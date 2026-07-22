@@ -10,7 +10,9 @@ The full product brief lives in [CLAUDE.md](CLAUDE.md). Architecture and specs l
 
 ## Status
 
-**Phase: Foundation.** The app shell is scaffolded — navigation, Supabase client, styling, and typed config are in place. Every screen is a placeholder that names the doc specifying it. No product features are built yet.
+**Phase: Foundation.** Navigation, Supabase client, the live v1 schema, and the design system are in place, and the Home screen is a working slice on mock data. Auth isn't wired yet and the other four tabs are placeholders.
+
+For the running to-do list, status board, and design system, see [docs/project-status.md](docs/project-status.md).
 
 ## Stack
 

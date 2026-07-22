@@ -168,6 +168,7 @@ Follow the patterns already established in `supabase/migrations/`. Rationale for
 
 - `README.md` — Public/high-level overview
 - `CLAUDE.md` — This file (AI brain)
+- `/docs/project-status.md` — **Living tracker:** to-do queue, status board, design system. Start here for "where are we?"
 - `/docs/data-model.md` — Detailed schema + what is actually shipped
 - `/docs/home-screen.md` — Information architecture
 - `/docs/ai-coach.md` — System prompt, tools, memory design
