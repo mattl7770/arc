@@ -51,10 +51,13 @@
 - [ ] ⚠️ Wire up the "Mode" quick action (Travel/Sick/Social/Manual) — present but inert
 - [ ] 🧊 Snooze/skip → surface incomplete items intelligently later in the day
 
-### AI Coach (prompt 4 — next up)
-- [ ] 📋 Chat interface with message send (`docs/ai-coach.md`)
-- [ ] 📋 System prompt encoding the ARC Coach personality
-- [ ] 📋 Daily-brief placeholder wired to the Home card
+### AI Coach
+- [x] Chat interface with message send, streaming replies, retry (`docs/ai-coach.md`)
+- [x] System prompt encoding the ARC Coach personality (`src/lib/ai/system-prompt.ts`)
+- [x] Daily-brief placeholder (opens the thread; same text as the Home card)
+- [x] Service seam (`src/lib/ai/coach-service.ts`) — honest mock today, one swap to an Edge Function later
+- [ ] ⚠️ 📋 **Wire the real model** — Supabase Edge Function holding the provider key, streaming; flip `isCoachBackendLive`
+- [ ] 📋 Persist conversations to `ai_conversations` / `ai_messages` (needs the migration)
 - [ ] 🧊 Tool calling (log_entry, update_protocol, …)
 - [ ] 🧊 RAG over user history + longevity knowledge base
 - [ ] 🧊 n-of-1 experiment engine
@@ -68,14 +71,14 @@
 - [ ] 📋 **Data tab** — biomarker trends, wearable history, body comp dashboards
 
 ### Screens still to build
-- [ ] 📋 Coach · Log · Data · Settings (all placeholders today)
+- [ ] 📋 Log · Data · Settings (still placeholders)
 
 ---
 
 ## 2. Status Board
 
 ### App as a whole
-**🚧 Foundation — a navigable shell with one real screen.** The app builds for iOS, Android and web, connects to a live Supabase backend, and the Home screen is a working (mock-data) vertical slice. Nothing is gated behind auth yet, and four of five tabs are placeholders. Not yet usable as a daily tool; on track as a foundation.
+**🚧 Foundation — a navigable shell with two real screens.** The app builds for iOS, Android and web, connects to a live Supabase backend, and both the Home screen and the Coach chat are working slices (on mock data / a mock model). Nothing is gated behind auth yet, and three of five tabs are placeholders. Not yet usable as a daily tool; on track as a foundation.
 
 ### Subsystems
 | Area | Status | Notes |
@@ -88,7 +91,7 @@
 | Generated types | ✅ | From the live DB; `public` schema byte-identical to local |
 | **Auth** | ⚠️ 🚧 | Session hook + login route exist; **tabs are not gated**, login is a placeholder |
 | **Home screen** | 🚧 | Full IA built on **mock data**; not reading Supabase, not persisted |
-| Coach | 📋 | Placeholder screen only |
+| **Coach** | 🚧 | Chat UX complete with streaming; behind a **mock model** (honest preview), not persisted |
 | Log | 📋 | Placeholder screen only |
 | Data | 📋 | Placeholder screen only |
 | Settings | 📋 | Placeholder screen only |
@@ -103,7 +106,8 @@
 - **`.env`:** present in the worktree, verified — anon key valid, all 10 tables reachable, RLS blocks anon reads/writes.
 
 ### Known caveats (things that will bite if forgotten)
-- ⚠️ Mission state is **in-memory** — a reload resets the Home screen.
+- ⚠️ The **Coach is a mock** — `src/lib/ai/coach-service.ts` returns a scripted, honest-preview reply with simulated streaming. No model, no data. `isCoachBackendLive` gates the UI's "Preview" affordance; flip it when the Edge Function lands.
+- ⚠️ Mission and chat state are both **in-memory** — a reload resets them.
 - ⚠️ `useSession` is imported by nobody yet, so **nothing touches Supabase at runtime** until auth is wired.
 - ⚠️ `EXPO_PUBLIC_*` vars are inlined at build time — **restart the dev server** after editing `.env`.
 - ⚠️ `src/types/database.ts` is **generated** — never hand-edit; run `npm run db:types`.
@@ -123,7 +127,7 @@ Tokens live in `tailwind.config.js` (source of truth for `className`) and are mi
 `50 #F6F7F9` · `100 #ECEEF2` · `200 #D9DDE4` · `300 #B8BFCB` · `400 #8C96A7` · `500 #697386` · `600 #525B6B` · `700 #3E4552` · `800 #252B35` · `900 #151A21` · `950 #0B0F14`
 
 **Accent — `accent` (teal)** · `DEFAULT #3FA7A0` · `muted #2C7A75` (light-mode text) · `soft #E4F2F1` (hero background)
-> **The one rule:** the accent belongs to the "Do this next" hero and its primary controls — nothing else. If everything is emphasised, nothing is directive. This restraint is what makes the Home screen work.
+> **The rule:** accent marks the single most important action on a screen, and the user's own voice/input — nothing else. On Home that is the "Do this next" hero. In Coach it is the user's message bubbles and the send button; the Coach itself replies in neutral ink, because it is a considered voice, not a chat buddy. If everything is emphasised, nothing is directive.
 
 **Signal — readiness / adherence** · `optimal #4BA07A` · `good #7FB069` · `caution #D9A441` · `poor #C4614C` · `unknown #697386`
 > Used for the readiness dot, pillar dots, and metric values that carry a verdict. Carried consistently everywhere a status appears.

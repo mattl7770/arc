@@ -1,5 +1,28 @@
 # Architecture Decision Records (ADR)
 
+## 2026-07-22 — Coach: client → Edge Function, never a client-side key
+
+**Decision:** The Coach's model call lives behind a single service seam (`src/lib/ai/coach-service.ts`). The client never holds a provider API key; the real implementation will be a Supabase Edge Function that holds the key server-side and streams the reply back. Today that seam returns an honest mock with simulated streaming.
+
+**Reasoning:**
+An `EXPO_PUBLIC_ANTHROPIC_KEY` would be inlined into every client bundle — a shipped secret (see `.env.example`). Routing through an Edge Function keeps the key server-side and gives one place to run the agent loop, RAG, and tools later. Isolating it behind one function means the entire chat UI — hook, components, streaming contract — is written against the final interface today and does not change when the backend lands.
+
+**Consequences:**
+- The chat streams token-by-token now, so the UX that ships today is the UX that ships with the real model.
+- `isCoachBackendLive` is the single flag the UI reads to show the "Preview" affordance.
+- Conversations are in-memory until the `ai_conversations` / `ai_messages` migration lands.
+
+---
+
+## 2026-07-22 — The mock Coach is honest, not fake-smart
+
+**Decision:** The placeholder Coach never fabricates data-grounded answers. It replies in-character but transparent — it states that it is a preview not yet connected to the model or the user's data — and the daily brief carries a visible "Preview" badge.
+
+**Reasoning:**
+A coach that confidently invents HRV numbers or protocol advice while disconnected from real data would train the user to distrust it exactly when it becomes real. Honesty about its own wiring is on-brand for "calm, precise, evidence-seeking" (docs/ai-coach.md) and avoids demoing fake intelligence.
+
+---
+
 ## 2026-07-22 — Project Naming
 
 **Decision:** Name the project **ARC** (Architecture for Resilience & Continuity)
