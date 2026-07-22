@@ -88,3 +88,18 @@ Only the highest-signal current numbers:
 - Move to AI-generated / AI-adjusted “Today’s Mission” once core data flows exist
 - Mock data is fine for the first visual version
 - Measure time-to-clarity: user should understand what to do within 3 seconds of opening the app
+
+---
+
+## Implementation Status
+
+**Shipped:** `app/(tabs)/index.tsx` renders all six sections in order on mock data (`src/lib/home/mock-day.ts`). Components live in `src/components/home/`; the mission/hero logic is in `src/hooks/use-mission.ts`.
+
+Key design decisions:
+
+- **The hero card is derived, not authored.** "Do this next" is the first unresolved mission item, so completing it advances the screen automatically — the checklist and the hero can never disagree. This is what makes the screen directive rather than a static mockup.
+- **The accent colour is reserved for the hero.** Everything else is neutral ink. Restraint is what keeps this from becoming a dashboard.
+- **Grouped but not collapsible.** The IA allows collapsing "if needed"; an achievable list should not need it. If it ever does, the list is too long — the fix is prioritisation, not a disclosure triangle.
+- The mock models a **low-recovery day**, the state the design most has to survive.
+
+**Not yet built:** the remaining states (travel, sick/deload, data-gappy, first-run); reading from `daily_logs` / `log_entries`; persistence (mission state is in-memory); the Mode override control (present but inert).

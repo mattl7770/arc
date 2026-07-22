@@ -10,7 +10,10 @@
 module.exports = {
   content: ['./app/**/*.{js,jsx,ts,tsx}', './src/**/*.{js,jsx,ts,tsx}'],
   presets: [require('nativewind/preset')],
-  darkMode: 'class',
+  // darkMode is deliberately unset, which NativeWind reads as "media" —
+  // i.e. driven by the OS setting, matching `userInterfaceStyle: "automatic"`
+  // in app.json. Setting it to 'class' silently disables every `dark:` variant
+  // until something calls colorScheme.set(), on native as well as web.
   theme: {
     extend: {
       colors: {
