@@ -183,4 +183,30 @@ n-of-1 experiments.
 - Proper indexing on user_id + date fields
 - Soft deletes where it makes sense later
 
+---
+
+## Implementation Status
+
+**Shipped:** `supabase/migrations/20260722000000_initial_schema.sql` implements the ten v1 priority tables above. `ai_conversations`, `ai_messages` and `experiments` are specified but **not yet migrated** — they land with the Coach.
+
+Generated types live in `src/types/database.ts`. That file is generated, never hand-edited — regenerate with `npm run db:types`.
+
+### Where the migration adds to this spec
+
+| Addition | Why |
+| --- | --- |
+| `user_id` on `log_entries` and `protocol_versions` | "user_id on everything" (Design Principles). Keeps every RLS policy a flat `auth.uid() = user_id` instead of a subquery through the parent. Consistency is enforced by composite FKs, so the column cannot drift from its parent. |
+| `updated_at` on all tables except `protocol_versions` | Versions are immutable by design; everything else gets an `updated_at` trigger. |
+| `public.users.id` references `auth.users.id` | The profile row *is* the auth user. A signup trigger creates it, so the two can never diverge. |
+| `unique (report_id, biomarker_id)` on `lab_results` | Re-parsing a PDF must not duplicate values. |
+| `unique (source_device, source_raw_id)` on `wearable_data` | Idempotent device re-sync. |
+| `bone_mass_kg`, `visceral_fat_rating`, `hip_cm` on `body_metrics` | Filling in the spec's "etc." with what a DEXA scan and a tape measure actually produce. |
+| Check constraints | Ordered ranges, 0–100 percentages, positive masses, snake_case slugs and metric types. |
+
+### Deliberate deviations
+
+- **`wearable_data.metric_type` is `text`, not an enum.** Vendors add metrics on their schedule. See `/docs/decisions.md`.
+- **`log_entries.scheduled_time` is `time`, not a timestamp.** The calendar date comes from the parent `daily_log`, so a 07:00 habit stays 07:00 across timezones.
+- **`daily_logs.date` is a `date`.** "Today" is resolved in `users.timezone`.
+
 This schema will evolve. When it does, update this document and note the change in `/docs/decisions.md`.

@@ -38,9 +38,9 @@ It is **not** a consumer wellness app. It is closer to a personal command center
 ## 3. Current Tech Stack
 
 **Starting stack (velocity first):**
-- Expo (React Native) + TypeScript + Expo Router
+- Expo SDK 57 (React Native 0.86) + TypeScript (strict) + Expo Router
 - Supabase (Postgres + Auth + Row Level Security + Storage + Edge Functions)
-- NativeWind or Tamagui
+- NativeWind 4 (Tailwind v3) — chosen over Tamagui, see `/docs/decisions.md`
 - Frontier LLMs via API (with strong RAG + tool calling)
 - Apple Health / Health Connect as wearable hub
 - Terra (or direct APIs) for Oura, WHOOP, Ultrahuman, etc.
@@ -133,6 +133,19 @@ Preferred direction (as of 2026-07):
 - When in doubt, optimize for long-term maintainability and clarity over cleverness
 - Ask for clarification on product decisions rather than assuming
 
+### Database conventions
+
+Follow the patterns already established in `supabase/migrations/`. Rationale for each is in `/docs/decisions.md`.
+
+- **Migration filenames need a 14-digit timestamp** (`YYYYMMDDHHMMSS_name.sql`). Shorter prefixes are silently ignored by `supabase db push`. Use `supabase migration new <name>` to get it right.
+- **Never hand-edit `src/types/database.ts`** — it is generated. Change the schema, push, then run `npm run db:types`.
+- `uuid` primary keys with `gen_random_uuid()`; `timestamptz` for instants, `date` for calendar days, `time` for wall-clock.
+- `created_at` + `updated_at` on every table, with a `set_updated_at()` trigger. The exception is immutable tables like `protocol_versions`.
+- **`user_id` on every owned table**, so every RLS policy is a flat `auth.uid() = user_id` rather than a subquery through a parent. Where the column is denormalised, enforce it with a composite FK to the parent's `unique (id, user_id)`.
+- **Enum when ARC owns the vocabulary, `text` when a vendor does.** Wearable `metric_type` is text for exactly this reason.
+- RLS on every table: one `FOR ALL` policy, with `auth.uid()` wrapped as `(select auth.uid())` so Postgres evaluates it once per statement instead of once per row.
+- Deleting a protocol must never destroy execution history — prefer `ON DELETE SET NULL` over `CASCADE` for anything referencing a log.
+
 ---
 
 ## 10. Current Phase & Next Priorities
@@ -140,12 +153,14 @@ Preferred direction (as of 2026-07):
 **Phase:** Foundation (July 2026)
 
 **Immediate priorities:**
-1. Solid project structure + this file
-2. Supabase schema v1 (biomarkers, protocols, daily_logs, etc.)
+1. ~~Solid project structure + this file~~ — **done.** Expo Router shell, five tabs, NativeWind, typed config.
+2. ~~Supabase schema v1 (biomarkers, protocols, daily_logs, etc.)~~ — **done.** Ten core tables migrated with RLS; types generated. `ai_conversations`, `ai_messages` and `experiments` are still pending and land with the Coach.
 3. Function Health PDF → structured data pipeline
-4. Basic authenticated app shell + navigation
+4. Basic authenticated app shell + navigation — *partly done:* navigation and the session hook exist, but nothing gates the tabs yet and `app/login.tsx` is still a placeholder.
 5. First version of directive Home Screen (even with mocked data)
 6. Minimal AI Coach chat interface
+
+**Live infrastructure:** a Supabase project exists with email auth and the Data API enabled. Storage is not set up yet — the `lab_reports.file_path` column is ready for it but nothing writes there.
 
 ---
 
@@ -153,10 +168,13 @@ Preferred direction (as of 2026-07):
 
 - `README.md` — Public/high-level overview
 - `CLAUDE.md` — This file (AI brain)
-- `/docs/data-model.md` — Detailed schema
+- `/docs/data-model.md` — Detailed schema + what is actually shipped
 - `/docs/home-screen.md` — Information architecture
 - `/docs/ai-coach.md` — System prompt, tools, memory design
 - `/docs/decisions.md` — Architecture Decision Records
+- `/docs/folder-structure.md` — Where code goes
+- `supabase/migrations/` — The schema as built. The migration is the source of truth; `data-model.md` is the intent.
+- `src/types/database.ts` — **Generated.** Never edit by hand; run `npm run db:types`.
 
 ---
 
