@@ -14,6 +14,12 @@
 
 ## 1. To-Do
 
+### Device / builds
+- [x] Development-build config (`eas.json` + `expo-dev-client`) — see `docs/dev-build.md`
+- [x] Diagnosed the Expo Go SDK-57 incompatibility (single-SDK runtime handshake)
+- [ ] ⚠️ 📋 **First iOS dev build** — needs a paid Apple Developer account ($99/yr); free `eas go` bridge available meanwhile
+- [ ] 📋 EAS account + `eas login` (user)
+
 ### Foundation & tooling
 - [x] Expo SDK 57 + Expo Router + TypeScript (strict) scaffold
 - [x] NativeWind 4 (Tailwind v3) with ARC design tokens
