@@ -9,10 +9,10 @@
     "icon": "./assets/images/icon.png",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.arc.app"
+      "bundleIdentifier": "com.arcresilience.app"
     },
     "android": {
-      "package": "com.arc.app",
+      "package": "com.arcresilience.app",
       "adaptiveIcon": {
         "backgroundColor": "#0B0F14",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
