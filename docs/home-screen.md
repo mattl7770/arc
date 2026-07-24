@@ -93,12 +93,15 @@ Only the highest-signal current numbers:
 
 ## Implementation Status
 
-**Shipped:** `app/(tabs)/index.tsx` renders all six sections in order on mock data (`src/lib/home/mock-day.ts`). Components live in `src/components/home/`; the mission/hero logic is in `src/hooks/use-mission.ts`.
+**Shipped:** `app/(tabs)/index.tsx` renders all six sections on mock data (`src/lib/home/mock-day.ts`). Components live in `src/components/home/`; the mission/hero logic is in `src/hooks/use-mission.ts`.
+
+**Section order revised (2026-07-24, owner decision — supersedes the Layout order above for v1):** only the **date eyebrow** sits above the hero, so the first real element on screen is the action. The readiness block (verdict + pillar **segment bar**, option D from the mock-up round) moved **below** the hero as supporting evidence. Reviewed on a real device via the dev build.
 
 Key design decisions:
 
 - **The hero card is derived, not authored.** "Do this next" is the first unresolved mission item, so completing it advances the screen automatically — the checklist and the hero can never disagree. This is what makes the screen directive rather than a static mockup.
 - **The accent colour is reserved for the hero.** Everything else is neutral ink. Restraint is what keeps this from becoming a dashboard.
+- **Pillars render as a segment bar** (`readiness-strip.tsx`): four slim signal-coloured segments with labels beneath — more scannable than dots, still not a chart.
 - **Grouped but not collapsible.** The IA allows collapsing "if needed"; an achievable list should not need it. If it ever does, the list is too long — the fix is prioritisation, not a disclosure triangle.
 - The mock models a **low-recovery day**, the state the design most has to survive.
 

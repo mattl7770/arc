@@ -26,6 +26,11 @@ export function signalTextClass(level: SignalLevel): string {
   return TEXT[level];
 }
 
+/** Background class for surfaces that carry a signal colour (segment bars). */
+export function signalBgClass(level: SignalLevel): string {
+  return DOT[level];
+}
+
 /** The readiness colour, carried consistently everywhere it appears. */
 export function SignalDot({ level, small = false }: { level: SignalLevel; small?: boolean }) {
   return <View className={`${small ? 'h-1.5 w-1.5' : 'h-2.5 w-2.5'} rounded-full ${DOT[level]}`} />;

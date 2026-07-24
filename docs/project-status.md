@@ -51,6 +51,7 @@
 ### Home screen
 - [x] Six-section IA on mock data (`docs/home-screen.md`)
 - [x] Derived "Do this next" hero (completing it advances the screen)
+- [x] Header redesign (2026-07-24): date-only above the hero; readiness verdict + pillar segment bar (mock-up option D) moved below it
 - [ ] 📋 Read from `daily_logs` / `log_entries` instead of mock
 - [ ] 📋 Persist mission state (currently in-memory only)
 - [ ] 📋 Remaining designed states: travel · sick/deload · data-gappy · first-run
