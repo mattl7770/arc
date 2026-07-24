@@ -9,7 +9,10 @@
     "icon": "./assets/images/icon.png",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.arcresilience.app"
+      "bundleIdentifier": "com.arcresilience.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.arcresilience.app",
@@ -42,6 +45,19 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "57331eea-ba13-41cc-898f-43194a21aae3"
+      }
+    },
+    "owner": "architecture-for-resilience-and-continuity",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/57331eea-ba13-41cc-898f-43194a21aae3"
     }
   }
 }
