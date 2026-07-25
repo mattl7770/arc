@@ -104,6 +104,8 @@
 - [ ] 📋 **Daily logs** — the Log tab (fast capture: habits, meals, supplements, …)
 - [ ] 📋 **Protocols** — versioned stack/routine editor
 - [ ] 📋 **Wearables** — **Apple Health as the hub** (on-device, offline for ARC; the vendor app does the cloud sync) → `wearable_data`; direct vendor API only where HealthKit lacks fidelity (e.g. WHOOP). **Terra dropped** — it's a cloud aggregator that needs a server, which breaks offline/no-server.
+- [ ] 📋 **Hydration tracking** (owner call, 2026-07-25) — a first-class daily metric. Manual quick-add in the Log tab **and** automatic ingest, ideally from a smart bottle (HidrateSpark or similar) via **Apple Health** (its app syncs the bottle → HealthKit → ARC reads it, staying offline/no-server, consistent with the wearables hub). Model as `wearable_data` (metric_type `water_ml`) or a dedicated field — decide with the Log/wearables build.
+- [ ] 🧊 **Write data back to Apple Health** (owner call, 2026-07-25) — ARC as a HealthKit *source*, not just a reader (e.g. push weight, workouts, hydration, supplement/med intake so other apps see them). Requires a **feasibility + importance assessment first** (HealthKit write scopes, which metric types are worth writing, privacy implications) — deferred until that's done.
 - [ ] 🧊 Nutrition · Supplements/Meds/Therapies · Body composition
 - [ ] 📋 **Data tab** — biomarker trends, wearable history, body comp dashboards
 
