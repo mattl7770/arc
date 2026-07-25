@@ -13,7 +13,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "doctor": "expo-doctor",
-    "db:validate": "node db/validate-schema.mjs",
+    "db:bundle": "node db/bundle-migrations.mjs",
+    "db:validate": "node db/bundle-migrations.mjs --check && node db/validate-schema.mjs",
+    "db:test": "node db/migrate.test.mjs",
     "db:push": "supabase db push",
     "db:types": "node scripts/gen-types.mjs"
   },
