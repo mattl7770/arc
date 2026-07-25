@@ -2,9 +2,11 @@
 
 **Living document.** This is the running board for what's done, what's next, and how the app is put together. Update it in the same change that changes reality — a status line that lies is worse than none.
 
-**Last updated:** 2026-07-22
+**Last updated:** 2026-07-24
 **Current phase:** Foundation
 **Branch:** `claude/expo-project-scaffold-d14e9e`
+
+> ⚠️ **Architecture pivot (2026-07-24): going local-first, no-server.** ARC is moving off cloud Supabase to on-device SQLite + `sqlite-vec`, with the Coach calling a frontier model directly from the app (user's key in the iOS Keychain) and encrypted iCloud backup. See the ADR in `docs/decisions.md` and the step-by-step in **`docs/architecture-migration.md`**. **Items below that mention Supabase, auth, RLS, or `useSession` are superseded** and will be reworked per that plan — they're left in place until each phase lands so the board stays honest about what still exists in the code *today*.
 
 **Legend:** ✅ done · 🚧 in progress · 📋 planned (v1) · 🧊 later · ⚠️ needs a decision or has a caveat
 
@@ -78,6 +80,7 @@
 - [ ] 📋 Persist conversations to `ai_conversations` / `ai_messages` (needs the migration)
 - [ ] 🧊 Tool calling (log_entry, update_protocol, …)
 - [ ] 🧊 RAG over user history + longevity knowledge base
+- [ ] 🧊 **Writable knowledge base** — the user can add/edit entries, and the Coach can do its own research to expand the corpus over time (grows the longevity knowledge plane, not just reads it)
 - [ ] 🧊 **Vector DB for Coach long-term memory** (brief §7 names it explicitly; pairs with RAG)
 - [ ] 🧊 **Predictive alerts** — flag a trend before the user would notice (brief §2; causal insights already noted in `ai-coach.md`)
 - [ ] 🧊 n-of-1 experiment engine

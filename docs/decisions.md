@@ -1,5 +1,31 @@
 # Architecture Decision Records (ADR)
 
+## 2026-07-24 — Local-first, single-user, no-server architecture
+
+**Decision:** ARC is a **local-first, single-user, server-less** app. All personal data lives **on the device** in SQLite, with `sqlite-vec` for on-device RAG. The Coach calls a frontier model **directly from the app** using a key the user supplies, held in the **iOS Keychain** and swappable at runtime via a settings screen (provider + model + key). The longevity **knowledge base lives on-device** and is writable — the user, and later the Coach's own research, can expand it. Media (food / progress photos) is **referenced from the iOS Photos library** (PhotoKit) or stored compressed, never duplicated wholesale. Backup is an **encrypted snapshot to iCloud**, the device holding the key. There is **no backend, no auth, no RLS, and no personal data at rest in any cloud.** Supabase is removed.
+
+**This supersedes** the 2026-07-22 "Coach: client → Edge Function, never a client-side key" ADR, the cloud posture of the 2026-07-22 schema/RLS ADRs, and the 2026-07-24 data-ownership *deferral* (we are not deferring local-first — we are adopting it now).
+
+**Reasoning:**
+- **One user for the foreseeable future.** Auth, RLS, `user_id` tenancy and a hosted Postgres all exist to isolate *many* users over a network. For one person on one phone they are pure overhead — removing them makes the app *simpler to build and to run*, not merely cheaper.
+- **The client-side-key objection doesn't apply here.** The original ADR banned a client-held model key because a *distributed* app would ship a shared secret to thousands of devices. This key is *yours*, in hardware-backed Keychain, on *your* device — revocable and spend-limited. The threat that justified the server is absent.
+- **Privacy by construction.** Personal health data never sits at rest in anyone's cloud; the only cloud copy is an encrypted blob the device alone can decrypt. This satisfies CLAUDE.md §2's "local-first or strongly encrypted" directly instead of deferring it.
+- **Storage fits comfortably.** Structured data + on-device vectors total well under 1 GB per decade; photos are the only variable and stay small via compression or PhotoKit references. Single-digit GB over ten years on a 128–256 GB phone. (Worked through with the owner, 2026-07-24.)
+- **Zero recurring cost but tokens.** No server, no hosting bill; ongoing cost is per-token model usage plus the $99/yr Apple membership any iOS app needs.
+- **The model stays swappable.** `coach-service.ts` already isolates the model call; a settings screen makes provider/model/key user-editable at runtime.
+
+**Consequences:**
+- **Removed:** Supabase (client, hosted project, migration-as-live-schema), email auth, RLS policies, `useSession` as a gate. The live Supabase project becomes vestigial (free tier — the owner can delete it whenever).
+- **The schema survives as the app's spine**, ported Postgres → SQLite (enums → `text` + `CHECK`, `uuid` → `text`, `timestamptz` → ISO-8601 `text`, `jsonb` → `text`). Table and column names are preserved so the UI and view-model types barely move.
+- **New surfaces:** an on-device migration runner, a local data-access layer, a settings screen for provider/model/key, `sqlite-vec` RAG, PhotoKit media references, and encrypted iCloud backup/restore.
+- **On-device key posture:** Keychain storage (`expo-secure-store`) + a provider-side spend limit + key rotation on device loss are the three mitigations that keep this safe.
+- **Upgrade path preserved.** If ARC ever goes multi-user or ships publicly with a shared key, a thin server returns *behind the same `coach-service.ts` seam* — the app doesn't change. Nothing here burns that bridge.
+- CLAUDE.md §3 (stack) and §9 (DB conventions — RLS / `auth.uid()`) and `docs/data-model.md` need updating to match; tracked in the plan.
+
+**Full step-by-step:** `docs/architecture-migration.md`.
+
+---
+
 ## 2026-07-24 — Reconciling the app with the source brief (`Health App Idea`)
 
 **Context:** The owner's original product brief (`Health App Idea`, kept outside the repo) was diffed against the shipped app and the docs. Most of it already agreed; the decisions below resolve the points that didn't. The full diff and the resulting backlog additions live in `docs/project-status.md` §1.
