@@ -53,11 +53,10 @@ Only the highest-signal current numbers:
 - Steps or strain progress
 - Next meal / hydration status (optional)
 
-### 6. Quick Actions Dock
-- Log something (voice / photo / quick add)
-- Chat with Coach
-- Override modes (Travel / Sick / Social / Manual day)
-- Jump to full Dashboard or Protocols
+### 6. Quick Actions Dock — ~~cut 2026-07-24~~
+Originally: log something, chat with Coach, override modes, jump to Dashboard.
+
+**Removed** (owner call). Three of its four buttons — Log, Coach, Data — were the tab bar sitting two inches above itself, and the fourth (Mode) was inert. The home screen ends at the metrics strip. Mode override needs a real home when the override model exists; it is not a dock button.
 
 ---
 
@@ -93,9 +92,13 @@ Only the highest-signal current numbers:
 
 ## Implementation Status
 
-**Shipped:** `app/(tabs)/index.tsx` renders all six sections on mock data (`src/lib/home/mock-day.ts`). Components live in `src/components/home/`; the mission/hero logic is in `src/hooks/use-mission.ts`.
+**Shipped:** `app/(tabs)/index.tsx` renders five sections on mock data (`src/lib/home/mock-day.ts`). Components live in `src/components/home/`; the mission/hero logic is in `src/hooks/use-mission.ts`.
 
 **Section order revised (2026-07-24, owner decision — supersedes the Layout order above for v1):** only the **date eyebrow** sits above the hero, so the first real element on screen is the action. The readiness block (verdict + pillar **segment bar**, option D from the mock-up round) moved **below** the hero as supporting evidence. Reviewed on a real device via the dev build.
+
+**Shipped order:** date → hero → readiness → mission → Coach brief → metrics. Six sections became five when the quick actions dock was cut.
+
+**No horizontal rules between sections (2026-07-24, owner call, after device review).** The first build separated the date and the metrics strip with hairlines. On a real screen a rule above and below one short block closes a box around it, and the owner read all three as "weird little boxes". Sections are now separated by whitespace only. Hairlines remain correct for **card edges** and **row separators inside a list** (mission rows) — the distinction is that those enclose something that genuinely is one object, whereas a page-slicing rule just adds furniture.
 
 Key design decisions:
 
@@ -105,4 +108,4 @@ Key design decisions:
 - **Grouped but not collapsible.** The IA allows collapsing "if needed"; an achievable list should not need it. If it ever does, the list is too long — the fix is prioritisation, not a disclosure triangle.
 - The mock models a **low-recovery day**, the state the design most has to survive.
 
-**Not yet built:** the remaining states (travel, sick/deload, data-gappy, first-run); reading from `daily_logs` / `log_entries`; persistence (mission state is in-memory); the Mode override control (present but inert).
+**Not yet built:** the remaining states (travel, sick/deload, data-gappy, first-run); reading from `daily_logs` / `log_entries`; persistence (mission state is in-memory); the Mode override control (no longer present anywhere — it went out with the dock and needs a real home).

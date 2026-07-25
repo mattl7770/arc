@@ -1,10 +1,12 @@
 import { Text, View } from 'react-native';
 
 /**
- * The only thing above the hero: today, quietly, over a hairline rule — the
- * Porcelain Ledger "folio line". The readiness block lives below the hero as
- * ReadinessStrip (owner call, 2026-07-24): the screen answers "what do I do"
- * before "how am I doing".
+ * The only thing above the hero: today, quietly — the Porcelain Ledger "folio
+ * line". The readiness block lives below the hero as ReadinessStrip (owner
+ * call, 2026-07-24): the screen answers "what do I do" before "how am I doing".
+ *
+ * Deliberately unruled (owner call, 2026-07-24): a hairline under a single
+ * short line closes a box around it. Separation here is whitespace's job.
  */
 export function DateEyebrow() {
   const today = new Date().toLocaleDateString(undefined, {
@@ -14,7 +16,7 @@ export function DateEyebrow() {
   });
 
   return (
-    <View className="border-b border-hairline pb-2">
+    <View>
       <Text className="text-[11px] uppercase tracking-[2px] text-ink-muted">{today}</Text>
     </View>
   );

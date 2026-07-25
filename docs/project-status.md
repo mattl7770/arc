@@ -53,10 +53,11 @@
 - [x] Derived "Do this next" hero (completing it advances the screen)
 - [x] Header redesign (2026-07-24): date-only above the hero; readiness verdict + pillar segment bar (mock-up option D) moved below it
 - [x] **Porcelain Ledger restyle** (2026-07-24): full app retheme — new tokens, serif/mono voices, light-only; philosophy in §3, alternatives archived in `docs/design-directions.md`
+- [x] **De-boxing pass** (2026-07-24, after device review): section-dividing hairlines removed from the date and the metrics strip; quick actions dock cut entirely
 - [ ] 📋 Read from `daily_logs` / `log_entries` instead of mock
 - [ ] 📋 Persist mission state (currently in-memory only)
 - [ ] 📋 Remaining designed states: travel · sick/deload · data-gappy · first-run
-- [ ] ⚠️ Wire up the "Mode" quick action (Travel/Sick/Social/Manual) — present but inert
+- [ ] 📋 **Mode override** (Travel/Sick/Social/Manual) — needs the override model *and* a home in the UI; the dock button that used to stand in for it is gone
 - [ ] 🧊 Snooze/skip → surface incomplete items intelligently later in the day
 
 ### AI Coach
@@ -140,7 +141,7 @@ Tokens live in `tailwind.config.js` (source of truth for every `className`) and 
 | `paper` | `#F6F3EC` | The page. Every screen's background. Bone-white, slightly warm. |
 | `paper-deep` | `#EFEADD` | Recessed paper: input fields, quiet chips (the PREVIEW badge). |
 | `porcelain` | `#FDFCF8` | Card surface — a shade whiter than the page, like coated stock. Cards sit *on* paper. |
-| `hairline` | `#E3DCCE` | The default rule: card borders, section dividers, the folio line under the date. |
+| `hairline` | `#E3DCCE` | The default rule: **card borders**. Not for slicing the page into sections — see "rules enclose objects" below. |
 | `hairline-soft` | `#EFEADD` | Row separators inside a list (mission rows). |
 | `hairline-strong` | `#C9C0AC` | Ghost-button borders, unchecked checkbox rings. |
 | `ink` | `#1C1917` | Primary text. Warm near-black, never pure black. |
@@ -178,18 +179,19 @@ The serif/mono split carries meaning: **serif speaks, mono measures.** A number 
 - Cards: `rounded-card` (10px). Buttons: `rounded-btn` (6px). **No pills, no 24px super-rounding** — this is print, not bubblegum. Chat bubbles use `rounded-card` with one squared corner (`rounded-br-sm` user / `rounded-bl-sm` coach) like a ledger tab.
 - **No shadows, no elevation, no glow — anywhere.** Layering is done with hairline borders and the paper/porcelain two-tone.
 - The hero is "a stamped ledger entry": `border border-pine-tint` + `border-t-[3px] border-t-pine` on `bg-pine-soft`.
-- Section rhythm on Home: `mt-7`–`mt-9`; airy density is part of the calm.
+- **Rules enclose objects, never pages** (owner call, 2026-07-24, after device review). A hairline is correct on a **card edge** and **between rows of one list**, because both times it is drawing the boundary of a single object. A rule laid across the page to separate two sections is furniture: put one above a short block and one below it and you have drawn a box around it — which is exactly what the owner flagged. **Sections are separated by whitespace only.** If a section can't hold its own without a rule, it needs a heading or more air, not a line.
+- Section rhythm on Home: `mt-5`–`mt-9`; airy density is part of the calm, and since the de-boxing pass it is the *only* thing separating sections, so don't tighten it casually.
 - One shared container: `Screen` (`src/components/ui/screen.tsx`) — safe-area, `px-5` gutter, `bg-paper`.
 - Tap targets are whole rows/cards; the IA target is ≤ 2 taps to act.
 
 ### Surface treatments (the recipes)
 - **Card:** `rounded-card border border-hairline bg-porcelain p-4`.
 - **Hero:** pine-soft + pine top rule (above); serif title; mono metadata; Done = solid pine `rounded-btn`; Snooze = `border-hairline-strong` ghost; Skip = bare muted text.
-- **Eyebrow:** `text-[11px] uppercase tracking-[2px] text-ink-muted` (+ `font-medium` when it labels a section); the date sits over a `border-b border-hairline` folio rule.
+- **Eyebrow:** `text-[11px] uppercase tracking-[2px] text-ink-muted` (+ `font-medium` when it labels a section). The date eyebrow is bare — no folio rule under it (see "rules enclose objects" above).
 - **Segment bar:** flat `h-[6px]` rectangles, `rounded-[1px]`, `gap-0.5`, mono-caps labels beneath. A typeset gauge, not a chart.
 - **Mission row:** hairline-soft separators; pine-filled circle when done; times in mono; completed text drops to ink-muted.
 - **Chat:** user = solid pine slip, right; coach = bordered porcelain slip, left. The Coach reads as typeset prose, not chat froth.
-- **Metrics:** mono `text-lg font-semibold` values coloured by signal only when they carry a verdict; labels are eyebrows.
+- **Metrics:** mono `text-lg font-semibold` values coloured by signal only when they carry a verdict; labels are eyebrows. No section heading — every cell already carries a caps label, and stacking caps on caps is noise; the 2×2 grid is its own boundary.
 
 ### Patterns worth reusing
 - **Derived emphasis:** the hero isn't authored separately — it's the first unresolved mission item (`src/hooks/use-mission.ts`). One source of truth, so the UI can't contradict itself.
@@ -197,8 +199,9 @@ The serif/mono split carries meaning: **serif speaks, mono measures.** A number 
 - **Explicit hairlines**, not `divide-y` — that utility needs a CSS sibling selector RN doesn't have.
 
 ### Open design questions
-- ⚠️ **Serif rendering on device** — Iowan Old Style at 600 weight on a real iPhone is the first thing to eyeball; if it renders as fake-bold or too bookish, Palatino is the next candidate in the stack.
-- ⚠️ **Pine-soft hero on paper** — enough contrast between `#E7EEE6` and `#F6F3EC` at real brightness? If the hero doesn't pop, deepen pine-soft before reaching for shadows (there are no shadows).
+- ⚠️ **Serif rendering on device** — Iowan Old Style at 600 weight on a real iPhone; if it renders as fake-bold or too bookish, Palatino is the next candidate in the stack. *Not raised in the 2026-07-24 device review, which is weak evidence it's fine — the owner was looking at boxes, not letterforms. Still unconfirmed.*
+- ⚠️ **Pine-soft hero on paper** — enough contrast between `#E7EEE6` and `#F6F3EC` at real brightness? If the hero doesn't pop, deepen pine-soft before reaching for shadows (there are no shadows). *Same caveat: not raised, not confirmed.*
+- ⚠️ **Does the metrics strip still land without its rule?** It is now the last thing on the screen with nothing but whitespace above it. If it reads as orphaned rather than quiet, the fix is more space or a serif heading — not the rule back.
 - 📋 Extract shared primitives (Card, Eyebrow, GhostButton) once a third screen needs them, not before.
 - 📋 Ionicons work but read slightly rounded against the print aesthetic; a stroke-consistent set is a candidate refinement.
 - 🧊 Android serif (falls back to system default today) — decide when Android becomes real.

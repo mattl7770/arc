@@ -5,7 +5,6 @@ import { DateEyebrow } from '@/components/home/date-eyebrow';
 import { HeroCard } from '@/components/home/hero-card';
 import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
-import { QuickActions } from '@/components/home/quick-actions';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
 import { useMission } from '@/hooks/use-mission';
@@ -17,7 +16,13 @@ import { mockDay } from '@/lib/home/mock-day';
  * Section order (revised 2026-07-24, owner call — supersedes the top-to-bottom
  * order in docs/home-screen.md): only the date sits above the hero, so the
  * first real thing on screen is the action. Readiness moved below the hero as
- * supporting evidence.
+ * supporting evidence. Section 6 (the quick actions dock) was cut entirely —
+ * it duplicated the tab bar.
+ *
+ * Sections are separated by whitespace alone. Horizontal rules were tried and
+ * removed (owner call, 2026-07-24): two of them around one short block reads
+ * as a box, and boxes are what this design is trying not to be. Hairlines are
+ * for card edges and rows inside a list, not for slicing up the page.
  *
  * Two things hold the design to its principles:
  *   - The hero is *derived* from the mission, not authored separately, so
@@ -38,7 +43,7 @@ export default function HomeScreen() {
         <DateEyebrow />
       </View>
 
-      <View className="mt-4">
+      <View className="mt-5">
         <HeroCard
           item={mission.next}
           onDone={(id) => mission.setStatus(id, 'completed')}
@@ -64,12 +69,8 @@ export default function HomeScreen() {
         <CoachBrief brief={mockDay.brief} />
       </View>
 
-      <View className="mt-7 border-t border-hairline pt-2">
+      <View className="mt-8">
         <MetricsStrip metrics={mockDay.metrics} />
-      </View>
-
-      <View className="mt-4 border-t border-hairline pt-2">
-        <QuickActions />
       </View>
     </Screen>
   );
