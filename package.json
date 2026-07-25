@@ -15,7 +15,7 @@
     "doctor": "expo-doctor",
     "db:bundle": "node db/bundle-migrations.mjs",
     "db:validate": "node db/bundle-migrations.mjs --check && node db/validate-schema.mjs",
-    "db:test": "node db/migrate.test.mjs",
+    "db:test": "node --import ./db/register-ts-hooks.mjs db/migrate.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-layer.test.mjs",
     "db:push": "supabase db push",
     "db:types": "node scripts/gen-types.mjs"
   },

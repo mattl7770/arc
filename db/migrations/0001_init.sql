@@ -11,12 +11,13 @@
 --
 -- Dialect / design changes from the Postgres original:
 --   * enums          -> text + CHECK (col IN (...))
---   * uuid           -> text. Ids are generated in the app (crypto.randomUUID),
---                       with NO default. Declared PRIMARY KEY NOT NULL so a
---                       missing id fails loud — SQLite's PRIMARY KEY alone does
---                       NOT imply NOT NULL for a text key (a rowid-table quirk),
---                       and would silently accept unlimited NULL-id rows, so the
---                       explicit NOT NULL is load-bearing, not decorative.
+--   * uuid           -> text. Ids are app-generated v4 UUIDs (src/lib/db/id.ts,
+--                       sourced from SQLite randomblob — Hermes has no crypto
+--                       global), with NO default. Declared PRIMARY KEY NOT NULL
+--                       so a missing id fails loud — SQLite's PRIMARY KEY alone
+--                       does NOT imply NOT NULL for a text key (a rowid-table
+--                       quirk) and would silently accept unlimited NULL-id rows,
+--                       so the explicit NOT NULL is load-bearing, not decorative.
 --   * timestamptz    -> text, ISO-8601 UTC, default strftime(...Z). ISO strings
 --                       sort chronologically as text, so range/order queries and
 --                       indexes still work.

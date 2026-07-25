@@ -7,7 +7,7 @@ import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
-import { useMission } from '@/hooks/use-mission';
+import { useTodayMission } from '@/hooks/use-today-mission';
 import { mockDay } from '@/lib/home/mock-day';
 
 /**
@@ -32,10 +32,13 @@ import { mockDay } from '@/lib/home/mock-day';
  *     (checkmarks, the mission progress fill). Everything else is neutral ink,
  *     which is what stops this becoming a dashboard.
  *
- * Still on mock data — see src/lib/home/mock-day.ts.
+ * The mission now reads from and writes to the on-device SQLite database
+ * (useTodayMission): completing an item persists across launches, and the day
+ * is seeded from mock-day on first open. Readiness, the Coach brief, and the
+ * metrics strip are still mock — they land when wearables and the Coach are.
  */
 export default function HomeScreen() {
-  const mission = useMission(mockDay.mission);
+  const mission = useTodayMission();
 
   return (
     <Screen scroll>

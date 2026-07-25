@@ -24,7 +24,7 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
 - [x] **`sqlite-vec` enabled** via `"op-sqlite": { "sqliteVec": true }` in package.json (flag confirmed against the podspec). Gives on-device vector search for the Coach's RAG; not exercised until Phase 3.
 - [x] **Schema ported** → `db/migrations/0001_init.sql`, preserving every table/column name:
   - `enum` → `text` + `CHECK (col IN (...))`
-  - `uuid` → `text`, **app-generated** (`crypto.randomUUID()`), no DB default, declared `PRIMARY KEY NOT NULL` so a missing id fails loud (SQLite's `PRIMARY KEY` alone permits NULLs on a text key — the `NOT NULL` is load-bearing)
+  - `uuid` → `text`, **app-generated v4 UUIDs** from SQLite `randomblob` (`src/lib/db/id.ts` — Hermes has no `crypto` global, so not `crypto.randomUUID()`), no DB default, declared `PRIMARY KEY NOT NULL` so a missing id fails loud (SQLite's `PRIMARY KEY` alone permits NULLs on a text key — the `NOT NULL` is load-bearing)
   - `timestamptz` → ISO-8601 `text` · `date` → `text` `YYYY-MM-DD` · `time` → `text` `HH:MM` (GLOB `[0-9]`-checked; note GLOB `_` is literal, unlike LIKE)
   - `jsonb` → `text` guarded by `json_valid()`
   - Dropped RLS, `auth.*`, grants, `handle_new_user`, **and `user_id` entirely** — single user, so the composite `(id, user_id)` FKs collapse to simple ones and the `(user_id, x)` uniques/indexes lose the prefix. `updated_at` triggers kept (rewritten as per-table `AFTER UPDATE`).

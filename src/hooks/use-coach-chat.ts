@@ -21,9 +21,9 @@ function makeId(seq: number): string {
  * Owns the Coach conversation.
  *
  * In-memory for now — there is no `ai_messages` table yet and the prompt for
- * this build is UX, not persistence. Swapping to Supabase later means loading
- * history here and writing through `send`; the component contract does not
- * change. Mirrors the in-memory approach in use-mission.ts.
+ * this build is UX, not persistence. Swapping to the local `ai_messages` table
+ * later means loading history here and writing through `send`; the component
+ * contract does not change.
  *
  * Concurrency model: all side effects (id generation, starting a stream) run in
  * the event handlers, never inside a `setState` updater. React may invoke an

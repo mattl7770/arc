@@ -89,7 +89,7 @@ Originally: log something, chat with Coach, override modes, jump to Dashboard.
 
 ## Implementation Status
 
-**Shipped:** `app/(tabs)/index.tsx` renders five sections on mock data (`src/lib/home/mock-day.ts`). Components live in `src/components/home/`; the mission/hero logic is in `src/hooks/use-mission.ts`.
+**Shipped:** `app/(tabs)/index.tsx` renders five sections. The **mission reads from and writes to the on-device SQLite database** (`src/hooks/use-today-mission.ts` → repositories in `src/lib/db/`); readiness, the Coach brief, and metrics are still mock (`src/lib/home/mock-day.ts`, also the mission's first-run seed). Components live in `src/components/home/`; the pure mission derivation (sort + fold + hero) is in `src/lib/home/derive-mission.ts`.
 
 **Section order revised (2026-07-24, owner decision — supersedes the Layout order above for v1):** only the **date eyebrow** sits above the hero, so the first real element on screen is the action. The readiness block (verdict + pillar **segment bar**, option D from the mock-up round) moved **below** the hero as supporting evidence. Reviewed on a real device via the dev build.
 
@@ -102,7 +102,7 @@ Key design decisions:
 - **The hero card is derived, not authored.** "Do this next" is the first pending mission item in time order, so completing it advances the screen automatically — the checklist and the hero can never disagree. This is what makes the screen directive rather than a static mockup.
 - **The accent colour is reserved for the hero.** Everything else is neutral ink. Restraint is what keeps this from becoming a dashboard.
 - **Pillars render as a segment bar** (`readiness-strip.tsx`): four slim signal-coloured segments with labels beneath — more scannable than dots, still not a chart.
-- **Chronological, with history that auto-collapses.** The mission is one time-sorted list (see §3); the only thing that ever folds is the run of already-finished items at the top, so the screen opens at *now*. Pending work is never hidden. `useMission` owns the sort and the fold; the list is dumb.
+- **Chronological, with history that auto-collapses.** The mission is one time-sorted list (see §3); the only thing that ever folds is the run of already-finished items at the top, so the screen opens at *now*. Pending work is never hidden. `deriveMissionView` owns the sort and the fold; the list is dumb.
 - The mock models a **low-recovery day**, the state the design most has to survive.
 
 **Not yet built:** the remaining states (travel, sick/deload, data-gappy, first-run); reading from `daily_logs` / `log_entries`; persistence (mission state is in-memory); the Mode override control (no longer present anywhere — it went out with the dock and needs a real home).

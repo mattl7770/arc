@@ -60,7 +60,7 @@ export type Metric = {
 export type HomeDay = {
   readiness: Readiness;
   pillars: Pillar[];
-  /** Authored in any order; `useMission` is what sorts it by time. */
+  /** Authored in any order; the mission derivation sorts it by time. */
   mission: MissionItem[];
   /** The Coach's daily brief. 3–6 sentences, calm and direct. */
   brief: string;

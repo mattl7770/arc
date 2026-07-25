@@ -10,7 +10,10 @@ import type { HomeDay } from '@/types/home';
  *
  * The mission is a **flat, chronological list** — category is a label on each
  * row, not a grouping (owner call, 2026-07-24). Authored here in time order for
- * readability, but `useMission` sorts regardless, so nothing depends on it.
+ * readability, but the derivation sorts regardless, so nothing depends on it.
+ * This list is now also the **first-run seed** for the on-device DB (see
+ * src/lib/db/seed.ts) — it's inserted into log_entries the first time the app
+ * opens on a given day.
  *
  * The other states in docs/home-screen.md — travel, sick/deload, data-gappy,
  * first-run — are the next ones worth mocking.

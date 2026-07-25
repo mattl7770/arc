@@ -51,10 +51,11 @@
 - [x] v1 schema designed — 10 core tables, FKs, indexes, CHECK constraints (`docs/data-model.md`)
 - [x] Built + verified as Postgres (37 PGlite tests) — now **superseded** by the SQLite port below; the Postgres file stays in git history as the origin
 - [x] **Ported to SQLite** (Phase 0): `db/migrations/0001_init.sql` — enums→text+CHECK, uuid→text (app-generated), timestamps→ISO-8601 text; **RLS / grants / auth wiring / `user_id` tenancy all dropped** (one user, one device); composite FKs collapsed to simple ones
-- [x] **Validated against real SQLite** — 16 checks: schema executes, inserts across all 10 tables, forward FK, `updated_at` triggers (no recursion), enum/JSON/GLOB/range CHECKs reject bad data, ON DELETE SET NULL / CASCADE semantics, idempotency unique
+- [x] **Validated against real SQLite** (`npm run db:validate`) — 20 checks: schema executes, inserts across all 10 tables, forward FK, `updated_at` triggers (no recursion), enum/JSON/GLOB/range CHECKs reject bad data, ON DELETE SET NULL / CASCADE semantics, idempotency unique, NOT-NULL ids, body-metric bounds
 - [x] `op-sqlite` installed + `sqliteVec` enabled (engine + on-device vector search)
-- [ ] 📋 **Migration runner** — apply versioned SQL on boot, tracked by `PRAGMA user_version` (Phase 1)
-- [ ] 📋 Seed the biomarker reference catalogue locally (never populated)
+- [x] **Migration runner** (Phase 1) — versioned SQL on boot via `PRAGMA user_version`, transactional, behind a testable interface (`src/lib/db/migrate.ts`); `npm run db:test` 9/9
+- [x] **Data layer + repositories** (Phase 1) — `Database` interface + op-sqlite client (`src/lib/db/`), mission repository, hand-authored types; `npm run db:test` data-layer 17/17
+- [x] Seed the biomarker reference catalogue locally (12 starter biomarkers, idempotent)
 - [ ] 📋 Local tables for `ai_conversations`, `ai_messages`, `experiments` (land with the Coach)
 - [x] ~~Supabase Storage bucket for lab PDFs~~ — **dropped**; the original PDF becomes a local / iCloud file, referenced by `lab_reports.file_path` (Phase 4)
 - [ ] 📋 **Preventive screenings + medical calendar** table(s) — colonoscopy, skin checks, imaging cadence, appointment tracking (brief §2; nothing exists today)
@@ -75,9 +76,10 @@
 - [x] Header redesign (2026-07-24): date-only above the hero; readiness verdict + pillar segment bar (mock-up option D) moved below it
 - [x] **Porcelain Ledger restyle** (2026-07-24): full app retheme — new tokens, serif/mono voices, light-only; philosophy in §3, alternatives archived in `docs/design-directions.md`
 - [x] **De-boxing pass** (2026-07-24, after device review): section-dividing hairlines removed from the date and the metrics strip; quick actions dock cut entirely
-- [x] **Chronological mission** (2026-07-24): one time-sorted list, category demoted to a row label; leading run of finished items auto-collapses so the list opens at *now* (`useMission` owns sort + fold)
-- [ ] 📋 Read from `daily_logs` / `log_entries` instead of mock
-- [ ] 📋 Persist mission state (currently in-memory only)
+- [x] **Chronological mission** (2026-07-24): one time-sorted list, category demoted to a row label; leading run of finished items auto-collapses so the list opens at *now* (`derive-mission.ts` owns sort + fold)
+- [x] **Mission reads/writes the on-device DB** (Phase 1b): `useTodayMission` → `daily_logs` / `log_entries`; status persists across launches; foreground refresh handles the midnight rollover
+- [x] **Mission state persisted** — status lives in the DB (only snooze is ephemeral); mock-day is the first-run seed, marked `seed:true` and purgeable
+- [ ] 📋 Readiness / brief / metrics still mock — land with wearables + the Coach
 - [ ] 📋 Remaining designed states: travel · sick/deload · data-gappy · first-run
 - [ ] 📋 **Mode override** (Travel/Sick/Social/Manual) — needs the override model *and* a home in the UI; the dock button that used to stand in for it is gone (2026-07-24 ADR)
 - [ ] 🧊 Snooze/skip → surface incomplete items intelligently later in the day
@@ -228,7 +230,7 @@ The serif/mono split carries meaning: **serif speaks, mono measures.** A number 
 - **Metrics:** mono `text-lg font-semibold` values coloured by signal only when they carry a verdict; labels are eyebrows. No section heading — every cell already carries a caps label, and stacking caps on caps is noise; the 2×2 grid is its own boundary.
 
 ### Patterns worth reusing
-- **Derived emphasis:** the hero isn't authored separately — it's the first unresolved mission item (`src/hooks/use-mission.ts`). One source of truth, so the UI can't contradict itself.
+- **Derived emphasis:** the hero isn't authored separately — it's the first unresolved mission item (`src/lib/home/derive-mission.ts`). One source of truth, so the UI can't contradict itself.
 - **Whole-string class maps** for dynamic styles (`src/components/home/signal.tsx`): Tailwind only sees class names that appear literally in source — never build `bg-signal-${level}`.
 - **Explicit hairlines**, not `divide-y` — that utility needs a CSS sibling selector RN doesn't have.
 
