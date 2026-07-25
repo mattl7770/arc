@@ -24,18 +24,20 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
 - [x] **`sqlite-vec` enabled** via `"op-sqlite": { "sqliteVec": true }` in package.json (flag confirmed against the podspec). Gives on-device vector search for the Coach's RAG; not exercised until Phase 3.
 - [x] **Schema ported** → `db/migrations/0001_init.sql`, preserving every table/column name:
   - `enum` → `text` + `CHECK (col IN (...))`
-  - `uuid` → `text`, **app-generated** (`crypto.randomUUID()`), no DB default — fail loud on a missing id
+  - `uuid` → `text`, **app-generated** (`crypto.randomUUID()`), no DB default, declared `PRIMARY KEY NOT NULL` so a missing id fails loud (SQLite's `PRIMARY KEY` alone permits NULLs on a text key — the `NOT NULL` is load-bearing)
   - `timestamptz` → ISO-8601 `text` · `date` → `text` `YYYY-MM-DD` · `time` → `text` `HH:MM` (GLOB `[0-9]`-checked; note GLOB `_` is literal, unlike LIKE)
   - `jsonb` → `text` guarded by `json_valid()`
   - Dropped RLS, `auth.*`, grants, `handle_new_user`, **and `user_id` entirely** — single user, so the composite `(id, user_id)` FKs collapse to simple ones and the `(user_id, x)` uniques/indexes lose the prefix. `updated_at` triggers kept (rewritten as per-table `AFTER UPDATE`).
   - Dropped the `~` regex CHECKs (slug, metric_type) — no portable regex in SQLite DDL; the repository layer owns that validation.
-- [x] **Validated against real SQLite** (`node:sqlite`, 16 assertions): schema executes, inserts across all 10 tables incl. the forward FK (`protocols.current_version_id`), `updated_at` triggers fire without recursion, enum/JSON/GLOB/range CHECKs reject bad data, ON DELETE SET NULL keeps log history / CASCADE drops parsed results, idempotency unique holds. *(Bug caught & fixed in the process: GLOB `_` is literal, not a wildcard — switched date/time checks to `[0-9]` classes.)*
+- [x] **Validated against real SQLite** (`npm run db:validate`, `node:sqlite`, **20 assertions**): schema executes, inserts across all 10 tables incl. the forward FK (`protocols.current_version_id`), `updated_at` triggers fire without recursion, enum/JSON/GLOB/range CHECKs reject bad data, ON DELETE SET NULL keeps log history / CASCADE drops parsed results, idempotency unique holds, NULL ids rejected, body-metric bounds hold. *(Two bugs caught & fixed in the process: (1) GLOB `_` is literal, not a wildcard — switched date/time checks to `[0-9]` classes; (2) a pre-Phase-1 audit found `id text PRIMARY KEY` silently permits NULL/multiple-NULL ids in SQLite — added `NOT NULL` to every id. Also restored the `numeric`-domain upper bounds on `body_metrics` that `numeric→real` had dropped.)*
 - **Deferred to keep each dev rebuild meaningful** (all native modules): `expo-secure-store` (Phase 3), `expo-local-authentication` (Phase 2), photo libs (Phase 4). Batch them with the phase that first uses them.
 - ⚠️ **`op-sqlite` is native** → a fresh `eas build` is required before Phase 1's data layer runs on device. The current dev client is unaffected (nothing imports op-sqlite yet).
 
 ## Phase 1 — Local data layer
 
 - [ ] **Migration runner:** apply versioned SQL on app boot, tracked by SQLite's `PRAGMA user_version`. Idempotent, forward-only.
+  - **Safety net (audit finding):** forward-only migrations have no rollback, and this is irreplaceable health data. Before applying any pending migration, **copy the DB file to a timestamped pre-migration backup** and restore it if the migration throws (wrap the batch in a transaction; keep the file copy as belt-and-braces since some DDL self-commits). Keep the last N pre-migration copies.
+  - The runner **must not enable `recursive_triggers`** — the `updated_at` triggers rely on the default OFF (see the trigger note in `0001_init.sql`). Set `PRAGMA foreign_keys = ON` on every connection.
 - [ ] **Data-access layer** (`src/lib/db/…`): typed repository functions (read/write per domain) replacing Supabase queries. Hand-authored TS types from the SQLite schema replace the generated `database.ts` (the old generator retires).
 - [ ] Wire **Home** and **Coach** to read/write the local DB instead of mock data (`mock-day.ts` becomes a one-time seed, or a dev-only fallback).
 - [ ] Seed the biomarker reference catalogue locally.
@@ -53,6 +55,7 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
 - [ ] Rewrite `coach-service.ts`: swap the mock for a **direct streaming call** to the chosen provider with the stored key. Rename `isCoachBackendLive` → something like `isCoachKeyConfigured` (the gate is "has the user pasted a key", not "is a server up").
 - [ ] **On-device RAG** with `sqlite-vec`: vector tables for (a) personal history and (b) the knowledge base. At query time the app retrieves relevant slices locally and assembles the prompt client-side.
   - **Sub-decision — embeddings source:** simplest is to embed via the provider's embedding endpoint at write time (cheap, needs network), store the vector locally. A fully-offline on-device embedding model is a later nicety, not a blocker.
+  - **Embedding-space stability (audit finding):** vectors from different embedding models are incompatible (different dimensions and semantics), so *swapping the embedding model silently invalidates every stored vector*. Two consequences: (1) **store the embedding-model identity alongside each vector**, and on a change either block the swap or re-embed the whole (small, single-user) corpus and mark the index stale until done; (2) the **embedding provider is separate from the chat provider** — the chat model the user picks may have no embeddings endpoint at all (e.g. Anthropic), so Settings needs a distinct embedding provider/model/key, not one combined provider row. RAG quality depends on embedding-space stability, not just chat-model choice.
 - [ ] Persist conversations to the local `ai_conversations` / `ai_messages` tables (their migration lands here, in SQLite).
 
 ## Phase 4 — Media & backup
@@ -61,8 +64,10 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
   - **Progress pics → PhotoKit reference + thumbnail.** They belong in the camera roll at quality; iCloud Photos owns the original and backs it up, ARC stores only a reference. Keeps ARC's own footprint (and backup) tiny.
   - **Food photos → compressed in-app copy** (~1024px, HEIC, ~200 KB), *not* the camera roll (4/day would flood it). Just log data; can age out.
   - **Dangling-reference guard:** always keep a thumbnail as a degraded fallback if a referenced photo is deleted from Photos; let the user flag a pic "important" to force a full in-app copy.
+  - **Restore reality (audit finding):** PhotoKit `localIdentifier`s are device-local and **do not survive restore-to-a-new-phone** — the exact scenario backup exists for. On a fresh install every reference dangles at once, degrading the *entire* progress-photo history to thumbnails. So store the stable **`PHCloudIdentifier`** (iCloud asset id) and re-link on restore, or keep full in-app copies for anything flagged important. Referencing is a footprint optimization that trades away full-fidelity restore for progress pics unless this is handled.
   - Storage consequence: in-app food copies ride inside ARC's encrypted backup (~3 GB/decade); referenced progress pics don't (already in iCloud Photos). This split is *why* the app's backup blob stays small.
-- [ ] **Encrypted iCloud backup:** snapshot the SQLite file, encrypt with a Keychain-held key, write to the app's iCloud container. **Restore** flow on fresh install. The existing "data export" backlog item is the manual sibling of this.
+- [ ] **Encrypted iCloud backup:** snapshot the SQLite file, encrypt it, write to the app's iCloud container. **Restore** flow on fresh install. The existing "data export" backlog item is the manual sibling of this.
+  - ⚠️ **Backup-key custody — MUST decide before building this (audit finding, high).** This is a *second* key, distinct from the model API key, and it must **not** live only in the device Keychain: the device is exactly what the backup survives, so a device-only key makes the encrypted blob permanently undecryptable after loss — defeating the whole feature. `expo-secure-store` is device-local by default and does **not** sync to iCloud Keychain. Options: (a) derive the key from a **user passphrase** and show a **one-time recovery phrase** to record offline; (b) store the key in **iCloud Keychain** (`kSecAttrSynchronizable`) and depend on Apple's recovery chain; (c) both. Restore must include a **key-entry / re-derive step**. Keep the "model API key" and "backup encryption key" clearly separate everywhere — the earlier "spend limit + rotate on device loss" mitigations are API-key concerns and are *harmful* applied to a backup key (rotating it orphans old blobs).
 - [ ] Retention: keep hot recent data at full fidelity; downsample old high-res wearable samples so the DB stays lean.
 
 ## Phase 5 — Later (tracked, not now)
@@ -76,8 +81,10 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
 
 - [x] **CLAUDE.md §2 / §3 / §8 / §9 / §10 / §11** updated (2026-07-24): principles gain local-first/offline; stack states on-device SQLite; wearables drop Terra for Apple Health; the DB conventions replace all the RLS/`auth.uid()`/`user_id` Postgres lore with SQLite ones; §11 points at `db/migrations/0001_init.sql` and this plan.
 - [x] **`docs/project-status.md`** updated: migration-phase tracker, offline principle, status board reframed (Local DB / App lock / iCloud backup), Supabase marked vestigial.
-- [ ] **`docs/data-model.md`:** annotate as SQLite; note the dialect mapping. *(Light note added; full pass when the data layer lands.)*
+- [x] **`docs/data-model.md`:** Implementation Status rewritten for the pivot (SQLite is the schema of record, hand-authored types, no `auth.users`/`user_id`/RLS); dialect mapping noted (2026-07-24 audit pass).
+- [x] **`docs/folder-structure.md`:** relaid out for local-first — `db/` + `src/lib/db/`, `supabase/` marked origin/history, `login.tsx` gone, type-generation rule swapped (was missed by the original checklist; caught by the 2026-07-24 audit).
 - [ ] Retire `scripts/gen-types.mjs` and `db:types` / `db:push` (Phase 2, with the Supabase removal).
+- [ ] **`app.json` export-compliance flag (audit finding, low):** `ITSAppUsesNonExemptEncryption: false` is correct today, but the Phase 4 backup adds app-level encryption. Standard AES under a Keychain key usually stays exempt (Category 5 Part 2), but re-examine and document the classification at that submission rather than leaving the flag unexamined.
 
 ## Open sub-decisions
 
@@ -87,3 +94,9 @@ Decided:
 
 Still open (small, reversible, made at their phase):
 - **Embedding source** (Phase 3): provider API at write-time vs an on-device model. *Lean: provider API to start* — new data still saves offline; only its RAG index waits for connectivity, and you can't query the Coach offline anyway.
+
+Open and **needs the owner** (not small — decide before the phase builds):
+- ⚠️ **Backup-key custody** (Phase 4): passphrase + one-time recovery phrase, vs iCloud-Keychain-synced key, vs both. Determines whether a lost phone means a lost decade of data. See the Phase 4 note above. *Recommendation: passphrase-derived key + recovery phrase (works even if the user leaves the Apple ecosystem); optionally also sync to iCloud Keychain for convenience.*
+
+To verify early (the one irreversible bet):
+- ⚠️ **`op-sqlite` + `sqlite-vec` have only been validated against `node:sqlite`, never compiled/run natively.** Confirm the native module builds and opens a DB in the first Phase-1 dev build, before much is built on it.

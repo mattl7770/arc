@@ -12,8 +12,11 @@
 -- Dialect / design changes from the Postgres original:
 --   * enums          -> text + CHECK (col IN (...))
 --   * uuid           -> text. Ids are generated in the app (crypto.randomUUID),
---                       so id columns have NO default and fail loud if unset —
---                       a single-writer app wants the bug, not a silent id.
+--                       with NO default. Declared PRIMARY KEY NOT NULL so a
+--                       missing id fails loud — SQLite's PRIMARY KEY alone does
+--                       NOT imply NOT NULL for a text key (a rowid-table quirk),
+--                       and would silently accept unlimited NULL-id rows, so the
+--                       explicit NOT NULL is load-bearing, not decorative.
 --   * timestamptz    -> text, ISO-8601 UTC, default strftime(...Z). ISO strings
 --                       sort chronologically as text, so range/order queries and
 --                       indexes still work.
@@ -41,7 +44,7 @@
 -- just the settings the app and Coach need (timezone drives "today").
 -- ----------------------------------------------------------------------------
 CREATE TABLE users (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   email text,
   full_name text,
   date_of_birth text,
@@ -63,7 +66,7 @@ CREATE TABLE users (
 -- everyone). Seeded locally; never user-scoped.
 -- ----------------------------------------------------------------------------
 CREATE TABLE biomarkers (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   slug text NOT NULL UNIQUE,
   name text NOT NULL,
   category text NOT NULL DEFAULT 'other' CHECK (
@@ -100,7 +103,7 @@ CREATE INDEX biomarkers_category_idx ON biomarkers (category);
 -- be replayed without re-uploading.
 -- ----------------------------------------------------------------------------
 CREATE TABLE lab_reports (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   source text NOT NULL DEFAULT 'function_pdf' CHECK (
     source IN (
       'function_pdf', 'manual', 'api', 'device_sync', 'apple_health',
@@ -127,7 +130,7 @@ CREATE INDEX lab_reports_collected_idx ON lab_reports (collected_at DESC);
 -- manual entries (and NULLs never collide in the idempotency unique below).
 -- ----------------------------------------------------------------------------
 CREATE TABLE lab_results (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   biomarker_id text NOT NULL REFERENCES biomarkers (id) ON DELETE RESTRICT,
   -- Deleting a report discards the values parsed out of it; manual entries
   -- (report_id NULL) are untouched.
@@ -164,7 +167,7 @@ CREATE INDEX lab_results_report_idx
 -- runtime, not at CREATE time).
 -- ----------------------------------------------------------------------------
 CREATE TABLE protocols (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   slug text NOT NULL UNIQUE,
   name text NOT NULL,
   description text,
@@ -181,7 +184,7 @@ CREATE TABLE protocols (
 );
 
 CREATE TABLE protocol_versions (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   protocol_id text NOT NULL REFERENCES protocols (id) ON DELETE CASCADE,
   version_number integer NOT NULL CHECK (version_number > 0),
   -- Shape depends on protocols.type; a supplement stack and a training block
@@ -204,7 +207,7 @@ CREATE INDEX protocol_versions_protocol_idx
 -- day; log_entries are the rows behind Today's Mission.
 -- ----------------------------------------------------------------------------
 CREATE TABLE daily_logs (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   date text NOT NULL UNIQUE CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   summary text,
   overall_adherence_score real CHECK (
@@ -217,7 +220,7 @@ CREATE TABLE daily_logs (
 );
 
 CREATE TABLE log_entries (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   daily_log_id text NOT NULL REFERENCES daily_logs (id) ON DELETE CASCADE,
   type text NOT NULL CHECK (
     type IN (
@@ -258,7 +261,7 @@ CREATE INDEX log_entries_protocol_idx
 -- dual-ring / ring-plus-strap setups stay disambiguated.
 -- ----------------------------------------------------------------------------
 CREATE TABLE wearable_data (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   date text NOT NULL CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   -- e.g. sleep_score, hrv, rhr, strain, recovery, steps, spo2, temperature.
   -- Free text (vendors add metrics on their schedule); the repository layer
@@ -294,17 +297,29 @@ CREATE UNIQUE INDEX wearable_data_device_raw_id_key
 -- scale, a DEXA scan, and a tape measure each fill a different subset.
 -- ----------------------------------------------------------------------------
 CREATE TABLE body_metrics (
-  id text PRIMARY KEY,
+  id text PRIMARY KEY NOT NULL,
   measured_at text NOT NULL,
-  weight_kg real CHECK (weight_kg IS NULL OR weight_kg > 0),
+  -- Upper bounds restore the implicit domain the Postgres numeric(p,s) types
+  -- carried before the numeric->real collapse (weight/muscle/bone were
+  -- numeric(6,3) so < 1000; waist/hip numeric(6,2) so < 10000; visceral
+  -- numeric(5,2) so < 1000), catching fat-finger inserts at the DB layer for
+  -- data that has no source of truth to re-derive from. Loose on purpose.
+  weight_kg real CHECK (weight_kg IS NULL OR (weight_kg > 0 AND weight_kg < 1000)),
   body_fat_pct real CHECK (
     body_fat_pct IS NULL OR (body_fat_pct >= 0 AND body_fat_pct <= 100)
   ),
-  muscle_mass_kg real CHECK (muscle_mass_kg IS NULL OR muscle_mass_kg > 0),
-  bone_mass_kg real CHECK (bone_mass_kg IS NULL OR bone_mass_kg > 0),
-  visceral_fat_rating real,
-  waist_cm real CHECK (waist_cm IS NULL OR waist_cm > 0),
-  hip_cm real CHECK (hip_cm IS NULL OR hip_cm > 0),
+  muscle_mass_kg real CHECK (
+    muscle_mass_kg IS NULL OR (muscle_mass_kg > 0 AND muscle_mass_kg < 1000)
+  ),
+  bone_mass_kg real CHECK (
+    bone_mass_kg IS NULL OR (bone_mass_kg > 0 AND bone_mass_kg < 1000)
+  ),
+  -- Had no CHECK at all before; a rating is non-negative.
+  visceral_fat_rating real CHECK (
+    visceral_fat_rating IS NULL OR (visceral_fat_rating >= 0 AND visceral_fat_rating < 1000)
+  ),
+  waist_cm real CHECK (waist_cm IS NULL OR (waist_cm > 0 AND waist_cm < 10000)),
+  hip_cm real CHECK (hip_cm IS NULL OR (hip_cm > 0 AND hip_cm < 10000)),
   source text NOT NULL DEFAULT 'manual' CHECK (
     source IN (
       'function_pdf', 'manual', 'api', 'device_sync', 'apple_health',
@@ -322,8 +337,17 @@ CREATE INDEX body_metrics_measured_idx ON body_metrics (measured_at DESC);
 -- updated_at triggers
 --
 -- One AFTER UPDATE trigger per mutable table (protocol_versions is immutable, so
--- it has none). Relies on recursive_triggers being OFF (SQLite default): the
--- inner UPDATE does not re-fire the trigger.
+-- it has none). Correctness depends on recursive_triggers being OFF — the SQLite
+-- default, which the DB client must never override: otherwise the inner UPDATE
+-- that stamps updated_at would re-fire the trigger.
+--
+-- A `WHEN NEW.updated_at = OLD.updated_at` self-guard was tried and REJECTED: in
+-- a trigger cascade strftime('now') returns the same value on each call, so the
+-- fresh stamp can equal OLD within one millisecond, the WHEN stays true, and it
+-- recurses to the depth limit anyway (reproduced under recursive_triggers=ON in
+-- db/validate-schema.mjs). Relying on the default OFF is the idiomatic, actually
+-- -correct choice; `AFTER UPDATE OF <cols>` was also rejected — listing every
+-- column but updated_at is a footgun that silently stops stamping a new column.
 -- ----------------------------------------------------------------------------
 CREATE TRIGGER users_set_updated_at AFTER UPDATE ON users FOR EACH ROW BEGIN
   UPDATE users SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = NEW.id;

@@ -184,6 +184,29 @@ console.log('6. Delete semantics');
   );
 }
 
+console.log('7. Audit hardening (NOT NULL ids, body-metric bounds)');
+rejects('NULL id rejected (users)', () =>
+  db.exec("INSERT INTO users (id, timezone) VALUES (NULL, 'UTC');")
+);
+rejects('NULL id rejected (body_metrics)', () =>
+  db.exec("INSERT INTO body_metrics (id, measured_at) VALUES (NULL, '2026-07-24T07:00:00.000Z');")
+);
+rejects('visceral_fat_rating < 0 rejected', () =>
+  db.exec(
+    `INSERT INTO body_metrics (id, measured_at, visceral_fat_rating) VALUES ('${id('bo2')}', '2026-07-24T07:00:00.000Z', -3);`
+  )
+);
+rejects('weight_kg >= 1000 rejected (fat-finger)', () =>
+  db.exec(
+    `INSERT INTO body_metrics (id, measured_at, weight_kg) VALUES ('${id('bo3')}', '2026-07-24T07:00:00.000Z', 50000);`
+  )
+);
+// Note: the updated_at triggers are non-recursive only under the default
+// recursive_triggers=OFF (asserted in section 4). A WHEN-guarded "safe under ON"
+// variant was tried and fails — strftime('now') collides within a cascade — so
+// the contract is "the DB client never enables recursive_triggers", enforced in
+// the client, not assertable here. See the trigger comment in 0001_init.sql.
+
 db.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

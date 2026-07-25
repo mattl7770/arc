@@ -86,7 +86,7 @@
 - [x] Chat interface with message send, streaming replies, retry (`docs/ai-coach.md`)
 - [x] System prompt encoding the ARC Coach personality (`src/lib/ai/system-prompt.ts`)
 - [x] Daily-brief placeholder (opens the thread; same text as the Home card)
-- [x] Service seam (`src/lib/ai/coach-service.ts`) — honest mock today, one swap to an Edge Function later
+- [x] Service seam (`src/lib/ai/coach-service.ts`) — honest mock today, one swap to a direct on-device model call later (Phase 3)
 - [ ] ⚠️ 📋 **Wire the real model** — call the frontier provider **directly from the app** with the Keychain key, streaming; rename `isCoachBackendLive` → `isCoachKeyConfigured` (Phase 3). *(No Edge Function — that was the old cloud plan.)*
 - [ ] 📋 Persist conversations to local `ai_conversations` / `ai_messages` (needs the migration)
 - [ ] 🧊 Tool calling (log_entry, update_protocol, …)

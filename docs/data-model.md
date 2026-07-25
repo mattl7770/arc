@@ -189,21 +189,24 @@ n-of-1 experiments.
 
 ## Implementation Status
 
-**Shipped:** `supabase/migrations/20260722000000_initial_schema.sql` implements the ten v1 priority tables above. `ai_conversations`, `ai_messages` and `experiments` are specified but **not yet migrated** — they land with the Coach.
+**Shipped:** `db/migrations/0001_init.sql` (on-device SQLite) implements the ten v1 priority tables above — **this is the schema of record.** The original `supabase/migrations/20260722000000_initial_schema.sql` is the **superseded Postgres origin** (do not build on it). `ai_conversations`, `ai_messages` and `experiments` are specified but **not yet migrated** — they land with the Coach.
 
-Generated types live in `src/types/database.ts`. That file is generated, never hand-edited — regenerate with `npm run db:types`.
+**Types are hand-authored** from the SQLite schema (Phase 1 of `docs/architecture-migration.md`). The old Supabase generator (`npm run db:types` → `src/types/database.ts`) is **retired**; that generated file is stale Supabase output pending removal — do not regenerate it.
 
-### Where the migration adds to this spec
+> **Read the table below in light of the 2026-07-24 local-first pivot**, which removed `user_id`, RLS, auth and the `auth.users` linkage. Anything phrased around tenancy/RLS/auth describes the Postgres *origin's* rationale, not the shipped SQLite shape.
 
-| Addition | Why |
+### Where the SQLite schema adds to / diverges from this spec
+
+| Item | Note |
 | --- | --- |
-| `user_id` on `log_entries` and `protocol_versions` | "user_id on everything" (Design Principles). Keeps every RLS policy a flat `auth.uid() = user_id` instead of a subquery through the parent. Consistency is enforced by composite FKs, so the column cannot drift from its parent. |
-| `updated_at` on all tables except `protocol_versions` | Versions are immutable by design; everything else gets an `updated_at` trigger. |
-| `public.users.id` references `auth.users.id` | The profile row *is* the auth user. A signup trigger creates it, so the two can never diverge. |
+| No `user_id`, RLS, or auth | Single-user, on-device — dropped entirely. The composite `(id, user_id)` FKs collapse to simple FKs. |
+| `users` is a one-row profile | No `auth.users` linkage and no signup trigger — just timezone / sex / DOB / preferences. |
+| `updated_at` on all tables except `protocol_versions` | Versions are immutable by design; everything else gets an `AFTER UPDATE` trigger (non-recursive under the default `recursive_triggers=OFF`). |
+| `text` PKs declared `PRIMARY KEY NOT NULL` | App-generated UUIDs; the `NOT NULL` is load-bearing — SQLite's `PRIMARY KEY` alone permits NULLs on a text key. |
 | `unique (report_id, biomarker_id)` on `lab_results` | Re-parsing a PDF must not duplicate values. |
 | `unique (source_device, source_raw_id)` on `wearable_data` | Idempotent device re-sync. |
-| `bone_mass_kg`, `visceral_fat_rating`, `hip_cm` on `body_metrics` | Filling in the spec's "etc." with what a DEXA scan and a tape measure actually produce. |
-| Check constraints | Ordered ranges, 0–100 percentages, positive masses, snake_case slugs and metric types. |
+| `bone_mass_kg`, `visceral_fat_rating`, `hip_cm` on `body_metrics` | Filling in the spec's "etc."; plus loose upper bounds restoring the Postgres `numeric` domains dropped by `numeric→real`. |
+| Check constraints | Ordered ranges, 0–100 percentages, positive-and-bounded masses, enum vocab. Slug / `metric_type` shape now lives in the repository layer (SQLite has no portable regex). |
 
 ### Deliberate deviations
 

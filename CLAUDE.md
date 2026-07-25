@@ -128,7 +128,7 @@ What is decided, and holds regardless of device:
 - Always read this file and `/docs` before major changes
 - Prefer small, vertical, working slices
 - Maintain clean TypeScript
-- Use Supabase RLS properly (even for single user — good habit)
+- Set `PRAGMA foreign_keys = ON` on every DB connection (SQLite defaults it OFF) — see Database conventions below
 - Write clear commit messages
 - Update this CLAUDE.md and relevant docs when architecture decisions change
 - When in doubt, optimize for long-term maintainability and clarity over cleverness
@@ -136,18 +136,18 @@ What is decided, and holds regardless of device:
 
 ### Database conventions
 
-The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/migrations/0001_init.sql`; rationale for each choice is in `/docs/decisions.md`, and the Postgres→SQLite port is `docs/architecture-migration.md`. *(The old `supabase/migrations/` Postgres file is the origin, kept in git history only — do not build on it.)*
+The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/migrations/0001_init.sql`; rationale for each choice is in `/docs/decisions.md`, and the Postgres→SQLite port is `docs/architecture-migration.md`. *(The old `supabase/migrations/` Postgres file is the origin — still in the tree but superseded; do not build on it.)*
 
 - **Migrations** live in `db/migrations/NNNN_name.sql`, applied in order by the runner and tracked with `PRAGMA user_version`. Never edit a shipped migration; add the next number.
 - **`PRAGMA foreign_keys = ON` on every connection** — SQLite defaults it OFF, and without it the FKs don't enforce. Keep `recursive_triggers` OFF (default) so the `updated_at` triggers don't recurse.
-- **`text` primary keys holding app-generated UUIDs** (`crypto.randomUUID()`), no DB default — a single-writer app should fail loud on a missing id, not invent one.
+- **`text` primary keys holding app-generated UUIDs** (`crypto.randomUUID()`), no DB default, declared **`PRIMARY KEY NOT NULL`** — SQLite's `PRIMARY KEY` alone permits NULLs on a text key (and unlimited of them), so the `NOT NULL` is what makes a missing id fail loud instead of silently inserting a null-id row.
 - **Timestamps are ISO-8601 `text`** (`strftime('%Y-%m-%dT%H:%M:%fZ','now')`), dates are `text` `YYYY-MM-DD`, times are `text` `HH:MM`. All sort chronologically as text, so ordering/indexing still works. GLOB `[0-9]` character classes check the shape (note: in GLOB `_` is literal — use `?` or `[0-9]`, not LIKE's `_`).
 - **`created_at` + `updated_at` on every table**, stamped by a per-table `AFTER UPDATE` trigger. Exception: immutable tables like `protocol_versions` (no `updated_at`).
 - **No `user_id`, no RLS, no auth** — one user on one device. The OS + app lock are the security boundary. If ARC ever goes multi-user, that's a schema migration then, not a shape carried now.
 - **Enum vocabulary → `text` + `CHECK (col IN (...))`; vendor vocabulary → free `text`.** Wearable `metric_type` is free text so a new vendor metric isn't a migration.
 - **JSON is `text` guarded by `CHECK (json_valid(col))`** (SQLite's json1 is built in).
 - Deleting a protocol must never destroy execution history — prefer `ON DELETE SET NULL` over `CASCADE` for anything referencing a log.
-- **Validate schema changes against real SQLite before shipping** — Node's built-in `node:sqlite` runs the DDL headless (that's how `0001_init.sql` was checked: 16 assertions over inserts, FKs, triggers, CHECKs, delete semantics).
+- **Validate schema changes against real SQLite before shipping** — `npm run db:validate` runs the DDL headless via Node's built-in `node:sqlite` (that's how `0001_init.sql` was checked: 20 assertions over inserts, FKs, triggers, CHECKs, delete semantics, NOT-NULL ids and body-metric bounds).
 
 ---
 
