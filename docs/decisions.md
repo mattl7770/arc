@@ -1,5 +1,26 @@
 # Architecture Decision Records (ADR)
 
+## 2026-07-25 — Backup key: user-recorded recovery phrase, envelope-encrypted
+
+**Decision:** The encrypted iCloud backup (Phase 4) is protected by a key the user can recover **from a one-time recovery phrase**, not by a device-only key. Concretely:
+
+- **Envelope encryption.** A random 256-bit **data key (DEK)** encrypts the backup. The DEK never changes, so every past backup stays decryptable forever. The DEK is stored **wrapped** (encrypted) by a **key-encryption key (KEK)** derived from the recovery phrase, and the wrapped DEK travels with the backup (useless without the phrase).
+- **Recovery phrase.** At backup setup the app generates a one-time phrase (wallet-seed / 1Password-Secret-Key style), shows it once, and makes the user confirm they've stored it (password manager / paper). This is the sole durable recovery path.
+- **Day-to-day is frictionless.** The DEK (or the phrase) lives in the Face-ID-protected Keychain on the active device, so routine backups need no re-entry. The user only touches the phrase at **setup** and at **restore on a new phone**.
+- **iCloud Keychain is a deferred, optional convenience.** Because of envelope encryption, syncing a second KEK via iCloud Keychain can be added later as an *additional* wrap of the same DEK — zero re-encryption, no migration. Not built now.
+
+**Reasoning:**
+- **Ownership and portability win the tie.** A recovery phrase is the user's, full stop — it works if ARC ever ports off iOS, if data is exported to the user's own storage, or if Apple changes iCloud Keychain in a decade. An iCloud-Keychain-only key chains a decade of health data to the survival of one Apple ID. For an ownership-first, decades-horizon, single-user app, that is decisive (CLAUDE.md §2).
+- **Fewest long-term dependencies.** Recovery depends only on a string the user controls, not on Apple's escrow infrastructure remaining intact and accessible.
+- **It's also less work now.** `expo-secure-store` does not expose the iCloud-Keychain sync flag (`kSecAttrSynchronizable`), so the sync option would need custom native code; the recovery-phrase path does not.
+- **Fixes the audit finding directly** (2026-07-24 pre-Phase-1 audit): a device-only Keychain key makes the backup undecryptable after the exact event it exists to survive. The DEK is also kept strictly separate from the **model API key** — the "spend limit / rotate on device loss" mitigations are API-key concerns and are *harmful* applied to a backup key (rotating it orphans old blobs); the DEK never rotates.
+
+**Consequences:**
+- **The one accepted risk:** losing the phone **and** the recovery phrase means the backup is unrecoverable. That is the price of nobody-but-the-user being able to decrypt it. Mitigations: strong setup UX (generate, prompt to store, confirm), and the manual **data export** as an independent second escape hatch.
+- **Phase 4 implementation notes** (not binding, decided at build): KDF Argon2id preferred (PBKDF2-HMAC-SHA256 as the widely-available fallback), AES-256-GCM for the wrap and the backup. Worth evaluating **SQLCipher** (op-sqlite supports it) so the on-device DB is encrypted at rest and a backup is just a copy of the already-encrypted file — one scheme covering both at-rest and backup.
+
+---
+
 ## 2026-07-24 — Local-first, single-user, no-server architecture
 
 **Decision:** ARC is a **local-first, single-user, server-less** app. All personal data lives **on the device** in SQLite, with `sqlite-vec` for on-device RAG. The Coach calls a frontier model **directly from the app** using a key the user supplies, held in the **iOS Keychain** and swappable at runtime via a settings screen (provider + model + key). The longevity **knowledge base lives on-device** and is writable — the user, and later the Coach's own research, can expand it. Media (food / progress photos) is **referenced from the iOS Photos library** (PhotoKit) or stored compressed, never duplicated wholesale. Backup is an **encrypted snapshot to iCloud**, the device holding the key. There is **no backend, no auth, no RLS, and no personal data at rest in any cloud.** Supabase is removed.
