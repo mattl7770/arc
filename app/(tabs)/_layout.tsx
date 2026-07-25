@@ -1,28 +1,25 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Tabs } from 'expo-router/js-tabs';
-import { useColorScheme } from 'react-native';
 
-import { theme } from '@/constants/theme';
+import { palette } from '@/constants/theme';
 
 /**
  * The five surfaces of ARC. Home is the only one that gets to be directive —
  * everything else is exploration or capture. See docs/home-screen.md.
  *
- * `expo-router/js-tabs` is the stable JS tab bar; the root `Tabs` export is
- * deprecated in SDK 57 and `unstable-native-tabs` is not API-stable yet.
+ * Chrome follows Porcelain Ledger: paper bar, hairline top rule, active tab
+ * stamped in pine, inactive in muted ink.
  */
 export default function TabsLayout() {
-  const colors = theme[useColorScheme() === 'dark' ? 'dark' : 'light'];
-
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: colors.accent,
-        tabBarInactiveTintColor: colors.textMuted,
+        tabBarActiveTintColor: palette.pine,
+        tabBarInactiveTintColor: palette.inkMuted,
         tabBarStyle: {
-          backgroundColor: colors.background,
-          borderTopColor: colors.border,
+          backgroundColor: palette.paper,
+          borderTopColor: palette.hairline,
         },
         tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
       }}>

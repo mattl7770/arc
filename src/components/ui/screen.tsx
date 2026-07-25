@@ -12,12 +12,13 @@ type ScreenProps = {
 };
 
 /**
- * The one container every screen sits in: safe-area aware, themed background,
- * consistent horizontal gutter. The bottom edge is owned by the tab bar.
+ * The one container every screen sits in: safe-area aware, bone-paper
+ * background, consistent horizontal gutter. The bottom edge is owned by the
+ * tab bar.
  */
 export function Screen({ children, scroll = false }: ScreenProps) {
   return (
-    <SafeAreaView edges={['top']} className="flex-1 bg-white dark:bg-ink-950">
+    <SafeAreaView edges={['top']} className="flex-1 bg-paper">
       {scroll ? (
         <ScrollView
           className="flex-1"

@@ -52,6 +52,7 @@
 - [x] Six-section IA on mock data (`docs/home-screen.md`)
 - [x] Derived "Do this next" hero (completing it advances the screen)
 - [x] Header redesign (2026-07-24): date-only above the hero; readiness verdict + pillar segment bar (mock-up option D) moved below it
+- [x] **Porcelain Ledger restyle** (2026-07-24): full app retheme — new tokens, serif/mono voices, light-only; philosophy in §3, alternatives archived in `docs/design-directions.md`
 - [ ] 📋 Read from `daily_logs` / `log_entries` instead of mock
 - [ ] 📋 Persist mission state (currently in-memory only)
 - [ ] 📋 Remaining designed states: travel · sick/deload · data-gappy · first-run
@@ -122,72 +123,94 @@
 
 ---
 
-## 3. Design & Styling
+## 3. Design & Styling — Porcelain Ledger
 
-**North star:** calm, precise, premium, directive. The opposite of a hype-y consumer wellness app. Restraint is the aesthetic — the design should feel like a well-made instrument, not a dashboard.
+> **The philosophy in one line:** ARC is a beautifully printed lab report that happens to be alive.
 
-Tokens live in `tailwind.config.js` (source of truth for `className`) and are mirrored in `src/constants/theme.ts` for the few APIs that need literal colour strings (navigation, status bar). **Keep those two in sync.**
+Chosen 2026-07-24 from a six-direction exploration (all six specs archived in `docs/design-directions.md` — read that file before proposing any new visual direction). The interface earns trust the way a well-set medical document does: typography, whitespace, hairline rules, and one deep pine-green stamp of authority. Nothing glows, nothing gamifies, nothing is decorated. Bone-white paper is the identity; it will look the same in twenty years, which is the point of an app built for decades.
+
+**How to make something look like ARC:** set it on paper, wrap it in a hairline, headline it in serif, print its numbers in mono, and only reach for pine if it is the one thing that matters on the screen.
+
+Tokens live in `tailwind.config.js` (source of truth for every `className`) and are mirrored in `src/constants/theme.ts` for the few APIs that need literal colour strings (navigation theme, icon `color` props). **Any palette change must touch both files.**
 
 ### Colour
 
-**Neutral ramp — `ink`** (cool, low-chroma greys; the whole UI is built from these):
-`50 #F6F7F9` · `100 #ECEEF2` · `200 #D9DDE4` · `300 #B8BFCB` · `400 #8C96A7` · `500 #697386` · `600 #525B6B` · `700 #3E4552` · `800 #252B35` · `900 #151A21` · `950 #0B0F14`
+| Token | Hex | Meaning and use |
+| --- | --- | --- |
+| `paper` | `#F6F3EC` | The page. Every screen's background. Bone-white, slightly warm. |
+| `paper-deep` | `#EFEADD` | Recessed paper: input fields, quiet chips (the PREVIEW badge). |
+| `porcelain` | `#FDFCF8` | Card surface — a shade whiter than the page, like coated stock. Cards sit *on* paper. |
+| `hairline` | `#E3DCCE` | The default rule: card borders, section dividers, the folio line under the date. |
+| `hairline-soft` | `#EFEADD` | Row separators inside a list (mission rows). |
+| `hairline-strong` | `#C9C0AC` | Ghost-button borders, unchecked checkbox rings. |
+| `ink` | `#1C1917` | Primary text. Warm near-black, never pure black. |
+| `ink-secondary` | `#544E45` | Supporting text: briefs, item "why" lines, details. |
+| `ink-muted` | `#8B8272` | Incidental: eyebrows, labels, timestamps, disabled, completed items. |
+| `pine` | `#1E5C46` | **The one accent.** See discipline rule below. |
+| `pine-on` | `#F8F6EF` | Text/icons on solid pine. |
+| `pine-soft` | `#E7EEE6` | The hero card's background — the only tinted surface in the app. |
+| `pine-tint` | `#CBDCCB` | The hero card's side/bottom border. |
+| `signal-optimal` | `#22684E` | Readiness: optimal. |
+| `signal-good` | `#77803A` | Readiness: good (olive). |
+| `signal-caution` | `#B07C2A` | Readiness: caution. |
+| `signal-poor` | `#96382C` | Readiness: poor. |
+| `signal-unknown` | `#8B8272` | No data — same value as ink-muted, deliberately. |
 
-**Accent — `accent` (teal)** · `DEFAULT #3FA7A0` · `muted #2C7A75` (light-mode text) · `soft #E4F2F1` (hero background)
-> **The rule:** accent marks the single most important action on a screen, and the user's own voice/input — nothing else. On Home that is the "Do this next" hero. In Coach it is the user's message bubbles and the send button; the Coach itself replies in neutral ink, because it is a considered voice, not a chat buddy. If everything is emphasised, nothing is directive.
+> **The pine discipline rule (sacred):** pine appears on exactly five things — the "Do this next" hero (its soft surface, top rule, eyebrow, and Done button), primary actions (send button, a card's single CTA like "Open chat"), **completion stamps** (checkmark circles, the mission progress fill — completion is what pine *means*), the user's own chat bubbles, and the active tab. Plus two sanctioned micro-accents: the 1.5px "Coach presence" dot beside ARC-Coach eyebrows and the streaming caret. Nothing else. Not links-in-general, not decorations, not headings. If everything is emphasised, nothing is directive — the entire design stands on this restraint.
 
-**Signal — readiness / adherence** · `optimal #4BA07A` · `good #7FB069` · `caution #D9A441` · `poor #C4614C` · `unknown #697386`
-> Used for the readiness dot, pillar dots, and metric values that carry a verdict. Carried consistently everywhere a status appears.
+> Signal colours mark **biological states only** (readiness dot, segment bar, metric values carrying a verdict) — never UI chrome. Known accepted weakness from the design critique: `good` (olive) sits between `optimal` (green) and `caution` (amber) as a saturation slide rather than a distinct hue; direction F's categorical green/blue/gold/red taxonomy is the fix if the segment bar ever reads ambiguously on device.
 
-### Light & dark
-Both are first-class, driven by the OS setting (`userInterfaceStyle: "automatic"`, NativeWind `darkMode: media`). Every surface pairs a light and a `dark:` class.
-> ⚠️ Do **not** set `darkMode: 'class'` in the Tailwind config — it silently disables every `dark:` variant until something sets a `dark` class, on native as well as web. (Learned the hard way; see commit `8c316ef`.)
+### Light only — by decision, not omission
+ARC is **light-mode only**: `userInterfaceStyle: "light"` in app.json, an unconditional nav theme in `app/_layout.tsx`, `StatusBar style="dark"`, and **zero `dark:` variants anywhere in the codebase** (a grep for `dark:` in app/ and src/ should return nothing — if it returns something, someone broke the system). Paper is the identity; a "dark porcelain" would be a different, worse design. If ARC ever needs a night mode, the archived **Night Watch (B)** direction is the designed candidate — it would be a second complete theme, not `dark:` variants bolted onto this one. See the ADR in `docs/decisions.md`.
 
-Typical surface pairing:
-```tsx
-className="bg-white dark:bg-ink-950"      // page
-className="bg-ink-50 dark:bg-ink-900"     // card
-className="text-ink-900 dark:text-ink-50" // primary text
-className="text-ink-500 dark:text-ink-400"// secondary text
-className="border-ink-100 dark:border-ink-800" // hairline
-```
-
-### Type scale (measured on the running Home screen)
-| Role | Size / weight | Class | Tracking |
+### Typography — three voices
+| Voice | Family | Used for | Class |
 | --- | --- | --- | --- |
-| Screen verdict / hero title | 24px / 600 | `text-2xl font-semibold` | tight |
-| Metric value | 20px / 600 | `text-xl font-semibold` | tight |
-| Section heading | 18px / 600 | `text-lg font-semibold` | tight |
-| Body | 15px / 400 | `text-[15px]` | normal |
-| Secondary / caption | 13px / 400 | `text-[13px]` | normal |
-| Eyebrow / label | 11–12px / 500, UPPERCASE | `text-xs uppercase tracking-widest` | wide |
+| **Serif** (authority) | Iowan Old Style → Palatino → Georgia (iOS system serifs; Android falls back to its default for now) | Headlines, screen titles, the readiness verdict, "Today's Mission", "Today is handled" | `font-serif font-semibold` |
+| **Sans** (voice) | System default | Body text, briefs, item titles, buttons, chat | (default) |
+| **Mono** (data) | Menlo → Courier New | **Every measured value**: times (07:15), counters (3 of 11), metric values (42 ms), hero metadata line, segment-bar labels, the PREVIEW badge | `font-mono` |
 
-Headlines use `tracking-tight`; uppercase eyebrows use `tracking-widest`. Numbers use `tabular-nums` so they don't jitter as values change.
+The serif/mono split carries meaning: **serif speaks, mono measures.** A number set in mono is a datum; if you find a standalone measurement in sans, fix it. One deliberate exception: numbers **inside prose** (the readiness detail line, the Coach's sentences) stay sans — splitting fonts mid-sentence reads worse than the rule is worth. Eyebrows are 11px uppercase with `tracking-[2px]` (the "2px tracking" of the spec — not `tracking-widest`, which is em-relative).
 
-### Layout & rhythm
-- One shared container: `Screen` (`src/components/ui/screen.tsx`) — safe-area aware, `px-5` gutter, themed background.
-- Vertical rhythm between major sections: **`mt-7` to `mt-9`**. Generous whitespace is part of "calm."
-- Corners: cards `rounded-3xl`, controls/pills `rounded-full`, small chips `rounded-2xl`.
-- Tap targets are whole rows/cards where possible — the IA target is ≤ 2 taps to act.
+> ⚠️ **Font-stack gotcha (cost an hour):** define `fontFamily` in tailwind.config.js as a plain **array** of family names. Do NOT use `nativewind/theme`'s `platformSelect` — its custom-function CSS syntax cannot carry a family name containing spaces, and "Iowan Old Style" silently compiled to an **empty declaration** (verified in the bundle's style registry). Plain CSS stacks parse correctly; native picks the first family.
+
+### Shape & rhythm
+- Cards: `rounded-card` (10px). Buttons: `rounded-btn` (6px). **No pills, no 24px super-rounding** — this is print, not bubblegum. Chat bubbles use `rounded-card` with one squared corner (`rounded-br-sm` user / `rounded-bl-sm` coach) like a ledger tab.
+- **No shadows, no elevation, no glow — anywhere.** Layering is done with hairline borders and the paper/porcelain two-tone.
+- The hero is "a stamped ledger entry": `border border-pine-tint` + `border-t-[3px] border-t-pine` on `bg-pine-soft`.
+- Section rhythm on Home: `mt-7`–`mt-9`; airy density is part of the calm.
+- One shared container: `Screen` (`src/components/ui/screen.tsx`) — safe-area, `px-5` gutter, `bg-paper`.
+- Tap targets are whole rows/cards; the IA target is ≤ 2 taps to act.
+
+### Surface treatments (the recipes)
+- **Card:** `rounded-card border border-hairline bg-porcelain p-4`.
+- **Hero:** pine-soft + pine top rule (above); serif title; mono metadata; Done = solid pine `rounded-btn`; Snooze = `border-hairline-strong` ghost; Skip = bare muted text.
+- **Eyebrow:** `text-[11px] uppercase tracking-[2px] text-ink-muted` (+ `font-medium` when it labels a section); the date sits over a `border-b border-hairline` folio rule.
+- **Segment bar:** flat `h-[6px]` rectangles, `rounded-[1px]`, `gap-0.5`, mono-caps labels beneath. A typeset gauge, not a chart.
+- **Mission row:** hairline-soft separators; pine-filled circle when done; times in mono; completed text drops to ink-muted.
+- **Chat:** user = solid pine slip, right; coach = bordered porcelain slip, left. The Coach reads as typeset prose, not chat froth.
+- **Metrics:** mono `text-lg font-semibold` values coloured by signal only when they carry a verdict; labels are eyebrows.
 
 ### Patterns worth reusing
-- **Derived emphasis:** the hero isn't authored separately — it's the first unresolved item (`src/hooks/use-mission.ts`). One source of truth, so the UI can't contradict itself.
-- **Whole-string class maps** for dynamic styles (`src/components/home/signal.tsx`): Tailwind only sees class names that appear literally in source, so map to complete strings rather than building `bg-signal-${level}`.
+- **Derived emphasis:** the hero isn't authored separately — it's the first unresolved mission item (`src/hooks/use-mission.ts`). One source of truth, so the UI can't contradict itself.
+- **Whole-string class maps** for dynamic styles (`src/components/home/signal.tsx`): Tailwind only sees class names that appear literally in source — never build `bg-signal-${level}`.
 - **Explicit hairlines**, not `divide-y` — that utility needs a CSS sibling selector RN doesn't have.
 
 ### Open design questions
-- ⚠️ **Vertical rhythm** on Home — does the section spacing read as calm or sparse on a real device? (Needs your eye.)
-- ⚠️ **Coach voice** — does the low-recovery brief hit "calm, precise, slightly ruthless"? It sets the tone for the real Coach.
-- 📋 No component library yet beyond `Screen` / `Placeholder` — extract shared primitives (Card, Pill, Row) once a second screen needs them, not before.
-- 📋 Iconography is Ionicons for now; revisit if a more distinctive set fits the "instrument" feel.
-- 🧊 Typography is system default; a custom display face is a later, deliberate choice.
+- ⚠️ **Serif rendering on device** — Iowan Old Style at 600 weight on a real iPhone is the first thing to eyeball; if it renders as fake-bold or too bookish, Palatino is the next candidate in the stack.
+- ⚠️ **Pine-soft hero on paper** — enough contrast between `#E7EEE6` and `#F6F3EC` at real brightness? If the hero doesn't pop, deepen pine-soft before reaching for shadows (there are no shadows).
+- 📋 Extract shared primitives (Card, Eyebrow, GhostButton) once a third screen needs them, not before.
+- 📋 Ionicons work but read slightly rounded against the print aesthetic; a stroke-consistent set is a candidate refinement.
+- 🧊 Android serif (falls back to system default today) — decide when Android becomes real.
 
 ---
 
 ## Related documents
 - `CLAUDE.md` — product brain, principles, conventions
+- `docs/design-directions.md` — the six explored visual directions + critique; A (Porcelain Ledger) chosen
 - `docs/data-model.md` — schema intent + what shipped
 - `docs/decisions.md` — architecture decision records
 - `docs/home-screen.md` — Home IA + implementation notes
-- `docs/ai-coach.md` — Coach spec (next build)
+- `docs/ai-coach.md` — Coach spec
+- `docs/dev-build.md` — device runbook (EAS dev build)
 - `docs/folder-structure.md` — where code goes

@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Pressable, Text, View } from 'react-native';
 
+import { palette } from '@/constants/theme';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
 type Props = {
@@ -10,7 +11,8 @@ type Props = {
 
 /**
  * One line of Today's Mission. The whole row is the tap target, so completing
- * anything is a single tap from opening the app.
+ * anything is a single tap from opening the app. Times are set in mono, like
+ * every measured value in the app.
  */
 export function MissionItemRow({ item, onToggle }: Props) {
   const done = item.status === 'completed';
@@ -33,36 +35,30 @@ export function MissionItemRow({ item, onToggle }: Props) {
           <Text
             className={
               muted
-                ? 'flex-1 text-[15px] leading-5 text-ink-400 dark:text-ink-600'
-                : 'flex-1 text-[15px] leading-5 text-ink-900 dark:text-ink-100'
+                ? 'flex-1 text-[15px] leading-5 text-ink-muted'
+                : 'flex-1 text-[15px] leading-5 text-ink'
             }
             style={skipped ? { textDecorationLine: 'line-through' } : undefined}>
             {item.title}
           </Text>
 
           {item.window ? (
-            <Text className="text-xs tabular-nums text-ink-400 dark:text-ink-600">
-              {item.window}
-            </Text>
+            <Text className="font-mono text-[11px] text-ink-muted">{item.window}</Text>
           ) : null}
         </View>
 
         {item.why && !muted ? (
-          <Text className="mt-1 text-[13px] leading-5 text-ink-500 dark:text-ink-400">
-            {item.why}
-          </Text>
+          <Text className="mt-1 text-[13px] leading-5 text-ink-secondary">{item.why}</Text>
         ) : null}
 
         <View className="mt-1.5 flex-row items-center gap-2">
           {item.protocol ? (
-            <Text className="text-[11px] uppercase tracking-wider text-ink-400 dark:text-ink-600">
+            <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">
               {item.protocol}
             </Text>
           ) : null}
           {item.snoozed && item.status === 'pending' ? (
-            <Text className="text-[11px] uppercase tracking-wider text-ink-400 dark:text-ink-600">
-              · Snoozed
-            </Text>
+            <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">· Snoozed</Text>
           ) : null}
         </View>
       </View>
@@ -70,33 +66,31 @@ export function MissionItemRow({ item, onToggle }: Props) {
   );
 }
 
-/** Completion state as a single 22pt control. */
+/** Completion state as a single 22pt control, stamped in pine when done. */
 function StatusBox({ status }: { status: MissionStatus }) {
   if (status === 'completed') {
     return (
-      <View className="h-[22px] w-[22px] items-center justify-center rounded-full bg-accent">
-        <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+      <View className="h-[22px] w-[22px] items-center justify-center rounded-full bg-pine">
+        <Ionicons name="checkmark" size={14} color={palette.pineOn} />
       </View>
     );
   }
 
   if (status === 'skipped') {
     return (
-      <View className="h-[22px] w-[22px] items-center justify-center rounded-full border border-ink-300 dark:border-ink-700">
-        <View className="h-[9px] w-[1.5px] rotate-90 bg-ink-400 dark:bg-ink-600" />
+      <View className="h-[22px] w-[22px] items-center justify-center rounded-full border border-hairline-strong">
+        <View className="h-[9px] w-[1.5px] rotate-90 bg-ink-muted" />
       </View>
     );
   }
 
   if (status === 'partial') {
     return (
-      <View className="h-[22px] w-[22px] items-center justify-center rounded-full border-[1.5px] border-accent">
-        <View className="h-2 w-2 rounded-full bg-accent" />
+      <View className="h-[22px] w-[22px] items-center justify-center rounded-full border-[1.5px] border-pine">
+        <View className="h-2 w-2 rounded-full bg-pine" />
       </View>
     );
   }
 
-  return (
-    <View className="h-[22px] w-[22px] rounded-full border-[1.5px] border-ink-300 dark:border-ink-700" />
-  );
+  return <View className="h-[22px] w-[22px] rounded-full border-[1.5px] border-hairline-strong" />;
 }

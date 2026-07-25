@@ -18,12 +18,10 @@ type PlaceholderProps = {
 export function Placeholder({ title, purpose, spec }: PlaceholderProps) {
   return (
     <View className="flex-1 justify-center">
-      <Text className="text-3xl font-semibold tracking-tight text-ink-900 dark:text-ink-50">
-        {title}
-      </Text>
-      <Text className="mt-2 text-base leading-6 text-ink-500 dark:text-ink-400">{purpose}</Text>
+      <Text className="font-serif text-3xl font-semibold tracking-tight text-ink">{title}</Text>
+      <Text className="mt-2 text-base leading-6 text-ink-secondary">{purpose}</Text>
       {spec ? (
-        <Text className="mt-6 text-xs uppercase tracking-widest text-ink-400 dark:text-ink-600">
+        <Text className="mt-6 font-mono text-[11px] uppercase tracking-[2px] text-ink-muted">
           Spec · {spec}
         </Text>
       ) : null}

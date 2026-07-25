@@ -1,50 +1,59 @@
 /**
- * ARC design tokens.
+ * ARC design tokens — Porcelain Ledger (docs/project-status.md §3).
  *
- * Kept deliberately small: a neutral ramp, one restrained accent, and the
- * signal colours the home screen needs to express readiness at a glance.
- * Add tokens only when a screen actually needs them — see docs/home-screen.md.
+ * "A beautifully printed lab report that happens to be alive." Chosen from six
+ * candidate directions on 2026-07-24; the full exploration is archived in
+ * docs/design-directions.md.
+ *
+ * Light mode IS the identity — there are deliberately no dark: variants in the
+ * app (see the ADR in docs/decisions.md). Mirror any palette change into
+ * src/constants/theme.ts, which exists for APIs that need literal colours.
  *
  * @type {import('tailwindcss').Config}
  */
 module.exports = {
   content: ['./app/**/*.{js,jsx,ts,tsx}', './src/**/*.{js,jsx,ts,tsx}'],
   presets: [require('nativewind/preset')],
-  // darkMode is deliberately unset, which NativeWind reads as "media" —
-  // i.e. driven by the OS setting, matching `userInterfaceStyle: "automatic"`
-  // in app.json. Setting it to 'class' silently disables every `dark:` variant
-  // until something calls colorScheme.set(), on native as well as web.
   theme: {
     extend: {
       colors: {
-        // Neutral ramp — cool, low-chroma, calm.
-        ink: {
-          50: '#F6F7F9',
-          100: '#ECEEF2',
-          200: '#D9DDE4',
-          300: '#B8BFCB',
-          400: '#8C96A7',
-          500: '#697386',
-          600: '#525B6B',
-          700: '#3E4552',
-          800: '#252B35',
-          900: '#151A21',
-          950: '#0B0F14',
-        },
-        // Single accent. Used for the "do this next" affordance, nothing else.
-        accent: {
-          DEFAULT: '#3FA7A0',
-          muted: '#2C7A75',
-          soft: '#E4F2F1',
-        },
+        // The page and its recessed variant (input fields, quiet chips).
+        paper: { DEFAULT: '#F6F3EC', deep: '#EFEADD' },
+        // Card surface — slightly whiter than the page, like coated stock.
+        porcelain: '#FDFCF8',
+        // Rules and dividers. soft = row separators, strong = ghost-button edges.
+        hairline: { DEFAULT: '#E3DCCE', soft: '#EFEADD', strong: '#C9C0AC' },
+        // Warm ink, three voices: primary, supporting, incidental.
+        ink: { DEFAULT: '#1C1917', secondary: '#544E45', muted: '#8B8272' },
+        // The one accent: a deep pine-green stamp. Hero + primary actions +
+        // the user's own chat bubbles. Nothing else.
+        pine: { DEFAULT: '#1E5C46', on: '#F8F6EF', soft: '#E7EEE6', tint: '#CBDCCB' },
         // Readiness / adherence signals.
         signal: {
-          optimal: '#4BA07A',
-          good: '#7FB069',
-          caution: '#D9A441',
-          poor: '#C4614C',
-          unknown: '#697386',
+          optimal: '#22684E',
+          good: '#77803A',
+          caution: '#B07C2A',
+          poor: '#96382C',
+          unknown: '#8B8272',
         },
+      },
+      fontFamily: {
+        // Headlines and verdicts. System serifs — no font downloads; these
+        // ship with the OS and will still be there in twenty years.
+        //
+        // Deliberately a plain CSS stack, NOT nativewind/theme's
+        // platformSelect: its custom-function syntax cannot carry a family
+        // name containing spaces ("Iowan Old Style" compiled to an EMPTY
+        // declaration — verified in the bundle registry). A quoted CSS stack
+        // parses cleanly; native picks the first family, so iOS renders Iowan
+        // and Android falls back to its default until we ship a serif there.
+        serif: ['Iowan Old Style', 'Palatino', 'Georgia', 'serif'],
+        // Data voice: every numeral that represents a measurement.
+        mono: ['Menlo', 'Courier New', 'monospace'],
+      },
+      borderRadius: {
+        card: '10px',
+        btn: '6px',
       },
     },
   },

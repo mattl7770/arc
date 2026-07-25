@@ -19,7 +19,7 @@ const TEXT: Record<SignalLevel, string> = {
   good: 'text-signal-good',
   caution: 'text-signal-caution',
   poor: 'text-signal-poor',
-  unknown: 'text-ink-400 dark:text-ink-500',
+  unknown: 'text-ink-muted',
 };
 
 export function signalTextClass(level: SignalLevel): string {

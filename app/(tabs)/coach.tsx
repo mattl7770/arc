@@ -44,12 +44,10 @@ export default function CoachScreen() {
   const hasConversation = chat.messages.length > 0;
 
   return (
-    <SafeAreaView edges={['top']} className="flex-1 bg-white dark:bg-ink-950">
-      <View className="border-b border-ink-100 px-5 pb-3 pt-1 dark:border-ink-800">
-        <Text className="text-2xl font-semibold tracking-tight text-ink-900 dark:text-ink-50">
-          ARC Coach
-        </Text>
-        <Text className="mt-0.5 text-sm text-ink-500 dark:text-ink-400">{COACH_TAGLINE}</Text>
+    <SafeAreaView edges={['top']} className="flex-1 bg-paper">
+      <View className="border-b border-hairline px-5 pb-3 pt-1">
+        <Text className="font-serif text-2xl font-semibold text-ink">ARC Coach</Text>
+        <Text className="mt-0.5 text-sm text-ink-secondary">{COACH_TAGLINE}</Text>
       </View>
 
       <KeyboardAvoidingView

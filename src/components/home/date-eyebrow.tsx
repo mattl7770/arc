@@ -1,10 +1,10 @@
-import { Text } from 'react-native';
+import { Text, View } from 'react-native';
 
 /**
- * The only thing above the hero: today, quietly. The rest of the old day
- * header (readiness + pillars) lives below the hero as ReadinessStrip —
- * owner call from the 2026-07-24 mock-up round: the screen answers
- * "what do I do" before "how am I doing".
+ * The only thing above the hero: today, quietly, over a hairline rule — the
+ * Porcelain Ledger "folio line". The readiness block lives below the hero as
+ * ReadinessStrip (owner call, 2026-07-24): the screen answers "what do I do"
+ * before "how am I doing".
  */
 export function DateEyebrow() {
   const today = new Date().toLocaleDateString(undefined, {
@@ -14,8 +14,8 @@ export function DateEyebrow() {
   });
 
   return (
-    <Text className="text-xs uppercase tracking-widest text-ink-400 dark:text-ink-600">
-      {today}
-    </Text>
+    <View className="border-b border-hairline pb-2">
+      <Text className="text-[11px] uppercase tracking-[2px] text-ink-muted">{today}</Text>
+    </View>
   );
 }

@@ -23,7 +23,8 @@ import { mockDay } from '@/lib/home/mock-day';
  *   - The hero is *derived* from the mission, not authored separately, so
  *     "do this next" can never drift out of step with the checklist, and
  *     finishing something advances the screen on its own.
- *   - Only the hero uses the accent colour. Everything below it is neutral,
+ *   - Pine is reserved for the hero, primary actions, and completion stamps
+ *     (checkmarks, the mission progress fill). Everything else is neutral ink,
  *     which is what stops this becoming a dashboard.
  *
  * Still on mock data — see src/lib/home/mock-day.ts.
@@ -63,11 +64,11 @@ export default function HomeScreen() {
         <CoachBrief brief={mockDay.brief} />
       </View>
 
-      <View className="mt-7 border-t border-ink-100 pt-2 dark:border-ink-800">
+      <View className="mt-7 border-t border-hairline pt-2">
         <MetricsStrip metrics={mockDay.metrics} />
       </View>
 
-      <View className="mt-4 border-t border-ink-100 pt-2 dark:border-ink-800">
+      <View className="mt-4 border-t border-hairline pt-2">
         <QuickActions />
       </View>
     </Screen>

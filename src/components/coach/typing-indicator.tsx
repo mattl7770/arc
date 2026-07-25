@@ -25,9 +25,7 @@ function Dot({ delay }: { delay: number }) {
 
   const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
-  return (
-    <Animated.View style={style} className="h-1.5 w-1.5 rounded-full bg-ink-400 dark:bg-ink-500" />
-  );
+  return <Animated.View style={style} className="h-1.5 w-1.5 rounded-full bg-ink-muted" />;
 }
 
 /** The three-dot "Coach is thinking" indicator, shown before the first token. */

@@ -1,9 +1,10 @@
 import { Pressable, ScrollView, Text } from 'react-native';
 
 /**
- * Starter prompts, shown only before the user has said anything. They make the
- * empty thread feel alive and hint at what the Coach is for — each is a real
- * question the Coach will answer once it is wired to data.
+ * Starter prompts, shown only before the user has said anything. Bordered
+ * paper tags — they make the empty thread feel alive and hint at what the
+ * Coach is for; each is a real question the Coach will answer once it is
+ * wired to data.
  */
 const PROMPTS = [
   'How’s my recovery today?',
@@ -24,8 +25,8 @@ export function SuggestedPrompts({ onPick }: { onPick: (text: string) => void })
           key={prompt}
           accessibilityRole="button"
           onPress={() => onPick(prompt)}
-          className="rounded-full border border-ink-200 px-3.5 py-2 active:opacity-60 dark:border-ink-700">
-          <Text className="text-[13px] text-ink-600 dark:text-ink-300">{prompt}</Text>
+          className="rounded-[14px] border border-hairline-strong px-3.5 py-2 active:opacity-60">
+          <Text className="text-[13px] text-ink-secondary">{prompt}</Text>
         </Pressable>
       ))}
     </ScrollView>

@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Text, View } from 'react-native';
 
+import { palette } from '@/constants/theme';
 import { isCoachBackendLive } from '@/lib/ai/coach-service';
 
 /**
@@ -13,29 +14,29 @@ import { isCoachBackendLive } from '@/lib/ai/coach-service';
  */
 export function DailyBriefCard({ brief }: { brief: string }) {
   return (
-    <View className="mb-4 rounded-3xl border border-ink-200 bg-ink-50 p-5 dark:border-ink-800 dark:bg-ink-900">
+    <View className="mb-4 rounded-card border border-hairline bg-porcelain p-4">
       <View className="flex-row items-center justify-between">
         <View className="flex-row items-center gap-2">
-          <View className="h-1.5 w-1.5 rounded-full bg-accent" />
-          <Text className="text-xs font-medium uppercase tracking-widest text-ink-500 dark:text-ink-400">
+          <View className="h-1.5 w-1.5 rounded-full bg-pine" />
+          <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
             Today’s Brief
           </Text>
         </View>
         {!isCoachBackendLive ? (
-          <View className="rounded-full bg-ink-100 px-2 py-0.5 dark:bg-ink-800">
-            <Text className="text-[10px] font-medium uppercase tracking-wider text-ink-400 dark:text-ink-500">
+          <View className="rounded bg-paper-deep px-2 py-0.5">
+            <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
               Preview
             </Text>
           </View>
         ) : null}
       </View>
 
-      <Text className="mt-3 text-[15px] leading-6 text-ink-800 dark:text-ink-200">{brief}</Text>
+      <Text className="mt-3 text-[15px] leading-6 text-ink-secondary">{brief}</Text>
 
       {!isCoachBackendLive ? (
-        <View className="mt-4 flex-row items-center gap-1.5 border-t border-ink-100 pt-3 dark:border-ink-800">
-          <Ionicons name="information-circle-outline" size={14} color="#8C96A7" />
-          <Text className="flex-1 text-xs leading-4 text-ink-400 dark:text-ink-500">
+        <View className="mt-4 flex-row items-center gap-1.5 border-t border-hairline-soft pt-3">
+          <Ionicons name="information-circle-outline" size={14} color={palette.inkMuted} />
+          <Text className="flex-1 text-xs leading-4 text-ink-muted">
             Sample brief. The Coach isn’t connected to the model or your data yet.
           </Text>
         </View>

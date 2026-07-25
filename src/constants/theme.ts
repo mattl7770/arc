@@ -1,64 +1,44 @@
 /**
- * Raw theme values for APIs that cannot take a Tailwind class — navigation
- * options, status bar, native tab bars.
+ * Raw Porcelain Ledger values for APIs that cannot take a Tailwind class —
+ * navigation themes, status bar, icon `color` props.
  *
  * KEEP IN SYNC with `tailwind.config.js`. That file is the source of truth for
- * anything styled with `className`; this one exists only because React
- * Navigation needs literal colour strings.
+ * anything styled with `className`; this one exists only because a few APIs
+ * need literal colour strings. Design philosophy: docs/project-status.md §3.
  */
 
 export const palette = {
-  ink: {
-    50: '#F6F7F9',
-    100: '#ECEEF2',
-    200: '#D9DDE4',
-    300: '#B8BFCB',
-    400: '#8C96A7',
-    500: '#697386',
-    600: '#525B6B',
-    700: '#3E4552',
-    800: '#252B35',
-    900: '#151A21',
-    950: '#0B0F14',
-  },
-  accent: {
-    DEFAULT: '#3FA7A0',
-    muted: '#2C7A75',
-    soft: '#E4F2F1',
-  },
+  paper: '#F6F3EC',
+  paperDeep: '#EFEADD',
+  porcelain: '#FDFCF8',
+  hairline: '#E3DCCE',
+  hairlineSoft: '#EFEADD',
+  hairlineStrong: '#C9C0AC',
+  ink: '#1C1917',
+  inkSecondary: '#544E45',
+  inkMuted: '#8B8272',
+  pine: '#1E5C46',
+  pineOn: '#F8F6EF',
+  pineSoft: '#E7EEE6',
+  pineTint: '#CBDCCB',
   signal: {
-    optimal: '#4BA07A',
-    good: '#7FB069',
-    caution: '#D9A441',
-    poor: '#C4614C',
-    unknown: '#697386',
+    optimal: '#22684E',
+    good: '#77803A',
+    caution: '#B07C2A',
+    poor: '#96382C',
+    unknown: '#8B8272',
   },
 } as const;
 
-type ThemeColors = {
-  background: string;
-  surface: string;
-  border: string;
-  text: string;
-  textMuted: string;
-  accent: string;
-};
-
-export const theme: Record<'light' | 'dark', ThemeColors> = {
-  light: {
-    background: '#FFFFFF',
-    surface: palette.ink[50],
-    border: palette.ink[200],
-    text: palette.ink[900],
-    textMuted: palette.ink[500],
-    accent: palette.accent.muted,
-  },
-  dark: {
-    background: palette.ink[950],
-    surface: palette.ink[900],
-    border: palette.ink[800],
-    text: palette.ink[50],
-    textMuted: palette.ink[400],
-    accent: palette.accent.DEFAULT,
-  },
-};
+/**
+ * Colours handed to React Navigation (expo-router's ThemeProvider). ARC is
+ * light-mode only by design — see the ADR in docs/decisions.md.
+ */
+export const navColors = {
+  primary: palette.pine,
+  background: palette.paper,
+  card: palette.paper,
+  text: palette.ink,
+  border: palette.hairline,
+  notification: palette.signal.caution,
+} as const;

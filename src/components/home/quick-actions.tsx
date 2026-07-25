@@ -2,6 +2,8 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { type Href, useRouter } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
+import { palette } from '@/constants/theme';
+
 type Action = {
   key: string;
   label: string;
@@ -21,8 +23,9 @@ const ACTIONS: Action[] = [
 /**
  * Section 6 — quick actions dock.
  *
- * Four escape hatches, evenly weighted. Nothing here competes with the hero
- * card for attention; these are for when you already know what you want.
+ * Four escape hatches, evenly weighted, in incidental ink. Nothing here
+ * competes with the hero for attention; these are for when you already know
+ * what you want.
  */
 export function QuickActions() {
   const router = useRouter();
@@ -36,11 +39,11 @@ export function QuickActions() {
           accessibilityLabel={action.label}
           disabled={!action.href}
           onPress={() => action.href && router.push(action.href)}
-          className={`flex-1 items-center gap-1.5 rounded-2xl py-3 ${
+          className={`flex-1 items-center gap-1.5 rounded-card py-3 ${
             action.href ? 'active:opacity-60' : 'opacity-40'
           }`}>
-          <Ionicons name={action.icon} size={20} color="#8C96A7" />
-          <Text className="text-xs text-ink-500 dark:text-ink-400">{action.label}</Text>
+          <Ionicons name={action.icon} size={20} color={palette.inkMuted} />
+          <Text className="text-[11px] text-ink-secondary">{action.label}</Text>
         </Pressable>
       ))}
     </View>
