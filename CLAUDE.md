@@ -113,12 +113,13 @@ Full data dashboards live elsewhere. Never let the home screen become a data dum
 
 ## 8. Wearables Strategy
 
-Preferred direction (as of 2026-07):
-- Primary sleep/recovery: Oura or Ultrahuman ring
-- Daytime/strain: WHOOP (or dual same-device strategy)
-- Avoid heavy dependence on Apple Watch wrist feel
-- Always normalize into ARC’s own schema
+Device choice is **undecided** (as of 2026-07) — candidates: Garmin (CIRQA), WHOOP, Ultrahuman ring, Oura ring. Rather than commit early, ARC stays device-agnostic; nothing in the code depends on the choice. (Relaxed from an earlier stated Oura/WHOOP preference to match the source brief — see the 2026-07-24 ADR in `/docs/decisions.md`.)
+
+What is decided, and holds regardless of device:
+- Always normalize every source into ARC’s own schema (`wearable_data.metric_type` is `text` precisely so a new vendor is not a migration)
 - Support dual-device setups and source labeling
+- Let the AI weight sources intelligently; prefer algorithm consistency where possible, but specialized quality can win
+- Apple Health / Health Connect + Terra (or direct APIs) as the ingestion hub
 
 ---
 

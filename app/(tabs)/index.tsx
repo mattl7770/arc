@@ -58,7 +58,8 @@ export default function HomeScreen() {
 
       <View className="mt-9">
         <Mission
-          sections={mission.sections}
+          leadingSettled={mission.leadingSettled}
+          rest={mission.rest}
           completed={mission.completed}
           total={mission.total}
           onToggle={mission.toggle}

@@ -15,8 +15,14 @@ export type MissionStatus = 'pending' | 'completed' | 'skipped' | 'partial';
 export type MissionItem = {
   id: string;
   title: string;
-  /** Time or window, pre-formatted for display: "07:15", "17:00–18:00". */
-  window?: string;
+  /**
+   * 24-hour "HH:MM". Mirrors `log_entries.scheduled_time`, and doubles as the
+   * chronological sort key — the mission is one time-ordered list, never
+   * grouped by category (owner call, 2026-07-24). Undefined sorts to the end.
+   */
+  scheduledTime?: string;
+  /** Nutrition, Training, Supplements, ... — a label on the row, not a group. */
+  category: string;
   /** One line on why this matters. Promoted to the hero card when it is next. */
   why?: string;
   /** Source protocol, if this item came from one. */
@@ -24,17 +30,10 @@ export type MissionItem = {
   estimatedMinutes?: number;
   status: MissionStatus;
   /**
-   * Deferred from the hero card. Still pending and still in its section — it
-   * just stops claiming "do this next" so the screen keeps moving.
+   * Deferred from the hero card. Still pending and still in the list — it just
+   * stops claiming "do this next" so the screen keeps moving.
    */
   snoozed?: boolean;
-};
-
-export type MissionSection = {
-  id: string;
-  /** Morning Protocol, Nutrition, Training, ... */
-  title: string;
-  items: MissionItem[];
 };
 
 export type Readiness = {
@@ -61,7 +60,8 @@ export type Metric = {
 export type HomeDay = {
   readiness: Readiness;
   pillars: Pillar[];
-  mission: MissionSection[];
+  /** Authored in any order; `useMission` is what sorts it by time. */
+  mission: MissionItem[];
   /** The Coach's daily brief. 3–6 sentences, calm and direct. */
   brief: string;
   metrics: Metric[];

@@ -14,6 +14,8 @@
 
 ## 1. To-Do
 
+> **This is an unordered catalogue, not a sequence.** It lists everything known to be wanted; the owner picks what to build next as they go, so nothing here implies "do this before that". The `📋 / 🧊` marks are rough appetite (concrete-next vs. someday), not a queue position. Grouping is by domain, for findability. The full product vision this is measured against is `Health App Idea` (the owner's source brief); the reconciliation that seeded the newer items is the 2026-07-24 ADR in `docs/decisions.md`.
+
 ### Device / builds
 - [x] Development-build config (`eas.json` + `expo-dev-client`) — see `docs/dev-build.md`
 - [x] Diagnosed the Expo Go SDK-57 incompatibility (single-SDK runtime handshake)
@@ -31,6 +33,7 @@
 - [ ] 📋 Test runner (Jest + React Native Testing Library) — **none installed yet**
 - [ ] 📋 CI (typecheck + lint + schema apply on push)
 - [ ] 🧊 EAS build profiles for device/TestFlight
+- [ ] ⚠️ 🧊 **Data-ownership posture** — CLAUDE.md §2 and the brief call for "local-first or strongly encrypted". v1 is cloud Supabase + RLS, with data export as the ownership guarantee; revisit before genetics / mental-health data lands (2026-07-24 ADR)
 
 ### Database
 - [x] v1 schema migration — 10 core tables, RLS, triggers, indexes
@@ -40,7 +43,12 @@
 - [ ] 📋 Migration for `ai_conversations`, `ai_messages`, `experiments` (lands with the Coach)
 - [ ] 📋 Seed the biomarker reference catalogue (`supabase/seed.sql` is empty)
 - [ ] 📋 Supabase Storage bucket for lab PDFs (wire up `lab_reports.file_path`)
-- [ ] 🧊 Future tables: genetics, cognitive, progress photos, environment
+- [ ] 📋 **Preventive screenings + medical calendar** table(s) — colonoscopy, skin checks, imaging cadence, appointment tracking (brief §2; nothing exists today)
+- [ ] 📋 **Lab breadth** — add `microbiome` (and other missing) values to `biomarker_category`; a biological-age / epigenetic-clock representation. Today's 11-category enum can't store either (brief §2)
+- [ ] 📋 **Exercise as measured data** — VO2max, mobility, balance, progressive-overload metrics; today only a `training_block` protocol + `workout` log entry exist, training has no metrics of its own (brief §2)
+- [ ] 🧊 **Food model** — pantry status, recipe bank, food-photo (CAL AI-style) analysis records (brief §2)
+- [ ] 🧊 **Environment & lifestyle** — screen time, social connection, substances (only air quality is noted today) (brief §2)
+- [ ] 🧊 Future tables: genetics, cognitive, progress photos
 
 ### Auth & app shell
 - [ ] ⚠️ 🚧 **Auth gate** — `useSession` + `/login` exist but nothing guards the tabs; `app/login.tsx` is a placeholder
@@ -49,15 +57,16 @@
 - [ ] 📋 Sign-out + session surfacing in Settings
 
 ### Home screen
-- [x] Six-section IA on mock data (`docs/home-screen.md`)
+- [x] Five-section IA on mock data (`docs/home-screen.md`)
 - [x] Derived "Do this next" hero (completing it advances the screen)
 - [x] Header redesign (2026-07-24): date-only above the hero; readiness verdict + pillar segment bar (mock-up option D) moved below it
 - [x] **Porcelain Ledger restyle** (2026-07-24): full app retheme — new tokens, serif/mono voices, light-only; philosophy in §3, alternatives archived in `docs/design-directions.md`
 - [x] **De-boxing pass** (2026-07-24, after device review): section-dividing hairlines removed from the date and the metrics strip; quick actions dock cut entirely
+- [x] **Chronological mission** (2026-07-24): one time-sorted list, category demoted to a row label; leading run of finished items auto-collapses so the list opens at *now* (`useMission` owns sort + fold)
 - [ ] 📋 Read from `daily_logs` / `log_entries` instead of mock
 - [ ] 📋 Persist mission state (currently in-memory only)
 - [ ] 📋 Remaining designed states: travel · sick/deload · data-gappy · first-run
-- [ ] 📋 **Mode override** (Travel/Sick/Social/Manual) — needs the override model *and* a home in the UI; the dock button that used to stand in for it is gone
+- [ ] 📋 **Mode override** (Travel/Sick/Social/Manual) — needs the override model *and* a home in the UI; the dock button that used to stand in for it is gone (2026-07-24 ADR)
 - [ ] 🧊 Snooze/skip → surface incomplete items intelligently later in the day
 
 ### AI Coach
@@ -69,15 +78,23 @@
 - [ ] 📋 Persist conversations to `ai_conversations` / `ai_messages` (needs the migration)
 - [ ] 🧊 Tool calling (log_entry, update_protocol, …)
 - [ ] 🧊 RAG over user history + longevity knowledge base
+- [ ] 🧊 **Vector DB for Coach long-term memory** (brief §7 names it explicitly; pairs with RAG)
+- [ ] 🧊 **Predictive alerts** — flag a trend before the user would notice (brief §2; causal insights already noted in `ai-coach.md`)
 - [ ] 🧊 n-of-1 experiment engine
+- [ ] 🧊 Multi-modal input — voice logging, later vision (documented in `ai-coach.md`, unbuilt)
 
-### Data domains (per CLAUDE.md priority order)
+### Data domains (CLAUDE.md §4 lists these by intent; not a build sequence)
 - [ ] 📋 **Labs** — Function Health PDF → structured extraction pipeline
 - [ ] 📋 **Daily logs** — the Log tab (fast capture: habits, meals, supplements, …)
 - [ ] 📋 **Protocols** — versioned stack/routine editor
 - [ ] 📋 **Wearables** — Terra / Apple Health / Health Connect → `wearable_data`
 - [ ] 🧊 Nutrition · Supplements/Meds/Therapies · Body composition
 - [ ] 📋 **Data tab** — biomarker trends, wearable history, body comp dashboards
+
+### Reporting, export & knowledge (from the brief; newly tracked 2026-07-24)
+- [ ] 📋 **Data export** — CLAUDE.md §2 promises "easy export" as a non-negotiable; nothing implements or schedules it yet (brief §2)
+- [ ] 🧊 **Progress reporting** — exportable periodic reports / accountability summaries (brief §2)
+- [ ] 🧊 **Education / knowledge base module** — a *browsable* longevity reference in-app; today this exists only as a RAG corpus the Coach reads, not something the user can open (brief §2)
 
 ### Screens still to build
 - [ ] 📋 Log · Data · Settings (still placeholders)

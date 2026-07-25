@@ -13,6 +13,10 @@ type Props = {
  * One line of Today's Mission. The whole row is the tap target, so completing
  * anything is a single tap from opening the app. Times are set in mono, like
  * every measured value in the app.
+ *
+ * Since the list went chronological (2026-07-24), the row carries its own
+ * category — it is what tells you a 21:45 entry is a supplement and not a
+ * meal, work the section heading used to do.
  */
 export function MissionItemRow({ item, onToggle }: Props) {
   const done = item.status === 'completed';
@@ -42,8 +46,8 @@ export function MissionItemRow({ item, onToggle }: Props) {
             {item.title}
           </Text>
 
-          {item.window ? (
-            <Text className="font-mono text-[11px] text-ink-muted">{item.window}</Text>
+          {item.scheduledTime ? (
+            <Text className="font-mono text-[11px] text-ink-muted">{item.scheduledTime}</Text>
           ) : null}
         </View>
 
@@ -52,9 +56,12 @@ export function MissionItemRow({ item, onToggle }: Props) {
         ) : null}
 
         <View className="mt-1.5 flex-row items-center gap-2">
+          <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">
+            {item.category}
+          </Text>
           {item.protocol ? (
             <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">
-              {item.protocol}
+              · {item.protocol}
             </Text>
           ) : null}
           {item.snoozed && item.status === 'pending' ? (

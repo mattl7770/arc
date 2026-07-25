@@ -26,18 +26,15 @@ Full data and exploration live in other tabs. The home screen must stay directiv
 ### 3. Today’s Mission
 Ordered, dynamic checklist of the day’s non-negotiables.
 
-Grouped sections (collapsible if needed):
-- Morning Protocol
-- Nutrition (exact meals / templates + logging)
-- Training
-- Supplements & Medications (timed)
-- Therapies
-- Evening Wind-down
+**One chronological list — not category groups** (owner call, 2026-07-24). The day is sorted by scheduled time, top to bottom, so the order you read is the order you act. Grouping by category (Morning, Nutrition, Training…) was tried first and cut: it let a 21:45 supplement sit above an 08:00 breakfast, so the list order stopped matching the day, and the hero ("do this next") could point somewhere other than the top of the list. Category is now a **label on each row**, doing the identification work the section heading used to.
+
+**Auto-collapse, not collapsible.** The one concession to a long day: the run of already-settled items at the very top folds into a single "N earlier today" line, so the list always opens at *now*. Tapping it expands them. This is the sanctioned reading of the PDF's "progressive disclosure", bounded by a hard rule — **disclosure may hide history, never work.** Anything still pending is always visible, *including things you're late for*; an item settled out of order also stays in place rather than folding, because hiding it would misrepresent where you are in the day. (This is the specific, bounded form of the "collapsible if needed" idea the earlier draft rejected outright — the rejection was of hiding pending work, which this doesn't do.)
 
 Each item shows:
 - Checkbox / completion state
-- Time or window
-- Short context or “Why” expander
+- Scheduled time (mono), which is also the sort key
+- Category label (Nutrition, Training, Supplements…)
+- Short context or “Why” line (shown on the active item)
 - Source protocol (if any)
 
 ### 4. AI Coach Daily Brief
@@ -102,10 +99,10 @@ Originally: log something, chat with Coach, override modes, jump to Dashboard.
 
 Key design decisions:
 
-- **The hero card is derived, not authored.** "Do this next" is the first unresolved mission item, so completing it advances the screen automatically — the checklist and the hero can never disagree. This is what makes the screen directive rather than a static mockup.
+- **The hero card is derived, not authored.** "Do this next" is the first pending mission item in time order, so completing it advances the screen automatically — the checklist and the hero can never disagree. This is what makes the screen directive rather than a static mockup.
 - **The accent colour is reserved for the hero.** Everything else is neutral ink. Restraint is what keeps this from becoming a dashboard.
 - **Pillars render as a segment bar** (`readiness-strip.tsx`): four slim signal-coloured segments with labels beneath — more scannable than dots, still not a chart.
-- **Grouped but not collapsible.** The IA allows collapsing "if needed"; an achievable list should not need it. If it ever does, the list is too long — the fix is prioritisation, not a disclosure triangle.
+- **Chronological, with history that auto-collapses.** The mission is one time-sorted list (see §3); the only thing that ever folds is the run of already-finished items at the top, so the screen opens at *now*. Pending work is never hidden. `useMission` owns the sort and the fold; the list is dumb.
 - The mock models a **low-recovery day**, the state the design most has to survive.
 
 **Not yet built:** the remaining states (travel, sick/deload, data-gappy, first-run); reading from `daily_logs` / `log_entries`; persistence (mission state is in-memory); the Mode override control (no longer present anywhere — it went out with the dock and needs a real home).

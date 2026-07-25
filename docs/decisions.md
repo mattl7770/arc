@@ -1,5 +1,27 @@
 # Architecture Decision Records (ADR)
 
+## 2026-07-24 — Reconciling the app with the source brief (`Health App Idea`)
+
+**Context:** The owner's original product brief (`Health App Idea`, kept outside the repo) was diffed against the shipped app and the docs. Most of it already agreed; the decisions below resolve the points that didn't. The full diff and the resulting backlog additions live in `docs/project-status.md` §1.
+
+**Decisions:**
+
+1. **Today's Mission is one chronological list, not category groups.** The brief calls the home screen "directive and **chronological**"; the first build grouped items by category (Morning, Nutrition, Training…), which let a 21:45 supplement render above an 08:00 meal. Sorting by scheduled time makes the reading order the acting order, and guarantees the derived hero ("do this next") always points at the top of the list. Category survives as a per-row label. See `docs/home-screen.md` §3 and `src/hooks/use-mission.ts`.
+
+2. **Progressive disclosure is allowed to hide history, never work.** The brief wants "beautiful progressive disclosure"; the home-screen doctrine had flatly refused collapsing. Both are honoured by a narrow rule: the run of already-settled items at the *top* of the day folds into one line so the list opens at *now*, and nothing else ever collapses. Anything still pending — including overdue items, and items settled out of order — stays visible. This is the bounded form of "collapsible if needed"; the thing the doctrine rejected (hiding pending work) is still rejected.
+
+3. **The status bar / quick-actions questions were already settled this session** and the brief does not reopen them: the date-only header (readiness moved below the hero) stands, and the quick-actions dock stays cut (see the ADR below). The brief's "overrides for travel/sick/social" is retained as the **Mode override** backlog item, which needs a real home, not a restored dock.
+
+4. **Data-ownership posture: cloud-first for v1, deferred deliberately.** The brief and CLAUDE.md §2 both ask for "local-first or strongly encrypted". v1 is plain cloud Supabase with RLS; the ownership guarantee for now is **easy full data export**, not local-first or client-side encryption. Client-side encryption is rejected for v1 because it would blind the Coach's server-side RAG to most of the data. Revisit before genetics or mental-health data lands. Tracked in §1 as a ⚠️ item; CLAUDE.md §2's principle is aspirational until then, not a description of what's built.
+
+5. **Wearable choice stays open.** The brief lists Garmin CIRQA / WHOOP / Ultrahuman / Oura as undecided. CLAUDE.md §8 had asserted a firmer dual-device preference; it's been relaxed to match — all four are candidates, everything normalises into ARC's own schema, so no code depends on the decision and it costs nothing to defer.
+
+**Consequences:**
+- The brief's exhaustive feature set seeded a large batch of backlog items (preventive screenings + medical calendar, food/pantry/recipe/photo-analyzer model, microbiome + epigenetic-clock lab breadth, exercise-as-measured-data, environment breadth, education module, reporting + export, predictive alerts, vector memory). All are in §1, marked as appetite not sequence.
+- **§1 is now explicitly an unordered catalogue.** The owner builds in the order they choose; the doc stopped implying a phase order (the earlier "per CLAUDE.md priority order" framing is gone).
+
+---
+
 ## 2026-07-24 — Rules enclose objects, never pages; the quick actions dock is cut
 
 **Decision:** Two changes from the first on-device review of the Porcelain Ledger build.

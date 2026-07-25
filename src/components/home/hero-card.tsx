@@ -33,7 +33,11 @@ export function HeroCard({ item, onDone, onSnooze, onSkip }: Props) {
       </Text>
 
       <Text className="mt-1.5 font-mono text-xs text-ink-secondary">
-        {[item.window, item.estimatedMinutes && `${item.estimatedMinutes} min`, item.protocol]
+        {[
+          item.scheduledTime,
+          item.estimatedMinutes && `${item.estimatedMinutes} min`,
+          item.protocol,
+        ]
           .filter(Boolean)
           .join(' · ')}
       </Text>
