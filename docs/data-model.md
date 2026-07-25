@@ -1,9 +1,11 @@
 # ARC Data Model (v1)
 
 **Status:** Draft — Foundation phase  
-**Last updated:** 2026-07-22
+**Last updated:** 2026-07-24
 
 This document defines the core schema for ARC. Keep it clean, normalized, and extensible.
+
+> ⚠️ **Now SQLite, on-device (2026-07-24 pivot).** The live schema is `db/migrations/0001_init.sql`; this doc is the *intent*. The dialect changed (see `docs/architecture-migration.md` Phase 0): enums→`text`+CHECK, `uuid`→`text` (app-generated), timestamps→ISO-8601 `text`, `jsonb`→`text`+`json_valid()`. Most importantly, **`user_id`, RLS, and the auth wiring are gone** — one user on one device — so the composite FKs simplify to plain ones. Where the sections below say `uuid`, `timestamptz`, `user_id`, or RLS, read the SQLite equivalent.
 
 ---
 

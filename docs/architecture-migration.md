@@ -18,18 +18,20 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
 
 ---
 
-## Phase 0 — Foundations & schema port
+## Phase 0 — Foundations & schema port ✅ DONE (2026-07-24)
 
-- [ ] Add the on-device DB dependency. **Sub-decision:** `op-sqlite` (fastest, first-class loadable-extension support for `sqlite-vec`) vs `expo-sqlite` (purest Expo dependency surface, extension support is newer). *Lean: `op-sqlite`, for the `sqlite-vec` support.*
-- [ ] Add `sqlite-vec`, `expo-secure-store` (Keychain), `expo-local-authentication` (Face ID), `expo-image-manipulator` (photo compression).
-- [ ] **Port the schema** `supabase/migrations/…sql` → SQLite dialect, preserving every table/column name:
+- [x] **Engine chosen and installed: `op-sqlite`** (`@op-engineering/op-sqlite` 17.1.2) — battle-tested native SQLite, first-class `sqlite-vec` support. Chosen over `expo-sqlite` for exactly that.
+- [x] **`sqlite-vec` enabled** via `"op-sqlite": { "sqliteVec": true }` in package.json (flag confirmed against the podspec). Gives on-device vector search for the Coach's RAG; not exercised until Phase 3.
+- [x] **Schema ported** → `db/migrations/0001_init.sql`, preserving every table/column name:
   - `enum` → `text` + `CHECK (col IN (...))`
-  - `uuid` → `text` (generate with a uuid v4 helper at insert time)
-  - `timestamptz` → `text` (ISO-8601) · `date` → `text` (`YYYY-MM-DD`) · `time` → `text` (`HH:MM`)
-  - `jsonb` → `text` (JSON), parsed in the app
-  - Drop RLS, `auth.*`, grants, and the `handle_new_user` trigger (no auth, no multi-tenancy). Keep `updated_at` triggers.
-  - `user_id`: drop as a tenancy key. Keep columns only where a table genuinely needs them; a single-user app has an implicit owner.
-- [ ] Land the ported schema as `db/migrations/0001_init.sql` (new home; the Supabase file stays in git history as the origin).
+  - `uuid` → `text`, **app-generated** (`crypto.randomUUID()`), no DB default — fail loud on a missing id
+  - `timestamptz` → ISO-8601 `text` · `date` → `text` `YYYY-MM-DD` · `time` → `text` `HH:MM` (GLOB `[0-9]`-checked; note GLOB `_` is literal, unlike LIKE)
+  - `jsonb` → `text` guarded by `json_valid()`
+  - Dropped RLS, `auth.*`, grants, `handle_new_user`, **and `user_id` entirely** — single user, so the composite `(id, user_id)` FKs collapse to simple ones and the `(user_id, x)` uniques/indexes lose the prefix. `updated_at` triggers kept (rewritten as per-table `AFTER UPDATE`).
+  - Dropped the `~` regex CHECKs (slug, metric_type) — no portable regex in SQLite DDL; the repository layer owns that validation.
+- [x] **Validated against real SQLite** (`node:sqlite`, 16 assertions): schema executes, inserts across all 10 tables incl. the forward FK (`protocols.current_version_id`), `updated_at` triggers fire without recursion, enum/JSON/GLOB/range CHECKs reject bad data, ON DELETE SET NULL keeps log history / CASCADE drops parsed results, idempotency unique holds. *(Bug caught & fixed in the process: GLOB `_` is literal, not a wildcard — switched date/time checks to `[0-9]` classes.)*
+- **Deferred to keep each dev rebuild meaningful** (all native modules): `expo-secure-store` (Phase 3), `expo-local-authentication` (Phase 2), photo libs (Phase 4). Batch them with the phase that first uses them.
+- ⚠️ **`op-sqlite` is native** → a fresh `eas build` is required before Phase 1's data layer runs on device. The current dev client is unaffected (nothing imports op-sqlite yet).
 
 ## Phase 1 — Local data layer
 
@@ -55,7 +57,11 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
 
 ## Phase 4 — Media & backup
 
-- [ ] **Photos:** capture → either a **PhotoKit reference** + thumbnail (photo stays in iOS Photos / iCloud Photos, zero duplication) or a compressed (~1024px, HEIC) copy in the app's document dir. Default to the reference approach to keep the app's footprint at ~just structured data.
+- [ ] **Photos — split by keepsake vs. log data** (owner call, 2026-07-24):
+  - **Progress pics → PhotoKit reference + thumbnail.** They belong in the camera roll at quality; iCloud Photos owns the original and backs it up, ARC stores only a reference. Keeps ARC's own footprint (and backup) tiny.
+  - **Food photos → compressed in-app copy** (~1024px, HEIC, ~200 KB), *not* the camera roll (4/day would flood it). Just log data; can age out.
+  - **Dangling-reference guard:** always keep a thumbnail as a degraded fallback if a referenced photo is deleted from Photos; let the user flag a pic "important" to force a full in-app copy.
+  - Storage consequence: in-app food copies ride inside ARC's encrypted backup (~3 GB/decade); referenced progress pics don't (already in iCloud Photos). This split is *why* the app's backup blob stays small.
 - [ ] **Encrypted iCloud backup:** snapshot the SQLite file, encrypt with a Keychain-held key, write to the app's iCloud container. **Restore** flow on fresh install. The existing "data export" backlog item is the manual sibling of this.
 - [ ] Retention: keep hot recent data at full fidelity; downsample old high-res wearable samples so the DB stays lean.
 
@@ -68,15 +74,16 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
 
 ## Cross-cutting cleanup (do as touched, not in a big-bang)
 
-- [ ] **CLAUDE.md §3** (stack: drop Supabase, state on-device SQLite) and **§9** (DB conventions: the whole RLS / `auth.uid()` / `user_id`-on-every-table section is Postgres-multi-tenant lore that no longer applies — replace with the SQLite conventions).
-- [ ] **`docs/data-model.md`:** annotate as SQLite; note the dialect mapping.
-- [ ] **`docs/project-status.md`:** the Supabase/auth/RLS to-do items are superseded by this plan; the status board's "Supabase / Auth / Storage" rows get reframed as "Local DB / App lock / iCloud backup".
-- [ ] Retire `scripts/gen-types.mjs` and `db:types` / `db:push` (no live DB to generate from).
+- [x] **CLAUDE.md §2 / §3 / §8 / §9 / §10 / §11** updated (2026-07-24): principles gain local-first/offline; stack states on-device SQLite; wearables drop Terra for Apple Health; the DB conventions replace all the RLS/`auth.uid()`/`user_id` Postgres lore with SQLite ones; §11 points at `db/migrations/0001_init.sql` and this plan.
+- [x] **`docs/project-status.md`** updated: migration-phase tracker, offline principle, status board reframed (Local DB / App lock / iCloud backup), Supabase marked vestigial.
+- [ ] **`docs/data-model.md`:** annotate as SQLite; note the dialect mapping. *(Light note added; full pass when the data layer lands.)*
+- [ ] Retire `scripts/gen-types.mjs` and `db:types` / `db:push` (Phase 2, with the Supabase removal).
 
-## Open sub-decisions (small, made at their phase)
+## Open sub-decisions
 
-1. `op-sqlite` vs `expo-sqlite` (Phase 0) — lean `op-sqlite`.
-2. Embedding source: provider API vs on-device model (Phase 3) — lean provider API to start.
-3. Photo storage: PhotoKit reference vs compressed copy (Phase 4) — lean reference.
+Decided:
+- ✅ **DB engine:** `op-sqlite` + SQLite (the one irreversible choice — made & installed).
+- ✅ **Photo storage:** the keepsake-vs-log split above (reference progress pics, compress food logs).
 
-None of these three is hard to reverse; the one irreversible choice (the DB engine, SQLite) is already made.
+Still open (small, reversible, made at their phase):
+- **Embedding source** (Phase 3): provider API at write-time vs an on-device model. *Lean: provider API to start* — new data still saves offline; only its RAG index waits for connectivity, and you can't query the Coach offline anyway.

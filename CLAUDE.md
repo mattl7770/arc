@@ -27,7 +27,7 @@ It is **not** a consumer wellness app. It is closer to a personal command center
 
 - **Actionability > Information density** on the home screen
 - Full data ownership and easy export
-- Prefer local-first or strongly encrypted patterns where reasonable
+- **Local-first, no-server, offline-except-AI** (adopted 2026-07-24, see `/docs/decisions.md`): personal data lives on-device; the app works with the network unplugged except for AI features; nothing personal sits at rest in any cloud. This is the concrete form of "full data ownership".
 - Protocols are versioned and treatable like code
 - The AI coach must be calm, precise, evidence-seeking, and slightly ruthless — never generic or hypey
 - Every feature must either improve the daily operating system or stay completely out of the way
@@ -37,16 +37,16 @@ It is **not** a consumer wellness app. It is closer to a personal command center
 
 ## 3. Current Tech Stack
 
-**Starting stack (velocity first):**
+**Local-first, single-user, no-server** (pivoted 2026-07-24 from cloud Supabase — see the ADR and `docs/architecture-migration.md`):
 - Expo SDK 57 (React Native 0.86) + TypeScript (strict) + Expo Router
-- Supabase (Postgres + Auth + Row Level Security + Storage + Edge Functions)
+- **On-device SQLite via `op-sqlite`** (+ `sqlite-vec` for on-device RAG) — the whole data layer. No backend.
 - NativeWind 4 (Tailwind v3) — chosen over Tamagui, see `/docs/decisions.md`
-- Frontier LLMs via API (with strong RAG + tool calling)
-- Apple Health / Health Connect as wearable hub
-- Terra (or direct APIs) for Oura, WHOOP, Ultrahuman, etc.
-- Function Health as primary lab backend (PDF ingestion)
+- **Frontier LLM called directly from the app**, key in the iOS Keychain (`expo-secure-store`), provider/model swappable in Settings. RAG + tools run client-side.
+- **Apple Health** as the wearable hub (on-device; the vendor app does the cloud sync). Direct vendor API only where HealthKit lacks fidelity. *(Terra dropped — a cloud aggregator needs a server.)*
+- Function Health as primary lab backend (PDF → on-device parse)
+- **Backup:** encrypted iCloud snapshot; media referenced from iOS Photos (PhotoKit)
 
-**Long-term consideration:** Native SwiftUI port once UX and data model are proven.
+**Long-term consideration:** Native SwiftUI port once UX and data model are proven. (Local-first + on-device SQLite makes that port *easier*, not harder — no server contract to reproduce.)
 
 ---
 
@@ -119,7 +119,7 @@ What is decided, and holds regardless of device:
 - Always normalize every source into ARC’s own schema (`wearable_data.metric_type` is `text` precisely so a new vendor is not a migration)
 - Support dual-device setups and source labeling
 - Let the AI weight sources intelligently; prefer algorithm consistency where possible, but specialized quality can win
-- Apple Health / Health Connect + Terra (or direct APIs) as the ingestion hub
+- **Apple Health is the ingestion hub** — it's on-device, so wearables stay offline for ARC (the vendor's own app does the cloud sync). Direct vendor API only where HealthKit lacks fidelity. **Terra is dropped**: a cloud aggregator needs a server, which breaks the offline/no-server architecture (2026-07-24).
 
 ---
 
@@ -136,16 +136,18 @@ What is decided, and holds regardless of device:
 
 ### Database conventions
 
-Follow the patterns already established in `supabase/migrations/`. Rationale for each is in `/docs/decisions.md`.
+The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/migrations/0001_init.sql`; rationale for each choice is in `/docs/decisions.md`, and the Postgres→SQLite port is `docs/architecture-migration.md`. *(The old `supabase/migrations/` Postgres file is the origin, kept in git history only — do not build on it.)*
 
-- **Migration filenames need a 14-digit timestamp** (`YYYYMMDDHHMMSS_name.sql`). Shorter prefixes are silently ignored by `supabase db push`. Use `supabase migration new <name>` to get it right.
-- **Never hand-edit `src/types/database.ts`** — it is generated. Change the schema, push, then run `npm run db:types`.
-- `uuid` primary keys with `gen_random_uuid()`; `timestamptz` for instants, `date` for calendar days, `time` for wall-clock.
-- `created_at` + `updated_at` on every table, with a `set_updated_at()` trigger. The exception is immutable tables like `protocol_versions`.
-- **`user_id` on every owned table**, so every RLS policy is a flat `auth.uid() = user_id` rather than a subquery through a parent. Where the column is denormalised, enforce it with a composite FK to the parent's `unique (id, user_id)`.
-- **Enum when ARC owns the vocabulary, `text` when a vendor does.** Wearable `metric_type` is text for exactly this reason.
-- RLS on every table: one `FOR ALL` policy, with `auth.uid()` wrapped as `(select auth.uid())` so Postgres evaluates it once per statement instead of once per row.
+- **Migrations** live in `db/migrations/NNNN_name.sql`, applied in order by the runner and tracked with `PRAGMA user_version`. Never edit a shipped migration; add the next number.
+- **`PRAGMA foreign_keys = ON` on every connection** — SQLite defaults it OFF, and without it the FKs don't enforce. Keep `recursive_triggers` OFF (default) so the `updated_at` triggers don't recurse.
+- **`text` primary keys holding app-generated UUIDs** (`crypto.randomUUID()`), no DB default — a single-writer app should fail loud on a missing id, not invent one.
+- **Timestamps are ISO-8601 `text`** (`strftime('%Y-%m-%dT%H:%M:%fZ','now')`), dates are `text` `YYYY-MM-DD`, times are `text` `HH:MM`. All sort chronologically as text, so ordering/indexing still works. GLOB `[0-9]` character classes check the shape (note: in GLOB `_` is literal — use `?` or `[0-9]`, not LIKE's `_`).
+- **`created_at` + `updated_at` on every table**, stamped by a per-table `AFTER UPDATE` trigger. Exception: immutable tables like `protocol_versions` (no `updated_at`).
+- **No `user_id`, no RLS, no auth** — one user on one device. The OS + app lock are the security boundary. If ARC ever goes multi-user, that's a schema migration then, not a shape carried now.
+- **Enum vocabulary → `text` + `CHECK (col IN (...))`; vendor vocabulary → free `text`.** Wearable `metric_type` is free text so a new vendor metric isn't a migration.
+- **JSON is `text` guarded by `CHECK (json_valid(col))`** (SQLite's json1 is built in).
 - Deleting a protocol must never destroy execution history — prefer `ON DELETE SET NULL` over `CASCADE` for anything referencing a log.
+- **Validate schema changes against real SQLite before shipping** — Node's built-in `node:sqlite` runs the DDL headless (that's how `0001_init.sql` was checked: 16 assertions over inserts, FKs, triggers, CHECKs, delete semantics).
 
 ---
 
@@ -153,15 +155,17 @@ Follow the patterns already established in `supabase/migrations/`. Rationale for
 
 **Phase:** Foundation (July 2026)
 
-**Immediate priorities:**
-1. ~~Solid project structure + this file~~ — **done.** Expo Router shell, five tabs, NativeWind, typed config.
-2. ~~Supabase schema v1 (biomarkers, protocols, daily_logs, etc.)~~ — **done.** Ten core tables migrated with RLS; types generated. `ai_conversations`, `ai_messages` and `experiments` are still pending and land with the Coach.
-3. Function Health PDF → structured data pipeline
-4. Basic authenticated app shell + navigation — *partly done:* navigation and the session hook exist, but nothing gates the tabs yet and `app/login.tsx` is still a placeholder.
-5. First version of directive Home Screen (even with mocked data)
-6. Minimal AI Coach chat interface
+> **Now pivoting to local-first (2026-07-24).** The authoritative, live picture is `docs/project-status.md`; the phased plan is `docs/architecture-migration.md`. The list below is the original foundation snapshot, annotated.
 
-**Live infrastructure:** a Supabase project exists with email auth and the Data API enabled. Storage is not set up yet — the `lab_reports.file_path` column is ready for it but nothing writes there.
+**Foundation milestones:**
+1. ~~Solid project structure + this file~~ — **done.** Expo Router shell, five tabs, NativeWind, typed config.
+2. ~~Schema v1~~ — **done, then ported.** Ten core tables built for Postgres, now **ported to on-device SQLite** (`db/migrations/0001_init.sql`, validated). `ai_conversations` / `ai_messages` / `experiments` still land with the Coach.
+3. Function Health PDF → structured data pipeline (on-device parse)
+4. ~~Authenticated app shell~~ — **cut.** No accounts in a single-user local app; a Face ID app lock replaces it (Phase 2). `useSession` / `app/login.tsx` are removed.
+5. ~~First version of directive Home Screen~~ — **done** on mock data (chronological mission).
+6. ~~Minimal AI Coach chat~~ — **done** as UX on a mock model; the real on-device model call is Phase 3.
+
+**Infrastructure:** none required — local-first. The previously-created Supabase project is vestigial (delete whenever). The lab PDF becomes a local/iCloud file at `lab_reports.file_path`.
 
 ---
 
@@ -174,9 +178,10 @@ Follow the patterns already established in `supabase/migrations/`. Rationale for
 - `/docs/home-screen.md` — Information architecture
 - `/docs/ai-coach.md` — System prompt, tools, memory design
 - `/docs/decisions.md` — Architecture Decision Records
+- `/docs/architecture-migration.md` — **The local-first migration plan** (cloud → on-device), phased. Read before touching the data layer.
 - `/docs/folder-structure.md` — Where code goes
-- `supabase/migrations/` — The schema as built. The migration is the source of truth; `data-model.md` is the intent.
-- `src/types/database.ts` — **Generated.** Never edit by hand; run `npm run db:types`.
+- `db/migrations/0001_init.sql` — **The schema, source of truth** (on-device SQLite). `data-model.md` is the intent.
+- `supabase/migrations/` — the Postgres origin, **history only** — superseded, do not build on it.
 
 ---
 

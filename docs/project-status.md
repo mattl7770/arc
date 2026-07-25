@@ -6,7 +6,7 @@
 **Current phase:** Foundation
 **Branch:** `claude/expo-project-scaffold-d14e9e`
 
-> ⚠️ **Architecture pivot (2026-07-24): going local-first, no-server.** ARC is moving off cloud Supabase to on-device SQLite + `sqlite-vec`, with the Coach calling a frontier model directly from the app (user's key in the iOS Keychain) and encrypted iCloud backup. See the ADR in `docs/decisions.md` and the step-by-step in **`docs/architecture-migration.md`**. **Items below that mention Supabase, auth, RLS, or `useSession` are superseded** and will be reworked per that plan — they're left in place until each phase lands so the board stays honest about what still exists in the code *today*.
+> ⚠️ **Architecture pivot (2026-07-24): local-first, no-server, offline-except-AI.** ARC is moving off cloud Supabase to **on-device SQLite** (`op-sqlite` + `sqlite-vec`), with the Coach calling a frontier model **directly from the app** (user's key in the iOS Keychain, swappable in Settings) and **encrypted iCloud backup**. The app runs **fully offline except for AI features**. No backend, no auth, no personal data in any cloud; the only recurring cost is model tokens. See the ADR in `docs/decisions.md` and the phased plan in **`docs/architecture-migration.md`**. **Phase 0 (schema port) is done** — items below that still mention Supabase/auth/RLS/`useSession` describe what remains in the *code* today and are retired phase-by-phase.
 
 **Legend:** ✅ done · 🚧 in progress · 📋 planned (v1) · 🧊 later · ⚠️ needs a decision or has a caveat
 
@@ -16,6 +16,15 @@
 
 ## 1. To-Do
 
+### Local-first migration — phases (`docs/architecture-migration.md`)
+- [x] **Phase 0** — schema ported Postgres → SQLite (`db/migrations/0001_init.sql`), **validated against real SQLite** (16 checks); `op-sqlite` + `sqliteVec` installed
+- [ ] 📋 **Phase 1** — migration runner (`PRAGMA user_version`) + local data-access layer; wire Home & Coach to the DB instead of mock
+- [ ] 📋 **Phase 2** — remove Supabase / RLS / `useSession`; Face ID app lock (`expo-local-authentication`)
+- [ ] 📋 **Phase 3** — Coach calls the model directly (Keychain key via `expo-secure-store`, provider/model picker); on-device `sqlite-vec` RAG
+- [ ] 📋 **Phase 4** — media (PhotoKit references for progress pics; compressed in-app copies for food logs) + encrypted iCloud backup
+- [ ] 🧊 **Phase 5** — writable knowledge base + Coach research
+- **Offline principle:** everything works with the network unplugged **except AI features** (Coach chat, LLM lab-PDF parse, food-photo analysis, Coach research). The lone non-AI online dependency is air-quality data; purchases stay manual (auto-import would need a server).
+
 > **This is an unordered catalogue, not a sequence.** It lists everything known to be wanted; the owner picks what to build next as they go, so nothing here implies "do this before that". The `📋 / 🧊` marks are rough appetite (concrete-next vs. someday), not a queue position. Grouping is by domain, for findability. The full product vision this is measured against is `Health App Idea` (the owner's source brief); the reconciliation that seeded the newer items is the 2026-07-24 ADR in `docs/decisions.md`.
 
 ### Device / builds
@@ -23,6 +32,7 @@
 - [x] Diagnosed the Expo Go SDK-57 incompatibility (single-SDK runtime handshake)
 - [ ] ⚠️ 📋 **First iOS dev build** — needs a paid Apple Developer account ($99/yr); free `eas go` bridge available meanwhile
 - [ ] 📋 EAS account + `eas login` (user)
+- [ ] ⚠️ 📋 **Dev rebuild for `op-sqlite`** — it's a native module, so the JS-only dev client can't load it. The next `eas build` picks it up; the running app is unaffected until Phase 1 imports it. (Batch this with any other native deps — `expo-secure-store`, `expo-local-authentication` — added in later phases, to save rebuilds.)
 
 ### Foundation & tooling
 - [x] Expo SDK 57 + Expo Router + TypeScript (strict) scaffold
@@ -35,16 +45,18 @@
 - [ ] 📋 Test runner (Jest + React Native Testing Library) — **none installed yet**
 - [ ] 📋 CI (typecheck + lint + schema apply on push)
 - [ ] 🧊 EAS build profiles for device/TestFlight
-- [ ] ⚠️ 🧊 **Data-ownership posture** — CLAUDE.md §2 and the brief call for "local-first or strongly encrypted". v1 is cloud Supabase + RLS, with data export as the ownership guarantee; revisit before genetics / mental-health data lands (2026-07-24 ADR)
+- [x] **Data-ownership posture decided** — CLAUDE.md §2's "local-first or strongly encrypted" is being *adopted*, not deferred: on-device data, encrypted iCloud backup, no cloud personal data (2026-07-24 ADR). Execution tracked in the migration phases above.
 
-### Database
-- [x] v1 schema migration — 10 core tables, RLS, triggers, indexes
-- [x] Pushed to the live project (`20260722000000` applied)
-- [x] Types generated from the live database
-- [x] `db:push` / `db:types` scripts (Windows-safe)
-- [ ] 📋 Migration for `ai_conversations`, `ai_messages`, `experiments` (lands with the Coach)
-- [ ] 📋 Seed the biomarker reference catalogue (`supabase/seed.sql` is empty)
-- [ ] 📋 Supabase Storage bucket for lab PDFs (wire up `lab_reports.file_path`)
+### Database (on-device SQLite)
+- [x] v1 schema designed — 10 core tables, FKs, indexes, CHECK constraints (`docs/data-model.md`)
+- [x] Built + verified as Postgres (37 PGlite tests) — now **superseded** by the SQLite port below; the Postgres file stays in git history as the origin
+- [x] **Ported to SQLite** (Phase 0): `db/migrations/0001_init.sql` — enums→text+CHECK, uuid→text (app-generated), timestamps→ISO-8601 text; **RLS / grants / auth wiring / `user_id` tenancy all dropped** (one user, one device); composite FKs collapsed to simple ones
+- [x] **Validated against real SQLite** — 16 checks: schema executes, inserts across all 10 tables, forward FK, `updated_at` triggers (no recursion), enum/JSON/GLOB/range CHECKs reject bad data, ON DELETE SET NULL / CASCADE semantics, idempotency unique
+- [x] `op-sqlite` installed + `sqliteVec` enabled (engine + on-device vector search)
+- [ ] 📋 **Migration runner** — apply versioned SQL on boot, tracked by `PRAGMA user_version` (Phase 1)
+- [ ] 📋 Seed the biomarker reference catalogue locally (never populated)
+- [ ] 📋 Local tables for `ai_conversations`, `ai_messages`, `experiments` (land with the Coach)
+- [x] ~~Supabase Storage bucket for lab PDFs~~ — **dropped**; the original PDF becomes a local / iCloud file, referenced by `lab_reports.file_path` (Phase 4)
 - [ ] 📋 **Preventive screenings + medical calendar** table(s) — colonoscopy, skin checks, imaging cadence, appointment tracking (brief §2; nothing exists today)
 - [ ] 📋 **Lab breadth** — add `microbiome` (and other missing) values to `biomarker_category`; a biological-age / epigenetic-clock representation. Today's 11-category enum can't store either (brief §2)
 - [ ] 📋 **Exercise as measured data** — VO2max, mobility, balance, progressive-overload metrics; today only a `training_block` protocol + `workout` log entry exist, training has no metrics of its own (brief §2)
@@ -52,11 +64,10 @@
 - [ ] 🧊 **Environment & lifestyle** — screen time, social connection, substances (only air quality is noted today) (brief §2)
 - [ ] 🧊 Future tables: genetics, cognitive, progress photos
 
-### Auth & app shell
-- [ ] ⚠️ 🚧 **Auth gate** — `useSession` + `/login` exist but nothing guards the tabs; `app/login.tsx` is a placeholder
-- [ ] 📋 Real email sign-in / sign-up flow on `/login`
-- [ ] 📋 Redirect unauthenticated users to `/login` from the root layout
-- [ ] 📋 Sign-out + session surfacing in Settings
+### App access (no accounts — local-first)
+- [x] ~~Auth gate · email sign-in · `/login` · redirect · sign-out~~ — **cut**: a single-user on-device app has no accounts. `useSession`, `app/login.tsx`, and the Supabase client are removed in Phase 2.
+- [ ] 📋 **App lock** — Face ID / passcode on open (`expo-local-authentication`), Phase 2. The device + OS are the security boundary, not row policies.
+- [ ] 📋 **Provider / model / API-key settings** — editable in-app, key held in the iOS Keychain (`expo-secure-store`), Phase 3
 
 ### Home screen
 - [x] Five-section IA on mock data (`docs/home-screen.md`)
@@ -76,8 +87,8 @@
 - [x] System prompt encoding the ARC Coach personality (`src/lib/ai/system-prompt.ts`)
 - [x] Daily-brief placeholder (opens the thread; same text as the Home card)
 - [x] Service seam (`src/lib/ai/coach-service.ts`) — honest mock today, one swap to an Edge Function later
-- [ ] ⚠️ 📋 **Wire the real model** — Supabase Edge Function holding the provider key, streaming; flip `isCoachBackendLive`
-- [ ] 📋 Persist conversations to `ai_conversations` / `ai_messages` (needs the migration)
+- [ ] ⚠️ 📋 **Wire the real model** — call the frontier provider **directly from the app** with the Keychain key, streaming; rename `isCoachBackendLive` → `isCoachKeyConfigured` (Phase 3). *(No Edge Function — that was the old cloud plan.)*
+- [ ] 📋 Persist conversations to local `ai_conversations` / `ai_messages` (needs the migration)
 - [ ] 🧊 Tool calling (log_entry, update_protocol, …)
 - [ ] 🧊 RAG over user history + longevity knowledge base
 - [ ] 🧊 **Writable knowledge base** — the user can add/edit entries, and the Coach can do its own research to expand the corpus over time (grows the longevity knowledge plane, not just reads it)
@@ -90,7 +101,7 @@
 - [ ] 📋 **Labs** — Function Health PDF → structured extraction pipeline
 - [ ] 📋 **Daily logs** — the Log tab (fast capture: habits, meals, supplements, …)
 - [ ] 📋 **Protocols** — versioned stack/routine editor
-- [ ] 📋 **Wearables** — Terra / Apple Health / Health Connect → `wearable_data`
+- [ ] 📋 **Wearables** — **Apple Health as the hub** (on-device, offline for ARC; the vendor app does the cloud sync) → `wearable_data`; direct vendor API only where HealthKit lacks fidelity (e.g. WHOOP). **Terra dropped** — it's a cloud aggregator that needs a server, which breaks offline/no-server.
 - [ ] 🧊 Nutrition · Supplements/Meds/Therapies · Body composition
 - [ ] 📋 **Data tab** — biomarker trends, wearable history, body comp dashboards
 
@@ -107,39 +118,42 @@
 ## 2. Status Board
 
 ### App as a whole
-**🚧 Foundation — a navigable shell with two real screens.** The app builds for iOS, Android and web, connects to a live Supabase backend, and both the Home screen and the Coach chat are working slices (on mock data / a mock model). Nothing is gated behind auth yet, and three of five tabs are placeholders. Not yet usable as a daily tool; on track as a foundation.
+**🚧 Foundation — a navigable shell mid-pivot to local-first.** The app builds for iOS/Android/web; Home and Coach are working slices on mock data / a mock model. As of 2026-07-24 the architecture is moving off cloud Supabase to **on-device SQLite** — Phase 0 (schema ported to SQLite and validated) is done; the local data layer, the real on-device Coach, and encrypted backup are the next phases (`docs/architecture-migration.md`). Three of five tabs are placeholders. Not yet a daily tool; on track as a foundation.
 
 ### Subsystems
 | Area | Status | Notes |
 | --- | --- | --- |
-| Build & tooling | ✅ | tsc, lint, prettier, expo-doctor all green; iOS + Android + web bundle |
-| Navigation shell | ✅ | Five tabs + `/login` + not-found, file-based routing |
+| Build & tooling | ✅ | tsc, lint, prettier all green; iOS + Android + web bundle |
+| Navigation shell | ✅ | Five tabs + not-found, file-based routing (`/login` removed in Phase 2) |
 | Design system | ✅ | Tokens defined and compiling; see §3 |
-| Supabase client | ✅ | Lazy init; verified against the live project |
-| Database schema | ✅ | 10 tables live with RLS; 37 behavioural tests pass |
-| Generated types | ✅ | From the live DB; `public` schema byte-identical to local |
-| **Auth** | ⚠️ 🚧 | Session hook + login route exist; **tabs are not gated**, login is a placeholder |
-| **Home screen** | 🚧 | Full IA built on **mock data**; not reading Supabase, not persisted |
+| Database schema | ✅ | **Ported to SQLite** (`db/migrations/0001_init.sql`), 16-check validation; Postgres origin retired |
+| Local DB engine | 🚧 | `op-sqlite` + `sqliteVec` installed; data-access layer is Phase 1. Needs a dev rebuild (native module) |
+| DB types | 📋 | Hand-authored from the SQLite schema in Phase 1; the Supabase generator retires |
+| Supabase client | ⚠️ | Still in the tree; **removed in Phase 2**. Unused at runtime |
+| **Home screen** | 🚧 | Full IA on **mock data**; not reading the DB, not persisted |
 | **Coach** | 🚧 | Chat UX complete with streaming; behind a **mock model** (honest preview), not persisted |
+| App lock | 📋 | Face ID / passcode on open — Phase 2 (replaces the cut auth gate) |
 | Log | 📋 | Placeholder screen only |
 | Data | 📋 | Placeholder screen only |
 | Settings | 📋 | Placeholder screen only |
 | Labs pipeline | 📋 | Not started |
-| Wearables | 📋 | Not started; schema ready |
-| Storage (PDFs) | 📋 | Not set up; `file_path` column ready |
-| Tests / CI | 📋 | No runner, no CI |
+| Wearables | 📋 | Not started; schema ready. Apple Health hub (Terra dropped) |
+| Media / photos | 📋 | PhotoKit refs (progress pics) + compressed copies (food) — Phase 4 |
+| iCloud backup | 📋 | Encrypted snapshot + restore — Phase 4 |
+| Tests / CI | 📋 | No runner, no CI (schema has a standalone SQLite validation) |
 
-### Live infrastructure
-- **Supabase project:** live, email auth enabled, Data API on. Migration `20260722000000` applied and in sync.
-- **Storage:** not configured yet.
-- **`.env`:** present in the worktree, verified — anon key valid, all 10 tables reachable, RLS blocks anon reads/writes.
+### Infrastructure
+- **None required (local-first).** No backend to run or pay for; the only external calls are to the AI provider, made directly from the app. Recurring cost = model tokens (+ $99/yr Apple).
+- **Supabase project:** the previously-created cloud project is now **vestigial** — nothing depends on it. Free tier; the owner can delete it whenever.
+- **`.env`:** the `EXPO_PUBLIC_SUPABASE_*` vars retire in Phase 2. The model API key lives in the iOS Keychain, never in `.env`.
 
 ### Known caveats (things that will bite if forgotten)
-- ⚠️ The **Coach is a mock** — `src/lib/ai/coach-service.ts` returns a scripted, honest-preview reply with simulated streaming. No model, no data. `isCoachBackendLive` gates the UI's "Preview" affordance; flip it when the Edge Function lands.
-- ⚠️ Mission and chat state are both **in-memory** — a reload resets them.
-- ⚠️ `useSession` is imported by nobody yet, so **nothing touches Supabase at runtime** until auth is wired.
-- ⚠️ `EXPO_PUBLIC_*` vars are inlined at build time — **restart the dev server** after editing `.env`.
-- ⚠️ `src/types/database.ts` is **generated** — never hand-edit; run `npm run db:types`.
+- ⚠️ **`op-sqlite` is a native module** — it can't load in the JS-only dev client. A fresh `eas build` is required before Phase 1's data layer will run on device.
+- ⚠️ **SQLite needs `PRAGMA foreign_keys = ON` per connection** (it defaults OFF) — the data layer must set it on every open, or the FKs in `0001_init.sql` silently won't enforce. `recursive_triggers` must stay OFF (default) so `updated_at` triggers don't recurse.
+- ⚠️ The **Coach is a mock** — `src/lib/ai/coach-service.ts` returns a scripted, honest-preview reply with simulated streaming. No model, no data. `isCoachBackendLive` gates the "Preview" affordance; Phase 3 wires the direct model call and renames it.
+- ⚠️ Mission and chat state are both **in-memory** — a reload resets them (until the DB layer lands, Phase 1).
+- ⚠️ **Supabase is still in the tree but unused at runtime** (`src/lib/supabase.ts`, `useSession`, `src/types/database.ts`, `db:push`/`db:types` scripts) — all removed in Phase 2. Don't build on them.
+- ⚠️ `src/types/database.ts` is stale Supabase output — it's **replaced by hand-authored SQLite types in Phase 1**, not regenerated.
 - ⚠️ `.env` lives at the main-repo root too; it's protected via `.git/info/exclude`, but that file isn't shared — re-add the ignore on other machines.
 
 ---
