@@ -33,6 +33,7 @@ export default function RootLayout() {
           {/* Pushed over the tabs from the Log tab (docs/information-architecture.md). */}
           <Stack.Screen name="nutrition" />
           <Stack.Screen name="exercise" />
+          <Stack.Screen name="workout-log" />
           <Stack.Screen name="metric-entry" />
           <Stack.Screen name="capture" />
         </Stack>
