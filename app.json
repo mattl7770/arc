@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "ARC",
+    "slug": "arc",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "arc",
+    "userInterfaceStyle": "light",
+    "platforms": ["ios", "web"],
+    "icon": "./assets/images/icon.png",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.arcresilience.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F6F3EC",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 160
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "57331eea-ba13-41cc-898f-43194a21aae3"
+      }
+    },
+    "owner": "architecture-for-resilience-and-continuity",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/57331eea-ba13-41cc-898f-43194a21aae3"
+    }
+  }
+}

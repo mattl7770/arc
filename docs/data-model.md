@@ -1,9 +1,11 @@
 # ARC Data Model (v1)
 
 **Status:** Draft — Foundation phase  
-**Last updated:** 2026-07-22
+**Last updated:** 2026-07-24
 
 This document defines the core schema for ARC. Keep it clean, normalized, and extensible.
+
+> ⚠️ **Now SQLite, on-device (2026-07-24 pivot).** The live schema is `db/migrations/0001_init.sql`; this doc is the *intent*. The dialect changed (see `docs/architecture-migration.md` Phase 0): enums→`text`+CHECK, `uuid`→`text` (app-generated), timestamps→ISO-8601 `text`, `jsonb`→`text`+`json_valid()`. Most importantly, **`user_id`, RLS, and the auth wiring are gone** — one user on one device — so the composite FKs simplify to plain ones. Where the sections below say `uuid`, `timestamptz`, `user_id`, or RLS, read the SQLite equivalent.
 
 ---
 
@@ -182,5 +184,34 @@ n-of-1 experiments.
 - jsonb for flexibility in protocol content and log values
 - Proper indexing on user_id + date fields
 - Soft deletes where it makes sense later
+
+---
+
+## Implementation Status
+
+**Shipped:** `db/migrations/0001_init.sql` (on-device SQLite) implements the ten v1 priority tables above — **this is the schema of record.** The Postgres/Supabase origin it was ported from was **deleted 2026-07-25** (git history only). Four feature tables were added 2026-07-25 as their screens went real: **`meals`** (0002, Nutrition), **`workouts`** + **`workout_sets`** (0003, Exercise, ON DELETE CASCADE), and **`symptoms`** (0004). `ai_conversations`, `ai_messages` and `experiments` are specified but **not yet migrated** — they land with the Coach.
+
+**Types are hand-authored** from the SQLite schema (`src/lib/db/types.ts` for rows; `src/types/*` for view-models). The old Supabase generator (`npm run db:types` → `src/types/database.ts`) and the generated file were **deleted 2026-07-25**.
+
+> **Read the table below in light of the 2026-07-24 local-first pivot**, which removed `user_id`, RLS, auth and the `auth.users` linkage. Anything phrased around tenancy/RLS/auth describes the Postgres *origin's* rationale, not the shipped SQLite shape.
+
+### Where the SQLite schema adds to / diverges from this spec
+
+| Item | Note |
+| --- | --- |
+| No `user_id`, RLS, or auth | Single-user, on-device — dropped entirely. The composite `(id, user_id)` FKs collapse to simple FKs. |
+| `users` is a one-row profile | No `auth.users` linkage and no signup trigger — just timezone / sex / DOB / preferences. |
+| `updated_at` on all tables except `protocol_versions` | Versions are immutable by design; everything else gets an `AFTER UPDATE` trigger (non-recursive under the default `recursive_triggers=OFF`). |
+| `text` PKs declared `PRIMARY KEY NOT NULL` | App-generated UUIDs; the `NOT NULL` is load-bearing — SQLite's `PRIMARY KEY` alone permits NULLs on a text key. |
+| `unique (report_id, biomarker_id)` on `lab_results` | Re-parsing a PDF must not duplicate values. |
+| `unique (source_device, source_raw_id)` on `wearable_data` | Idempotent device re-sync. |
+| `bone_mass_kg`, `visceral_fat_rating`, `hip_cm` on `body_metrics` | Filling in the spec's "etc."; plus loose upper bounds restoring the Postgres `numeric` domains dropped by `numeric→real`. |
+| Check constraints | Ordered ranges, 0–100 percentages, positive-and-bounded masses, enum vocab. Slug / `metric_type` shape now lives in the repository layer (SQLite has no portable regex). |
+
+### Deliberate deviations
+
+- **`wearable_data.metric_type` is `text`, not an enum.** Vendors add metrics on their schedule. See `/docs/decisions.md`.
+- **`log_entries.scheduled_time` is `time`, not a timestamp.** The calendar date comes from the parent `daily_log`, so a 07:00 habit stays 07:00 across timezones.
+- **`daily_logs.date` is a `date`.** "Today" is resolved in `users.timezone`.
 
 This schema will evolve. When it does, update this document and note the change in `/docs/decisions.md`.
