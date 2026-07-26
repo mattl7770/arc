@@ -1,6 +1,6 @@
 # Running ARC on a device (and why Expo Go broke)
 
-**Platform assumed:** Windows dev machine + iPhone. Android notes at the end.
+**Platform assumed:** Windows dev machine + iPhone. **iOS only** — ARC does not target Android.
 
 ---
 
@@ -105,20 +105,7 @@ Also: phone and PC on the **same Wi-Fi** (no guest/client-isolation), allow Node
 
 ---
 
-## Android (for reference / future test devices)
-
-Windows can build Android locally, but from a clean machine the **cloud EAS APK is faster to first launch** (skips the multi-GB Android Studio + JDK setup) and needs no paid account:
-
-```powershell
-eas build --profile development --platform android   # emits an installable APK
-```
-
-Scan the QR → download the `.apk` → allow install from unknown sources. Only prefer local `npx expo run:android --device` if you already have Android Studio + SDK Platform 36 + JDK 17 + `adb` working.
-
----
-
 ## Confidence notes (don't over-trust the date-sensitive bits)
 
 - **Whether the store Expo Go supports SDK 57 on any given day — unverified.** Check the live App Store listing; if it shows SDK 57, Option A (a free update) is all you need.
 - The **$99 Apple requirement for iOS-on-Windows** and the **single-SDK Expo Go** root cause are high-confidence.
-- The local-vs-cloud Android speed claim is a reasoned estimate (no published timings); true from a cold Windows machine, flips if the toolchain is already installed.

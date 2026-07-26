@@ -47,7 +47,6 @@ npm start
 | ---------------------- | --------------------------------------------- |
 | `npm start`            | Start the dev server                          |
 | `npm run ios`          | Dev server, open iOS                          |
-| `npm run android`      | Dev server, open Android                      |
 | `npm run typecheck`    | `tsc --noEmit`                                |
 | `npm run lint`         | ESLint (expo config, incl. React Compiler)    |
 | `npm run format`       | Prettier, with Tailwind class sorting         |
@@ -66,7 +65,6 @@ src/components/  ui/ = design primitives; home/, log/, coach/ = feature componen
 src/hooks/    Shared React hooks (use-today-mission, use-log-feed, use-coach-chat)
 src/types/    Hand-authored view-model types (home, coach, log)
 db/           SQLite migrations + headless validation/tests
-supabase/     Postgres origin — HISTORY ONLY, superseded by db/ (do not build on it)
 docs/         Source of truth for architecture. Read before changing anything.
 ```
 

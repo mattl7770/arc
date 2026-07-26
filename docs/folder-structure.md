@@ -39,8 +39,6 @@ arc/
 │   ├── decisions.md
 │   ├── architecture-migration.md
 │   └── folder-structure.md
-├── supabase/                     # ORIGIN / HISTORY ONLY — superseded, do not build on it
-│   └── migrations/
 ├── assets/
 ├── CLAUDE.md                     # AI brain — critical
 ├── README.md
@@ -52,7 +50,7 @@ arc/
 └── .gitignore
 ```
 
-*(The Supabase client island — `src/lib/supabase.ts`, `src/lib/env.ts`, `src/hooks/use-session.ts`, `src/types/database.ts`, `app/login.tsx`, `scripts/gen-types.mjs`, and the `@supabase/supabase-js` / `async-storage` deps — was **deleted 2026-07-25** during the full-app review. The `supabase/` folder above is kept as Postgres history only.)*
+*(All Supabase remnants — the client island (`src/lib/supabase.ts`, `env.ts`, `use-session.ts`, `types/database.ts`, `app/login.tsx`, `gen-types.mjs`), the `@supabase/supabase-js` / `async-storage` deps, AND the whole `supabase/` Postgres-origin folder — were **deleted 2026-07-25**. ARC is local-first with no Supabase anywhere; the origin lives in git history only.)*
 
 ## Key Rules
 

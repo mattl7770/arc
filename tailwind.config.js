@@ -45,8 +45,7 @@ module.exports = {
         // platformSelect: its custom-function syntax cannot carry a family
         // name containing spaces ("Iowan Old Style" compiled to an EMPTY
         // declaration — verified in the bundle registry). A quoted CSS stack
-        // parses cleanly; native picks the first family, so iOS renders Iowan
-        // and Android falls back to its default until we ship a serif there.
+        // parses cleanly; native picks the first family, so iOS renders Iowan.
         serif: ['Iowan Old Style', 'Palatino', 'Georgia', 'serif'],
         // Data voice: every numeral that represents a measurement.
         mono: ['Menlo', 'Courier New', 'monospace'],

@@ -38,6 +38,7 @@ It is **not** a consumer wellness app. It is closer to a personal command center
 ## 3. Current Tech Stack
 
 **Local-first, single-user, no-server** (pivoted 2026-07-24 from cloud Supabase — see the ADR and `docs/architecture-migration.md`):
+- **iOS only** (owner call, 2026-07-25 — no Android target in any form; web kept only as a dev-time logic-check preview, never a shipped surface)
 - Expo SDK 57 (React Native 0.86) + TypeScript (strict) + Expo Router
 - **On-device SQLite via `op-sqlite`** (+ `sqlite-vec` for on-device RAG) — the whole data layer. No backend.
 - NativeWind 4 (Tailwind v3) — chosen over Tamagui, see `/docs/decisions.md`
@@ -136,7 +137,7 @@ What is decided, and holds regardless of device:
 
 ### Database conventions
 
-The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/migrations/0001_init.sql`; rationale for each choice is in `/docs/decisions.md`, and the Postgres→SQLite port is `docs/architecture-migration.md`. *(The old `supabase/migrations/` Postgres file is the origin — still in the tree but superseded; do not build on it.)*
+The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/migrations/0001_init.sql`; rationale for each choice is in `/docs/decisions.md`, and the Postgres→SQLite port is `docs/architecture-migration.md`. *(The old Postgres/Supabase origin was deleted 2026-07-25; it survives in git history only.)*
 
 - **Migrations** live in `db/migrations/NNNN_name.sql`, applied in order by the runner and tracked with `PRAGMA user_version`. Never edit a shipped migration; add the next number.
 - **`PRAGMA foreign_keys = ON` on every connection** — SQLite defaults it OFF, and without it the FKs don't enforce. Keep `recursive_triggers` OFF (default) so the `updated_at` triggers don't recurse.
@@ -182,7 +183,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `/docs/architecture-migration.md` — **The local-first migration plan** (cloud → on-device), phased. Read before touching the data layer.
 - `/docs/folder-structure.md` — Where code goes
 - `db/migrations/0001_init.sql` — **The schema, source of truth** (on-device SQLite). `data-model.md` is the intent.
-- `supabase/migrations/` — the Postgres origin, **history only** — superseded, do not build on it.
+- *(The `supabase/` Postgres origin was deleted 2026-07-25 — it lives in git history only.)*
 
 ---
 

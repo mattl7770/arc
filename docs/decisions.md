@@ -1,5 +1,17 @@
 # Architecture Decision Records (ADR)
 
+## 2026-07-25 — iOS-only target, and the last Supabase remnants purged
+
+**Decision (owner):**
+- **ARC targets iOS only.** Android is not a target "in any form." Removed the `android` block from `app.json`, the Android build entries from `eas.json`, the `android` npm script, and the three Android adaptive-icon assets. **Web is kept** — not as a shipped target but as the dev-time logic-check preview path (see [[verify-on-device-not-web]]); it can be dropped later if we want a pure-iOS tree.
+- **All Supabase remnants deleted.** The owner decommissioned the remote project, so the last artifacts went too: the whole `supabase/` folder (config, the Postgres-origin migration, seed, functions) and the `EXPO_PUBLIC_SUPABASE_*` lines in `.env`. This finishes the removal the 2026-07-25 review started (which had deleted the client island but kept `supabase/` as "history"). Nothing Supabase remains in the tree; the Postgres origin lives in git history only.
+
+**Reasoning:** a single-user iOS app has no reason to carry Android config, icons, or an EAS Android profile — it's pure surface area to keep correct. The Supabase project being gone removes the last reason to keep its origin files or a live anon key in `.env`. Both are reversible via git history if ever needed.
+
+**Consequences:** the `0001_init.sql` header no longer points at the deleted `supabase/` path (regenerated `migrations.generated.ts` to match); docs (README, folder-structure, CLAUDE.md §9/§11, data-model, dev-build, project-status) drop their Android and `supabase/`-origin references. Gates stay green.
+
+---
+
 ## 2026-07-25 — Full-app review: fixes, and pulling the Supabase removal forward
 
 **Context:** a full-app review ran five read-only reviewers in parallel (correctness/DB, UI/design-system, security/privacy, architecture/docs, plus the Log-wiring diff). Findings converged; the top three correctness bugs were reproduced against real SQLite. This ADR records the decisions in the fixes; the mechanical fixes themselves are self-explanatory.

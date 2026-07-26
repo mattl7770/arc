@@ -6,6 +6,7 @@
     "orientation": "portrait",
     "scheme": "arc",
     "userInterfaceStyle": "light",
+    "platforms": ["ios", "web"],
     "icon": "./assets/images/icon.png",
     "ios": {
       "supportsTablet": true,
@@ -13,16 +14,6 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
-    },
-    "android": {
-      "package": "com.arcresilience.app",
-      "adaptiveIcon": {
-        "backgroundColor": "#F6F3EC",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
-      },
-      "predictiveBackGestureEnabled": false
     },
     "web": {
       "bundler": "metro",

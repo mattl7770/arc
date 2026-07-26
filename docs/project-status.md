@@ -136,7 +136,7 @@
 ### Subsystems
 | Area | Status | Notes |
 | --- | --- | --- |
-| Build & tooling | ✅ | tsc, lint, prettier all green; iOS + Android + web bundle |
+| Build & tooling | ✅ | tsc, lint, prettier all green; iOS + web bundle (iOS-only target) |
 | Navigation shell | ✅ | Five tabs + not-found, file-based routing (no `/login` — single-user) |
 | Design system | ✅ | Tokens defined and compiling; see §3 |
 | Database schema | ✅ | **Ported to SQLite** (`db/migrations/0001_init.sql`), 20-check validation; Postgres origin retired |
@@ -214,7 +214,7 @@ ARC is **light-mode only**: `userInterfaceStyle: "light"` in app.json, an uncond
 ### Typography — three voices
 | Voice | Family | Used for | Class |
 | --- | --- | --- | --- |
-| **Serif** (authority) | Iowan Old Style → Palatino → Georgia (iOS system serifs; Android falls back to its default for now) | Headlines, screen titles, the readiness verdict, "Today's Mission", "Today is handled" | `font-serif font-semibold` |
+| **Serif** (authority) | Iowan Old Style → Palatino → Georgia (iOS system serifs) | Headlines, screen titles, the readiness verdict, "Today's Mission", "Today is handled" | `font-serif font-semibold` |
 | **Sans** (voice) | System default | Body text, briefs, item titles, buttons, chat | (default) |
 | **Mono** (data) | Menlo → Courier New | **Every measured value**: times (07:15), counters (3 of 11), metric values (42 ms), hero metadata line, segment-bar labels, the PREVIEW badge | `font-mono` |
 
@@ -251,7 +251,6 @@ The serif/mono split carries meaning: **serif speaks, mono measures.** A number 
 - ⚠️ **Does the metrics strip still land without its rule?** It is now the last thing on the screen with nothing but whitespace above it. If it reads as orphaned rather than quiet, the fix is more space or a serif heading — not the rule back.
 - 📋 Extract shared primitives (Card, Eyebrow, GhostButton) once a third screen needs them, not before.
 - 📋 Ionicons work but read slightly rounded against the print aesthetic; a stroke-consistent set is a candidate refinement.
-- 🧊 Android serif (falls back to system default today) — decide when Android becomes real.
 
 ---
 

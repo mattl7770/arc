@@ -1,13 +1,12 @@
 -- ============================================================================
 -- ARC v1 core schema — SQLite (local-first)
 --
--- Ported from the original Postgres/Supabase migration
--- (supabase/migrations/20260722000000_initial_schema.sql) when ARC moved to a
+-- Ported from the original Postgres/Supabase migration when ARC moved to a
 -- local-first, single-user, no-server architecture. See the 2026-07-24 ADR in
 -- docs/decisions.md and the plan in docs/architecture-migration.md (Phase 0).
 --
--- THIS FILE IS NOW THE SOURCE OF TRUTH for the schema. The Postgres file stays
--- in git history only, as the origin.
+-- THIS FILE IS THE SOURCE OF TRUTH for the schema. The Postgres/Supabase origin
+-- has been deleted (2026-07-25); it survives in git history only.
 --
 -- Dialect / design changes from the Postgres original:
 --   * enums          -> text + CHECK (col IN (...))
