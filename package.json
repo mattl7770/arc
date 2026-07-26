@@ -14,7 +14,7 @@
     "doctor": "expo-doctor",
     "db:bundle": "node db/bundle-migrations.mjs",
     "db:validate": "node db/bundle-migrations.mjs --check && node db/validate-schema.mjs",
-    "db:test": "node --import ./db/register-ts-hooks.mjs db/migrate.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-layer.test.mjs && node --import ./db/register-ts-hooks.mjs db/log.test.mjs"
+    "db:test": "node --import ./db/register-ts-hooks.mjs db/migrate.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-layer.test.mjs && node --import ./db/register-ts-hooks.mjs db/log.test.mjs && node --import ./db/register-ts-hooks.mjs db/nutrition.test.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
