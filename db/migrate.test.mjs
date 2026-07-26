@@ -38,6 +38,11 @@ function executor(db) {
   };
 }
 
+// The final user_version is the HIGHEST version, not the count — version
+// numbers may hold gaps while parallel slices are in flight (0003 shipped
+// while 0002 was still on its branch), and the runner tolerates that.
+const LATEST = Math.max(...MIGRATIONS.map((m) => m.version));
+
 console.log('1. Fresh database applies all migrations');
 {
   const db = new DatabaseSync(':memory:');
@@ -45,10 +50,10 @@ console.log('1. Fresh database applies all migrations');
   const r = migrate(executor(db), MIGRATIONS);
   const version = db.prepare('PRAGMA user_version').get().user_version;
   const tableCount = db.prepare("SELECT count(*) c FROM sqlite_master WHERE type='table'").get().c;
-  r.from === 0 && r.to === MIGRATIONS.length && r.applied.length === MIGRATIONS.length
+  r.from === 0 && r.to === LATEST && r.applied.length === MIGRATIONS.length
     ? ok(`applied ${r.applied.length} migration(s): ${r.applied.join(', ')}`)
     : bad('applied all from 0', JSON.stringify(r));
-  version === MIGRATIONS.length
+  version === LATEST
     ? ok(`user_version = ${version}`)
     : bad('user_version bumped', String(version));
   tableCount >= 10
@@ -63,9 +68,7 @@ console.log('2. Re-running is a no-op (idempotent)');
   db.exec('PRAGMA foreign_keys = ON;');
   migrate(executor(db), MIGRATIONS);
   const second = migrate(executor(db), MIGRATIONS);
-  second.applied.length === 0 &&
-  second.from === MIGRATIONS.length &&
-  second.to === MIGRATIONS.length
+  second.applied.length === 0 && second.from === LATEST && second.to === LATEST
     ? ok('second run applies nothing')
     : bad('idempotent re-run', JSON.stringify(second));
   db.close();
