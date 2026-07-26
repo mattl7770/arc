@@ -6,52 +6,53 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { getDb } from '@/lib/db/client';
+import { todayISODate } from '@/lib/db/date';
+import { logMetric, recentSummary } from '@/lib/db/repositories/logs';
+import {
+  isLoggableCanonical,
+  METRICS,
+  metricByKey,
+  type MetricDescriptor,
+  type MetricKey,
+} from '@/lib/log/metrics';
 
 /**
  * Single-number entry — the "calibrated instrument" drill-in (direction F,
  * living as a secondary screen). Reached by tapping a numeric tile (Weight,
  * Water) or switched via the metric chips. Big mono readout, a full keypad,
- * recent values with a trend.
+ * a live "recent" line, and — for Water — additive quick-estimates.
  *
- * Interactive skeleton: the keypad drives a local readout so the feel is real,
- * but "Log" doesn't persist yet (it just returns). Wiring it to `wearable_data`
- * / `body_metrics` is the next step (docs/information-architecture.md).
+ * Fully wired: "Log" converts the typed display value to the metric's canonical
+ * unit and writes it (src/lib/db/repositories/logs.ts → body_metrics /
+ * wearable_data / log_entries), then returns; the Log tab re-reads on focus.
  */
-type Metric = {
-  key: string;
-  label: string;
-  unit: string;
-  /** Mock recent readings + a one-line trend, shown under the readout. */
-  recent: string;
-};
-
-const METRICS: Metric[] = [
-  { key: 'weight', label: 'Weight', unit: 'lb', recent: '178.9 · 179.1 · 7-day ↓ 0.9' },
-  { key: 'water', label: 'Water', unit: 'oz', recent: '64 so far today · goal 100' },
-  { key: 'body_fat', label: 'Body-fat', unit: '%', recent: '14.8 · 15.1 · trending down' },
-  { key: 'waist', label: 'Waist', unit: 'in', recent: '32.5 · 32.6 · steady' },
-  {
-    key: 'hrv',
-    label: 'HRV',
-    unit: 'ms',
-    recent: '42 · 49 baseline · usually auto from Apple Health',
-  },
-  { key: 'rhr', label: 'Resting HR', unit: 'bpm', recent: '58 · 54 baseline · usually auto' },
-  { key: 'dose', label: 'Dose', unit: 'mg', recent: 'last: 500 mg' },
-];
-
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'] as const;
+
+/** Additive water shortcuts, sitting just above the keypad (Water only). */
+const WATER_QUICK = [
+  { label: 'Glass', oz: 8 },
+  { label: 'Bottle', oz: 16 },
+  { label: 'Large', oz: 24 },
+] as const;
+
+/** Cap significant digits so the big readout can't overflow its row. */
+function withinCap(next: string): boolean {
+  return next.replace('.', '').length <= 6;
+}
 
 export default function MetricEntryScreen() {
   const router = useRouter();
   const { metric } = useLocalSearchParams<{ metric?: string }>();
-  const [activeKey, setActiveKey] = useState(
-    () => METRICS.find((m) => m.key === metric)?.key ?? 'weight'
-  );
-  const [value, setValue] = useState('');
+  const today = todayISODate();
+  const initialKey = metricByKey(metric ?? '')?.key ?? 'weight';
 
-  const active = useMemo(
-    () => METRICS.find((m) => m.key === activeKey) ?? METRICS[0]!,
+  const [activeKey, setActiveKey] = useState<MetricKey>(initialKey);
+  const [value, setValue] = useState('');
+  const [recent, setRecent] = useState(() => recentSummary(getDb(), initialKey, today));
+
+  const active = useMemo<MetricDescriptor>(
+    () => metricByKey(activeKey) ?? METRICS[0]!,
     [activeKey]
   );
 
@@ -65,20 +66,43 @@ export default function MetricEntryScreen() {
       return;
     }
     setValue((v) => {
-      // Cap significant digits so the big readout can't overflow its row.
-      if (v.replace('.', '').length >= 6) return v;
-      return v === '0' ? key : v + key;
+      const next = v === '0' ? key : v + key;
+      return withinCap(next) ? next : v;
     });
   };
 
-  const switchMetric = (key: string) => {
-    setActiveKey(key);
-    setValue('');
+  const addWater = (oz: number) => {
+    setValue((v) => {
+      const next = String((Number(v) || 0) + oz);
+      return withinCap(next) ? next : v;
+    });
   };
 
-  // A logged value must be a real positive number — 0, "0.", "0.0" are not
-  // loggable for any of these metrics.
-  const canLog = Number(value) > 0;
+  const switchMetric = (key: MetricKey) => {
+    setActiveKey(key);
+    setValue('');
+    setRecent(recentSummary(getDb(), key, today));
+  };
+
+  // A logged value must be a real positive number within the metric's domain:
+  // 0/"0."/blank, and out-of-range body values (e.g. body-fat > 100, weight
+  // ≥ 1000 kg) are not loggable — they'd otherwise trip a schema CHECK and throw
+  // out of this handler.
+  const canonical = active.toCanonical(Number(value));
+  const canLog = isLoggableCanonical(active, canonical);
+  const outOfRange = value !== '' && Number(value) > 0 && !canLog;
+
+  const log = () => {
+    if (!canLog) return;
+    try {
+      logMetric(getDb(), today, active.key, canonical);
+      router.back();
+    } catch (error) {
+      // canLog already gates the known cases; this is a backstop so a write
+      // failure never crashes the tap handler.
+      console.warn('[log] metric write failed', error);
+    }
+  };
 
   return (
     <Screen edges={['top', 'bottom']}>
@@ -115,15 +139,34 @@ export default function MetricEntryScreen() {
       <View className="mt-8 flex-row items-baseline justify-center gap-2">
         <Text
           numberOfLines={1}
+          maxFontSizeMultiplier={1.3}
           className={`font-mono text-6xl ${value ? 'text-ink' : 'text-ink-muted'}`}>
           {value || '0'}
         </Text>
-        <Text className="font-mono text-lg text-ink-muted">{active.unit}</Text>
+        <Text className="font-mono text-lg text-ink-muted">{active.displayUnit}</Text>
       </View>
-      <Text className="mt-2 text-center text-xs text-ink-muted">{active.recent}</Text>
+      <Text className="mt-2 text-center text-xs text-ink-muted">
+        {outOfRange ? `That looks out of range for ${active.label.toLowerCase()}` : recent}
+      </Text>
 
       {/* Keypad */}
       <View className="mt-8 flex-1 justify-end">
+        {active.key === 'water' ? (
+          <View className="mb-3 flex-row gap-2">
+            {WATER_QUICK.map((q) => (
+              <Pressable
+                key={q.label}
+                accessibilityRole="button"
+                accessibilityLabel={`Add ${q.oz} ounces (${q.label})`}
+                onPress={() => addWater(q.oz)}
+                className="flex-1 items-center rounded-btn border border-hairline bg-porcelain py-2 active:bg-paper-deep">
+                <Text className="text-[13px] font-medium text-ink">{q.label}</Text>
+                <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">+{q.oz} oz</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+
         <View className="-mx-1.5 flex-row flex-wrap">
           {KEYS.map((key) => (
             <View key={key} className="w-1/3 p-1.5">
@@ -135,7 +178,9 @@ export default function MetricEntryScreen() {
                 {key === 'del' ? (
                   <Ionicons name="backspace-outline" size={24} color={palette.inkSecondary} />
                 ) : (
-                  <Text className="font-mono text-2xl text-ink">{key}</Text>
+                  <Text maxFontSizeMultiplier={1.3} className="font-mono text-2xl text-ink">
+                    {key}
+                  </Text>
                 )}
               </Pressable>
             </View>
@@ -147,7 +192,7 @@ export default function MetricEntryScreen() {
           accessibilityLabel={`Log ${active.label}`}
           accessibilityState={{ disabled: !canLog }}
           disabled={!canLog}
-          onPress={() => router.back()}
+          onPress={log}
           className={`mt-4 h-12 items-center justify-center rounded-btn ${
             canLog ? 'bg-pine active:opacity-70' : 'bg-hairline'
           }`}>

@@ -1,7 +1,9 @@
 import type { HomeDay } from '@/types/home';
 
 /**
- * MOCK DATA — delete once the Home Screen reads from Supabase.
+ * MOCK DATA — the first-run seed source for Home's mission (planted into the
+ * on-device DB by src/lib/db/seed.ts). Retire once the protocol→mission
+ * generator produces the day's plan from real protocols.
  *
  * This models a **low recovery day** rather than a perfect one. That is the
  * state the design has to survive: the plan bends, the Coach explains why, and

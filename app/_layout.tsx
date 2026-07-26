@@ -4,6 +4,7 @@ import '../global.css';
 import { DefaultTheme, Stack, type Theme, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
+import { ErrorBoundary } from '@/components/ui/error-boundary';
 import { navColors } from '@/constants/theme';
 
 /**
@@ -13,10 +14,10 @@ import { navColors } from '@/constants/theme';
  * bone-white paper as the identity, so there is no dark theme to switch to —
  * app.json pins userInterfaceStyle to "light" and this theme is unconditional.
  *
- * Auth is deliberately not gated here yet. `useSession` (src/hooks/use-session.ts)
- * exposes the Supabase session and `/login` is routable, but nothing redirects —
- * so the shell runs before auth is wired. Add the guard here when auth lands
- * (CLAUDE.md §10, priority 4).
+ * No auth gate: ARC is single-user and local-first (no accounts). Access is
+ * guarded by a Face ID / passcode app lock, added in Phase 2 (CLAUDE.md §10).
+ * The whole tree sits under an ErrorBoundary because the data layer opens SQLite
+ * synchronously and throws on failure.
  */
 const porcelainTheme: Theme = {
   ...DefaultTheme,
@@ -25,17 +26,18 @@ const porcelainTheme: Theme = {
 
 export default function RootLayout() {
   return (
-    <ThemeProvider value={porcelainTheme}>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="login" />
-        {/* Pushed over the tabs from the Log tab (docs/information-architecture.md). */}
-        <Stack.Screen name="nutrition" />
-        <Stack.Screen name="exercise" />
-        <Stack.Screen name="metric-entry" />
-        <Stack.Screen name="capture" />
-      </Stack>
-      <StatusBar style="dark" />
-    </ThemeProvider>
+    <ErrorBoundary>
+      <ThemeProvider value={porcelainTheme}>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(tabs)" />
+          {/* Pushed over the tabs from the Log tab (docs/information-architecture.md). */}
+          <Stack.Screen name="nutrition" />
+          <Stack.Screen name="exercise" />
+          <Stack.Screen name="metric-entry" />
+          <Stack.Screen name="capture" />
+        </Stack>
+        <StatusBar style="dark" />
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }

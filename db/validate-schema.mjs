@@ -41,7 +41,7 @@ const rejects = (name, fn) => {
     ok(name);
   }
 };
-const id = (s) => s.padEnd(36, '0'); // stand-in uuids (the app uses crypto.randomUUID)
+const id = (s) => s.padEnd(36, '0'); // stand-in uuids (the app generates them from SQLite randomblob — Hermes has no crypto)
 
 console.log(`Validating ${schemaPath}\n`);
 

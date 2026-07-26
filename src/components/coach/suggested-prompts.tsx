@@ -25,7 +25,7 @@ export function SuggestedPrompts({ onPick }: { onPick: (text: string) => void })
           key={prompt}
           accessibilityRole="button"
           onPress={() => onPick(prompt)}
-          className="rounded-[14px] border border-hairline-strong px-3.5 py-2 active:opacity-60">
+          className="rounded-btn border border-hairline-strong px-3.5 py-2 active:opacity-60">
           <Text className="text-[13px] text-ink-secondary">{prompt}</Text>
         </Pressable>
       ))}

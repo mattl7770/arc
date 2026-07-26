@@ -9,7 +9,7 @@ The shell is **five tabs** — Home · Coach · Log · Data · Settings — plus
 | Tab | What lives here |
 | --- | --- |
 | **Home** | Today's Mission, hero, readiness, brief, live metrics · designed states (travel/sick/data-gappy/first-run) · **Mode control** (see below) · proactive/predictive nudges surfaced · upcoming preventive screenings surfaced |
-| **Log** | Command + voice field (**free notes** + parse) · 6 quick-add tiles · **metric keypad** drill-in · today's recent entries. Two tiles are gateways to sub-screens (Meal → Nutrition, Workout → Exercise). |
+| **Log** | Command + voice field (**free notes** + parse) · 6 quick-add tiles · **metric keypad** drill-in · today's recent entries. Two tiles are gateways to sub-screens (Nutrition, Workout → Exercise). |
 | **Coach** | Chat + daily brief · real model + RAG + tools · proactive corrections / evening accountability · n-of-1 experiments · predictive-alert generation · correlations & insights · Coach research · voice/vision input · conversation history |
 | **Data** *(view + manage hub)* | Biomarker trends & optimal ranges · **Labs** (Function PDF import + results) · wearable history · body composition + **progress-photo gallery** · **Protocols editor** · **preventive screenings + medical calendar** (browse) · environment & lifestyle · genetics/cognitive (later) · **browsable knowledge base** · **progress reports** |
 | **Settings** | **App lock** (Face ID) · **provider/model/API-key** · **integrations** (Apple Health read, smart-bottle hydration, Apple Health write-back) · **backup/restore + recovery phrase** · **data export** · profile (DOB/sex/timezone/units) · about |
@@ -22,18 +22,21 @@ The shell is **five tabs** — Home · Coach · Log · Data · Settings — plus
 
 ## The Log tab — direction A ("Open Line")
 
-Chosen from a two-round design study (`ARC Log tab` artifacts; the six round-2 fusions are the reference). Capture works in **three layers**, each holding what matches its frequency:
+Chosen from a two-round design study (`ARC Log tab` artifacts; the six round-2 fusions are the reference). **Built and wired to the on-device DB 2026-07-25.** Capture works in **three layers**, each holding what matches its frequency:
 
-1. **Command / voice field (hero, top).** The catch-all: free-text or spoken **notes** (a log with no metric bucket, written for the Coach to read), plus natural-language parse of structured entries. The fast path — "ate eggs + oats, 45g protein" logs in one line without opening a sub-screen.
+1. **Command / voice field (hero, top).** The catch-all: free-text or spoken **notes** (a log with no metric bucket, written for the Coach to read), plus a parse of structured entries. *Wired:* an **offline** parser (`src/lib/log/parse.ts`) handles the common one-liners — `weight 178`, `16 oz water`, `hrv 48`, `180 lb` — and saves everything else verbatim as a note. Rich natural language ("ate eggs + oats, 45g protein" → a meal with macros) needs the on-device model and lands with the Coach (Phase 3). The pine action is a **mic** when the field is empty (voice arrives with the Coach) and a **send** arrow once there's text.
 2. **Quick-add tiles (3×2).** The high-frequency structured captures. Two kinds:
-   - **Quick-capture** → a lightweight sheet or the keypad: **Supplement · Water · Weight · Therapy**.
-   - **Gateway** → pushes a full sub-screen: **Meal → Nutrition**, **Workout → Exercise**.
-3. **Metric keypad (drill-in).** Single-number entry as a calibrated instrument: big mono readout, keypad, and metric chips (**Weight · Body-fat % · Waist · HRV · Resting HR · Dose**). Reached by tapping Weight (or Water); other body numbers switch via the chips.
+   - **Quick-capture** → the keypad or a capture sheet: **Supplement · Water · Weight · Therapy**.
+   - **Gateway** → pushes a full sub-screen: **Nutrition**, **Workout → Exercise**.
+   - *Layout:* the two gateway tiles sit together in the right column; quick captures fill the left and middle (owner call, 2026-07-25). Row 1: Supplement · Water · Nutrition. Row 2: Weight · Therapy · Workout.
+3. **Metric keypad (drill-in).** Single-number entry as a calibrated instrument: big mono readout, keypad, and metric chips (**Weight · Water · Body-fat % · Waist · HRV · Resting HR · Dose**). Reached by tapping Weight or Water; other numbers switch via the chips. *Wired:* "Log" converts the typed display value to canonical units and writes it — body_metrics (weight/body-fat/waist, in kg/cm), wearable_data (water/HRV/RHR, in ml/…), or a log_entry (dose). **Water** shows additive quick-estimates (**Glass +8 · Bottle +16 · Large +24 oz**) just above the pad, and a live "N oz logged today" line.
+
+**Where captures land (and why they don't pollute Home):** Log-tab captures are *ad-hoc* — a note, a spontaneous metric — and are marked `value.adhoc = true` (or live in `body_metrics` / `wearable_data`). Home's mission reads only the *planned* entries, so the two never mix; the Log feed shows only ad-hoc captures, newest first. Details in `src/lib/db/repositories/logs.ts`.
 
 **Not tiles, on purpose:** notes/voice live in the hero field; other body numbers live in the keypad chips; **Medication/peptides** fold into the Supplement sheet as a type toggle (they're usually part of a protocol stack); **habits** are completed on Home's mission, not re-logged here.
 
 ### Nutrition & Exercise (sub-app screens)
-Placeholders now, built out later. **Nutrition:** food logging by photo / text / manual, meal templates, macros/micros, grocery list, pantry, recipe bank, CAL-AI-style photo analysis. **Exercise:** workout builder, set/rep logging, Zone 2 / VO2max / mobility / balance metrics, progressive-overload tracking. Both are reachable from the Log tiles now and cross-linked from Data (history/trends) later.
+**Design mockups built 2026-07-25** (real layout, mock content, nothing persists yet — each carries a quiet "mockup" footer). **Nutrition:** today's intake (kcal + macros), three ways to log a meal (photo / text / manual), the day's meals — growing into templates, macros/micros, grocery, pantry, recipes, CAL-AI-style photo analysis. **Exercise:** the week at a glance (Zone 2 / strength / VO₂max), start-or-log, templates, recent sessions — growing into a workout builder, set/rep logging, Zone 2 / VO2max / mobility / balance metrics, progressive-overload tracking. The **Supplement/Therapy capture sheet** is likewise a mockup (one-tap quick-log strip + manual add). All three are reachable from the Log tiles now; wiring is next, and they cross-link from Data (history/trends) later.
 
 ## Modes
 

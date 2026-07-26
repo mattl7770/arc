@@ -99,8 +99,13 @@ export function getDb(): Database {
  * that wiring is a one-function change, not a restructure.
  */
 function backupBeforeMigrate(dbPath: string): void {
-  console.warn(
+  const message =
     `[db] pending migration against existing data at ${dbPath}: pre-migration ` +
-      `backup is not implemented yet — wire the file copy before shipping migration 0002.`
-  );
+    `backup is not implemented yet — wire the file copy (expo-file-system) before ` +
+    `shipping the next migration.`;
+  // Fail loud in development: this fires the moment migration 0002 is added
+  // against a populated DB, which is exactly when the backup must be wired. In
+  // production, warn rather than brick the app on boot.
+  if (__DEV__) throw new Error(message);
+  console.warn(message);
 }

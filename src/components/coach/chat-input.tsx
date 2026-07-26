@@ -27,7 +27,7 @@ export function ChatInput({ onSend, disabled = false }: Props) {
 
   return (
     <View className="flex-row items-end gap-2 border-t border-hairline bg-paper px-4 pb-2 pt-2.5">
-      <View className="max-h-32 flex-1 justify-center rounded-lg bg-paper-deep px-4 py-1">
+      <View className="max-h-32 flex-1 justify-center rounded-btn bg-paper-deep px-4 py-1">
         <TextInput
           value={text}
           onChangeText={setText}

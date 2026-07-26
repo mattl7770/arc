@@ -52,7 +52,8 @@ npm start
 | `npm run lint`         | ESLint (expo config, incl. React Compiler)    |
 | `npm run format`       | Prettier, with Tailwind class sorting         |
 | `npm run doctor`       | Expo dependency / config health check         |
-| `npm run db:types`     | Regenerate `src/types/database.ts` from Supabase |
+| `npm run db:validate`  | Apply the schema headlessly and assert its invariants |
+| `npm run db:test`      | Headless data-layer tests (migrate · repositories · log layer) |
 
 ## Layout
 
@@ -60,11 +61,12 @@ Defined in [docs/folder-structure.md](docs/folder-structure.md).
 
 ```
 app/          Expo Router routes — (tabs)/ holds Home, Coach, Log, Data, Settings
-src/lib/      Business logic: supabase.ts, env.ts, ai/, wearables/, labs/, utils/
-src/components/  ui/ = design primitives; home/ and coach/ = feature components
-src/hooks/    Shared React hooks (use-session.ts)
-src/types/    database.ts is GENERATED — run `npm run db:types`
-supabase/     Migrations, edge functions, seed.sql
+src/lib/      Business logic: db/ (on-device SQLite), log/, ai/, home/, utils/
+src/components/  ui/ = design primitives; home/, log/, coach/ = feature components
+src/hooks/    Shared React hooks (use-today-mission, use-log-feed, use-coach-chat)
+src/types/    Hand-authored view-model types (home, coach, log)
+db/           SQLite migrations + headless validation/tests
+supabase/     Postgres origin — HISTORY ONLY, superseded by db/ (do not build on it)
 docs/         Source of truth for architecture. Read before changing anything.
 ```
 

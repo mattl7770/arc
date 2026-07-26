@@ -44,15 +44,14 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
 
 ## Phase 2 — Remove the cloud
 
-- [ ] Delete the Supabase client, `useSession`-as-gate, RLS assumptions, and `EXPO_PUBLIC_SUPABASE_*` env wiring.
-- [ ] App opens directly to Home — optionally behind a **Face ID** unlock (`expo-local-authentication`). That biometric gate *is* the auth model now.
-- [ ] Remove `@supabase/*` deps; prune `.env.example`.
-- [ ] The live Supabase project is now unused (free tier) — owner may delete it whenever; nothing in the app depends on it.
+- [x] **Done 2026-07-25 (full-app review):** deleted the Supabase client, `useSession`, `app/login.tsx`, `env.ts`, `src/types/database.ts`, `scripts/gen-types.mjs`, and the `@supabase/supabase-js` + `@react-native-async-storage/async-storage` deps + `db:push`/`db:types` scripts; pruned `.env.example`. Nothing live imported any of it. This was pulled ahead of the app-lock work below because the dead island (and its wrong-shape generated types) was a standing hazard.
+- [ ] App opens directly to Home — optionally behind a **Face ID** unlock (`expo-local-authentication`). That biometric gate *is* the auth model now. **(This is the remaining Phase 2 work.)**
+- [ ] Owner action: decommission the live Supabase project (revokes the anon key still sitting in `.env`) and delete the `EXPO_PUBLIC_SUPABASE_*` lines from `.env`. Nothing in the app depends on it.
 
 ## Phase 3 — The Coach goes real, on-device
 
 - [ ] **Settings screen:** provider + model picker + API-key field. Key stored via `expo-secure-store` (Keychain), **never** in plain storage or `.env`.
-- [ ] Rewrite `coach-service.ts`: swap the mock for a **direct streaming call** to the chosen provider with the stored key. Rename `isCoachBackendLive` → something like `isCoachKeyConfigured` (the gate is "has the user pasted a key", not "is a server up").
+- [ ] Rewrite `coach-service.ts`: swap the mock for a **direct streaming call** to the chosen provider with the stored key. *(The flag was already renamed `isCoachBackendLive` → `isCoachKeyConfigured` in the 2026-07-25 review — the gate is "has the user pasted a key", not "is a server up".)*
 - [ ] **On-device RAG** with `sqlite-vec`: vector tables for (a) personal history and (b) the knowledge base. At query time the app retrieves relevant slices locally and assembles the prompt client-side.
   - **Sub-decision — embeddings source:** simplest is to embed via the provider's embedding endpoint at write time (cheap, needs network), store the vector locally. A fully-offline on-device embedding model is a later nicety, not a blocker.
   - **Embedding-space stability (audit finding):** vectors from different embedding models are incompatible (different dimensions and semantics), so *swapping the embedding model silently invalidates every stored vector*. Two consequences: (1) **store the embedding-model identity alongside each vector**, and on a change either block the swap or re-embed the whole (small, single-user) corpus and mark the index stale until done; (2) the **embedding provider is separate from the chat provider** — the chat model the user picks may have no embeddings endpoint at all (e.g. Anthropic), so Settings needs a distinct embedding provider/model/key, not one combined provider row. RAG quality depends on embedding-space stability, not just chat-model choice.
@@ -83,7 +82,7 @@ The entire UI, the design system (Porcelain Ledger), the view-model types in `sr
 - [x] **`docs/project-status.md`** updated: migration-phase tracker, offline principle, status board reframed (Local DB / App lock / iCloud backup), Supabase marked vestigial.
 - [x] **`docs/data-model.md`:** Implementation Status rewritten for the pivot (SQLite is the schema of record, hand-authored types, no `auth.users`/`user_id`/RLS); dialect mapping noted (2026-07-24 audit pass).
 - [x] **`docs/folder-structure.md`:** relaid out for local-first — `db/` + `src/lib/db/`, `supabase/` marked origin/history, `login.tsx` gone, type-generation rule swapped (was missed by the original checklist; caught by the 2026-07-24 audit).
-- [ ] Retire `scripts/gen-types.mjs` and `db:types` / `db:push` (Phase 2, with the Supabase removal).
+- [x] Retired `scripts/gen-types.mjs` and `db:types` / `db:push` (done 2026-07-25 with the Supabase removal).
 - [ ] **`app.json` export-compliance flag (audit finding, low):** `ITSAppUsesNonExemptEncryption: false` is correct today, but the Phase 4 backup adds app-level encryption. Standard AES under a Keychain key usually stays exempt (Category 5 Part 2), but re-examine and document the classification at that submission rather than leaving the flag unexamined.
 
 ## Open sub-decisions

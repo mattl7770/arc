@@ -24,7 +24,7 @@ And "Update" often can't help: when SDK 57 released (2026-06-30) the store build
 | **B. `eas go` bridge** — SDK-57 Expo Go via TestFlight | free | yes | no — same limit |
 | **C. Development build** (recommended) | **$99/yr Apple Developer** | yes | **yes** — this is the permanent path |
 
-**The catch that decides it:** ARC will integrate Apple Health, then wearables (Terra) and more. Those are **custom native modules Expo Go can never run** — the first one you add, Expo Go (any version, including the `eas go` bridge) stops working for good. The development build is the environment you end up in regardless; the only question is whether you set it up now or in a few weeks.
+**The catch that decides it:** ARC already depends on a custom native module (`op-sqlite`) and will add more (Apple Health / HealthKit, secure-store, biometrics). Those are **native modules Expo Go can never run** — so Expo Go (any version, including the `eas go` bridge) can't load ARC. The development build is the environment you end up in regardless; the only question is whether you set it up now or in a few weeks.
 
 **Recommended plan:** use **B** to see ARC on your phone today for free, and move to **C** when you're ready to pay for the Apple Developer Program (or when Apple Health forces it — whichever comes first).
 

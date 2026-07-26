@@ -4,18 +4,18 @@ import { CommandField } from '@/components/log/command-field';
 import { QuickAddGrid } from '@/components/log/quick-add-grid';
 import { RecentLogs } from '@/components/log/recent-logs';
 import { Screen } from '@/components/ui/screen';
+import { useLogFeed } from '@/hooks/use-log-feed';
 
 /**
  * Log — fast capture. Direction A ("Open Line"), locked 2026-07-25
  * (docs/information-architecture.md). Three layers:
  *   1. the command / voice field (free notes + parse) — the hero,
- *   2. six quick-add tiles (Meal → Nutrition and Workout → Exercise push
- *      sub-app screens; the rest open a sheet or the metric keypad),
- *   3. today's running record.
+ *   2. six quick-add tiles (Nutrition & Workout push sub-app screens; Water &
+ *      Weight open the metric keypad; Supplement & Therapy open a capture sheet),
+ *   3. today's running record, read live from the DB.
  *
- * Skeleton for now: the structure is real and navigable, but capture doesn't
- * persist and the recents are mock. Wiring writes/reads to the DB (and the
- * command-field parse) is the next step.
+ * The command field and the keypad persist to on-device SQLite; the feed reloads
+ * on capture and whenever the tab regains focus (returning from the keypad).
  */
 export default function LogScreen() {
   const today = new Date().toLocaleDateString(undefined, {
@@ -23,6 +23,7 @@ export default function LogScreen() {
     day: 'numeric',
     month: 'long',
   });
+  const { entries, reload } = useLogFeed();
 
   return (
     <Screen scroll>
@@ -32,7 +33,7 @@ export default function LogScreen() {
       </View>
 
       <View className="mt-5">
-        <CommandField />
+        <CommandField onLogged={reload} />
       </View>
 
       <View className="mt-6">
@@ -40,7 +41,7 @@ export default function LogScreen() {
       </View>
 
       <View className="mt-8">
-        <RecentLogs />
+        <RecentLogs entries={entries} />
       </View>
     </Screen>
   );

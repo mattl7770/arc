@@ -1,5 +1,39 @@
 # Architecture Decision Records (ADR)
 
+## 2026-07-25 — Full-app review: fixes, and pulling the Supabase removal forward
+
+**Context:** a full-app review ran five read-only reviewers in parallel (correctness/DB, UI/design-system, security/privacy, architecture/docs, plus the Log-wiring diff). Findings converged; the top three correctness bugs were reproduced against real SQLite. This ADR records the decisions in the fixes; the mechanical fixes themselves are self-explanatory.
+
+**Decisions:**
+
+- **The command parser requires ADJACENCY.** It was matching "a keyword anywhere + the first number anywhere", which silently mis-logged notes containing a common word (`took 2 pills, weight 181` → 2 lb; `great water views, walked 5 miles` → 5 oz). A note must never become a wrong measurement, so a number now only becomes a metric when it sits next to that metric's keyword/unit, and only a narrow set of unambiguous units (`lb/kg`, `bpm`, `ms`) may imply a metric with no keyword — `oz`/`ml`/`mg` require their keyword (food is logged in oz/g, so `16 oz` alone must not mean water). Everything else stays a note. (`src/lib/log/parse.ts`, `metrics.ts` `inferUnits`.)
+- **Writes validate against the schema's domain.** Out-of-range values (`body-fat 150`, `weight 0`) tripped a `body_metrics` CHECK and threw out of the tap handler. `isLoggableCanonical` now gates both surfaces: the keypad disables "Log" with an inline hint; the command field saves the raw text as a note rather than crash or lose it (plus a try/catch backstop). (`metrics.ts`, `command-field.tsx`, `metric-entry.tsx`.)
+- **The seed guard counts planned entries only.** Logging a note before opening Home on a new day left the daily_log non-empty and suppressed the whole day's seeded mission. The guard now uses `countMissionEntries` (ad-hoc-excluded), matching the mission filter. (`seed.ts`, `mission.ts`.)
+- **The dead Supabase island was deleted now, not deferred to Phase 2.** `supabase.ts`, `env.ts`, `use-session.ts`, `types/database.ts`, `login.tsx`, `gen-types.mjs`, the `@supabase/supabase-js` + `@react-native-async-storage/async-storage` deps, and the `db:push`/`db:types` scripts were removed. Rationale: security + architecture reviewers agreed it's a closed graph nothing live imports (the app boots without `.env`), and `types/database.ts` was *actively wrong* (Postgres/RLS shape the SQLite port dropped) — a stray import would type-check against a schema that no longer exists. Deferring it bundled two unrelated things ("remove Supabase" + "add Face ID"); the removal is separable and zero-runtime-risk, so it shipped early. **Face ID app lock remains the real Phase 2 work.** *(Owner action still outstanding: decommission the remote Supabase project and strip `EXPO_PUBLIC_SUPABASE_*` from `.env` — a bundled anon key is why removing the code matters.)*
+- **The Coach seam was corrected to the adopted architecture.** Comments across `coach-service.ts`, `system-prompt.ts`, `coach.tsx` still described the retired "Supabase Edge Function" plan; they now describe the direct, on-device model call (Keychain key), and `isCoachBackendLive` was renamed `isCoachKeyConfigured`. Comment/rename only — no behavior change.
+
+**Consequences:** headless coverage grew to `db:test` log-layer 43/43 (adjacency, out-of-range, log-then-seed, UTC-range boundary, multi-measurement fan-out); the `@/` alias now resolves in the test loader. UI polish also landed (off-token radii → `rounded-btn`; decorative icons hidden from a11y; a keypad Dynamic-Type cap; a Coach keyboard offset; an app-wide `ErrorBoundary`; the migration-backup stub throws in `__DEV__`). **Deliberately deferred (flagged to the owner, not fixed here):** SQLCipher at-rest encryption (Phase 4) and the Face ID app lock (Phase 2); and one design call left to the owner — colour-only state on Home's pillar strip (WCAG 1.4.1) — because changing the approved Home visual is a product decision, not a review fix.
+
+---
+
+## 2026-07-25 — Wiring the Log tab: canonical units, an ad-hoc marker, and an offline parser
+
+**Decision:** the Log tab now persists to the on-device DB. The shape of that wiring:
+
+- **Storage is canonical SI; display is a conversion.** Every metric is stored in a canonical unit — weight **kg**, waist **cm**, water **ml** — and rendered in the user's display unit (lb / in / oz) through a single **metric registry** (`src/lib/log/metrics.ts`) that owns each metric's label, display unit, decimals, both conversion directions, and its persistence target. This makes the future lb/kg · in/cm · oz/ml **unit toggle a display-layer preference, not a migration** (it plugs into `fromCanonical`), and matches the schema's already-canonical `body_metrics.weight_kg` / `waist_cm`.
+- **Persistence routing (one place, the registry):** weight / body-fat / waist → `body_metrics`; water / HRV / RHR → `wearable_data` (`source_device='manual'`, free-text `metric_type` — `water_ml`, `hrv`, `rhr`); dose and free notes → `log_entries`.
+- **An `value.adhoc = true` marker separates Log captures from Home's mission.** `log_entries` holds both the planned mission (Home) and ad-hoc Log captures (a note, a spontaneous dose). Rather than a schema column, ad-hoc captures carry `adhoc:true` in their `value` JSON: `listMission` filters them **out**, the Log feed filters them **in**. Body/wearable captures live in their own tables, so they never touch the mission. (Seeded/planned entries carry no flag, so they're unaffected — and the Log feed correctly starts empty until the user logs something real.)
+- **The command-field parser is deterministic and offline.** `src/lib/log/parse.ts` handles the common one-liners (`weight 178`, `16 oz water`, `hrv 48`, `180 lb`) via metric keywords and strong units; everything else is saved verbatim as a **note for the Coach**. Everyday-word units (`in`, `l`) never *imply* a metric on their own, so a plain sentence isn't misread as a measurement. Rich natural language ("ate eggs + oats, 45g protein" → a meal) needs the on-device model and lands with the Coach (Phase 3).
+- **Water is modeled as `wearable_data(water_ml)`** with additive quick-estimates (Glass +8 / Bottle +16 / Large +24 oz). A smart bottle via Apple Health later adds rows to the same `metric_type`, no migration — as the hydration ADR intended.
+
+**Small refinements to the 2026-07-25 Log-tab ADR below** (owner calls, same day): the **Meal tile is renamed Nutrition**; the tile grid is regrouped so the two gateway tiles share the right column (Row 1: Supplement · Water · Nutrition; Row 2: Weight · Therapy · Workout); **Nutrition, Exercise, and the Supplement/Therapy capture sheet ship as design mockups** (real layout, mock content, a quiet "mockup" footer) ahead of wiring.
+
+**Reasoning:** canonical storage is the standard fix for a unit toggle and costs nothing now; a JSON marker avoids a migration for a distinction that may dissolve once the protocol→mission generator exists; an offline parser keeps fast capture working with the network unplugged (the offline-except-AI principle), and a note is never a wrong interpretation, so the fallback is safe.
+
+**Consequences:** the registry is the single source of truth for units/targets — add a metric there, not in three UIs. `listMission` gained an `adhoc IS NULL` filter (verified: seeded mission intact, captures excluded). Headless coverage added: `npm run db:test` log-layer 26/26 (parser, conversions, routing, feed union/order, mission isolation). The test loader now resolves the `@/` alias (`db/ts-ext-hook.mjs`) so repositories can use it for runtime value imports. No new native deps → no dev rebuild to see it.
+
+---
+
 ## 2026-07-25 — Log tab direction, Nutrition/Exercise sub-apps, and the Modes model
 
 **Decision:** Full map + rationale in `docs/information-architecture.md`. In brief:
@@ -68,7 +102,7 @@
 
 **Decisions:**
 
-1. **Today's Mission is one chronological list, not category groups.** The brief calls the home screen "directive and **chronological**"; the first build grouped items by category (Morning, Nutrition, Training…), which let a 21:45 supplement render above an 08:00 meal. Sorting by scheduled time makes the reading order the acting order, and guarantees the derived hero ("do this next") always points at the top of the list. Category survives as a per-row label. See `docs/home-screen.md` §3 and `src/hooks/use-mission.ts`.
+1. **Today's Mission is one chronological list, not category groups.** The brief calls the home screen "directive and **chronological**"; the first build grouped items by category (Morning, Nutrition, Training…), which let a 21:45 supplement render above an 08:00 meal. Sorting by scheduled time makes the reading order the acting order, and guarantees the derived hero ("do this next") always points at the top of the list. Category survives as a per-row label. See `docs/home-screen.md` §3, `src/lib/home/derive-mission.ts`, and `src/hooks/use-today-mission.ts`.
 
 2. **Progressive disclosure is allowed to hide history, never work.** The brief wants "beautiful progressive disclosure"; the home-screen doctrine had flatly refused collapsing. Both are honoured by a narrow rule: the run of already-settled items at the *top* of the day folds into one line so the list opens at *now*, and nothing else ever collapses. Anything still pending — including overdue items, and items settled out of order — stays visible. This is the bounded form of "collapsible if needed"; the thing the doctrine rejected (hiding pending work) is still rejected.
 
@@ -129,7 +163,7 @@ An `EXPO_PUBLIC_ANTHROPIC_KEY` would be inlined into every client bundle — a s
 
 **Consequences:**
 - The chat streams token-by-token now, so the UX that ships today is the UX that ships with the real model.
-- `isCoachBackendLive` is the single flag the UI reads to show the "Preview" affordance.
+- `isCoachKeyConfigured` (renamed from `isCoachBackendLive` on 2026-07-25, when the Edge-Function plan was retired for the direct on-device call) is the single flag the UI reads to show the "Preview" affordance.
 - Conversations are in-memory until the `ai_conversations` / `ai_messages` migration lands.
 
 ---

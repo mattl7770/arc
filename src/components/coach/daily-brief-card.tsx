@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Text, View } from 'react-native';
 
 import { palette } from '@/constants/theme';
-import { isCoachBackendLive } from '@/lib/ai/coach-service';
+import { isCoachKeyConfigured } from '@/lib/ai/coach-service';
 
 /**
  * Section: the daily brief placeholder that opens the thread.
@@ -22,8 +22,8 @@ export function DailyBriefCard({ brief }: { brief: string }) {
             Today’s Brief
           </Text>
         </View>
-        {!isCoachBackendLive ? (
-          <View className="rounded bg-paper-deep px-2 py-0.5">
+        {!isCoachKeyConfigured ? (
+          <View className="rounded-btn bg-paper-deep px-2 py-0.5">
             <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
               Preview
             </Text>
@@ -33,9 +33,15 @@ export function DailyBriefCard({ brief }: { brief: string }) {
 
       <Text className="mt-3 text-[15px] leading-6 text-ink-secondary">{brief}</Text>
 
-      {!isCoachBackendLive ? (
+      {!isCoachKeyConfigured ? (
         <View className="mt-4 flex-row items-center gap-1.5 border-t border-hairline-soft pt-3">
-          <Ionicons name="information-circle-outline" size={14} color={palette.inkMuted} />
+          <Ionicons
+            name="information-circle-outline"
+            size={14}
+            color={palette.inkMuted}
+            accessibilityElementsHidden
+            importantForAccessibility="no"
+          />
           <Text className="flex-1 text-xs leading-4 text-ink-muted">
             Sample brief. The Coach isn’t connected to the model or your data yet.
           </Text>

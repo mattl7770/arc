@@ -22,6 +22,14 @@ type Props = {
 export function HeroCard({ item, onDone, onSnooze, onSkip }: Props) {
   if (!item) return <MissionComplete />;
 
+  const metadata = [
+    item.scheduledTime,
+    item.estimatedMinutes && `${item.estimatedMinutes} min`,
+    item.protocol,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   return (
     <View className="rounded-card border border-t-[3px] border-pine-tint border-t-pine bg-pine-soft p-4 pb-5">
       <Text className="text-[11px] font-medium uppercase tracking-[2px] text-pine">
@@ -32,15 +40,9 @@ export function HeroCard({ item, onDone, onSnooze, onSkip }: Props) {
         {item.title}
       </Text>
 
-      <Text className="mt-1.5 font-mono text-xs text-ink-secondary">
-        {[
-          item.scheduledTime,
-          item.estimatedMinutes && `${item.estimatedMinutes} min`,
-          item.protocol,
-        ]
-          .filter(Boolean)
-          .join(' · ')}
-      </Text>
+      {metadata ? (
+        <Text className="mt-1.5 font-mono text-xs text-ink-secondary">{metadata}</Text>
+      ) : null}
 
       {item.why ? (
         <Text className="mt-3 text-[15px] leading-6 text-ink-secondary">{item.why}</Text>

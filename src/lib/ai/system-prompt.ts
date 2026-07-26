@@ -1,10 +1,10 @@
 /**
  * The ARC Coach system prompt.
  *
- * This is the real prompt, not a placeholder — it is what the Edge Function
- * will send to the model once the backend lands (see coach-service.ts). It is
- * the refined form of the skeleton in docs/ai-coach.md, with the personality
- * and safety boundaries made explicit.
+ * This is the real prompt, not a placeholder — it is what the app will send to
+ * the model on the direct, on-device call once that lands (see coach-service.ts).
+ * It is the refined form of the skeleton in docs/ai-coach.md, with the
+ * personality and safety boundaries made explicit.
  *
  * Keep this in sync with docs/ai-coach.md. If the voice changes, change it in
  * both places and note it in docs/decisions.md.

@@ -191,7 +191,7 @@ n-of-1 experiments.
 
 **Shipped:** `db/migrations/0001_init.sql` (on-device SQLite) implements the ten v1 priority tables above — **this is the schema of record.** The original `supabase/migrations/20260722000000_initial_schema.sql` is the **superseded Postgres origin** (do not build on it). `ai_conversations`, `ai_messages` and `experiments` are specified but **not yet migrated** — they land with the Coach.
 
-**Types are hand-authored** from the SQLite schema (Phase 1 of `docs/architecture-migration.md`). The old Supabase generator (`npm run db:types` → `src/types/database.ts`) is **retired**; that generated file is stale Supabase output pending removal — do not regenerate it.
+**Types are hand-authored** from the SQLite schema (`src/lib/db/types.ts` for rows; `src/types/*` for view-models). The old Supabase generator (`npm run db:types` → `src/types/database.ts`) and the generated file were **deleted 2026-07-25**.
 
 > **Read the table below in light of the 2026-07-24 local-first pivot**, which removed `user_id`, RLS, auth and the `auth.users` linkage. Anything phrased around tenancy/RLS/auth describes the Postgres *origin's* rationale, not the shipped SQLite shape.
 

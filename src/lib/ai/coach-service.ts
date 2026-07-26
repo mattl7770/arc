@@ -5,11 +5,13 @@ import { buildCoachSystemPrompt } from './system-prompt';
 /**
  * The Coach service seam.
  *
- * This is the ONE place a model call happens. Today it returns an honest mock;
- * the real implementation is a call to a Supabase Edge Function that holds the
- * provider key server-side (never in the client bundle — see .env.example) and
- * runs the agent loop. When that lands, only the body of `streamCoachReply`
- * changes; every caller and every component stays exactly the same.
+ * This is the ONE place a model call happens. Today it returns an honest mock.
+ * Per the local-first architecture (docs/decisions.md, 2026-07-24), the real
+ * implementation calls a frontier model **directly from the app** using the
+ * user's own key held in the iOS Keychain (expo-secure-store), with provider /
+ * model / key user-editable in Settings — no server, no backend. On-device RAG +
+ * tools run client-side. When that lands (Phase 3), only the body of
+ * `streamCoachReply` changes; every caller and component stays the same.
  *
  * It deliberately does NOT fake intelligence. The mock is transparent about
  * being a preview rather than inventing data-grounded answers, because a coach
@@ -18,11 +20,12 @@ import { buildCoachSystemPrompt } from './system-prompt';
  */
 
 /**
- * Flip to true when the Edge Function is live. The UI reads this to decide
- * whether to show the "preview" affordance, so there is a single source of
- * truth for "is the Coach real yet".
+ * Flip to true when the user has configured a provider/model/API key and the
+ * direct model call is wired (Phase 3). The UI reads this to decide whether to
+ * show the "preview" affordance, so there is a single source of truth for "is
+ * the Coach real yet".
  */
-export const isCoachBackendLive = false;
+export const isCoachKeyConfigured = false;
 
 export type StreamOptions = {
   onToken: (chunk: string) => void;
@@ -65,7 +68,7 @@ export async function streamCoachReply(
   options: StreamOptions
 ): Promise<string> {
   // Built and discarded so the wiring is real and type-checked today — the
-  // Edge Function will send exactly this. Grounding is thin until the data
+  // direct model call will send exactly this. Grounding is thin until the data
   // layer feeds `summary`.
   void buildCoachSystemPrompt({ date: new Date().toDateString() });
 
@@ -99,7 +102,7 @@ function mockReply(userText: string): string {
   if (isGreeting) {
     return (
       "Morning. I'm here, but I should be straight with you: I'm not connected to the " +
-      'model or your data yet — this is the chat foundation. Once the backend is wired, ' +
+      'model or your data yet — this is the chat foundation. Once the model is connected, ' +
       "I'll open each day with a brief grounded in last night's sleep and recovery. What " +
       'would you want me to look at first?'
     );
@@ -117,7 +120,7 @@ function mockReply(userText: string): string {
   return (
     "Noted. I'm running as a preview right now — the chat works end to end, but I'm not " +
     "connected to the model or your data yet, so I won't pretend to have answers I " +
-    "can't ground. Once the Edge Function and your data are wired in, this same thread " +
+    "can't ground. Once the model and your data are connected, this same thread " +
     'becomes the real thing.'
   );
 }

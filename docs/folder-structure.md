@@ -52,7 +52,7 @@ arc/
 └── .gitignore
 ```
 
-*(`src/lib/supabase.ts` and `src/types/database.ts` still exist but are vestigial — removed as the Supabase client is torn out in the migration's later phases.)*
+*(The Supabase client island — `src/lib/supabase.ts`, `src/lib/env.ts`, `src/hooks/use-session.ts`, `src/types/database.ts`, `app/login.tsx`, `scripts/gen-types.mjs`, and the `@supabase/supabase-js` / `async-storage` deps — was **deleted 2026-07-25** during the full-app review. The `supabase/` folder above is kept as Postgres history only.)*
 
 ## Key Rules
 

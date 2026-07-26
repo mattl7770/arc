@@ -24,7 +24,8 @@ import { mockDay } from '@/lib/home/mock-day';
  * The thread opens with today's brief (the same text the Home card taps
  * through to), then invites a first message. The model call lives behind
  * src/lib/ai/coach-service.ts, which returns an honest preview today and
- * becomes an Edge Function call later — this screen doesn't change when it does.
+ * becomes a direct, on-device model call later — this screen doesn't change
+ * when it does.
  */
 export default function CoachScreen() {
   const chat = useCoachChat();

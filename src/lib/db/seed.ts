@@ -12,7 +12,11 @@
  */
 import type { Database } from './database';
 import { newId } from './id';
-import { countLogEntries, getOrCreateDailyLog, insertMissionItem } from './repositories/mission';
+import {
+  countMissionEntries,
+  getOrCreateDailyLog,
+  insertMissionItem,
+} from './repositories/mission';
 import type { BiomarkerCategory, LogEntryType } from './types';
 import type { MissionItem } from '@/types/home';
 
@@ -176,19 +180,23 @@ export function seedReferenceData(db: Database): void {
 }
 
 /**
- * Plant a demo mission for `date` if that day has no entries yet. No-op once the
- * day has any log entries (so it never clobbers real edits or re-seeds).
+ * Plant a demo mission for `date` if that day has no *planned* entries yet. The
+ * guard counts mission entries only (`countMissionEntries`), NOT ad-hoc Log-tab
+ * captures — otherwise logging a note before opening Home on a new day would
+ * leave that daily_log non-empty, skip the seed, and render an empty mission for
+ * the rest of the day (the note is filtered out of the mission).
  *
  * NOTE: the guard is per-day, so this fires on the first open of *every* new
- * day — not just first-ever run — because each day starts with an empty
- * daily_log. That's intended for Phase 1b (the seed is the only data source),
- * but it MUST be gated/removed once real logging or the protocol→mission
- * generator lands. Seeded rows are marked `seed: true` in their value json so
- * they're purgeable and distinguishable from real entries until then.
+ * day — not just first-ever run — because each day starts with no planned
+ * entries. That's intended for Phase 1b (the seed is the only data source), but
+ * it MUST be gated/removed once real logging or the protocol→mission generator
+ * lands. Seeded rows are marked `seed: true` in their value json so they're
+ * purgeable and distinguishable from real entries until then. (The purge itself
+ * is not built yet — the marker is written, not yet read.)
  */
 export function ensureTodaySeeded(db: Database, date: string, mission: MissionItem[]): void {
   const log = getOrCreateDailyLog(db, date);
-  if (countLogEntries(db, log.id) > 0) return;
+  if (countMissionEntries(db, log.id) > 0) return;
   db.transaction(() => {
     for (const item of mission) {
       const type = TYPE_BY_CATEGORY[item.category] ?? 'habit';

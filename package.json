@@ -15,15 +15,11 @@
     "doctor": "expo-doctor",
     "db:bundle": "node db/bundle-migrations.mjs",
     "db:validate": "node db/bundle-migrations.mjs --check && node db/validate-schema.mjs",
-    "db:test": "node --import ./db/register-ts-hooks.mjs db/migrate.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-layer.test.mjs",
-    "db:push": "supabase db push",
-    "db:types": "node scripts/gen-types.mjs"
+    "db:test": "node --import ./db/register-ts-hooks.mjs db/migrate.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-layer.test.mjs && node --import ./db/register-ts-hooks.mjs db/log.test.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
     "@op-engineering/op-sqlite": "^17.1.2",
-    "@react-native-async-storage/async-storage": "2.2.0",
-    "@supabase/supabase-js": "^2.110.8",
     "expo": "~57.0.8",
     "expo-constants": "~57.0.6",
     "expo-dev-client": "~57.0.9",
@@ -51,7 +47,6 @@
     "eslint-config-expo": "~57.0.0",
     "prettier": "^3.9.6",
     "prettier-plugin-tailwindcss": "^0.8.1",
-    "supabase": "^2.109.1",
     "tailwindcss": "^3.4.19",
     "typescript": "~6.0.3"
   },

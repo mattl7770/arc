@@ -73,13 +73,18 @@ export function getOrCreateDailyLog(db: Database, date: string): DailyLogRow {
  * last), then insertion order. Empty array if there's no daily_log yet — the
  * derivation layer sorts again, so this order is a convenience, not the source
  * of truth.
+ *
+ * Ad-hoc Log-tab captures (a note, a spontaneous metric — marked
+ * `value.adhoc = true` by src/lib/db/repositories/logs.ts) share the
+ * `log_entries` table but are NOT part of the day's plan, so they're excluded
+ * here. Planned/seeded entries carry no such flag and pass through.
  */
 export function listMission(db: Database, date: string): MissionItem[] {
   const log = db.get<{ id: string }>('SELECT id FROM daily_logs WHERE date = ?', [date]);
   if (!log) return [];
   const rows = db.all<LogEntryRow>(
     `SELECT * FROM log_entries
-     WHERE daily_log_id = ?
+     WHERE daily_log_id = ? AND json_extract(value, '$.adhoc') IS NULL
      ORDER BY (scheduled_time IS NULL), scheduled_time, created_at, id`,
     [log.id]
   );
@@ -140,10 +145,17 @@ export function insertMissionItem(
   );
 }
 
-/** Number of log entries under a daily_log (used to decide whether to seed). */
-export function countLogEntries(db: Database, dailyLogId: string): number {
-  const row = db.get<{ c: number }>('SELECT count(*) c FROM log_entries WHERE daily_log_id = ?', [
-    dailyLogId,
-  ]);
+/**
+ * Number of *planned* (mission) entries under a daily_log — the same rows
+ * `listMission` shows, i.e. excluding ad-hoc Log-tab captures (`value.adhoc`).
+ * This is what the seed guard must use: counting all rows would let a single
+ * note logged before Home opens suppress the whole day's seeded mission.
+ */
+export function countMissionEntries(db: Database, dailyLogId: string): number {
+  const row = db.get<{ c: number }>(
+    `SELECT count(*) c FROM log_entries
+     WHERE daily_log_id = ? AND json_extract(value, '$.adhoc') IS NULL`,
+    [dailyLogId]
+  );
   return row?.c ?? 0;
 }
