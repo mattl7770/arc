@@ -75,7 +75,7 @@ export function getDb(): Database {
 
     const from = db.getUserVersion();
     if (from > 0 && pendingMigrations(from, MIGRATIONS).length > 0) {
-      backupBeforeMigrate(raw.getDbPath());
+      backupBeforeMigrate(raw);
     }
     migrate(db, MIGRATIONS);
     seedReferenceData(db);
@@ -91,21 +91,20 @@ export function getDb(): Database {
 }
 
 /**
- * Pre-migration safety net (2026-07-24 audit finding). Not reached at Phase 1b:
- * the only migration is 0001 on a fresh (user_version 0) database, so there is
- * nothing to lose. It goes live when 0002 first ships against a populated DB —
- * wire it then to copy the file at `dbPath` (via expo-file-system, which lands
- * with the Phase 4 backup infra) before migrating. The call site exists now so
- * that wiring is a one-function change, not a restructure.
+ * Snapshot the database before a migration touches existing data, so a bad
+ * migration is recoverable (2026-07-24 audit finding; live as of the 0002+
+ * migrations shipping against a populated DB). Uses SQLite's `VACUUM INTO` — a
+ * consistent single-file copy, no extra native dependency. On any failure it
+ * warns and proceeds rather than blocking boot: a pre-release, single-user,
+ * re-seedable app must never brick on a backup hiccup. Phase 4 (encrypted
+ * iCloud backup) supersedes this with a managed snapshot + retention.
  */
-function backupBeforeMigrate(dbPath: string): void {
-  const message =
-    `[db] pending migration against existing data at ${dbPath}: pre-migration ` +
-    `backup is not implemented yet — wire the file copy (expo-file-system) before ` +
-    `shipping the next migration.`;
-  // Fail loud in development: this fires the moment migration 0002 is added
-  // against a populated DB, which is exactly when the backup must be wired. In
-  // production, warn rather than brick the app on boot.
-  if (__DEV__) throw new Error(message);
-  console.warn(message);
+function backupBeforeMigrate(raw: OpDb): void {
+  try {
+    const backupPath = `${raw.getDbPath()}.pre-migrate-${Date.now()}.bak`;
+    raw.executeSync(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+    console.log(`[db] pre-migration backup written: ${backupPath}`);
+  } catch (error) {
+    console.warn('[db] pre-migration backup failed; proceeding with migration', error);
+  }
 }

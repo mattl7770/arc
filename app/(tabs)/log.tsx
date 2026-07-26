@@ -1,9 +1,12 @@
-import { Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { useRouter } from 'expo-router';
+import { Pressable, Text, View } from 'react-native';
 
 import { CommandField } from '@/components/log/command-field';
 import { QuickAddGrid } from '@/components/log/quick-add-grid';
 import { RecentLogs } from '@/components/log/recent-logs';
 import { Screen } from '@/components/ui/screen';
+import { palette } from '@/constants/theme';
 import { useLogFeed } from '@/hooks/use-log-feed';
 
 /**
@@ -24,6 +27,7 @@ export default function LogScreen() {
     month: 'long',
   });
   const { entries, reload } = useLogFeed();
+  const router = useRouter();
 
   return (
     <Screen scroll>
@@ -38,6 +42,25 @@ export default function LogScreen() {
 
       <View className="mt-6">
         <QuickAddGrid />
+      </View>
+
+      {/* Symptom capture — a distinct "something's off" entry, kept separate from
+          the routine quick-adds. Neutral: the command field owns the one pine accent. */}
+      <View className="mt-3">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Log a symptom"
+          onPress={() => router.push('/symptom')}
+          className="flex-row items-center gap-3 rounded-card border border-hairline bg-porcelain px-4 py-3 active:bg-paper-deep">
+          <Ionicons name="pulse-outline" size={18} color={palette.inkSecondary} />
+          <View className="flex-1">
+            <Text className="text-[15px] text-ink">Log a symptom</Text>
+            <Text className="mt-0.5 text-xs text-ink-muted">
+              Headache, pain, GI, energy — with severity
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={palette.inkMuted} />
+        </Pressable>
       </View>
 
       <View className="mt-8">

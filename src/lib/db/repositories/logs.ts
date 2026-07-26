@@ -244,6 +244,24 @@ export function listTodayEntries(db: Database, now: Date = new Date()): LogFeedI
     }
   }
 
+  // 4) Symptoms — their own table (0004), keyed on the local `date` column.
+  const symptomRows = db.all<{
+    id: string;
+    name: string;
+    severity: number | null;
+    created_at: string;
+  }>(`SELECT id, name, severity, created_at FROM symptoms WHERE date = ?`, [date]);
+  for (const r of symptomRows) {
+    const sev = r.severity != null ? ` · ${r.severity}/10` : '';
+    rows.push({
+      id: r.id,
+      time: clockFromISO(r.created_at),
+      title: `${r.name}${sev}`,
+      category: 'Symptom',
+      sortKey: r.created_at,
+    });
+  }
+
   // Newest first by insertion time.
   rows.sort((a, b) => (a.sortKey < b.sortKey ? 1 : a.sortKey > b.sortKey ? -1 : 0));
   return rows.map(({ sortKey: _sortKey, ...item }) => item);
