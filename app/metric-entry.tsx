@@ -64,7 +64,11 @@ export default function MetricEntryScreen() {
       setValue((v) => (v.includes('.') ? v : v === '' ? '0.' : v + '.'));
       return;
     }
-    setValue((v) => (v === '0' ? key : v + key));
+    setValue((v) => {
+      // Cap significant digits so the big readout can't overflow its row.
+      if (v.replace('.', '').length >= 6) return v;
+      return v === '0' ? key : v + key;
+    });
   };
 
   const switchMetric = (key: string) => {
@@ -72,10 +76,12 @@ export default function MetricEntryScreen() {
     setValue('');
   };
 
-  const canLog = value !== '' && value !== '.';
+  // A logged value must be a real positive number — 0, "0.", "0.0" are not
+  // loggable for any of these metrics.
+  const canLog = Number(value) > 0;
 
   return (
-    <Screen>
+    <Screen edges={['top', 'bottom']}>
       <View className="pt-2">
         <StackHeader title={active.label} />
       </View>
@@ -107,7 +113,9 @@ export default function MetricEntryScreen() {
 
       {/* Readout */}
       <View className="mt-8 flex-row items-baseline justify-center gap-2">
-        <Text className={`font-mono text-6xl ${value ? 'text-ink' : 'text-ink-muted'}`}>
+        <Text
+          numberOfLines={1}
+          className={`font-mono text-6xl ${value ? 'text-ink' : 'text-ink-muted'}`}>
           {value || '0'}
         </Text>
         <Text className="font-mono text-lg text-ink-muted">{active.unit}</Text>

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { ScrollView, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { type Edge, SafeAreaView } from 'react-native-safe-area-context';
 
 type ScreenProps = {
   children: ReactNode;
@@ -9,16 +9,22 @@ type ScreenProps = {
    * virtualised list — nesting a FlatList inside a ScrollView breaks recycling.
    */
   scroll?: boolean;
+  /**
+   * Safe-area edges to inset. Defaults to top only — tab screens let the tab bar
+   * own the bottom. Stack-pushed screens with a bottom action (e.g. the metric
+   * keypad) have no tab bar, so they pass `['top', 'bottom']` to keep the action
+   * clear of the home indicator.
+   */
+  edges?: readonly Edge[];
 };
 
 /**
  * The one container every screen sits in: safe-area aware, bone-paper
- * background, consistent horizontal gutter. The bottom edge is owned by the
- * tab bar.
+ * background, consistent horizontal gutter.
  */
-export function Screen({ children, scroll = false }: ScreenProps) {
+export function Screen({ children, scroll = false, edges = ['top'] }: ScreenProps) {
   return (
-    <SafeAreaView edges={['top']} className="flex-1 bg-paper">
+    <SafeAreaView edges={edges} className="flex-1 bg-paper">
       {scroll ? (
         <ScrollView
           className="flex-1"

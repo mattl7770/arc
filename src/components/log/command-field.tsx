@@ -18,8 +18,10 @@ export function CommandField() {
 
   return (
     <View className="rounded-card border border-hairline bg-porcelain p-3">
-      <View className="flex-row items-stretch gap-2.5">
-        <View className="max-h-28 flex-1 justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+      {/* items-end (not stretch) keeps the pine mic a fixed stamp — a multi-line
+          note grows the field, never the accent. */}
+      <View className="flex-row items-end gap-2.5">
+        <View className="max-h-28 min-h-[48px] flex-1 justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
           <TextInput
             value={text}
             onChangeText={setText}
@@ -33,7 +35,7 @@ export function CommandField() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Voice log"
-          className="w-[52px] items-center justify-center rounded-btn bg-pine active:opacity-70">
+          className="h-12 w-[52px] items-center justify-center rounded-btn bg-pine active:opacity-70">
           <Ionicons name="mic-outline" size={22} color={palette.pineOn} />
         </Pressable>
       </View>
