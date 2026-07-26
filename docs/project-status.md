@@ -2,11 +2,11 @@
 
 **Living document.** This is the running board for what's done, what's next, and how the app is put together. Update it in the same change that changes reality — a status line that lies is worse than none.
 
-**Last updated:** 2026-07-25
-**Current phase:** Foundation
+**Last updated:** 2026-07-26
+**Current phase:** Foundation → the local data layer and the whole Log-tab capture surface are real
 **Branch:** `claude/expo-project-scaffold-d14e9e`
 
-> ⚠️ **Architecture pivot (2026-07-24): local-first, no-server, offline-except-AI.** ARC is moving off cloud Supabase to **on-device SQLite** (`op-sqlite` + `sqlite-vec`), with the Coach calling a frontier model **directly from the app** (user's key in the iOS Keychain, swappable in Settings) and **encrypted iCloud backup**. The app runs **fully offline except for AI features**. No backend, no auth, no personal data in any cloud; the only recurring cost is model tokens. See the ADR in `docs/decisions.md` and the phased plan in **`docs/architecture-migration.md`**. **Phase 0 (schema port) is done** — items below that still mention Supabase/auth/RLS/`useSession` describe what remains in the *code* today and are retired phase-by-phase.
+> ✅ **Architecture pivot (2026-07-24) — largely complete: local-first, no-server, offline-except-AI, iOS-only.** ARC runs on **on-device SQLite** (`op-sqlite` + `sqlite-vec`); **Supabase is fully removed** (client + folder deleted 2026-07-25) and Android was dropped (iOS-only). The Coach will call a frontier model **directly from the app** (user's key in the iOS Keychain, Phase 3); backup is an **encrypted iCloud snapshot** (Phase 4). The app runs **fully offline except for AI features**. No backend, no auth, no personal data in any cloud; the only recurring cost is model tokens. See the ADRs in `docs/decisions.md` and the phased plan in **`docs/architecture-migration.md`**. Remaining pivot work: the Face-ID app lock (Phase 2) and the direct on-device Coach (Phase 3).
 
 **Legend:** ✅ done · 🚧 in progress · 📋 planned (v1) · 🧊 later · ⚠️ needs a decision or has a caveat
 
@@ -18,7 +18,7 @@
 
 ### Local-first migration — phases (`docs/architecture-migration.md`)
 - [x] **Phase 0** — schema ported Postgres → SQLite (`db/migrations/0001_init.sql`), **validated against real SQLite** (20 checks); `op-sqlite` + `sqliteVec` installed
-- [ ] 📋 **Phase 1** — migration runner (`PRAGMA user_version`) + local data-access layer; wire Home & Coach to the DB instead of mock
+- [x] **Phase 1 (largely done)** — migration runner (`PRAGMA user_version`), the local data-access layer (`Database` interface + repositories), and a **pre-migration `VACUUM INTO` backup** are all built and confirmed on device; Home's mission + the entire Log tab (command field, keypad, Capture, Nutrition, Exercise, Symptoms) read/write the DB. **Remaining:** wiring the Coach to the DB is Phase 3 (it's still a mock).
 - [x] **Phase 2 (Supabase removal, done 2026-07-25)** — the dead Supabase client island (`supabase.ts`, `env.ts`, `use-session.ts`, `types/database.ts`, `login.tsx`, `gen-types.mjs`, `@supabase/supabase-js` + `async-storage` deps, `db:push`/`db:types`) was deleted in the full-app review. **Still to do:** Face ID app lock (`expo-local-authentication`).
 - [ ] 📋 **Phase 3** — Coach calls the model directly (Keychain key via `expo-secure-store`, provider/model picker); on-device `sqlite-vec` RAG
 - [ ] 📋 **Phase 4** — media (PhotoKit references for progress pics; compressed in-app copies for food logs) + encrypted iCloud backup
@@ -32,7 +32,7 @@
 - [x] Diagnosed the Expo Go SDK-57 incompatibility (single-SDK runtime handshake)
 - [ ] ⚠️ 📋 **First iOS dev build** — needs a paid Apple Developer account ($99/yr); free `eas go` bridge available meanwhile
 - [ ] 📋 EAS account + `eas login` (user)
-- [ ] ⚠️ 📋 **Dev rebuild for `op-sqlite`** — it's a native module, so the JS-only dev client can't load it. The next `eas build` picks it up; the running app is unaffected until Phase 1 imports it. (Batch this with any other native deps — `expo-secure-store`, `expo-local-authentication` — added in later phases, to save rebuilds.)
+- [x] **Dev rebuild for `op-sqlite`** — done; persistence is confirmed on device (the data layer runs). No new native deps have been added since (the Log/Nutrition/Exercise/Symptoms work is all JS + SQL migrations; the pre-migration backup uses SQLite `VACUUM INTO`, no extra module), so **no rebuild is needed to run the current app**. Batch the next rebuild with `expo-secure-store` / `expo-local-authentication` when Phases 2–3 add them.
 
 ### Foundation & tooling
 - [x] Expo SDK 57 + Expo Router + TypeScript (strict) scaffold
@@ -40,7 +40,7 @@
 - [x] ESLint (expo config, React Compiler rules) + Prettier
 - [x] `.env` support with build-time `EXPO_PUBLIC_*` handling
 - [x] Five-tab navigation shell (Home · Coach · Log · Data · Settings)
-- [x] Supabase client (lazy, boots with no `.env`)
+- [x] ~~Supabase client~~ — built early, then **deleted 2026-07-25** with the local-first pivot (see App access below)
 - [x] `.gitattributes` for cross-machine line endings
 - [ ] 📋 Test runner (Jest + React Native Testing Library) — **none installed yet**
 - [ ] 📋 CI (typecheck + lint + schema apply on push)
@@ -56,12 +56,14 @@
 - [x] **Migration runner** (Phase 1) — versioned SQL on boot via `PRAGMA user_version`, transactional, behind a testable interface (`src/lib/db/migrate.ts`); `npm run db:test` 9/9
 - [x] **Data layer + repositories** (Phase 1) — `Database` interface + op-sqlite client (`src/lib/db/`), mission repository, hand-authored types; `npm run db:test` data-layer 17/17
 - [x] Seed the biomarker reference catalogue locally (12 starter biomarkers, idempotent)
+- [x] **Feature tables added 2026-07-25** as their screens went real: `meals` (0002), `workouts` + `workout_sets` (0003, ON DELETE CASCADE), `symptoms` (0004). Schema of record now **14 tables across 4 migrations**; each has its repository + headless tests.
+- [x] **Pre-migration backup wired** — `backupBeforeMigrate` (`client.ts`) snapshots the DB via SQLite `VACUUM INTO` before any migration touches existing data (no new native dep; warns-and-proceeds on failure). Supersedes the throwing stub; Phase 4's encrypted iCloud backup supersedes this.
 - [ ] 📋 Local tables for `ai_conversations`, `ai_messages`, `experiments` (land with the Coach)
 - [x] ~~Supabase Storage bucket for lab PDFs~~ — **dropped**; the original PDF becomes a local / iCloud file, referenced by `lab_reports.file_path` (Phase 4)
 - [ ] 📋 **Preventive screenings + medical calendar** table(s) — colonoscopy, skin checks, imaging cadence, appointment tracking (brief §2; nothing exists today)
 - [ ] 📋 **Lab breadth** — add `microbiome` (and other missing) values to `biomarker_category`; a biological-age / epigenetic-clock representation. Today's 11-category enum can't store either (brief §2)
-- [ ] 📋 **Exercise as measured data** — VO2max, mobility, balance, progressive-overload metrics; today only a `training_block` protocol + `workout` log entry exist, training has no metrics of its own (brief §2)
-- [ ] 🧊 **Food model** — pantry status, recipe bank, food-photo (CAL AI-style) analysis records (brief §2)
+- [~] 📋 **Exercise as measured data** — **started**: `workouts` + `workout_sets` (0003) store sessions, sets, reps, and canonical-kg loads (the Exercise screen). Still to add: VO2max, mobility, balance, and progressive-overload analytics over that data (brief §2).
+- [~] 🧊 **Food model** — **started**: the `meals` table (0002) stores per-meal kcal + macros (the Nutrition screen). Still to add: pantry status, recipe bank, food-photo (CAL-AI-style) analysis records (brief §2).
 - [ ] 🧊 **Environment & lifestyle** — screen time, social connection, substances (only air quality is noted today) (brief §2)
 - [ ] 🧊 Future tables: genetics, cognitive, progress photos
 
@@ -101,12 +103,12 @@
 
 ### Data domains (CLAUDE.md §4 lists these by intent; not a build sequence)
 - [ ] 📋 **Labs** — Function Health PDF → structured extraction pipeline
-- [ ] 📋 **Daily logs** — the Log tab (fast capture: habits, meals, supplements, …)
+- [x] **Daily logs** — the Log tab is real (fast capture: notes, metrics, water, weight, supplements/therapies, meals, workouts, symptoms), all persisting on-device. Habits are completed on Home's mission.
 - [ ] 📋 **Protocols** — versioned stack/routine editor
 - [ ] 📋 **Wearables** — **Apple Health as the hub** (on-device, offline for ARC; the vendor app does the cloud sync) → `wearable_data`; direct vendor API only where HealthKit lacks fidelity (e.g. WHOOP). **Terra dropped** — it's a cloud aggregator that needs a server, which breaks offline/no-server.
 - [~] 📋 **Hydration tracking** (owner call, 2026-07-25) — a first-class daily metric. **Manual quick-add is built**: the Water tile → keypad with additive Glass/Bottle/Large estimates, stored in `wearable_data` (metric_type `water_ml`, canonical ml, `source_device='manual'`), with a running "N oz logged today" summary. **Automatic ingest is still to do** — ideally a smart bottle (HidrateSpark or similar) via **Apple Health** (its app syncs the bottle → HealthKit → ARC reads it, staying offline/no-server, consistent with the wearables hub); it lands on the same `water_ml` rows, so no migration.
 - [ ] 🧊 **Write data back to Apple Health** (owner call, 2026-07-25) — ARC as a HealthKit *source*, not just a reader (e.g. push weight, workouts, hydration, supplement/med intake so other apps see them). Requires a **feasibility + importance assessment first** (HealthKit write scopes, which metric types are worth writing, privacy implications) — deferred until that's done.
-- [ ] 🧊 Nutrition · Supplements/Meds/Therapies · Body composition
+- [~] **Nutrition · Supplements/Therapies · Body composition** — capture is real (meals with macros; supplement/therapy sheet; weight/body-fat/waist via the keypad → `body_metrics`). Still to come: the deeper Nutrition/Exercise sub-app features and the Data-tab dashboards/trends over all of it.
 - [ ] 📋 **Data tab** — biomarker trends, wearable history, body comp dashboards
 
 ### Reporting, export & knowledge (from the brief; newly tracked 2026-07-24)
@@ -132,7 +134,7 @@
 ## 2. Status Board
 
 ### App as a whole
-**🚧 Foundation — a navigable shell mid-pivot to local-first.** The app builds for iOS/Android/web; Home and Coach are working slices on mock data / a mock model. As of 2026-07-24 the architecture is moving off cloud Supabase to **on-device SQLite** — Phase 0 (schema ported to SQLite and validated) is done; the local data layer, the real on-device Coach, and encrypted backup are the next phases (`docs/architecture-migration.md`). Three of five tabs are placeholders. Not yet a daily tool; on track as a foundation.
+**🚧 Foundation, well underway — local-first and iOS-only.** The app builds for iOS (+ a web bundle kept only for logic-check previews). The **local data layer is live**: on-device SQLite via `op-sqlite`, a versioned migration runner (4 migrations, 14 tables), repositories, and a pre-migration `VACUUM INTO` backup — all confirmed running on device. **Home's mission and the whole Log-tab capture surface** (command field + offline parser, metric keypad, Capture, Nutrition, Exercise, Symptoms) read and write real data. Supabase is fully removed; the tree is iOS-only. Still mock or placeholder: the **Coach** (mock model until Phase 3), Home's readiness/brief/metrics (need wearables + Coach), and the **Data** + **Settings** tabs (2 of 5). Not yet a full daily tool, but the capture spine is real and persistent.
 
 ### Subsystems
 | Area | Status | Notes |
@@ -141,13 +143,14 @@
 | Navigation shell | ✅ | Five tabs + not-found, file-based routing (no `/login` — single-user) |
 | Design system | ✅ | Tokens defined and compiling; see §3 |
 | Database schema | ✅ | **Ported to SQLite** (`db/migrations/0001_init.sql`), 20-check validation; Postgres origin retired |
-| Local DB engine | ✅ | `op-sqlite` + `sqliteVec` installed; data-access layer built (migrate · repositories · seed), op-sqlite isolated to `client.ts`. Needs the one-time dev rebuild to run natively |
+| Local DB engine | ✅ | `op-sqlite` + `sqliteVec` running on device (persistence confirmed); migration runner + repositories + seed + pre-migration backup; op-sqlite isolated to `client.ts`. 4 migrations, 14 tables |
 | DB types | ✅ | Hand-authored row types (`src/lib/db/types.ts`); the Supabase generator is deleted |
 | Supabase client | ✅ | **Deleted 2026-07-25** (dead island removed in the full-app review) |
 | **Home screen** | 🚧 | Mission reads/persists via the DB; readiness/brief/metrics still mock |
 | **Coach** | 🚧 | Chat UX complete with streaming; behind a **mock model** (honest preview), not persisted |
 | App lock | 📋 | Face ID / passcode on open — Phase 2 (replaces the cut auth gate) |
-| Log | 🚧 | **Wired to the DB**: command-field parse + metric keypad persist; "Logged today" reads live. Nutrition/Exercise/Capture sub-screens are mockups |
+| Log | ✅ | Fully wired: command field (offline parse), metric keypad, Capture (Supplement/Therapy), Nutrition, Exercise, and Symptoms all persist; "Logged today" reads live. Sub-apps are real (meals / workouts+sets / symptoms), not mockups. Deeper features (photo/text-AI, templates, builder) are follow-ups |
+| Nutrition / Exercise / Symptoms | ✅ | Real capture — `meals` (0002), `workouts`+`workout_sets` (0003), `symptoms` (0004); manual entry persists, summaries read live |
 | Data | 📋 | Placeholder screen only |
 | Settings | 📋 | Placeholder screen only |
 | Labs pipeline | 📋 | Not started |
@@ -162,11 +165,11 @@
 - **`.env`:** the `EXPO_PUBLIC_SUPABASE_*` vars are no longer read by any code (safe for the owner to delete from `.env`). The model API key lives in the iOS Keychain, never in `.env`.
 
 ### Known caveats (things that will bite if forgotten)
-- ⚠️ **`op-sqlite` is a native module** — it can't load in the JS-only dev client. A fresh `eas build` is required before Phase 1's data layer will run on device.
+- ⚠️ **`op-sqlite` is a native module** — the dev build that includes it is done (persistence runs on device). The current app needs no rebuild, but **adding any new native dep** (`expo-secure-store`, `expo-local-authentication`, …) will require a fresh `eas build` — batch them.
 - ⚠️ **SQLite needs `PRAGMA foreign_keys = ON` per connection** (it defaults OFF) — the data layer must set it on every open, or the FKs in `0001_init.sql` silently won't enforce. `recursive_triggers` must stay OFF (default) so `updated_at` triggers don't recurse.
 - ⚠️ The **Coach is a mock** — `src/lib/ai/coach-service.ts` returns a scripted, honest-preview reply with simulated streaming. No model, no data. `isCoachKeyConfigured` gates the "Preview" affordance; Phase 3 wires the direct, on-device model call.
 - ⚠️ **Chat state is in-memory** — a reload resets the Coach thread (persistence lands with the real Coach, Phase 3). Home's mission and the Log feed already persist to the DB.
-- ⚠️ **op-sqlite's `wrap()` adapter (`client.ts`) has no automated coverage** — the headless tests run against `node:sqlite`, a different engine. Confirm `.rows` shape + transaction rollback in the first Phase-1 dev build before building further on the data layer.
+- ⚠️ **op-sqlite's `wrap()` adapter (`client.ts`) has no automated coverage** — the headless tests run against `node:sqlite`, a different engine. It's exercised on device (persistence works), but changes to the adapter (or the `VACUUM INTO` backup, which also only runs on device) are unverified by CI — test them on device.
 - ⚠️ **Coach keyboard offset unverified (2026-07-25 review)** — on iOS the composer may float above the keyboard by the tab-bar height. The usual fix (`useBottomTabBarHeight` from `@react-navigation/bottom-tabs`) is **blocked by expo-router 57's no-`@react-navigation`-imports guard** (it fails the bundle). Verify on device; if it's wrong, derive the offset from the safe-area inset + tab-bar height rather than importing react-navigation.
 - ⚠️ `.env` lives at the main-repo root too; it's protected via `.git/info/exclude`, but that file isn't shared — re-add the ignore on other machines.
 
