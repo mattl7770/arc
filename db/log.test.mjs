@@ -11,6 +11,7 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
   listTodayEntries,
+  logCapture,
   logMetric,
   logNote,
   recentSummary,
@@ -339,6 +340,30 @@ console.log('7. logMetric dose → log_entries(type=metric), adhoc, off the miss
     ? ok('dose renders as "500 mg" · Dose in the feed')
     : bad('dose feed', JSON.stringify(feed));
   listMission(db, TODAY).length === 0 ? ok('dose stays off the mission') : bad('dose leaked');
+}
+
+console.log('7b. logCapture (supplement / therapy) persists ad-hoc and labels the feed');
+{
+  const { db, raw } = freshDb();
+  logCapture(db, TODAY, 'supplement', 'Creatine · 5 g', { protocol: true });
+  logCapture(db, TODAY, 'therapy', 'Sauna · 20 min · 82°C');
+  const rows = raw.prepare('SELECT type, title, value FROM log_entries ORDER BY type').all();
+  rows.length === 2 &&
+  rows[0].type === 'supplement' &&
+  rows[0].title === 'Creatine · 5 g' &&
+  JSON.parse(rows[0].value).adhoc === true &&
+  JSON.parse(rows[0].value).protocol === true
+    ? ok('supplement stored as an ad-hoc log_entry with the protocol flag')
+    : bad('capture write', JSON.stringify(rows));
+  const feed = listTodayEntries(db);
+  const supp = feed.find((f) => f.title === 'Creatine · 5 g');
+  const ther = feed.find((f) => f.title === 'Sauna · 20 min · 82°C');
+  supp && supp.category === 'Supplements' && ther && ther.category === 'Therapies'
+    ? ok('feed labels supplement → Supplements, therapy → Therapies')
+    : bad('capture feed categories', JSON.stringify(feed));
+  listMission(db, TODAY).length === 0
+    ? ok('captures stay off the mission')
+    : bad('capture leaked to mission');
 }
 
 console.log('8. feed is newest-first, and excludes seeded mission items');

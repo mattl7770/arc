@@ -92,6 +92,49 @@ export function logMetric(
   );
 }
 
+/** The capture types the Log-tab Supplement/Therapy sheet writes. */
+export type CaptureType = 'supplement' | 'therapy' | 'medication';
+
+/** Display category for each ad-hoc `log_entries.type` shown in the feed. */
+const CAPTURE_CATEGORY: Record<string, string> = {
+  supplement: 'Supplements',
+  medication: 'Medications',
+  therapy: 'Therapies',
+  meal: 'Nutrition',
+  workout: 'Training',
+  habit: 'Routine',
+};
+
+/**
+ * Persist a Supplement / Therapy / Medication capture as an ad-hoc `log_entries`
+ * row. `title` is the display line (e.g. "Creatine · 5 g", "Sauna · 20 min");
+ * marked `adhoc` so it stays off Home's mission and in the Log feed.
+ */
+export function logCapture(
+  db: Database,
+  date: string,
+  type: CaptureType,
+  title: string,
+  opts: { protocol?: boolean } = {}
+): string {
+  const log = getOrCreateDailyLog(db, date);
+  const id = newId(db);
+  db.run(
+    `INSERT INTO log_entries
+       (id, daily_log_id, type, title, status, completed_at, value, source)
+     VALUES (?, ?, ?, ?, 'completed', ?, ?, 'manual')`,
+    [
+      id,
+      log.id,
+      type,
+      title.trim(),
+      nowISO(),
+      JSON.stringify({ adhoc: true, ...(opts.protocol ? { protocol: true } : {}) }),
+    ]
+  );
+  return id;
+}
+
 /** Generic-metric payload stashed in `log_entries.value`. */
 type GenericMetricValue = { metricKey?: string; canonical?: number };
 
@@ -133,7 +176,7 @@ export function listTodayEntries(db: Database, now: Date = new Date()): LogFeedI
         note: true,
         sortKey: r.created_at,
       });
-    } else {
+    } else if (r.type === 'metric') {
       const extras = parseValue(r.value);
       const metric = extras.metricKey ? metricByKey(extras.metricKey) : undefined;
       const title =
@@ -145,6 +188,16 @@ export function listTodayEntries(db: Database, now: Date = new Date()): LogFeedI
         time: clockFromISO(r.created_at),
         title,
         category: metric?.label ?? 'Metric',
+        sortKey: r.created_at,
+      });
+    } else {
+      // Capture types (supplement / therapy / medication) — the title carries
+      // the display line already.
+      rows.push({
+        id: r.id,
+        time: clockFromISO(r.created_at),
+        title: r.title,
+        category: CAPTURE_CATEGORY[r.type] ?? 'Logged',
         sortKey: r.created_at,
       });
     }
