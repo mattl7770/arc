@@ -76,7 +76,7 @@ export default function ExerciseScreen() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Start a workout"
-          onPress={() => router.push('/workout-log?mode=live')}
+          onPress={() => router.push({ pathname: '/workout-log', params: { mode: 'live' } })}
           className="mt-2 flex-row items-center gap-3 rounded-card bg-pine px-4 py-3.5 active:opacity-70">
           <Ionicons name="play-outline" size={20} color={palette.pineOn} />
           <View className="flex-1">
@@ -87,7 +87,7 @@ export default function ExerciseScreen() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Log a past session"
-          onPress={() => router.push('/workout-log?mode=past')}
+          onPress={() => router.push({ pathname: '/workout-log', params: { mode: 'past' } })}
           className="mt-2 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
           <Ionicons name="time-outline" size={17} color={palette.inkSecondary} />
           <Text className="text-[13px] text-ink">Log a past session</Text>

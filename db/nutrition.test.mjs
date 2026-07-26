@@ -70,11 +70,16 @@ function freshDb() {
 const TODAY = todayISODate();
 const OTHER_DAY = '2000-01-01';
 
-console.log('0. migrations: 0002 applies on top of 0001 and stamps user_version 2');
+console.log('0. migrations: 0002 (meals) applies on top of 0001');
 {
   const { raw } = freshDb();
+  // user_version is the HIGHEST applied migration — >= 2 once 0002 has run
+  // (it's 3 with exercise's 0003 also present after the merge; assert the floor
+  // so this stays correct as later migrations land).
   const version = raw.prepare('PRAGMA user_version').get().user_version;
-  version === 2 ? ok('user_version is 2 after migrating') : bad('user_version', version);
+  version >= 2
+    ? ok(`user_version is ${version} (>= 2, 0002 applied)`)
+    : bad('user_version', version);
   const meals = raw
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='meals'")
     .get();
