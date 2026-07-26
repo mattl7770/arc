@@ -189,7 +189,7 @@ n-of-1 experiments.
 
 ## Implementation Status
 
-**Shipped:** `db/migrations/0001_init.sql` (on-device SQLite) implements the ten v1 priority tables above — **this is the schema of record.** The Postgres/Supabase origin it was ported from was **deleted 2026-07-25** (git history only). `ai_conversations`, `ai_messages` and `experiments` are specified but **not yet migrated** — they land with the Coach.
+**Shipped:** `db/migrations/0001_init.sql` (on-device SQLite) implements the ten v1 priority tables above — **this is the schema of record.** The Postgres/Supabase origin it was ported from was **deleted 2026-07-25** (git history only). Four feature tables were added 2026-07-25 as their screens went real: **`meals`** (0002, Nutrition), **`workouts`** + **`workout_sets`** (0003, Exercise, ON DELETE CASCADE), and **`symptoms`** (0004). `ai_conversations`, `ai_messages` and `experiments` are specified but **not yet migrated** — they land with the Coach.
 
 **Types are hand-authored** from the SQLite schema (`src/lib/db/types.ts` for rows; `src/types/*` for view-models). The old Supabase generator (`npm run db:types` → `src/types/database.ts`) and the generated file were **deleted 2026-07-25**.
 

@@ -160,7 +160,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 
 **Foundation milestones:**
 1. ~~Solid project structure + this file~~ — **done.** Expo Router shell, five tabs, NativeWind, typed config.
-2. ~~Schema v1~~ — **done, then ported.** Ten core tables built for Postgres, now **ported to on-device SQLite** (`db/migrations/0001_init.sql`, validated). `ai_conversations` / `ai_messages` / `experiments` still land with the Coach.
+2. ~~Schema v1~~ — **done, then ported.** Ten core tables built for Postgres, now **ported to on-device SQLite** (`db/migrations/0001_init.sql`, validated). Feature tables added since as their screens shipped (2026-07-25): `meals` (0002), `workouts`+`workout_sets` (0003), `symptoms` (0004). `ai_conversations` / `ai_messages` / `experiments` still land with the Coach.
 3. Function Health PDF → structured data pipeline (on-device parse)
 4. ~~Authenticated app shell~~ — **cut.** No accounts in a single-user local app; a Face ID app lock replaces it (Phase 2). `useSession` / `app/login.tsx` are removed.
 5. ~~First version of directive Home Screen~~ — **done** on mock data (chronological mission).

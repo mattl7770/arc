@@ -1,5 +1,25 @@
 # Architecture Decision Records (ADR)
 
+## 2026-07-25 — Nutrition / Exercise / Capture / Symptoms went real (parallel build)
+
+**Decision:** the four Log sub-surfaces were built for real, replacing the mockups. Nutrition and Exercise were built **in parallel** in separate Claude (Fable) windows on their own worktrees/branches; Capture and Symptoms were built in the main window, which also **integrated** everything.
+
+**Data model** — each feature got its own additive table rather than overloading `log_entries` (whose `type` is a fixed CHECK vocabulary, and which holds *planned* mission rows, not records of what happened):
+- **`meals`** (0002) — one row per eaten meal, canonical macros, summed into the day's intake.
+- **`workouts`** + **`workout_sets`** (0003) — a session and its strength sets; `weight_kg` canonical; sets `ON DELETE CASCADE` with their workout (a set has no meaning outside its session — unlike log history, which survives its protocol via SET NULL).
+- **`symptoms`** (0004) — name + 1–10 severity + body area + note, so the Coach can correlate against protocols/labs/wearables.
+Capture (Supplement/Therapy) needed no table — it writes ad-hoc `log_entries`. All four surface in the Log feed's "Logged today".
+
+**Parallel-build coordination (what kept the merge clean):** distinct reserved migration numbers per stream (0002/0003/0004); each window in its own git worktree; feature-local types (`src/lib/<feature>/types.ts`) instead of the shared `src/lib/db/types.ts`; and the integrator owning the shared files at merge — the generated migration bundle (re-run `db:bundle`), the `db:test` script line, and all docs. The merge itself only conflicted on those two generated/shared files. `migrate.test.mjs` was hardened during the build to assert `user_version === max(version)` rather than the migration *count*, since parallel numbering leaves gaps on a branch until merge.
+
+**Pre-migration backup, now live:** 0002–0004 are the first migrations to run against a device that already has data, so `backupBeforeMigrate` (a stub that threw in `__DEV__`) was wired to take a real snapshot via SQLite **`VACUUM INTO`** before migrating — a consistent single-file copy with **no new native dependency**. It warns-and-proceeds on failure rather than blocking boot (pre-release, single-user, re-seedable). Phase 4's encrypted iCloud backup supersedes it.
+
+**Scope this pass:** functional cores only — manual entry that persists and matches the mockups. Photo/text natural-language logging (snap-a-meal, spoken symptoms) is blocked on the on-device model and lands with the Coach (Phase 3); meal templates, the workout builder's deeper features, and progressive-overload analytics are follow-ups.
+
+**Consequences:** four new tables (schema of record now 14 tables across 4 migrations); `db:test` grew to 140 across six suites; the reserved-number + integrator-owns-shared-files pattern is the template for future parallel feature work.
+
+---
+
 ## 2026-07-25 — iOS-only target, and the last Supabase remnants purged
 
 **Decision (owner):**
