@@ -29,6 +29,11 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="login" />
+        {/* Pushed over the tabs from the Log tab (docs/information-architecture.md). */}
+        <Stack.Screen name="nutrition" />
+        <Stack.Screen name="exercise" />
+        <Stack.Screen name="metric-entry" />
+        <Stack.Screen name="capture" />
       </Stack>
       <StatusBar style="dark" />
     </ThemeProvider>

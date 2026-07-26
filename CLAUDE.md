@@ -175,7 +175,8 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `CLAUDE.md` — This file (AI brain)
 - `/docs/project-status.md` — **Living tracker:** to-do queue, status board, design system. Start here for "where are we?"
 - `/docs/data-model.md` — Detailed schema + what is actually shipped
-- `/docs/home-screen.md` — Information architecture
+- `/docs/information-architecture.md` — **Where every feature lives** (5 tabs + pushed sub-screens), the Log-tab spec, and the Modes model (locked 2026-07-25)
+- `/docs/home-screen.md` — Home screen information architecture (detail)
 - `/docs/ai-coach.md` — System prompt, tools, memory design
 - `/docs/decisions.md` — Architecture Decision Records
 - `/docs/architecture-migration.md` — **The local-first migration plan** (cloud → on-device), phased. Read before touching the data layer.

@@ -1,5 +1,20 @@
 # Architecture Decision Records (ADR)
 
+## 2026-07-25 — Log tab direction, Nutrition/Exercise sub-apps, and the Modes model
+
+**Decision:** Full map + rationale in `docs/information-architecture.md`. In brief:
+
+- **Log tab = direction A ("Open Line")** — chosen from a two-round design study. Three capture layers: a command/voice field (free notes + parse), a 3×2 quick-add tile grid, and a single-number metric keypad drill-in.
+- **Quick-add tiles:** Supplement · Meal · Water · Weight · Workout · Therapy. **Meal and Workout are gateways** that push full sub-app screens (**Nutrition**, **Exercise**); the rest are quick-capture (sheet/keypad). Notes live in the command field; other body numbers in the keypad chips; medication folds into the Supplement sheet; habits are completed on Home, not re-logged.
+- **Nutrition and Exercise are stack-pushed sub-app screens** (placeholders now), not Data sections — they're deep enough to own their space, which also keeps the Data hub from overloading. **Protocols stays in Data** for now but is the leading candidate to graduate the same way.
+- **Modes** (Normal/Travel/Sick/Deload/Social/Custom) live on **Home** and adapt four things — the plan, priorities, the Coach's tone, and adherence accounting (excused misses). The override data model is built later with Protocols + the mission generator.
+
+**Reasoning:** capture frequency drives layer (daily-many → tile, deep domain → sub-app, anything/notes → the field); Home owns "today" so the Mode control belongs there, not Settings; sub-app screens beat Data-sections for food/exercise because both are real mini-apps. Everything is defensible for v1 and reversible.
+
+**Consequences:** the placement map in `docs/information-architecture.md` is the source of truth for where features go; `docs/home-screen.md` and CLAUDE.md §11 point to it. Building starts with the Log skeleton (structure on mock content; persistence/parsing is the next step).
+
+---
+
 ## 2026-07-25 — Backup key: user-recorded recovery phrase, envelope-encrypted
 
 **Decision:** The encrypted iCloud backup (Phase 4) is protected by a key the user can recover **from a one-time recovery phrase**, not by a device-only key. Concretely:

@@ -115,7 +115,14 @@
 - [ ] 🧊 **Education / knowledge base module** — a *browsable* longevity reference in-app; today this exists only as a RAG corpus the Coach reads, not something the user can open (brief §2)
 
 ### Screens still to build
-- [ ] 📋 Log · Data · Settings (still placeholders)
+- [ ] 🚧 **Log tab** — direction A locked (`docs/information-architecture.md`); building the skeleton now (command/voice field, 6 quick-add tiles, recents, metric keypad). Persistence/parsing is the next step.
+- [ ] 📋 **Nutrition** sub-app screen (from the Meal tile) — food logging by photo/text/manual, templates, macros, grocery/pantry/recipes, CAL-AI photo analysis
+- [ ] 📋 **Exercise** sub-app screen (from the Workout tile) — workout builder, set/rep logging, Zone 2 / VO2max / mobility metrics
+- [ ] 📋 **Metric keypad** drill-in — single-number entry (Weight / Body-fat / Waist / HRV / RHR / Dose)
+- [ ] 📋 **Modes** (Normal/Travel/Sick/Deload/Social/Custom) on Home — adapts plan, priorities, Coach tone, adherence accounting; needs the override model (`docs/information-architecture.md`)
+- [ ] 📋 Data · Settings (still placeholders)
+
+> **Information architecture** — where every feature lives (5 tabs + pushed sub-screens), the Log-tab spec, and the Modes model: `docs/information-architecture.md` (locked 2026-07-25).
 
 ---
 
