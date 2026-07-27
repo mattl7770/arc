@@ -13,7 +13,13 @@
  * in ml — matching `body_metrics.weight_kg`/`waist_cm` and keeping a future
  * lb/kg · in/cm · oz/ml unit toggle (Settings, see docs/project-status.md) a
  * display concern, never a migration. `displayUnit` is what the user sees today.
+ *
+ * The unit toggle is honoured through {@link resolveDisplay}: given a metric and
+ * the user's {@link UnitPreferences}, it returns a preference-aware
+ * {@link DisplaySpec} (unit label, decimals, canonical↔display converters). The
+ * type-only import keeps this module pure and DB-free (types erase at build).
  */
+import type { UnitPreferences } from '@/lib/user/types';
 
 export type MetricKey = 'weight' | 'body_fat' | 'waist' | 'hrv' | 'rhr' | 'water' | 'dose';
 
@@ -204,4 +210,78 @@ export function isLoggableCanonical(metric: MetricDescriptor, canonical: number)
     }
   }
   return true;
+}
+
+/**
+ * A preference-aware display contract for a metric: the unit label to show, how
+ * many decimals to render, and the converters between the CANONICAL stored value
+ * (kg/cm/ml) and that display unit. This is what lets the lb↔kg · in↔cm · oz↔ml
+ * toggle stay a pure render concern — storage never changes, only this spec does.
+ */
+export type DisplaySpec = {
+  unit: string;
+  decimals: number;
+  /** Canonical (stored) value → display value. */
+  fromCanonical: (canonical: number) => number;
+  /** Display value → canonical (stored) value. */
+  toCanonical: (display: number) => number;
+};
+
+/**
+ * Resolve how a metric should render for the user's chosen units. Only the three
+ * metrics with a user-facing unit choice branch — weight (lb/kg), water (oz/ml),
+ * waist (in/cm); each SI branch is the identity map (storage IS canonical), and
+ * each imperial branch reproduces the descriptor's own factors exactly, so the
+ * imperial defaults render identically to the pre-toggle behaviour. Every other
+ * metric (body-fat %, HRV ms, RHR bpm, dose mg) has no unit preference and falls
+ * through to its own fixed unit and converters.
+ */
+export function resolveDisplay(metric: MetricDescriptor, units: UnitPreferences): DisplaySpec {
+  switch (metric.key) {
+    case 'weight':
+      return units.weight === 'kg'
+        ? { unit: 'kg', decimals: 1, fromCanonical: id, toCanonical: id }
+        : {
+            unit: 'lb',
+            decimals: 1,
+            fromCanonical: (kg) => kg * LB_PER_KG,
+            toCanonical: (lb) => lb / LB_PER_KG,
+          };
+    case 'water':
+      return units.volume === 'ml'
+        ? { unit: 'ml', decimals: 0, fromCanonical: id, toCanonical: id }
+        : {
+            unit: 'oz',
+            decimals: 0,
+            fromCanonical: (ml) => ml / ML_PER_OZ,
+            toCanonical: (oz) => oz * ML_PER_OZ,
+          };
+    case 'waist':
+      return units.length === 'cm'
+        ? { unit: 'cm', decimals: 1, fromCanonical: id, toCanonical: id }
+        : {
+            unit: 'in',
+            decimals: 1,
+            fromCanonical: (cm) => cm / CM_PER_IN,
+            toCanonical: (inches) => inches * CM_PER_IN,
+          };
+    default:
+      return {
+        unit: metric.displayUnit,
+        decimals: metric.decimals,
+        fromCanonical: metric.fromCanonical,
+        toCanonical: metric.toCanonical,
+      };
+  }
+}
+
+/** Round a display number to the spec's precision (mirrors {@link roundDisplay}). */
+export function roundToSpec(spec: DisplaySpec, display: number): number {
+  const factor = 10 ** spec.decimals;
+  return Math.round(display * factor) / factor;
+}
+
+/** "178.2 lb", "1,893 ml" without the comma — a canonical value rendered per spec. */
+export function formatMeasured(spec: DisplaySpec, canonical: number): string {
+  return `${roundToSpec(spec, spec.fromCanonical(canonical)).toFixed(spec.decimals)} ${spec.unit}`;
 }

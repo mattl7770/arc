@@ -38,6 +38,8 @@ export default function RootLayout() {
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />
           <Stack.Screen name="labs" />
+          <Stack.Screen name="settings-profile" />
+          <Stack.Screen name="settings-units" />
         </Stack>
         <StatusBar style="dark" />
       </ThemeProvider>

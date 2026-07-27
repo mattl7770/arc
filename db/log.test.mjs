@@ -111,6 +111,27 @@ console.log('1. parseCommand: notes vs. structured metrics (single-value)');
     ? ok('"82 kg" → weight, kg passed straight to canonical')
     : bad('kg passthrough', JSON.stringify(wk));
 
+  // Unit preference: a BARE number is read in the user's display unit (the keypad
+  // does the same), so the two Log-tab write paths never disagree. An explicit
+  // unit token always wins over the preference.
+  const KG_PREFS = { weight: 'kg', distance: 'km', volume: 'ml', length: 'cm', temperature: 'C' };
+  const wkgPref = parseCommand('weight 80', KG_PREFS);
+  wkgPref.kind === 'metric' && near(wkgPref.canonical, 80)
+    ? ok('"weight 80" under kg preference → 80 kg canonical (not 36.3)')
+    : bad('kg-pref bare weight', JSON.stringify(wkgPref));
+  const wlbDefault = parseCommand('weight 80');
+  wlbDefault.kind === 'metric' && near(wlbDefault.canonical, 80 / 2.2046226218)
+    ? ok('"weight 80" with no preference → 80 lb canonical (imperial default unchanged)')
+    : bad('default bare weight', JSON.stringify(wlbDefault));
+  const wExplicit = parseCommand('180 lb', KG_PREFS);
+  wExplicit.kind === 'metric' && near(wExplicit.canonical, 180 / 2.2046226218)
+    ? ok('"180 lb" ignores the kg preference — an explicit unit wins')
+    : bad('explicit over pref', JSON.stringify(wExplicit));
+  const water20 = parseCommand('water 20', KG_PREFS);
+  water20.kind === 'metric' && water20.metric === 'water' && near(water20.canonical, 20)
+    ? ok('"water 20" under ml preference → 20 ml canonical (not 591 ml as oz)')
+    : bad('ml-pref bare water', JSON.stringify(water20));
+
   const hrv = parseCommand('hrv 48');
   hrv.kind === 'metric' && hrv.metric === 'hrv' && near(hrv.canonical, 48)
     ? ok('"hrv 48" → hrv')

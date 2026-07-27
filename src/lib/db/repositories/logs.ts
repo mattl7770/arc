@@ -21,11 +21,15 @@ import { getOrCreateDailyLog } from './mission';
 import type { BodyMetricRow, LogEntryRow, WearableDataRow } from '../types';
 import {
   formatCanonical,
+  formatMeasured,
   metricByBodyColumn,
   metricByKey,
   metricByWearableType,
+  resolveDisplay,
+  type MetricDescriptor,
   type MetricKey,
 } from '@/lib/log/metrics';
+import type { UnitPreferences } from '@/lib/user/types';
 import type { LogFeedItem } from '@/types/log';
 
 const nowISO = () => new Date().toISOString();
@@ -154,7 +158,11 @@ function parseValue(value: string | null): GenericMetricValue {
  * the single `now` argument, so they can't disagree; `now` is injectable so the
  * headless tests are deterministic.
  */
-export function listTodayEntries(db: Database, now: Date = new Date()): LogFeedItem[] {
+export function listTodayEntries(
+  db: Database,
+  now: Date = new Date(),
+  units?: UnitPreferences
+): LogFeedItem[] {
   const date = todayISODate(now);
   const { startUtc, endUtc } = localDayUtcRange(now);
   const rows: (LogFeedItem & { sortKey: string })[] = [];
@@ -181,7 +189,7 @@ export function listTodayEntries(db: Database, now: Date = new Date()): LogFeedI
       const metric = extras.metricKey ? metricByKey(extras.metricKey) : undefined;
       const title =
         metric && typeof extras.canonical === 'number'
-          ? formatCanonical(metric, extras.canonical)
+          ? formatForUnits(metric, extras.canonical, units)
           : r.title;
       rows.push({
         id: r.id,
@@ -211,7 +219,7 @@ export function listTodayEntries(db: Database, now: Date = new Date()): LogFeedI
   for (const r of wearableRows) {
     const metric = metricByWearableType(r.metric_type);
     const title = metric
-      ? formatCanonical(metric, r.value)
+      ? formatForUnits(metric, r.value, units)
       : `${r.value}${r.unit ? ` ${r.unit}` : ''}`;
     rows.push({
       id: r.id,
@@ -237,7 +245,7 @@ export function listTodayEntries(db: Database, now: Date = new Date()): LogFeedI
       rows.push({
         id: `${r.id}:${column}`,
         time: clockFromISO(r.created_at),
-        title: metric ? formatCanonical(metric, value) : String(value),
+        title: metric ? formatForUnits(metric, value, units) : String(value),
         category: metric?.label ?? column,
         sortKey: r.created_at,
       });
@@ -268,10 +276,34 @@ export function listTodayEntries(db: Database, now: Date = new Date()): LogFeedI
 }
 
 /**
- * A short "recent" line for the keypad drill-in: today's total for water, else
- * the last stored reading. Empty-safe.
+ * Render a canonical value for the keypad's "recent" line, honouring the user's
+ * unit preference when supplied. `units` is optional and backward-compatible:
+ * omitting it (the headless tests do) keeps the metric's fixed display unit via
+ * `formatCanonical`, so existing output is unchanged; passing it resolves a
+ * preference-aware DisplaySpec so "logged today" / "Last …" read in the chosen
+ * unit (lb↔kg, oz↔ml, in↔cm).
  */
-export function recentSummary(db: Database, metricKey: MetricKey, date: string): string {
+function formatForUnits(
+  metric: MetricDescriptor,
+  canonical: number,
+  units?: UnitPreferences
+): string {
+  return units
+    ? formatMeasured(resolveDisplay(metric, units), canonical)
+    : formatCanonical(metric, canonical);
+}
+
+/**
+ * A short "recent" line for the keypad drill-in: today's total for water, else
+ * the last stored reading. Empty-safe. `units` (optional) renders the numbers in
+ * the user's chosen unit; when omitted the metric's fixed display unit is used.
+ */
+export function recentSummary(
+  db: Database,
+  metricKey: MetricKey,
+  date: string,
+  units?: UnitPreferences
+): string {
   const metric = metricByKey(metricKey);
   if (!metric) return '';
 
@@ -285,7 +317,7 @@ export function recentSummary(db: Database, metricKey: MetricKey, date: string):
     );
     const ml = row?.total ?? 0;
     if (!ml) return 'No water logged yet today';
-    return `${formatCanonical(metric, ml)} logged today`;
+    return `${formatForUnits(metric, ml, units)} logged today`;
   }
 
   const target = metric.target;
@@ -319,5 +351,5 @@ export function recentSummary(db: Database, metricKey: MetricKey, date: string):
     const auto = target.kind === 'wearable' ? ' — usually auto from Apple Health' : '';
     return `No readings yet${auto}`;
   }
-  return `Last ${formatCanonical(metric, last.value)}`;
+  return `Last ${formatForUnits(metric, last.value, units)}`;
 }

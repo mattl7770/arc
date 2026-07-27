@@ -14,7 +14,7 @@
     "doctor": "expo-doctor",
     "db:bundle": "node db/bundle-migrations.mjs",
     "db:validate": "node db/bundle-migrations.mjs --check && node db/validate-schema.mjs",
-    "db:test": "node --import ./db/register-ts-hooks.mjs db/migrate.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-layer.test.mjs && node --import ./db/register-ts-hooks.mjs db/log.test.mjs && node --import ./db/register-ts-hooks.mjs db/nutrition.test.mjs && node --import ./db/register-ts-hooks.mjs db/exercise.test.mjs && node --import ./db/register-ts-hooks.mjs db/symptoms.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-body-biomarkers.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-trends.test.mjs"
+    "db:test": "node --import ./db/register-ts-hooks.mjs db/migrate.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-layer.test.mjs && node --import ./db/register-ts-hooks.mjs db/log.test.mjs && node --import ./db/register-ts-hooks.mjs db/nutrition.test.mjs && node --import ./db/register-ts-hooks.mjs db/exercise.test.mjs && node --import ./db/register-ts-hooks.mjs db/symptoms.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-body-biomarkers.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-trends.test.mjs && node --import ./db/register-ts-hooks.mjs db/user.test.mjs && node --import ./db/register-ts-hooks.mjs db/units.test.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",

@@ -15,7 +15,8 @@
  * protein" → a meal with macros) needs the on-device model and lands with the
  * Coach (Phase 3, docs/architecture-migration.md).
  */
-import { METRICS, type MetricDescriptor, type MetricKey } from './metrics';
+import { METRICS, resolveDisplay, type MetricDescriptor, type MetricKey } from './metrics';
+import type { UnitPreferences } from '@/lib/user/types';
 
 export type ParseResult =
   | {
@@ -85,21 +86,46 @@ function matchMetric(text: string, metric: MetricDescriptor): Hit | undefined {
  * Parse a raw command-field string into a structured metric or a note. The first
  * metric (in registry order) that a number is adjacently bound to wins;
  * otherwise the whole string is a note.
+ *
+ * `units` (the user's display preference) governs how a BARE number with no
+ * explicit unit token is interpreted: "weight 80" means 80 in whatever unit the
+ * user sees today (kg if they've switched, lb by default) — matching the keypad,
+ * so the two Log-tab write paths never disagree. An EXPLICIT unit ("80 kg",
+ * "180 lb") always wins and is unaffected by the preference. Omitting `units`
+ * (the headless parse tests do) falls back to the metric's fixed display unit,
+ * which equals the imperial-default resolution, so existing behaviour is intact.
  */
-export function parseCommand(input: string): ParseResult {
+export function parseCommand(input: string, units?: UnitPreferences): ParseResult {
   const text = input.trim();
 
   for (const metric of METRICS) {
     const hit = matchMetric(text, metric);
     if (!hit) continue;
-    const convert = hit.unit ? metric.units?.[hit.unit] : undefined;
-    const canonical = convert ? convert(hit.value) : metric.toCanonical(hit.value);
+
+    if (hit.unit) {
+      // Explicit unit token — convert via the metric's own units map, never the
+      // preference. "80 kg" is 80 kg no matter what the display toggle says.
+      const convert = metric.units?.[hit.unit];
+      const canonical = convert ? convert(hit.value) : metric.toCanonical(hit.value);
+      return {
+        kind: 'metric',
+        metric: metric.key,
+        canonical,
+        display: hit.value,
+        displayUnit: hit.unit,
+      };
+    }
+
+    // Bare number — interpret it in the user's preferred display unit for this
+    // metric (falling back to the metric's fixed unit when no preference is given).
+    const spec = units ? resolveDisplay(metric, units) : undefined;
+    const canonical = spec ? spec.toCanonical(hit.value) : metric.toCanonical(hit.value);
     return {
       kind: 'metric',
       metric: metric.key,
       canonical,
       display: hit.value,
-      displayUnit: hit.unit ?? metric.displayUnit,
+      displayUnit: spec ? spec.unit : metric.displayUnit,
     };
   }
 

@@ -9,7 +9,8 @@ import { listBiomarkerRanges } from '@/lib/db/repositories/biomarkers';
 import { weeklyTrainingSeries, weekSummary } from '@/lib/db/repositories/exercise';
 import { dailyIntakeSeries, todayTotals } from '@/lib/db/repositories/nutrition';
 import { listTodaySymptoms, symptomDailySeries } from '@/lib/db/repositories/symptoms';
-import { metricByBodyColumn, roundDisplay } from '@/lib/log/metrics';
+import { getPreferences } from '@/lib/db/repositories/user';
+import { metricByBodyColumn, resolveDisplay, roundToSpec } from '@/lib/log/metrics';
 
 /**
  * The Data tab's "Standing Ledger" view model, backed by the on-device database.
@@ -86,6 +87,9 @@ function read(): DataOverviewState {
   const db = getDb();
   const today = todayISODate();
   const now = new Date();
+  // Display-only unit preference (storage stays canonical kg); the weight
+  // headline renders in the user's chosen unit via the resolved DisplaySpec.
+  const units = getPreferences(db).units;
 
   // Weight — latest reading is the headline; the 30-day series is the trend.
   const weightLatest = latestBody(db, 'weight_kg');
@@ -95,9 +99,9 @@ function read(): DataOverviewState {
   let weightUnit = '';
   let weightQualifier: string | null = null;
   if (weightLatest && weightMetric) {
-    const display = roundDisplay(weightMetric, weightMetric.fromCanonical(weightLatest.value));
-    weightValue = display.toFixed(weightMetric.decimals);
-    weightUnit = weightMetric.displayUnit;
+    const spec = resolveDisplay(weightMetric, units);
+    weightValue = roundToSpec(spec, spec.fromCanonical(weightLatest.value)).toFixed(spec.decimals);
+    weightUnit = spec.unit;
     weightQualifier = shortDate(weightLatest.measuredAt);
   }
   const weight: DataTrend = {
