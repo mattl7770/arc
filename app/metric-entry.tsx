@@ -6,6 +6,7 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { logMetric, recentSummary } from '@/lib/db/repositories/logs';
@@ -13,6 +14,7 @@ import {
   isLoggableCanonical,
   METRICS,
   metricByKey,
+  resolveDisplay,
   type MetricDescriptor,
   type MetricKey,
 } from '@/lib/log/metrics';
@@ -29,12 +31,24 @@ import {
  */
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'] as const;
 
-/** Additive water shortcuts, sitting just above the keypad (Water only). */
-const WATER_QUICK = [
-  { label: 'Glass', oz: 8 },
-  { label: 'Bottle', oz: 16 },
-  { label: 'Large', oz: 24 },
-] as const;
+/**
+ * Additive water shortcuts, sitting just above the keypad (Water only). Amounts
+ * are in the CURRENT display unit — a "Glass" adds 8 oz or 240 ml depending on
+ * the volume preference — so the additive maths stays in display units and the
+ * stored value is still converted to canonical ml at log time.
+ */
+const WATER_QUICK: Record<'oz' | 'ml', readonly { label: string; amount: number }[]> = {
+  oz: [
+    { label: 'Glass', amount: 8 },
+    { label: 'Bottle', amount: 16 },
+    { label: 'Large', amount: 24 },
+  ],
+  ml: [
+    { label: 'Glass', amount: 240 },
+    { label: 'Bottle', amount: 500 },
+    { label: 'Large', amount: 750 },
+  ],
+};
 
 /** Cap significant digits so the big readout can't overflow its row. */
 function withinCap(next: string): boolean {
@@ -44,17 +58,22 @@ function withinCap(next: string): boolean {
 export default function MetricEntryScreen() {
   const router = useRouter();
   const { metric } = useLocalSearchParams<{ metric?: string }>();
+  const { units } = useUnitPreferences();
   const today = todayISODate();
   const initialKey = metricByKey(metric ?? '')?.key ?? 'weight';
 
   const [activeKey, setActiveKey] = useState<MetricKey>(initialKey);
   const [value, setValue] = useState('');
-  const [recent, setRecent] = useState(() => recentSummary(getDb(), initialKey, today));
+  const [recent, setRecent] = useState(() => recentSummary(getDb(), initialKey, today, units));
 
   const active = useMemo<MetricDescriptor>(
     () => metricByKey(activeKey) ?? METRICS[0]!,
     [activeKey]
   );
+
+  // Preference-aware display contract for the active metric: what unit to show,
+  // how to round, and how to convert the typed value to/from the canonical store.
+  const spec = useMemo(() => resolveDisplay(active, units), [active, units]);
 
   const press = (key: (typeof KEYS)[number]) => {
     if (key === 'del') {
@@ -71,9 +90,9 @@ export default function MetricEntryScreen() {
     });
   };
 
-  const addWater = (oz: number) => {
+  const addWater = (amount: number) => {
     setValue((v) => {
-      const next = String((Number(v) || 0) + oz);
+      const next = String((Number(v) || 0) + amount);
       return withinCap(next) ? next : v;
     });
   };
@@ -81,14 +100,16 @@ export default function MetricEntryScreen() {
   const switchMetric = (key: MetricKey) => {
     setActiveKey(key);
     setValue('');
-    setRecent(recentSummary(getDb(), key, today));
+    setRecent(recentSummary(getDb(), key, today, units));
   };
 
   // A logged value must be a real positive number within the metric's domain:
   // 0/"0."/blank, and out-of-range body values (e.g. body-fat > 100, weight
   // ≥ 1000 kg) are not loggable — they'd otherwise trip a schema CHECK and throw
-  // out of this handler.
-  const canonical = active.toCanonical(Number(value));
+  // out of this handler. The typed value is in the display unit, so it converts
+  // to canonical via the resolved spec; the guard checks the canonical value
+  // (unit-independent) against the schema bounds.
+  const canonical = spec.toCanonical(Number(value));
   const canLog = isLoggableCanonical(active, canonical);
   const outOfRange = value !== '' && Number(value) > 0 && !canLog;
 
@@ -143,7 +164,7 @@ export default function MetricEntryScreen() {
           className={`font-mono text-6xl ${value ? 'text-ink' : 'text-ink-muted'}`}>
           {value || '0'}
         </Text>
-        <Text className="font-mono text-lg text-ink-muted">{active.displayUnit}</Text>
+        <Text className="font-mono text-lg text-ink-muted">{spec.unit}</Text>
       </View>
       <Text className="mt-2 text-center text-xs text-ink-muted">
         {outOfRange ? `That looks out of range for ${active.label.toLowerCase()}` : recent}
@@ -153,15 +174,17 @@ export default function MetricEntryScreen() {
       <View className="mt-8 flex-1 justify-end">
         {active.key === 'water' ? (
           <View className="mb-3 flex-row gap-2">
-            {WATER_QUICK.map((q) => (
+            {WATER_QUICK[units.volume].map((q) => (
               <Pressable
                 key={q.label}
                 accessibilityRole="button"
-                accessibilityLabel={`Add ${q.oz} ounces (${q.label})`}
-                onPress={() => addWater(q.oz)}
+                accessibilityLabel={`Add ${q.amount} ${spec.unit} (${q.label})`}
+                onPress={() => addWater(q.amount)}
                 className="flex-1 items-center rounded-btn border border-hairline bg-porcelain py-2 active:bg-paper-deep">
                 <Text className="text-[13px] font-medium text-ink">{q.label}</Text>
-                <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">+{q.oz} oz</Text>
+                <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
+                  +{q.amount} {spec.unit}
+                </Text>
               </Pressable>
             ))}
           </View>

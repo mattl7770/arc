@@ -3,6 +3,7 @@ import { useFocusEffect } from 'expo-router';
 
 import { getDb } from '@/lib/db/client';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
+import { getPreferences } from '@/lib/db/repositories/user';
 import type { LogFeedItem } from '@/types/log';
 
 export type LogFeed = {
@@ -20,11 +21,17 @@ export type LogFeed = {
  * switching back — which also rolls the feed over to a new day if midnight
  * passed while the app was backgrounded.
  */
+function readFeed(): LogFeedItem[] {
+  const db = getDb();
+  // Render the feed in the user's chosen units (display-only; storage is canonical).
+  return listTodayEntries(db, new Date(), getPreferences(db).units);
+}
+
 export function useLogFeed(): LogFeed {
-  const [entries, setEntries] = useState<LogFeedItem[]>(() => listTodayEntries(getDb()));
+  const [entries, setEntries] = useState<LogFeedItem[]>(readFeed);
 
   const reload = useCallback(() => {
-    setEntries(listTodayEntries(getDb()));
+    setEntries(readFeed());
   }, []);
 
   useFocusEffect(reload);

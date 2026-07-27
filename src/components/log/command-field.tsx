@@ -8,6 +8,7 @@ import { todayISODate } from '@/lib/db/date';
 import { logMetric, logNote } from '@/lib/db/repositories/logs';
 import { isLoggableCanonical, metricByKey } from '@/lib/log/metrics';
 import { parseCommand } from '@/lib/log/parse';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
 /**
  * The Log tab hero (direction A, "Open Line"): a recessed "Log anything…" field
@@ -22,6 +23,7 @@ import { parseCommand } from '@/lib/log/parse';
 export function CommandField({ onLogged }: { onLogged: () => void }) {
   const [text, setText] = useState('');
   const [voiceHint, setVoiceHint] = useState(false);
+  const { units } = useUnitPreferences();
 
   const trimmed = text.trim();
   const canSend = trimmed.length > 0;
@@ -35,7 +37,7 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
     if (!trimmed) return;
     const db = getDb();
     const date = todayISODate();
-    const result = parseCommand(trimmed);
+    const result = parseCommand(trimmed, units);
     try {
       const metric = result.kind === 'metric' ? metricByKey(result.metric) : undefined;
       if (result.kind === 'metric' && metric && isLoggableCanonical(metric, result.canonical)) {
