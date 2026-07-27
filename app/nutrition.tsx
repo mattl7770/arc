@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
@@ -9,47 +10,61 @@ import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { logMeal } from '@/lib/db/repositories/nutrition';
 import { useNutrition } from '@/hooks/use-nutrition';
-import type { MealRow } from '@/lib/nutrition/types';
+import { fmtInt, macroLine } from '@/lib/nutrition/format';
+import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 
 /**
- * Nutrition sub-app, pushed from the Log tab's Nutrition tile.
+ * Nutrition sub-app home, pushed from the Log tab's Nutrition tile.
  *
- * Wired to the on-device DB (db/migrations/0002_nutrition.sql): the Today card
- * sums today's meals live, "Eaten today" lists them, and Manual entry saves
- * through src/lib/db/repositories/nutrition.ts, reloading in place. The pine
- * "describe or snap" path stays a labelled stub until the Coach model lands
- * (Phase 3), and meal templates arrive with protocols — both say so when
- * tapped. Full spec (templates, micros, grocery, pantry, recipes, photo
- * analysis) in docs/information-architecture.md.
+ * The hub of the food-logging family (docs/nutrition-subapp.md): the Today
+ * card reads real intake against the real (versioned) daily targets — or shows
+ * no denominators at all until targets are set, never a placeholder; "Add
+ * food" pushes the catalog search; manual entry stays as the free-form path;
+ * "Eaten today" rows push meal detail. The pine "describe or snap" action
+ * remains a labelled stub until the Coach's model client lands (Phase 3) —
+ * the estimation seam is src/lib/nutrition/estimate.ts.
  */
 
-/**
- * Daily targets, kept from the mockup as placeholder constants: targets belong
- * to protocols / settings once those exist (docs/project-status.md §1). The
- * summed intake is real; these denominators are not yet personal.
- */
-const KCAL_TARGET = 2200;
-type MacroKey = 'protein_g' | 'carbs_g' | 'fat_g';
-const MACRO_TARGETS: { key: MacroKey; label: string; target: number }[] = [
-  { key: 'protein_g', label: 'Protein', target: 180 },
-  { key: 'carbs_g', label: 'Carbs', target: 160 },
-  { key: 'fat_g', label: 'Fat', target: 70 },
-];
-
-/** 1840 → "1,840" — hand-rolled so the one comma doesn't lean on Hermes Intl. */
-function fmtInt(n: number): string {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+/** 42 → "42", null target → value alone. Tracks fill ink-secondary and stamp
+ * pine only when the target is met — completion is what pine means. */
+function MacroColumn({
+  label,
+  grams,
+  target,
+}: {
+  label: string;
+  grams: number;
+  target: number | null;
+}) {
+  const met = target !== null && target > 0 && grams >= target;
+  return (
+    <View className="flex-1">
+      <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">{label}</Text>
+      <View className="mt-1 flex-row items-baseline gap-1">
+        <Text className="font-mono text-lg text-ink">{Math.round(grams)}</Text>
+        <Text className="font-mono text-[11px] text-ink-muted">
+          {target !== null ? `/ ${Math.round(target)}g` : 'g'}
+        </Text>
+      </View>
+      {target !== null && target > 0 ? (
+        <View className="mt-1.5 h-1 overflow-hidden rounded-full bg-hairline">
+          <View
+            className={`h-1 rounded-full ${met ? 'bg-pine' : 'bg-ink-secondary'}`}
+            style={{ width: `${Math.min(100, (grams / target) * 100)}%` }}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
-/** "P 42g · C 30g · F 18g" from whatever macros a meal actually recorded. */
-function macroLine(meal: MealRow): string | null {
-  const parts: string[] = [];
-  if (meal.protein_g != null) parts.push(`P ${Math.round(meal.protein_g)}g`);
-  if (meal.carbs_g != null) parts.push(`C ${Math.round(meal.carbs_g)}g`);
-  if (meal.fat_g != null) parts.push(`F ${Math.round(meal.fat_g)}g`);
-  return parts.length > 0 ? parts.join(' · ') : null;
+/** The Today-card corner: the kcal denominator when one exists (a measured
+ * value → mono voice), otherwise the invitation to set targets (prose → sans).
+ * Either way it opens the targets editor. */
+function targetsCorner(targets: NutritionTargetsRow | null): { label: string; mono: boolean } {
+  if (targets === null) return { label: 'Set daily targets', mono: false };
+  if (targets.kcal !== null) return { label: `of ${fmtInt(targets.kcal)} target`, mono: true };
+  return { label: 'Edit targets', mono: false };
 }
 
 /** "" is fine (stored as NULL); anything typed must be a non-negative number. */
@@ -233,8 +248,50 @@ function AddMealForm({ onSaved }: { onSaved: () => void }) {
   );
 }
 
+/** One "Eaten today" row — the whole row pushes the meal's detail screen. */
+function MealRowItem({
+  meal,
+  itemCount,
+  first,
+  onPress,
+}: {
+  meal: MealRow;
+  itemCount: number;
+  first: boolean;
+  onPress: () => void;
+}) {
+  const macros = macroLine(meal);
+  const detail =
+    meal.notes ??
+    [macros, itemCount > 0 ? `${itemCount} item${itemCount === 1 ? '' : 's'}` : null]
+      .filter(Boolean)
+      .join(' · ');
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${meal.name}, details`}
+      onPress={onPress}
+      className={`flex-row gap-3 py-3 active:opacity-60 ${first ? '' : 'border-t border-hairline-soft'}`}>
+      <Text className="w-11 pt-0.5 font-mono text-[11px] text-ink-muted">{meal.time ?? '—'}</Text>
+      <View className="flex-1">
+        <Text className="text-[15px] leading-5 text-ink">{meal.name}</Text>
+        {detail !== '' ? (
+          <Text
+            className={`mt-0.5 text-xs leading-5 text-ink-muted ${meal.notes ? '' : 'font-mono text-[11px]'}`}>
+            {detail}
+          </Text>
+        ) : null}
+      </View>
+      <Text className="pt-0.5 font-mono text-[13px] text-ink-secondary">
+        {meal.kcal != null ? fmtInt(meal.kcal) : '—'}
+      </Text>
+    </Pressable>
+  );
+}
+
 export default function NutritionScreen() {
-  const { meals, totals, reload } = useNutrition();
+  const router = useRouter();
+  const { meals, totals, fiberTotal, itemCounts, targets, reload } = useNutrition();
   const [formOpen, setFormOpen] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
 
@@ -248,13 +305,18 @@ export default function NutritionScreen() {
     reload();
   };
 
+  const corner = targetsCorner(targets);
+  const kcalTarget = targets?.kcal ?? null;
+  const fiberTarget = targets?.fiber_g ?? null;
+  const fiberMet = fiberTarget !== null && fiberTarget > 0 && fiberTotal >= fiberTarget;
+
   return (
     <Screen scroll>
       <View className="pt-2">
         <StackHeader title="Nutrition" />
       </View>
 
-      {/* Today's intake — real sums over today's meals. */}
+      {/* Today's intake — real sums against the real (versioned) targets. */}
       <View className="mt-2">
         <SectionLabel>Today</SectionLabel>
         <View className="mt-2 rounded-card border border-hairline bg-porcelain p-4">
@@ -263,32 +325,61 @@ export default function NutritionScreen() {
               <Text className="font-mono text-4xl text-ink">{fmtInt(totals.kcal)}</Text>
               <Text className="font-mono text-sm text-ink-muted">kcal</Text>
             </View>
-            <Text className="text-xs text-ink-muted">of {fmtInt(KCAL_TARGET)} target</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Daily targets"
+              hitSlop={8}
+              onPress={() => router.push('/nutrition-targets')}
+              className="active:opacity-60">
+              <Text
+                className={
+                  corner.mono ? 'font-mono text-[11px] text-ink-muted' : 'text-xs text-ink-muted'
+                }>
+                {corner.label}
+              </Text>
+            </Pressable>
           </View>
+
+          {kcalTarget !== null && kcalTarget > 0 ? (
+            <View className="mt-3 h-1 overflow-hidden rounded-full bg-hairline">
+              <View
+                className={`h-1 rounded-full ${totals.kcal >= kcalTarget ? 'bg-pine' : 'bg-ink-secondary'}`}
+                style={{ width: `${Math.min(100, (totals.kcal / kcalTarget) * 100)}%` }}
+              />
+            </View>
+          ) : null}
 
           <View className="mt-4 border-t border-hairline-soft pt-4">
             <View className="flex-row gap-4">
-              {MACRO_TARGETS.map((m) => {
-                const grams = totals[m.key];
-                return (
-                  <View key={m.label} className="flex-1">
-                    <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">
-                      {m.label}
-                    </Text>
-                    <View className="mt-1 flex-row items-baseline gap-1">
-                      <Text className="font-mono text-lg text-ink">{Math.round(grams)}</Text>
-                      <Text className="font-mono text-[11px] text-ink-muted">/ {m.target}g</Text>
-                    </View>
-                    <View className="mt-1.5 h-1 overflow-hidden rounded-full bg-hairline">
-                      <View
-                        className="h-1 rounded-full bg-ink-secondary"
-                        style={{ width: `${Math.min(100, (grams / m.target) * 100)}%` }}
-                      />
-                    </View>
-                  </View>
-                );
-              })}
+              <MacroColumn
+                label="Protein"
+                grams={totals.protein_g}
+                target={targets?.protein_g ?? null}
+              />
+              <MacroColumn label="Carbs" grams={totals.carbs_g} target={targets?.carbs_g ?? null} />
+              <MacroColumn label="Fat" grams={totals.fat_g} target={targets?.fat_g ?? null} />
             </View>
+            {fiberTarget !== null ? (
+              <View className="mt-3">
+                <View className="flex-row items-baseline justify-between">
+                  <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">Fiber</Text>
+                  <View className="flex-row items-baseline gap-1">
+                    <Text className="font-mono text-[13px] text-ink">{Math.round(fiberTotal)}</Text>
+                    <Text className="font-mono text-[11px] text-ink-muted">
+                      / {Math.round(fiberTarget)}g
+                    </Text>
+                  </View>
+                </View>
+                {fiberTarget > 0 ? (
+                  <View className="mt-1.5 h-1 overflow-hidden rounded-full bg-hairline">
+                    <View
+                      className={`h-1 rounded-full ${fiberMet ? 'bg-pine' : 'bg-ink-secondary'}`}
+                      style={{ width: `${Math.min(100, (fiberTotal / fiberTarget) * 100)}%` }}
+                    />
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
           </View>
         </View>
       </View>
@@ -297,12 +388,13 @@ export default function NutritionScreen() {
       <View className="mt-8">
         <SectionLabel>Log a meal</SectionLabel>
         {/* The one pine action on this screen — a labelled stub until the Coach
-            model lands (Phase 3); manual entry below is the working path. */}
+            model client lands (Phase 3); src/lib/nutrition/estimate.ts is the
+            seam. Catalog search + manual entry below are the working paths. */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Describe or snap a meal"
           onPress={() =>
-            setHint('Photo and described meals arrive with the Coach — manual entry works now.')
+            setHint('Photo and described meals arrive with the Coach — Add food works now.')
           }
           className="mt-2 flex-row items-center gap-3 rounded-card bg-pine px-4 py-3.5 active:opacity-70">
           <Ionicons name="camera-outline" size={20} color={palette.pineOn} />
@@ -317,6 +409,14 @@ export default function NutritionScreen() {
         <View className="mt-2 flex-row gap-2">
           <Pressable
             accessibilityRole="button"
+            accessibilityLabel="Add food from the catalog"
+            onPress={() => router.push('/food-search')}
+            className="flex-1 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
+            <Ionicons name="search-outline" size={17} color={palette.inkSecondary} />
+            <Text className="text-[13px] text-ink">Add food</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
             accessibilityLabel="Manual entry"
             accessibilityState={{ expanded: formOpen }}
             onPress={openForm}
@@ -325,16 +425,6 @@ export default function NutritionScreen() {
             }`}>
             <Ionicons name="create-outline" size={17} color={palette.inkSecondary} />
             <Text className="text-[13px] text-ink">Manual entry</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="From a template"
-            onPress={() =>
-              setHint('Meal templates arrive with protocols — manual entry works now.')
-            }
-            className="flex-1 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3">
-            <Ionicons name="albums-outline" size={17} color={palette.inkSecondary} />
-            <Text className="text-[13px] text-ink">From a template</Text>
           </Pressable>
         </View>
 
@@ -352,31 +442,15 @@ export default function NutritionScreen() {
           </Text>
         ) : (
           <View className="mt-1">
-            {meals.map((meal, index) => {
-              const macros = macroLine(meal);
-              return (
-                <View
-                  key={meal.id}
-                  className={`flex-row gap-3 py-3 ${index === 0 ? '' : 'border-t border-hairline-soft'}`}>
-                  <Text className="w-11 pt-0.5 font-mono text-[11px] text-ink-muted">
-                    {meal.time ?? '—'}
-                  </Text>
-                  <View className="flex-1">
-                    <Text className="text-[15px] leading-5 text-ink">{meal.name}</Text>
-                    {meal.notes ? (
-                      <Text className="mt-0.5 text-xs leading-5 text-ink-muted">{meal.notes}</Text>
-                    ) : macros ? (
-                      <Text className="mt-0.5 font-mono text-[11px] leading-5 text-ink-muted">
-                        {macros}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <Text className="pt-0.5 font-mono text-[13px] text-ink-secondary">
-                    {meal.kcal != null ? fmtInt(meal.kcal) : '—'}
-                  </Text>
-                </View>
-              );
-            })}
+            {meals.map((meal, index) => (
+              <MealRowItem
+                key={meal.id}
+                meal={meal}
+                itemCount={itemCounts[meal.id] ?? 0}
+                first={index === 0}
+                onPress={() => router.push({ pathname: '/meal-detail', params: { id: meal.id } })}
+              />
+            ))}
           </View>
         )}
       </View>

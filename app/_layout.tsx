@@ -48,6 +48,12 @@ export default function RootLayout() {
           <Stack.Screen name="(tabs)" />
           {/* Pushed over the tabs from the Log tab (docs/information-architecture.md). */}
           <Stack.Screen name="nutrition" />
+          {/* Nutrition sub-app family (docs/nutrition-subapp.md). INTEGRATOR-MERGE:
+              these four routes were added on the nutrition-sub-app branch. */}
+          <Stack.Screen name="food-search" />
+          <Stack.Screen name="food-new" />
+          <Stack.Screen name="meal-detail" />
+          <Stack.Screen name="nutrition-targets" />
           <Stack.Screen name="exercise" />
           <Stack.Screen name="workout-log" />
           <Stack.Screen name="metric-entry" />
