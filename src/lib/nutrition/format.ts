@@ -18,6 +18,14 @@ export function fmtQty(n: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
+/**
+ * A micronutrient amount: 0 decimals get the thousands comma (Sodium 1,850),
+ * 1-decimal nutrients render fixed (Iron 12.4). Pure, Intl-free.
+ */
+export function fmtMicro(value: number, decimals: number): string {
+  return decimals > 0 ? value.toFixed(decimals) : fmtInt(value);
+}
+
 /** "P 42g · C 30g · F 18g" from whatever macros a row actually recorded. */
 export function macroLine(row: {
   protein_g: number | null;

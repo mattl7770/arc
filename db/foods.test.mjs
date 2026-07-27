@@ -1,6 +1,6 @@
 /**
- * Headless test of the food-catalog layer — foods + meal_items (0008), the
- * versioned nutrition_targets (0009), the seed catalog (0010), and their
+ * Headless test of the food-catalog layer — foods + meal_items (0014), the
+ * versioned nutrition_targets (0015), the seed catalog (0016), and their
  * repositories (foods.ts + the nutrition.ts additions) — against real SQLite
  * via node:sqlite. Mirrors db/nutrition.test.mjs; op-sqlite is never loaded.
  * Run: npm run db:test.
@@ -116,13 +116,13 @@ function testFood(db, overrides = {}) {
   });
 }
 
-console.log('0. migrations: 0008–0010 apply on top of the earlier set');
+console.log('0. migrations: 0014–0016 apply on top of the earlier set');
 {
   const { raw } = freshDb();
-  // user_version is the HIGHEST applied migration — >= 10 once 0010 has run
+  // user_version is the HIGHEST applied migration — >= 16 once 0016 has run
   // (assert the floor so this stays correct as later migrations land).
   const version = raw.prepare('PRAGMA user_version').get().user_version;
-  version >= 10 ? ok(`user_version is ${version} (>= 10)`) : bad('user_version', version);
+  version >= 16 ? ok(`user_version is ${version} (>= 16)`) : bad('user_version', version);
   for (const table of ['foods', 'meal_items', 'nutrition_targets']) {
     raw.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(table)
       ? ok(`${table} table exists`)
@@ -620,7 +620,7 @@ console.log('12. servings helpers: per-100 g × portion, NULLs preserved');
     : bad('itemForPortion grams', JSON.stringify(gramsItem));
 }
 
-console.log('13. the 0010 seed catalog is present and sane');
+console.log('13. the 0016 seed catalog is present and sane');
 {
   const { db, raw } = freshDb();
   const seeds = db.all(`SELECT * FROM foods WHERE source = 'seed'`);

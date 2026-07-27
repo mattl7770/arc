@@ -1,5 +1,5 @@
 /**
- * The foods catalog's data layer (0008_food_catalog.sql + the 0010 seed):
+ * The foods catalog's data layer (0014_food_catalog.sql + the 0016 seed):
  * search, favorites, recents, customs, and the offline barcode lookup.
  *
  * Search is tokenized LIKE over `name_norm` — a lowercased key this repository

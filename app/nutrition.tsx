@@ -428,6 +428,15 @@ export default function NutritionScreen() {
           </Pressable>
         </View>
 
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Log from a template"
+          onPress={() => router.push('/meal-templates')}
+          className="mt-2 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
+          <Ionicons name="albums-outline" size={17} color={palette.inkSecondary} />
+          <Text className="text-[13px] text-ink">From a template</Text>
+        </Pressable>
+
         {hint ? <Text className="mt-2 text-xs leading-5 text-ink-muted">{hint}</Text> : null}
 
         {formOpen ? <AddMealForm onSaved={saved} /> : null}
@@ -454,6 +463,53 @@ export default function NutritionScreen() {
           </View>
         )}
       </View>
+
+      {/* Review — micronutrients and cross-day trends (read-only, no pine). */}
+      <View className="mt-8">
+        <SectionLabel>Review</SectionLabel>
+        <View className="mt-2">
+          <ReviewRow
+            icon="nutrition-outline"
+            title="Micronutrients"
+            detail="Today's totals vs reference"
+            onPress={() => router.push('/nutrition-micros')}
+          />
+          <ReviewRow
+            icon="trending-up-outline"
+            title="History"
+            detail="Energy & macros over time"
+            onPress={() => router.push('/nutrition-history')}
+          />
+        </View>
+      </View>
     </Screen>
+  );
+}
+
+/** One review row (Micronutrients / History) — card + chevron, no pine. */
+function ReviewRow({
+  icon,
+  title,
+  detail,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  detail: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      onPress={onPress}
+      className="mb-2 flex-row items-center gap-3 rounded-card border border-hairline bg-porcelain px-4 py-3 active:bg-paper-deep">
+      <Ionicons name={icon} size={18} color={palette.inkSecondary} />
+      <View className="flex-1">
+        <Text className="text-[15px] text-ink">{title}</Text>
+        <Text className="mt-0.5 text-xs text-ink-muted">{detail}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={palette.inkMuted} />
+    </Pressable>
   );
 }

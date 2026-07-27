@@ -1,9 +1,11 @@
 # Nutrition sub-app — design & build spec
 
-**Status:** Phase-1 orient — awaiting owner review. The Phase-2 offline vertical slice described in §9 is built on this branch; everything marked *long tail* is **not** built and waits for that review.
-**Last updated:** 2026-07-26
-**Branch:** `claude/arc-setup-conventions-6f1e42` (parallel build; reserved migrations 0008–0010)
+**Status:** Round 2 shipped (offline serious-logging loop built). The AI photo/NL path remains a seam over the Coach model client; camera/barcode remain native-dep long tail.
+**Last updated:** 2026-07-27
+**Branch:** `claude/arc-setup-conventions-6f1e42` (rebased on `main` — Settings/units, Protocols, Screenings, **and the agentic Coach**; nutrition migrations **0014–0018**, renumbered from the original 0008–0010/0014–0015 when the Coach took 0008/0009 — see §3)
 **Mission:** turn ARC's Nutrition screen into a complete, best-in-class food-logging sub-app on the level of Cal AI — photo → macros plus the full serious-logging loop — adapted to ARC's local-first, Porcelain-Ledger world.
+
+> **Build status (2026-07-27, round 2).** The offline serious-logging loop is now **complete**: catalog search + recents/favorites + quick-add (round 1), plus **meal templates** (save a meal → one-tap re-log), **micronutrient snapshots + a daily micro rollup**, **adjustable versioned targets with progress** (round 1), and a **cross-day history/trends screen** — all offline. The two online exceptions stay seams: the **AI photo/describe path** now has its pure request-builder + response-parser aligned to the real Coach model client (`src/lib/ai/model-client.ts`'s `runCoachTurn`), wired in ~5 lines once that client merges to `main`; **barcode** waits on `expo-camera` (native dep → EAS rebuild). §5–§7 below describe those; §11 records what round 2 changed against this spec's original plan.
 
 ---
 
@@ -105,7 +107,9 @@ app/nutrition.tsx            Nutrition home (reworked)     ── slice
 
 ---
 
-## 3. Data model (migrations 0008–0010)
+## 3. Data model (migrations 0014–0016, then 0017–0018)
+
+> **Numbering note (final):** the tables below were originally authored as 0008–0010; when the branch rebased onto the Coach-inclusive `main`, the Coach's `ai_chat`/`reminders` had taken 0008/0009, so the whole nutrition set was renumbered to a contiguous block **above** Exercise's reserved 0011–0013: `foods`+`meal_items` = **0014**, `nutrition_targets` = **0015**, seed = **0016**, `meal_items.micros` = **0017**, `meal_templates` = **0018**. The schema is identical; only the file numbers moved (§11).
 
 Designed to extend `meals` (0002) **without touching its shape or its four exports** (`logMeal`, `listTodayMeals`, `todayTotals`, `dailyIntakeSeries` — the Data-tab trend and the Coach read-tools keep working unchanged).
 
@@ -113,7 +117,7 @@ Designed to extend `meals` (0002) **without touching its shape or its four expor
 
 `meals` stays the day-facing record and keeps carrying its own kcal/macro columns. A meal **may** now be *itemized*: child `meal_items` rows, each a snapshot of a food+portion. **When a meal has items, the repository maintains the meal's macro columns as the item sums** (recomputed in the same transaction as every item change). Existing free-form meals (no items) behave exactly as today — and when a free-form meal with typed totals gains its *first* item, those totals are preserved as their own "(as logged)" item rather than silently overwritten, so the forgotten egg *adds to* the 800-kcal dinner instead of replacing it. `todayTotals`/`dailyIntakeSeries` read only `meals` and are automatically correct for both kinds. Repository functions are the only writers, which is what keeps the denormalized sums trustworthy.
 
-### `0008_food_catalog.sql` — `foods` + `meal_items`
+### `0014_food_catalog.sql` — `foods` + `meal_items`
 
 **`foods`** — the on-device catalog (seeded + user + AI + barcode-cached):
 
@@ -149,7 +153,7 @@ Indexes: `foods_name_norm_idx`, partial-unique `foods_barcode_idx`.
 
 Indexes: `meal_items_meal_idx`, `meal_items_food_idx` (recents + FK perf).
 
-### `0009_nutrition_targets.sql` — versioned daily targets
+### `0015_nutrition_targets.sql` — versioned daily targets
 
 **`nutrition_targets`** — append-only, immutable rows (the `protocol_versions` pattern: a target you can edit in place is not a version):
 
@@ -167,11 +171,11 @@ History stays honest: "was I under target in March?" is answered against March's
 
 Adaptive targets are deliberately **not** an automatic loop: the versioned table is exactly the substrate for the Coach to propose a new version (`created_by='ai'`, with reasoning in `notes`) from weight trend + intake — MacroFactor's math, ARC's authorship model. Long tail, with the Coach.
 
-### `0010_food_seed.sql` — the starter catalog
+### `0016_food_seed.sql` — the starter catalog
 
 ~150–200 curated staples (`source='seed'`, fixed UUIDs), per-100 g values authored from USDA lab-analyzed knowledge (FDC is public domain), each with a household serving where one is natural, fiber where meaningful, micros only where confidently known. Coverage per the research convention: proteins (chicken/beef/fish/eggs/dairy/tofu/legumes), staple carbs (rice/oats/potato/bread/pasta), produce, fats/nuts/oils, common beverages, condiments, and a handful of composite restaurant archetypes (pizza slice, burger, burrito, sushi roll…) to absorb eating-out logging before the AI path exists. Values are approximate by nature; every row is editable in-app, and future catalog updates are **new append-only migrations** (a shipped migration is never edited). The catalog grows organically afterwards: customs (`user`), AI-synthesized entries (`ai`), scanned barcodes (`openfoodfacts`).
 
-Migration-number note: the runner (`pendingMigrations` + `bundle-migrations.mjs`) tolerates branch-local gaps (0004 → 0008 here) and `migrate.test.mjs` already asserts `user_version === max(version)`, so this branch runs standalone in headless tests; **the integrator finalizes actual numbers at merge** (reserved block 0008–0010, per `project-status.md`). ⚠️ **Do not install this branch's build on the phone before that renumbering is final**: a device at `user_version = 10` would *silently skip* the Coach's lower-numbered 0005–0007 when they merge (`pendingMigrations` only applies versions above the current), and renumbering these files *after* a device ran them as 8–10 would re-run their DDL and fail at boot. Same hazard class the 0002/0003 parallel build had; the merge-then-install order is what resolves it.
+Migration-number note (resolved): the branch is now rebased onto the Coach-inclusive `main` (which has migrations through 0009), and the nutrition set is numbered **0014–0018** — strictly above `main`'s max and above Exercise's reserved 0011–0013, so `pendingMigrations` applies them cleanly on any device already past 9. The earlier "integrator finalizes numbers" caveat is discharged: the collision with the Coach's 0008/0009 was real (they renumbered from 0005/0006 to slot above Screenings' 0007), and this branch renumbered above them. The runner still tolerates the 0010–0013 gap; `migrate.test.mjs` asserts `user_version === max(version)` (now 18).
 
 ---
 
@@ -237,16 +241,16 @@ No bulk database ships on-device beyond the seed: the full OFF/FDC dumps are ser
 - **Streaks / badges / celebration** — retention theater; adherence lives with Modes and the Coach's accounting (excused ≠ missed).
 - **Red over-target states** — adherence-neutral by design (MacroFactor's cited reasoning; ARC's calm).
 - **Auto-adjusting targets** — replaced by Coach-proposed versioned targets (§3).
-- **A nutrition dashboard inside the sub-app** — the Data tab is the zoom-out; one weekly-trend surface, not two (its `dailyIntakeSeries` feed is untouched).
+- **A second nutrition dashboard competing with the Data tab** — the Data tab keeps its single-row glance (`dailyIntakeSeries`, untouched). Round 2's `app/nutrition-history.tsx` is the *domain's own* drill-down (per-day totals, macro averages, per-day adherence vs each day's targets), reached from within Nutrition — not a duplicate of the Data hub and not an edit to `data.tsx`.
 - **Shipping a big food database** — grow-your-own cache instead (§5).
-- **Meal templates as a separate system** — deferred to protocols (`meal_template` protocol type already exists in 0001); "Log again" + recents cover the daily need meanwhile. Retroactive MacroFactor-style "bundle these logged items into a template" is noted for that build.
-- **Micros beyond the shortlist** — honest sparse data over fake completeness; Cronometer-grade panels only if a lab-analyzed import lands later.
+- ~~**Meal templates as a separate system** — deferred to protocols~~ — **BUILT in round 2** in the nutrition domain (`meal_templates` + `meal_template_items`, 0018), because a "saved meal" is a nutrition record, not a versioned protocol. Captured retroactively (save a logged meal), logged in one tap (`logMealFromTemplate` stamps fresh snapshots — a stamp, not a link). The `meal_template` protocol *type* remains for prescriptive plan templates; the two don't overlap.
+- **Micros beyond the shortlist** — honest sparse data over fake completeness; Cronometer-grade panels only if a lab-analyzed import lands later. Round 2 tracks the longevity shortlist (`src/lib/nutrition/micros.ts`), snapshotted per item (0017) and rolled up daily against general reference values (never a good/bad verdict).
 
 ---
 
 ## 9. The Phase-2 slice (built on this branch) & build sequence
 
-**Built now (offline, self-standing):** migrations 0008/0009/0010 + `foods.ts` repo + `nutrition.ts` additions + `servings.ts`/`format.ts` helpers + types + reworked `nutrition.tsx` + `food-search.tsx` + `food-new.tsx` + `meal-detail.tsx` + `nutrition-targets.tsx` + the `estimate.ts` seam + headless suite `db/foods.test.mjs` + `db:bundle` regeneration.
+**Built now (offline, self-standing):** migrations 0014/0015/0016 + `foods.ts` repo + `nutrition.ts` additions + `servings.ts`/`format.ts` helpers + types + reworked `nutrition.tsx` + `food-search.tsx` + `food-new.tsx` + `meal-detail.tsx` + `nutrition-targets.tsx` + the `estimate.ts` seam + headless suite `db/foods.test.mjs` + `db:bundle` regeneration.
 
 **Build sequence after owner review (long tail):**
 1. Describe-in-words + AI review screen (once the Coach model client merges — coordinate with that window).
@@ -261,10 +265,10 @@ No bulk database ships on-device beyond the seed: the full OFF/FDC dumps are ser
 
 | # | Item | Kind |
 | --- | --- | --- |
-| 1 | `src/lib/db/migrations.generated.ts` regenerated (0008–0010 added) | **INTEGRATOR-MERGE** (regenerate `db:bundle` at merge) |
+| 1 | `src/lib/db/migrations.generated.ts` regenerated (0014–0018 added) | **INTEGRATOR-MERGE** (regenerate `db:bundle` at merge) |
 | 2 | `package.json` `db:test` line gains `db/foods.test.mjs` | **INTEGRATOR-MERGE** |
 | 3 | `app/_layout.tsx` gains 4 routes (`food-search`, `food-new`, `meal-detail`, `nutrition-targets`) | **INTEGRATOR-MERGE** |
-| 4 | Migration numbers 0008/0009/0010 | integrator finalizes at merge (strictly increasing). **Don't install this branch on the device before then** — §3's silent-skip / re-run hazard |
+| 4 | Migration numbers 0014–0018 | **resolved** — already renumbered above `main`'s Coach 0008/0009 and Exercise's 0011–0013 (§3); strictly increasing, applies cleanly on any device past 9 |
 | 5 | Coach model client (`src/lib/ai/*`) | **DEPENDENCY** — estimate.ts reuses it; do not build a second model path |
 | 6 | `expo-camera` (+ `expo-image-manipulator`, maybe `expo-image-picker`) | **NATIVE DEP, not added** — EAS rebuild required; batch with secure-store/local-auth |
 | 7 | Data tab / Coach read-tools | untouched — all existing nutrition exports stable |
@@ -272,3 +276,21 @@ No bulk database ships on-device beyond the seed: the full OFF/FDC dumps are ser
 | 9 | `docs/project-status.md`, `decisions.md`, CLAUDE.md §4 currency | integrator-owned at merge; proposed ADR below |
 
 **Proposed ADR (for `docs/decisions.md`, integrator to lift):** *2026-07-26 — Nutrition became a food-logging sub-app.* Foods catalog + meal-items extend `meals` without breaking it (items snapshot macros; repos maintain parent sums); targets are append-only versions (`protocol_versions` pattern, Coach-proposable); the AI photo/NL path is a seam over the Coach's model client (one model path), grounded retrieve-then-generate with a mandatory editable review; barcode = OFF + grow-your-own offline cache (ODbL private-use carve-out); adherence-neutral display, no gamification — per the competitor research digest in `docs/nutrition-subapp.md` §1.
+
+---
+
+## 11. Round 2 — what shipped, and what changed vs this spec
+
+Round 2 (2026-07-27, rebased on `main` after Settings/units + Protocols + Screenings merged) built the offline serious-logging loop the mission asked for. Changes against the original plan above:
+
+**Built (offline, migrations 0017–0018):**
+- **Micronutrient snapshots** — `meal_items` gains a `micros` JSON column (0017, `ALTER ADD COLUMN`); `itemForPortion` snapshots the catalog food's per-100 g micros scaled to the portion, so micros survive a catalog edit or a food's deletion (same discipline as the macro snapshot, and it lets the AI path carry micros the catalog lacked). Vocabulary + reference DVs in `src/lib/nutrition/micros.ts` (the longevity shortlist). Daily rollup: `dayMicroTotals` → `app/nutrition-micros.tsx` (mono numbers + thin neutral tracks vs a general reference, sodium framed as a ceiling; read-only, no pine, no good/bad colour).
+- **Meal templates** — `meal_templates` + `meal_template_items` (0018), a stamp not a link (`logMealFromTemplate` copies snapshots, so editing/deleting a template never touches logged meals). Captured retroactively via "Save as template" on `app/meal-detail.tsx`; browsed and one-tap-logged from `app/meal-templates.tsx`. Repo: `src/lib/db/repositories/meal-templates.ts`.
+- **Cross-day trends** — `nutritionHistory(db, days, today)` returns per-day totals + each day's *own-era* targets; `app/nutrition-history.tsx` shows a 7/14/30-day window, averages over logged days, a dependency-free kcal sparkline, and per-day adherence. Read-only, no pine, and it does **not** touch `data.tsx`.
+- **AI seam aligned to the real client** — now that the Coach's `model-client.ts` (`runCoachTurn`, streaming Messages loop) is known (it lives on the Coach branch, not `main`), `estimate.ts` ships the *pure* `buildMealEstimationRequest` (produces the `AgenticRequest` shape the client consumes, image block included) + `parseMealEstimate` (tolerant JSON validator). `estimateMeal` still throws until the client is on `main`; the wiring is the ~5 lines documented in the file. **No second model path.**
+
+**Plan corrections:** meal templates moved from "deferred to protocols" (§8) into the nutrition domain — a saved meal is a nutrition record, not a versioned protocol. The Cal-AI goal-ring → thin-pine-track translation (§2) is now realized on every progress surface (Today card, micros, history) with the round-1 discipline (fill turns pine only at target completion; micros/history stay neutral, being read-only ledgers).
+
+**Migration numbers (final, after the Coach-collision rebase): the whole nutrition set is 0014–0018** — `food_catalog` 0014, `nutrition_targets` 0015, `food_seed` 0016, `meal_item_micros` **0017**, `meal_templates` **0018** — a contiguous block above `main`'s Coach 0008/0009 and Exercise's reserved 0011–0013. No device-install caveat remains: the numbers are strictly above `main`'s max, so they apply cleanly.
+
+**Round-2 integrator-merge points** (in addition to §10): `migrations.generated.ts` (now **12 migrations** after the rebase — `main`'s 7 + nutrition's 0014–0018), `package.json` `db:test` (union: `main`'s 17 Coach/Data suites + `db/foods.test.mjs` + `db/nutrition-v2.test.mjs` = 19), and `app/_layout.tsx` (my 7 nutrition routes coexist with `main`'s route list). The `db/screenings.test.mjs` floor-fix I made in round 2 is **no longer in this branch** — `main`'s Coach integration (commit `44d7d74`) had already hardened the same assertion to `>= 7`, so the rebase kept `main`'s identical version. Verified: `db:test` is **19 suites / 577 assertions**, all green, with the Coach's tables and my nutrition tables coexisting.

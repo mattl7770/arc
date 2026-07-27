@@ -14,6 +14,7 @@
 import type { Database } from '../database';
 import { todayISODate } from '../date';
 import { newId } from '../id';
+import { type Micros, parseMicros, sumMicros } from '@/lib/nutrition/micros';
 import type {
   DayTotals,
   MealItemWithServing,
@@ -22,6 +23,7 @@ import type {
   NewMealItem,
   NewMealWithItems,
   NewNutritionTargets,
+  NutritionHistoryDay,
   NutritionTargetsRow,
 } from '@/lib/nutrition/types';
 
@@ -163,8 +165,8 @@ function insertMealItem(db: Database, mealId: string, item: NewMealItem): string
   const id = newId(db);
   db.run(
     `INSERT INTO meal_items (id, meal_id, food_id, name, grams, serving_qty,
-       kcal, protein_g, carbs_g, fat_g, fiber_g, confidence)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       kcal, protein_g, carbs_g, fat_g, fiber_g, confidence, micros)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       mealId,
@@ -178,6 +180,7 @@ function insertMealItem(db: Database, mealId: string, item: NewMealItem): string
       item.fat_g ?? null,
       item.fiber_g ?? null,
       item.confidence ?? null,
+      item.micros ?? null,
     ]
   );
   return id;
@@ -282,7 +285,7 @@ export function updateMealItemPortion(
   itemId: string,
   portion: Pick<
     NewMealItem,
-    'grams' | 'serving_qty' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g'
+    'grams' | 'serving_qty' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
   >
 ): void {
   const row = db.get<{ meal_id: string }>('SELECT meal_id FROM meal_items WHERE id = ?', [itemId]);
@@ -290,7 +293,7 @@ export function updateMealItemPortion(
   db.transaction(() => {
     db.run(
       `UPDATE meal_items SET grams = ?, serving_qty = ?, kcal = ?, protein_g = ?,
-         carbs_g = ?, fat_g = ?, fiber_g = ?
+         carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?
        WHERE id = ?`,
       [
         portion.grams ?? null,
@@ -300,6 +303,7 @@ export function updateMealItemPortion(
         portion.carbs_g ?? null,
         portion.fat_g ?? null,
         portion.fiber_g ?? null,
+        portion.micros ?? null,
         itemId,
       ]
     );
@@ -422,6 +426,7 @@ export function relogMeal(
       fat_g: i.fat_g,
       fiber_g: i.fiber_g,
       confidence: i.confidence,
+      micros: i.micros,
     })),
   }).mealId;
 }
@@ -441,6 +446,95 @@ export function dayFiberTotal(db: Database, date: string): number {
     [date]
   );
   return row?.fiber ?? 0;
+}
+
+/**
+ * The day's micronutrient totals, summed from item snapshots (0014). Micros
+ * are per-portion JSON, so this reads the day's item payloads and folds them in
+ * JS (sumMicros skips absent keys). Only itemized/catalog-linked or AI meals
+ * carry micros — a purely free-form manual day yields {}, which the UI reads as
+ * "no micro data today", never a fake zero panel.
+ */
+export function dayMicroTotals(db: Database, date: string): Micros {
+  const rows = db.all<{ micros: string | null }>(
+    `SELECT mi.micros
+     FROM meal_items mi
+     JOIN meals m ON m.id = mi.meal_id
+     WHERE m.date = ? AND mi.micros IS NOT NULL`,
+    [date]
+  );
+  return sumMicros(rows.map((r) => parseMicros(r.micros)));
+}
+
+/**
+ * Per-day nutrition totals for the last `days` calendar days (oldest → `today`
+ * inclusive, zero-filled), each paired with the daily targets that governed
+ * that day — the cross-day trends screen's data source. Macros come from the
+ * `meals` columns (correct for free-form and itemized alike); fiber from the
+ * item snapshots. Targets are resolved per day so a history row is judged
+ * against its own era's targets, not today's. `today` is injectable so the
+ * headless tests are deterministic.
+ */
+export function nutritionHistory(
+  db: Database,
+  days: number = 14,
+  today: string = todayISODate()
+): NutritionHistoryDay[] {
+  const dates = dateListEndingAt(today, days);
+  const start = dates[0] ?? today;
+
+  const mealRows = db.all<{
+    date: string;
+    kcal: number;
+    protein_g: number;
+    carbs_g: number;
+    fat_g: number;
+    mealCount: number;
+  }>(
+    `SELECT date,
+            coalesce(sum(kcal), 0)      AS kcal,
+            coalesce(sum(protein_g), 0) AS protein_g,
+            coalesce(sum(carbs_g), 0)   AS carbs_g,
+            coalesce(sum(fat_g), 0)     AS fat_g,
+            count(*)                    AS mealCount
+     FROM meals WHERE date >= ? AND date <= ?
+     GROUP BY date`,
+    [start, today]
+  );
+  const byDate = new Map(mealRows.map((r) => [r.date, r]));
+
+  const fiberRows = db.all<{ date: string; fiber: number }>(
+    `SELECT m.date AS date, coalesce(sum(mi.fiber_g), 0) AS fiber
+     FROM meal_items mi
+     JOIN meals m ON m.id = mi.meal_id
+     WHERE m.date >= ? AND m.date <= ?
+     GROUP BY m.date`,
+    [start, today]
+  );
+  const fiberByDate = new Map(fiberRows.map((r) => [r.date, r.fiber]));
+
+  return dates.map((date) => {
+    const row = byDate.get(date);
+    const t = activeNutritionTargets(db, date);
+    return {
+      date,
+      kcal: row?.kcal ?? 0,
+      protein_g: row?.protein_g ?? 0,
+      carbs_g: row?.carbs_g ?? 0,
+      fat_g: row?.fat_g ?? 0,
+      fiber_g: fiberByDate.get(date) ?? 0,
+      mealCount: row?.mealCount ?? 0,
+      target: t
+        ? {
+            kcal: t.kcal,
+            protein_g: t.protein_g,
+            carbs_g: t.carbs_g,
+            fat_g: t.fat_g,
+            fiber_g: t.fiber_g,
+          }
+        : null,
+    };
+  });
 }
 
 // === Daily targets (0009: nutrition_targets) =================================

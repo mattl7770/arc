@@ -1,13 +1,14 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
+import { saveMealAsTemplate } from '@/lib/db/repositories/meal-templates';
 import {
   deleteMeal,
   getMeal,
@@ -48,12 +49,18 @@ export default function MealDetailScreen() {
   const [state, setState] = useState<MealState>(() => readMeal(mealId));
   // Two-tap delete: first tap arms, second deletes. No native alert drama.
   const [deleteArmed, setDeleteArmed] = useState(false);
+  // Transient confirmation after saving a template.
+  const [savedTemplate, setSavedTemplate] = useState(false);
 
   const reload = useCallback(() => {
     setState(readMeal(mealId));
     // Regaining focus disarms a pending delete — a confirm must be two taps in
     // a row, not one tap now and a fatal one after a detour through Add food.
     setDeleteArmed(false);
+    // And clears a stale "Saved" — the meal may have changed since, so the old
+    // confirmation would misrepresent the current state (and a fresh save is a
+    // deliberate new template, not this one re-tapped).
+    setSavedTemplate(false);
   }, [mealId]);
   useFocusEffect(reload);
 
@@ -90,6 +97,28 @@ export default function MealDetailScreen() {
     }
     deleteMeal(getDb(), meal.id);
     router.back();
+  };
+
+  // Save this itemized meal as a reusable template. Alert.prompt is iOS-only —
+  // fine, ARC is iOS-only — and defaults to the meal's name.
+  const saveAsTemplate = () => {
+    Alert.prompt(
+      'Save as template',
+      'Name it so you can log it again in one tap.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Save',
+          onPress: (name?: string) => {
+            const trimmed = (name ?? '').trim() || meal.name;
+            const id = saveMealAsTemplate(getDb(), meal.id, trimmed);
+            if (id) setSavedTemplate(true);
+          },
+        },
+      ],
+      'plain-text',
+      meal.name
+    );
   };
 
   const macros = macroLine(meal);
@@ -202,6 +231,36 @@ export default function MealDetailScreen() {
             </Text>
           </View>
         </Pressable>
+
+        {/* Save as template — only meaningful for an itemized meal (a template
+            needs items to re-stamp). */}
+        {items.length > 0 ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Save this meal as a template"
+            accessibilityState={{ disabled: savedTemplate }}
+            // Inert once saved: a second tap would silently create a duplicate,
+            // and the checkmark reads as "done". Re-enabled on the next visit
+            // (reload clears savedTemplate), where a save is a deliberate new one.
+            disabled={savedTemplate}
+            onPress={saveAsTemplate}
+            className={`mt-2 flex-row items-center gap-3 rounded-card border border-hairline bg-porcelain px-4 py-3 ${
+              savedTemplate ? '' : 'active:bg-paper-deep'
+            }`}>
+            <Ionicons name="albums-outline" size={18} color={palette.inkSecondary} />
+            <View className="flex-1">
+              <Text className="text-[15px] text-ink">Save as template</Text>
+              <Text className="mt-0.5 text-xs text-ink-muted">
+                {savedTemplate
+                  ? 'Saved — find it under “From a template”'
+                  : 'Reuse this meal later'}
+              </Text>
+            </View>
+            {savedTemplate ? (
+              <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
+            ) : null}
+          </Pressable>
+        ) : null}
 
         <Pressable
           accessibilityRole="button"

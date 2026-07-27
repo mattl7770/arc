@@ -6,6 +6,7 @@
  * NULL discipline matches the schema: a food that doesn't record a macro
  * yields NULL for it at any portion — "not recorded" never becomes 0.
  */
+import { microsForGrams, serializeMicros } from './micros';
 import type { FoodRow, NewMealItem } from './types';
 
 /** The per-100 g columns portion math reads — satisfied by a full FoodRow. */
@@ -59,5 +60,8 @@ export function itemForPortion(
     ...(grams > 0
       ? macrosForGrams(food, grams)
       : { kcal: null, protein_g: null, carbs_g: null, fat_g: null, fiber_g: null }),
+    // Snapshot the food's micros scaled to this portion (0017); NULL when the
+    // food carries none, so "not recorded" never becomes a fake zero.
+    micros: grams > 0 ? serializeMicros(microsForGrams(food.micros, grams)) : null,
   };
 }

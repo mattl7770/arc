@@ -1,7 +1,8 @@
 /**
  * Types for the Nutrition domain, mirroring db/migrations/0002_nutrition.sql
- * plus the food-catalog migrations 0008 (foods, meal_items) and 0009
- * (nutrition_targets) — see docs/nutrition-subapp.md.
+ * plus the food-catalog migrations 0014 (foods, meal_items) and 0015
+ * (nutrition_targets), micros on meal_items (0017), and templates (0018) —
+ * see docs/nutrition-subapp.md.
  *
  * Kept beside the nutrition feature rather than in src/lib/db/types.ts (the
  * 0001 rows) so parallel schema work doesn't collide in one file; same
@@ -61,11 +62,11 @@ export type DayTotals = {
   mealCount: number;
 };
 
-// --- Foods catalog (0008) -----------------------------------------------------
+// --- Foods catalog (0014) -----------------------------------------------------
 
 /**
  * Catalog provenance — a different axis than the shared DataSource of *logged*
- * rows: 'seed' (the 0010 starter catalog), 'user' (custom foods), 'ai'
+ * rows: 'seed' (the 0016 starter catalog), 'user' (custom foods), 'ai'
  * (synthesized by the estimation path), 'openfoodfacts' (cached barcode hits).
  */
 export type FoodSource = 'seed' | 'user' | 'ai' | 'openfoodfacts';
@@ -124,7 +125,7 @@ export type RecentFood = {
   lastLoggedAt: Timestamp;
 };
 
-// --- Meal items (0008) --------------------------------------------------------
+// --- Meal items (0014; micros 0017) -------------------------------------------
 
 /**
  * A `meal_items` row. `name` and the macro columns are a snapshot at log time —
@@ -144,6 +145,9 @@ export type MealItemRow = {
   fat_g: number | null;
   fiber_g: number | null;
   confidence: EstimateConfidence | null;
+  /** Per-portion micronutrient snapshot (JSON), scaled from the food at log
+   * time — added in 0014. NULL when the food had no micro data. */
+  micros: JsonText | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -165,6 +169,8 @@ export type NewMealItem = {
   fat_g?: number | null;
   fiber_g?: number | null;
   confidence?: EstimateConfidence | null;
+  /** Per-portion micronutrient snapshot as a JSON string (serializeMicros). */
+  micros?: JsonText | null;
 };
 
 /** A meal plus its items, logged atomically; the meal's macro columns are
@@ -179,7 +185,7 @@ export type NewMealWithItems = {
   items: NewMealItem[];
 };
 
-// --- Daily targets (0009) -----------------------------------------------------
+// --- Daily targets (0015) -----------------------------------------------------
 
 /** A `nutrition_targets` row — append-only and immutable (no updated_at). */
 export type NutritionTargetsRow = {
@@ -207,4 +213,74 @@ export type NewNutritionTargets = {
   /** Defaults to 'user'; the Coach's future proposals stamp 'ai'. */
   created_by?: Authorship;
   notes?: string | null;
+};
+
+// --- Meal templates (0018) ----------------------------------------------------
+
+/** A `meal_templates` row — a reusable named meal. */
+export type MealTemplateRow = {
+  id: string;
+  name: string;
+  name_norm: string;
+  notes: string | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
+/** A `meal_template_items` row — a food+portion snapshot inside a template
+ * (mirrors MealItemRow minus confidence; templates are curated, not estimated). */
+export type MealTemplateItemRow = {
+  id: string;
+  template_id: string;
+  food_id: string | null;
+  name: string;
+  grams: number | null;
+  serving_qty: number | null;
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  fiber_g: number | null;
+  micros: JsonText | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
+/** A template with its rolled-up totals + item count — the templates list row. */
+export type MealTemplateSummary = {
+  template: MealTemplateRow;
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  itemCount: number;
+};
+
+/** What the app supplies to create a template (items reuse NewMealItem). */
+export type NewMealTemplate = {
+  name: string;
+  notes?: string | null;
+  items: NewMealItem[];
+};
+
+// --- Cross-day trends & micro rollups (view models) --------------------------
+
+/** One day in the nutrition history view: totals + the active targets that day
+ * (null where none were set), so adherence is judged against the era's targets. */
+export type NutritionHistoryDay = {
+  date: DateString;
+  kcal: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+  fiber_g: number;
+  mealCount: number;
+  /** Active kcal/protein/carbs/fat/fiber targets for this day, or null. */
+  target: {
+    kcal: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+    fiber_g: number | null;
+  } | null;
 };
