@@ -8,7 +8,7 @@
 
 > ✅ **Architecture pivot (2026-07-24) — largely complete: local-first, no-server, offline-except-AI, iOS-only.** ARC runs on **on-device SQLite** (`op-sqlite` + `sqlite-vec`); **Supabase is fully removed** (client + folder deleted 2026-07-25) and Android was dropped (iOS-only). The Coach will call a frontier model **directly from the app** (user's key in the iOS Keychain, Phase 3); backup is an **encrypted iCloud snapshot** (Phase 4). The app runs **fully offline except for AI features**. No backend, no auth, no personal data in any cloud; the only recurring cost is model tokens. See the ADRs in `docs/decisions.md` and the phased plan in **`docs/architecture-migration.md`**. Remaining pivot work: the Face-ID app lock (Phase 2) and the direct on-device Coach (Phase 3).
 
-> **In flight (2026-07-26) — parallel build across windows.** **Data tab** (Frame A "Standing Ledger") is built + twice-reviewed, committed on `claude/expo-project-scaffold-d14e9e` (`b4e173c`) — **pending merge to `main`**. The **agentic Coach** is being built in a parallel window: real model call + tool-use loop, proactive trend detection, reminders, and read/write app-interaction tools over the shipped repos (persisting to new `ai_conversations`/`ai_messages` + a `reminders` table). **Migration reservations** (keep parallel work collision-free): **0005** ai-chat + **0006** reminders → Coach; **0007** → **used** by Screenings + medical calendar (built, this pass); integrator holds **0008+**. Protocols needs **no** migration (its tables ship in `0001`). ⚠️ The Coach's read-tools depend on the Data-tab read functions, which are **not on `main` yet** — merge Data first, then rebase the Coach branch.
+> **Parallel-build integration status (2026-07-26).** Six windows built in parallel; integration onto `main` is underway. **On `main` / integrated + gated:** Data tab (Frame A), Settings + unit switching, **Protocols** (no migration), **Screenings + medical calendar** (migration 0007). **Done but not yet integrated:** the **agentic Coach** (branch `arc-coach-agentic-tools`: model client + tool-use loop + proactive insights + reminders, migrations 0005/0006) — a dedicated integration pass. **Still building:** Exercise (Phase-1 spec done) and Nutrition (first slice shipped, migrations 0008–0010). ⚠️ **Migration-number reconciliation at integration:** Screenings' `0007` is already on `main`, so any unmerged branch with a *lower* number (the Coach's `0005/0006`) must be **renumbered above the current max** — and the Coach and Nutrition both need numbers `> 0007` that don't collide — so the integrator will renumber the Coach's two migrations to the next free slots ahead of Nutrition's block when it integrates. Migrations currently on `main`: `0001–0004`, `0007`.
 
 **Legend:** ✅ done · 🚧 in progress · 📋 planned (v1) · 🧊 later · ⚠️ needs a decision or has a caveat
 
@@ -58,7 +58,7 @@
 - [x] **Migration runner** (Phase 1) — versioned SQL on boot via `PRAGMA user_version`, transactional, behind a testable interface (`src/lib/db/migrate.ts`); `npm run db:test` 9/9
 - [x] **Data layer + repositories** (Phase 1) — `Database` interface + op-sqlite client (`src/lib/db/`), mission repository, hand-authored types; `npm run db:test` data-layer 17/17
 - [x] Seed the biomarker reference catalogue locally (12 starter biomarkers, idempotent)
-- [x] **Feature tables added 2026-07-25** as their screens went real: `meals` (0002), `workouts` + `workout_sets` (0003, ON DELETE CASCADE), `symptoms` (0004). Schema of record now **14 tables across 4 migrations**; each has its repository + headless tests.
+- [x] **Feature tables added as their screens went real:** `meals` (0002), `workouts` + `workout_sets` (0003, ON DELETE CASCADE), `symptoms` (0004), and `screenings` + `appointments` (0007, preventive-screening ledger + medical calendar). Schema of record on `main` is now **16 tables across 5 migrations** (`0001–0004`, `0007`); each has its repository + headless tests. (The Coach's `ai_conversations`/`ai_messages`/`reminders` and Nutrition's food tables land as those branches integrate.)
 - [x] **Pre-migration backup wired** — `backupBeforeMigrate` (`client.ts`) snapshots the DB via SQLite `VACUUM INTO` before any migration touches existing data (no new native dep; warns-and-proceeds on failure). Supersedes the throwing stub; Phase 4's encrypted iCloud backup supersedes this.
 - [~] 🚧 `ai_conversations` / `ai_messages` (migration **0005**) + `reminders` (**0006**) — **in progress** (Coach window). `experiments` still later.
 - [x] ~~Supabase Storage bucket for lab PDFs~~ — **dropped**; the original PDF becomes a local / iCloud file, referenced by `lab_reports.file_path` (Phase 4)
@@ -147,7 +147,7 @@
 | Navigation shell | ✅ | Five tabs + not-found, file-based routing (no `/login` — single-user) |
 | Design system | ✅ | Tokens defined and compiling; see §3 |
 | Database schema | ✅ | **Ported to SQLite** (`db/migrations/0001_init.sql`), 20-check validation; Postgres origin retired |
-| Local DB engine | ✅ | `op-sqlite` + `sqliteVec` running on device (persistence confirmed); migration runner + repositories + seed + pre-migration backup; op-sqlite isolated to `client.ts`. 4 migrations, 14 tables |
+| Local DB engine | ✅ | `op-sqlite` + `sqliteVec` running on device (persistence confirmed); migration runner + repositories + seed + pre-migration backup; op-sqlite isolated to `client.ts`. 5 migrations, 16 tables (on `main`) |
 | DB types | ✅ | Hand-authored row types (`src/lib/db/types.ts`); the Supabase generator is deleted |
 | Supabase client | ✅ | **Deleted 2026-07-25** (dead island removed in the full-app review) |
 | **Home screen** | 🚧 | Mission reads/persists via the DB; readiness/brief/metrics still mock |
@@ -163,7 +163,7 @@
 | Wearables | 📋 | Not started; schema ready. Apple Health hub (Terra dropped) |
 | Media / photos | 📋 | PhotoKit refs (progress pics) + compressed copies (food) — Phase 4 |
 | iCloud backup | 📋 | Encrypted snapshot + restore — Phase 4 |
-| Tests / CI | 🚧 | No app-level runner/CI yet, but the data layer has headless `node:sqlite` tests (`npm run db:test`: 9 migrate + 17 data-layer + 57 log + 20 nutrition + 26 exercise + 11 symptoms + 17 body/biomarkers + 29 trend-series + 44 screenings = 230 across 9 suites) plus schema validation (`db:validate`, 20) |
+| Tests / CI | 🚧 | No app-level runner/CI yet, but the data layer has headless `node:sqlite` tests (`npm run db:test`: 9 migrate + 17 data-layer + 61 log + 20 nutrition + 26 exercise + 11 symptoms + 17 body/biomarkers + 29 trend-series + 14 user + 17 units + 46 protocols + 44 screenings = **311 across 12 suites**) plus schema validation (`db:validate`, 20) |
 
 ### Infrastructure
 - **None required (local-first).** No backend to run or pay for; the only external calls are to the AI provider, made directly from the app. Recurring cost = model tokens (+ $99/yr Apple).
