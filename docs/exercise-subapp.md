@@ -1,9 +1,11 @@
 # Exercise Sub-App — Design Spec
 
-**Status:** Proposed — Phase 1 (orient) deliverable, **awaiting owner review before build**
-**Last updated:** 2026-07-26
-**Window:** parallel build, reserved migrations **0011–0013**
+**Status:** Phase 2 — **first vertical slice built** (offline). Catalog, routines, structured logger, e1RM/PRs, and the rule-based "Train today" recommendation are real and headless-tested; AI-assist is a designed-but-stubbed seam (the Coach model client isn't on `main` yet).
+**Last updated:** 2026-07-27
+**Window:** parallel build, migrations **0011–0013** (integrator finalizes exact numbers at merge)
 **Reads:** CLAUDE.md §4/§9 · `docs/information-architecture.md` · `docs/project-status.md` ("exercise as measured data") · `db/migrations/0003_exercise.sql`
+
+> **What shipped (2026-07-27).** Migrations 0011 `exercises`+`exercise_muscles` (69-exercise seeded core), 0012 `routines`+`routine_exercises`, 0013 additive enrichment of `workout_sets`/`workouts` (exercise_id, set_type, rpe, duration_sec, superset_group reserved, routine_id). Pure offline engine in `src/lib/exercise/` (e1RM, per-muscle freshness decay, dynamic double progression, warmup/rest, recommender). New repos: `exercise-catalog`, `routines`, `training-stats`, `training-recommend`. Screens: the grown hub (`exercise.tsx`), the structured logger (`workout-live.tsx`), the routine builder (`routine-edit.tsx`), exercise detail (`exercise-detail.tsx`), and the shared picker. 83 new headless tests. The existing `exercise.ts` exports are byte-stable, so the Data-tab trend and Coach read-tool are untouched. §8's open questions were resolved by building both loggers (structured + quick) and the longevity-blend defaults; unit rendering now honours the lb/kg preference via the units engine. Native (rest-timer background delivery, HR/VO₂) and AI-assist remain flagged/deferred.
 
 ---
 
