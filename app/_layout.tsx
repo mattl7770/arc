@@ -44,6 +44,9 @@ export default function RootLayout() {
           {/* Pushed from the Data tab. */}
           <Stack.Screen name="protocols" />
           <Stack.Screen name="protocol-edit" />
+          <Stack.Screen name="screenings" />
+          <Stack.Screen name="screening-form" />
+          <Stack.Screen name="appointment-form" />
         </Stack>
         <StatusBar style="dark" />
       </ThemeProvider>
