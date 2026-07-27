@@ -18,9 +18,28 @@ export type ChatMessage = {
   streaming?: boolean;
   /** Set when the send failed, so the row can offer a retry. */
   error?: boolean;
+  /**
+   * Human labels of the tools the turn used ("metric series", "reminder") —
+   * the transparency chips under an assistant bubble. Derived from the
+   * persisted `ai_messages.tool_calls` record.
+   */
+  tools?: string[];
 };
 
 /** What the service seam reports back as a reply streams in. */
 export type CoachStreamHandlers = {
   onToken: (chunk: string) => void;
+};
+
+/** A Coach-initiated write awaiting the user's decision, as the UI shows it. */
+export type PendingWrite = {
+  /**
+   * Per-request nonce. Approving must name WHICH request it approves — in a
+   * multi-write turn the next gate can appear between a double-tap's first and
+   * second press, and a bare approve would grant the new write sight-unseen.
+   */
+  id: number;
+  tool: string;
+  /** The one human line: "Log weight 178.0 lb". */
+  summary: string;
 };

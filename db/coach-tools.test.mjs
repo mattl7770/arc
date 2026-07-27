@@ -1,0 +1,408 @@
+/**
+ * Headless test of the Coach tool registry (src/lib/ai/tools/) against real
+ * SQLite via node:sqlite — each tool's execute really reads/writes the same
+ * tables the capture screens use. Mirrors db/nutrition.test.mjs; op-sqlite and
+ * the model client are never loaded. Run: npm run db:test.
+ */
+import { DatabaseSync } from 'node:sqlite';
+
+import { todayISODate } from '../src/lib/db/date.ts';
+import { migrate } from '../src/lib/db/migrate.ts';
+import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
+import {
+  COACH_TOOLS,
+  READ_TOOLS,
+  STUB_TOOLS,
+  WRITE_TOOLS,
+  toolByName,
+  toWireTools,
+} from '../src/lib/ai/tools/index.ts';
+
+let pass = 0;
+let fail = 0;
+const ok = (n) => {
+  pass++;
+  console.log(`  ok   ${n}`);
+};
+const bad = (n, e) => {
+  fail++;
+  console.log(`  FAIL ${n}${e ? ' — ' + e : ''}`);
+};
+const near = (a, b, eps = 0.05) => typeof a === 'number' && Math.abs(a - b) < eps;
+const throws = (fn) => {
+  try {
+    fn();
+    return false;
+  } catch {
+    return true;
+  }
+};
+
+function makeDb(raw) {
+  return {
+    run: (sql, params = []) => {
+      raw.prepare(sql).run(...params);
+    },
+    all: (sql, params = []) => raw.prepare(sql).all(...params),
+    get: (sql, params = []) => raw.prepare(sql).get(...params),
+    transaction: (fn) => {
+      raw.exec('BEGIN');
+      try {
+        fn();
+        raw.exec('COMMIT');
+      } catch (e) {
+        raw.exec('ROLLBACK');
+        throw e;
+      }
+    },
+  };
+}
+
+function freshDb() {
+  const raw = new DatabaseSync(':memory:');
+  raw.exec('PRAGMA foreign_keys = ON;');
+  const db = makeDb(raw);
+  migrate(
+    {
+      exec: (sql) => raw.exec(sql),
+      getUserVersion: () => raw.prepare('PRAGMA user_version').get().user_version,
+      setUserVersion: (n) => raw.exec(`PRAGMA user_version = ${n}`),
+      transaction: db.transaction,
+    },
+    MIGRATIONS
+  );
+  return { raw, db };
+}
+
+const NOW = new Date();
+const CTX = { now: NOW };
+const TODAY = todayISODate(NOW);
+const run = (name, db, input = {}) => JSON.parse(toolByName(name).execute(db, input, CTX));
+
+console.log('0. registry shape: unique names, read/write split, wire mapping');
+{
+  const names = COACH_TOOLS.map((t) => t.name);
+  new Set(names).size === names.length
+    ? ok(`tool names unique (${names.length} registered)`)
+    : bad('duplicate names', names.join(','));
+  READ_TOOLS.every((t) => t.readOnly) ? ok('read tools are readOnly') : bad('read/readOnly');
+  WRITE_TOOLS.every((t) => !t.readOnly && typeof t.confirmSummary === 'function')
+    ? ok('every write tool is gated and has a confirmSummary')
+    : bad('write tools shape');
+  STUB_TOOLS.every((t) => !names.includes(t.name))
+    ? ok('stub tools (protocols/modes/navigation…) are NOT registered')
+    : bad('stub leaked into registry');
+  const wire = toWireTools();
+  wire.length === names.length &&
+  wire.every((t) => t.name && t.description && t.input_schema && t.input_schema.type === 'object')
+    ? ok('toWireTools maps name/description/input_schema')
+    : bad('wire shape');
+}
+
+console.log('1. get_today_snapshot: empty day is zeros, then reflects writes');
+{
+  const { db } = freshDb();
+  const empty = run('get_today_snapshot', db);
+  empty.date === TODAY &&
+  empty.meals.length === 0 &&
+  empty.workouts.length === 0 &&
+  empty.symptoms.length === 0 &&
+  empty.remindersDueToday.length === 0
+    ? ok('empty snapshot is empty, not fabricated')
+    : bad('empty snapshot', JSON.stringify(empty));
+
+  run('log_meal', db, { name: 'Salmon bowl', time: '12:30', kcal: 700, protein_g: 45 });
+  run('log_workout', db, { name: 'Zone 2', kind: 'cardio', duration_min: 40 });
+  run('log_symptom', db, { name: 'Headache', severity: 4 });
+  run('log_capture', db, { type: 'supplement', title: 'Creatine · 5 g' });
+  run('set_reminder', db, { title: 'Take magnesium', time: '21:00', repeat: 'daily' });
+
+  const snap = run('get_today_snapshot', db);
+  snap.meals.length === 1 &&
+  near(snap.nutritionTotals.protein_g, 45) &&
+  snap.workouts.length === 1 &&
+  snap.symptoms.length === 1 &&
+  snap.captures.some((c) => c.title === 'Creatine · 5 g') &&
+  snap.remindersDueToday.length === 1
+    ? ok('snapshot reflects meal, workout, symptom, capture, reminder')
+    : bad('populated snapshot', JSON.stringify(snap));
+}
+
+console.log('2. log_metric: display-unit input lands canonical in the right table');
+{
+  const { db, raw } = freshDb();
+  const out = run('log_metric', db, { metric: 'weight', value: 178 });
+  out.logged === true ? ok('log_metric reports logged') : bad('result', JSON.stringify(out));
+  const row = raw.prepare('SELECT weight_kg, source FROM body_metrics').get();
+  row && near(row.weight_kg, 80.74) && row.source === 'manual'
+    ? ok('178 lb stored as ~80.74 kg canonical (body_metrics)')
+    : bad('canonical weight', JSON.stringify(row));
+
+  run('log_metric', db, { metric: 'weight', value: 81, unit: 'kg' });
+  const rows = raw.prepare('SELECT weight_kg FROM body_metrics ORDER BY created_at').all();
+  near(rows[1]?.weight_kg, 81, 1e-6)
+    ? ok('explicit unit token ("kg") bypasses the display-unit conversion')
+    : bad('unit token', JSON.stringify(rows));
+
+  run('log_metric', db, { metric: 'hrv', value: 48 });
+  const hrv = raw.prepare(`SELECT * FROM wearable_data WHERE metric_type = 'hrv'`).get();
+  hrv && hrv.value === 48 && hrv.date === TODAY && hrv.source_device === 'manual'
+    ? ok('hrv lands in wearable_data as manual, keyed to today')
+    : bad('hrv row', JSON.stringify(hrv));
+
+  throws(() => run('log_metric', db, { metric: 'weight', value: -5 }))
+    ? ok('out-of-range value rejected before any write')
+    : bad('bad value accepted');
+  throws(() => run('log_metric', db, { metric: 'weight', value: 80, unit: 'stone' }))
+    ? ok('unknown unit token rejected with the valid set named')
+    : bad('bad unit accepted');
+  throws(() => run('log_metric', db, { metric: 'steps', value: 100 }))
+    ? ok('unknown metric rejected')
+    : bad('bad metric accepted');
+
+  const summary = toolByName('log_metric').confirmSummary({ metric: 'weight', value: 178 });
+  summary === 'Log weight 178 lb'
+    ? ok(`confirmSummary is the human line ("${summary}")`)
+    : bad('confirm summary', summary);
+}
+
+console.log('3. log_workout writes the session and its sets transactionally');
+{
+  const { db, raw } = freshDb();
+  run('log_workout', db, {
+    name: 'Upper A',
+    kind: 'strength',
+    duration_min: 55,
+    sets: [
+      { exercise: 'Bench', reps: 8, weight: 80, unit: 'kg' },
+      { exercise: 'Bench', reps: 8, weight: 80, unit: 'kg' },
+    ],
+  });
+  raw.prepare('SELECT count(*) c FROM workouts').get().c === 1 &&
+  raw.prepare('SELECT count(*) c FROM workout_sets WHERE weight_kg = 80').get().c === 2
+    ? ok('workout + 2 sets persisted with their weights')
+    : bad('workout rows');
+  throws(() => run('log_workout', db, { name: 'X', kind: 'swimming' }))
+    ? ok('unknown kind rejected')
+    : bad('bad kind accepted');
+  throws(() => run('log_workout', db, { name: 'X', kind: 'strength', sets: [{ reps: 5 }] }))
+    ? ok('a set without an exercise name rejected')
+    : bad('bad set accepted');
+}
+
+console.log('4. log_symptom and log_meal validate before writing');
+{
+  const { db, raw } = freshDb();
+  throws(() => run('log_symptom', db, { name: 'Headache', severity: 11 }))
+    ? ok('severity 11 rejected')
+    : bad('severity 11 accepted');
+  throws(() => run('log_meal', db, { name: 'Lunch', time: '25:00' }))
+    ? ok('impossible clock time rejected (25:00)')
+    : bad('25:00 accepted');
+  throws(() => run('log_meal', db, {}))
+    ? ok('a meal without a name rejected')
+    : bad('nameless meal accepted');
+  raw.prepare('SELECT count(*) c FROM meals').get().c === 0 &&
+  raw.prepare('SELECT count(*) c FROM symptoms').get().c === 0
+    ? ok('failed validations wrote nothing')
+    : bad('partial writes');
+}
+
+console.log('5. reminders end to end: set → list → complete/dismiss, with guards');
+{
+  const { db, raw } = freshDb();
+  const daily = run('set_reminder', db, {
+    title: 'Take magnesium',
+    time: '21:00',
+    repeat: 'daily',
+  });
+  raw.prepare('SELECT created_by FROM reminders WHERE id = ?').get(daily.id).created_by === 'ai'
+    ? ok('tool-created reminder records created_by = ai')
+    : bad('created_by');
+
+  const listed = run('list_reminders', db);
+  listed.reminders.length === 1 &&
+  listed.reminders[0].title === 'Take magnesium' &&
+  listed.reminders[0].dueToday === true
+    ? ok('list_reminders surfaces it, due today (daily)')
+    : bad('list', JSON.stringify(listed));
+
+  // Completing a RECURRING reminder would end it permanently — guarded.
+  throws(() => run('complete_reminder', db, { id: daily.id }))
+    ? ok('complete_reminder refuses a daily reminder (would end it for good)')
+    : bad('recurring completed');
+
+  const once = run('set_reminder', db, { title: 'Book DEXA', repeat: 'once' });
+  const summary = toolByName('complete_reminder').confirmSummary({ id: once.id }, db);
+  summary === 'Mark reminder "Book DEXA" done'
+    ? ok(`confirmation names the target, never a bare id ("${summary}")`)
+    : bad('confirm summary', summary);
+  const completed = run('complete_reminder', db, { id: once.id });
+  completed.completed === true &&
+  run('list_reminders', db).reminders.every((r) => r.title !== 'Book DEXA')
+    ? ok('complete_reminder retires the one-off from the active list')
+    : bad('complete');
+
+  const dismissSummary = toolByName('dismiss_reminder').confirmSummary({ id: daily.id }, db);
+  dismissSummary === 'Dismiss reminder "Take magnesium"'
+    ? ok('dismiss confirmation names the target too')
+    : bad('dismiss summary', dismissSummary);
+  run('dismiss_reminder', db, { id: daily.id });
+  run('list_reminders', db).reminders.length === 0
+    ? ok('dismiss_reminder ends the daily one')
+    : bad('dismiss');
+
+  throws(() => run('dismiss_reminder', db, { id: 'nope' }))
+    ? ok('unknown reminder id rejected with guidance')
+    : bad('unknown id accepted');
+  throws(() => run('set_reminder', db, { title: 'Weekly check', repeat: 'weekly' }))
+    ? ok('weekly without an anchor date rejected at the tool layer')
+    : bad('anchorless weekly accepted');
+}
+
+console.log('6. get_metric_series returns display units with honest stats');
+{
+  const { db } = freshDb();
+  run('log_metric', db, { metric: 'weight', value: 178 });
+  run('log_metric', db, { metric: 'weight', value: 180 });
+  const series = run('get_metric_series', db, { metric: 'weight', days: 7 });
+  series.unit === 'lb' && series.points.length === 1 && near(series.points[0].value, 179, 0.2)
+    ? ok('two same-day weigh-ins average to one daily point, in lb')
+    : bad('series', JSON.stringify(series));
+  series.stats && series.stats.count === 1
+    ? ok('stats ride along')
+    : bad('stats', JSON.stringify(series.stats));
+
+  const empty = run('get_metric_series', db, { metric: 'hrv' });
+  empty.points.length === 0 && empty.stats === null
+    ? ok('an unlogged metric returns empty points + null stats (nothing invented)')
+    : bad('empty series', JSON.stringify(empty));
+
+  throws(() => run('get_metric_series', db, { metric: 'weight', days: 0 }))
+    ? ok('days: 0 rejected')
+    : bad('days 0 accepted');
+}
+
+console.log('7. get_nutrition_summary + get_training_summary aggregate honestly');
+{
+  const { db } = freshDb();
+  run('log_meal', db, { name: 'A', kcal: 600, protein_g: 40 });
+  run('log_meal', db, { name: 'B', kcal: 800, protein_g: 50 });
+  const nutrition = run('get_nutrition_summary', db, { days: 7 });
+  nutrition.loggedDays === 1 &&
+  near(nutrition.averagesAcrossLoggedDays.kcal, 1400) &&
+  near(nutrition.averagesAcrossLoggedDays.protein_g, 90)
+    ? ok('nutrition day totals + averages across logged days')
+    : bad('nutrition', JSON.stringify(nutrition));
+
+  run('log_workout', db, { name: 'Zone 2', kind: 'cardio', duration_min: 45 });
+  run('log_workout', db, { name: 'Upper', kind: 'strength', duration_min: 50 });
+  const training = run('get_training_summary', db, { days: 28 });
+  training.totals.sessions === 2 &&
+  near(training.totals.cardioMinutes, 45) &&
+  training.totals.strengthSessions === 1 &&
+  training.recentSessions.length === 2
+    ? ok('training totals, split by kind, with recent sessions')
+    : bad('training', JSON.stringify(training));
+}
+
+console.log('8. get_biomarkers: honest when empty, real when a result exists');
+{
+  const { db, raw } = freshDb();
+  const empty = run('get_biomarkers', db);
+  empty.resultsAvailable === 0 && typeof empty.note === 'string'
+    ? ok('no lab results → says so instead of inventing values')
+    : bad('empty biomarkers', JSON.stringify(empty));
+
+  raw
+    .prepare(
+      `INSERT INTO biomarkers (id, slug, name, category, unit, optimal_range_low, optimal_range_high)
+       VALUES ('b1', 'apob', 'ApoB', 'cardiovascular', 'mg/dL', 20, 60)`
+    )
+    .run();
+  raw
+    .prepare(
+      `INSERT INTO lab_results (id, biomarker_id, value, collected_at, source)
+       VALUES ('r1', 'b1', 78, '2026-06-01', 'manual')`
+    )
+    .run();
+  const withData = run('get_biomarkers', db, { category: 'cardiovascular' });
+  withData.resultsAvailable === 1 &&
+  withData.results[0].slug === 'apob' &&
+  withData.results[0].value === 78 &&
+  withData.results[0].optimal_range_high === 60
+    ? ok('latest value + optimal range returned for the filter')
+    : bad('biomarkers', JSON.stringify(withData));
+}
+
+console.log('9. get_insights wraps the deterministic engine');
+{
+  const { db } = freshDb();
+  const out = run('get_insights', db);
+  Array.isArray(out.insights) && typeof out.briefLine === 'string'
+    ? ok('insights array + brief line, no model involved')
+    : bad('insights', JSON.stringify(out));
+}
+
+console.log('10. backdating: an explicit date lands on that day and shows in the summary');
+{
+  const { db, raw } = freshDb();
+  run('log_meal', db, { name: 'Late dinner', kcal: 800, date: '2026-07-20' });
+  raw.prepare('SELECT date FROM meals').get().date === '2026-07-20'
+    ? ok('log_meal date param writes the stated day, not today')
+    : bad('backdated meal');
+  const summary = toolByName('log_meal').confirmSummary(
+    { name: 'Late dinner', kcal: 800, date: '2026-07-20' },
+    db
+  );
+  summary.includes('· 2026-07-20') && summary.includes('800 kcal')
+    ? ok(`confirmation shows the backdate and the macros ("${summary}")`)
+    : bad('backdate summary', summary);
+  throws(() => run('log_meal', db, { name: 'Bad', date: '2026-13-45' }))
+    ? ok('an impossible calendar date is rejected before the DB')
+    : bad('2026-13-45 accepted');
+  run('log_workout', db, { name: 'Zone 2', kind: 'cardio', duration_min: 40, date: '2026-07-19' });
+  raw.prepare('SELECT date FROM workouts').get().date === '2026-07-19'
+    ? ok('log_workout backdates too')
+    : bad('backdated workout');
+}
+
+console.log('11. set weights arrive in display lb and store canonical kg');
+{
+  const { db, raw } = freshDb();
+  run('log_workout', db, {
+    name: 'Upper A',
+    kind: 'strength',
+    sets: [
+      { exercise: 'Bench', reps: 8, weight: 225 },
+      { exercise: 'Press', reps: 5, weight: 60, unit: 'kg' },
+    ],
+  });
+  const sets = raw.prepare('SELECT exercise, weight_kg FROM workout_sets ORDER BY set_index').all();
+  near(sets[0]?.weight_kg, 225 / 2.2046226218, 1e-6)
+    ? ok('225 (lb, the default) stored as ~102.06 kg canonical')
+    : bad('lb set', JSON.stringify(sets));
+  near(sets[1]?.weight_kg, 60, 1e-9)
+    ? ok('unit "kg" passes through unconverted')
+    : bad('kg set', JSON.stringify(sets));
+  const summary = toolByName('log_workout').confirmSummary(
+    { name: 'Upper A', kind: 'strength', sets: [{ exercise: 'Bench', reps: 8, weight: 225 }] },
+    db
+  );
+  summary.includes('Bench 8 × 225 lb')
+    ? ok(`confirmation shows the sets in display units ("${summary}")`)
+    : bad('set summary', summary);
+}
+
+console.log('12. sub-week training windows refuse to extrapolate a weekly rate');
+{
+  const { db } = freshDb();
+  run('log_workout', db, { name: 'Zone 2', kind: 'cardio', duration_min: 60 });
+  const training = run('get_training_summary', db, { days: 1 });
+  training.weeklyRates === null && near(training.totals.minutes, 60)
+    ? ok('days: 1 reports totals but a null weeklyRates (no 420 min/week fiction)')
+    : bad('weekly extrapolation', JSON.stringify(training));
+}
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);
