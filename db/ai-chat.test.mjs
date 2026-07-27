@@ -1,6 +1,6 @@
 /**
  * Headless test of the AI chat data layer — ai_conversations + ai_messages
- * (0005_ai_chat.sql) and their repository (ai-chat.ts) — against real SQLite
+ * (0008_ai_chat.sql) and their repository (ai-chat.ts) — against real SQLite
  * via node:sqlite. Mirrors db/nutrition.test.mjs; op-sqlite is never loaded.
  * Run: npm run db:test.
  */
@@ -75,7 +75,7 @@ function freshDb() {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-console.log('0. migrations: 0005 (ai chat) applies; both tables exist');
+console.log('0. migrations: 0008 (ai chat) applies; both tables exist');
 {
   const { raw } = freshDb();
   const version = raw.prepare('PRAGMA user_version').get().user_version;

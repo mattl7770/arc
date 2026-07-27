@@ -1,5 +1,5 @@
 -- ============================================================================
--- ARC 0005 — ai chat: ai_conversations + ai_messages
+-- ARC 0008 — ai chat: ai_conversations + ai_messages
 --
 -- The Coach's conversation store (docs/ai-coach.md). A conversation is a
 -- thread; a message is one turn in it. Messages are APPEND-ONLY — like
@@ -13,7 +13,7 @@
 -- wire format's and evolves with the tool set, not a schema concern. NULL for
 -- plain turns.
 --
--- Numbered 0005 (0005 + 0006 reserved for the Coach slice; integrator holds
+-- Numbered 0008 (renumbered from 0005 at integration to sit above Screenings 0007;
 -- 0007+). Conventions per CLAUDE.md §9 / 0001_init.sql: app-generated v4 UUID
 -- text ids (PRIMARY KEY NOT NULL, no default — src/lib/db/id.ts), ISO-8601 UTC
 -- timestamps, enum vocabulary as text + CHECK, json as text + json_valid, FKs

@@ -6,7 +6,7 @@ import type { ReminderRow } from '@/lib/reminders/types';
 
 /**
  * Section: active reminders — the in-app surfacing seam for rows the user or
- * the Coach created (0006_reminders.sql). Renders nothing when empty. OS
+ * the Coach created (0009_reminders.sql). Renders nothing when empty. OS
  * notification delivery is a flagged native dependency; until it lands, this
  * list IS the reminder.
  */

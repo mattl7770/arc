@@ -1,6 +1,6 @@
 /**
  * Types for the AI/Coach slice — row shapes mirroring db/migrations/
- * 0005_ai_chat.sql plus the agentic-loop records shared between the model
+ * 0008_ai_chat.sql plus the agentic-loop records shared between the model
  * client, the repositories, and the chat view-model.
  *
  * Row types live here (not in src/lib/db/types.ts) by the parallel-work

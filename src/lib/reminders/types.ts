@@ -1,5 +1,5 @@
 /**
- * Types for reminders (0006_reminders.sql). Row type mirrors the table;
+ * Types for reminders (0009_reminders.sql). Row type mirrors the table;
  * NewReminder is what callers (the reminder sheet later, the Coach's
  * set_reminder tool today) pass to createReminder — ids/timestamps come from
  * the repository / DB defaults. Lives beside the feature by the parallel-work

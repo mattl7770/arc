@@ -1,6 +1,6 @@
 /**
  * Headless test of the reminders data layer — the reminders table
- * (0006_reminders.sql) and its repository (reminders.ts) — against real SQLite
+ * (0009_reminders.sql) and its repository (reminders.ts) — against real SQLite
  * via node:sqlite. Mirrors db/nutrition.test.mjs; op-sqlite is never loaded.
  * Run: npm run db:test.
  */
@@ -71,7 +71,7 @@ function freshDb() {
   return { raw, db };
 }
 
-console.log('0. migrations: 0006 (reminders) applies');
+console.log('0. migrations: 0009 (reminders) applies');
 {
   const { raw } = freshDb();
   const version = raw.prepare('PRAGMA user_version').get().user_version;

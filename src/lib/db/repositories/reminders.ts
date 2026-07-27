@@ -1,5 +1,5 @@
 /**
- * The reminders data layer (0006_reminders.sql): nudges in, what's due out.
+ * The reminders data layer (0009_reminders.sql): nudges in, what's due out.
  *
  * This is storage + in-app surfacing only. OS notification delivery
  * (expo-notifications) is a native dependency and deliberately not here — when

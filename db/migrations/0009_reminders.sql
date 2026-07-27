@@ -1,5 +1,5 @@
 -- ============================================================================
--- ARC 0006 — reminders: the nudge store
+-- ARC 0009 — reminders: the nudge store
 --
 -- One row per reminder — user-asked ("remind me to take magnesium at 9pm") or
 -- Coach-initiated ("you haven't logged weight in 8 days — want a daily
@@ -9,7 +9,7 @@
 -- deliberate non-goal of this migration — when it lands, it schedules from
 -- these same rows; nothing here changes.
 --
--- Numbered 0006 (0005 + 0006 reserved for the Coach slice; integrator holds
+-- Numbered 0009 (renumbered from 0006 at integration to sit above Screenings 0007;
 -- 0007+). Conventions per CLAUDE.md §9 / 0001_init.sql: app-generated v4 UUID
 -- text ids (PRIMARY KEY NOT NULL, no default — src/lib/db/id.ts),
 -- local-calendar `date` text YYYY-MM-DD (GLOB-checked), wall-clock `time` text

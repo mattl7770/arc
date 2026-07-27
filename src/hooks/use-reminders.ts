@@ -18,7 +18,7 @@ export type Reminders = {
 };
 
 /**
- * Active reminders, backed by the on-device database (0006) — the in-app
+ * Active reminders, backed by the on-device database (0009) — the in-app
  * surfacing seam for reminders the user or the Coach created. Same shape as
  * use-log-feed: synchronous first read in the initializer, re-read on focus,
  * and an explicit reload for same-screen writes (the Coach's set_reminder).

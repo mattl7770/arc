@@ -1,5 +1,5 @@
 /**
- * The Coach conversation store (0005_ai_chat.sql): threads and their turns.
+ * The Coach conversation store (0008_ai_chat.sql): threads and their turns.
  *
  * Messages are append-only — a turn is written once, after it finishes, and
  * never edited. The conversation row's updated_at doubles as "last activity"

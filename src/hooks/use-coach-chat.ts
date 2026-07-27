@@ -59,7 +59,7 @@ function loadThread(conversationId: string): ChatMessage[] {
 
 /**
  * Owns the Coach conversation — persisted in `ai_conversations`/`ai_messages`
- * (0005), so a reload resumes the thread. op-sqlite is synchronous, so the
+ * (0008), so a reload resumes the thread. op-sqlite is synchronous, so the
  * initial load runs in the `useState` initializers (no loading state), same
  * pattern as use-log-feed. Turns persist at their edges: the user row on send,
  * the assistant row (with its tool-call record) when the stream completes;
