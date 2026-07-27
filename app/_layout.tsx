@@ -38,6 +38,9 @@ export default function RootLayout() {
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />
           <Stack.Screen name="labs" />
+          <Stack.Screen name="screenings" />
+          <Stack.Screen name="screening-form" />
+          <Stack.Screen name="appointment-form" />
         </Stack>
         <StatusBar style="dark" />
       </ThemeProvider>
