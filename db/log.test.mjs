@@ -324,6 +324,27 @@ console.log('5. logMetric weight → body_metrics (canonical kg), feed renders l
     : bad('weight feed render', JSON.stringify(feed));
 }
 
+console.log('5b. logMetric backdates a body metric onto its day, not today');
+{
+  const { db, raw } = freshDb();
+  const BACKDATE = '2026-07-20';
+  logMetric(db, BACKDATE, 'weight', metricByKey('weight').toCanonical(178));
+  // measured_at is a UTC instant at local noon of the backdate; its LOCAL day
+  // must equal the backdate (the pre-fix bug stamped today, corrupting the series).
+  const back = raw.prepare('SELECT measured_at FROM body_metrics').get();
+  back && todayISODate(new Date(back.measured_at)) === BACKDATE
+    ? ok('a backdated weight stamps measured_at on the backdated local day')
+    : bad('backdate measured_at', back && back.measured_at);
+  // A same-day log still stamps the real current instant.
+  logMetric(db, TODAY, 'weight', metricByKey('weight').toCanonical(179));
+  const latest = raw
+    .prepare('SELECT measured_at FROM body_metrics ORDER BY measured_at DESC LIMIT 1')
+    .get();
+  latest && todayISODate(new Date(latest.measured_at)) === TODAY
+    ? ok("today's weight still stamps the current day")
+    : bad('today measured_at', latest && latest.measured_at);
+}
+
 console.log('6. logMetric water → wearable_data (ml), recentSummary sums the day');
 {
   const { db, raw } = freshDb();

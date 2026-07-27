@@ -8,7 +8,7 @@
  * interval_months on every write unless the caller passes an explicit date (a
  * doctor's told-you date wins over arithmetic). Home's "what's due" surfacing
  * consumes {@link dueScreenings}; this is deliberately separate from the
- * Coach's generic reminders (0006) — the Coach may later create a reminder
+ * Coach's generic reminders (0009) — the Coach may later create a reminder
  * FROM a due screening, but the stores never mix.
  *
  * Works against the {@link Database} interface only — never op-sqlite — so the

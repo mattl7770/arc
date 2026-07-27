@@ -101,8 +101,9 @@ console.log('0. migration 0007 creates both tables (user_version jumps the 0005/
     ? ok('screenings + appointments tables exist')
     : bad('tables missing', JSON.stringify(names));
   const v = raw.prepare('PRAGMA user_version').get().user_version;
-  v === 7
-    ? ok('user_version = 7 (runner tolerates the reserved 0005/0006 gap)')
+  // Floor, not exact: later migrations (the Coach's ai_chat/reminders) raise it.
+  v >= 7
+    ? ok(`user_version is ${v} (>= 7; runner tolerates the 0005/0006 gap)`)
     : bad('user_version', v);
 }
 

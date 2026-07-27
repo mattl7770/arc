@@ -1,36 +1,158 @@
+import { fetch as expoFetch } from 'expo/fetch';
+
 import type { ChatMessage } from '@/types/coach';
+import { getDb } from '@/lib/db/client';
+import { todayISODate } from '@/lib/db/date';
 
+import { runCoachTurn, type FetchLike, type WireMessage, DEFAULT_MODEL } from './model-client';
+import { sessionKeyStore } from './session-key-store';
 import { buildCoachSystemPrompt } from './system-prompt';
+import { COACH_TOOLS, toolByName, toWireTools } from './tools';
+import type { CoachTurnResult } from './types';
 
 /**
- * The Coach service seam.
+ * The Coach service seam — the ONE place a model call happens.
  *
- * This is the ONE place a model call happens. Today it returns an honest mock.
- * Per the local-first architecture (docs/decisions.md, 2026-07-24), the real
- * implementation calls a frontier model **directly from the app** using the
- * user's own key held in the iOS Keychain (expo-secure-store), with provider /
- * model / key user-editable in Settings — no server, no backend. On-device RAG +
- * tools run client-side. When that lands (Phase 3), only the body of
- * `streamCoachReply` changes; every caller and component stays the same.
+ * Two paths behind one function:
+ *   - REAL (a session key is set): the full agentic loop against the Messages
+ *     API via src/lib/ai/model-client.ts — the model reads and writes the
+ *     on-device database through the tool registry, with every write gated on
+ *     user confirmation (options.confirmWrite).
+ *   - MOCK (no key): the honest preview. It deliberately does NOT fake
+ *     intelligence — a coach that confidently makes things up is worse than
+ *     one that admits its wiring isn't finished.
  *
- * It deliberately does NOT fake intelligence. The mock is transparent about
- * being a preview rather than inventing data-grounded answers, because a coach
- * that confidently makes things up is worse than one that admits its wiring
- * isn't finished.
+ * The key comes from the in-memory session store (src/lib/ai/session-key-store
+ * — pasted per session, never persisted); the durable Keychain home lands with
+ * Settings. Everything but the model call itself runs on-device.
  */
 
 /**
- * Flip to true when the user has configured a provider/model/API key and the
- * direct model call is wired (Phase 3). The UI reads this to decide whether to
- * show the "preview" affordance, so there is a single source of truth for "is
- * the Coach real yet".
+ * Whether the Coach is live this session (a key is set). UI reads this to
+ * decide whether to show the "preview" affordances; re-render via
+ * useSessionKeySet() so it stays current.
  */
-export const isCoachKeyConfigured = false;
+export function isCoachKeyConfigured(): boolean {
+  return sessionKeyStore.has();
+}
+
+/** A write tool call awaiting the user's decision. */
+export type WriteConfirmation = {
+  tool: string;
+  /** The one human line to show: "Log weight 178.0 lb". */
+  summary: string;
+};
 
 export type StreamOptions = {
   onToken: (chunk: string) => void;
   signal?: AbortSignal;
+  /**
+   * Consequential-write gate: resolve true to run the tool, false to decline.
+   * When absent, every write is declined — reads never ask.
+   */
+  confirmWrite?: (request: WriteConfirmation) => Promise<boolean>;
+  /** Tool activity for the UI ("Reading metric series…"). */
+  onToolCall?: (call: { name: string; label: string }) => void;
 };
+
+/** Bound the request: the model doesn't need the whole thread forever. */
+const MAX_HISTORY_MESSAGES = 30;
+
+/** "get_metric_series" → "metric series" — the caption chips' vocabulary. */
+export function humanizeToolName(name: string): string {
+  return name.replace(/^(get|list|log|set|complete|dismiss)_/, '').replace(/_/g, ' ');
+}
+
+/**
+ * Streams the Coach's reply to the latest user message, emitting text chunks
+ * via `onToken` as they arrive, executing tool calls (writes only after
+ * confirmation) along the way. Returns the full turn record once complete.
+ *
+ * @param history  The conversation so far, oldest first, ending in the user
+ *                 turn being answered.
+ */
+export async function streamCoachReply(
+  history: ChatMessage[],
+  options: StreamOptions
+): Promise<CoachTurnResult> {
+  const apiKey = sessionKeyStore.get();
+  if (!apiKey) return mockTurn(history, options);
+
+  const db = getDb();
+  const windowed = history.slice(-MAX_HISTORY_MESSAGES).filter((m) => m.content.trim().length > 0);
+  // The API requires the first message to be a user turn — the window boundary
+  // can land mid-pair, so shed any leading assistant turns.
+  while (windowed.length > 0 && windowed[0]!.role !== 'user') windowed.shift();
+  const messages: WireMessage[] = windowed.map((m) => ({ role: m.role, content: m.content }));
+
+  const result = await runCoachTurn(
+    {
+      apiKey,
+      model: DEFAULT_MODEL,
+      // expo/fetch streams response bodies in React Native (WHATWG fetch there
+      // does not), with no native dependency. Structurally a FetchLike; the
+      // cast bridges Expo's own response typings.
+      fetchImpl: expoFetch as unknown as FetchLike,
+    },
+    {
+      system: buildCoachSystemPrompt({ date: todayISODate() }),
+      messages,
+      tools: toWireTools(COACH_TOOLS),
+    },
+    {
+      onToken: options.onToken,
+      signal: options.signal,
+      onToolCall: ({ name }) => options.onToolCall?.({ name, label: humanizeToolName(name) }),
+      executeTool: async (name, input) => {
+        const tool = toolByName(name);
+        if (!tool) return { content: `Unknown tool: ${name}.`, isError: true };
+
+        if (!tool.readOnly) {
+          let summary: string;
+          try {
+            summary =
+              tool.confirmSummary?.(input as Record<string, unknown>, db) ??
+              humanizeToolName(tool.name);
+          } catch (error) {
+            // Invalid input surfaces at summary time — report it, don't gate.
+            return { content: errorText(error), isError: true };
+          }
+          const approved = options.confirmWrite
+            ? await options.confirmWrite({ tool: name, summary })
+            : false;
+          if (!approved) {
+            return {
+              content: 'The user declined this action. Do not retry it; acknowledge and move on.',
+              declined: true,
+            };
+          }
+        }
+
+        try {
+          return {
+            content: tool.execute(db, input as Record<string, unknown>, { now: new Date() }),
+          };
+        } catch (error) {
+          return { content: errorText(error), isError: true };
+        }
+      },
+    }
+  );
+
+  // A refusal can arrive with no text streamed; leave the bubble honest.
+  if (result.stopReason === 'refusal' && result.text.trim().length === 0) {
+    const line = 'I can’t help with that request.';
+    options.onToken(line);
+    return { ...result, text: line };
+  }
+  return result;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : 'Tool execution failed.';
+}
+
+// --- The honest mock (no key set) --------------------------------------------
 
 /** Sleep that rejects promptly if the turn is aborted mid-stream. */
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -56,22 +178,7 @@ function abortError(): Error {
   return err;
 }
 
-/**
- * Streams the Coach's reply to the latest user message, emitting chunks via
- * `onToken` as they arrive. Returns the full text once complete.
- *
- * @param history  The conversation so far, oldest first, ending in the user
- *                 turn being answered.
- */
-export async function streamCoachReply(
-  history: ChatMessage[],
-  options: StreamOptions
-): Promise<string> {
-  // Built and discarded so the wiring is real and type-checked today — the
-  // direct model call will send exactly this. Grounding is thin until the data
-  // layer feeds `summary`.
-  void buildCoachSystemPrompt({ date: new Date().toDateString() });
-
+async function mockTurn(history: ChatMessage[], options: StreamOptions): Promise<CoachTurnResult> {
   const latest = [...history].reverse().find((m) => m.role === 'user');
   const reply = mockReply(latest?.content ?? '');
 
@@ -84,7 +191,7 @@ export async function streamCoachReply(
     await delay(18 + token.length * 6, options.signal);
   }
 
-  return reply;
+  return { text: reply, toolCalls: [], stopReason: 'end_turn' };
 }
 
 /**
@@ -101,26 +208,25 @@ function mockReply(userText: string): string {
 
   if (isGreeting) {
     return (
-      "Morning. I'm here, but I should be straight with you: I'm not connected to the " +
-      'model or your data yet — this is the chat foundation. Once the model is connected, ' +
-      "I'll open each day with a brief grounded in last night's sleep and recovery. What " +
-      'would you want me to look at first?'
+      "Morning. I'm here, but I should be straight with you: no model is connected this " +
+      'session, so this is the chat foundation, not the intelligence. Paste an API key in ' +
+      "the panel above and I'll answer from your actual data — trends, today's log, " +
+      'reminders, all of it. What would you want me to look at first?'
     );
   }
 
   if (asksAboutData) {
     return (
-      "Good question — and exactly the kind I'm built to answer. I can't yet: I'm not " +
-      'reading your labs, wearables, or logs until the data layer is connected. When it ' +
-      "is, I'll answer this with your actual numbers and the trend behind them, not a " +
-      'generic take. For now, treat me as a preview of the interface, not the intelligence.'
+      "Good question — and exactly the kind I'm built to answer. I can't yet in this " +
+      "session: no model is connected, so I won't pretend to read your labs, wearables, " +
+      "or logs. Paste an API key in the panel above and I'll answer this with your " +
+      'actual numbers and the trend behind them, not a generic take.'
     );
   }
 
   return (
-    "Noted. I'm running as a preview right now — the chat works end to end, but I'm not " +
-    "connected to the model or your data yet, so I won't pretend to have answers I " +
-    "can't ground. Once the model and your data are connected, this same thread " +
-    'becomes the real thing.'
+    "Noted. I'm running as a preview right now — the chat works end to end, but no model " +
+    "is connected this session, so I won't pretend to have answers I can't ground. " +
+    'Paste an API key in the panel above and this same thread becomes the real thing.'
   );
 }
