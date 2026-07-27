@@ -37,6 +37,7 @@ export default function RootLayout() {
           <Stack.Screen name="metric-entry" />
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />
+          <Stack.Screen name="labs" />
         </Stack>
         <StatusBar style="dark" />
       </ThemeProvider>

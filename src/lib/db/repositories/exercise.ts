@@ -89,6 +89,55 @@ export function weekSummary(db: Database, now: Date = new Date()): WeekSummary {
   return { zone2Min: row?.zone2 ?? 0, strengthSessions: row?.strength ?? 0 };
 }
 
+export interface WeekPoint {
+  weekStart: string;
+  zone2Min: number;
+  strengthCount: number;
+  /**
+   * Total sessions that week across every kind — the "has data" signal. The
+   * headline aggregates only cover cardio (zone2Min) and strength (strengthCount);
+   * a week of only mobility/other sessions has real workouts but zero of both, so
+   * emptiness must key on this count, not on the headline metrics.
+   */
+  workoutCount: number;
+}
+
+/**
+ * Zone 2 minutes + strength-session count per Monday-start week, oldest ->
+ * current, zero-filled — the Exercise trend chart's data source. Steps back
+ * 7 days per prior week and reuses {@link localWeekRange} / {@link
+ * weekSummary}'s own aggregation for each week's bounds, so "current week"
+ * here matches weekSummary's definition exactly. `now` is injectable so the
+ * headless tests are deterministic.
+ */
+export function weeklyTrainingSeries(
+  db: Database,
+  weeks: number = 6,
+  now: Date = new Date()
+): WeekPoint[] {
+  const points: WeekPoint[] = [];
+  for (let i = weeks - 1; i >= 0; i--) {
+    const weekNow = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i * 7);
+    const { start, end } = localWeekRange(weekNow);
+    const row = db.get<{ zone2: number | null; strength: number | null; total: number | null }>(
+      `SELECT
+         sum(CASE WHEN kind = 'cardio' THEN coalesce(duration_min, 0) ELSE 0 END) AS zone2,
+         sum(CASE WHEN kind = 'strength' THEN 1 ELSE 0 END) AS strength,
+         count(*) AS total
+       FROM workouts
+       WHERE date >= ? AND date <= ?`,
+      [start, end]
+    );
+    points.push({
+      weekStart: start,
+      zone2Min: row?.zone2 ?? 0,
+      strengthCount: row?.strength ?? 0,
+      workoutCount: row?.total ?? 0,
+    });
+  }
+  return points;
+}
+
 /**
  * Recent sessions, newest first (by date, then by insertion time within a
  * date), each with its set count. Empty-safe.
