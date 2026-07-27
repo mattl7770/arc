@@ -455,7 +455,12 @@ export async function runCoachTurn(
   let text = '';
 
   for (let call = 0; call < MAX_MODEL_CALLS_PER_TURN; call++) {
-    if (handlers.signal?.aborted) throw abortError();
+    if (handlers.signal?.aborted) {
+      // Preserve the audit trail if writes already executed this turn — mirror
+      // the streamOnce catch below so an unmount mid-turn still persists the
+      // tool-call record (use-coach-chat drops a bare AbortError without saving).
+      throw toolCalls.length > 0 ? new CoachTurnError(abortError(), text, toolCalls) : abortError();
+    }
 
     let reply: AccumulatedMessage;
     try {
@@ -492,7 +497,14 @@ export async function runCoachTurn(
     for (const block of reply.blocks) {
       if (block.type !== 'tool_use') continue;
       const toolUse = block as WireToolUseBlock;
-      if (handlers.signal?.aborted) throw abortError();
+      if (handlers.signal?.aborted) {
+        // Preserve the audit trail if writes already executed this turn — mirror
+        // the streamOnce catch below so an unmount mid-turn still persists the
+        // tool-call record (use-coach-chat drops a bare AbortError without saving).
+        throw toolCalls.length > 0
+          ? new CoachTurnError(abortError(), text, toolCalls)
+          : abortError();
+      }
       handlers.onToolCall?.({ name: toolUse.name, input: toolUse.input });
 
       let outcome: ToolExecutionOutcome;

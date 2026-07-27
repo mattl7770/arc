@@ -34,6 +34,17 @@ import type { LogFeedItem } from '@/types/log';
 
 const nowISO = () => new Date().toISOString();
 
+/**
+ * A UTC ISO instant at LOCAL noon of a `YYYY-MM-DD` — how a backdated body
+ * metric gets stamped onto its intended day. Noon (not midnight) keeps the
+ * reading safely inside the local day so it never flips to an adjacent day at a
+ * timezone boundary.
+ */
+function dayInstant(date: string): string {
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(y!, m! - 1, d!, 12, 0, 0, 0).toISOString();
+}
+
 /** Save a free-text note (a log with no metric bucket, written for the Coach). */
 export function logNote(db: Database, date: string, text: string): string {
   const log = getOrCreateDailyLog(db, date);
@@ -64,9 +75,16 @@ export function logMetric(
 
   if (target.kind === 'body') {
     // Column comes from the registry (a fixed union), not user input.
+    // body_metrics has no `date` column — only a UTC `measured_at`. For TODAY we
+    // stamp the real instant (preserves time-of-day + ordering); for a BACKDATE
+    // (the Coach forwards one when the user reports a past event) we stamp local
+    // noon of that day, so the reading lands on the intended day in both the
+    // Data-tab window read and the Coach's substr(measured_at,1,10) bucket — not
+    // silently on today, which would corrupt the daily series.
+    const measuredAt = date === todayISODate() ? nowISO() : dayInstant(date);
     db.run(
       `INSERT INTO body_metrics (id, measured_at, ${target.column}, source) VALUES (?, ?, ?, 'manual')`,
-      [newId(db), nowISO(), canonical]
+      [newId(db), measuredAt, canonical]
     );
     return;
   }
