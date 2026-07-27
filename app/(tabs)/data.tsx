@@ -75,9 +75,20 @@ export default function DataScreen() {
       chip: 'setup',
       onPress: () => router.push('/labs'),
     },
-    // Set up, but nothing to open yet — visibly disabled until the builder exists.
-    { key: 'protocols', label: 'Protocols', icon: 'git-branch-outline', chip: 'setup' },
-    { key: 'screenings', label: 'Screenings & calendar', icon: 'calendar-outline', chip: 'later' },
+    {
+      key: 'protocols',
+      label: 'Protocols',
+      icon: 'git-branch-outline',
+      chip: 'setup',
+      onPress: () => router.push('/protocols'),
+    },
+    {
+      key: 'screenings',
+      label: 'Screenings & calendar',
+      icon: 'calendar-outline',
+      chip: 'setup',
+      onPress: () => router.push('/screenings'),
+    },
     { key: 'photos', label: 'Progress photos', icon: 'images-outline', chip: 'later' },
     { key: 'knowledge', label: 'Knowledge base', icon: 'library-outline', chip: 'later' },
     { key: 'export', label: 'Reports & export', icon: 'download-outline', chip: 'later' },

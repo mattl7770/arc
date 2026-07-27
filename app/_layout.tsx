@@ -38,8 +38,15 @@ export default function RootLayout() {
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />
           <Stack.Screen name="labs" />
+          {/* Pushed from Settings. */}
           <Stack.Screen name="settings-profile" />
           <Stack.Screen name="settings-units" />
+          {/* Pushed from the Data tab. */}
+          <Stack.Screen name="protocols" />
+          <Stack.Screen name="protocol-edit" />
+          <Stack.Screen name="screenings" />
+          <Stack.Screen name="screening-form" />
+          <Stack.Screen name="appointment-form" />
         </Stack>
         <StatusBar style="dark" />
       </ThemeProvider>
