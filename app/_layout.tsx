@@ -38,6 +38,9 @@ export default function RootLayout() {
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />
           <Stack.Screen name="labs" />
+          {/* Pushed from the Data tab. */}
+          <Stack.Screen name="protocols" />
+          <Stack.Screen name="protocol-edit" />
         </Stack>
         <StatusBar style="dark" />
       </ThemeProvider>
