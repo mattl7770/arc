@@ -8,6 +8,8 @@
 
 > ✅ **Architecture pivot (2026-07-24) — largely complete: local-first, no-server, offline-except-AI, iOS-only.** ARC runs on **on-device SQLite** (`op-sqlite` + `sqlite-vec`); **Supabase is fully removed** (client + folder deleted 2026-07-25) and Android was dropped (iOS-only). The Coach will call a frontier model **directly from the app** (user's key in the iOS Keychain, Phase 3); backup is an **encrypted iCloud snapshot** (Phase 4). The app runs **fully offline except for AI features**. No backend, no auth, no personal data in any cloud; the only recurring cost is model tokens. See the ADRs in `docs/decisions.md` and the phased plan in **`docs/architecture-migration.md`**. Remaining pivot work: the Face-ID app lock (Phase 2) and the direct on-device Coach (Phase 3).
 
+> **In flight (2026-07-26) — parallel build across windows.** **Data tab** (Frame A "Standing Ledger") is built + twice-reviewed, committed on `claude/expo-project-scaffold-d14e9e` (`b4e173c`) — **pending merge to `main`**. The **agentic Coach** is being built in a parallel window: real model call + tool-use loop, proactive trend detection, reminders, and read/write app-interaction tools over the shipped repos (persisting to new `ai_conversations`/`ai_messages` + a `reminders` table). **Migration reservations** (keep parallel work collision-free): **0005** ai-chat + **0006** reminders → Coach; **0007** → next dispatched feature; integrator holds **0008+**. Protocols needs **no** migration (its tables ship in `0001`). ⚠️ The Coach's read-tools depend on the Data-tab read functions, which are **not on `main` yet** — merge Data first, then rebase the Coach branch.
+
 **Legend:** ✅ done · 🚧 in progress · 📋 planned (v1) · 🧊 later · ⚠️ needs a decision or has a caveat
 
 > How to read this: the **To-Do** list is the work queue. The **Status Board** is the honest snapshot of what actually runs today. **Design & Styling** is the source of truth for the visual system. When these three disagree with the code, the code wins — fix the doc.
@@ -58,7 +60,7 @@
 - [x] Seed the biomarker reference catalogue locally (12 starter biomarkers, idempotent)
 - [x] **Feature tables added 2026-07-25** as their screens went real: `meals` (0002), `workouts` + `workout_sets` (0003, ON DELETE CASCADE), `symptoms` (0004). Schema of record now **14 tables across 4 migrations**; each has its repository + headless tests.
 - [x] **Pre-migration backup wired** — `backupBeforeMigrate` (`client.ts`) snapshots the DB via SQLite `VACUUM INTO` before any migration touches existing data (no new native dep; warns-and-proceeds on failure). Supersedes the throwing stub; Phase 4's encrypted iCloud backup supersedes this.
-- [ ] 📋 Local tables for `ai_conversations`, `ai_messages`, `experiments` (land with the Coach)
+- [~] 🚧 `ai_conversations` / `ai_messages` (migration **0005**) + `reminders` (**0006**) — **in progress** (Coach window). `experiments` still later.
 - [x] ~~Supabase Storage bucket for lab PDFs~~ — **dropped**; the original PDF becomes a local / iCloud file, referenced by `lab_reports.file_path` (Phase 4)
 - [ ] 📋 **Preventive screenings + medical calendar** table(s) — colonoscopy, skin checks, imaging cadence, appointment tracking (brief §2; nothing exists today)
 - [ ] 📋 **Lab breadth** — add `microbiome` (and other missing) values to `biomarker_category`; a biological-age / epigenetic-clock representation. Today's 11-category enum can't store either (brief §2)
@@ -87,13 +89,14 @@
 - [ ] 🧊 Snooze/skip → surface incomplete items intelligently later in the day
 
 ### AI Coach
+> 🚧 **Being built now (2026-07-26, parallel window) — the *agentic* Coach.** Not just a chatbot: a real model call + **tool-use loop**, **proactive trend/insight detection**, **reminders**, and read/write **app-interaction tools** over the shipped repos. Migrations **0005** (chat) + **0006** (reminders). The full tool surface + additional-capability spec is being written into `docs/ai-coach.md` (the window's first deliverable) for owner review.
 - [x] Chat interface with message send, streaming replies, retry (`docs/ai-coach.md`)
 - [x] System prompt encoding the ARC Coach personality (`src/lib/ai/system-prompt.ts`)
 - [x] Daily-brief placeholder (opens the thread; same text as the Home card)
 - [x] Service seam (`src/lib/ai/coach-service.ts`) — honest mock today, one swap to a direct on-device model call later (Phase 3)
-- [ ] ⚠️ 📋 **Wire the real model** — call the frontier provider **directly from the app** with the Keychain key, streaming; rename `isCoachBackendLive` → `isCoachKeyConfigured` (Phase 3). *(No Edge Function — that was the old cloud plan.)*
-- [ ] 📋 Persist conversations to local `ai_conversations` / `ai_messages` (needs the migration)
-- [ ] 🧊 Tool calling (log_entry, update_protocol, …)
+- [~] 🚧 **Wire the real model** — call the frontier provider **directly from the app** (latest Claude, `expo/fetch` streaming), key injected (in-memory this-session paste now; Keychain later). In progress. *(No Edge Function — that was the old cloud plan.)*
+- [~] 🚧 Persist conversations to local `ai_conversations` / `ai_messages` (migration 0005) — in progress
+- [~] 🚧 **Tool calling** (read trends/labs/logs, log captures, set reminders, …) — now **core**, in progress (was 🧊)
 - [ ] 🧊 RAG over user history + longevity knowledge base
 - [ ] 🧊 **Writable knowledge base** — the user can add/edit entries, and the Coach can do its own research to expand the corpus over time (grows the longevity knowledge plane, not just reads it)
 - [ ] 🧊 **Vector DB for Coach long-term memory** (brief §7 names it explicitly; pairs with RAG)
@@ -109,7 +112,7 @@
 - [~] 📋 **Hydration tracking** (owner call, 2026-07-25) — a first-class daily metric. **Manual quick-add is built**: the Water tile → keypad with additive Glass/Bottle/Large estimates, stored in `wearable_data` (metric_type `water_ml`, canonical ml, `source_device='manual'`), with a running "N oz logged today" summary. **Automatic ingest is still to do** — ideally a smart bottle (HidrateSpark or similar) via **Apple Health** (its app syncs the bottle → HealthKit → ARC reads it, staying offline/no-server, consistent with the wearables hub); it lands on the same `water_ml` rows, so no migration.
 - [ ] 🧊 **Write data back to Apple Health** (owner call, 2026-07-25) — ARC as a HealthKit *source*, not just a reader (e.g. push weight, workouts, hydration, supplement/med intake so other apps see them). Requires a **feasibility + importance assessment first** (HealthKit write scopes, which metric types are worth writing, privacy implications) — deferred until that's done.
 - [~] **Nutrition · Supplements/Therapies · Body composition** — capture is real (meals with macros; supplement/therapy sheet; weight/body-fat/waist via the keypad → `body_metrics`). Still to come: the deeper Nutrition/Exercise sub-app features and the Data-tab dashboards/trends over all of it.
-- [ ] 📋 **Data tab** — biomarker trends, wearable history, body comp dashboards
+- [~] **Data tab** — Frame A "Standing Ledger" is **live** (`app/(tabs)/data.tsx`, 2026-07-26): the 12 seeded biomarker reference ranges + four live trend rows (Weight/Nutrition/Training/Symptoms, sparklines reading real on-device data) + a manage/browse index, plus a pushed **Labs** screen (`app/labs.tsx`). Still to come: real lab *values* (needs the PDF pipeline), wearable history (needs Apple Health), and deeper per-domain dashboards.
 
 ### Reporting, export & knowledge (from the brief; newly tracked 2026-07-24)
 - [ ] 📋 **Data export** — CLAUDE.md §2 promises "easy export" as a non-negotiable; nothing implements or schedules it yet (brief §2)
@@ -125,7 +128,8 @@
 - [x] **Symptom logging** (owner priority, built 2026-07-25) — `app/symptom.tsx` (common-symptom chips, 1–10 severity, note) persists to a `symptoms` table (migration 0004); reached from the Log tab's "Log a symptom" row; surfaces in "Logged today". Voice/NL symptom capture arrives with the Coach (Phase 3).
 - [ ] 📋 **Unit switching** (owner call, 2026-07-25) — a Settings preference for lb/kg and mi/km (likely also in/cm, oz/ml, °F/°C later). Storage is already canonical SI (weight kg, waist cm, water ml — the metric registry `src/lib/log/metrics.ts` owns display conversion), so this is a display-layer toggle, **not** a migration.
 - [ ] 📋 **Modes** (Normal/Travel/Sick/Deload/Social/Custom) on Home — adapts plan, priorities, Coach tone, adherence accounting; needs the override model (`docs/information-architecture.md`)
-- [ ] 📋 Data · Settings (still placeholders)
+- [x] **Data tab** — Frame A "Standing Ledger" built (2026-07-26): live trends + biomarker reference ranges + manage index, + pushed **Labs** screen (see the Data-domains list above).
+- [ ] 📋 **Settings tab** — still a placeholder.
 
 > **Information architecture** — where every feature lives (5 tabs + pushed sub-screens), the Log-tab spec, and the Modes model: `docs/information-architecture.md` (locked 2026-07-25).
 
@@ -134,7 +138,7 @@
 ## 2. Status Board
 
 ### App as a whole
-**🚧 Foundation, well underway — local-first and iOS-only.** The app builds for iOS (+ a web bundle kept only for logic-check previews). The **local data layer is live**: on-device SQLite via `op-sqlite`, a versioned migration runner (4 migrations, 14 tables), repositories, and a pre-migration `VACUUM INTO` backup — all confirmed running on device. **Home's mission and the whole Log-tab capture surface** (command field + offline parser, metric keypad, Capture, Nutrition, Exercise, Symptoms) read and write real data. Supabase is fully removed; the tree is iOS-only. Still mock or placeholder: the **Coach** (mock model until Phase 3), Home's readiness/brief/metrics (need wearables + Coach), and the **Data** + **Settings** tabs (2 of 5). Not yet a full daily tool, but the capture spine is real and persistent.
+**🚧 Foundation, well underway — local-first and iOS-only.** The app builds for iOS (+ a web bundle kept only for logic-check previews). The **local data layer is live**: on-device SQLite via `op-sqlite`, a versioned migration runner (4 migrations, 14 tables), repositories, and a pre-migration `VACUUM INTO` backup — all confirmed running on device. **Home's mission and the whole Log-tab capture surface** (command field + offline parser, metric keypad, Capture, Nutrition, Exercise, Symptoms) read and write real data. Supabase is fully removed; the tree is iOS-only. The **Data** tab is now real too — Frame A "Standing Ledger" reads live on-device data (four trend sparklines + the seeded biomarker reference ranges). Still mock or placeholder: the **Coach** (mock model until Phase 3), Home's readiness/brief/metrics (need wearables + Coach), and the **Settings** tab (1 of 5). Not yet a full daily tool, but the capture spine — and now the review surface — are real and persistent.
 
 ### Subsystems
 | Area | Status | Notes |
@@ -147,17 +151,17 @@
 | DB types | ✅ | Hand-authored row types (`src/lib/db/types.ts`); the Supabase generator is deleted |
 | Supabase client | ✅ | **Deleted 2026-07-25** (dead island removed in the full-app review) |
 | **Home screen** | 🚧 | Mission reads/persists via the DB; readiness/brief/metrics still mock |
-| **Coach** | 🚧 | Chat UX complete with streaming; behind a **mock model** (honest preview), not persisted |
+| **Coach** | 🚧 | Chat UX complete with streaming; **agentic build in progress (parallel window)** — real model call + tool-use loop, proactive trends, reminders, persistence (0005/0006). Mock model remains the fallback until a key is set |
 | App lock | 📋 | Face ID / passcode on open — Phase 2 (replaces the cut auth gate) |
 | Log | ✅ | Fully wired: command field (offline parse), metric keypad, Capture (Supplement/Therapy), Nutrition, Exercise, and Symptoms all persist; "Logged today" reads live. Sub-apps are real (meals / workouts+sets / symptoms), not mockups. Deeper features (photo/text-AI, templates, builder) are follow-ups |
 | Nutrition / Exercise / Symptoms | ✅ | Real capture — `meals` (0002), `workouts`+`workout_sets` (0003), `symptoms` (0004); manual entry persists, summaries read live |
-| Data | 📋 | Placeholder screen only |
+| Data | ✅ | **Frame A "Standing Ledger"** — live trends (Weight/Nutrition/Training/Symptoms sparklines from real data), the 12 seeded biomarker reference ranges, a manage/browse index, + pushed **Labs** screen. Real lab values + wearable history await their pipelines; the screen + trend reads are real |
 | Settings | 📋 | Placeholder screen only |
 | Labs pipeline | 📋 | Not started |
 | Wearables | 📋 | Not started; schema ready. Apple Health hub (Terra dropped) |
 | Media / photos | 📋 | PhotoKit refs (progress pics) + compressed copies (food) — Phase 4 |
 | iCloud backup | 📋 | Encrypted snapshot + restore — Phase 4 |
-| Tests / CI | 🚧 | No app-level runner/CI yet, but the data layer has headless `node:sqlite` tests (`npm run db:test`: 9 migrate + 17 data-layer + 57 log + 20 nutrition + 26 exercise + 11 symptoms = 140) plus schema validation (`db:validate`, 20) |
+| Tests / CI | 🚧 | No app-level runner/CI yet, but the data layer has headless `node:sqlite` tests (`npm run db:test`: 9 migrate + 17 data-layer + 57 log + 20 nutrition + 26 exercise + 11 symptoms + 17 body/biomarkers + 29 trend-series = 186 across 8 suites) plus schema validation (`db:validate`, 20) |
 
 ### Infrastructure
 - **None required (local-first).** No backend to run or pay for; the only external calls are to the AI provider, made directly from the app. Recurring cost = model tokens (+ $99/yr Apple).

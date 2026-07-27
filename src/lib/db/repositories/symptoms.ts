@@ -8,6 +8,7 @@
  * so the same code runs on device and against node:sqlite in db/symptoms.test.mjs.
  */
 import type { Database } from '../database';
+import { todayISODate } from '../date';
 import { newId } from '../id';
 import type { NewSymptom, SymptomRow } from '@/lib/symptoms/types';
 
@@ -40,4 +41,53 @@ export function listTodaySymptoms(db: Database, date: string): SymptomRow[] {
     `SELECT * FROM symptoms WHERE date = ? ORDER BY (time IS NULL), time, created_at, id`,
     [date]
   );
+}
+
+/**
+ * `count` local-calendar dates ending at (and including) `end`, oldest first —
+ * the zero-fill scaffold for {@link symptomDailySeries}. Built from Date math
+ * (not a SQL date range) so callers always get exactly `count` points
+ * regardless of how sparse the data is; `end` is parsed as local Y/M/D
+ * components, not `new Date(string)`, which some runtimes treat as UTC
+ * midnight and would shift the day near timezone boundaries.
+ */
+function dateListEndingAt(end: string, count: number): string[] {
+  const [y, m, d] = end.split('-').map(Number);
+  const dates: string[] = [];
+  for (let i = count - 1; i >= 0; i--) {
+    dates.push(todayISODate(new Date(y!, m! - 1, d! - i)));
+  }
+  return dates;
+}
+
+export interface SymptomDayPoint {
+  date: string;
+  count: number;
+  maxSeverity: number | null;
+}
+
+/**
+ * Daily symptom count + peak severity for the last `days` calendar days,
+ * oldest -> `today` inclusive, zero-filled (maxSeverity null) for days with
+ * no symptoms — the Symptoms trend chart's data source. `today` is injectable
+ * so the headless tests are deterministic.
+ */
+export function symptomDailySeries(
+  db: Database,
+  days: number = 14,
+  today: string = todayISODate()
+): SymptomDayPoint[] {
+  const dates = dateListEndingAt(today, days);
+  const rows = db.all<{ date: string; count: number; maxSeverity: number | null }>(
+    `SELECT date, count(*) AS count, max(severity) AS maxSeverity
+     FROM symptoms
+     WHERE date >= ? AND date <= ?
+     GROUP BY date`,
+    [dates[0] ?? today, today]
+  );
+  const byDate = new Map(rows.map((r) => [r.date, r]));
+  return dates.map((date) => {
+    const row = byDate.get(date);
+    return { date, count: row?.count ?? 0, maxSeverity: row?.maxSeverity ?? null };
+  });
 }
