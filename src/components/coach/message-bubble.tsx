@@ -60,6 +60,13 @@ export function MessageBubble({ message, onRetry }: Props) {
         </Text>
       </View>
 
+      {/* Transparency chips: which data the turn actually read or wrote. */}
+      {message.tools && message.tools.length > 0 ? (
+        <Text className="mt-1 font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
+          {message.tools.join(' · ')}
+        </Text>
+      ) : null}
+
       {message.error ? (
         <Pressable
           accessibilityRole="button"
