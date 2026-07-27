@@ -12,10 +12,12 @@ import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
   addVersion,
   createProtocol,
+  createProtocolWithVersion,
   deleteProtocol,
   getCurrentVersion,
   getProtocol,
   listProtocols,
+  reviseProtocol,
   setActive,
   updateProtocolMeta,
 } from '../src/lib/db/repositories/protocols.ts';
@@ -366,6 +368,8 @@ console.log('10. parseProtocolContent is forgiving on read');
         { title: '', dose: 'ignored' },
         'not an object',
         { title: 'Walk', scheduled_time: '99:99' },
+        { title: 'Nap', scheduled_time: '24:15' },
+        { title: 'Lights out', scheduled_time: '23:59' },
       ],
     })
   );
@@ -374,10 +378,92 @@ console.log('10. parseProtocolContent is forgiving on read');
     items: [
       { title: 'Creatine', scheduled_time: '07:30', dose: '5 g', notes: null },
       { title: 'Walk', scheduled_time: null, dose: null, notes: null },
+      { title: 'Nap', scheduled_time: null, dose: null, notes: null },
+      { title: 'Lights out', scheduled_time: '23:59', dose: null, notes: null },
     ],
   })
-    ? ok('titled items normalize (trim, junk keys dropped, bad times nulled); untitled dropped')
+    ? ok('titled items normalize; impossible clock times (99:99, 24:15) nulled, 23:59 kept')
     : bad('normalize', JSON.stringify(parsed));
+}
+
+console.log('11. createProtocolWithVersion is one atomic create');
+{
+  const { db, raw } = freshDb();
+  const pid = createProtocolWithVersion(
+    db,
+    { name: 'Evening Wind-down', type: 'sleep_protocol', description: 'Screens off' },
+    STACK,
+    'Initial version'
+  );
+  const p = raw.prepare('SELECT * FROM protocols WHERE id = ?').get(pid);
+  const v = getCurrentVersion(db, pid);
+  p &&
+  v &&
+  p.current_version_id === v.id &&
+  v.version_number === 1 &&
+  v.change_notes === 'Initial version'
+    ? ok('protocol + v1 + live pointer land together')
+    : bad('atomic create', JSON.stringify({ p, v }));
+  throws(() =>
+    createProtocolWithVersion(db, { name: 'Broken', type: 'other' }, STACK, null, 'robot')
+  )
+    ? ok('a bad created_by makes the whole create throw')
+    : bad('bad created_by accepted');
+  raw.prepare("SELECT count(*) c FROM protocols WHERE name = 'Broken'").get().c === 0
+    ? ok('…and the protocol row rolled back with it — no orphan to duplicate on retry')
+    : bad('orphan protocol left behind');
+}
+
+console.log('12. reviseProtocol applies meta + active + version in one transaction');
+{
+  const { db, raw } = freshDb();
+  const pid = createProtocolWithVersion(
+    db,
+    { name: 'Morning Stack', type: 'supplement_stack' },
+    STACK
+  );
+  const v2 = reviseProtocol(db, pid, {
+    name: 'AM Stack',
+    type: 'daily_routine',
+    description: 'renamed',
+    active: false,
+    content: { items: [STACK.items[0]] },
+    changeNotes: 'Trimmed to creatine only',
+  });
+  const p = raw.prepare('SELECT * FROM protocols WHERE id = ?').get(pid);
+  const v = getCurrentVersion(db, pid);
+  p && p.name === 'AM Stack' && p.type === 'daily_routine' && p.is_active === 0
+    ? ok('identity + paused state updated')
+    : bad('revise meta', JSON.stringify(p));
+  v && v.id === v2 && v.version_number === 2 && v.change_notes === 'Trimmed to creatine only'
+    ? ok('new version written and live')
+    : bad('revise version', JSON.stringify(v));
+  const noVersion = reviseProtocol(db, pid, {
+    name: 'AM Stack',
+    type: 'daily_routine',
+    description: null,
+    active: true,
+    content: null,
+  });
+  noVersion === null &&
+  raw.prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?').get(pid).c === 2
+    ? ok('content: null updates the row without minting a version')
+    : bad('meta-only revise', JSON.stringify(noVersion));
+  throws(() =>
+    reviseProtocol(db, pid, {
+      name: 'Half-saved',
+      type: 'daily_routine',
+      description: null,
+      active: true,
+      content: STACK,
+      createdBy: 'robot',
+    })
+  )
+    ? ok('a failing version write makes the whole revision throw')
+    : bad('bad revise accepted');
+  raw.prepare('SELECT name FROM protocols WHERE id = ?').get(pid).name === 'AM Stack'
+    ? ok('…and the rename rolled back with it — no partial save')
+    : bad('partial revise persisted');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

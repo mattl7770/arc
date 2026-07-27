@@ -54,9 +54,13 @@ export default function ProtocolsScreen() {
       </Pressable>
 
       <View className="mt-8">
-        <SectionLabel>
-          {protocols.length === 0 ? 'Your protocols' : `Your protocols · ${protocols.length}`}
-        </SectionLabel>
+        {/* The count is a measured value — mono, beside the sans label. */}
+        <View className="flex-row items-baseline justify-between">
+          <SectionLabel>Your protocols</SectionLabel>
+          {protocols.length > 0 ? (
+            <Text className="font-mono text-[11px] text-ink-muted">{protocols.length}</Text>
+          ) : null}
+        </View>
 
         {protocols.length === 0 ? (
           <Text className="mt-2 text-[13px] leading-5 text-ink-muted">

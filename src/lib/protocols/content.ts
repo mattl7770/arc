@@ -9,8 +9,13 @@
  */
 import type { ProtocolContent, ProtocolItem } from './types';
 
-/** 'HH:MM' — the same shape the schema GLOB-checks on log_entries. */
-const TIME_SHAPE = /^[0-2][0-9]:[0-5][0-9]$/;
+/**
+ * A real 24h clock time, 'HH:MM' zero-padded — deliberately STRICTER than the
+ * schema's `[0-9][0-9]:[0-9][0-9]` GLOB on log_entries (which would admit
+ * '99:99') and exactly as strict as the editor's own time validation, so
+ * content from any author round-trips through the editor without tripping it.
+ */
+const TIME_SHAPE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
 
 function asOptionalText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;

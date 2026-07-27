@@ -20,7 +20,13 @@
  */
 import type { Database } from '../database';
 import { newId } from '../id';
-import type { Authorship, ProtocolRow, ProtocolVersionRow, SqliteBool } from '../types';
+import type {
+  Authorship,
+  ProtocolRow,
+  ProtocolType,
+  ProtocolVersionRow,
+  SqliteBool,
+} from '../types';
 import type { NewProtocol, ProtocolContent, ProtocolListItem } from '@/lib/protocols/types';
 
 /**
@@ -47,17 +53,69 @@ function uniqueSlug(db: Database, name: string): string {
 }
 
 /**
- * Create the protocol identity — active by default, no version yet
- * (`current_version_id` NULL until the first {@link addVersion}). Returns the
- * new protocol id.
+ * The un-transactioned inserts. Database.transaction is a plain BEGIN — it
+ * does not nest — so every composed write below wraps exactly one transaction
+ * around these; never call them outside one.
  */
-export function createProtocol(db: Database, input: NewProtocol): string {
-  const id = newId(db);
+function insertProtocolRow(db: Database, id: string, input: NewProtocol): void {
   db.run(
     `INSERT INTO protocols (id, slug, name, description, type)
      VALUES (?, ?, ?, ?, ?)`,
     [id, uniqueSlug(db, input.name), input.name.trim(), input.description ?? null, input.type]
   );
+}
+
+function insertVersionRow(
+  db: Database,
+  protocolId: string,
+  content: ProtocolContent,
+  changeNotes: string | null,
+  createdBy: Authorship
+): string {
+  const id = newId(db);
+  const row = db.get<{ next: number }>(
+    'SELECT coalesce(max(version_number), 0) + 1 AS next FROM protocol_versions WHERE protocol_id = ?',
+    [protocolId]
+  );
+  db.run(
+    `INSERT INTO protocol_versions (id, protocol_id, version_number, content, change_notes, created_by)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, protocolId, row?.next ?? 1, JSON.stringify(content), changeNotes, createdBy]
+  );
+  db.run('UPDATE protocols SET current_version_id = ? WHERE id = ?', [id, protocolId]);
+  return id;
+}
+
+/**
+ * Create the protocol identity — active by default, no version yet
+ * (`current_version_id` NULL until the first {@link addVersion}). Returns the
+ * new protocol id. Prefer {@link createProtocolWithVersion} when the first
+ * version is in hand, so a mid-sequence failure can't strand a version-less
+ * protocol.
+ */
+export function createProtocol(db: Database, input: NewProtocol): string {
+  const id = newId(db);
+  insertProtocolRow(db, id, input);
+  return id;
+}
+
+/**
+ * Create the protocol AND its first version in ONE transaction — the editor's
+ * create path. Either both rows land or neither does; a failure can't leave an
+ * orphan protocol that a retry would duplicate. Returns the protocol id.
+ */
+export function createProtocolWithVersion(
+  db: Database,
+  input: NewProtocol,
+  content: ProtocolContent,
+  changeNotes: string | null = null,
+  createdBy: Authorship = 'user'
+): string {
+  const id = newId(db);
+  db.transaction(() => {
+    insertProtocolRow(db, id, input);
+    insertVersionRow(db, id, content, changeNotes, createdBy);
+  });
   return id;
 }
 
@@ -74,20 +132,56 @@ export function addVersion(
   changeNotes: string | null = null,
   createdBy: Authorship = 'user'
 ): string {
-  const id = newId(db);
+  let id = '';
   db.transaction(() => {
-    const row = db.get<{ next: number }>(
-      'SELECT coalesce(max(version_number), 0) + 1 AS next FROM protocol_versions WHERE protocol_id = ?',
-      [protocolId]
-    );
-    db.run(
-      `INSERT INTO protocol_versions (id, protocol_id, version_number, content, change_notes, created_by)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, protocolId, row?.next ?? 1, JSON.stringify(content), changeNotes, createdBy]
-    );
-    db.run('UPDATE protocols SET current_version_id = ? WHERE id = ?', [id, protocolId]);
+    id = insertVersionRow(db, protocolId, content, changeNotes, createdBy);
   });
   return id;
+}
+
+/** Everything one editor Save can change, applied atomically by {@link reviseProtocol}. */
+export type ProtocolRevision = {
+  name: string;
+  type: ProtocolType;
+  description: string | null;
+  active: boolean;
+  /** New version content, or null to leave the live version untouched. */
+  content: ProtocolContent | null;
+  changeNotes?: string | null;
+  createdBy?: Authorship;
+};
+
+/**
+ * The editor's edit-path Save: identity fields, active flag, and (when
+ * `content` is non-null) a new version, in ONE transaction — a failure rolls
+ * everything back rather than leaving a renamed protocol with stale items.
+ * Returns the new version id, or null when no version was written.
+ */
+export function reviseProtocol(
+  db: Database,
+  id: string,
+  revision: ProtocolRevision
+): string | null {
+  let versionId: string | null = null;
+  db.transaction(() => {
+    db.run('UPDATE protocols SET name = ?, description = ?, type = ?, is_active = ? WHERE id = ?', [
+      revision.name.trim(),
+      revision.description ?? null,
+      revision.type,
+      revision.active ? 1 : 0,
+      id,
+    ]);
+    if (revision.content !== null) {
+      versionId = insertVersionRow(
+        db,
+        id,
+        revision.content,
+        revision.changeNotes ?? null,
+        revision.createdBy ?? 'user'
+      );
+    }
+  });
+  return versionId;
 }
 
 export function getProtocol(db: Database, id: string): ProtocolRow | undefined {

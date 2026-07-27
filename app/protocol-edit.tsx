@@ -8,11 +8,9 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import {
-  addVersion,
-  createProtocol,
+  createProtocolWithVersion,
   deleteProtocol,
-  setActive,
-  updateProtocolMeta,
+  reviseProtocol,
 } from '@/lib/db/repositories/protocols';
 import type { ProtocolType } from '@/lib/db/types';
 import { normalizeItem } from '@/lib/protocols/content';
@@ -118,8 +116,19 @@ function FormField({
 }
 
 export default function ProtocolEditScreen() {
+  // A deep link can repeat the param (?id=a&id=b) and expo-router then delivers
+  // string[] despite the generic — coerce so a malformed link degrades to the
+  // "no longer exists" branch instead of throwing at the SQLite bind.
+  const params = useLocalSearchParams<{ id?: string | string[] }>();
+  const id = Array.isArray(params.id) ? params.id[0] : params.id;
+  // key remounts the form if this mounted instance is ever re-targeted at a
+  // different protocol (router.navigate / a deep link while open), so the
+  // fields reseed instead of saving protocol A's form over protocol B.
+  return <ProtocolEditor key={id ?? 'new'} id={id} />;
+}
+
+function ProtocolEditor({ id }: { id: string | undefined }) {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id?: string }>();
   const detail = useProtocol(id);
   const editing = id != null;
 
@@ -130,6 +139,10 @@ export default function ProtocolEditScreen() {
   const [items, setItems] = useState<EditItem[]>(() => initialItems(detail));
   const [changeNotes, setChangeNotes] = useState('');
   const nextKey = useRef(items.length);
+  // Re-entrancy guard: the screen stays touchable during the pop transition,
+  // and a double-tap would otherwise run the whole save twice (duplicate
+  // protocol / duplicate version). Reset only on failure so a retry can save.
+  const inFlight = useRef(false);
 
   const nextVersion = (detail?.version?.version_number ?? 0) + 1;
 
@@ -156,7 +169,8 @@ export default function ProtocolEditScreen() {
   };
 
   const save = () => {
-    if (!canSave) return;
+    if (inFlight.current || !canSave) return;
+    inFlight.current = true;
     const content: ProtocolContent = {
       items: items
         .filter((it) => it.title.trim() !== '')
@@ -172,31 +186,36 @@ export default function ProtocolEditScreen() {
     try {
       const db = getDb();
       if (detail) {
-        updateProtocolMeta(db, detail.protocol.id, {
-          name: name.trim(),
-          type,
-          description: description.trim() || null,
-        });
-        setActive(db, detail.protocol.id, active);
         // normalizeItem gives both sides one canonical shape, so a plain
-        // string compare detects "nothing changed" — no no-op versions.
+        // string compare detects "nothing changed" — no no-op versions. Typed
+        // change notes force a version anyway: they're user data, and skipping
+        // would silently discard them.
         const unchanged =
-          detail.version !== null && JSON.stringify(content) === JSON.stringify(detail.content);
-        if (!unchanged) {
-          addVersion(db, detail.protocol.id, content, changeNotes.trim() || null);
-        }
-      } else {
-        const newId = createProtocol(db, {
+          detail.version !== null &&
+          changeNotes.trim() === '' &&
+          JSON.stringify(content) === JSON.stringify(detail.content);
+        reviseProtocol(db, detail.protocol.id, {
           name: name.trim(),
           type,
           description: description.trim() || null,
+          active,
+          content: unchanged ? null : content,
+          changeNotes: changeNotes.trim() || null,
         });
-        addVersion(db, newId, content);
+      } else {
+        createProtocolWithVersion(
+          db,
+          { name: name.trim(), type, description: description.trim() || null },
+          content
+        );
       }
       router.back();
     } catch (error) {
-      // A failed write must not crash the tap handler or lose the typed form.
+      // Atomic writes: nothing partial persisted. Keep the form, say so, and
+      // let the user retry.
+      inFlight.current = false;
       console.warn('[protocols] save failed', error);
+      Alert.alert('Save failed', 'Nothing was changed. Please try again.');
     }
   };
 
@@ -211,11 +230,15 @@ export default function ProtocolEditScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
+            if (inFlight.current) return;
+            inFlight.current = true;
             try {
               deleteProtocol(getDb(), detail.protocol.id);
               router.back();
             } catch (error) {
+              inFlight.current = false;
               console.warn('[protocols] delete failed', error);
+              Alert.alert('Delete failed', 'Nothing was changed. Please try again.');
             }
           },
         },
@@ -376,7 +399,11 @@ export default function ProtocolEditScreen() {
           </View>
 
           <View className="mt-8">
-            <SectionLabel>{`What changed (optional) → v${nextVersion}`}</SectionLabel>
+            {/* The version number is a measured value — mono, beside the sans label. */}
+            <View className="flex-row items-baseline justify-between">
+              <SectionLabel>What changed (optional)</SectionLabel>
+              <Text className="font-mono text-[11px] text-ink-muted">{`→ v${nextVersion}`}</Text>
+            </View>
             <View className="mt-2">
               <FormField
                 value={changeNotes}
@@ -409,7 +436,14 @@ export default function ProtocolEditScreen() {
         />
         <Text
           className={`text-[15px] font-semibold ${canSave ? 'text-pine-on' : 'text-ink-muted'}`}>
-          {editing ? `Save as v${nextVersion}` : 'Create protocol'}
+          {editing ? (
+            <>
+              {'Save as '}
+              <Text className="font-mono">{`v${nextVersion}`}</Text>
+            </>
+          ) : (
+            'Create protocol'
+          )}
         </Text>
       </Pressable>
 
