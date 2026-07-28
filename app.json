@@ -33,7 +33,19 @@
       ],
       "expo-font",
       "expo-secure-store",
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "ARC uses the camera to scan food barcodes and photograph meals for logging."
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "ARC uses Face ID to lock the app so only you can open your health data."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
