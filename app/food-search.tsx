@@ -368,6 +368,22 @@ export default function FoodSearchScreen() {
         </View>
       )}
 
+      {/* Scan a barcode — only once a meal is in progress here, so the scan
+          continues THIS meal (scanning fresh would fork a separate day-part
+          meal; the fresh-scan entry point is the Nutrition screen). */}
+      {targetMealId ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Scan a barcode into this meal"
+          onPress={() =>
+            router.push({ pathname: '/barcode-scan', params: { mealId: targetMealId } })
+          }
+          className="mt-6 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
+          <Ionicons name="barcode-outline" size={17} color={palette.inkSecondary} />
+          <Text className="text-[13px] text-ink">Scan a barcode</Text>
+        </Pressable>
+      ) : null}
+
       {/* Not in the catalog → create it, query prefilled. */}
       <Pressable
         accessibilityRole="button"
@@ -375,7 +391,7 @@ export default function FoodSearchScreen() {
         onPress={() =>
           router.push({ pathname: '/food-new', params: query.trim() ? { name: query.trim() } : {} })
         }
-        className="mt-6 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
+        className={`${targetMealId ? 'mt-2' : 'mt-6'} flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep`}>
         <Ionicons name="add-circle-outline" size={17} color={palette.inkSecondary} />
         <Text className="text-[13px] text-ink">
           Create a food{query.trim() !== '' ? ` — “${query.trim()}”` : ''}

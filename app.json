@@ -33,7 +33,13 @@
       ],
       "expo-font",
       "expo-secure-store",
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "ARC uses the camera to scan food barcodes and photograph meals for logging."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

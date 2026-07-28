@@ -293,10 +293,8 @@ export default function NutritionScreen() {
   const router = useRouter();
   const { meals, totals, fiberTotal, itemCounts, targets, reload } = useNutrition();
   const [formOpen, setFormOpen] = useState(false);
-  const [hint, setHint] = useState<string | null>(null);
 
   const openForm = () => {
-    setHint(null);
     setFormOpen((open) => !open);
   };
 
@@ -387,21 +385,18 @@ export default function NutritionScreen() {
       {/* Log a meal */}
       <View className="mt-8">
         <SectionLabel>Log a meal</SectionLabel>
-        {/* The one pine action on this screen — a labelled stub until the Coach
-            model client lands (Phase 3); src/lib/nutrition/estimate.ts is the
-            seam. Catalog search + manual entry below are the working paths. */}
+        {/* The one pine action on this screen — AI estimation (photo / describe)
+            landing in an editable review (app/meal-estimate.tsx). */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Describe or snap a meal"
-          onPress={() =>
-            setHint('Photo and described meals arrive with the Coach — Add food works now.')
-          }
+          onPress={() => router.push('/meal-estimate')}
           className="mt-2 flex-row items-center gap-3 rounded-card bg-pine px-4 py-3.5 active:opacity-70">
           <Ionicons name="camera-outline" size={20} color={palette.pineOn} />
           <View className="flex-1">
             <Text className="text-[15px] font-semibold text-pine-on">Describe or snap a meal</Text>
             <Text className="mt-0.5 text-xs text-pine-tint">
-              Type it, speak it, or photograph the plate
+              Type it or photograph the plate — you review before it logs
             </Text>
           </View>
         </Pressable>
@@ -415,6 +410,17 @@ export default function NutritionScreen() {
             <Ionicons name="search-outline" size={17} color={palette.inkSecondary} />
             <Text className="text-[13px] text-ink">Add food</Text>
           </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Scan a barcode"
+            onPress={() => router.push('/barcode-scan')}
+            className="flex-1 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
+            <Ionicons name="barcode-outline" size={17} color={palette.inkSecondary} />
+            <Text className="text-[13px] text-ink">Scan</Text>
+          </Pressable>
+        </View>
+
+        <View className="mt-2 flex-row gap-2">
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Manual entry"
@@ -436,8 +442,6 @@ export default function NutritionScreen() {
           <Ionicons name="albums-outline" size={17} color={palette.inkSecondary} />
           <Text className="text-[13px] text-ink">From a template</Text>
         </Pressable>
-
-        {hint ? <Text className="mt-2 text-xs leading-5 text-ink-muted">{hint}</Text> : null}
 
         {formOpen ? <AddMealForm onSaved={saved} /> : null}
       </View>

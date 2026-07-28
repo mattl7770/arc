@@ -57,6 +57,8 @@ export default function RootLayout() {
           <Stack.Screen name="meal-templates" />
           <Stack.Screen name="nutrition-micros" />
           <Stack.Screen name="nutrition-history" />
+          <Stack.Screen name="barcode-scan" />
+          <Stack.Screen name="meal-estimate" />
           <Stack.Screen name="exercise" />
           <Stack.Screen name="workout-log" />
           <Stack.Screen name="metric-entry" />

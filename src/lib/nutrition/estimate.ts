@@ -1,38 +1,33 @@
 /**
  * The AI meal-estimation seam: photo → itemized macros, description → itemized
- * macros. This is the nutrition sub-app's ONE model touchpoint, and it is a
- * SEAM today, not a call — exactly like coach-service.ts before its model call
- * landed.
+ * macros. This is the nutrition sub-app's ONE model touchpoint — and it now
+ * REUSES the Coach's on-device model client (`src/lib/ai/model-client.ts`'s
+ * `runCoachTurn`), never a second HTTP/model stack:
+ *   1. {@link buildMealEstimationRequest} builds the `AgenticRequest` the client
+ *      consumes (system + one user message, with a base64 image block for photos).
+ *   2. {@link estimateMeal} runs that request through `runCoachTurn` (no tools),
+ *      using the same key (iOS Keychain, `api-key-store`) and streaming fetch
+ *      (`expo/fetch`) as Coach chat, then {@link parseMealEstimate} validates
+ *      the model's JSON reply.
+ *   3. {@link groundMealEstimate} matches each item against the local catalog
+ *      and re-prices it from known per-100 g values (Lose-It's own-history lever
+ *      / MacroFactor's retrieve-then-generate). Raw LLM photo MAPE is ~36%,
+ *      portion-dominated (research §1) — so results ALWAYS land in an editable
+ *      review screen, saved source='ai_suggested' with per-item confidence,
+ *      NEVER auto-committed.
+ * Describe-in-words is the same pipeline minus the image block.
  *
- * REUSE, DON'T REBUILD (docs/nutrition-subapp.md §6): the Coach's on-device
- * model client (`src/lib/ai/model-client.ts` — `runCoachTurn`, the streaming
- * Messages-API loop, key in the iOS Keychain) is the ONE model path in the app.
- * That client lives on the Coach branch and is not on `main` yet, so this
- * module must NOT import it (it would break the build) and must NOT grow a
- * second HTTP/model stack. Instead it ships the *pure* pieces that plug into
- * that client with no second path:
- *   - {@link buildMealEstimationRequest} produces the exact request shape the
- *     client's `AgenticRequest` consumes (a system prompt + one user message,
- *     with a base64 image block for the photo case);
- *   - {@link parseMealEstimate} validates the model's JSON reply into a
- *     {@link MealEstimate}.
- * When the client merges, the integrator wires ~5 lines (see estimateMeal's
- * doc) — building the request here, running it through `runCoachTurn` with no
- * tools, and parsing the text. Nothing else in this module changes.
- *
- * The planned call (research: docs/nutrition-subapp.md §1 "Camera + vision"):
- *   1. photo → ~1024 px JPEG at ~0.65 quality (expo-image-manipulator) →
- *      base64 image block before the visual-estimation prompt. ≈1,369 vision
- *      tokens ≈ $0.001–0.004 per photo; only the compressed copy leaves device.
- *   2. Ground, don't trust: returned item names are matched against the local
- *      catalog + the user's recents (searchFoods / listRecentFoods); a hit
- *      swaps in known per-100 g macros scaled to the estimated grams. Raw LLM
- *      photo MAPE is ~36%, portion-dominated — so results ALWAYS land in an
- *      editable review screen, saved source='ai_suggested' with per-item
- *      confidence, never auto-committed.
- *   3. Describe-in-words is the same pipeline minus the image block.
+ * `expo/fetch` is loaded through a guarded require (like api-key-store's) so
+ * this module — whose pure builder/parser the headless tests import — never
+ * fails to load in node, where the native/Expo fetch is absent.
  */
-import type { EstimateConfidence } from './types';
+import type { Database } from '@/lib/db/database';
+import { normalizeFoodName, searchFoods } from '@/lib/db/repositories/foods';
+import { apiKeyStore } from '@/lib/ai/api-key-store';
+import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
+
+import { itemForPortion } from './servings';
+import type { EstimateConfidence, FoodRow } from './types';
 
 export type EstimateInput =
   | { kind: 'text'; description: string }
@@ -61,21 +56,36 @@ export type MealEstimate = {
   notes: string | null;
 };
 
-/** Thrown while the Coach model client hasn't landed (or has no key). */
+/** Thrown when no model key is configured (the UI points the user to Settings). */
 export class MealEstimationUnavailableError extends Error {
   constructor() {
-    super('Meal estimation needs the on-device model (the Coach client) — not wired yet.');
+    super('Meal estimation needs a model key — set one in the Coach settings.');
     this.name = 'MealEstimationUnavailableError';
   }
 }
 
 /**
- * Whether the estimation path can run. Mirrors isCoachKeyConfigured — the UI
- * reads this to keep the "Describe or snap" affordance honest. Flips when the
- * Coach model client merges and a provider key is configured.
+ * Whether the estimation path can run — a model key is configured (same key the
+ * Coach uses). The UI reads this to keep the "Describe or snap" affordance
+ * honest; re-render via the Coach's useSessionKeySet() so it stays current.
  */
 export function isMealEstimationAvailable(): boolean {
-  return false;
+  return apiKeyStore.has();
+}
+
+/**
+ * `expo/fetch` streams response bodies in React Native (the global fetch there
+ * does not). Loaded through a guarded require so the node test loader — which
+ * imports this module's pure functions — never fails on the missing module.
+ */
+function loadStreamingFetch(): FetchLike | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('expo/fetch') as { fetch?: unknown };
+    return (mod.fetch ?? null) as FetchLike | null;
+  } catch {
+    return null;
+  }
 }
 
 // --- The request the Coach client consumes (structurally == AgenticRequest) --
@@ -216,26 +226,95 @@ export function parseMealEstimate(replyText: string): MealEstimate {
 }
 
 /**
- * Estimate a meal from a photo or a description. Today: always throws
- * {@link MealEstimationUnavailableError}; the contract is what ships. The UI
- * treats the error as "arrives with the Coach", identical to the mock Coach's
- * honesty rule — a nutrition number ARC invented would be worse than none.
- *
- * Integration when the Coach client is on `main` (do NOT add a second path):
- *
- *   import { runCoachTurn } from '@/lib/ai/model-client';
- *   const req = buildMealEstimationRequest(input);
- *   let text = '';
- *   await runCoachTurn(config, { ...req, tools: [] }, {
- *     onToken: (t) => { text += t; },
- *     executeTool: async () => ({ content: '' }), // no tools in this turn
- *   });
- *   return parseMealEstimate(text);
- *
- * `config` is the Coach's ModelClientConfig (its key + fetchImpl + model). The
- * grounding step (match items to the catalog, swap in known macros, set foodId)
- * runs on the returned MealEstimate before the review screen.
+ * Estimate a meal from a photo or a description — one turn through the Coach's
+ * model client (no tools). Throws {@link MealEstimationUnavailableError} when no
+ * key is set or the streaming fetch is absent (pre-rebuild); the caller shows
+ * an honest "connect a key" message. The returned estimate is NOT logged — the
+ * caller grounds it ({@link groundMealEstimate}) and lands it in an editable
+ * review the user must confirm.
  */
-export async function estimateMeal(_input: EstimateInput): Promise<MealEstimate> {
-  throw new MealEstimationUnavailableError();
+export async function estimateMeal(
+  input: EstimateInput,
+  signal?: AbortSignal
+): Promise<MealEstimate> {
+  const apiKey = apiKeyStore.get();
+  const fetchImpl = loadStreamingFetch();
+  if (!apiKey || !fetchImpl) throw new MealEstimationUnavailableError();
+
+  const req = buildMealEstimationRequest(input);
+  let text = '';
+  const result = await runCoachTurn(
+    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
+    { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
+    {
+      onToken: (chunk) => {
+        text += chunk;
+      },
+      signal,
+      // No tools in an estimation turn; the model answers in text.
+      executeTool: async () => ({ content: '' }),
+    }
+  );
+  if (result.stopReason === 'refusal') {
+    throw new Error('The model declined to estimate this meal.');
+  }
+  return parseMealEstimate(text.length > 0 ? text : result.text);
+}
+
+/**
+ * A catalog match confident enough to re-price from. A generic single-token
+ * name ("rice", "chicken", "egg") is deliberately NOT confident — the top
+ * substring hit for it is alphabetical noise ("rice" → "Rice cakes"), and
+ * silently swapping the model's chicken-breast macros for rice-cake macros
+ * would make the estimate worse while the review screen shows the same name and
+ * confidence. So we ground only on an exact name match, or a multi-token name
+ * that is the food's leading phrase ("chicken breast" → "Chicken breast,
+ * cooked"). Everything else keeps the model's own numbers.
+ */
+function isConfidentMatch(itemNorm: string, foodNorm: string): boolean {
+  if (foodNorm === itemNorm) return true;
+  const tokens = itemNorm.split(' ').filter(Boolean);
+  if (tokens.length < 2) return false;
+  return foodNorm.startsWith(`${itemNorm} `) || foodNorm.startsWith(`${itemNorm},`);
+}
+
+/**
+ * Ground an estimate against the on-device catalog: for a CONFIDENT name match
+ * to a food with complete macros, RE-PRICE the whole item from that food's
+ * per-100 g values at the estimated grams (setting foodId), so a "Chicken
+ * breast" estimate inherits the seeded food's real macros. Everything else —
+ * an ambiguous name, no match, or a match with incomplete macros — keeps the
+ * model's own numbers verbatim, so grounding never produces a half-catalog,
+ * half-model item. Confidence is untouched (portion uncertainty remains); the
+ * review screen is the safety net for a wrong portion. Pure over the Database
+ * interface, so it's headless-testable.
+ */
+export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEstimate {
+  const items = estimate.items.map((item) => {
+    if (item.grams == null || item.grams <= 0) return item;
+    const match: FoodRow | undefined = searchFoods(db, item.name, 1)[0];
+    if (!match || !isConfidentMatch(normalizeFoodName(item.name), match.name_norm)) return item;
+    // Only ground when the food carries every macro — a partial food would
+    // leave the item's kcal contradicting its (kept-from-model) macros.
+    if (
+      match.kcal_100g == null ||
+      match.protein_g_100g == null ||
+      match.carbs_g_100g == null ||
+      match.fat_g_100g == null
+    ) {
+      return item;
+    }
+    const priced = itemForPortion(match, { grams: item.grams });
+    return {
+      ...item,
+      kcal: priced.kcal ?? item.kcal,
+      protein_g: priced.protein_g ?? item.protein_g,
+      carbs_g: priced.carbs_g ?? item.carbs_g,
+      fat_g: priced.fat_g ?? item.fat_g,
+      // Fiber may be genuinely absent on the food; keep the model's when so.
+      fiber_g: priced.fiber_g ?? item.fiber_g,
+      foodId: match.id,
+    };
+  });
+  return { ...estimate, items };
 }

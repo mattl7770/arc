@@ -66,7 +66,13 @@ function per100Problem(kcal: number | null, macros: (number | null)[]): string |
 
 export default function FoodNewScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ name?: string }>();
+  const params = useLocalSearchParams<{ name?: string; barcode?: string }>();
+  // A barcode arrives when this screen is reached from a scan that missed both
+  // the local cache and Open Food Facts — storing it means the next scan hits.
+  // The schema requires ≥6 digits (a short Code128 payload isn't a product
+  // barcode); a shorter one is dropped so the save never trips the CHECK.
+  const digits = (params.barcode ?? '').replace(/\D/g, '');
+  const barcode = digits.length >= 6 ? digits : '';
 
   const [name, setName] = useState(params.name ?? '');
   const [brand, setBrand] = useState('');
@@ -115,6 +121,7 @@ export default function FoodNewScreen() {
       createFood(getDb(), {
         name: name.trim(),
         brand: brand.trim() === '' ? null : brand.trim(),
+        barcode: barcode === '' ? null : barcode,
         serving_name: servingName.trim() === '' ? null : servingName.trim(),
         serving_grams: servingUsable ? servingGramsNum : null,
         kcal_100g: kcal100,

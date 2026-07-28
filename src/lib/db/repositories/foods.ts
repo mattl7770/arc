@@ -163,3 +163,23 @@ export function findFoodByBarcode(db: Database, barcode: string): FoodRow | unde
   if (digits === '') return undefined;
   return db.get<FoodRow>('SELECT * FROM foods WHERE barcode = ?', [digits]);
 }
+
+/**
+ * Cache a resolved barcode food (from Open Food Facts) into the catalog and
+ * return the stored row. Idempotent: if that barcode is already cached — a
+ * re-scan, or a race between two scans — the existing row is returned rather
+ * than tripping the partial-unique barcode index. `food.barcode` is normalized
+ * to digits so the stored value matches what findFoodByBarcode looks up.
+ */
+export function cacheBarcodeFood(db: Database, food: NewFood): FoodRow {
+  const raw = food.barcode ? food.barcode.replace(/\D/g, '') : '';
+  // The schema requires ≥6 digits; a shorter code is stored as no barcode
+  // (the food is still cached, just not barcode-addressable) so the CHECK holds.
+  const digits = raw.length >= 6 ? raw : '';
+  if (digits !== '') {
+    const existing = findFoodByBarcode(db, digits);
+    if (existing) return existing;
+  }
+  const id = createFood(db, { ...food, barcode: digits === '' ? null : digits });
+  return getFood(db, id)!;
+}

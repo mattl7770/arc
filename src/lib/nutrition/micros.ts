@@ -119,3 +119,14 @@ export function sumMicros(payloads: Micros[]): Micros {
   }
   return out;
 }
+
+/** Scale every micro amount by `factor` — re-portioning an already-scaled
+ * snapshot (no catalog food to re-derive from). */
+export function scaleMicros(micros: Micros, factor: number): Micros {
+  const out: Micros = {};
+  for (const m of MICROS) {
+    const v = micros[m.key];
+    if (v != null) out[m.key] = v * factor;
+  }
+  return out;
+}

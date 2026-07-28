@@ -30,15 +30,21 @@ import {
   nutritionHistory,
   setNutritionTargets,
   todayTotals,
+  updateMealItemPortion,
 } from '../src/lib/db/repositories/nutrition.ts';
-import { buildMealEstimationRequest, parseMealEstimate } from '../src/lib/nutrition/estimate.ts';
+import {
+  buildMealEstimationRequest,
+  groundMealEstimate,
+  parseMealEstimate,
+} from '../src/lib/nutrition/estimate.ts';
 import {
   microsForGrams,
   parseMicros,
+  scaleMicros,
   serializeMicros,
   sumMicros,
 } from '../src/lib/nutrition/micros.ts';
-import { itemForPortion } from '../src/lib/nutrition/servings.ts';
+import { itemForPortion, rescaleLoggedItem } from '../src/lib/nutrition/servings.ts';
 
 let pass = 0;
 let fail = 0;
@@ -384,6 +390,199 @@ console.log('9. existing exports still behave (no regression from micros/templat
   near(t.kcal, 100) && near(t.protein_g, 10) && t.mealCount === 1
     ? ok('todayTotals unchanged with micros present')
     : bad('todayTotals regression', JSON.stringify(t));
+}
+
+console.log('10. scaleMicros scales knowns, skips absent');
+{
+  const s = scaleMicros({ sodium_mg: 100, calcium_mg: 40 }, 0.5);
+  near(s.sodium_mg, 50) && near(s.calcium_mg, 20) && s.iron_mg === undefined
+    ? ok('scaleMicros halves present keys')
+    : bad('scaleMicros', JSON.stringify(s));
+}
+
+console.log('11. rescaleLoggedItem: re-derive from a food; else proportional; null when neither');
+{
+  const { db } = freshDb();
+  const food = db.get('SELECT * FROM foods WHERE id = ?', [microFood(db)]);
+  // With the catalog food (100 kcal/100 g, sodium 200/100 g): re-derive at 200 g.
+  const fromFood = rescaleLoggedItem(
+    { grams: 100, kcal: 100, protein_g: 10, carbs_g: 5, fat_g: 2, fiber_g: 1, micros: null },
+    food,
+    { grams: 200 }
+  );
+  fromFood &&
+  near(fromFood.kcal, 200) &&
+  near(fromFood.protein_g, 20) &&
+  near(parseMicros(fromFood.micros).sodium_mg, 400)
+    ? ok('food present → macros + micros re-derived from the catalog')
+    : bad('rescale food', JSON.stringify(fromFood));
+  // Serving stepper needs the food; 2 servings of a 50 g serving = 100 g.
+  const fromServing = rescaleLoggedItem({ grams: 50 }, food, { servingQty: 2 });
+  fromServing && near(fromServing.grams, 100) && near(fromServing.kcal, 100)
+    ? ok('food present → serving qty re-derives')
+    : bad('rescale serving', JSON.stringify(fromServing));
+  // No food: scale the snapshot proportionally (doubling 150 g → 300 g).
+  const proportional = rescaleLoggedItem(
+    {
+      grams: 150,
+      kcal: 300,
+      protein_g: 30,
+      carbs_g: null,
+      fat_g: 12,
+      fiber_g: 3,
+      micros: '{"sodium_mg":90}',
+    },
+    undefined,
+    { grams: 300 }
+  );
+  proportional &&
+  near(proportional.kcal, 600) &&
+  near(proportional.protein_g, 60) &&
+  proportional.carbs_g === null &&
+  near(parseMicros(proportional.micros).sodium_mg, 180)
+    ? ok('no food → snapshot scaled proportionally, NULLs preserved')
+    : bad('rescale proportional', JSON.stringify(proportional));
+  rescaleLoggedItem({ grams: null }, undefined, { grams: 100 }) === null
+    ? ok('no food + no grams → null (nothing to re-scale)')
+    : bad('rescale null');
+  rescaleLoggedItem({ grams: 100 }, undefined, { servingQty: 2 }) === null
+    ? ok('no food + serving qty → null (a serving needs a food)')
+    : bad('rescale serving-no-food');
+}
+
+console.log('12. updateMealItemPortion via rescaleLoggedItem keeps meal totals honest');
+{
+  const { db } = freshDb();
+  const foodId = microFood(db);
+  const food = db.get('SELECT * FROM foods WHERE id = ?', [foodId]);
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:00',
+    name: 'Breakfast',
+    items: [itemForPortion(food, { grams: 100 })],
+  });
+  const item = listMealItems(db, mealId)[0];
+  const update = rescaleLoggedItem(item, food, { grams: 250 });
+  updateMealItemPortion(db, item.id, update);
+  near(getMeal(db, mealId).kcal, 250) && near(dayMicroTotals(db, TODAY).sodium_mg, 500)
+    ? ok('re-portioning an item re-derives its macros + micros and the meal total')
+    : bad('update portion', JSON.stringify(getMeal(db, mealId)));
+}
+
+console.log('13. groundMealEstimate matches items to the catalog and re-prices them');
+{
+  const { db } = freshDb();
+  // A catalog food the estimate should ground to (100 kcal / 20 P per 100 g).
+  createFood(db, {
+    name: 'Grilled chicken',
+    kcal_100g: 100,
+    protein_g_100g: 20,
+    carbs_g_100g: 0,
+    fat_g_100g: 2,
+    micros: JSON.stringify({ sodium_mg: 60 }),
+  });
+  const estimate = {
+    title: 'Lunch',
+    notes: null,
+    items: [
+      // Model guessed 250 kcal for 150 g; grounding should re-price to 150 kcal.
+      {
+        name: 'Grilled chicken',
+        grams: 150,
+        kcal: 250,
+        protein_g: 25,
+        carbs_g: 0,
+        fat_g: 10,
+        fiber_g: null,
+        confidence: 'medium',
+        foodId: null,
+      },
+      // No catalog match → left as the model gave it.
+      {
+        name: 'Mystery sauce',
+        grams: 30,
+        kcal: 90,
+        protein_g: 0,
+        carbs_g: 5,
+        fat_g: 7,
+        fiber_g: null,
+        confidence: 'low',
+        foodId: null,
+      },
+    ],
+  };
+  const grounded = groundMealEstimate(db, estimate);
+  const chicken = grounded.items[0];
+  chicken.foodId != null && near(chicken.kcal, 150) && near(chicken.protein_g, 30)
+    ? ok('a catalog match is re-priced from known per-100 g values (foodId set)')
+    : bad('ground match', JSON.stringify(chicken));
+  chicken.confidence === 'medium'
+    ? ok('confidence is untouched (portion uncertainty remains)')
+    : bad('ground confidence');
+  const sauce = grounded.items[1];
+  sauce.foodId === null && near(sauce.kcal, 90)
+    ? ok('an unmatched item keeps the model’s numbers')
+    : bad('ground unmatched', JSON.stringify(sauce));
+}
+
+console.log('13b. grounding is conservative — generic single words never mis-ground');
+{
+  const { db } = freshDb();
+  // The seed catalog has "Rice cakes", "Chicken and rice bowl", "Egg white" etc.
+  // — a bare "rice"/"chicken"/"egg" must NOT ground to those (categorical error).
+  const generic = groundMealEstimate(db, {
+    title: 'Bowl',
+    notes: null,
+    items: [
+      {
+        name: 'rice',
+        grams: 150,
+        kcal: 200,
+        protein_g: 4,
+        carbs_g: 44,
+        fat_g: 0,
+        fiber_g: 1,
+        confidence: 'high',
+        foodId: null,
+      },
+      {
+        name: 'chicken',
+        grams: 120,
+        kcal: 200,
+        protein_g: 37,
+        carbs_g: 0,
+        fat_g: 4,
+        fiber_g: null,
+        confidence: 'high',
+        foodId: null,
+      },
+    ],
+  });
+  generic.items.every((i) => i.foodId === null && near(i.kcal, 200))
+    ? ok('single-token generic names keep the model’s numbers (no wrong ground)')
+    : bad('generic grounded', JSON.stringify(generic.items.map((i) => [i.name, i.foodId, i.kcal])));
+  // A partial-macro catalog food is not grounded to (would mix model + catalog).
+  createFood(db, { name: 'Overnight oats mix', kcal_100g: 300 }); // protein/carbs/fat NULL
+  const partial = groundMealEstimate(db, {
+    title: 'B',
+    notes: null,
+    items: [
+      {
+        name: 'Overnight oats mix',
+        grams: 100,
+        kcal: 250,
+        protein_g: 10,
+        carbs_g: 40,
+        fat_g: 5,
+        fiber_g: null,
+        confidence: 'medium',
+        foodId: null,
+      },
+    ],
+  });
+  partial.items[0].foodId === null && near(partial.items[0].kcal, 250)
+    ? ok('a catalog food missing macros is not grounded to (no mixed item)')
+    : bad('partial grounded', JSON.stringify(partial.items[0]));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

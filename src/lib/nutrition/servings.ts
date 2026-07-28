@@ -6,8 +6,8 @@
  * NULL discipline matches the schema: a food that doesn't record a macro
  * yields NULL for it at any portion — "not recorded" never becomes 0.
  */
-import { microsForGrams, serializeMicros } from './micros';
-import type { FoodRow, NewMealItem } from './types';
+import { microsForGrams, parseMicros, scaleMicros, serializeMicros } from './micros';
+import type { FoodRow, MealItemRow, NewMealItem } from './types';
 
 /** The per-100 g columns portion math reads — satisfied by a full FoodRow. */
 export type FoodMacros = Pick<
@@ -63,5 +63,63 @@ export function itemForPortion(
     // Snapshot the food's micros scaled to this portion (0017); NULL when the
     // food carries none, so "not recorded" never becomes a fake zero.
     micros: grams > 0 ? serializeMicros(microsForGrams(food.micros, grams)) : null,
+  };
+}
+
+/** The columns updateMealItemPortion rewrites for a re-portioned logged item. */
+export type PortionUpdate = Pick<
+  NewMealItem,
+  'grams' | 'serving_qty' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
+>;
+
+/**
+ * Recompute a logged item's macro/micro snapshot for a new portion — what
+ * meal-detail's inline editor feeds updateMealItemPortion.
+ *
+ * When the catalog food is still present it RE-DERIVES from the food's per-100 g
+ * values (accurate, and the only way to honour a serving stepper). When the food
+ * is gone or the item was never linked (a free-form or AI item), it scales the
+ * item's own snapshot PROPORTIONALLY by grams — the best that can be done from a
+ * snapshot alone. Returns null when neither basis exists (a food-less item
+ * logged without grams, e.g. an "≈300 kcal" AI estimate): such an item has no
+ * portion to re-scale, so the UI must not offer inline editing for it.
+ */
+export function rescaleLoggedItem(
+  item: Pick<
+    MealItemRow,
+    'grams' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
+  >,
+  food: FoodRow | undefined,
+  portion: { grams: number } | { servingQty: number }
+): PortionUpdate | null {
+  if (food) {
+    const next = itemForPortion(food, portion);
+    return {
+      grams: next.grams ?? null,
+      serving_qty: next.serving_qty ?? null,
+      kcal: next.kcal ?? null,
+      protein_g: next.protein_g ?? null,
+      carbs_g: next.carbs_g ?? null,
+      fat_g: next.fat_g ?? null,
+      fiber_g: next.fiber_g ?? null,
+      micros: next.micros ?? null,
+    };
+  }
+  // No catalog food: a serving stepper is impossible, and proportional scaling
+  // needs a positive old grams to divide by.
+  if (!('grams' in portion)) return null;
+  const oldGrams = item.grams;
+  if (oldGrams == null || oldGrams <= 0 || portion.grams <= 0) return null;
+  const ratio = portion.grams / oldGrams;
+  const s = (v: number | null): number | null => (v == null ? null : v * ratio);
+  return {
+    grams: portion.grams,
+    serving_qty: null,
+    kcal: s(item.kcal),
+    protein_g: s(item.protein_g),
+    carbs_g: s(item.carbs_g),
+    fat_g: s(item.fat_g),
+    fiber_g: s(item.fiber_g),
+    micros: serializeMicros(scaleMicros(parseMicros(item.micros), ratio)),
   };
 }
