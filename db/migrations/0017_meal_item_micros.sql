@@ -1,0 +1,25 @@
+-- ============================================================================
+-- ARC 0017 — nutrition sub-app: micronutrient snapshots on meal_items
+--
+-- meal_items (0008) snapshot macros at log time; this adds the same for
+-- micronutrients. A `micros` JSON object (per PORTION, not per-100 g — it is a
+-- snapshot of what this serving contributed), scaled from the catalog food's
+-- own per-100 g `micros` when the item is logged. Snapshotting (rather than
+-- joining meal_items -> foods live at read time) keeps micros correct after a
+-- catalog edit, survives a food's deletion (food_id -> NULL), and lets the AI
+-- path carry micros the catalog never had — exactly the reasoning the macro
+-- columns already follow.
+--
+-- Forward-only ALTER (never edit shipped 0008): SQLite ADD COLUMN allows a
+-- CHECK as long as existing rows satisfy it — every existing meal_item gets
+-- micros = NULL, which passes. Keys are the longevity shortlist
+-- (sodium_mg, potassium_mg, calcium_mg, magnesium_mg, iron_mg, zinc_mg,
+-- vitamin_c_mg, vitamin_d_mcg, b12_mcg, folate_mcg, omega3_g); the vocabulary
+-- lives in src/lib/nutrition/micros.ts, the JSON is guarded here only for shape.
+--
+-- Numbered 0017, above the nutrition 0014–0016 block it extends (foods +
+-- meal_items land in 0014). No new table, no trigger change: the existing
+-- meal_items_set_updated_at trigger already covers this column.
+-- The migration runner stamps PRAGMA user_version = 17 after applying this file.
+-- ============================================================================
+ALTER TABLE meal_items ADD COLUMN micros text CHECK (micros IS NULL OR json_valid(micros));

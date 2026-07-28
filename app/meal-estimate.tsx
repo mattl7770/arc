@@ -1,0 +1,448 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { useRouter } from 'expo-router';
+import { useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+
+import { Screen } from '@/components/ui/screen';
+import { StackHeader } from '@/components/ui/stack-header';
+import { palette } from '@/constants/theme';
+import { getDb } from '@/lib/db/client';
+import { clockFromISO, todayISODate } from '@/lib/db/date';
+import { getFood } from '@/lib/db/repositories/foods';
+import { logMealWithItems } from '@/lib/db/repositories/nutrition';
+import {
+  type EstimateInput,
+  estimateMeal,
+  groundMealEstimate,
+  isMealEstimationAvailable,
+  type MealEstimate,
+  MealEstimationUnavailableError,
+} from '@/lib/nutrition/estimate';
+import { fmtInt } from '@/lib/nutrition/format';
+import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
+import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
+
+/**
+ * AI meal estimation → editable review (docs/nutrition-subapp.md §6). Describe a
+ * meal in words or photograph it; the Coach's model client itemizes it (one
+ * turn, no tools), the result is GROUNDED against the catalog, and it lands here
+ * as an editable review the user confirms. NOTHING is logged until Save — an
+ * estimate is a labelled estimate (≈, per-item confidence), never a measurement.
+ *
+ * ONLINE-EXCEPT-AI: the model call is the exception; grounding, editing and
+ * logging are offline. Photo capture is NATIVE (expo-camera + image-manipulator)
+ * → needs the EAS rebuild; describe-in-words works as soon as a key is set.
+ */
+
+type Phase =
+  | { kind: 'input' }
+  | { kind: 'camera' }
+  | { kind: 'estimating' }
+  | { kind: 'review'; title: string; notes: string | null }
+  | { kind: 'error'; message: string };
+
+/** One editable review row: the model's item, grounded, with a live grams edit. */
+type ReviewItem = {
+  key: string;
+  name: string;
+  foodId: string | null;
+  food: FoodRow | undefined;
+  confidence: 'high' | 'medium' | 'low';
+  /** The base snapshot the grams edit re-scales from. */
+  base: {
+    grams: number | null;
+    kcal: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+    fiber_g: number | null;
+    micros: string | null;
+  };
+  gramsText: string;
+};
+
+function parseGrams(text: string): number | null {
+  const g = Number(text.trim());
+  return Number.isFinite(g) && g > 0 && g <= 5000 ? g : null;
+}
+
+/** Current macros/micros for a review row at its edited grams — via the same
+ * tested rescale used everywhere; falls back to the base when it can't scale. */
+function currentPortion(row: ReviewItem) {
+  const grams = parseGrams(row.gramsText);
+  if (grams != null) {
+    const scaled = rescaleLoggedItem(row.base, row.food, { grams });
+    if (scaled) return scaled;
+  }
+  return {
+    grams: row.base.grams,
+    serving_qty: null,
+    kcal: row.base.kcal,
+    protein_g: row.base.protein_g,
+    carbs_g: row.base.carbs_g,
+    fat_g: row.base.fat_g,
+    fiber_g: row.base.fiber_g,
+    micros: row.base.micros,
+  };
+}
+
+function SectionLabel({ children }: { children: string }) {
+  return (
+    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
+      {children}
+    </Text>
+  );
+}
+
+export default function MealEstimateScreen() {
+  const router = useRouter();
+  const [permission, requestPermission] = useCameraPermissions();
+  const cameraRef = useRef<CameraView>(null);
+
+  const available = isMealEstimationAvailable();
+  const [phase, setPhase] = useState<Phase>({ kind: 'input' });
+  const [description, setDescription] = useState('');
+  const [rows, setRows] = useState<ReviewItem[]>([]);
+
+  /** Turn a grounded estimate into editable review rows (loads each grounded
+   * food so grams edits re-price from it). */
+  const toReview = (estimate: MealEstimate) => {
+    const db = getDb();
+    const reviewRows: ReviewItem[] = estimate.items.map((item, i) => {
+      const food = item.foodId ? getFood(db, item.foodId) : undefined;
+      // A grounded item's base is derived from the food so macros AND micros are
+      // consistent — including when the user clears the grams field (currentPortion
+      // falls back to base). An ungrounded item keeps the model's numbers; the
+      // model returns no micros, so those stay null.
+      const grounded =
+        food && item.grams != null && item.grams > 0
+          ? itemForPortion(food, { grams: item.grams })
+          : null;
+      return {
+        key: `${i}-${item.name}`,
+        name: item.name,
+        foodId: item.foodId,
+        food,
+        confidence: item.confidence,
+        base: {
+          grams: item.grams,
+          kcal: grounded?.kcal ?? item.kcal,
+          protein_g: grounded?.protein_g ?? item.protein_g,
+          carbs_g: grounded?.carbs_g ?? item.carbs_g,
+          fat_g: grounded?.fat_g ?? item.fat_g,
+          fiber_g: grounded?.fiber_g ?? item.fiber_g,
+          micros: grounded?.micros ?? null,
+        },
+        gramsText: item.grams != null ? String(Math.round(item.grams)) : '',
+      };
+    });
+    setRows(reviewRows);
+    setPhase({ kind: 'review', title: estimate.title, notes: estimate.notes });
+  };
+
+  const run = async (input: EstimateInput) => {
+    setPhase({ kind: 'estimating' });
+    try {
+      const grounded = groundMealEstimate(getDb(), await estimateMeal(input));
+      toReview(grounded);
+    } catch (error) {
+      const message =
+        error instanceof MealEstimationUnavailableError
+          ? error.message
+          : 'Couldn’t estimate that meal. Check your connection and try again, or log it manually.';
+      setPhase({ kind: 'error', message });
+    }
+  };
+
+  const capturePhoto = async () => {
+    try {
+      const photo = await cameraRef.current?.takePictureAsync({ quality: 0.7 });
+      if (!photo?.uri) return setPhase({ kind: 'input' });
+      // Downscale + recompress so only a small JPEG leaves the device.
+      const shrunk = await manipulateAsync(photo.uri, [{ resize: { width: 1024 } }], {
+        compress: 0.6,
+        format: SaveFormat.JPEG,
+        base64: true,
+      });
+      if (!shrunk.base64)
+        return setPhase({ kind: 'error', message: 'Couldn’t process the photo.' });
+      await run({
+        kind: 'photo',
+        base64Jpeg: shrunk.base64,
+        mediaType: 'image/jpeg',
+        description: description.trim() || undefined,
+      });
+    } catch {
+      setPhase({
+        kind: 'error',
+        message: 'Couldn’t take the photo. Try describing the meal instead.',
+      });
+    }
+  };
+
+  const setGrams = (key: string, text: string) => {
+    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, gramsText: text } : r)));
+  };
+  const removeRow = (key: string) => {
+    setRows((prev) => prev.filter((r) => r.key !== key));
+  };
+
+  const save = () => {
+    if (rows.length === 0) return;
+    const items: NewMealItem[] = rows.map((row) => {
+      const p = currentPortion(row);
+      return {
+        food_id: row.foodId,
+        name: row.name,
+        grams: p.grams,
+        serving_qty: null,
+        kcal: p.kcal,
+        protein_g: p.protein_g,
+        carbs_g: p.carbs_g,
+        fat_g: p.fat_g,
+        fiber_g: p.fiber_g,
+        confidence: row.confidence,
+        micros: p.micros,
+      };
+    });
+    const now = new Date();
+    const title = phase.kind === 'review' ? phase.title : 'Meal';
+    try {
+      logMealWithItems(getDb(), {
+        date: todayISODate(),
+        time: clockFromISO(now.toISOString()),
+        name: title,
+        notes: phase.kind === 'review' ? phase.notes : null,
+        source: 'ai_suggested',
+        items,
+      });
+      router.back();
+    } catch (error) {
+      console.warn('[meal-estimate] save failed', error);
+      setPhase({ kind: 'error', message: 'Couldn’t save the meal. Try again.' });
+    }
+  };
+
+  // --- Not configured -------------------------------------------------------
+  if (!available) {
+    return (
+      <Screen scroll>
+        <View className="pt-2">
+          <StackHeader title="Describe or snap" />
+        </View>
+        <Text className="mt-2 text-[13px] leading-5 text-ink-secondary">
+          AI meal estimation needs a model key — the same one the Coach uses.
+        </Text>
+        <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
+          Add a key in the Coach tab, then come back. Meanwhile, Add food and Manual entry work
+          offline.
+        </Text>
+      </Screen>
+    );
+  }
+
+  return (
+    <Screen scroll>
+      <View className="pt-2">
+        <StackHeader title="Describe or snap" />
+      </View>
+
+      {phase.kind === 'input' ? (
+        <View className="mt-2">
+          <SectionLabel>Describe the meal</SectionLabel>
+          <TextInput
+            value={description}
+            onChangeText={setDescription}
+            placeholder="e.g. grilled salmon, ½ cup rice, steamed broccoli"
+            placeholderTextColor={palette.inkMuted}
+            multiline
+            accessibilityLabel="Describe the meal"
+            className="mt-2 min-h-[88px] rounded-card border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] leading-6 text-ink"
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Estimate from description"
+            accessibilityState={{ disabled: description.trim() === '' }}
+            disabled={description.trim() === ''}
+            onPress={() => void run({ kind: 'text', description: description.trim() })}
+            className={`mt-3 h-12 flex-row items-center justify-center gap-2 rounded-btn ${
+              description.trim() === '' ? 'bg-hairline' : 'bg-pine active:opacity-70'
+            }`}>
+            <Ionicons
+              name="sparkles-outline"
+              size={18}
+              color={description.trim() === '' ? palette.inkMuted : palette.pineOn}
+            />
+            <Text
+              className={`text-[15px] font-semibold ${
+                description.trim() === '' ? 'text-ink-muted' : 'text-pine-on'
+              }`}>
+              Estimate
+            </Text>
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Photograph the meal"
+            onPress={() => setPhase({ kind: 'camera' })}
+            className="mt-2 h-12 flex-row items-center justify-center gap-2 rounded-btn border border-hairline bg-porcelain active:bg-paper-deep">
+            <Ionicons name="camera-outline" size={18} color={palette.inkSecondary} />
+            <Text className="text-[14px] text-ink">Photograph it instead</Text>
+          </Pressable>
+
+          <Text className="mt-3 text-xs leading-5 text-ink-muted">
+            Estimates are just that — you’ll review and adjust every item before anything is logged.
+          </Text>
+        </View>
+      ) : null}
+
+      {phase.kind === 'camera' ? (
+        !permission ? (
+          <Text className="mt-6 text-[13px] text-ink-muted">Preparing the camera…</Text>
+        ) : !permission.granted ? (
+          <View className="mt-6">
+            <Text className="text-[13px] leading-5 text-ink-secondary">
+              Photographing a meal needs camera access.
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Allow camera"
+              onPress={requestPermission}
+              className="mt-3 h-12 items-center justify-center rounded-btn bg-pine active:opacity-70">
+              <Text className="text-[14px] font-semibold text-pine-on">Allow camera</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View className="mt-4">
+            <View className="aspect-square w-full overflow-hidden rounded-card border border-hairline bg-ink">
+              <CameraView ref={cameraRef} style={{ flex: 1 }} facing="back" />
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Capture photo"
+              onPress={() => void capturePhoto()}
+              className="mt-3 h-12 flex-row items-center justify-center gap-2 rounded-btn bg-pine active:opacity-70">
+              <Ionicons name="camera" size={18} color={palette.pineOn} />
+              <Text className="text-[15px] font-semibold text-pine-on">Capture</Text>
+            </Pressable>
+          </View>
+        )
+      ) : null}
+
+      {phase.kind === 'estimating' ? (
+        <View className="mt-10 items-center">
+          <ActivityIndicator color={palette.pine} />
+          <Text className="mt-3 text-[13px] text-ink-muted">Estimating the meal…</Text>
+        </View>
+      ) : null}
+
+      {phase.kind === 'error' ? (
+        <View className="mt-6">
+          <Text className="text-[13px] leading-5 text-ink-secondary">{phase.message}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Try again"
+            onPress={() => setPhase({ kind: 'input' })}
+            className="mt-3 h-12 items-center justify-center rounded-btn border border-hairline-strong active:bg-paper-deep">
+            <Text className="text-[14px] font-semibold text-ink">Try again</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {phase.kind === 'review' ? (
+        <View className="mt-2">
+          <View className="flex-row items-baseline gap-2">
+            <Text className="flex-1 font-serif text-lg font-semibold text-ink">{phase.title}</Text>
+            <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
+              est · AI
+            </Text>
+          </View>
+          {phase.notes ? (
+            <Text className="mt-1 text-xs leading-5 text-ink-secondary">{phase.notes}</Text>
+          ) : null}
+
+          <View className="mt-4">
+            {rows.length === 0 ? (
+              <Text className="text-[13px] leading-5 text-ink-muted">
+                No items left. Discard, or go back and re-estimate.
+              </Text>
+            ) : (
+              rows.map((row, index) => {
+                const p = currentPortion(row);
+                return (
+                  <View
+                    key={row.key}
+                    className={`py-3 ${index === 0 ? '' : 'border-t border-hairline-soft'}`}>
+                    <View className="flex-row items-center gap-3">
+                      <View className="flex-1">
+                        <Text className="text-[15px] leading-5 text-ink">
+                          {row.name}
+                          <Text className="font-mono text-[10px] text-ink-muted">
+                            {'  '}≈ {row.confidence}
+                            {row.foodId ? ' · matched' : ''}
+                          </Text>
+                        </Text>
+                      </View>
+                      <View className="flex-row items-center gap-1">
+                        <TextInput
+                          value={row.gramsText}
+                          onChangeText={(t) => setGrams(row.key, t)}
+                          keyboardType="decimal-pad"
+                          accessibilityLabel={`${row.name} grams`}
+                          className="w-14 rounded-btn border border-hairline-soft bg-paper-deep px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+                        />
+                        <Text className="text-xs text-ink-secondary">g</Text>
+                      </View>
+                      <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
+                        {p.kcal != null ? fmtInt(p.kcal) : '—'}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove ${row.name}`}
+                        hitSlop={8}
+                        onPress={() => removeRow(row.key)}
+                        className="h-8 w-8 items-center justify-center rounded-btn active:bg-paper-deep">
+                        <Ionicons name="close" size={16} color={palette.inkMuted} />
+                      </Pressable>
+                    </View>
+                    <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
+                      {p.protein_g != null ? `P ${Math.round(p.protein_g)}g` : ''}
+                      {p.carbs_g != null ? ` · C ${Math.round(p.carbs_g)}g` : ''}
+                      {p.fat_g != null ? ` · F ${Math.round(p.fat_g)}g` : ''}
+                    </Text>
+                  </View>
+                );
+              })
+            )}
+          </View>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Save this meal"
+            accessibilityState={{ disabled: rows.length === 0 }}
+            disabled={rows.length === 0}
+            onPress={save}
+            className={`mt-5 h-12 items-center justify-center rounded-btn ${
+              rows.length === 0 ? 'bg-hairline' : 'bg-pine active:opacity-70'
+            }`}>
+            <Text
+              className={`text-[15px] font-semibold ${
+                rows.length === 0 ? 'text-ink-muted' : 'text-pine-on'
+              }`}>
+              Save meal
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Discard"
+            onPress={() => router.back()}
+            className="mt-2 items-center py-2 active:opacity-60">
+            <Text className="text-[13px] text-ink-muted">Discard</Text>
+          </Pressable>
+        </View>
+      ) : null}
+    </Screen>
+  );
+}
