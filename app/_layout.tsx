@@ -8,6 +8,8 @@ import { useEffect } from 'react';
 import { ErrorBoundary } from '@/components/ui/error-boundary';
 import { navColors } from '@/constants/theme';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
+import { getDb } from '@/lib/db/client';
+import { syncReminderNotifications } from '@/lib/notifications/reminders';
 
 /**
  * Root layout.
@@ -27,11 +29,16 @@ const porcelainTheme: Theme = {
 };
 
 export default function RootLayout() {
-  // Load the Coach's API key + model from the Keychain into the in-memory
-  // mirror once, at boot. Fire-and-forget: the store emits when values land, so
-  // the Coach screen (useSessionKeySet) re-renders from preview to connected.
+  // Boot side effects, both fire-and-forget:
+  //  - hydrate the Coach's API key + model from the Keychain into the in-memory
+  //    mirror (the store emits when values land, so the Coach screen re-renders
+  //    from preview to connected);
+  //  - reconcile OS notifications with the active reminders, so a daily/weekly
+  //    nudge keeps firing across launches and a reminder changed while the app
+  //    was closed is picked up. No-ops until the native module ships (rebuild).
   useEffect(() => {
     void apiKeyStore.hydrate();
+    void syncReminderNotifications(getDb());
   }, []);
 
   return (
