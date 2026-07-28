@@ -187,17 +187,27 @@ console.log('0. buildMessagesRequest: exact wire shape, no sampling params');
   payload.model === DEFAULT_MODEL &&
   payload.stream === true &&
   payload.max_tokens === 8192 &&
-  payload.system === 'You are the Coach.' &&
+  Array.isArray(payload.system) &&
+  payload.system[0].type === 'text' &&
+  payload.system[0].text === 'You are the Coach.' &&
   payload.tools.length === 1
-    ? ok('model/stream/max_tokens/system/tools in the body')
+    ? ok('model/stream/max_tokens/system(block)/tools in the body')
     : bad('payload', body);
+  payload.system[0].cache_control?.type === 'ephemeral' &&
+  payload.tools[payload.tools.length - 1].cache_control?.type === 'ephemeral'
+    ? ok('prompt-cache breakpoints on the system block and the last tool')
+    : bad('cache_control missing', body);
   !('temperature' in payload) && !('thinking' in payload) && !('top_p' in payload)
     ? ok('no temperature/top_p/thinking (current models reject or default them)')
     : bad('forbidden params present');
   const bare = buildMessagesRequest(CONFIG(null), { ...REQUEST, tools: [] });
-  !('tools' in JSON.parse(bare.body))
+  const bareBody = JSON.parse(bare.body);
+  !('tools' in bareBody)
     ? ok('an empty tool set omits the tools key entirely')
     : bad('empty tools sent');
+  Array.isArray(bareBody.system) && bareBody.system[0].cache_control?.type === 'ephemeral'
+    ? ok('the system block stays cached even when no tools are sent')
+    : bad('bare system not cached', bare.body);
 }
 
 console.log('1. SseParser: chunk boundaries, CRLF, comments, multi-line data, flush');

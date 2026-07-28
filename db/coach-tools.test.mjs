@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
+import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import {
   COACH_TOOLS,
   READ_TOOLS,
@@ -402,6 +403,98 @@ console.log('12. sub-week training windows refuse to extrapolate a weekly rate')
   training.weeklyRates === null && near(training.totals.minutes, 60)
     ? ok('days: 1 reports totals but a null weeklyRates (no 420 min/week fiction)')
     : bad('weekly extrapolation', JSON.stringify(training));
+}
+
+console.log('13. protocols: get_protocols reads live items; update_protocol versions like code');
+{
+  const { db, raw } = freshDb();
+  // Seed an "evening stack" through the same repo path the editor uses.
+  const protocolId = createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack' },
+    {
+      items: [
+        { title: 'Magnesium Glycinate', scheduled_time: '21:00', dose: '200 mg', notes: null },
+        { title: 'Vitamin D3', scheduled_time: '21:00', dose: '5000 IU', notes: null },
+      ],
+    },
+    'seed'
+  );
+  const slug = raw.prepare('SELECT slug FROM protocols WHERE id = ?').get(protocolId).slug;
+
+  const view = run('get_protocols', db);
+  const stack = view.protocols.find((p) => p.slug === slug);
+  stack &&
+  stack.name === 'Evening Stack' &&
+  stack.versionNumber === 1 &&
+  stack.items.length === 2 &&
+  stack.items[0].title === 'Magnesium Glycinate' &&
+  stack.items[0].dose === '200 mg'
+    ? ok('get_protocols returns the stack with its current items')
+    : bad('get_protocols', JSON.stringify(view));
+
+  // The magnesium scenario: read the current items, resubmit the COMPLETE list
+  // plus the change. The confirmation shows the count delta so a wipe is visible.
+  const changeInput = {
+    protocol_slug: slug,
+    items: [
+      { title: 'Magnesium Glycinate', scheduled_time: '21:00', dose: '400 mg' },
+      { title: 'Vitamin D3', scheduled_time: '21:00', dose: '5000 IU' },
+      { title: 'Zinc', scheduled_time: '21:00', dose: '15 mg' },
+    ],
+    change_notes: 'Bumped magnesium to 400 mg, added zinc',
+  };
+  const summary = toolByName('update_protocol').confirmSummary(changeInput, db);
+  summary === 'Update "Evening Stack": 3 items (was 2) — Bumped magnesium to 400 mg, added zinc'
+    ? ok(`confirmation shows the item-count delta ("${summary}")`)
+    : bad('update summary', summary);
+
+  const out = run('update_protocol', db, changeInput);
+  out.updated === true && out.versionNumber === 2 && out.itemCount === 3 && out.protocol === slug
+    ? ok('update_protocol writes version 2 with 3 items')
+    : bad('update result', JSON.stringify(out));
+
+  const versionCount = raw
+    .prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?')
+    .get(protocolId).c;
+  const current = raw
+    .prepare(
+      `SELECT v.version_number, v.created_by, json_array_length(v.content, '$.items') n
+       FROM protocols p JOIN protocol_versions v ON v.id = p.current_version_id WHERE p.id = ?`
+    )
+    .get(protocolId);
+  versionCount === 2 &&
+  current.version_number === 2 &&
+  current.created_by === 'ai' &&
+  current.n === 3
+    ? ok('v1 preserved; current_version_id points at the ai-authored v2 (3 items)')
+    : bad('versioning', JSON.stringify({ versionCount, current }));
+
+  const after = run('get_protocols', db).protocols.find((p) => p.slug === slug);
+  after.versionNumber === 2 &&
+  after.items.some((it) => it.title === 'Zinc') &&
+  after.items.find((it) => it.title === 'Magnesium Glycinate').dose === '400 mg'
+    ? ok('get_protocols now reads v2 (zinc added, magnesium at 400 mg)')
+    : bad('post-update read', JSON.stringify(after));
+
+  throws(() =>
+    run('update_protocol', db, {
+      protocol_slug: 'no_such_stack',
+      items: [{ title: 'X' }],
+      change_notes: 'y',
+    })
+  )
+    ? ok('unknown slug rejected with guidance (call get_protocols first)')
+    : bad('unknown slug accepted');
+  throws(() =>
+    run('update_protocol', db, {
+      protocol_slug: slug,
+      items: [{ dose: '5 g' }],
+      change_notes: 'z',
+    })
+  )
+    ? ok('an item without a title is rejected before any write')
+    : bad('titleless item accepted');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -22,6 +22,7 @@ import { todayISODate } from '@/lib/db/date';
 import { logCapture, logMetric, logNote } from '@/lib/db/repositories/logs';
 import { logWorkout } from '@/lib/db/repositories/exercise';
 import { logMeal } from '@/lib/db/repositories/nutrition';
+import { addVersion, getCurrentVersion, getProtocolBySlug } from '@/lib/db/repositories/protocols';
 import {
   completeReminder,
   createReminder,
@@ -32,6 +33,8 @@ import { logSymptom } from '@/lib/db/repositories/symptoms';
 import { kgToLb, lbToKg, setLine } from '@/lib/exercise/format';
 import { isLoggableCanonical, metricByKey, roundDisplay, type MetricKey } from '@/lib/log/metrics';
 import type { SetInput, WorkoutKind } from '@/lib/exercise/types';
+import { normalizeItem, parseProtocolContent } from '@/lib/protocols/content';
+import type { ProtocolItem } from '@/lib/protocols/types';
 
 import {
   asRecord,
@@ -498,6 +501,113 @@ const dismissReminderTool: CoachTool = {
   },
 };
 
+// --- update_protocol (versioned stack / routine edit) ------------------------
+
+/**
+ * The COMPLETE new item list, validated and canonicalized through the same
+ * normalizeItem the editor uses (so a Coach-written version is byte-identical
+ * to a hand-edited one). Throws with the offending index so the model can fix a
+ * bad item rather than silently dropping it.
+ */
+function parseProtocolItems(input: Record<string, unknown>): ProtocolItem[] {
+  const raw = input['items'];
+  if (!Array.isArray(raw)) {
+    throw new Error('"items" must be an array — the COMPLETE new item list for this version.');
+  }
+  return raw.map((entry, i) => {
+    const item = asRecord(entry);
+    if (typeof item['title'] !== 'string' || item['title'].trim().length === 0) {
+      throw new Error(`items[${i}].title must be a non-empty string.`);
+    }
+    return normalizeItem({
+      title: item['title'],
+      scheduled_time: optTime(item, 'scheduled_time') ?? null,
+      dose: optString(item, 'dose') ?? null,
+      notes: optString(item, 'notes') ?? null,
+    });
+  });
+}
+
+/** Resolve the slug → protocol, with a message that points the model at the fix. */
+function requireProtocol(db: Database, slug: string) {
+  const protocol = getProtocolBySlug(db, slug);
+  if (!protocol) {
+    throw new Error(`No protocol with slug "${slug}". Call get_protocols first for valid slugs.`);
+  }
+  return protocol;
+}
+
+const updateProtocolTool: CoachTool = {
+  name: 'update_protocol',
+  description:
+    'Save a NEW version of a protocol (supplement stack, routine, training block), addressed by ' +
+    'its slug from get_protocols. Protocols are versioned like code: this NEVER edits the live ' +
+    'version — it writes a new one and makes it live, preserving the old. "items" MUST be the ' +
+    'COMPLETE new list: call get_protocols first, then include every item you are keeping plus ' +
+    'your change — anything omitted is dropped from the stack. Each item: title, optional ' +
+    'scheduled_time "HH:MM", optional dose ("400 mg"), optional notes. Use when the user agrees ' +
+    'to a stack/routine change ("add magnesium to my evening stack").',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      protocol_slug: { type: 'string', description: 'The slug from get_protocols.' },
+      items: {
+        type: 'array',
+        description: 'The COMPLETE new item list (kept items + the change), not just the delta.',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            scheduled_time: { type: 'string', description: '24h "HH:MM", omit for any time.' },
+            dose: { type: 'string', description: 'e.g. "400 mg", "2 caps".' },
+            notes: { type: 'string' },
+          },
+          required: ['title'],
+          additionalProperties: false,
+        },
+      },
+      change_notes: { type: 'string', description: 'One line: what changed and why.' },
+    },
+    required: ['protocol_slug', 'items', 'change_notes'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db) => {
+    const args = asRecord(input);
+    const protocol = requireProtocol(db, reqString(args, 'protocol_slug'));
+    const items = parseProtocolItems(args);
+    const wasCount = parseProtocolContent(getCurrentVersion(db, protocol.id)?.content ?? null).items
+      .length;
+    const notes = optString(args, 'change_notes');
+    // "(was N)" makes a destructive replace visible — the user must never approve
+    // a stack-wipe thinking it's an add.
+    return (
+      `Update "${protocol.name}": ${items.length} item${items.length === 1 ? '' : 's'} ` +
+      `(was ${wasCount})${notes ? ` — ${notes}` : ''}`
+    );
+  },
+  execute: (db, input) => {
+    const args = asRecord(input);
+    const protocol = requireProtocol(db, reqString(args, 'protocol_slug'));
+    const items = parseProtocolItems(args);
+    const versionId = addVersion(
+      db,
+      protocol.id,
+      { items },
+      optString(args, 'change_notes') ?? null,
+      'ai'
+    );
+    const version = getCurrentVersion(db, protocol.id);
+    return json({
+      updated: true,
+      protocol: protocol.slug,
+      versionId,
+      versionNumber: version?.version_number ?? null,
+      itemCount: items.length,
+    });
+  },
+};
+
 export const WRITE_TOOLS: CoachTool[] = [
   logMetricTool,
   logMealTool,
@@ -505,6 +615,7 @@ export const WRITE_TOOLS: CoachTool[] = [
   logSymptomTool,
   logCaptureTool,
   logNoteTool,
+  updateProtocolTool,
   setReminderTool,
   completeReminderTool,
   dismissReminderTool,

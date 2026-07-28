@@ -18,26 +18,9 @@ const unavailable = (feature: string): never => {
   throw new Error(`${feature} has not shipped yet — this tool is not available.`);
 };
 
-/** Propose a new version of a protocol. Needs: Protocols feature (Data tab). */
-export const updateProtocolStub: CoachTool = {
-  name: 'update_protocol',
-  description:
-    'Propose a new version of a protocol (supplement stack, routine, training block) with ' +
-    'change notes. Versioned like code: the current version is never edited.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      protocol_slug: { type: 'string' },
-      content: { type: 'object', description: 'The new version content (shape per type).' },
-      change_notes: { type: 'string' },
-    },
-    required: ['protocol_slug', 'content', 'change_notes'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  confirmSummary: () => 'Propose protocol update',
-  execute: () => unavailable('Protocols'),
-};
+// update_protocol has shipped — it is a real write tool now (write-tools.ts),
+// backed by the Protocols repository's versioning. It lived here as a stub
+// until the Protocols feature landed.
 
 /** Design an n-of-1 experiment. Needs: experiments table (Coach Phase 2). */
 export const createExperimentStub: CoachTool = {
@@ -125,7 +108,6 @@ export const navigateToStub: CoachTool = {
 
 /** Everything above, for the spec and future wiring — never sent to the model. */
 export const STUB_TOOLS: CoachTool[] = [
-  updateProtocolStub,
   createExperimentStub,
   setModeStub,
   completeMissionItemStub,

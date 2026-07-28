@@ -3,9 +3,11 @@ import '../global.css';
 
 import { DefaultTheme, Stack, type Theme, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useEffect } from 'react';
 
 import { ErrorBoundary } from '@/components/ui/error-boundary';
 import { navColors } from '@/constants/theme';
+import { apiKeyStore } from '@/lib/ai/api-key-store';
 
 /**
  * Root layout.
@@ -25,6 +27,13 @@ const porcelainTheme: Theme = {
 };
 
 export default function RootLayout() {
+  // Load the Coach's API key + model from the Keychain into the in-memory
+  // mirror once, at boot. Fire-and-forget: the store emits when values land, so
+  // the Coach screen (useSessionKeySet) re-renders from preview to connected.
+  useEffect(() => {
+    void apiKeyStore.hydrate();
+  }, []);
+
   return (
     <ErrorBoundary>
       <ThemeProvider value={porcelainTheme}>
@@ -41,6 +50,7 @@ export default function RootLayout() {
           {/* Pushed from Settings. */}
           <Stack.Screen name="settings-profile" />
           <Stack.Screen name="settings-units" />
+          <Stack.Screen name="settings-coach" />
           {/* Pushed from the Data tab. */}
           <Stack.Screen name="protocols" />
           <Stack.Screen name="protocol-edit" />
