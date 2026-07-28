@@ -24,9 +24,23 @@ import type {
 function insertSet(db: Database, workoutId: string, set: SetInput, setIndex: number): string {
   const id = newId(db);
   db.run(
-    `INSERT INTO workout_sets (id, workout_id, exercise, set_index, reps, weight_kg)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, workoutId, set.exercise, setIndex, set.reps ?? null, set.weightKg ?? null]
+    `INSERT INTO workout_sets
+       (id, workout_id, exercise, set_index, reps, weight_kg,
+        exercise_id, set_type, rpe, duration_sec, superset_group)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      workoutId,
+      set.exercise,
+      setIndex,
+      set.reps ?? null,
+      set.weightKg ?? null,
+      set.exerciseId ?? null,
+      set.setType ?? 'normal',
+      set.rpe ?? null,
+      set.durationSec ?? null,
+      set.supersetGroup ?? null,
+    ]
   );
   return id;
 }
@@ -40,9 +54,17 @@ export function logWorkout(db: Database, input: LogWorkoutInput, sets: SetInput[
   const id = newId(db);
   db.transaction(() => {
     db.run(
-      `INSERT INTO workouts (id, date, name, kind, duration_min, notes)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, input.date, input.name, input.kind, input.durationMin ?? null, input.notes ?? null]
+      `INSERT INTO workouts (id, date, name, kind, duration_min, notes, routine_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.date,
+        input.name,
+        input.kind,
+        input.durationMin ?? null,
+        input.notes ?? null,
+        input.routineId ?? null,
+      ]
     );
     sets.forEach((set, i) => insertSet(db, id, set, i + 1));
   });

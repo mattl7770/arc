@@ -50,6 +50,11 @@ export default function RootLayout() {
           <Stack.Screen name="nutrition" />
           <Stack.Screen name="exercise" />
           <Stack.Screen name="workout-log" />
+          {/* INTEGRATOR-MERGE: Exercise sub-app routes (docs/exercise-subapp.md). */}
+          <Stack.Screen name="workout-live" />
+          <Stack.Screen name="routine-edit" />
+          <Stack.Screen name="exercise-detail" />
+          <Stack.Screen name="program-edit" />
           <Stack.Screen name="metric-entry" />
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />
