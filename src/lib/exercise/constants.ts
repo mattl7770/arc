@@ -124,6 +124,54 @@ export const ROUTINE_CAUTION = 60;
 /** How far back to sum sets when computing fatigue (older sets have ~0 weight). */
 export const FRESHNESS_LOOKBACK_DAYS = 14;
 
+// ---------------------------------------------------------------------------
+// Weekly volume landmarks (RP / Israetel, docs/exercise-subapp.md §1 research)
+// ---------------------------------------------------------------------------
+
+/** Per-muscle weekly hard-set landmarks, in fractional sets (primary 1.0 / secondary 0.5). */
+export type VolumeLandmark = {
+  /** Minimum Effective Volume — below this, growth stimulus is weak. */
+  mev: number;
+  /** Maximum Adaptive Volume — the top of the productive range to build toward. */
+  mav: number;
+  /** Maximum Recoverable Volume — at/over this, back off. */
+  mrv: number;
+};
+
+/**
+ * Published weekly-set landmarks per muscle (Renaissance Periodization). The
+ * deltoid heads split because they diverge sharply: front delts saturate from
+ * pressing (MEV ~0), side/rear need direct work. Muscles worked mostly
+ * indirectly (lower back, forearms, abs, traps) carry a low direct MEV. These
+ * are population starting points, not gospel — labelled tunable, and the engine
+ * only uses them for coarse add/hold/cut guidance.
+ */
+export const VOLUME_LANDMARKS: Record<Muscle, VolumeLandmark> = {
+  chest: { mev: 8, mav: 16, mrv: 22 },
+  upper_back: { mev: 6, mav: 14, mrv: 20 },
+  lats: { mev: 8, mav: 16, mrv: 25 },
+  lower_back: { mev: 2, mav: 8, mrv: 12 },
+  front_delts: { mev: 0, mav: 6, mrv: 12 },
+  side_delts: { mev: 6, mav: 16, mrv: 25 },
+  rear_delts: { mev: 6, mav: 16, mrv: 25 },
+  traps: { mev: 0, mav: 16, mrv: 26 },
+  biceps: { mev: 6, mav: 14, mrv: 20 },
+  triceps: { mev: 4, mav: 12, mrv: 18 },
+  forearms: { mev: 0, mav: 8, mrv: 14 },
+  quads: { mev: 6, mav: 16, mrv: 20 },
+  hamstrings: { mev: 4, mav: 12, mrv: 16 },
+  glutes: { mev: 4, mav: 12, mrv: 20 },
+  calves: { mev: 6, mav: 14, mrv: 20 },
+  abs: { mev: 0, mav: 16, mrv: 22 },
+};
+
+/**
+ * On a deload week the program cuts working volume to roughly this fraction of
+ * normal (RP deload ≈ MV, about half of accumulation). Surfaced to the logger/
+ * recommender; the per-exercise engine keeps the movements, just fewer sets.
+ */
+export const DELOAD_VOLUME_FRACTION = 0.5;
+
 /**
  * Effort multiplier on a set's fatigue from proximity to failure. A submaximal
  * set (RIR > 4) costs less; a set to failure (RIR ≤ 0) costs more and extends

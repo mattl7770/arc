@@ -54,6 +54,7 @@ export default function RootLayout() {
           <Stack.Screen name="workout-live" />
           <Stack.Screen name="routine-edit" />
           <Stack.Screen name="exercise-detail" />
+          <Stack.Screen name="program-edit" />
           <Stack.Screen name="metric-entry" />
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />

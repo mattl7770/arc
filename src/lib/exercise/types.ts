@@ -380,6 +380,16 @@ export type RecommendedExercise = {
   suggestion: ProgressionSuggestion;
 };
 
+/** When the recommendation comes from an active program, the week context. */
+export type ProgramContext = {
+  programId: string;
+  programName: string;
+  /** 1-based current week and the program's total length. */
+  week: number;
+  weeks: number;
+  weekKind: WeekKind;
+};
+
 /** The "Train today" recommendation. */
 export type Recommendation =
   | {
@@ -392,6 +402,8 @@ export type Recommendation =
       caution: boolean;
       exercises: RecommendedExercise[];
       why: string;
+      /** Present when this session is the one an active program scheduled today. */
+      program?: ProgramContext;
     }
   | {
       kind: 'muscles';
@@ -401,6 +413,131 @@ export type Recommendation =
       why: string;
     }
   | {
+      /** An active program scheduled a rest day today (or a whole deload/rest week). */
+      kind: 'rest';
+      why: string;
+      program?: ProgramContext;
+    }
+  | {
       kind: 'empty';
       why: string;
     };
+
+// ---------------------------------------------------------------------------
+// programs / periodization (0020)
+// ---------------------------------------------------------------------------
+
+/** program_weeks.kind — a week that differs from plain accumulation. */
+export type WeekKind = 'accumulation' | 'deload' | 'test';
+
+/** ISO weekday, 1=Mon … 7=Sun (the program schedule's convention). */
+export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+/** One `programs` row. */
+export type ProgramRow = {
+  id: string;
+  name: string;
+  notes: string | null;
+  weeks: number;
+  active_start: DateString | null;
+  archived: 0 | 1;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
+/** One `program_days` row (a weekday → routine in the repeating split). */
+export type ProgramDayRow = {
+  id: string;
+  program_id: string;
+  dow: number;
+  routine_id: string;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
+/** One `program_weeks` row (a non-accumulation week marker). */
+export type ProgramWeekRow = {
+  id: string;
+  program_id: string;
+  week: number;
+  kind: WeekKind;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
+/** One weekday of a program's split, joined to its routine name. */
+export type ProgramDay = {
+  dow: Weekday;
+  routineId: string;
+  routineName: string;
+};
+
+/** A program in the hub list. */
+export type ProgramListItem = {
+  id: string;
+  name: string;
+  weeks: number;
+  trainingDays: number;
+  /** True when this program is the one currently running. */
+  active: boolean;
+  /** 1-based current week of the running instance, or null when inactive/finished. */
+  currentWeek: number | null;
+};
+
+/** A program plus its split + week kinds, for the builder. */
+export type ProgramDetail = {
+  id: string;
+  name: string;
+  notes: string | null;
+  weeks: number;
+  activeStart: DateString | null;
+  days: ProgramDay[];
+  /** kind per week 1..weeks (accumulation unless overridden). */
+  weekKinds: WeekKind[];
+};
+
+/** One weekday assignment the builder saves. */
+export type ProgramDayInput = { dow: Weekday; routineId: string };
+
+/** Everything one program Save writes. */
+export type ProgramInput = {
+  name: string;
+  notes: string | null;
+  weeks: number;
+  days: ProgramDayInput[];
+  /** kind per week, length === weeks (index 0 = week 1). */
+  weekKinds: WeekKind[];
+};
+
+/** What an active program has scheduled for a given day. */
+export type ScheduledSession =
+  | {
+      kind: 'train';
+      program: ProgramContext;
+      routineId: string;
+      routineName: string;
+    }
+  | {
+      kind: 'rest';
+      program: ProgramContext;
+    };
+
+// ---------------------------------------------------------------------------
+// weekly volume vs landmarks (engine: volume.ts)
+// ---------------------------------------------------------------------------
+
+/** Where a muscle's weekly volume sits against its landmarks. */
+export type VolumeStatus = 'under' | 'optimal' | 'approaching' | 'over';
+
+/** One muscle's weekly volume verdict. */
+export type MuscleVolume = {
+  muscle: Muscle;
+  /** Fractional weekly sets (primary 1.0, secondary 0.5). */
+  sets: number;
+  mev: number;
+  mav: number;
+  mrv: number;
+  status: VolumeStatus;
+  /** Short add/hold/cut guidance. */
+  guidance: string;
+};

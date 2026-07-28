@@ -73,11 +73,12 @@ function freshDb() {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-console.log('0. migration 0011 seeds the catalog (user_version reaches 13 with 0012/0013)');
+console.log('0. migration 0011 seeds the catalog');
 {
   const { raw } = freshDb();
-  raw.prepare('PRAGMA user_version').get().user_version === 13
-    ? ok('user_version = 13 (max of applied migrations, gaps tolerated)')
+  // Floor, not exact: later windows' migrations (0020 programs, …) raise it.
+  raw.prepare('PRAGMA user_version').get().user_version >= 13
+    ? ok('user_version >= 13 (later migrations tolerated; reserved-number gaps too)')
     : bad('user_version', raw.prepare('PRAGMA user_version').get().user_version);
   const ex = raw.prepare('SELECT count(*) c FROM exercises').get().c;
   ex === 69 ? ok(`69 seeded exercises`) : bad('exercise count', ex);

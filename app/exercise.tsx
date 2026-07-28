@@ -8,19 +8,25 @@ import { palette } from '@/constants/theme';
 import { todayISODate } from '@/lib/db/date';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
 import { dayLabel, sessionDetail } from '@/lib/exercise/format';
-import type { MuscleFreshness, Recommendation, RoutineListItem } from '@/lib/exercise/types';
+import { volumeAttention } from '@/lib/exercise/volume';
+import type {
+  MuscleFreshness,
+  MuscleVolume,
+  ProgramListItem,
+  Recommendation,
+  RoutineListItem,
+} from '@/lib/exercise/types';
 import { useTrainingHub } from '@/hooks/use-training';
 
 /**
  * Exercise sub-app hub, pushed from the Log tab's Workout tile
- * (docs/exercise-subapp.md §2).
+ * (docs/exercise-subapp.md).
  *
- * "Train today" is the rule-based recommendation (freshness + progression, all
- * offline) and holds the one pine action on this screen — Start. Below it: the
- * muscle-freshness ledger (FitBod's recovery heatmap restated as a typeset
- * ledger; freshness is a biological state, so signal colours are sanctioned
- * here), this week's totals, your routines, and recent sessions. VO₂max stays a
- * placeholder until wearables land.
+ * "Train today" is the rule-based recommendation — an active program's
+ * scheduled session when one is running, else the freshness pick (all offline).
+ * It holds the one pine action on this screen (Start). Below it: the
+ * muscle-freshness ledger, weekly volume vs landmarks, this week's totals,
+ * programs, routines, and recent sessions.
  */
 function SectionLabel({ children }: { children: string }) {
   return (
@@ -44,7 +50,7 @@ function freshnessColor(state: MuscleFreshness['state']): string {
 
 export default function ExerciseScreen() {
   const router = useRouter();
-  const { week, sessions, routines, ledger, recommendation } = useTrainingHub();
+  const { week, sessions, routines, programs, ledger, volume, recommendation } = useTrainingHub();
   const today = todayISODate();
 
   const stats = [
@@ -62,16 +68,18 @@ export default function ExerciseScreen() {
     if (recommendation.kind === 'routine') {
       router.push({
         pathname: '/workout-live',
-        params: { routineId: recommendation.routineId, name: recommendation.routineName },
+        params: {
+          routineId: recommendation.routineId,
+          name: recommendation.routineName,
+          // A program deload week pre-fills fewer sets in the logger.
+          ...(recommendation.program?.weekKind === 'deload' ? { deload: '1' } : {}),
+        },
       });
     } else if (recommendation.kind === 'muscles') {
-      // Prefill the suggested movements so Start opens a ready session, not a blank one.
       router.push({
         pathname: '/workout-live',
         params: { exerciseIds: recommendation.exercises.map((e) => e.exerciseId).join(',') },
       });
-    } else {
-      router.push('/workout-live');
     }
   };
 
@@ -85,6 +93,12 @@ export default function ExerciseScreen() {
       <View className="mt-2">
         <SectionLabel>Train today</SectionLabel>
         <TrainTodayCard recommendation={recommendation} onStart={startRecommended} />
+      </View>
+
+      {/* Weekly volume vs landmarks */}
+      <View className="mt-8">
+        <SectionLabel>Weekly volume</SectionLabel>
+        <WeeklyVolume volume={volume} />
       </View>
 
       {/* Muscle freshness ledger */}
@@ -128,6 +142,40 @@ export default function ExerciseScreen() {
             </View>
           ))}
         </View>
+      </View>
+
+      {/* Programs */}
+      <View className="mt-8">
+        <View className="flex-row items-baseline justify-between">
+          <SectionLabel>Programs</SectionLabel>
+          {programs.length > 0 ? (
+            <Text className="font-mono text-[11px] text-ink-muted">{programs.length}</Text>
+          ) : null}
+        </View>
+        {programs.length === 0 ? (
+          <Text className="mt-2 text-xs leading-5 text-ink-muted">
+            No programs yet. A program schedules your routines across a multi-week block with
+            planned deload weeks; start one and Train today follows the plan.
+          </Text>
+        ) : (
+          <View className="mt-2 gap-2">
+            {programs.map((p) => (
+              <ProgramCard
+                key={p.id}
+                program={p}
+                onPress={() => router.push({ pathname: '/program-edit', params: { id: p.id } })}
+              />
+            ))}
+          </View>
+        )}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="New program"
+          onPress={() => router.push('/program-edit')}
+          className="mt-2 h-11 flex-row items-center justify-center gap-2 rounded-btn border border-hairline-strong active:bg-paper-deep">
+          <Ionicons name="add" size={17} color={palette.inkSecondary} />
+          <Text className="text-[13px] font-medium text-ink">New program</Text>
+        </Pressable>
       </View>
 
       {/* Routines */}
@@ -230,15 +278,41 @@ function TrainTodayCard({
     );
   }
 
+  if (recommendation.kind === 'rest') {
+    const eyebrow =
+      recommendation.program &&
+      `${recommendation.program.programName} · week ${recommendation.program.week} of ${recommendation.program.weeks}`;
+    return (
+      <View className="mt-2 rounded-card border border-hairline bg-porcelain p-4">
+        {eyebrow ? (
+          <Text className="text-[10.5px] uppercase tracking-[1px] text-ink-muted">{eyebrow}</Text>
+        ) : null}
+        <Text className="mt-1 font-serif text-[17px] font-semibold text-ink">Rest day</Text>
+        <Text className="mt-1 text-[12.5px] leading-5 text-ink-secondary">
+          {recommendation.why}
+        </Text>
+      </View>
+    );
+  }
+
   const title =
     recommendation.kind === 'routine'
       ? recommendation.routineName
       : recommendation.muscles.map((m) => MUSCLE_LABEL[m]).join(' · ') || 'Fresh muscles';
   const freshness = recommendation.kind === 'routine' ? recommendation.freshness : null;
+  const program = recommendation.kind === 'routine' ? recommendation.program : undefined;
+  const eyebrow = program
+    ? program.weekKind === 'deload'
+      ? `${program.programName} · deload week ${program.week} of ${program.weeks}`
+      : `${program.programName} · week ${program.week} of ${program.weeks}`
+    : null;
 
   return (
     <View className="mt-2 rounded-card border border-t-[3px] border-pine-tint border-t-pine bg-pine-soft p-4">
-      <View className="flex-row items-baseline justify-between">
+      {eyebrow ? (
+        <Text className="text-[10.5px] uppercase tracking-[1px] text-ink-muted">{eyebrow}</Text>
+      ) : null}
+      <View className="mt-0.5 flex-row items-baseline justify-between">
         <Text className="font-serif text-[17px] font-semibold text-ink">{title}</Text>
         {freshness != null ? (
           <Text className="font-mono text-[12px] text-ink-secondary">{freshness}% fresh</Text>
@@ -261,6 +335,76 @@ function TrainTodayCard({
         <Text className="text-[15px] font-semibold text-pine-on">Start</Text>
       </Pressable>
     </View>
+  );
+}
+
+function WeeklyVolume({ volume }: { volume: MuscleVolume[] }) {
+  const total = volume.reduce((acc, v) => acc + v.sets, 0);
+  const { under, over } = volumeAttention(volume);
+
+  if (total === 0) {
+    return (
+      <View className="mt-2 rounded-card border border-hairline-soft bg-paper-deep px-3.5 py-3">
+        <Text className="text-xs leading-5 text-ink-muted">
+          No sets logged this week yet. Once you train, ARC tracks each muscle&rsquo;s weekly sets
+          against its productive range (MEV–MRV).
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <View className="mt-2 rounded-card border border-hairline bg-porcelain p-4">
+      {under.length > 0 ? (
+        <Text className="text-[13px] leading-5 text-ink">
+          <Text className="text-ink-secondary">Add volume: </Text>
+          <Text className="font-mono">{under.join(' · ')}</Text>
+        </Text>
+      ) : null}
+      {over.length > 0 ? (
+        <Text className={`text-[13px] leading-5 text-ink ${under.length > 0 ? 'mt-1.5' : ''}`}>
+          <Text className="text-ink-secondary">Ease off: </Text>
+          <Text className="font-mono">{over.join(' · ')}</Text>
+        </Text>
+      ) : null}
+      {under.length === 0 && over.length === 0 ? (
+        <Text className="text-[13px] leading-5 text-ink-secondary">
+          On track — every trained muscle is inside its productive range this week.
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ProgramCard({ program, onPress }: { program: ProgramListItem; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${program.name}. ${program.weeks} weeks, ${program.trainingDays} training days${
+        program.active ? `, active, week ${program.currentWeek ?? ''}` : ''
+      }. Edit.`}
+      onPress={onPress}
+      className="rounded-card border border-hairline bg-porcelain p-4 active:bg-paper-deep">
+      <View className="flex-row items-center gap-3">
+        <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">{program.name}</Text>
+        {program.active ? (
+          <View className="rounded-btn bg-paper-deep px-2 py-0.5">
+            <Text className="font-mono text-[9.5px] uppercase tracking-[1px] text-ink-muted">
+              {program.currentWeek != null ? `Week ${program.currentWeek}` : 'Active'}
+            </Text>
+          </View>
+        ) : null}
+        <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+      </View>
+      <View className="mt-1 flex-row items-center justify-between">
+        <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">
+          {program.active ? 'Running' : 'Not started'}
+        </Text>
+        <Text className="font-mono text-[11px] text-ink-muted">
+          {program.weeks} wk · {program.trainingDays} days
+        </Text>
+      </View>
+    </Pressable>
   );
 }
 

@@ -17,7 +17,7 @@ import {
   personalRecords,
   type PrevSet,
 } from '@/lib/db/repositories/training-stats';
-import { restSecFor } from '@/lib/exercise/constants';
+import { DELOAD_VOLUME_FRACTION, restSecFor } from '@/lib/exercise/constants';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
 import {
   displayWeight,
@@ -27,6 +27,7 @@ import {
   weightSpec,
 } from '@/lib/exercise/format';
 import type { LoggingType, Mechanic, SetType } from '@/lib/exercise/types';
+import { cancelRestAlert, scheduleRestAlert } from '@/lib/notifications/rest-timer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import type { UnitPreferences } from '@/lib/user/types';
 
@@ -68,8 +69,32 @@ type LiveBlock = {
   prev: PrevSet[];
   /** Best e1RM before this session — the bar a set must beat to tag a PR. */
   bestE1rm: number | null;
+  /** Grouped into a superset with the block below it (shared superset_group). */
+  linkedToNext: boolean;
   sets: LiveSet[];
 };
+
+/**
+ * Superset group numbers derived from the linked-to-next flags: a maximal run of
+ * blocks chained by `linkedToNext` shares one 1-based group id; ungrouped blocks
+ * map to null. Pure function of block order + flags (recomputed on save/render),
+ * so unlinking is just toggling one boolean.
+ */
+function supersetGroups(blocks: LiveBlock[]): (number | null)[] {
+  const groups: (number | null)[] = blocks.map(() => null);
+  let next = 1;
+  let i = 0;
+  while (i < blocks.length) {
+    if (blocks[i]!.linkedToNext && i + 1 < blocks.length) {
+      const start = i;
+      while (i + 1 < blocks.length && blocks[i]!.linkedToNext) i++;
+      for (let j = start; j <= i; j++) groups[j] = next;
+      next++;
+    }
+    i++;
+  }
+  return groups;
+}
 
 const WEIGHT_LOGGING = new Set<LoggingType>([
   'weight_reps',
@@ -97,14 +122,18 @@ function blankSet(from?: LiveSet): LiveSet {
 function buildBlock(
   exerciseId: string,
   targetSets: number,
-  restSec: number | null
+  restSec: number | null,
+  deload: boolean
 ): LiveBlock | null {
   const db = getDb();
   const ex = getExercise(db, exerciseId);
   if (!ex) return null;
   const prev = lastSessionSets(db, exerciseId);
   const bestE1rm = personalRecords(db, exerciseId).bestE1rmKg;
-  const count = Math.max(1, targetSets);
+  // On a deload week the split runs with the volume cut (RP model), so pre-fill
+  // fewer set rows — the user can still add more.
+  const scaled = deload ? Math.ceil(targetSets * DELOAD_VOLUME_FRACTION) : targetSets;
+  const count = Math.max(1, scaled);
   return {
     key: nextKey(),
     exerciseId,
@@ -114,6 +143,7 @@ function buildBlock(
     restSec: restSec ?? restSecFor(ex.mechanic, null),
     prev,
     bestE1rm,
+    linkedToNext: false,
     sets: Array.from({ length: count }, () => blankSet()),
   };
 }
@@ -123,16 +153,22 @@ function buildBlock(
  * explicit exercise-id list (the hub's freshest-muscle recommendation), else
  * empty (free-form — add exercises as you go).
  */
-function initialBlocks(routineId: string | undefined, exerciseIds: string[]): LiveBlock[] {
+function initialBlocks(
+  routineId: string | undefined,
+  exerciseIds: string[],
+  deload: boolean
+): LiveBlock[] {
   if (routineId) {
     const routine = getRoutine(getDb(), routineId);
     if (routine) {
       return routine.exercises
-        .map((line) => buildBlock(line.exerciseId, line.targetSets, line.restSec))
+        .map((line) => buildBlock(line.exerciseId, line.targetSets, line.restSec, deload))
         .filter((b): b is LiveBlock => b !== null);
     }
   }
-  return exerciseIds.map((id) => buildBlock(id, 3, null)).filter((b): b is LiveBlock => b !== null);
+  return exerciseIds
+    .map((id) => buildBlock(id, 3, null, deload))
+    .filter((b): b is LiveBlock => b !== null);
 }
 
 export default function WorkoutLiveScreen() {
@@ -140,22 +176,34 @@ export default function WorkoutLiveScreen() {
     routineId?: string | string[];
     name?: string;
     exerciseIds?: string | string[];
+    deload?: string | string[];
   }>();
   const routineId = Array.isArray(params.routineId) ? params.routineId[0] : params.routineId;
   const seedName = Array.isArray(params.name) ? params.name[0] : params.name;
   const idsParam = Array.isArray(params.exerciseIds) ? params.exerciseIds[0] : params.exerciseIds;
   const exerciseIds = idsParam ? idsParam.split(',').filter(Boolean) : [];
-  return <WorkoutLive routineId={routineId} seedName={seedName} exerciseIds={exerciseIds} />;
+  const deloadParam = Array.isArray(params.deload) ? params.deload[0] : params.deload;
+  const deload = deloadParam === '1';
+  return (
+    <WorkoutLive
+      routineId={routineId}
+      seedName={seedName}
+      exerciseIds={exerciseIds}
+      deload={deload}
+    />
+  );
 }
 
 function WorkoutLive({
   routineId,
   seedName,
   exerciseIds,
+  deload,
 }: {
   routineId?: string;
   seedName?: string;
   exerciseIds: string[];
+  deload: boolean;
 }) {
   const router = useRouter();
   const navigation = useNavigation();
@@ -165,10 +213,27 @@ function WorkoutLive({
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(startedAt);
   const [name, setName] = useState(seedName ?? '');
-  const [blocks, setBlocks] = useState<LiveBlock[]>(() => initialBlocks(routineId, exerciseIds));
+  const [blocks, setBlocks] = useState<LiveBlock[]>(() =>
+    initialBlocks(routineId, exerciseIds, deload)
+  );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [restEndsAt, setRestEndsAt] = useState<number | null>(null);
+  // The id of the pending OS rest-alert (to cancel/replace it). null when none.
+  const restNotifId = useRef<string | null>(null);
   const savedRef = useRef(false);
+
+  /** Arm a fresh OS rest alert `seconds` out, cancelling any pending one. */
+  const armRestAlert = (seconds: number) => {
+    void cancelRestAlert(restNotifId.current);
+    restNotifId.current = null;
+    void scheduleRestAlert(seconds).then((id) => {
+      restNotifId.current = id;
+    });
+  };
+  const disarmRestAlert = () => {
+    void cancelRestAlert(restNotifId.current);
+    restNotifId.current = null;
+  };
 
   // One-second tick drives the elapsed clock + rest countdown (same pattern as
   // app/workout-log.tsx). Foreground only; both are computed from timestamps, so
@@ -235,12 +300,19 @@ function WorkoutLive({
   };
 
   const addExercise = (exerciseId: string) => {
-    const block = buildBlock(exerciseId, 1, null);
+    const block = buildBlock(exerciseId, 1, null, false);
     if (block) setBlocks((prev) => [...prev, block]);
   };
 
   const removeBlock = (blockKey: number) =>
     setBlocks((prev) => prev.filter((b) => b.key !== blockKey));
+
+  /** Group / ungroup a block with the one below it into a superset. */
+  const toggleLink = (blockKey: number) => {
+    setBlocks((prev) =>
+      prev.map((b) => (b.key === blockKey ? { ...b, linkedToNext: !b.linkedToNext } : b))
+    );
+  };
 
   /** Toggle a set done; on completion start rest + tag a PR if it beats best e1RM. */
   const toggleDone = (block: LiveBlock, set: LiveSet) => {
@@ -258,17 +330,28 @@ function WorkoutLive({
       }
     }
     patchSet(block.key, set.key, { done, pr: done ? pr : false });
-    if (done && block.restSec && block.restSec > 0)
+    if (done && block.restSec && block.restSec > 0) {
       setRestEndsAt(Date.now() + block.restSec * 1000);
+      armRestAlert(block.restSec);
+    }
   };
 
   const bumpRest = (delta: number) => {
-    setRestEndsAt((end) => (end == null ? null : end + delta * 1000));
+    if (restEndsAt == null) return;
+    const next = restEndsAt + delta * 1000;
+    setRestEndsAt(next);
+    armRestAlert(Math.max(1, Math.round((next - Date.now()) / 1000)));
+  };
+
+  const dismissRest = () => {
+    setRestEndsAt(null);
+    disarmRestAlert();
   };
 
   const finish = () => {
     if (savedRef.current || !canFinish) return;
-    const sets = blocks.flatMap((b) =>
+    const groups = supersetGroups(blocks);
+    const sets = blocks.flatMap((b, bi) =>
       b.sets
         .filter((s) => s.done || s.reps.trim() !== '' || s.weight.trim() !== '')
         .map((s) => {
@@ -282,6 +365,7 @@ function WorkoutLive({
             weightKg: weightKg != null && Number.isFinite(weightKg) ? weightKg : null,
             rpe: rpe != null && Number.isFinite(rpe) ? rpe : null,
             setType: s.setType,
+            supersetGroup: groups[bi],
           };
         })
     );
@@ -300,6 +384,7 @@ function WorkoutLive({
         sets
       );
       if (routineId) touchRoutineStarted(db, routineId, new Date().toISOString());
+      disarmRestAlert();
       savedRef.current = true;
       router.back();
     } catch (error) {
@@ -307,6 +392,12 @@ function WorkoutLive({
       Alert.alert('Save failed', 'Nothing was changed. Please try again.');
     }
   };
+
+  // Cancel any pending OS rest alert if the screen is left without finishing.
+  useEffect(() => () => void cancelRestAlert(restNotifId.current), []);
+
+  // Superset group per block, derived from the linked-to-next flags.
+  const groups = supersetGroups(blocks);
 
   return (
     <Screen>
@@ -337,26 +428,63 @@ function WorkoutLive({
           />
         </View>
 
+        {/* Deload week — the split runs with the volume cut. */}
+        {deload ? (
+          <View className="mt-3 rounded-card border border-hairline-soft bg-paper-deep px-3.5 py-2.5">
+            <Text className="text-[12px] leading-5 text-ink-secondary">
+              Deload week — fewer sets pre-filled. Keep RPE ≤ 7 and the loads submaximal; the point
+              is to recover.
+            </Text>
+          </View>
+        ) : null}
+
         {/* Exercise blocks */}
         {blocks.length === 0 ? (
           <Text className="mt-8 text-[13px] leading-5 text-ink-muted">
             Add the first exercise to start logging sets.
           </Text>
         ) : (
-          <View className="mt-6 gap-6">
-            {blocks.map((block) => (
-              <ExerciseBlock
-                key={block.key}
-                block={block}
-                units={units}
-                spec={spec}
-                onPatch={patchSet}
-                onAddSet={addSet}
-                onRemoveSet={removeSet}
-                onCycleType={cycleSetType}
-                onToggleDone={toggleDone}
-                onRemove={removeBlock}
-              />
+          <View className="mt-6">
+            {blocks.map((block, bi) => (
+              <View key={block.key} className={bi === 0 ? '' : 'mt-6'}>
+                <ExerciseBlock
+                  block={block}
+                  group={groups[bi] ?? null}
+                  groupStart={groups[bi] != null && groups[bi] !== groups[bi - 1]}
+                  units={units}
+                  spec={spec}
+                  onPatch={patchSet}
+                  onAddSet={addSet}
+                  onRemoveSet={removeSet}
+                  onCycleType={cycleSetType}
+                  onToggleDone={toggleDone}
+                  onRemove={removeBlock}
+                />
+                {bi < blocks.length - 1 ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: block.linkedToNext }}
+                    accessibilityLabel={
+                      block.linkedToNext
+                        ? `Ungroup ${block.name} from the next exercise`
+                        : `Superset ${block.name} with the next exercise`
+                    }
+                    onPress={() => toggleLink(block.key)}
+                    className="mt-2 flex-row items-center justify-center gap-1.5 rounded-btn py-1.5 active:bg-paper-deep">
+                    <Ionicons
+                      name={block.linkedToNext ? 'link' : 'link-outline'}
+                      size={14}
+                      color={block.linkedToNext ? palette.ink : palette.inkMuted}
+                    />
+                    <Text
+                      className={`text-[11px] uppercase tracking-[1px] ${
+                        block.linkedToNext ? 'font-medium text-ink-secondary' : 'text-ink-muted'
+                      }`}>
+                      {block.linkedToNext ? 'Supersetted' : 'Superset with next'}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
             ))}
           </View>
         )}
@@ -410,7 +538,7 @@ function WorkoutLive({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Dismiss rest timer"
-            onPress={() => setRestEndsAt(null)}
+            onPress={dismissRest}
             className="h-8 w-8 items-center justify-center rounded-btn active:bg-paper-deep">
             <Ionicons name="close" size={16} color={palette.inkMuted} />
           </Pressable>
@@ -428,6 +556,8 @@ function WorkoutLive({
 
 function ExerciseBlock({
   block,
+  group,
+  groupStart,
   units,
   spec,
   onPatch,
@@ -438,6 +568,8 @@ function ExerciseBlock({
   onRemove,
 }: {
   block: LiveBlock;
+  group: number | null;
+  groupStart: boolean;
   units: UnitPreferences;
   spec: ReturnType<typeof weightSpec>;
   onPatch: (bk: number, sk: number, patch: Partial<Omit<LiveSet, 'key'>>) => void;
@@ -449,7 +581,11 @@ function ExerciseBlock({
 }) {
   const showWeight = WEIGHT_LOGGING.has(block.loggingType);
   return (
-    <View>
+    // Supersetted blocks carry a hairline-strong left rule tying the group.
+    <View className={group != null ? 'border-l border-hairline-strong pl-3' : ''}>
+      {groupStart ? (
+        <Text className="mb-1 text-[9.5px] uppercase tracking-[2px] text-ink-muted">Superset</Text>
+      ) : null}
       <View className="flex-row items-center gap-2">
         <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">{block.name}</Text>
         <Pressable

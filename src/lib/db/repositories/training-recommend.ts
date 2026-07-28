@@ -11,22 +11,29 @@
  * is the offline default the Coach refines, never replaces.
  */
 import type { Database } from '../database';
+import { todayISODate } from '../date';
 import { getExercise, listExercises } from './exercise-catalog';
+import { scheduledToday } from './programs';
 import { getRoutine, listRoutines } from './routines';
-import { exerciseSessionTops, recentMuscleLoads } from './training-stats';
+import { exerciseSessionTops, recentMuscleLoads, weeklyMuscleSets } from './training-stats';
 import {
   ANCHOR_MUSCLES,
   FRESHNESS_LOOKBACK_DAYS,
+  MUSCLE_LABEL,
   REP_RANGE,
+  ROUTINE_CAUTION,
   progressionIncrementKg,
 } from '@/lib/exercise/constants';
 import { meanFreshness, muscleFreshness } from '@/lib/exercise/freshness';
 import { suggestProgression } from '@/lib/exercise/progression';
-import { type RoutineCandidate, recommendToday } from '@/lib/exercise/recommend';
+import { type RoutineCandidate, recommendToday, routineFreshness } from '@/lib/exercise/recommend';
+import { volumeLedger } from '@/lib/exercise/volume';
 import type {
   CatalogExercise,
   Muscle,
   MuscleFreshness,
+  MuscleVolume,
+  ProgramContext,
   ProgressionSuggestion,
   Recommendation,
   RecommendedExercise,
@@ -113,12 +120,90 @@ function freshestMuscleFallback(db: Database, ledger: MuscleFreshness[]): Recomm
 
 export type TrainingRecommendation = {
   ledger: MuscleFreshness[];
+  /** Weekly volume vs MEV/MAV/MRV per muscle. */
+  volume: MuscleVolume[];
   recommendation: Recommendation;
 };
 
-/** The freshness ledger + today's recommendation. `now` injected for tests. */
+/** The top few primary muscles of a session with their freshness, for the "why". */
+function musclesLine(exercises: RecommendedExercise[], ledger: MuscleFreshness[]): string {
+  const fresh = new Map(ledger.map((e) => [e.muscle, e.freshness]));
+  return [...new Set(exercises.flatMap((e) => e.primaryMuscles))]
+    .sort((a, b) => (fresh.get(b) ?? 0) - (fresh.get(a) ?? 0))
+    .slice(0, 3)
+    .map((m) => `${MUSCLE_LABEL[m]} ${fresh.get(m) ?? 100}%`)
+    .join(' · ');
+}
+
+/** Build the routine recommendation for a program-scheduled training day. */
+function programTrainRecommendation(
+  db: Database,
+  ledger: MuscleFreshness[],
+  program: ProgramContext,
+  routineId: string,
+  routineName: string
+): Recommendation {
+  const exercises = scoreRoutineExercises(db, ledger, routineId);
+  const freshness = routineFreshness(exercises);
+  const weekLine = `Week ${program.week} of ${program.weeks}`;
+  const why =
+    program.weekKind === 'deload'
+      ? `${weekLine} · deload — cut sets ~50%, keep RPE ≤ 7 and the movements light.`
+      : `${weekLine} · ${musclesLine(exercises, ledger)}`;
+  return {
+    kind: 'routine',
+    routineId,
+    routineName,
+    freshness,
+    // On a deload week the low-freshness caution would be noise — the plan IS to
+    // go easy — so suppress it there.
+    caution: program.weekKind !== 'deload' && freshness < ROUTINE_CAUTION,
+    exercises,
+    why,
+    program,
+  };
+}
+
+/**
+ * The freshness ledger, weekly-volume ledger, and today's recommendation.
+ * Priority: an active program's scheduled session wins; otherwise the
+ * freshness-based routine pick (or freshest-muscle fallback). `now` injected
+ * for deterministic tests.
+ */
 export function buildRecommendation(db: Database, now: Date = new Date()): TrainingRecommendation {
   const ledger = muscleFreshness(recentMuscleLoads(db, FRESHNESS_LOOKBACK_DAYS, now), now);
+  const volume = volumeLedger(weeklyMuscleSets(db, now));
+  const today = todayISODate(now);
+
+  // 1) An active program's schedule takes precedence — it's the deliberate plan.
+  const scheduled = scheduledToday(db, today);
+  if (scheduled) {
+    if (scheduled.kind === 'rest') {
+      const lead = scheduled.program.weekKind === 'deload' ? 'Deload week — planned ' : 'Planned ';
+      return {
+        ledger,
+        volume,
+        recommendation: {
+          kind: 'rest',
+          why: `${lead}rest day. Recover, walk, mobilise — no lifting scheduled.`,
+          program: scheduled.program,
+        },
+      };
+    }
+    return {
+      ledger,
+      volume,
+      recommendation: programTrainRecommendation(
+        db,
+        ledger,
+        scheduled.program,
+        scheduled.routineId,
+        scheduled.routineName
+      ),
+    };
+  }
+
+  // 2) No program running → freshness-based pick, with the no-routine fallback.
   const routines = listRoutines(db);
   const candidates: RoutineCandidate[] = routines.map((r) => ({
     routineId: r.id,
@@ -128,7 +213,7 @@ export function buildRecommendation(db: Database, now: Date = new Date()): Train
   }));
   const fallbackExercises = routines.length === 0 ? freshestMuscleFallback(db, ledger) : [];
   const recommendation = recommendToday({ ledger, routines: candidates, fallbackExercises }, now);
-  return { ledger, recommendation };
+  return { ledger, volume, recommendation };
 }
 
 // Re-export the muscle type users of this module commonly need.
