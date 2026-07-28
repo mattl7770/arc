@@ -10,9 +10,11 @@ import { todayISODate } from '@/lib/db/date';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { listMission } from '@/lib/db/repositories/mission';
 import { listTodayMeals, todayTotals } from '@/lib/db/repositories/nutrition';
+import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocols';
 import { isDueOn, listActiveReminders } from '@/lib/db/repositories/reminders';
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
 import { metricByKey, type MetricKey } from '@/lib/log/metrics';
+import { parseProtocolContent } from '@/lib/protocols/content';
 import type { BiomarkerRow } from '@/lib/db/types';
 
 import { computeInsights, generateDailyBrief } from '../insights';
@@ -413,6 +415,37 @@ const getInsights: CoachTool = {
     }),
 };
 
+// --- get_protocols -----------------------------------------------------------
+
+const getProtocols: CoachTool = {
+  name: 'get_protocols',
+  description:
+    'The user’s protocols — supplement stacks, routines, training blocks — each with its live ' +
+    'version number and current items (title, scheduled_time, dose). Call this before proposing ' +
+    'a change with update_protocol (you must know the current items to submit the complete new ' +
+    'list), and whenever the user asks what is in a stack or routine.',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  readOnly: true,
+  execute: (db) =>
+    json({
+      protocols: listProtocols(db).map((p) => {
+        const version = getCurrentVersion(db, p.id);
+        return {
+          slug: p.slug,
+          name: p.name,
+          type: p.type,
+          isActive: p.isActive,
+          versionNumber: p.versionNumber,
+          items: parseProtocolContent(version?.content ?? null).items.map((item) => ({
+            title: item.title,
+            scheduled_time: item.scheduled_time,
+            dose: item.dose,
+          })),
+        };
+      }),
+    }),
+};
+
 export const READ_TOOLS: CoachTool[] = [
   getTodaySnapshot,
   getMetricSeries,
@@ -420,6 +453,7 @@ export const READ_TOOLS: CoachTool[] = [
   getNutritionSummary,
   getSymptomHistory,
   getBiomarkers,
+  getProtocols,
   listRemindersTool,
   getInsights,
 ];

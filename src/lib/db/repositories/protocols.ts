@@ -188,6 +188,11 @@ export function getProtocol(db: Database, id: string): ProtocolRow | undefined {
   return db.get<ProtocolRow>('SELECT * FROM protocols WHERE id = ?', [id]);
 }
 
+/** By its stable slug (how the Coach addresses a protocol). slug is UNIQUE. */
+export function getProtocolBySlug(db: Database, slug: string): ProtocolRow | undefined {
+  return db.get<ProtocolRow>('SELECT * FROM protocols WHERE slug = ?', [slug]);
+}
+
 /** The live version (what `current_version_id` points at), if any exists yet. */
 export function getCurrentVersion(
   db: Database,

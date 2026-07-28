@@ -6,6 +6,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
+import { useSessionKeySet } from '@/hooks/use-session-key';
 import { getDb } from '@/lib/db/client';
 import { getOrCreateUser } from '@/lib/db/repositories/user';
 
@@ -50,13 +51,6 @@ type SoonRow = {
 // Visible, non-tappable, muted. Each says honestly why it's not here yet.
 const SOON: SoonRow[] = [
   {
-    key: 'coach',
-    label: 'Coach model & API key',
-    sub: 'Set up with the Coach',
-    icon: 'sparkles-outline',
-    chip: 'Soon',
-  },
-  {
     key: 'lock',
     label: 'App lock — Face ID',
     sub: 'Face ID or passcode',
@@ -90,6 +84,7 @@ const APP_VERSION = Constants.expoConfig?.version ?? '0.1.0';
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const keySet = useSessionKeySet();
   const [profile, setProfile] = useState(() => getOrCreateUser(getDb()));
 
   // Re-read on focus so a name edited on the Profile screen shows up on return.
@@ -136,6 +131,21 @@ export default function SettingsScreen() {
             <View className="flex-1">
               <Text className="text-[15px] text-ink">Units</Text>
               <Text className="mt-0.5 text-[12px] text-ink-muted">Weight, distance, and more</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Coach"
+            onPress={() => router.push('/settings-coach')}
+            className="flex-row items-center gap-3 border-t border-hairline-soft px-4 py-3 active:bg-paper-deep">
+            <Ionicons name="sparkles-outline" size={18} color={palette.inkSecondary} />
+            <View className="flex-1">
+              <Text className="text-[15px] text-ink">Coach</Text>
+              <Text className="mt-0.5 text-[12px] text-ink-muted">
+                {keySet ? 'Model connected' : 'API key and model'}
+              </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
           </Pressable>

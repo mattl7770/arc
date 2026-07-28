@@ -1,7 +1,7 @@
 # ARC AI Coach — Capability Specification
 
-**Status:** v1 spec + first vertical slice SHIPPED (2026-07-26)
-**Last updated:** 2026-07-26
+**Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, and protocol write-back (2026-07-27)
+**Last updated:** 2026-07-27
 
 This is the concrete capability surface of the Coach: every tool it has (shipped, stubbed, or planned), its proactive behaviors, memory, safety rails, and the sequenced long tail — each item flagged with what it depends on. **Items marked `⚑ MATT` are product decisions to steer before the long tail gets built.**
 
@@ -18,22 +18,22 @@ user turn ──▶ model (streaming) ──▶ tool calls ──▶ executed lo
                                 (loop until the model answers in text)
 ```
 
-Everything runs on-device except the model call itself (local-first, offline-except-AI — the 2026-07-24 ADR). The model is the latest Claude (`claude-opus-5` today), called directly from the app over streaming `expo/fetch`; provider/model become Settings-editable later.
+Everything runs on-device except the model call itself (local-first, offline-except-AI — the 2026-07-24 ADR). The model is the latest Claude (`claude-opus-5` default), called directly from the app over streaming `expo/fetch`; the model is now user-selectable in **Settings › Coach** — Opus 5 / Sonnet 5 / Haiku 4.5 (`COACH_MODELS` in `model-client.ts`).
 
 **Architecture (shipped 2026-07-26):**
 
 | Layer | File | Role |
 | --- | --- | --- |
-| Model client + agentic loop | `src/lib/ai/model-client.ts` | Streaming Messages API call, SSE parsing, tool-use loop. Pure; fetch-injected; unit-tested with a mocked wire (`db/model-client.test.mjs`). |
+| Model client + agentic loop | `src/lib/ai/model-client.ts` | Streaming Messages API call, SSE parsing, tool-use loop. Pure; fetch-injected; unit-tested with a mocked wire (`db/model-client.test.mjs`). The system prompt + tool list carry prompt-cache breakpoints so the large fixed prefix bills at ~0.1× on a turn's later round-trips. |
 | Tool registry | `src/lib/ai/tools/` | Typed `{name, description, inputSchema, readOnly, execute(db, input, ctx)}` per tool, each wrapping a repository. Headless-tested against real SQLite (`db/coach-tools.test.mjs`). |
 | Insights engine | `src/lib/ai/insights.ts` | Deterministic trends/gaps/correlations + the daily brief. No model involved (`db/insights.test.mjs`). |
 | Service seam | `src/lib/ai/coach-service.ts` | The ONE model-call site. Real agentic path when a key is set; honest mock otherwise. Owns the write-confirmation gate. |
 | Persistence | `db/migrations/0008_ai_chat.sql` + `src/lib/db/repositories/ai-chat.ts` | Conversations + append-only messages with the per-turn tool-call record. |
 | Reminders | `db/migrations/0009_reminders.sql` + `src/lib/db/repositories/reminders.ts` | The nudge store + in-app surfacing. |
 | System prompt | `src/lib/ai/system-prompt.ts` | §6 voice + tool doctrine + safety rails (the refined form of §7 below). |
-| UI | `app/(tabs)/coach.tsx` + `src/components/coach/*` | Thread, brief, reminders list, write-confirmation card, session key panel. |
+| UI | `app/(tabs)/coach.tsx` + `src/components/coach/*` | Thread, brief, reminders list, write-confirmation card, session-key panel. Key + model managed in `app/settings-coach.tsx`. |
 
-**Key handling (temporary, deliberate):** the key is pasted per session into a clearly-labelled panel and lives in process memory only (`src/lib/ai/session-key-store.ts`) — never persisted, gone on restart. The durable home is the iOS Keychain via `expo-secure-store` → **native dep → EAS rebuild → flagged, Settings phase**.
+**Key handling:** the key is the app's one secret. It's stored in the **iOS Keychain** via `expo-secure-store` (`src/lib/ai/api-key-store.ts`) — never in SQLite, the JS bundle, logs, or the system prompt — with an in-memory mirror hydrated at boot (`app/_layout.tsx`) so the hot read path stays synchronous. Managed in **Settings › Coach** (paste / replace / clear + model pick) and quick-connectable from the Coach screen. `expo-secure-store` is a native dep: until the next EAS dev build ships it, the store degrades to memory-only (session-lived) and the UI says so plainly. The key rides only the `x-api-key` header on the direct call to Anthropic — the user pastes their own key; ARC never sees it server-side (there is no server).
 
 ---
 
@@ -51,6 +51,7 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 | `get_nutrition_summary` | `days?` (14) | `meals` | Per-day kcal/macros + averages across logged days |
 | `get_symptom_history` | `days?` (30) | `symptoms` | Occurrences + counts by name w/ avg severity |
 | `get_biomarkers` | `category?`, `biomarker?` | `biomarkers` ⋈ latest `lab_results` | Latest value per marker + optimal/standard ranges; explicit "no labs imported" when empty |
+| `get_protocols` | — | `protocols` ⋈ live `protocol_versions` | Each stack/routine/block with its live version number + current items (title, time, dose) |
 | `list_reminders` | — | `reminders` | Active reminders + due-today flags |
 | `get_insights` | — | insights engine | Precomputed trends/gaps/correlations + the brief line |
 
@@ -67,8 +68,11 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 | `set_reminder` | `title`, `time?`, `date?`, `repeat: once\|daily\|weekly`, `notes?` | `createReminder` (`created_by: 'ai'`) | "Set reminder "Take magnesium" at 21:00 · daily" |
 | `complete_reminder` | `id` (one-offs only — refuses recurring) | `completeReminder` | "Mark reminder "Book DEXA" done" |
 | `dismiss_reminder` | `id` | `dismissReminder` | "Dismiss reminder "Take magnesium"" |
+| `update_protocol` | `protocol_slug`, `items[]` (the COMPLETE new list), `change_notes` | `addVersion(…, 'ai')` — writes a NEW immutable version, never edits the live one | "Update "Evening Stack": 3 items (was 2) — added magnesium" |
 
 A Coach-logged row is indistinguishable from a hand-logged one downstream — the tools call the same repositories the capture screens use. Three contract rules, enforced in code and covered by tests: **units convert in code, never in the model** (values arrive as the user said them — lb, oz — and the registry/exercise helpers canonicalize); **backdating is explicit** (every log tool takes an optional real-calendar `date`; the confirmation line shows a backdate, and the system prompt instructs the model to pass one for "yesterday…" reports); **the confirmation line carries everything consequential** — macros, sets, dates, and the resolved *name* behind any id (the user never approves a bare identifier).
+
+**Protocol edits are versioned, not patched.** `update_protocol` never mutates the live version: the model reads the current items with `get_protocols`, submits the COMPLETE new item list (kept items + the change), and the tool writes a new immutable `protocol_versions` row via `addVersion(…, 'ai')`, bumping `current_version_id`. The confirmation line shows the item-count delta (`3 items (was 2)`) so a destructive replace can't be approved as an innocent add; the old version is preserved. This is the concrete form of "add magnesium to my evening stack → the stack actually updates."
 
 ### 2c. Stubbed — interface defined, NOT registered (`src/lib/ai/tools/stubs.ts`)
 
@@ -76,7 +80,6 @@ Withheld from the model on purpose: a tool that always fails teaches the model n
 
 | Tool | Blocked on | Notes |
 | --- | --- | --- |
-| `update_protocol` | **Protocols feature** (Data tab editor + protocol→mission generator) | Proposes a new immutable version with change notes; `created_by: 'ai'`. The schema (0001) is ready. |
 | `create_experiment` | **`experiments` table** (Coach Phase 2 migration) | n-of-1: hypothesis, intervention, metrics, duration, success criteria. |
 | `set_mode` | **Modes** (docs/information-architecture.md) | Sets today's mode so plan/priorities/tone/adherence adapt. |
 | `complete_mission_item` | **Home integration decision** — mission ids must be surfaced to the Coach; Home is integrator-owned | Snapshot already exposes titles/status read-only. |

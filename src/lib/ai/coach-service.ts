@@ -4,8 +4,8 @@ import type { ChatMessage } from '@/types/coach';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 
-import { runCoachTurn, type FetchLike, type WireMessage, DEFAULT_MODEL } from './model-client';
-import { sessionKeyStore } from './session-key-store';
+import { runCoachTurn, type FetchLike, type WireMessage } from './model-client';
+import { apiKeyStore } from './api-key-store';
 import { buildCoachSystemPrompt } from './system-prompt';
 import { COACH_TOOLS, toolByName, toWireTools } from './tools';
 import type { CoachTurnResult } from './types';
@@ -22,18 +22,18 @@ import type { CoachTurnResult } from './types';
  *     intelligence — a coach that confidently makes things up is worse than
  *     one that admits its wiring isn't finished.
  *
- * The key comes from the in-memory session store (src/lib/ai/session-key-store
- * — pasted per session, never persisted); the durable Keychain home lands with
- * Settings. Everything but the model call itself runs on-device.
+ * The key and the chosen model come from the persistent key store
+ * (src/lib/ai/api-key-store.ts) — held in the iOS Keychain, hydrated into an
+ * in-memory mirror at boot. Everything but the model call itself runs on-device.
  */
 
 /**
- * Whether the Coach is live this session (a key is set). UI reads this to
- * decide whether to show the "preview" affordances; re-render via
- * useSessionKeySet() so it stays current.
+ * Whether the Coach is live (a key is set). UI reads this to decide whether to
+ * show the "preview" affordances; re-render via useSessionKeySet() so it stays
+ * current.
  */
 export function isCoachKeyConfigured(): boolean {
-  return sessionKeyStore.has();
+  return apiKeyStore.has();
 }
 
 /** A write tool call awaiting the user's decision. */
@@ -75,7 +75,7 @@ export async function streamCoachReply(
   history: ChatMessage[],
   options: StreamOptions
 ): Promise<CoachTurnResult> {
-  const apiKey = sessionKeyStore.get();
+  const apiKey = apiKeyStore.get();
   if (!apiKey) return mockTurn(history, options);
 
   const db = getDb();
@@ -88,7 +88,7 @@ export async function streamCoachReply(
   const result = await runCoachTurn(
     {
       apiKey,
-      model: DEFAULT_MODEL,
+      model: apiKeyStore.getModel(),
       // expo/fetch streams response bodies in React Native (WHATWG fetch there
       // does not), with no native dependency. Structurally a FetchLike; the
       // cast bridges Expo's own response typings.

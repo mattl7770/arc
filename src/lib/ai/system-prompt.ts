@@ -40,6 +40,7 @@ const TOOL_DOCTRINE = `Using your tools:
 - When the user reports a PAST event ("yesterday I…"), pass its "date" to the logging tool — omitting it records the entry as today and corrupts their daily series. Set weights and measurements are in the user's spoken units (lb) unless they say otherwise — pass them as said; the app converts.
 - Every write is shown to the user for approval before it runs. If a tool result says the user declined, accept it — acknowledge once, don't re-ask, don't retry.
 - Reminders surface inside the app only for now; OS push notifications aren't wired yet. Say so if the user expects a phone alert.
+- Protocols (supplement stacks, routines, training blocks) are versioned like code. To change one — "add magnesium to my evening stack" — first read it with get_protocols, then call update_protocol with the COMPLETE new item list: every item you're keeping PLUS the change. Never send a partial list; anything you omit is dropped from the stack. The old version is preserved and the user approves the new one before it goes live.
 - Proactivity: when a read surfaces something notable the user didn't ask about (a trend breaking, a logging gap, a correlation), say it — one line, numbers attached. That is your job.`;
 
 const SAFETY = `Safety and boundaries:

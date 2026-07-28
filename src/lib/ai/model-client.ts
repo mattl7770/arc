@@ -23,7 +23,9 @@
  * blocks stream with empty text; they are accumulated verbatim and echoed back
  * unchanged on tool continuations (required by the API). Sampling params
  * (temperature/top_p/top_k) are not sent — the current models reject them.
- * A `refusal` stop reason is surfaced, never retried.
+ * A `refusal` stop reason is surfaced, never retried. The system prompt and
+ * tool list carry prompt-cache breakpoints (buildMessagesRequest) so the large
+ * fixed prefix bills at cache-read rates across a turn's round-trips.
  */
 import type { CoachStopReason, CoachToolCall, CoachTurnResult } from './types';
 
@@ -32,8 +34,27 @@ import type { CoachStopReason, CoachToolCall, CoachTurnResult } from './types';
 export const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 export const ANTHROPIC_VERSION = '2023-06-01';
 
-/** The default model — the latest Claude (Settings will make this editable). */
+/** The default model — the latest Claude, used until the user picks in Settings. */
 export const DEFAULT_MODEL = 'claude-opus-5';
+
+/**
+ * The models the Coach may run, chosen in Settings (src/lib/ai/api-key-store.ts
+ * persists the pick). The default stays the most capable; Sonnet is flagged
+ * because it is near-Opus on this workload at a fraction of the cost (the
+ * per-interaction cost analysis in docs/ai-coach.md).
+ */
+export const COACH_MODELS = [
+  { id: 'claude-opus-5', label: 'Opus 5', note: 'Deepest reasoning · highest cost' },
+  { id: 'claude-sonnet-5', label: 'Sonnet 5', note: 'Near-Opus quality · ~⅓ the cost' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', note: 'Fastest · cheapest' },
+] as const;
+
+export type CoachModelId = (typeof COACH_MODELS)[number]['id'];
+
+/** Guard: is `id` a model the Coach is allowed to run? Rejects stale stored ids. */
+export function isCoachModel(id: string): id is CoachModelId {
+  return COACH_MODELS.some((m) => m.id === id);
+}
 
 /**
  * Output cap per model round-trip. On models with default-on thinking this
@@ -77,11 +98,18 @@ export type ModelClientConfig = {
 
 // --- Wire types (the slice of the Messages API this client speaks) -----------
 
+/** An ephemeral prompt-cache breakpoint — everything before it is cached. */
+export type CacheControl = { type: 'ephemeral' };
+
 export type WireTool = {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+  cache_control?: CacheControl;
 };
+
+/** A `system` content block — array form so it can carry a cache breakpoint. */
+export type WireSystemBlock = { type: 'text'; text: string; cache_control?: CacheControl };
 
 export type WireTextBlock = { type: 'text'; text: string };
 export type WireToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown };
@@ -176,6 +204,21 @@ export function buildMessagesRequest(
   config: ModelClientConfig,
   request: AgenticRequest
 ): BuiltRequest {
+  // Prompt caching (docs/ai-coach.md): the system prompt and the whole tool
+  // list are the largest stable prefix, re-sent on every round-trip of every
+  // turn. Render order is tools → system → messages, so a breakpoint on the
+  // system block caches tools+system together; a second on the last tool keeps
+  // the tool list cached across the daily system-prompt date change. Cache
+  // reads bill at ~0.1×, and the prefix clears Opus 5's 512-token minimum.
+  const cache: CacheControl = { type: 'ephemeral' };
+  const system: WireSystemBlock[] = [{ type: 'text', text: request.system, cache_control: cache }];
+  const tools =
+    request.tools.length > 0
+      ? request.tools.map((tool, i) =>
+          i === request.tools.length - 1 ? { ...tool, cache_control: cache } : tool
+        )
+      : undefined;
+
   return {
     url: ANTHROPIC_MESSAGES_URL,
     headers: {
@@ -188,9 +231,9 @@ export function buildMessagesRequest(
       model: config.model,
       max_tokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
       stream: true,
-      system: request.system,
+      system,
       messages: request.messages,
-      ...(request.tools.length > 0 ? { tools: request.tools } : {}),
+      ...(tools ? { tools } : {}),
     }),
   };
 }
