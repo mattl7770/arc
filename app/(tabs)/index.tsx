@@ -7,6 +7,7 @@ import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
+import { useDailyBrief } from '@/hooks/use-daily-brief';
 import { useTodayMission } from '@/hooks/use-today-mission';
 import { mockDay } from '@/lib/home/mock-day';
 
@@ -34,11 +35,14 @@ import { mockDay } from '@/lib/home/mock-day';
  *
  * The mission now reads from and writes to the on-device SQLite database
  * (useTodayMission): completing an item persists across launches, and the day
- * is seeded from mock-day on first open. Readiness, the Coach brief, and the
- * metrics strip are still mock — they land when wearables and the Coach are.
+ * is seeded from mock-day on first open. The Coach brief is now real too — the
+ * deterministic insights engine (useDailyBrief), same text the Coach screen
+ * opens with, no model call. Readiness and the metrics strip are still mock —
+ * they land when wearables do.
  */
 export default function HomeScreen() {
   const mission = useTodayMission();
+  const brief = useDailyBrief();
 
   return (
     <Screen scroll>
@@ -70,7 +74,7 @@ export default function HomeScreen() {
       </View>
 
       <View className="mt-9">
-        <CoachBrief brief={mockDay.brief} />
+        <CoachBrief brief={brief} />
       </View>
 
       <View className="mt-8">

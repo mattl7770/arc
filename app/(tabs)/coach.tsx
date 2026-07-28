@@ -24,6 +24,7 @@ import { useSessionKeySet } from '@/hooks/use-session-key';
 import { generateDailyBrief } from '@/lib/ai/insights';
 import { COACH_TAGLINE } from '@/lib/ai/system-prompt';
 import { getDb } from '@/lib/db/client';
+import { syncReminderNotifications } from '@/lib/notifications/reminders';
 
 /**
  * Coach — the conversational surface (docs/ai-coach.md).
@@ -48,7 +49,26 @@ export default function CoachScreen() {
   const onTurnComplete = useCallback(() => {
     reloadReminders();
     reloadBrief();
+    // A turn may have set/completed/dismissed a reminder — re-mirror the OS
+    // notification schedule so a while-closed nudge tracks the change.
+    void syncReminderNotifications(getDb());
   }, [reloadReminders, reloadBrief]);
+
+  // Completing/dismissing from the card also changes what should fire.
+  const onCompleteReminder = useCallback(
+    (id: string) => {
+      complete(id);
+      void syncReminderNotifications(getDb());
+    },
+    [complete]
+  );
+  const onDismissReminder = useCallback(
+    (id: string) => {
+      dismiss(id);
+      void syncReminderNotifications(getDb());
+    },
+    [dismiss]
+  );
 
   const chat = useCoachChat({ onTurnComplete });
   const scrollRef = useRef<ScrollView>(null);
@@ -89,7 +109,11 @@ export default function CoachScreen() {
           onContentSizeChange={followIfAtBottom}>
           <DailyBriefCard brief={brief} keySet={keySet} />
 
-          <RemindersCard reminders={reminders} onComplete={complete} onDismiss={dismiss} />
+          <RemindersCard
+            reminders={reminders}
+            onComplete={onCompleteReminder}
+            onDismiss={onDismissReminder}
+          />
 
           {chat.messages.map((message) => (
             <MessageBubble key={message.id} message={message} onRetry={chat.retry} />

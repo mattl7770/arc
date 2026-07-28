@@ -22,7 +22,7 @@
 - [x] **Phase 0** — schema ported Postgres → SQLite (`db/migrations/0001_init.sql`), **validated against real SQLite** (20 checks); `op-sqlite` + `sqliteVec` installed
 - [x] **Phase 1 (largely done)** — migration runner (`PRAGMA user_version`), the local data-access layer (`Database` interface + repositories), and a **pre-migration `VACUUM INTO` backup** are all built and confirmed on device; Home's mission + the entire Log tab (command field, keypad, Capture, Nutrition, Exercise, Symptoms) read/write the DB. **Remaining:** wiring the Coach to the DB is Phase 3 (it's still a mock).
 - [x] **Phase 2 (Supabase removal, done 2026-07-25)** — the dead Supabase client island (`supabase.ts`, `env.ts`, `use-session.ts`, `types/database.ts`, `login.tsx`, `gen-types.mjs`, `@supabase/supabase-js` + `async-storage` deps, `db:push`/`db:types`) was deleted in the full-app review. **Still to do:** Face ID app lock (`expo-local-authentication`).
-- [~] 🚧 **Phase 3** — Coach calls the model directly ✅ (Keychain key via `expo-secure-store`, model picker) and writes back to versioned protocols ✅; **remaining:** on-device `sqlite-vec` RAG, food-photo / lab-PDF vision, and the EAS rebuild that activates the Keychain natively
+- [~] 🚧 **Phase 3** — Coach calls the model directly ✅ (Keychain key via `expo-secure-store`, model picker) and writes back to versioned protocols ✅; the deterministic brief now feeds the Home card and while-closed reminder nudges are wired (`expo-notifications`) ✅; **remaining:** on-device RAG (the plan is `docs/rag-embeddings.md` — pick the on-device embedder), food-photo / lab-PDF vision, and the one EAS rebuild that activates the native modules
 - [ ] 📋 **Phase 4** — media (PhotoKit references for progress pics; compressed in-app copies for food logs) + encrypted iCloud backup
 - [ ] 🧊 **Phase 5** — writable knowledge base + Coach research
 - **Offline principle:** everything works with the network unplugged **except AI features** (Coach chat, LLM lab-PDF parse, food-photo analysis, Coach research). The lone non-AI online dependency is air-quality data; purchases stay manual (auto-import would need a server).
@@ -150,7 +150,7 @@
 | Local DB engine | ✅ | `op-sqlite` + `sqliteVec` running on device (persistence confirmed); migration runner + repositories + seed + pre-migration backup; op-sqlite isolated to `client.ts`. 7 migrations, 19 tables |
 | DB types | ✅ | Hand-authored row types (`src/lib/db/types.ts`); the Supabase generator is deleted |
 | Supabase client | ✅ | **Deleted 2026-07-25** (dead island removed in the full-app review) |
-| **Home screen** | 🚧 | Mission reads/persists via the DB; readiness/brief/metrics still mock |
+| **Home screen** | 🚧 | Mission + the Coach brief read from the DB (brief = deterministic insights via `useDailyBrief`, no model call, same text the Coach screen opens with); readiness + metrics still mock |
 | **Coach** | ✅ | **Agentic** — real streaming model call (expo/fetch) + a tool-use loop that reads *and writes* the app through tools (consequential writes confirmed via a pending-write card), proactive insights, reminders, and persisted threads (0008/0009). Key in the iOS **Keychain**, in-app model picker (Opus 5 / Sonnet 5 / Haiku 4.5), prompt-cached prefix, and versioned protocol edits (`update_protocol`); the honest mock is the fallback when no key is set |
 | App lock | 📋 | Face ID / passcode on open — Phase 2 (replaces the cut auth gate) |
 | Log | ✅ | Fully wired: command field (offline parse), metric keypad, Capture (Supplement/Therapy), Nutrition, Exercise, and Symptoms all persist; "Logged today" reads live. Sub-apps are real (meals / workouts+sets / symptoms), not mockups. Deeper features (photo/text-AI, templates, builder) are follow-ups |
@@ -171,7 +171,7 @@
 - **`.env`:** the `EXPO_PUBLIC_SUPABASE_*` vars are no longer read by any code (safe for the owner to delete from `.env`). The model API key lives in the iOS Keychain, never in `.env`.
 
 ### Known caveats (things that will bite if forgotten)
-- ⚠️ **`op-sqlite` is a native module** — the dev build that includes it is done (persistence runs on device). **`expo-secure-store` is now a dependency** (config plugin registered) but its native module ships only with the **next `eas build`** — until then the Coach key store degrades to memory-only (session-lived) and the UI says so. `expo-local-authentication` (app lock) is still pending — batch it into the same rebuild.
+- ⚠️ **`op-sqlite` is a native module** — the dev build that includes it is done (persistence runs on device). **Three native deps are now added and awaiting one `eas build`:** `expo-secure-store` (Coach key → Keychain; memory-only fallback until then) and `expo-notifications` (while-closed reminder nudges; scheduling no-ops until then). `expo-local-authentication` (app lock) and, later, the RAG embedder (`onnxruntime-react-native`, see `docs/rag-embeddings.md`) should ride the **same** rebuild — batch them. Each degrades gracefully (no crash) until it ships.
 - ⚠️ **SQLite needs `PRAGMA foreign_keys = ON` per connection** (it defaults OFF) — the data layer must set it on every open, or the FKs in `0001_init.sql` silently won't enforce. `recursive_triggers` must stay OFF (default) so `updated_at` triggers don't recurse.
 - ⚠️ The **Coach is real, not a mock, when a key is set** — `src/lib/ai/coach-service.ts` runs the full agentic loop against the Messages API; the honest mock is only the fallback when no key is configured (`isCoachKeyConfigured` gates the "Preview" affordance). Threads persist to `ai_conversations`/`ai_messages` (0008) and resume on reload.
 - ⚠️ **op-sqlite's `wrap()` adapter (`client.ts`) has no automated coverage** — the headless tests run against `node:sqlite`, a different engine. It's exercised on device (persistence works), but changes to the adapter (or the `VACUUM INTO` backup, which also only runs on device) are unverified by CI — test them on device.
@@ -270,5 +270,6 @@ The serif/mono split carries meaning: **serif speaks, mono measures.** A number 
 - `docs/decisions.md` — architecture decision records
 - `docs/home-screen.md` — Home IA + implementation notes
 - `docs/ai-coach.md` — Coach spec
+- `docs/rag-embeddings.md` — RAG/embeddings plan (the on-device embedder decision)
 - `docs/dev-build.md` — device runbook (EAS dev build)
 - `docs/folder-structure.md` — where code goes
