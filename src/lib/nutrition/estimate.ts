@@ -88,12 +88,13 @@ function loadStreamingFetch(): FetchLike | null {
   }
 }
 
-// --- The request the Coach client consumes (structurally == AgenticRequest) --
+// --- The vision request the Coach client consumes -----------------------------
 //
-// These mirror the model client's wire types (`WireMessage` / content blocks in
-// src/lib/ai/model-client.ts). Redeclared locally because that module is not on
-// `main` yet and this file must not import it; at integration they are the same
-// shapes, so the builder's output drops straight into `runCoachTurn`.
+// The model client (src/lib/ai/model-client.ts) is imported directly above;
+// these local block types just give the image/text content a precise shape. The
+// client's WireContentBlock carries an image as an opaque block, so
+// buildMealEstimationRequest's output is cast to WireMessage[] at the call site
+// in estimateMeal — the shapes match the Anthropic vision wire format 1:1.
 
 export type VisionTextBlock = { type: 'text'; text: string };
 export type VisionImageBlock = {

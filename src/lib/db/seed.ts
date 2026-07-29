@@ -17,6 +17,7 @@ import {
   getOrCreateDailyLog,
   insertMissionItem,
 } from './repositories/mission';
+import { generateMissionForDay } from './repositories/mission-generate';
 import type { BiomarkerCategory, LogEntryType } from './types';
 import type { MissionItem } from '@/types/home';
 
@@ -180,25 +181,35 @@ export function seedReferenceData(db: Database): void {
 }
 
 /**
- * Plant a demo mission for `date` if that day has no *planned* entries yet. The
- * guard counts mission entries only (`countMissionEntries`), NOT ad-hoc Log-tab
- * captures — otherwise logging a note before opening Home on a new day would
- * leave that daily_log non-empty, skip the seed, and render an empty mission for
- * the rest of the day (the note is filtered out of the mission).
+ * Ensure `date` has a mission, protocol-first. The user's ACTIVE protocols are
+ * the plan: {@link generateMissionForDay} expands their live versions into the
+ * day's `log_entries`. The `fallbackMission` (mock-day) is planted ONLY when the
+ * generator produced nothing — i.e. a fresh install with no protocols yet — so
+ * Home is never empty before the user (or the Coach) has built any protocol.
  *
- * NOTE: the guard is per-day, so this fires on the first open of *every* new
- * day — not just first-ever run — because each day starts with no planned
- * entries. That's intended for Phase 1b (the seed is the only data source), but
- * it MUST be gated/removed once real logging or the protocol→mission generator
- * lands. Seeded rows are marked `seed: true` in their value json so they're
- * purgeable and distinguishable from real entries until then. (The purge itself
- * is not built yet — the marker is written, not yet read.)
+ * Both paths are guarded on *planned* entries (`countMissionEntries`), not
+ * ad-hoc Log-tab captures — otherwise a note logged before Home opens on a new
+ * day would suppress the whole day's mission (the note is filtered out of it).
+ * The guard is per-day, so this fires on the first open of *every* day; once
+ * protocols exist that is exactly right (the day is regenerated from them), and
+ * a protocol edited today only reshapes tomorrow (today is already committed).
+ * Fallback rows carry `seed: true`, generated rows `generated: true`, so the
+ * three sources (protocol / mock seed / ad-hoc) stay distinguishable.
  */
-export function ensureTodaySeeded(db: Database, date: string, mission: MissionItem[]): void {
+export function ensureTodaySeeded(
+  db: Database,
+  date: string,
+  fallbackMission: MissionItem[]
+): void {
+  // Protocols drive the day; if any active protocol produced entries, done.
+  if (generateMissionForDay(db, date) > 0) return;
+
+  // No protocols (or the day is already populated) — fall back to the mock demo
+  // only when the day is genuinely empty of planned entries.
   const log = getOrCreateDailyLog(db, date);
   if (countMissionEntries(db, log.id) > 0) return;
   db.transaction(() => {
-    for (const item of mission) {
+    for (const item of fallbackMission) {
       const type = TYPE_BY_CATEGORY[item.category] ?? 'habit';
       insertMissionItem(db, log.id, type, item, { seed: true });
     }
