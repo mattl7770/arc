@@ -11,6 +11,7 @@ import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
   getOrCreateUser,
   getPreferences,
+  setAppLockEnabled,
   setUnitPreference,
   updateProfile,
 } from '../src/lib/db/repositories/user.ts';
@@ -177,6 +178,67 @@ console.log('7. DB CHECKs still guard bad profile input');
   throws(() => updateProfile(db, { dateOfBirth: '13/07/1990' }))
     ? ok('malformed date_of_birth rejected by the GLOB CHECK')
     : bad('bad DOB accepted');
+}
+
+console.log('8. app lock defaults OFF and normalises from junk to OFF');
+{
+  const { db, raw } = freshDb();
+  getPreferences(db).appLock.enabled === false
+    ? ok('fresh profile has appLock.enabled false')
+    : bad('default', JSON.stringify(getPreferences(db)));
+  const user = getOrCreateUser(db);
+  // A corrupt/foreign value must never read as enabled — the lock can't turn
+  // itself on by accident.
+  raw
+    .prepare('UPDATE users SET preferences = ? WHERE id = ?')
+    .run('{"appLock":{"enabled":"yes"}}', user.id);
+  getPreferences(db).appLock.enabled === false
+    ? ok('non-boolean enabled ("yes") normalises to false')
+    : bad('junk enabled read as true');
+  raw.prepare('UPDATE users SET preferences = ? WHERE id = ?').run('{"appLock":[true]}', user.id);
+  getPreferences(db).appLock.enabled === false
+    ? ok('non-object appLock section normalises to false')
+    : bad('array appLock read as true');
+}
+
+console.log('9. setAppLockEnabled persists and preserves the rest of the blob');
+{
+  const { db, raw } = freshDb();
+  const user = getOrCreateUser(db);
+  raw
+    .prepare('UPDATE users SET preferences = ? WHERE id = ?')
+    .run('{"theme":"pine","units":{"weight":"kg"}}', user.id);
+  const on = setAppLockEnabled(db, true);
+  on.appLock.enabled === true && on.units.weight === 'kg'
+    ? ok('returned prefs: lock on, prior unit intact')
+    : bad('enable return', JSON.stringify(on));
+  const stored = JSON.parse(
+    raw.prepare('SELECT preferences FROM users WHERE id = ?').get(user.id).preferences
+  );
+  stored.theme === 'pine' && stored.units.weight === 'kg' && stored.appLock.enabled === true
+    ? ok('unknown key (theme) and units survive the merge; appLock persisted')
+    : bad('merge', JSON.stringify(stored));
+  getPreferences(db).appLock.enabled === true
+    ? ok('persisted across a re-read')
+    : bad('persistence');
+  const off = setAppLockEnabled(db, false);
+  off.appLock.enabled === false && getPreferences(db).appLock.enabled === false
+    ? ok('disable round-trips too')
+    : bad('disable', JSON.stringify(off));
+}
+
+console.log("10. setUnitPreference and setAppLockEnabled don't clobber each other");
+{
+  const { db } = freshDb();
+  setAppLockEnabled(db, true);
+  const afterUnit = setUnitPreference(db, 'weight', 'kg');
+  afterUnit.appLock.enabled === true && afterUnit.units.weight === 'kg'
+    ? ok('unit write keeps the lock on (and reports it)')
+    : bad('unit write', JSON.stringify(afterUnit));
+  const afterLock = setAppLockEnabled(db, false);
+  afterLock.units.weight === 'kg'
+    ? ok('lock write keeps the unit choice')
+    : bad('lock write', JSON.stringify(afterLock));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

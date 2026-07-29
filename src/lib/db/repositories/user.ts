@@ -13,7 +13,7 @@
 import type { Database } from '../database';
 import { newId } from '../id';
 import type { BiologicalSex, UserRow } from '../types';
-import type { Preferences, UnitPreferences } from '@/lib/user/types';
+import type { AppLockPreferences, Preferences, UnitPreferences } from '@/lib/user/types';
 import { DEFAULT_UNIT_PREFERENCES } from '@/lib/user/types';
 
 /**
@@ -82,10 +82,7 @@ function pickUnit<K extends keyof UnitPreferences>(
 }
 
 function readUnits(obj: Record<string, unknown>): UnitPreferences {
-  const raw =
-    obj.units && typeof obj.units === 'object' && !Array.isArray(obj.units)
-      ? (obj.units as Record<string, unknown>)
-      : {};
+  const raw = readSection(obj, 'units');
   return {
     weight: pickUnit(raw, 'weight', ['lb', 'kg']),
     distance: pickUnit(raw, 'distance', ['mi', 'km']),
@@ -95,10 +92,25 @@ function readUnits(obj: Record<string, unknown>): UnitPreferences {
   };
 }
 
+/** One nested preference object (`units`, `appLock`, …), or {} when absent/junk. */
+function readSection(obj: Record<string, unknown>, key: string): Record<string, unknown> {
+  const raw = obj[key];
+  return raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {};
+}
+
+function readAppLock(obj: Record<string, unknown>): AppLockPreferences {
+  // Strict `=== true` so a corrupt/foreign value can only ever read as
+  // disabled — the lock never turns itself on by accident.
+  return { enabled: readSection(obj, 'appLock').enabled === true };
+}
+
 /** The user's preferences, normalised (every field present) from the JSON blob. */
 export function getPreferences(db: Database): Preferences {
   const user = getOrCreateUser(db);
-  return { units: readUnits(parseObject(user.preferences)) };
+  const obj = parseObject(user.preferences);
+  return { units: readUnits(obj), appLock: readAppLock(obj) };
 }
 
 /**
@@ -112,11 +124,21 @@ export function setUnitPreference<K extends keyof UnitPreferences>(
 ): Preferences {
   const user = getOrCreateUser(db);
   const obj = parseObject(user.preferences);
-  const units =
-    obj.units && typeof obj.units === 'object' && !Array.isArray(obj.units)
-      ? (obj.units as Record<string, unknown>)
-      : {};
-  obj.units = { ...units, [key]: value };
+  obj.units = { ...readSection(obj, 'units'), [key]: value };
   db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
-  return { units: readUnits(obj) };
+  return { units: readUnits(obj), appLock: readAppLock(obj) };
+}
+
+/**
+ * Turn the app lock on or off and persist. Merges into the existing blob
+ * (unit choices and unknown keys are preserved), and returns the normalised
+ * result. Whether the device can actually authenticate is the caller's check
+ * (src/lib/security/app-lock.ts) — this layer just records the choice.
+ */
+export function setAppLockEnabled(db: Database, enabled: boolean): Preferences {
+  const user = getOrCreateUser(db);
+  const obj = parseObject(user.preferences);
+  obj.appLock = { ...readSection(obj, 'appLock'), enabled };
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+  return { units: readUnits(obj), appLock: readAppLock(obj) };
 }

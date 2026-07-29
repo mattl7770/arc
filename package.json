@@ -14,7 +14,7 @@
     "doctor": "expo-doctor",
     "db:bundle": "node db/bundle-migrations.mjs",
     "db:validate": "node db/bundle-migrations.mjs --check && node db/validate-schema.mjs",
-    "db:test": "node --import ./db/register-ts-hooks.mjs db/migrate.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-layer.test.mjs && node --import ./db/register-ts-hooks.mjs db/log.test.mjs && node --import ./db/register-ts-hooks.mjs db/nutrition.test.mjs && node --import ./db/register-ts-hooks.mjs db/exercise.test.mjs && node --import ./db/register-ts-hooks.mjs db/symptoms.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-body-biomarkers.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-trends.test.mjs && node --import ./db/register-ts-hooks.mjs db/user.test.mjs && node --import ./db/register-ts-hooks.mjs db/units.test.mjs && node --import ./db/register-ts-hooks.mjs db/protocols.test.mjs && node --import ./db/register-ts-hooks.mjs db/screenings.test.mjs && node --import ./db/register-ts-hooks.mjs db/ai-chat.test.mjs && node --import ./db/register-ts-hooks.mjs db/reminders.test.mjs && node --import ./db/register-ts-hooks.mjs db/coach-tools.test.mjs && node --import ./db/register-ts-hooks.mjs db/insights.test.mjs && node --import ./db/register-ts-hooks.mjs db/model-client.test.mjs && node --import ./db/register-ts-hooks.mjs db/notifications.test.mjs && node --import ./db/register-ts-hooks.mjs db/exercise-catalog.test.mjs && node --import ./db/register-ts-hooks.mjs db/routines.test.mjs && node --import ./db/register-ts-hooks.mjs db/training-engine.test.mjs && node --import ./db/register-ts-hooks.mjs db/programs.test.mjs && node --import ./db/register-ts-hooks.mjs db/training-volume.test.mjs && node --import ./db/register-ts-hooks.mjs db/foods.test.mjs && node --import ./db/register-ts-hooks.mjs db/nutrition-v2.test.mjs && node --import ./db/register-ts-hooks.mjs db/barcode.test.mjs && node --import ./db/register-ts-hooks.mjs db/mission-generate.test.mjs"
+    "db:test": "node --import ./db/register-ts-hooks.mjs db/migrate.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-layer.test.mjs && node --import ./db/register-ts-hooks.mjs db/log.test.mjs && node --import ./db/register-ts-hooks.mjs db/nutrition.test.mjs && node --import ./db/register-ts-hooks.mjs db/exercise.test.mjs && node --import ./db/register-ts-hooks.mjs db/symptoms.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-body-biomarkers.test.mjs && node --import ./db/register-ts-hooks.mjs db/data-trends.test.mjs && node --import ./db/register-ts-hooks.mjs db/user.test.mjs && node --import ./db/register-ts-hooks.mjs db/units.test.mjs && node --import ./db/register-ts-hooks.mjs db/protocols.test.mjs && node --import ./db/register-ts-hooks.mjs db/screenings.test.mjs && node --import ./db/register-ts-hooks.mjs db/ai-chat.test.mjs && node --import ./db/register-ts-hooks.mjs db/reminders.test.mjs && node --import ./db/register-ts-hooks.mjs db/coach-tools.test.mjs && node --import ./db/register-ts-hooks.mjs db/insights.test.mjs && node --import ./db/register-ts-hooks.mjs db/model-client.test.mjs && node --import ./db/register-ts-hooks.mjs db/notifications.test.mjs && node --import ./db/register-ts-hooks.mjs db/exercise-catalog.test.mjs && node --import ./db/register-ts-hooks.mjs db/routines.test.mjs && node --import ./db/register-ts-hooks.mjs db/training-engine.test.mjs && node --import ./db/register-ts-hooks.mjs db/programs.test.mjs && node --import ./db/register-ts-hooks.mjs db/training-volume.test.mjs && node --import ./db/register-ts-hooks.mjs db/foods.test.mjs && node --import ./db/register-ts-hooks.mjs db/nutrition-v2.test.mjs && node --import ./db/register-ts-hooks.mjs db/barcode.test.mjs && node --import ./db/register-ts-hooks.mjs db/mission-generate.test.mjs && node --import ./db/register-ts-hooks.mjs db/export.test.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
@@ -23,6 +23,7 @@
     "expo-camera": "~57.0.3",
     "expo-constants": "~57.0.6",
     "expo-dev-client": "~57.0.9",
+    "expo-file-system": "~57.0.1",
     "expo-font": "~57.0.1",
     "expo-image-manipulator": "~57.0.6",
     "expo-linking": "~57.0.4",
@@ -30,6 +31,7 @@
     "expo-notifications": "~57.0.7",
     "expo-router": "~57.0.8",
     "expo-secure-store": "~57.0.1",
+    "expo-sharing": "~57.0.8",
     "expo-splash-screen": "~57.0.5",
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.1",
