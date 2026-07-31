@@ -683,17 +683,20 @@ const setModeTool: CoachTool = {
     const args = asRecord(input);
     const mode = reqEnum(args, 'mode', MODE_KEYS);
     const startDate = todayISODate(context.now);
-    // Omitted `until` = JUST TODAY (endDate = today), matching the tool's
-    // documented semantics. Open-ended ("until turned off") is a Home-control
-    // affordance, not reachable through the model — the model always bounds it.
-    const until = optDate(args, 'until') ?? startDate;
-    const id = setMode(db, {
-      mode,
-      startDate,
-      endDate: until,
-      note: optString(args, 'note') ?? null,
-    });
-    return json({ set: true, mode, from: startDate, until, id });
+    const until = optDate(args, 'until');
+    if (until !== undefined && until < startDate) {
+      throw new Error(
+        `"until" (${until}) is before today (${startDate}) — a mode can't end in the past.`
+      );
+    }
+    // 'normal' is a RESET: open-ended (endDate null) so it ends an earlier
+    // range/open-ended mode for today AND every following day, not just today.
+    // Any other mode: omitted `until` = just today; an explicit `until` bounds a
+    // range. Open-ended non-normal ("until turned off") stays a Home-control
+    // affordance — the model always bounds a mode it sets.
+    const endDate = mode === 'normal' ? null : (until ?? startDate);
+    const id = setMode(db, { mode, startDate, endDate, note: optString(args, 'note') ?? null });
+    return json({ set: true, mode, from: startDate, until: endDate, id });
   },
 };
 

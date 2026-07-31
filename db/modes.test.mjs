@@ -222,11 +222,31 @@ console.log('6. the real set_mode Coach tool writes a mode + honest confirmation
     ? ok('getActiveMode now reads Travel for today')
     : bad('post-set active mode');
 
-  // 'normal' resets.
+  // 'normal' resets — and it must END THE WHOLE RANGE, not just today (the
+  // Travel range above ran through 08-07). A single-day normal would let Travel
+  // resurface tomorrow.
   const reset = JSON.parse(tool.execute(db, { mode: 'normal' }, ctx));
-  reset.mode === 'normal' && getActiveMode(db, today) === 'normal'
-    ? ok('set_mode normal resets the day to Normal')
-    : bad('reset via tool');
+  reset.mode === 'normal' &&
+  reset.until === null &&
+  getActiveMode(db, today) === 'normal' &&
+  getActiveMode(db, '2026-08-04') === 'normal' &&
+  getActiveMode(db, '2026-08-07') === 'normal'
+    ? ok('set_mode normal resets open-ended — ends the whole Travel range, not just today')
+    : bad(
+        'reset via tool',
+        `${getActiveMode(db, today)}/${getActiveMode(db, '2026-08-04')}/${getActiveMode(db, '2026-08-07')}`
+      );
+
+  // A past `until` is rejected (would store an inert, no-day row).
+  let threw = false;
+  try {
+    tool.execute(db, { mode: 'travel', until: '2026-07-31' }, ctx);
+  } catch {
+    threw = true;
+  }
+  threw
+    ? ok('an `until` before today is rejected, not silently stored inert')
+    : bad('past until accepted');
 }
 
 console.log('7. get_today_snapshot surfaces the active mode + its guidance');
