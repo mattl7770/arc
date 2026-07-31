@@ -21,8 +21,18 @@ export interface UnitPreferences {
   temperature: TemperatureUnit;
 }
 
+export interface AppLockPreferences {
+  /**
+   * Require Face ID / device passcode on cold start and on return to the
+   * foreground after a timeout. The lock is the security boundary of a
+   * no-accounts app (CLAUDE.md §2) — but it's opt-in, so it defaults off.
+   */
+  enabled: boolean;
+}
+
 export interface Preferences {
   units: UnitPreferences;
+  appLock: AppLockPreferences;
 }
 
 /**
@@ -38,6 +48,11 @@ export const DEFAULT_UNIT_PREFERENCES: UnitPreferences = {
   temperature: 'F',
 };
 
+export const DEFAULT_APP_LOCK_PREFERENCES: AppLockPreferences = {
+  enabled: false,
+};
+
 export const DEFAULT_PREFERENCES: Preferences = {
   units: DEFAULT_UNIT_PREFERENCES,
+  appLock: DEFAULT_APP_LOCK_PREFERENCES,
 };

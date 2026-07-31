@@ -2,23 +2,28 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Alert, Pressable, Switch, Text, View } from 'react-native';
 
 import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
+import { useAppLockPreference } from '@/hooks/use-app-lock-preference';
 import { useSessionKeySet } from '@/hooks/use-session-key';
 import { getDb } from '@/lib/db/client';
 import { getOrCreateUser } from '@/lib/db/repositories/user';
+import { exportDataToFile } from '@/lib/export/export-file';
 
 /**
- * Settings — a calm index into the profile, unit preferences, and the surfaces
- * still to be built. This is an action-light tab, so it carries no pine at all
- * (pine is a ceiling, not a quota): the two live rows are neutral nav, and every
- * not-yet-built row is visibly muted with a neutral "not ready" chip. No signal
- * colour — those stay reserved for biological states (docs/project-status.md).
+ * Settings — a calm index into the profile, unit preferences, security & data,
+ * and the surfaces still to be built. This is an action-light tab, so it stays
+ * at the pine ceiling's floor: exactly ONE pine accent — the app-lock switch's
+ * on-track — while the three nav rows (Profile / Units / Coach) and the export
+ * action are neutral, and every not-yet-built row is visibly muted with a
+ * neutral "not ready" chip. No signal colour — those stay reserved for
+ * biological states (docs/project-status.md).
  *
- * Profile + Units push to their own screens. The name subtitle re-reads on focus
- * (the use-log-feed.ts useFocusEffect pattern) so an edit shows up on return.
+ * Profile + Units + Coach push to their own screens; App lock and Export act
+ * in place. The name subtitle re-reads on focus (the use-log-feed.ts
+ * useFocusEffect pattern) so an edit shows up on return.
  */
 
 function SectionLabel({ children }: { children: string }) {
@@ -51,13 +56,6 @@ type SoonRow = {
 // Visible, non-tappable, muted. Each says honestly why it's not here yet.
 const SOON: SoonRow[] = [
   {
-    key: 'lock',
-    label: 'App lock — Face ID',
-    sub: 'Face ID or passcode',
-    icon: 'lock-closed-outline',
-    chip: 'Needs a build',
-  },
-  {
     key: 'health',
     label: 'Apple Health',
     sub: 'Wearables via Apple Health',
@@ -71,13 +69,6 @@ const SOON: SoonRow[] = [
     icon: 'cloud-upload-outline',
     chip: 'Soon',
   },
-  {
-    key: 'export',
-    label: 'Data export',
-    sub: 'Take everything with you',
-    icon: 'download-outline',
-    chip: 'Soon',
-  },
 ];
 
 const APP_VERSION = Constants.expoConfig?.version ?? '0.1.0';
@@ -86,6 +77,9 @@ export default function SettingsScreen() {
   const router = useRouter();
   const keySet = useSessionKeySet();
   const [profile, setProfile] = useState(() => getOrCreateUser(getDb()));
+  const appLock = useAppLockPreference();
+  const [exporting, setExporting] = useState(false);
+  const [exportNote, setExportNote] = useState<string | null>(null);
 
   // Re-read on focus so a name edited on the Profile screen shows up on return.
   const reload = useCallback(() => setProfile(getOrCreateUser(getDb())), []);
@@ -93,6 +87,49 @@ export default function SettingsScreen() {
 
   const name = profile.full_name?.trim();
   const profileSub = name && name.length > 0 ? name : 'Name, date of birth, and biological sex';
+
+  const setAppLock = appLock.setEnabled;
+  const handleLockToggle = useCallback(
+    async (next: boolean) => {
+      const result = await setAppLock(next);
+      if (result === 'auth-failed') {
+        Alert.alert('Not enabled', 'The Face ID / passcode check didn’t pass. Try again.');
+      } else if (result === 'no-credentials') {
+        Alert.alert(
+          'Set a device passcode first',
+          'App lock needs Face ID or a device passcode to check against.'
+        );
+      }
+      // 'unsupported' can't happen from the UI — the switch only renders when
+      // the module is present.
+    },
+    [setAppLock]
+  );
+
+  const handleExport = useCallback(async () => {
+    if (exporting) return;
+    setExporting(true);
+    setExportNote(null);
+    try {
+      const outcome = await exportDataToFile(getDb());
+      if (outcome.status === 'shared') {
+        setExportNote(`Exported · ${outcome.fileName}`);
+      } else if (outcome.status === 'saved') {
+        setExportNote(`Saved · ${outcome.fileName}`);
+        Alert.alert(
+          'Export saved',
+          `Written to the app’s Documents folder:\n\n${outcome.uri}\n\nThe share sheet arrives with the next build.`
+        );
+      } else if (outcome.status === 'failed') {
+        setExportNote('Export failed');
+        Alert.alert('Export failed', outcome.message);
+      } else {
+        setExportNote('Needs the app build');
+      }
+    } finally {
+      setExporting(false);
+    }
+  }, [exporting]);
 
   return (
     <Screen scroll>
@@ -145,6 +182,53 @@ export default function SettingsScreen() {
               <Text className="text-[15px] text-ink">Coach</Text>
               <Text className="mt-0.5 text-[12px] text-ink-muted">
                 {keySet ? 'Model connected' : 'API key and model'}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+          </Pressable>
+        </View>
+      </View>
+
+      {/* Security & data — the lock on the front door and the way out with
+          everything. The switch's on-state is this screen's one pine accent. */}
+      <View className="mt-8">
+        <SectionLabel>Security &amp; data</SectionLabel>
+        <View className="mt-3 rounded-card border border-hairline bg-porcelain">
+          {/* Not an `accessible` container — the Switch must stay individually
+              focusable/toggleable for VoiceOver (unlike the static SOON rows). */}
+          <View className="flex-row items-center gap-3 px-4 py-3">
+            <Ionicons name="lock-closed-outline" size={18} color={palette.inkSecondary} />
+            <View className="flex-1">
+              <Text className="text-[15px] text-ink">App lock</Text>
+              <Text className="mt-0.5 text-[12px] text-ink-muted">
+                Face ID or passcode when ARC opens
+              </Text>
+            </View>
+            {appLock.supported ? (
+              <Switch
+                accessibilityLabel="App lock"
+                value={appLock.enabled}
+                onValueChange={(next) => void handleLockToggle(next)}
+                trackColor={{ true: palette.pine, false: palette.hairlineStrong }}
+                ios_backgroundColor={palette.hairlineStrong}
+              />
+            ) : (
+              <Chip>Needs a build</Chip>
+            )}
+          </View>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Export data"
+            accessibilityState={{ disabled: exporting }}
+            disabled={exporting}
+            onPress={() => void handleExport()}
+            className="flex-row items-center gap-3 border-t border-hairline-soft px-4 py-3 active:bg-paper-deep">
+            <Ionicons name="download-outline" size={18} color={palette.inkSecondary} />
+            <View className="flex-1">
+              <Text className="text-[15px] text-ink">Export data</Text>
+              <Text className="mt-0.5 text-[12px] text-ink-muted" numberOfLines={1}>
+                {exporting ? 'Writing…' : (exportNote ?? 'Everything, offline, as one JSON file')}
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />

@@ -4,9 +4,12 @@ import '../global.css';
 import { DefaultTheme, Stack, type Theme, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
+import { Modal } from 'react-native';
 
+import { AppLockScreen } from '@/components/ui/app-lock-screen';
 import { ErrorBoundary } from '@/components/ui/error-boundary';
 import { navColors } from '@/constants/theme';
+import { useAppLock } from '@/hooks/use-app-lock';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { getDb } from '@/lib/db/client';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
@@ -19,7 +22,10 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * app.json pins userInterfaceStyle to "light" and this theme is unconditional.
  *
  * No auth gate: ARC is single-user and local-first (no accounts). Access is
- * guarded by a Face ID / passcode app lock, added in Phase 2 (CLAUDE.md §10).
+ * guarded by the Face ID / passcode app lock below (useAppLock, CLAUDE.md §2):
+ * a locked cold start early-returns the lock screen so the Stack never mounts;
+ * a re-lock after time in the background covers the mounted Stack with an
+ * opaque overlay instead, so navigation state survives.
  * The whole tree sits under an ErrorBoundary because the data layer opens SQLite
  * synchronously and throws on failure.
  */
@@ -29,6 +35,11 @@ const porcelainTheme: Theme = {
 };
 
 export default function RootLayout() {
+  // Face ID / passcode gate (CLAUDE.md §2: the app lock is the security
+  // boundary). Must be the first hook so its synchronous enabled-check settles
+  // before anything below decides what to render.
+  const lock = useAppLock();
+
   // Boot side effects, both fire-and-forget:
   //  - hydrate the Coach's API key + model from the Keychain into the in-memory
   //    mirror (the store emits when values land, so the Coach screen re-renders
@@ -40,6 +51,19 @@ export default function RootLayout() {
     void apiKeyStore.hydrate();
     void syncReminderNotifications(getDb());
   }, []);
+
+  // Cold start while locked: the lock screen is the ONLY thing that mounts —
+  // no Stack, no screens, nothing rendered to reveal. After the first unlock
+  // the Stack stays mounted and a re-lock covers it with the overlay below,
+  // preserving navigation state.
+  if (lock.coldStart && lock.locked) {
+    return (
+      <ErrorBoundary>
+        <AppLockScreen unlocking={lock.unlocking} onUnlock={lock.retry} />
+        <StatusBar style="dark" />
+      </ErrorBoundary>
+    );
+  }
 
   return (
     <ErrorBoundary>
@@ -82,6 +106,23 @@ export default function RootLayout() {
           <Stack.Screen name="appointment-form" />
         </Stack>
         <StatusBar style="dark" />
+        {/* Re-lock / privacy cover. A NATIVE full-screen Modal, not an
+            absolute-fill View: RN Modals (the exercise/routine pickers)
+            present above the root view on iOS, so only another Modal —
+            presented from the topmost view controller — can cover one that's
+            already open. `covered` mounts it the moment the app backgrounds,
+            so the app-switcher snapshot shows the lock surface, never data;
+            a cancelled prompt leaves it in place (locked stays true). */}
+        <Modal
+          visible={lock.locked || lock.covered}
+          animationType="none"
+          presentationStyle="fullScreen"
+          onRequestClose={() => {
+            // iOS-only app: there is no back button, and the lock never
+            // dismisses except through the state machine.
+          }}>
+          <AppLockScreen unlocking={lock.unlocking} onUnlock={lock.retry} />
+        </Modal>
       </ThemeProvider>
     </ErrorBoundary>
   );
