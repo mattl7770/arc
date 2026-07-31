@@ -11,7 +11,7 @@
  * exact same code runs on device and in the headless tests (db/exercise.test.mjs).
  */
 import type { Database } from '../database';
-import { todayISODate } from '../date';
+import { localWeekRange, todayISODate } from '../date';
 import { newId } from '../id';
 import type {
   LogWorkoutInput,
@@ -80,18 +80,10 @@ export function addSet(db: Database, workoutId: string, set: SetInput): string {
   return insertSet(db, workoutId, set, row?.next ?? 1);
 }
 
-/**
- * The Monday-start local calendar week containing `now`, as inclusive
- * YYYY-MM-DD bounds — the meaning of "This week" on the Exercise screen.
- * Local like todayISODate: a Sunday-night session belongs to the week the
- * wall clock says it does.
- */
-export function localWeekRange(now: Date = new Date()): { start: string; end: string } {
-  const sinceMonday = (now.getDay() + 6) % 7; // getDay: 0 = Sunday
-  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - sinceMonday);
-  const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
-  return { start: todayISODate(monday), end: todayISODate(sunday) };
-}
+// `localWeekRange` (the Monday-start "this week" definition) now lives in the
+// shared date module so the Exercise screen, the Data tab, and the Coach all
+// agree. Re-exported here because the training screens import it from this repo.
+export { localWeekRange };
 
 /**
  * "This week" aggregates: Zone 2 (cardio) minutes and strength-session count.

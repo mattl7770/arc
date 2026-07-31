@@ -1,19 +1,21 @@
 /**
  * The Coach's read tools — every way the model can look at the user's real
  * data (docs/ai-coach.md, "Tool set"). All readOnly: the service layer runs
- * these without confirmation. Each returns compact JSON in DISPLAY units where
- * a display convention exists (weight in lb — what the user says out loud),
- * with the unit named so the model never guesses.
+ * these without confirmation. Each returns compact JSON in the user's CHOSEN
+ * display units where a display convention exists (weight in lb or kg per their
+ * Settings preference), with the unit named so the model never guesses.
  */
 import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { listMission } from '@/lib/db/repositories/mission';
+import { weekSummary } from '@/lib/db/repositories/exercise';
 import { listTodayMeals, todayTotals } from '@/lib/db/repositories/nutrition';
 import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocols';
 import { isDueOn, listActiveReminders } from '@/lib/db/repositories/reminders';
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
-import { metricByKey, type MetricKey } from '@/lib/log/metrics';
+import { getPreferences } from '@/lib/db/repositories/user';
+import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import type { BiomarkerRow } from '@/lib/db/types';
 
@@ -125,15 +127,19 @@ const getMetricSeries: CoachTool = {
     if (!metric) throw new Error(`"metric" must be one of: ${SERIES_METRICS.join(', ')}.`);
     const days = daysWindow(args, 30);
     const descriptor = metricByKey(metric as MetricKey)!;
+    // Report in the user's chosen unit (Settings › Units), matching what the app
+    // shows and what the write path stores — the Coach must never cite lb to a
+    // kg user. resolveDisplay is identity for the unit-less metrics.
+    const spec = resolveDisplay(descriptor, getPreferences(db).units);
 
     const points = loadSeries(db, metric, isoDaysAgo(context.now, days - 1)).map((p) => ({
       date: p.date,
-      value: round1(descriptor.fromCanonical(p.value)),
+      value: round1(spec.fromCanonical(p.value)),
     }));
     const stats = seriesStats(points);
     return json({
       metric,
-      unit: descriptor.displayUnit,
+      unit: spec.unit,
       days,
       points,
       stats:
@@ -156,9 +162,13 @@ const getMetricSeries: CoachTool = {
 const getTrainingSummary: CoachTool = {
   name: 'get_training_summary',
   description:
-    'Training over the last N days (default 28): per-day sessions/minutes, weekly ' +
-    'cardio-minute and strength-session rates, and the most recent sessions. Call this ' +
-    'for anything about workouts, training load, consistency, or recovery context.',
+    'Training over the last N days (default 28): per-day sessions/minutes, average weekly ' +
+    'cardio-minute and strength-session RATES over that rolling window, and the most recent ' +
+    'sessions. Also returns `thisWeek` — the CURRENT Monday-start calendar week (cardio ' +
+    'minutes + strength sessions), which matches the Data tab\'s "this week" exactly. Use ' +
+    '`thisWeek` for "this week" questions; the rolling `totals`/`weeklyRates` are "the last ' +
+    'N days", never "this week". Call this for anything about workouts, training load, ' +
+    'consistency, or recovery context.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -171,6 +181,10 @@ const getTrainingSummary: CoachTool = {
     const days = daysWindow(asRecord(input), 28);
     const since = isoDaysAgo(context.now, days - 1);
     const daily = trainingDailyTotals(db, since);
+    // The Monday-start calendar week, from the SAME weekSummary the Data tab
+    // renders as "Zone 2 · this week" — so the Coach and the Data tab can never
+    // disagree on "this week". Distinct from the rolling `totals` below.
+    const week = weekSummary(db, context.now);
     const totalMinutes = daily.reduce((a, d) => a + d.minutes, 0);
     const totalSessions = daily.reduce((a, d) => a + d.sessions, 0);
     const strengthSessions = daily.reduce((a, d) => a + d.strength_sessions, 0);
@@ -190,6 +204,12 @@ const getTrainingSummary: CoachTool = {
 
     return json({
       days,
+      // Monday-start calendar week to date — the "this week" number, matching
+      // the Data tab. Use this (not `totals`) for "how's my training this week".
+      thisWeek: {
+        cardioMinutes: round1(week.zone2Min),
+        strengthSessions: week.strengthSessions,
+      },
       totals: {
         sessions: totalSessions,
         minutes: round1(totalMinutes),

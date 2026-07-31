@@ -21,9 +21,11 @@
  * of observations before it will say anything.
  */
 import type { Database } from '@/lib/db/database';
-import { metricByKey } from '@/lib/log/metrics';
+import { metricByKey, resolveDisplay } from '@/lib/log/metrics';
 import { listActiveReminders, isDueOn } from '@/lib/db/repositories/reminders';
+import { getPreferences } from '@/lib/db/repositories/user';
 import { todayISODate } from '@/lib/db/date';
+import type { UnitPreferences } from '@/lib/user/types';
 import {
   bodyDailySeries,
   isoDatePlusDays,
@@ -73,11 +75,14 @@ type TrendSpec = {
   format: (canonical: number) => string;
 };
 
+// Format a canonical value in the user's chosen units (Settings › Units), so a
+// brief cites "72.6 kg" to a kg user, not "160 lb". resolveDisplay is identity
+// for hrv/rhr (no unit choice); weight follows the preference.
 const fmtVia =
-  (key: 'weight' | 'hrv' | 'rhr') =>
+  (key: 'weight' | 'hrv' | 'rhr', units: UnitPreferences) =>
   (canonical: number): string => {
-    const metric = metricByKey(key)!;
-    return `${round1(metric.fromCanonical(canonical))} ${metric.displayUnit}`;
+    const spec = resolveDisplay(metricByKey(key)!, units);
+    return `${round1(spec.fromCanonical(canonical))} ${spec.unit}`;
   };
 
 function splitWindows(points: SeriesPoint[], now: Date): { recent: number[]; baseline: number[] } {
@@ -122,6 +127,7 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
   const since = isoDaysAgo(now, RECENT_DAYS + BASELINE_DAYS);
   const insights: Insight[] = [];
   const today = todayISODate(now);
+  const units = getPreferences(db).units;
   // Accumulating metrics (per-day totals: protein, training minutes) exclude
   // today — the day is still being written, and a partial total would read as
   // a drop every single morning. Their windows anchor on yesterday instead.
@@ -141,7 +147,7 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
         thresholdPct: 5,
         toneUp: 'good',
         toneDown: 'watch',
-        format: fmtVia('hrv'),
+        format: fmtVia('hrv', units),
       },
       hrv,
     ],
@@ -152,7 +158,7 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
         thresholdPct: 3,
         toneUp: 'watch',
         toneDown: 'good',
-        format: fmtVia('rhr'),
+        format: fmtVia('rhr', units),
       },
       rhr,
     ],
@@ -163,7 +169,7 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
         thresholdPct: 1,
         toneUp: 'info',
         toneDown: 'info',
-        format: fmtVia('weight'),
+        format: fmtVia('weight', units),
       },
       weight,
     ],
@@ -250,7 +256,7 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
         tone: 'watch',
         metric: 'weight',
         headline: `Weight unlogged for ${daysSince} days`,
-        detail: `Last reading ${fmtVia('weight')(allTimeLastWeight.value)} on ${allTimeLastWeight.date}. Trend reads need a cadence.`,
+        detail: `Last reading ${fmtVia('weight', units)(allTimeLastWeight.value)} on ${allTimeLastWeight.date}. Trend reads need a cadence.`,
       });
     }
   }
@@ -273,7 +279,7 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
       kind: 'volume',
       tone: 'watch',
       metric: 'symptoms',
-      headline: `${recentSymptoms} symptoms logged this week — above your baseline`,
+      headline: `${recentSymptoms} symptoms logged in the last ${RECENT_DAYS} days — above your baseline`,
       detail:
         `${recentSymptoms} in the last ${RECENT_DAYS} days vs a weekly average of ` +
         `${round1(baselineWeeklySymptoms)} over the prior ${BASELINE_DAYS} days.`,

@@ -12,7 +12,7 @@
  * db/nutrition.test.mjs.
  */
 import type { Database } from '../database';
-import { todayISODate } from '../date';
+import { localDaysList, todayISODate } from '../date';
 import { newId } from '../id';
 import { type Micros, parseMicros, sumMicros } from '@/lib/nutrition/micros';
 import type {
@@ -79,23 +79,6 @@ export function todayTotals(db: Database, date: string): DayTotals {
   return row ?? { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, mealCount: 0 };
 }
 
-/**
- * `count` local-calendar dates ending at (and including) `end`, oldest first —
- * the zero-fill scaffold for {@link dailyIntakeSeries}. Built from Date math
- * (not a SQL date range) so callers always get exactly `count` points
- * regardless of how sparse the data is; `end` is parsed as local Y/M/D
- * components, not `new Date(string)`, which some runtimes treat as UTC
- * midnight and would shift the day near timezone boundaries.
- */
-function dateListEndingAt(end: string, count: number): string[] {
-  const [y, m, d] = end.split('-').map(Number);
-  const dates: string[] = [];
-  for (let i = count - 1; i >= 0; i--) {
-    dates.push(todayISODate(new Date(y!, m! - 1, d! - i)));
-  }
-  return dates;
-}
-
 export interface DayIntakePoint {
   date: string;
   kcal: number;
@@ -119,7 +102,7 @@ export function dailyIntakeSeries(
   days: number = 7,
   today: string = todayISODate()
 ): DayIntakePoint[] {
-  const dates = dateListEndingAt(today, days);
+  const dates = localDaysList(today, days);
   const rows = db.all<{ date: string; kcal: number; protein_g: number; mealCount: number }>(
     `SELECT date,
             coalesce(sum(kcal), 0)      AS kcal,
@@ -480,7 +463,7 @@ export function nutritionHistory(
   days: number = 14,
   today: string = todayISODate()
 ): NutritionHistoryDay[] {
-  const dates = dateListEndingAt(today, days);
+  const dates = localDaysList(today, days);
   const start = dates[0] ?? today;
 
   const mealRows = db.all<{

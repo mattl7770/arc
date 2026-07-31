@@ -10,6 +10,9 @@ import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
+import { weekSummary } from '../src/lib/db/repositories/exercise.ts';
+import { setUnitPreference } from '../src/lib/db/repositories/user.ts';
+import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import {
   COACH_TOOLS,
   READ_TOOLS,
@@ -161,7 +164,7 @@ console.log('2. log_metric: display-unit input lands canonical in the right tabl
     ? ok('unknown metric rejected')
     : bad('bad metric accepted');
 
-  const summary = toolByName('log_metric').confirmSummary({ metric: 'weight', value: 178 });
+  const summary = toolByName('log_metric').confirmSummary({ metric: 'weight', value: 178 }, db);
   summary === 'Log weight 178 lb'
     ? ok(`confirmSummary is the human line ("${summary}")`)
     : bad('confirm summary', summary);
@@ -495,6 +498,112 @@ console.log('13. protocols: get_protocols reads live items; update_protocol vers
   )
     ? ok('an item without a title is rejected before any write')
     : bad('titleless item accepted');
+}
+
+console.log('14. unit preferences drive the Coach write + read path (a metric user)');
+{
+  const { db, raw } = freshDb();
+  setUnitPreference(db, 'weight', 'kg');
+  setUnitPreference(db, 'length', 'cm');
+  setUnitPreference(db, 'volume', 'ml');
+
+  // The bug this fixes: an unqualified "80" from a kg user must store 80 kg, not
+  // 36 kg (the old imperial default). An explicit unit token still overrides.
+  run('log_metric', db, { metric: 'weight', value: 80 });
+  run('log_metric', db, { metric: 'weight', value: 80, unit: 'lb' });
+  const weights = raw
+    .prepare('SELECT weight_kg FROM body_metrics WHERE weight_kg IS NOT NULL ORDER BY rowid')
+    .all();
+  near(weights[0]?.weight_kg, 80, 1e-6)
+    ? ok('kg-preference: unqualified weight 80 stores 80 kg, not 36')
+    : bad('kg weight write', JSON.stringify(weights));
+  near(weights[1]?.weight_kg, 80 / 2.2046226218, 1e-6)
+    ? ok('an explicit "lb" token overrides the kg preference (80 lb → 36.3 kg)')
+    : bad('lb override', JSON.stringify(weights));
+
+  // The confirmation card must show the user's unit, so an approve isn't blind.
+  const summary = toolByName('log_metric').confirmSummary({ metric: 'weight', value: 80 }, db);
+  summary === 'Log weight 80 kg'
+    ? ok(`confirmation card shows the user's unit ("${summary}")`)
+    : bad('kg summary', summary);
+
+  // An explicit-unit override still renders the card in the user's OWN unit
+  // (kg here), so the shown value matches the app everywhere — intentional.
+  const lbCard = toolByName('log_metric').confirmSummary(
+    { metric: 'weight', value: 180, unit: 'lb' },
+    db
+  );
+  lbCard === 'Log weight 81.6 kg'
+    ? ok(`explicit "lb" from a kg user still shows the card in kg ("${lbCard}")`)
+    : bad('lb-override card', lbCard);
+
+  run('log_metric', db, { metric: 'waist', value: 90 });
+  const waist = raw.prepare('SELECT waist_cm FROM body_metrics WHERE waist_cm IS NOT NULL').get();
+  near(waist?.waist_cm, 90, 1e-6)
+    ? ok('cm-preference: waist 90 stores 90 cm, not 228.6')
+    : bad('cm waist', JSON.stringify(waist));
+
+  run('log_metric', db, { metric: 'water', value: 500 });
+  const water = raw.prepare(`SELECT value FROM wearable_data WHERE metric_type = 'water_ml'`).get();
+  near(water?.value, 500, 1e-6)
+    ? ok('ml-preference: water 500 stores 500 ml, not 14786')
+    : bad('ml water', JSON.stringify(water));
+
+  const series = run('get_metric_series', db, { metric: 'weight', days: 7 });
+  series.unit === 'kg'
+    ? ok('get_metric_series reports the series in kg for a kg user')
+    : bad('series unit', JSON.stringify(series));
+
+  // log_workout: an unqualified set weight follows the weight preference too.
+  run('log_workout', db, {
+    name: 'Squat',
+    kind: 'strength',
+    sets: [{ exercise: 'Squat', reps: 5, weight: 100 }],
+  });
+  const set = raw.prepare('SELECT weight_kg FROM workout_sets').get();
+  near(set?.weight_kg, 100, 1e-6)
+    ? ok('kg-preference: an unqualified set weight 100 stores 100 kg (not 45)')
+    : bad('kg set', JSON.stringify(set));
+  const wSummary = toolByName('log_workout').confirmSummary(
+    { name: 'Squat', kind: 'strength', sets: [{ exercise: 'Squat', reps: 5, weight: 100 }] },
+    db
+  );
+  wSummary.includes('100 kg')
+    ? ok(`workout card renders the set in kg ("${wSummary}")`)
+    : bad('kg set summary', wSummary);
+}
+
+console.log('15. get_training_summary.thisWeek is the calendar week (agrees with the Data tab)');
+{
+  const { db } = freshDb();
+  // A fixed Monday so the calendar week and the rolling-7 window barely overlap —
+  // the worst-case where the two definitions of "this week" disagree.
+  const monday = new Date(2026, 6, 27); // Mon 2026-07-27 (local)
+  const ctx = { now: monday };
+  const sunday = isoDaysAgo(monday, 1); // 2026-07-26 — LAST calendar week, but in rolling-7
+  const todayIso = todayISODate(monday); // 2026-07-27 — this calendar week
+
+  const trainTool = toolByName('log_workout');
+  trainTool.execute(db, { name: 'Sun ride', kind: 'cardio', duration_min: 30, date: sunday }, ctx);
+  trainTool.execute(
+    db,
+    { name: 'Mon ride', kind: 'cardio', duration_min: 45, date: todayIso },
+    ctx
+  );
+
+  const summary = JSON.parse(toolByName('get_training_summary').execute(db, { days: 7 }, ctx));
+  const week = weekSummary(db, monday); // exactly what the Data tab renders as "this week"
+
+  // thisWeek is the SAME number the Data tab shows (both call weekSummary): today only.
+  summary.thisWeek.cardioMinutes === week.zone2Min && summary.thisWeek.cardioMinutes === 45
+    ? ok('thisWeek = Monday-start calendar week (45 min today), identical to weekSummary')
+    : bad('thisWeek vs weekSummary', JSON.stringify({ tw: summary.thisWeek, week }));
+
+  // The rolling last-7-days totals DO include Sunday's session; thisWeek must not —
+  // this is the divergence the fix pins down so the Coach never calls 75 "this week".
+  near(summary.totals.cardioMinutes, 75) && summary.thisWeek.cardioMinutes === 45
+    ? ok('rolling 7-day totals include the Sunday session (75); thisWeek excludes it (45)')
+    : bad('rolling vs calendar', JSON.stringify(summary));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

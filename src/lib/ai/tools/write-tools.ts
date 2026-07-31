@@ -8,9 +8,10 @@
  *
  * Each wraps an existing repository write — the same code paths the capture
  * screens use — so a Coach-logged meal is indistinguishable from a hand-logged
- * one downstream. Values arrive in the user's display units (weight in lb)
- * unless a unit is named; conversion to canonical happens HERE via the metric
- * registry / exercise helpers, exactly like the keypad — the model is never
+ * one downstream. Values arrive in the user's CHOSEN display units (their
+ * Settings preference — lb or kg, in or cm, oz or ml) unless a unit is named;
+ * conversion to canonical happens HERE, reading UnitPreferences via the metric
+ * registry / exercise helpers exactly like the keypad — the model is never
  * trusted to convert units itself.
  *
  * Every log tool takes an optional "YYYY-MM-DD" `date` for backdating
@@ -30,8 +31,15 @@ import {
   listActiveReminders,
 } from '@/lib/db/repositories/reminders';
 import { logSymptom } from '@/lib/db/repositories/symptoms';
-import { kgToLb, lbToKg, setLine } from '@/lib/exercise/format';
-import { isLoggableCanonical, metricByKey, roundDisplay, type MetricKey } from '@/lib/log/metrics';
+import { getPreferences } from '@/lib/db/repositories/user';
+import { lbToKg, setLineKg } from '@/lib/exercise/format';
+import {
+  isLoggableCanonical,
+  metricByKey,
+  resolveDisplay,
+  roundToSpec,
+  type MetricKey,
+} from '@/lib/log/metrics';
 import type { SetInput, WorkoutKind } from '@/lib/exercise/types';
 import { normalizeItem, parseProtocolContent } from '@/lib/protocols/content';
 import type { ProtocolItem } from '@/lib/protocols/types';
@@ -75,8 +83,19 @@ const DATE_PROPERTY = {
 
 const METRIC_KEYS = ['weight', 'body_fat', 'waist', 'hrv', 'rhr', 'water'] as const;
 
-/** Validated input → canonical value + display string, shared by summary/execute. */
-function parseMetricInput(input: Record<string, unknown>): {
+/**
+ * Validated input → canonical value + display string, shared by summary/execute.
+ *
+ * An UNQUALIFIED value ("weight 80") is interpreted in the user's chosen display
+ * unit (Settings › Units) via {@link resolveDisplay} — exactly like the keypad —
+ * so a kg-preference user's "80" stores 80 kg, not 36 kg. An explicit `unit`
+ * token in the call ("80 kg", "waist 90 cm") always wins over the preference.
+ * The `db` handle carries the preference in; every call site already holds it.
+ */
+function parseMetricInput(
+  input: Record<string, unknown>,
+  db: Database
+): {
   key: MetricKey;
   canonical: number;
   display: string;
@@ -86,6 +105,7 @@ function parseMetricInput(input: Record<string, unknown>): {
   const value = reqNumber(args, 'value');
   const unit = optString(args, 'unit')?.toLowerCase();
   const metric = metricByKey(key)!;
+  const spec = resolveDisplay(metric, getPreferences(db).units);
 
   let canonical: number;
   if (unit !== undefined) {
@@ -97,12 +117,12 @@ function parseMetricInput(input: Record<string, unknown>): {
     }
     canonical = convert(value);
   } else {
-    canonical = metric.toCanonical(value);
+    canonical = spec.toCanonical(value);
   }
   if (!isLoggableCanonical(metric, canonical)) {
     throw new Error(`${key} value out of loggable range.`);
   }
-  const display = `${roundDisplay(metric, metric.fromCanonical(canonical))} ${metric.displayUnit}`;
+  const display = `${roundToSpec(spec, spec.fromCanonical(canonical))} ${spec.unit}`;
   return { key, canonical, display };
 }
 
@@ -110,28 +130,33 @@ const logMetricTool: CoachTool = {
   name: 'log_metric',
   description:
     'Log one body/vital measurement: weight, body_fat, waist, hrv, rhr, or water. ' +
-    "Value is in the metric's display unit (weight lb, waist in, water oz, hrv ms, " +
-    'rhr bpm, body_fat %) unless "unit" names another (kg, cm, ml, l…). Use when the ' +
-    'user states a measurement ("weight was 178 this morning").',
+    "The value is in the user's chosen display unit for that metric (their Settings " +
+    'preference — e.g. weight lb OR kg, waist in OR cm, water oz OR ml; hrv ms, rhr ' +
+    'bpm, body_fat %) unless "unit" names another. Pass the number exactly as the user ' +
+    'said it — the app reads their unit preference and converts. Use when the user ' +
+    'states a measurement ("weight was 178 this morning").',
   inputSchema: {
     type: 'object',
     properties: {
       metric: { type: 'string', enum: [...METRIC_KEYS] },
       value: { type: 'number' },
-      unit: { type: 'string', description: 'Optional explicit unit token, e.g. "kg".' },
+      unit: {
+        type: 'string',
+        description: 'Optional explicit unit token ("kg", "cm", "ml") — overrides the preference.',
+      },
       ...DATE_PROPERTY,
     },
     required: ['metric', 'value'],
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input) => {
-    const { key, display } = parseMetricInput(input);
+  confirmSummary: (input, db) => {
+    const { key, display } = parseMetricInput(input, db);
     return `Log ${metricByKey(key)!.label.toLowerCase()} ${display}${dateSuffix(asRecord(input))}`;
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
-    const { key, canonical, display } = parseMetricInput(input);
+    const { key, canonical, display } = parseMetricInput(input, db);
     logMetric(db, logDate(args, context.now), key, canonical);
     return json({ logged: true, metric: key, value: display });
   },
@@ -200,22 +225,29 @@ const SET_UNITS = ['lb', 'kg'] as const;
 type ParsedSet = SetInput & { displayLine: string };
 
 /**
- * Sets arrive in DISPLAY units (lb by default, like everything the user says
- * out loud); conversion to canonical kg happens here, never in the model.
+ * Sets arrive in the user's weight unit by default (their Settings preference —
+ * lb or kg), which an explicit per-set `unit` overrides; conversion to canonical
+ * kg happens here, never in the model, and the display line renders back in the
+ * same preferred unit (setLineKg) so the confirmation card matches the app.
  */
-function parseSets(input: Record<string, unknown>): ParsedSet[] {
+function parseSets(input: Record<string, unknown>, db: Database): ParsedSet[] {
   const raw = input['sets'];
   if (raw == null) return [];
   if (!Array.isArray(raw)) throw new Error('"sets" must be an array.');
+  const units = getPreferences(db).units;
   return raw.map((entry) => {
     const set = asRecord(entry);
     const exercise = reqString(set, 'exercise');
     const reps = optNumber(set, 'reps') ?? null;
     const weight = optNumber(set, 'weight') ?? null;
-    const unit = optEnum(set, 'unit', SET_UNITS) ?? 'lb';
+    const unit = optEnum(set, 'unit', SET_UNITS) ?? units.weight;
     const weightKg = weight == null ? null : unit === 'kg' ? weight : lbToKg(weight);
-    const weightLb = weightKg == null ? null : Math.round(kgToLb(weightKg) * 10) / 10;
-    return { exercise, reps, weightKg, displayLine: `${exercise} ${setLine(reps, weightLb)}` };
+    return {
+      exercise,
+      reps,
+      weightKg,
+      displayLine: `${exercise} ${setLineKg(reps, weightKg, units)}`,
+    };
   });
 }
 
@@ -224,8 +256,8 @@ const logWorkoutTool: CoachTool = {
   description:
     'Log a training session: name, kind (strength/cardio/mobility/other), duration in ' +
     'minutes, and optional strength sets [{exercise, reps, weight, unit}] — set weight ' +
-    'is in lb unless unit is "kg"; pass it exactly as the user said it. Use when the ' +
-    'user reports a workout.',
+    "is in the user's default weight unit unless `unit` names one (lb/kg); pass it " +
+    'exactly as the user said it. Use when the user reports a workout.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -240,7 +272,11 @@ const logWorkoutTool: CoachTool = {
           properties: {
             exercise: { type: 'string' },
             reps: { type: 'number', minimum: 0 },
-            weight: { type: 'number', minimum: 0, description: 'In `unit` (default lb).' },
+            weight: {
+              type: 'number',
+              minimum: 0,
+              description: "In `unit` (default = the user's weight-unit setting).",
+            },
             unit: { type: 'string', enum: [...SET_UNITS] },
           },
           required: ['exercise'],
@@ -253,11 +289,11 @@ const logWorkoutTool: CoachTool = {
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input) => {
+  confirmSummary: (input, db) => {
     const args = asRecord(input);
     const name = reqString(args, 'name');
     const duration = optNumber(args, 'duration_min');
-    const sets = parseSets(args);
+    const sets = parseSets(args, db);
     const parts = [
       `Log workout "${name}"`,
       ...(duration != null ? [`${Math.round(duration)} min`] : []),
@@ -276,7 +312,7 @@ const logWorkoutTool: CoachTool = {
         durationMin: optNumber(args, 'duration_min') ?? null,
         notes: optString(args, 'notes') ?? null,
       },
-      parseSets(args).map(({ exercise, reps, weightKg }) => ({ exercise, reps, weightKg }))
+      parseSets(args, db).map(({ exercise, reps, weightKg }) => ({ exercise, reps, weightKg }))
     );
     return json({ logged: true, id });
   },
