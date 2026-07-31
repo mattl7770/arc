@@ -1,7 +1,27 @@
 # RAG & Embeddings Plan — on-device retrieval for the Coach
 
-**Status:** PLAN (not built) — 2026-07-27
+**Status:** Phase C **INFRASTRUCTURE BUILT** (2026-07-31) — everything except the device-gated embedding model. Owner picked **EmbeddingGemma (768-dim)**.
 **Owner decision points flagged `⚑ MATT`.**
+
+---
+
+## 0. What's built vs. what's device-gated (2026-07-31)
+
+**Built + gated (34 headless suites, tsc/lint/bundle green), on `main`:**
+- **Migration 0025** — `knowledge_chunks` + `memory_chunks` (text + rich metadata; FK-free polymorphic provenance for memory). The `vec0` vector table is NOT in the migration — `node:sqlite` has no `vec0` module and it would break every headless suite — so it's created lazily on-device by `ensureVectorTable` (`CREATE VIRTUAL TABLE IF NOT EXISTS`, guarded).
+- **`src/lib/rag/chunk.ts`** — pure passage chunker (~300-tok target, sentence-packed, optional overlap). 13 tests.
+- **`src/lib/rag/embedder.ts`** — the seam: EmbeddingGemma's exact query/document **prompt prefixes**, L2 normalization (its output is NOT pre-normalized), and MRL truncation — all pure + tested. The model backend returns `null` (honest "not wired") until the device phase.
+- **`src/lib/db/repositories/rag.ts`** — content CRUD (tested) + the guarded `vec0` layer (`ensureVectorTable`/`upsertVector`/`knnSearch`/`deleteVectors`), DDL/queries per the sqlite-vec reference (TEXT-PK join id, `corpus` PARTITION KEY, cosine, JSON-string vector binding, `MATCH … AND k = ?`).
+- **`src/lib/rag/retrieve.ts`** + **`search_knowledge` Coach tool** (read-only, async) — embed → KNN → join content → cited passages, degrading to an honest "knowledge base not available yet" while the embedder is unwired (the Coach relays that; never fabricates).
+- **`src/lib/rag/memory.ts`** — `ingestMemory`: chunk a source unit → store content (always) → embed+store vector (when available); re-ingesting an origin replaces its chunks. Content persists now and back-embeds when the model ships.
+
+**Device-gated remainder (the one risky piece — needs the EAS build + an on-device runtime spike):**
+1. **The embedding model + tokenizer.** Concrete facts from the 2026-07-31 research: EmbeddingGemma ONNX is **~188 MB (q4) – 295 MB (int8)** — too big to bundle, so **download-on-first-run** into `documentDirectory`, not `require()`-bundle (there are open `onnxruntime-react-native` iOS bundling bugs for `require()`'d models). Prefer `model_quantized.onnx` (int8) over q4 unless a benchmark clears q4. **AVOID the fp16 exports** (Google's card says EmbeddingGemma doesn't support fp16 activations). The **tokenizer** is the real constraint — three paths, in rough preference: (c) `onnxruntime-extensions` with the SentencePiece op fused into the graph (model takes raw strings; needs a one-time Python export; cleanest for Hermes), (a) transformers.js `AutoTokenizer` via the community `@automatalabs/react-native-transformers` wrapper (needs Babel `unstable_transformImportMeta` + a dev client; not officially RN-supported), (b) a hand-rolled native SentencePiece wrapper. **Do the "does onnxruntime even load + infer on-device" spike first** (hard-coded input_ids), then wire the tokenizer.
+2. **`onnxruntime-react-native` is deliberately NOT yet in package.json** — adding a ~native runtime with open iOS bundling bugs before the spike would risk the build; the seam is designed so adding the dep + the `session.run` wiring is purely additive (the guarded require pattern, like HealthKit).
+3. **The knowledge corpus content** (Phase B) — curate longevity passages, embed offline with the locked model, ship/download the vectors.
+4. **Memory ingestion triggers** (Phase D) — call `ingestMemory` from write paths / a background pass once the embedder works (today the mechanism exists but isn't auto-fired, since content without vectors isn't yet searchable).
+
+The rest of this doc is the original plan; §3/§5 detail below are now partly settled by the research above.
 
 The Coach spec (`docs/ai-coach.md` §6, §2d) calls for RAG over two things: the user's own history (long-term memory — "deeply familiar with the user") and a curated longevity knowledge corpus (the `search_knowledge` tool). `op-sqlite` already ships with `sqlite-vec` compiled in (`package.json` → `"op-sqlite": { "sqliteVec": true }`), so the vector **index** is solved. What is not solved — and is a genuine architecture decision, not a coding task — is **where the embedding vectors come from.**
 

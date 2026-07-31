@@ -30,7 +30,8 @@ import {
   wearableDailySeries,
   type SeriesPoint,
 } from '../series';
-import { asRecord, daysWindow, optEnum, optString, type CoachTool } from './types';
+import { retrievePassages } from '@/lib/rag/retrieve';
+import { asRecord, daysWindow, optEnum, optString, reqString, type CoachTool } from './types';
 
 const json = (value: unknown): string => JSON.stringify(value);
 
@@ -466,6 +467,55 @@ const getProtocols: CoachTool = {
     }),
 };
 
+// --- search_knowledge --------------------------------------------------------
+
+const SEARCH_SCOPES = ['all', 'knowledge', 'memory'] as const;
+
+const searchKnowledge: CoachTool = {
+  name: 'search_knowledge',
+  description:
+    'Retrieve passages, by semantic similarity to a query, from the curated longevity knowledge ' +
+    'base AND the user’s own history (past days, notes, insights, protocol changes). Call this to ' +
+    'ground an explanation in evidence ("why does ApoB matter?") or to recall the user’s own past ' +
+    '("have we tried magnesium before?"). Every passage carries a citation — cite it; never state ' +
+    'a retrieved fact without its source. NOTE: the on-device knowledge base ships with a future ' +
+    'app update — if the result says it is unavailable, tell the user plainly and answer from the ' +
+    'other tools; NEVER invent a passage or citation.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'What to look for, in natural language.' },
+      scope: {
+        type: 'string',
+        enum: [...SEARCH_SCOPES],
+        description: 'Which corpus to search: all (default), knowledge, or memory.',
+      },
+    },
+    required: ['query'],
+    additionalProperties: false,
+  },
+  readOnly: true,
+  execute: async (db, input) => {
+    const args = asRecord(input);
+    const query = reqString(args, 'query');
+    const scope = optEnum(args, 'scope', SEARCH_SCOPES) ?? 'all';
+    const result = await retrievePassages(db, query, {
+      corpora: scope === 'all' ? undefined : [scope],
+    });
+    if (!result.available) {
+      return json({ available: false, note: result.reason, passages: [] });
+    }
+    return json({
+      available: true,
+      passages: result.passages.map((p) => ({
+        citation: p.citation,
+        corpus: p.corpus,
+        text: p.text,
+      })),
+    });
+  },
+};
+
 export const READ_TOOLS: CoachTool[] = [
   getTodaySnapshot,
   getMetricSeries,
@@ -476,4 +526,5 @@ export const READ_TOOLS: CoachTool[] = [
   getProtocols,
   listRemindersTool,
   getInsights,
+  searchKnowledge,
 ];

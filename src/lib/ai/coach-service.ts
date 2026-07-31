@@ -129,8 +129,11 @@ export async function streamCoachReply(
         }
 
         try {
+          // `await` handles both sync tools (a plain string) and async ones
+          // (search_knowledge embeds the query on-device); a rejection lands in
+          // the catch below exactly like a synchronous throw.
           return {
-            content: tool.execute(db, input as Record<string, unknown>, { now: new Date() }),
+            content: await tool.execute(db, input as Record<string, unknown>, { now: new Date() }),
           };
         } catch (error) {
           return { content: errorText(error), isError: true };
