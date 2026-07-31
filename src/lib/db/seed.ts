@@ -17,9 +17,11 @@ import {
   getOrCreateDailyLog,
   insertMissionItem,
 } from './repositories/mission';
+import { getActiveMode } from './repositories/day-modes';
 import { generateMissionForDay } from './repositories/mission-generate';
 import type { LogEntryType } from './types';
 import { BIOMARKER_SEED } from '@/lib/labs/catalog';
+import { modeChangesPlan } from '@/lib/modes/registry';
 import type { MissionItem } from '@/types/home';
 
 /** Mock category label → a real log_entry.type for stored entries. */
@@ -91,6 +93,10 @@ export function ensureTodaySeeded(
   // only when the day is genuinely empty of planned entries.
   const log = getOrCreateDailyLog(db, date);
   if (countMissionEntries(db, log.id) > 0) return;
+  // A plan-changing mode that produced no entries (e.g. a future Fasting mode
+  // dropping all meals with no additions) has still HANDLED the day — never
+  // paper the mock demo over an intentionally-spare mode day.
+  if (modeChangesPlan(getActiveMode(db, date))) return;
   db.transaction(() => {
     for (const item of fallbackMission) {
       const type = TYPE_BY_CATEGORY[item.category] ?? 'habit';

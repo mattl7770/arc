@@ -45,25 +45,9 @@ export const createExperimentStub: CoachTool = {
   execute: () => unavailable('Experiments'),
 };
 
-/** Set today's Mode. Needs: Modes (docs/information-architecture.md). */
-export const setModeStub: CoachTool = {
-  name: 'set_mode',
-  description:
-    "Set the day's mode (normal, travel, sick, deload, social, custom) so the plan, " +
-    'priorities, tone, and adherence accounting adapt.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      mode: { type: 'string', enum: ['normal', 'travel', 'sick', 'deload', 'social', 'custom'] },
-      until: { type: 'string', description: '"YYYY-MM-DD" end date; omit for just today.' },
-    },
-    required: ['mode'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  confirmSummary: () => 'Set mode',
-  execute: () => unavailable('Modes'),
-};
+// set_mode has shipped — it is a real write tool now (write-tools.ts), backed
+// by the day_modes repository (0026) and the mode registry. It lived here as a
+// stub until Modes landed.
 
 /** Complete a mission item by id. Needs: Home integration decision (item ids
  * must be surfaced to the Coach; today the mission is integrator-owned). */
@@ -109,7 +93,6 @@ export const navigateToStub: CoachTool = {
 /** Everything above, for the spec and future wiring — never sent to the model. */
 export const STUB_TOOLS: CoachTool[] = [
   createExperimentStub,
-  setModeStub,
   completeMissionItemStub,
   navigateToStub,
 ];
