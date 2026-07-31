@@ -279,7 +279,7 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
       kind: 'volume',
       tone: 'watch',
       metric: 'symptoms',
-      headline: `${recentSymptoms} symptoms logged this week — above your baseline`,
+      headline: `${recentSymptoms} symptoms logged in the last ${RECENT_DAYS} days — above your baseline`,
       detail:
         `${recentSymptoms} in the last ${RECENT_DAYS} days vs a weekly average of ` +
         `${round1(baselineWeeklySymptoms)} over the prior ${BASELINE_DAYS} days.`,

@@ -8,7 +8,7 @@
  * so the same code runs on device and against node:sqlite in db/symptoms.test.mjs.
  */
 import type { Database } from '../database';
-import { todayISODate } from '../date';
+import { localDaysList, todayISODate } from '../date';
 import { newId } from '../id';
 import type { NewSymptom, SymptomRow } from '@/lib/symptoms/types';
 
@@ -43,23 +43,6 @@ export function listTodaySymptoms(db: Database, date: string): SymptomRow[] {
   );
 }
 
-/**
- * `count` local-calendar dates ending at (and including) `end`, oldest first —
- * the zero-fill scaffold for {@link symptomDailySeries}. Built from Date math
- * (not a SQL date range) so callers always get exactly `count` points
- * regardless of how sparse the data is; `end` is parsed as local Y/M/D
- * components, not `new Date(string)`, which some runtimes treat as UTC
- * midnight and would shift the day near timezone boundaries.
- */
-function dateListEndingAt(end: string, count: number): string[] {
-  const [y, m, d] = end.split('-').map(Number);
-  const dates: string[] = [];
-  for (let i = count - 1; i >= 0; i--) {
-    dates.push(todayISODate(new Date(y!, m! - 1, d! - i)));
-  }
-  return dates;
-}
-
 export interface SymptomDayPoint {
   date: string;
   count: number;
@@ -77,7 +60,7 @@ export function symptomDailySeries(
   days: number = 14,
   today: string = todayISODate()
 ): SymptomDayPoint[] {
-  const dates = dateListEndingAt(today, days);
+  const dates = localDaysList(today, days);
   const rows = db.all<{ date: string; count: number; maxSeverity: number | null }>(
     `SELECT date, count(*) AS count, max(severity) AS maxSeverity
      FROM symptoms

@@ -10,7 +10,9 @@ import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
+import { weekSummary } from '../src/lib/db/repositories/exercise.ts';
 import { setUnitPreference } from '../src/lib/db/repositories/user.ts';
+import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import {
   COACH_TOOLS,
   READ_TOOLS,
@@ -569,6 +571,39 @@ console.log('14. unit preferences drive the Coach write + read path (a metric us
   wSummary.includes('100 kg')
     ? ok(`workout card renders the set in kg ("${wSummary}")`)
     : bad('kg set summary', wSummary);
+}
+
+console.log('15. get_training_summary.thisWeek is the calendar week (agrees with the Data tab)');
+{
+  const { db } = freshDb();
+  // A fixed Monday so the calendar week and the rolling-7 window barely overlap —
+  // the worst-case where the two definitions of "this week" disagree.
+  const monday = new Date(2026, 6, 27); // Mon 2026-07-27 (local)
+  const ctx = { now: monday };
+  const sunday = isoDaysAgo(monday, 1); // 2026-07-26 — LAST calendar week, but in rolling-7
+  const todayIso = todayISODate(monday); // 2026-07-27 — this calendar week
+
+  const trainTool = toolByName('log_workout');
+  trainTool.execute(db, { name: 'Sun ride', kind: 'cardio', duration_min: 30, date: sunday }, ctx);
+  trainTool.execute(
+    db,
+    { name: 'Mon ride', kind: 'cardio', duration_min: 45, date: todayIso },
+    ctx
+  );
+
+  const summary = JSON.parse(toolByName('get_training_summary').execute(db, { days: 7 }, ctx));
+  const week = weekSummary(db, monday); // exactly what the Data tab renders as "this week"
+
+  // thisWeek is the SAME number the Data tab shows (both call weekSummary): today only.
+  summary.thisWeek.cardioMinutes === week.zone2Min && summary.thisWeek.cardioMinutes === 45
+    ? ok('thisWeek = Monday-start calendar week (45 min today), identical to weekSummary')
+    : bad('thisWeek vs weekSummary', JSON.stringify({ tw: summary.thisWeek, week }));
+
+  // The rolling last-7-days totals DO include Sunday's session; thisWeek must not —
+  // this is the divergence the fix pins down so the Coach never calls 75 "this week".
+  near(summary.totals.cardioMinutes, 75) && summary.thisWeek.cardioMinutes === 45
+    ? ok('rolling 7-day totals include the Sunday session (75); thisWeek excludes it (45)')
+    : bad('rolling vs calendar', JSON.stringify(summary));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

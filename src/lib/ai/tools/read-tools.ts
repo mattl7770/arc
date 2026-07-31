@@ -9,6 +9,7 @@ import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { listMission } from '@/lib/db/repositories/mission';
+import { weekSummary } from '@/lib/db/repositories/exercise';
 import { listTodayMeals, todayTotals } from '@/lib/db/repositories/nutrition';
 import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocols';
 import { isDueOn, listActiveReminders } from '@/lib/db/repositories/reminders';
@@ -161,9 +162,13 @@ const getMetricSeries: CoachTool = {
 const getTrainingSummary: CoachTool = {
   name: 'get_training_summary',
   description:
-    'Training over the last N days (default 28): per-day sessions/minutes, weekly ' +
-    'cardio-minute and strength-session rates, and the most recent sessions. Call this ' +
-    'for anything about workouts, training load, consistency, or recovery context.',
+    'Training over the last N days (default 28): per-day sessions/minutes, average weekly ' +
+    'cardio-minute and strength-session RATES over that rolling window, and the most recent ' +
+    'sessions. Also returns `thisWeek` — the CURRENT Monday-start calendar week (cardio ' +
+    'minutes + strength sessions), which matches the Data tab\'s "this week" exactly. Use ' +
+    '`thisWeek` for "this week" questions; the rolling `totals`/`weeklyRates` are "the last ' +
+    'N days", never "this week". Call this for anything about workouts, training load, ' +
+    'consistency, or recovery context.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -176,6 +181,10 @@ const getTrainingSummary: CoachTool = {
     const days = daysWindow(asRecord(input), 28);
     const since = isoDaysAgo(context.now, days - 1);
     const daily = trainingDailyTotals(db, since);
+    // The Monday-start calendar week, from the SAME weekSummary the Data tab
+    // renders as "Zone 2 · this week" — so the Coach and the Data tab can never
+    // disagree on "this week". Distinct from the rolling `totals` below.
+    const week = weekSummary(db, context.now);
     const totalMinutes = daily.reduce((a, d) => a + d.minutes, 0);
     const totalSessions = daily.reduce((a, d) => a + d.sessions, 0);
     const strengthSessions = daily.reduce((a, d) => a + d.strength_sessions, 0);
@@ -195,6 +204,12 @@ const getTrainingSummary: CoachTool = {
 
     return json({
       days,
+      // Monday-start calendar week to date — the "this week" number, matching
+      // the Data tab. Use this (not `totals`) for "how's my training this week".
+      thisWeek: {
+        cardioMinutes: round1(week.zone2Min),
+        strengthSessions: week.strengthSessions,
+      },
       totals: {
         sessions: totalSessions,
         minutes: round1(totalMinutes),

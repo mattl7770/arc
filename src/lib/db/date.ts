@@ -25,6 +25,37 @@ export function localDayUtcRange(now: Date = new Date()): { startUtc: string; en
   return { startUtc: start.toISOString(), endUtc: end.toISOString() };
 }
 
+/**
+ * The Monday-start LOCAL calendar week containing `now`, as inclusive
+ * `YYYY-MM-DD` bounds — the single definition of "this week" across the app.
+ * Local like {@link todayISODate}: a Sunday-night session belongs to the week
+ * the wall clock says it does. Consumed by the Exercise screen, the Data tab
+ * (via weekSummary), and the Coach (get_training_summary) so all three agree.
+ */
+export function localWeekRange(now: Date = new Date()): { start: string; end: string } {
+  const sinceMonday = (now.getDay() + 6) % 7; // getDay: 0 = Sunday
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - sinceMonday);
+  const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+  return { start: todayISODate(monday), end: todayISODate(sunday) };
+}
+
+/**
+ * The last `count` LOCAL calendar days ending at `end` (inclusive), oldest →
+ * newest, as an explicit `YYYY-MM-DD` list — so a rolling-N series always yields
+ * exactly `count` points regardless of data sparsity. `end` is split into local
+ * Y/M/D components (not `new Date(string)`, which some runtimes read as UTC
+ * midnight and would shift the day near timezone boundaries). The single
+ * definition of a rolling-N-day window (nutrition/symptoms trends, Coach series).
+ */
+export function localDaysList(end: string, count: number): string[] {
+  const [y, m, d] = end.split('-').map(Number);
+  const dates: string[] = [];
+  for (let i = count - 1; i >= 0; i--) {
+    dates.push(todayISODate(new Date(y!, m! - 1, d! - i)));
+  }
+  return dates;
+}
+
 /** Local wall-clock "HH:MM" for an ISO-8601 UTC instant — the Log feed's time column. */
 export function clockFromISO(iso: string): string {
   const d = new Date(iso);
