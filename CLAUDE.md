@@ -122,6 +122,8 @@ What is decided, and holds regardless of device:
 - Let the AI weight sources intelligently; prefer algorithm consistency where possible, but specialized quality can win
 - **Apple Health is the ingestion hub** — it's on-device, so wearables stay offline for ARC (the vendor's own app does the cloud sync). Direct vendor API only where HealthKit lacks fidelity. **Terra is dropped**: a cloud aggregator needs a server, which breaks the offline/no-server architecture (2026-07-24).
 
+**The ingestion pipeline is built (2026-07-29)** — spec and mapping rules in `docs/wearables-subapp.md`: `@kingstinct/react-native-healthkit` behind a guarded require seam (no-ops until its EAS build), pure headless-tested mapping into `wearable_data`, per-(day, device) rows for discrete metrics, HealthKit-merged daily statistics for cumulative ones (`source_device = 'apple_health'`, added in 0021), and the readiness derivation Home consumes (`src/lib/home/readiness.ts`).
+
 ---
 
 ## 9. Development Guidelines for AI Assistants
@@ -179,6 +181,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `/docs/information-architecture.md` — **Where every feature lives** (5 tabs + pushed sub-screens), the Log-tab spec, and the Modes model (locked 2026-07-25)
 - `/docs/home-screen.md` — Home screen information architecture (detail)
 - `/docs/ai-coach.md` — System prompt, tools, memory design
+- `/docs/wearables-subapp.md` — Apple Health ingestion: library, scopes, mapping, dedup, readiness seam
 - `/docs/decisions.md` — Architecture Decision Records
 - `/docs/architecture-migration.md` — **The local-first migration plan** (cloud → on-device), phased. Read before touching the data layer.
 - `/docs/folder-structure.md` — Where code goes

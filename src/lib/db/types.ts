@@ -65,6 +65,9 @@ export type WearableDevice =
   | 'garmin'
   | 'eight_sleep'
   | 'withings'
+  // HealthKit's merged cross-device daily statistic (steps/energy) — no single
+  // device exists for these by design (0021; docs/wearables-subapp.md §4).
+  | 'apple_health'
   | 'manual'
   | 'other';
 

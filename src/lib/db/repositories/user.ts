@@ -114,6 +114,32 @@ export function getPreferences(db: Database): Preferences {
 }
 
 /**
+ * Whether Apple Health ingestion is enabled (Settings › Apple Health). A user
+ * choice, so it lives in the preferences blob beside units — machine cursor
+ * state (last-synced) lives in `health_sync_state` (0021) instead.
+ */
+export function isHealthSyncEnabled(db: Database): boolean {
+  const obj = parseObject(getOrCreateUser(db).preferences);
+  const health =
+    obj.health && typeof obj.health === 'object' && !Array.isArray(obj.health)
+      ? (obj.health as Record<string, unknown>)
+      : {};
+  return health.syncEnabled === true;
+}
+
+/** Flip the Apple Health toggle, preserving unrelated preference keys. */
+export function setHealthSyncEnabled(db: Database, enabled: boolean): void {
+  const user = getOrCreateUser(db);
+  const obj = parseObject(user.preferences);
+  const health =
+    obj.health && typeof obj.health === 'object' && !Array.isArray(obj.health)
+      ? (obj.health as Record<string, unknown>)
+      : {};
+  obj.health = { ...health, syncEnabled: enabled };
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+}
+
+/**
  * Set one unit preference and persist. Merges into the existing blob (unknown
  * preference keys are preserved), and returns the normalised result.
  */

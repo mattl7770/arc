@@ -12,6 +12,7 @@ import { navColors } from '@/constants/theme';
 import { useAppLock } from '@/hooks/use-app-lock';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { getDb } from '@/lib/db/client';
+import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 
 /**
@@ -40,16 +41,21 @@ export default function RootLayout() {
   // before anything below decides what to render.
   const lock = useAppLock();
 
-  // Boot side effects, both fire-and-forget:
+  // Boot side effects, all fire-and-forget:
   //  - hydrate the Coach's API key + model from the Keychain into the in-memory
   //    mirror (the store emits when values land, so the Coach screen re-renders
   //    from preview to connected);
   //  - reconcile OS notifications with the active reminders, so a daily/weekly
   //    nudge keeps firing across launches and a reminder changed while the app
-  //    was closed is picked up. No-ops until the native module ships (rebuild).
+  //    was closed is picked up. No-ops until the native module ships (rebuild);
+  //  - pull fresh Apple Health data (throttled), and again whenever the app
+  //    returns to the foreground — wearables written while ARC was closed are
+  //    waiting in HealthKit. No-ops until enabled + the native module ships.
   useEffect(() => {
     void apiKeyStore.hydrate();
     void syncReminderNotifications(getDb());
+    void syncHealthIfEnabled(getDb());
+    return registerForegroundHealthSync(getDb());
   }, []);
 
   // Cold start while locked: the lock screen is the ONLY thing that mounts —
@@ -98,6 +104,9 @@ export default function RootLayout() {
           <Stack.Screen name="settings-profile" />
           <Stack.Screen name="settings-units" />
           <Stack.Screen name="settings-coach" />
+          {/* INTEGRATOR-MERGE: wearables routes (docs/wearables-subapp.md). */}
+          <Stack.Screen name="settings-health" />
+          <Stack.Screen name="wearables" />
           {/* Pushed from the Data tab. */}
           <Stack.Screen name="protocols" />
           <Stack.Screen name="protocol-edit" />
