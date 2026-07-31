@@ -2,9 +2,11 @@
 
 **Living document.** This is the running board for what's done, what's next, and how the app is put together. Update it in the same change that changes reality — a status line that lies is worse than none.
 
-**Last updated:** 2026-07-27
-**Current phase:** Foundation → the local data layer and the whole Log-tab capture surface are real
+**Last updated:** 2026-07-29
+**Current phase:** Foundation → the local data layer and the whole Log-tab capture surface are real; Labs is the first ingestion pipeline
 **Branch:** `claude/expo-project-scaffold-d14e9e`
+
+> **Labs pipeline built (2026-07-29).** CLAUDE.md §4's #1 data domain is real: a Function Health PDF → the Coach's model client → catalog mapping → an **editable review the user confirms** → `lab_reports`/`lab_results`. Migration **0024** widens `biomarker_category` (a parent-table rebuild — `docs/labs-subapp.md` §2 documents why the two textbook approaches silently fail); the seeded catalog grows **12 → 65**. **No new native dependency and no EAS rebuild**: the file picker comes from `expo-file-system`, which ships with `expo` itself. Spec + research: **`docs/labs-subapp.md`**.
 
 > ✅ **Architecture pivot (2026-07-24) — largely complete: local-first, no-server, offline-except-AI, iOS-only.** ARC runs on **on-device SQLite** (`op-sqlite` + `sqlite-vec`); **Supabase is fully removed** (client + folder deleted 2026-07-25) and Android was dropped (iOS-only). The Coach will call a frontier model **directly from the app** (user's key in the iOS Keychain, Phase 3); backup is an **encrypted iCloud snapshot** (Phase 4). The app runs **fully offline except for AI features**. No backend, no auth, no personal data in any cloud; the only recurring cost is model tokens. See the ADRs in `docs/decisions.md` and the phased plan in **`docs/architecture-migration.md`**. Remaining pivot work: the Face-ID app lock (Phase 2) and the direct on-device Coach (Phase 3).
 
@@ -57,13 +59,13 @@
 - [x] `op-sqlite` installed + `sqliteVec` enabled (engine + on-device vector search)
 - [x] **Migration runner** (Phase 1) — versioned SQL on boot via `PRAGMA user_version`, transactional, behind a testable interface (`src/lib/db/migrate.ts`); `npm run db:test` 9/9
 - [x] **Data layer + repositories** (Phase 1) — `Database` interface + op-sqlite client (`src/lib/db/`), mission repository, hand-authored types; `npm run db:test` data-layer 17/17
-- [x] Seed the biomarker reference catalogue locally (12 starter biomarkers, idempotent)
+- [x] Seed the biomarker reference catalogue locally — **65 biomarkers** (idempotent by slug; grew from the original 12 with the labs pipeline, `src/lib/labs/catalog.ts`). The original 12 keep their original values byte-identically, since `INSERT OR IGNORE` can never update an already-seeded device
 - [x] **Feature tables added as their screens went real:** `meals` (0002), `workouts` + `workout_sets` (0003, ON DELETE CASCADE), `symptoms` (0004), `screenings` + `appointments` (0007, preventive-screening ledger + medical calendar), and the Coach's `ai_conversations` + `ai_messages` (0008, append-only turns with a per-turn tool-call record) + `reminders` (0009). Schema of record is now **31 tables across 16 migrations** (`0001–0004`, `0007–0009`, `0011–0018`, `0020`); each has its repository + headless tests. (The exercise sub-app added the catalog/routines/programs tables at 0011–0013 + 0020; nutrition added the food/meal-item/targets/template tables at 0014–0018, both integrated 2026-07-27. The Coach's migrations were renumbered from 0005/0006 → 0008/0009 at integration to stay above Screenings' 0007 — forward-only.)
 - [x] **Pre-migration backup wired** — `backupBeforeMigrate` (`client.ts`) snapshots the DB via SQLite `VACUUM INTO` before any migration touches existing data (no new native dep; warns-and-proceeds on failure). Supersedes the throwing stub; Phase 4's encrypted iCloud backup supersedes this.
 - [~] 🚧 `ai_conversations` / `ai_messages` (migration **0005**) + `reminders` (**0006**) — **in progress** (Coach window). `experiments` still later.
 - [x] ~~Supabase Storage bucket for lab PDFs~~ — **dropped**; the original PDF becomes a local / iCloud file, referenced by `lab_reports.file_path` (Phase 4)
 - [x] **Preventive screenings + medical calendar** (built 2026-07-26, parallel window) — `screenings` + `appointments` (migration **0007**): cadenced preventive items (interval_months, last_completed, stored/derived next_due) + one-off calendar events (`screening_id` FK, SET NULL). Browse screen `/screenings` (grouped by due status + upcoming appointments, add/edit forms) reached from the Data tab; `dueScreenings()` is the seam Home's "what's due" card will consume (not yet surfaced there). OS-calendar sync / notifications deferred (native deps). `npm run db:test` screenings 44.
-- [ ] 📋 **Lab breadth** — add `microbiome` (and other missing) values to `biomarker_category`; a biological-age / epigenetic-clock representation. Today's 11-category enum can't store either (brief §2)
+- [x] **Lab breadth** — `biomarker_category` widened with `microbiome` + `biological_age` (migration **0024**, a parent-table rebuild — see `docs/labs-subapp.md` §2 for why the two obvious approaches fail and the shuttle is required). The seeded catalog grew **12 → 65** markers. *(Note: microbiome is NOT a Function Health product — blood and urine only; the value lands now because re-rebuilding this table later is expensive.)*
 - [~] 📋 **Exercise as measured data** — **started**: `workouts` + `workout_sets` (0003) store sessions, sets, reps, and canonical-kg loads (the Exercise screen). Still to add: VO2max, mobility, balance, and progressive-overload analytics over that data (brief §2).
 - [~] 🧊 **Food model** — **started**: the `meals` table (0002) stores per-meal kcal + macros (the Nutrition screen). Still to add: pantry status, recipe bank, food-photo (CAL-AI-style) analysis records (brief §2).
 - [ ] 🧊 **Environment & lifestyle** — screen time, social connection, substances (only air quality is noted today) (brief §2)
@@ -105,7 +107,7 @@
 - [ ] 🧊 Multi-modal input — voice logging, later vision (documented in `ai-coach.md`, unbuilt)
 
 ### Data domains (CLAUDE.md §4 lists these by intent; not a build sequence)
-- [ ] 📋 **Labs** — Function Health PDF → structured extraction pipeline
+- [x] **Labs** — Function Health PDF → structured extraction pipeline **built** (2026-07-29, `docs/labs-subapp.md`). Pick a PDF (`expo-file-system`'s picker — **no new native dep, no rebuild**: it ships with `expo` itself) → parsed by the Coach's own model client (`runCoachTurn`, base64 `document` block, no tools) → mapped to the biomarker catalog by **exact name match only** (fuzzy matching is banned: `Testosterone` is a substring of `Testosterone, Free`) with an allowlist unit conversion that **refuses** what it doesn't know → **editable review** the user confirms → one transaction into `lab_reports`/`lab_results`, `source='function_pdf'`. Nothing auto-commits. Migration **0024**; catalog 12 → 65 markers; `db/labs.test.mjs` 107. ⚠️ **Not yet run against a real Function PDF** — the report's actual layout could not be verified from public sources (labs-subapp.md §1), so that is the next action.
 - [x] **Daily logs** — the Log tab is real (fast capture: notes, metrics, water, weight, supplements/therapies, meals, workouts, symptoms), all persisting on-device. Habits are completed on Home's mission.
 - [x] **Protocols** — the versioned stack/routine **editor** (2026-07-26): `app/protocols.tsx` + `app/protocol-edit.tsx` (every content save is a new immutable `protocol_versions` row, no-op saves skipped), repo over the 0001 tables (no migration), tests `db/protocols.test.mjs` (46). **The protocol→mission generator is now built too** (2026-07-27, `src/lib/db/repositories/mission-generate.ts`, tests `db/mission-generate.test.mjs` 10): active protocols' live versions expand into the day's `log_entries` (protocol-first, mock-day is the fallback — `ensureTodaySeeded`), linked via `log_entries.protocol_id`, idempotent per day. And the Coach's `update_protocol` tool is live — so the Coach editing a stack reshapes the next day's mission.
 - [ ] 📋 **Wearables** — **Apple Health as the hub** (on-device, offline for ARC; the vendor app does the cloud sync) → `wearable_data`; direct vendor API only where HealthKit lacks fidelity (e.g. WHOOP). **Terra dropped** — it's a cloud aggregator that needs a server, which breaks offline/no-server.
@@ -147,7 +149,7 @@
 | Navigation shell | ✅ | Five tabs + not-found, file-based routing (no `/login` — single-user) |
 | Design system | ✅ | Tokens defined and compiling; see §3 |
 | Database schema | ✅ | **Ported to SQLite** (`db/migrations/0001_init.sql`), 20-check validation; Postgres origin retired |
-| Local DB engine | ✅ | `op-sqlite` + `sqliteVec` running on device (persistence confirmed); migration runner + repositories + seed + pre-migration backup; op-sqlite isolated to `client.ts`. 16 migrations, 31 tables |
+| Local DB engine | ✅ | `op-sqlite` + `sqliteVec` running on device (persistence confirmed); migration runner + repositories + seed + pre-migration backup; op-sqlite isolated to `client.ts`. 17 migrations, 31 tables |
 | DB types | ✅ | Hand-authored row types (`src/lib/db/types.ts`); the Supabase generator is deleted |
 | Supabase client | ✅ | **Deleted 2026-07-25** (dead island removed in the full-app review) |
 | **Home screen** | 🚧 | Mission + the Coach brief read from the DB (brief = deterministic insights via `useDailyBrief`, no model call, same text the Coach screen opens with); readiness + metrics still mock |
@@ -155,15 +157,15 @@
 | App lock | 📋 | Face ID / passcode on open — Phase 2 (replaces the cut auth gate) |
 | Log | ✅ | Fully wired: command field (offline parse), metric keypad, Capture (Supplement/Therapy), Nutrition, Exercise, and Symptoms all persist; "Logged today" reads live. Sub-apps are real (meals / workouts+sets / symptoms), not mockups. Deeper features (photo/text-AI, templates, builder) are follow-ups |
 | Nutrition / Exercise / Symptoms | ✅ | **Full sub-apps integrated (2026-07-27).** Exercise: movement catalog + routines + structured logger + e1RM/freshness/progression engine + periodization/programs/volume-landmarks/supersets (0011–0013, 0020). Nutrition: 187-seed catalog + itemized meals w/ macros+micros + versioned targets + templates + history + barcode/inline-edit + an AI meal-estimation seam (0014–0018). Symptoms: `symptoms` (0004). All persist; summaries read live. (Camera/photo needs the EAS build; AI estimate needs its Coach-model seam wired) |
-| Data | ✅ | **Frame A "Standing Ledger"** — live trends (Weight/Nutrition/Training/Symptoms sparklines from real data), the 12 seeded biomarker reference ranges, a manage/browse index, + pushed **Labs**, **Protocols**, and **Screenings** screens. Real lab values + wearable history await their pipelines; the screen + trend reads are real |
+| Data | ✅ | **Frame A "Standing Ledger"** — live trends (Weight/Nutrition/Training/Symptoms sparklines from real data), the **65** seeded biomarker reference ranges, a manage/browse index, + pushed **Labs** (now with PDF import + report history), **Protocols**, and **Screenings** screens. Wearable history still awaits its pipeline; lab values now have one |
 | Settings | ✅ | **Real** — Profile (name/DOB/sex/timezone) + Units (lb/kg · oz/ml · in/cm live; mi/km · °F/°C stored, not yet consumed) + **Coach** (live: Keychain key + model picker). App-lock / Apple-Health / backup / export shown as disabled "Soon" rows |
 | Protocols | ✅ | Versioned stacks/routines — repo + editor (`app/protocols.tsx`, `protocol-edit.tsx`), no migration (tables ship in 0001), reached from Data. **The protocol→mission generator is live**: active protocols drive Home's mission (mock-day is only the no-protocols fallback), and the Coach's `update_protocol` reshapes the next day |
 | Screenings | ✅ | Preventive screenings + medical calendar (`screenings`/`appointments`, migration 0007) — browse + forms, reached from Data. Home "due" surfacing still to wire |
-| Labs pipeline | 📋 | Not started |
+| Labs pipeline | ✅ | **Built** — PDF → model parse → catalog mapping → editable review → transactional import (`docs/labs-subapp.md`). Migration 0024, 65-marker catalog, 610-entry alias table, refusing unit conversions. Needs one real Function PDF to confirm the prompt, and an on-device check of the file picker |
 | Wearables | 📋 | Not started; schema ready. Apple Health hub (Terra dropped) |
 | Media / photos | 📋 | PhotoKit refs (progress pics) + compressed copies (food) — Phase 4 |
 | iCloud backup | 📋 | Encrypted snapshot + restore — Phase 4 |
-| Tests / CI | 🚧 | No app-level runner/CI yet, but the data layer has headless `node:sqlite` tests — **761 across 26 suites** (`npm run db:test`, the original 18 plus the exercise suites (catalog, routines, training-engine, programs, training-volume) and nutrition suites (foods, nutrition-v2, barcode)) plus schema validation (`db:validate`, 20) |
+| Tests / CI | 🚧 | No app-level runner/CI yet, but the data layer has headless `node:sqlite` tests — **879 across 28 suites** (`npm run db:test` — the original 18, the exercise suites (catalog, routines, training-engine, programs, training-volume), the nutrition suites (foods, nutrition-v2, barcode), and **labs** (107: parse/map over a captured model reply, the import transaction, and migration 0024’s rebuild with data present)) plus schema validation (`db:validate`, 20) |
 
 ### Infrastructure
 - **None required (local-first).** No backend to run or pay for; the only external calls are to the AI provider, made directly from the app. Recurring cost = model tokens (+ $99/yr Apple).
@@ -270,6 +272,7 @@ The serif/mono split carries meaning: **serif speaks, mono measures.** A number 
 - `docs/decisions.md` — architecture decision records
 - `docs/home-screen.md` — Home IA + implementation notes
 - `docs/ai-coach.md` — Coach spec
+- `docs/labs-subapp.md` — the Function Health PDF → biomarkers pipeline (research, mapping rules, the 0024 rebuild)
 - `docs/rag-embeddings.md` — RAG/embeddings plan (the on-device embedder decision)
 - `docs/dev-build.md` — device runbook (EAS dev build)
 - `docs/folder-structure.md` — where code goes

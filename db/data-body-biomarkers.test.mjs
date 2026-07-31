@@ -13,6 +13,7 @@ import { newId } from '../src/lib/db/id.ts';
 import { bodySeries, latestBody } from '../src/lib/db/repositories/body.ts';
 import { listBiomarkerRanges } from '../src/lib/db/repositories/biomarkers.ts';
 import { seedReferenceData } from '../src/lib/db/seed.ts';
+import { BIOMARKER_SEED } from '../src/lib/labs/catalog.ts';
 
 let pass = 0;
 let fail = 0;
@@ -179,7 +180,12 @@ console.log('5. listBiomarkerRanges: full seeded catalogue, all latest values nu
   const { db } = freshDb();
   seedReferenceData(db);
   const ranges = listBiomarkerRanges(db);
-  ranges.length === 12 ? ok('12 seeded biomarkers returned') : bad('count', ranges.length);
+  // Sized off the catalog rather than a hard-coded number: the seed grows as
+  // ARC learns more markers (the labs pipeline took it from 12 to 65), and a
+  // snapshot count would just have to be bumped on every addition.
+  ranges.length === BIOMARKER_SEED.length
+    ? ok(`all ${ranges.length} seeded biomarkers returned`)
+    : bad('count', `${ranges.length} of ${BIOMARKER_SEED.length}`);
   ranges.every((r) => r.latestValue === null && r.latestAt === null)
     ? ok('every biomarker has latestValue/latestAt null on an empty lab_results table')
     : bad(
@@ -197,23 +203,45 @@ console.log('5. listBiomarkerRanges: full seeded catalogue, all latest values nu
     ? ok('a seeded row carries its catalogue fields through (apob)')
     : bad('apob row', JSON.stringify(apob));
 
-  const expectedOrder = [
-    'apob',
-    'hdl_c',
-    'homocysteine',
-    'ldl_c',
-    'lp_a',
-    'triglycerides', // cardiovascular, by name
-    'fasting_glucose',
-    'fasting_insulin',
-    'hba1c', // metabolic, by name
-    'hs_crp', // inflammation
-    'vitamin_d', // nutrient
-    'ferritin', // hematology
-  ];
-  JSON.stringify(ranges.map((r) => r.slug)) === JSON.stringify(expectedOrder)
-    ? ok('deterministic order: category priority, then name')
-    : bad('order', JSON.stringify(ranges.map((r) => r.slug)));
+  // The ordering CONTRACT rather than a snapshot of it: category priority
+  // ascending, then name within a category. Asserting the property survives
+  // catalog growth; asserting a fixed slug list did not.
+  // Mirrors the CASE in listBiomarkerRanges. Every category has its own rank —
+  // an ELSE bucket would let two categories interleave, which makes the Labs
+  // screen repeat a section header (its grouping folds contiguous runs).
+  const PRIORITY = {
+    cardiovascular: 0,
+    metabolic: 1,
+    inflammation: 2,
+    nutrient: 3,
+    hematology: 4,
+    hormone: 5,
+    immune: 6,
+    organ: 7,
+    cancer: 8,
+    toxin: 9,
+    microbiome: 10,
+    biological_age: 11,
+  };
+  const rank = (r) => PRIORITY[r.category] ?? 12;
+  let orderOk = true;
+  let firstBreak = null;
+  for (let i = 1; i < ranges.length; i++) {
+    const prev = ranges[i - 1];
+    const cur = ranges[i];
+    const inOrder = rank(prev) < rank(cur) || (rank(prev) === rank(cur) && prev.name <= cur.name);
+    if (!inOrder) {
+      orderOk = false;
+      firstBreak = `${prev.category}/${prev.name} then ${cur.category}/${cur.name}`;
+      break;
+    }
+  }
+  orderOk ? ok('deterministic order: category priority, then name') : bad('order', firstBreak);
+
+  // The head of the list is still the cardiovascular block, alphabetically.
+  ranges[0].slug === 'apob' && ranges[1].slug === 'hdl_c'
+    ? ok('cardiovascular sorts first, by name')
+    : bad('head of list', JSON.stringify(ranges.slice(0, 2).map((r) => r.slug)));
 }
 
 console.log('6. listBiomarkerRanges: latestValue picks the most recent lab_result by collected_at');
