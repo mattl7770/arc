@@ -8,8 +8,8 @@ import { Mission } from '@/components/home/mission';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
+import { useReadiness } from '@/hooks/use-readiness';
 import { useTodayMission } from '@/hooks/use-today-mission';
-import { mockDay } from '@/lib/home/mock-day';
 
 /**
  * Home — "What should I do right now, and what are the non-negotiables today?"
@@ -35,14 +35,17 @@ import { mockDay } from '@/lib/home/mock-day';
  *
  * The mission now reads from and writes to the on-device SQLite database
  * (useTodayMission): completing an item persists across launches, and the day
- * is seeded from mock-day on first open. The Coach brief is now real too — the
- * deterministic insights engine (useDailyBrief), same text the Coach screen
- * opens with, no model call. Readiness and the metrics strip are still mock —
- * they land when wearables do.
+ * is seeded from mock-day on first open. The Coach brief is real (useDailyBrief,
+ * deterministic insights). Readiness, the pillar bar, and the metrics strip are
+ * now real too — derived from wearable_data (useReadiness → src/lib/home/
+ * readiness.ts, fed by the Apple Health pipeline). With no wearable data they
+ * render an honest "no signal yet" state pointing at Settings › Apple Health,
+ * never fake numbers.
  */
 export default function HomeScreen() {
   const mission = useTodayMission();
   const brief = useDailyBrief();
+  const readiness = useReadiness();
 
   return (
     <Screen scroll>
@@ -60,7 +63,7 @@ export default function HomeScreen() {
       </View>
 
       <View className="mt-8">
-        <ReadinessStrip readiness={mockDay.readiness} pillars={mockDay.pillars} />
+        <ReadinessStrip readiness={readiness.readiness} pillars={readiness.pillars} />
       </View>
 
       <View className="mt-9">
@@ -78,7 +81,7 @@ export default function HomeScreen() {
       </View>
 
       <View className="mt-8">
-        <MetricsStrip metrics={mockDay.metrics} />
+        <MetricsStrip metrics={readiness.metrics} />
       </View>
     </Screen>
   );

@@ -8,7 +8,8 @@ import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import { useSessionKeySet } from '@/hooks/use-session-key';
 import { getDb } from '@/lib/db/client';
-import { getOrCreateUser } from '@/lib/db/repositories/user';
+import { getOrCreateUser, isHealthSyncEnabled } from '@/lib/db/repositories/user';
+import { isHealthKitSupported } from '@/lib/health/healthkit';
 
 /**
  * Settings — a calm index into the profile, unit preferences, and the surfaces
@@ -58,13 +59,6 @@ const SOON: SoonRow[] = [
     chip: 'Needs a build',
   },
   {
-    key: 'health',
-    label: 'Apple Health',
-    sub: 'Wearables via Apple Health',
-    icon: 'heart-outline',
-    chip: 'Needs a build',
-  },
-  {
     key: 'backup',
     label: 'Backup & restore',
     sub: 'Encrypted iCloud snapshot · Phase 4',
@@ -93,6 +87,13 @@ export default function SettingsScreen() {
 
   const name = profile.full_name?.trim();
   const profileSub = name && name.length > 0 ? name : 'Name, date of birth, and biological sex';
+  // Live row even pre-build — the screen itself explains "rides the next build"
+  // (same posture as Coach with no key). Sub reflects the honest state.
+  const healthSub = !isHealthKitSupported()
+    ? 'Wearables hub · rides the next build'
+    : isHealthSyncEnabled(getDb())
+      ? 'Connected'
+      : 'Wearables via Apple Health';
 
   return (
     <Screen scroll>
@@ -146,6 +147,19 @@ export default function SettingsScreen() {
               <Text className="mt-0.5 text-[12px] text-ink-muted">
                 {keySet ? 'Model connected' : 'API key and model'}
               </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Apple Health"
+            onPress={() => router.push('/settings-health')}
+            className="flex-row items-center gap-3 border-t border-hairline-soft px-4 py-3 active:bg-paper-deep">
+            <Ionicons name="heart-outline" size={18} color={palette.inkSecondary} />
+            <View className="flex-1">
+              <Text className="text-[15px] text-ink">Apple Health</Text>
+              <Text className="mt-0.5 text-[12px] text-ink-muted">{healthSub}</Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
           </Pressable>
