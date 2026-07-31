@@ -27,8 +27,10 @@ CREATE TABLE experiments (
   -- series (get_metric_series) when it writes the readout.
   metrics text NOT NULL CHECK (json_valid(metrics)),
   start_date text NOT NULL CHECK (start_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  -- Inclusive end (computed from start + duration at creation).
-  end_date text NOT NULL CHECK (end_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  -- Inclusive end (computed from start + duration at creation); never before start.
+  end_date text NOT NULL CHECK (
+    end_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND start_date <= end_date
+  ),
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'completed', 'abandoned')),
   success_criteria text,
   -- Optional structured protocol edit the experiment applies, for later recall.

@@ -805,6 +805,9 @@ const completeExperimentTool: CoachTool = {
   execute: (db, input) => {
     const args = asRecord(input);
     const exp = requireExperiment(db, reqString(args, 'id'));
+    if (exp.status !== 'active') {
+      throw new Error(`Experiment "${exp.title}" is already ${exp.status} — nothing to conclude.`);
+    }
     completeExperiment(db, exp.id, {
       conclusion: reqString(args, 'conclusion'),
       outcomeNotes: optString(args, 'outcome_notes') ?? null,

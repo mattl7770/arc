@@ -116,14 +116,28 @@ export function activeExperiments(
   }));
 }
 
-/** Conclude an experiment: record the verdict + readout, mark completed. */
+/** The most-recently-CONCLUDED experiments, newest readout first (by
+ * updated_at, which is stamped at completion — not start_date). */
+export function recentlyConcluded(db: Database, limit = 5): Experiment[] {
+  return db
+    .all<ExperimentRow>(
+      `SELECT * FROM experiments WHERE status = 'completed' ORDER BY updated_at DESC LIMIT ?`,
+      [limit]
+    )
+    .map(toExperiment);
+}
+
+/** Conclude an experiment: record the verdict + readout, mark completed. Only
+ * an ACTIVE experiment can be concluded (the `AND status` guards a double
+ * readout that would overwrite an existing verdict). */
 export function completeExperiment(
   db: Database,
   id: string,
   result: { conclusion: string; outcomeNotes?: string | null }
 ): void {
   db.run(
-    `UPDATE experiments SET status = 'completed', conclusion = ?, outcome_notes = ? WHERE id = ?`,
+    `UPDATE experiments SET status = 'completed', conclusion = ?, outcome_notes = ?
+     WHERE id = ? AND status = 'active'`,
     [result.conclusion, result.outcomeNotes ?? null, id]
   );
 }

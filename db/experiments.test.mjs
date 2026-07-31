@@ -284,6 +284,15 @@ console.log('4. get_experiments + complete_experiment tools close the loop');
   throws(() => complete.execute(db, { id: 'nope', conclusion: 'x' }, ctx))
     ? ok('concluding an unknown id is rejected with guidance')
     : bad('unknown id accepted');
+
+  // The 'mag' experiment was concluded above — re-concluding must be rejected,
+  // so a second readout can't overwrite the recorded verdict.
+  const magId = view.active[0].id;
+  const before = getExperiment(db, magId).conclusion;
+  throws(() => complete.execute(db, { id: magId, conclusion: 'a different verdict' }, ctx)) &&
+  getExperiment(db, magId).conclusion === before
+    ? ok('an already-concluded experiment can’t be re-concluded (its verdict is safe)')
+    : bad('re-conclude overwrote the verdict');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

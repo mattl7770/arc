@@ -10,7 +10,7 @@ import { todayISODate } from '@/lib/db/date';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { listMission } from '@/lib/db/repositories/mission';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
-import { activeExperiments, listExperiments } from '@/lib/db/repositories/experiments';
+import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/experiments';
 import { weekSummary } from '@/lib/db/repositories/exercise';
 import { listTodayMeals, todayTotals } from '@/lib/db/repositories/nutrition';
 import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocols';
@@ -562,14 +562,12 @@ const getExperiments: CoachTool = {
     }));
     const completed =
       asRecord(input)['include_completed'] === true
-        ? listExperiments(db, 'completed')
-            .slice(0, 5)
-            .map((e) => ({
-              id: e.id,
-              title: e.title,
-              conclusion: e.conclusion,
-              endDate: e.end_date,
-            }))
+        ? recentlyConcluded(db, 5).map((e) => ({
+            id: e.id,
+            title: e.title,
+            conclusion: e.conclusion,
+            endDate: e.end_date,
+          }))
         : undefined;
     return json({ active, ...(completed ? { completed } : {}) });
   },
