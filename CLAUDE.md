@@ -1,6 +1,6 @@
 # CLAUDE.md — ARC Project Brain
 
-**Last updated:** 2026-07-22  
+**Last updated:** 2026-07-29  
 **Project:** ARC — Architecture for Resilience & Continuity  
 **Owner:** Matt  
 **Type:** Personal longevity operating system (single-user, high-agency)
@@ -110,6 +110,11 @@ Full data dashboards live elsewhere. Never let the home screen become a data dum
 - Support historical uploads and trend analysis
 - Optimal ranges should be longevity-oriented where possible (not just lab “normal”)
 
+**Built 2026-07-29 — `docs/labs-subapp.md` is the spec.** Three things it establishes that are easy to get wrong:
+- Function is **blood and urine only** (drawn at Quest). There is no microbiome assay, despite a "Gut" health area whose copy discusses the microbiome at length.
+- A single report is **~100–135 markers, not 160** (the year splits across two draws), and **~20 of them are non-numeric** urinalysis descriptors.
+- **Never fuzzy-match a biomarker name.** `Testosterone` is a substring of `Testosterone, Free`; `CRP` of `hs-CRP`. Exact match, or leave it unmatched and let the user see it.
+
 ---
 
 ## 8. Wearables Strategy
@@ -163,7 +168,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 **Foundation milestones:**
 1. ~~Solid project structure + this file~~ — **done.** Expo Router shell, five tabs, NativeWind, typed config.
 2. ~~Schema v1~~ — **done, then ported.** Ten core tables built for Postgres, now **ported to on-device SQLite** (`db/migrations/0001_init.sql`, validated). Feature tables added since as their screens shipped (2026-07-25): `meals` (0002), `workouts`+`workout_sets` (0003), `symptoms` (0004). `ai_conversations` / `ai_messages` / `experiments` still land with the Coach.
-3. Function Health PDF → structured data pipeline (on-device parse)
+3. ~~Function Health PDF → structured data pipeline~~ — **done** (2026-07-29, `docs/labs-subapp.md`). Pick a PDF → parsed by the Coach's own model client (the one online step) → mapped to the biomarker catalog by exact name match with refusing unit conversions → **editable review** → `lab_reports`/`lab_results`. Migration 0024; catalog 12 → 65 markers; 107 headless tests. Not yet run against a real Function PDF.
 4. ~~Authenticated app shell~~ — **cut.** No accounts in a single-user local app; a Face ID app lock replaces it (Phase 2). `useSession` / `app/login.tsx` are removed.
 5. ~~First version of directive Home Screen~~ — **done** on mock data (chronological mission).
 6. ~~Minimal AI Coach chat~~ — **done** as UX on a mock model; the real on-device model call is Phase 3.
@@ -179,6 +184,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `/docs/project-status.md` — **Living tracker:** to-do queue, status board, design system. Start here for "where are we?"
 - `/docs/data-model.md` — Detailed schema + what is actually shipped
 - `/docs/information-architecture.md` — **Where every feature lives** (5 tabs + pushed sub-screens), the Log-tab spec, and the Modes model (locked 2026-07-25)
+- `/docs/labs-subapp.md` — **the Function Health PDF → biomarkers pipeline**: what the report actually is, the mapping rules that refuse to guess, and why migration 0024 rebuilds a table
 - `/docs/home-screen.md` — Home screen information architecture (detail)
 - `/docs/ai-coach.md` — System prompt, tools, memory design
 - `/docs/wearables-subapp.md` — Apple Health ingestion: library, scopes, mapping, dedup, readiness seam

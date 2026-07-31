@@ -28,6 +28,12 @@ export interface BiomarkerRange {
  * been measured. Deterministic order: a fixed category priority, then name,
  * so the Biomarkers screen renders in a stable, longevity-relevant grouping
  * rather than insertion order.
+ *
+ * EVERY category needs its own priority, not an `ELSE` bucket: the Labs screen
+ * folds *contiguous* runs into section headers, so two categories sharing a
+ * rank interleave by name and the same header repeats down the page. That was
+ * invisible while the catalog was 12 cardiovascular-to-hematology markers and
+ * appeared the moment it grew to cover organ, immune, cancer and biological age.
  */
 export function listBiomarkerRanges(db: Database): BiomarkerRange[] {
   return db.all<BiomarkerRange>(
@@ -56,7 +62,13 @@ export function listBiomarkerRanges(db: Database): BiomarkerRange[] {
          WHEN 'nutrient' THEN 3
          WHEN 'hematology' THEN 4
          WHEN 'hormone' THEN 5
-         ELSE 6
+         WHEN 'immune' THEN 6
+         WHEN 'organ' THEN 7
+         WHEN 'cancer' THEN 8
+         WHEN 'toxin' THEN 9
+         WHEN 'microbiome' THEN 10
+         WHEN 'biological_age' THEN 11
+         ELSE 12
        END,
        b.name`
   );

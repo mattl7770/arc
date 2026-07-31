@@ -1,26 +1,29 @@
-import { useState } from 'react';
-import { Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { Pressable, Text, View } from 'react-native';
 
-import { MockupNote } from '@/components/ui/mockup-note';
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
+import { palette } from '@/constants/theme';
 import { fmtNum, rangeText } from '@/lib/biomarkers/format';
 import { getDb } from '@/lib/db/client';
 import type { BiomarkerRange } from '@/lib/db/repositories/biomarkers';
 import { listBiomarkerRanges } from '@/lib/db/repositories/biomarkers';
+import { listLabReports } from '@/lib/db/repositories/labs';
+import type { LabReportSummary } from '@/lib/labs/types';
 
 /**
  * Labs — the full reference file, pushed from the Data tab.
  *
  * Lists the biomarker catalogue grouped by category (the longevity-optimal
- * ranges ARC ships with, seeded on first run — src/lib/db/seed.ts). Each marker
- * shows its optimal range and its latest reading, or "No reading yet" until a
- * lab is imported. The Function Health PDF import and on-device parsing land
- * with the ingestion pipeline (Phase 3), so there is no pine import action here
- * yet — this screen is the reference these results will be graded against.
+ * ranges ARC ships with, seeded on first run — src/lib/labs/catalog.ts), each
+ * marker showing its optimal range and its latest reading. "Import a report"
+ * runs the PDF pipeline (docs/labs-subapp.md); imported reports are listed
+ * beneath it, newest draw first.
  *
- * Reference ranges are static app-shipped data, so a one-time read in the
- * `useState` initializer is enough — nothing on device writes them today.
+ * Both reads run on focus rather than once: an import performed on the pushed
+ * screen must be visible the moment the user comes back here.
  */
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -30,6 +33,12 @@ const CATEGORY_LABELS: Record<string, string> = {
   nutrient: 'Nutrients',
   hematology: 'Hematology',
   hormone: 'Hormones',
+  organ: 'Organ function',
+  immune: 'Immune',
+  cancer: 'Cancer signals',
+  toxin: 'Toxins',
+  microbiome: 'Microbiome',
+  biological_age: 'Biological age',
   other: 'Other',
 };
 
@@ -50,14 +59,70 @@ function groupByCategory(ranges: BiomarkerRange[]): Group[] {
   return groups;
 }
 
+/** "2026-07-14" → "14 Jul 2026", without pulling in a date library. */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function fmtDate(iso: string): string {
+  const [y, m, d] = iso.split('-');
+  const month = MONTHS[Number(m) - 1];
+  return month ? `${Number(d)} ${month} ${y}` : iso;
+}
+
 export default function LabsScreen() {
-  const [groups] = useState<Group[]>(() => groupByCategory(listBiomarkerRanges(getDb())));
+  const router = useRouter();
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [reports, setReports] = useState<LabReportSummary[]>([]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const db = getDb();
+      setGroups(groupByCategory(listBiomarkerRanges(db)));
+      setReports(listLabReports(db));
+    }, [])
+  );
 
   return (
     <Screen scroll>
       <View className="pt-2">
         <StackHeader title="Labs" />
       </View>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Import a lab report"
+        onPress={() => router.push('/lab-import')}
+        className="mt-4 h-12 flex-row items-center justify-center gap-2 rounded-btn bg-pine active:opacity-70">
+        <Ionicons name="document-text-outline" size={18} color={palette.pineOn} />
+        <Text className="text-[15px] font-semibold text-pine-on">Import a report</Text>
+      </Pressable>
+
+      {reports.length > 0 ? (
+        <View className="mt-6">
+          <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
+            Imported
+          </Text>
+          <View className="mt-3 rounded-card border border-hairline bg-porcelain">
+            {reports.map((report, index) => (
+              <View
+                key={report.id}
+                className={`flex-row items-center gap-3 px-4 py-3 ${
+                  index === 0 ? '' : 'border-t border-hairline-soft'
+                }`}>
+                <View className="flex-1">
+                  <Text className="font-mono text-[13px] text-ink">
+                    {fmtDate(report.collectedAt)}
+                  </Text>
+                  {report.labName ? (
+                    <Text className="mt-0.5 text-[11px] text-ink-muted">{report.labName}</Text>
+                  ) : null}
+                </View>
+                <Text className="font-mono text-[11px] text-ink-muted">
+                  {report.resultCount} results
+                </Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
 
       {groups.map((group, groupIndex) => (
         <View key={group.category} className={groupIndex === 0 ? 'mt-4' : 'mt-8'}>
@@ -92,12 +157,6 @@ export default function LabsScreen() {
           </View>
         </View>
       ))}
-
-      <MockupNote>
-        Importing a Function Health PDF — parsed into these biomarkers on-device — arrives with the
-        ingestion pipeline (Phase 3). These are the longevity-optimal reference ranges ARC will
-        grade your results against.
-      </MockupNote>
     </Screen>
   );
 }

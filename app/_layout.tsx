@@ -100,6 +100,8 @@ export default function RootLayout() {
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />
           <Stack.Screen name="labs" />
+          {/* INTEGRATOR-MERGE: labs pipeline route (docs/labs-subapp.md). */}
+          <Stack.Screen name="lab-import" />
           {/* Pushed from Settings. */}
           <Stack.Screen name="settings-profile" />
           <Stack.Screen name="settings-units" />

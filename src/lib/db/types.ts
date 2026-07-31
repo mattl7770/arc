@@ -17,6 +17,7 @@
 
 export type BiologicalSex = 'male' | 'female' | 'intersex' | 'prefer_not_to_say';
 
+/** Widened by migration 0024 — keep in lockstep with that file's CHECK. */
 export type BiomarkerCategory =
   | 'cardiovascular'
   | 'metabolic'
@@ -28,6 +29,8 @@ export type BiomarkerCategory =
   | 'hematology'
   | 'cancer'
   | 'toxin'
+  | 'microbiome'
+  | 'biological_age'
   | 'other';
 
 export type DataSource =

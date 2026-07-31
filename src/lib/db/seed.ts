@@ -18,7 +18,8 @@ import {
   insertMissionItem,
 } from './repositories/mission';
 import { generateMissionForDay } from './repositories/mission-generate';
-import type { BiomarkerCategory, LogEntryType } from './types';
+import type { LogEntryType } from './types';
+import { BIOMARKER_SEED } from '@/lib/labs/catalog';
 import type { MissionItem } from '@/types/home';
 
 /** Mock category label → a real log_entry.type for stored entries. */
@@ -32,135 +33,17 @@ const TYPE_BY_CATEGORY: Record<string, LogEntryType> = {
 };
 
 /**
- * A small, longevity-oriented starter catalogue. Optimal ranges are starting
- * points to refine against Function ranges later; `higher_is_better` is null
- * where the metric is U-shaped (neither direction is simply better).
+ * The longevity-oriented biomarker catalogue now lives beside the labs
+ * pipeline's other reference data (`src/lib/labs/catalog.ts`), which is what
+ * maps a report's printed names onto it. Kept idempotent below: the 12 rows
+ * seeded before that file existed are reproduced there byte-identically,
+ * because INSERT OR IGNORE cannot update an already-seeded device.
  */
-type BiomarkerSeed = {
-  slug: string;
-  name: string;
-  category: BiomarkerCategory;
-  unit: string;
-  optimalLow: number | null;
-  optimalHigh: number | null;
-  higherIsBetter: 0 | 1 | null;
-};
-
-const BIOMARKERS: BiomarkerSeed[] = [
-  {
-    slug: 'apob',
-    name: 'ApoB',
-    category: 'cardiovascular',
-    unit: 'mg/dL',
-    optimalLow: null,
-    optimalHigh: 80,
-    higherIsBetter: 0,
-  },
-  {
-    slug: 'ldl_c',
-    name: 'LDL Cholesterol',
-    category: 'cardiovascular',
-    unit: 'mg/dL',
-    optimalLow: null,
-    optimalHigh: 100,
-    higherIsBetter: 0,
-  },
-  {
-    slug: 'hdl_c',
-    name: 'HDL Cholesterol',
-    category: 'cardiovascular',
-    unit: 'mg/dL',
-    optimalLow: 50,
-    optimalHigh: null,
-    higherIsBetter: 1,
-  },
-  {
-    slug: 'triglycerides',
-    name: 'Triglycerides',
-    category: 'cardiovascular',
-    unit: 'mg/dL',
-    optimalLow: null,
-    optimalHigh: 80,
-    higherIsBetter: 0,
-  },
-  {
-    slug: 'lp_a',
-    name: 'Lipoprotein(a)',
-    category: 'cardiovascular',
-    unit: 'nmol/L',
-    optimalLow: null,
-    optimalHigh: 75,
-    higherIsBetter: 0,
-  },
-  {
-    slug: 'homocysteine',
-    name: 'Homocysteine',
-    category: 'cardiovascular',
-    unit: 'umol/L',
-    optimalLow: null,
-    optimalHigh: 9,
-    higherIsBetter: 0,
-  },
-  {
-    slug: 'hs_crp',
-    name: 'hs-CRP',
-    category: 'inflammation',
-    unit: 'mg/L',
-    optimalLow: null,
-    optimalHigh: 1,
-    higherIsBetter: 0,
-  },
-  {
-    slug: 'hba1c',
-    name: 'HbA1c',
-    category: 'metabolic',
-    unit: '%',
-    optimalLow: null,
-    optimalHigh: 5.4,
-    higherIsBetter: 0,
-  },
-  {
-    slug: 'fasting_glucose',
-    name: 'Fasting Glucose',
-    category: 'metabolic',
-    unit: 'mg/dL',
-    optimalLow: 70,
-    optimalHigh: 90,
-    higherIsBetter: null,
-  },
-  {
-    slug: 'fasting_insulin',
-    name: 'Fasting Insulin',
-    category: 'metabolic',
-    unit: 'uIU/mL',
-    optimalLow: null,
-    optimalHigh: 5,
-    higherIsBetter: 0,
-  },
-  {
-    slug: 'vitamin_d',
-    name: 'Vitamin D (25-OH)',
-    category: 'nutrient',
-    unit: 'ng/mL',
-    optimalLow: 40,
-    optimalHigh: 60,
-    higherIsBetter: null,
-  },
-  {
-    slug: 'ferritin',
-    name: 'Ferritin',
-    category: 'hematology',
-    unit: 'ng/mL',
-    optimalLow: 30,
-    optimalHigh: 150,
-    higherIsBetter: null,
-  },
-];
 
 /** Idempotent: adds any biomarkers not already present (by slug). */
 export function seedReferenceData(db: Database): void {
   db.transaction(() => {
-    for (const b of BIOMARKERS) {
+    for (const b of BIOMARKER_SEED) {
       db.run(
         `INSERT OR IGNORE INTO biomarkers
            (id, slug, name, category, unit, optimal_range_low, optimal_range_high, higher_is_better)
