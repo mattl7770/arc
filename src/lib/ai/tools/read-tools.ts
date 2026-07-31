@@ -10,6 +10,7 @@ import { todayISODate } from '@/lib/db/date';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { listMission } from '@/lib/db/repositories/mission';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
+import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/experiments';
 import { weekSummary } from '@/lib/db/repositories/exercise';
 import { listTodayMeals, todayTotals } from '@/lib/db/repositories/nutrition';
 import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocols';
@@ -530,6 +531,48 @@ const searchKnowledge: CoachTool = {
   },
 };
 
+// --- get_experiments ---------------------------------------------------------
+
+const getExperiments: CoachTool = {
+  name: 'get_experiments',
+  description:
+    "The user's n-of-1 experiments: ACTIVE ones (each with daysLeft, and ready=true once its " +
+    'window has closed and it is time to read out) and, when include_completed is set, recent ' +
+    'concluded ones with their verdicts. Call before concluding one (complete_experiment needs ' +
+    'the id), or when the user asks how an experiment is going.',
+  inputSchema: {
+    type: 'object',
+    properties: { include_completed: { type: 'boolean' } },
+    additionalProperties: false,
+  },
+  readOnly: true,
+  execute: (db, input, context) => {
+    const today = todayISODate(context.now);
+    const active = activeExperiments(db, today).map((e) => ({
+      id: e.id,
+      title: e.title,
+      hypothesis: e.hypothesis,
+      intervention: e.intervention,
+      metrics: e.metrics,
+      startDate: e.start_date,
+      endDate: e.end_date,
+      daysLeft: e.daysLeft,
+      ready: e.ready,
+      successCriteria: e.success_criteria,
+    }));
+    const completed =
+      asRecord(input)['include_completed'] === true
+        ? recentlyConcluded(db, 5).map((e) => ({
+            id: e.id,
+            title: e.title,
+            conclusion: e.conclusion,
+            endDate: e.end_date,
+          }))
+        : undefined;
+    return json({ active, ...(completed ? { completed } : {}) });
+  },
+};
+
 export const READ_TOOLS: CoachTool[] = [
   getTodaySnapshot,
   getMetricSeries,
@@ -541,4 +584,5 @@ export const READ_TOOLS: CoachTool[] = [
   listRemindersTool,
   getInsights,
   searchKnowledge,
+  getExperiments,
 ];

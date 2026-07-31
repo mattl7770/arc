@@ -31,6 +31,11 @@ import {
   listActiveReminders,
 } from '@/lib/db/repositories/reminders';
 import { setMode } from '@/lib/db/repositories/day-modes';
+import {
+  completeExperiment,
+  createExperiment,
+  getExperiment,
+} from '@/lib/db/repositories/experiments';
 import { logSymptom } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { getModeDefinition, MODE_KEYS } from '@/lib/modes/registry';
@@ -700,6 +705,117 @@ const setModeTool: CoachTool = {
   },
 };
 
+// --- create_experiment / complete_experiment (n-of-1) ------------------------
+
+/** Validate the metrics-to-watch: a non-empty array of non-empty strings. */
+function parseMetricsArray(input: Record<string, unknown>): string[] {
+  const raw = input['metrics'];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error('"metrics" must be a non-empty array of metric names to watch.');
+  }
+  return raw.map((m, i) => {
+    if (typeof m !== 'string' || m.trim().length === 0) {
+      throw new Error(`metrics[${i}] must be a non-empty string.`);
+    }
+    return m.trim();
+  });
+}
+
+const createExperimentTool: CoachTool = {
+  name: 'create_experiment',
+  description:
+    'Design an n-of-1 experiment: a title, the hypothesis, the ONE intervention being changed, ' +
+    'the metrics to watch, a duration in days, and optionally the success criteria. It starts ' +
+    'TODAY and runs for the duration; later you read those metrics (get_metric_series) and close ' +
+    'it with complete_experiment. Use when the user wants to test something ("does magnesium ' +
+    'improve my sleep?"). Keep it to ONE change so the readout is attributable.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      hypothesis: { type: 'string' },
+      intervention: {
+        type: 'string',
+        description: 'The single change, e.g. "400 mg magnesium glycinate at night".',
+      },
+      metrics: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Metrics to watch, e.g. ["HRV", "sleep score"].',
+      },
+      duration_days: { type: 'integer', minimum: 3 },
+      success_criteria: { type: 'string', description: 'What would confirm the hypothesis.' },
+    },
+    required: ['name', 'hypothesis', 'intervention', 'metrics', 'duration_days'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input) => {
+    const args = asRecord(input);
+    const name = reqString(args, 'name');
+    const days = reqNumber(args, 'duration_days');
+    return `Start experiment "${name}" — ${Math.round(days)} days`;
+  },
+  execute: (db, input, context) => {
+    const args = asRecord(input);
+    const metrics = parseMetricsArray(args);
+    const durationDays = reqNumber(args, 'duration_days');
+    if (!Number.isInteger(durationDays) || durationDays < 3) {
+      throw new Error('"duration_days" must be an integer of at least 3.');
+    }
+    const id = createExperiment(db, {
+      title: reqString(args, 'name'),
+      hypothesis: reqString(args, 'hypothesis'),
+      intervention: reqString(args, 'intervention'),
+      metrics,
+      startDate: todayISODate(context.now),
+      durationDays,
+      successCriteria: optString(args, 'success_criteria') ?? null,
+    });
+    return json({ created: true, id, durationDays });
+  },
+};
+
+/** Resolve an experiment id → its row, with a message pointing at the fix. */
+function requireExperiment(db: Database, id: string) {
+  const exp = getExperiment(db, id);
+  if (!exp) throw new Error(`No experiment with id ${id}. Call get_experiments first.`);
+  return exp;
+}
+
+const completeExperimentTool: CoachTool = {
+  name: 'complete_experiment',
+  description:
+    'Conclude an active experiment (get its id from get_experiments): record the one-line ' +
+    'conclusion — did the hypothesis hold? — and optional outcome_notes on how the watched ' +
+    'metrics moved. Read the metrics first (get_metric_series). Use when an experiment has ended.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+      conclusion: { type: 'string', description: 'The verdict, e.g. "HRV up 9% — supported".' },
+      outcome_notes: { type: 'string', description: 'How the metrics moved, the readout.' },
+    },
+    required: ['id', 'conclusion'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db) =>
+    `Conclude experiment "${requireExperiment(db, reqString(asRecord(input), 'id')).title}"`,
+  execute: (db, input) => {
+    const args = asRecord(input);
+    const exp = requireExperiment(db, reqString(args, 'id'));
+    if (exp.status !== 'active') {
+      throw new Error(`Experiment "${exp.title}" is already ${exp.status} — nothing to conclude.`);
+    }
+    completeExperiment(db, exp.id, {
+      conclusion: reqString(args, 'conclusion'),
+      outcomeNotes: optString(args, 'outcome_notes') ?? null,
+    });
+    return json({ completed: true, id: exp.id, title: exp.title });
+  },
+};
+
 export const WRITE_TOOLS: CoachTool[] = [
   logMetricTool,
   logMealTool,
@@ -709,6 +825,8 @@ export const WRITE_TOOLS: CoachTool[] = [
   logNoteTool,
   updateProtocolTool,
   setModeTool,
+  createExperimentTool,
+  completeExperimentTool,
   setReminderTool,
   completeReminderTool,
   dismissReminderTool,

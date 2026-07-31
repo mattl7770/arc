@@ -22,28 +22,9 @@ const unavailable = (feature: string): never => {
 // backed by the Protocols repository's versioning. It lived here as a stub
 // until the Protocols feature landed.
 
-/** Design an n-of-1 experiment. Needs: experiments table (Coach Phase 2). */
-export const createExperimentStub: CoachTool = {
-  name: 'create_experiment',
-  description:
-    'Create an n-of-1 experiment: hypothesis, intervention, metrics to watch, duration, ' +
-    'and success criteria. The Coach tracks it and reports the readout.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      name: { type: 'string' },
-      hypothesis: { type: 'string' },
-      intervention: { type: 'string' },
-      metrics: { type: 'array', items: { type: 'string' } },
-      duration_days: { type: 'integer', minimum: 3 },
-    },
-    required: ['name', 'hypothesis', 'intervention', 'metrics', 'duration_days'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  confirmSummary: () => 'Create experiment',
-  execute: () => unavailable('Experiments'),
-};
+// create_experiment / complete_experiment have shipped — real write tools now
+// (write-tools.ts), backed by the experiments repository (0027). They lived here
+// as a stub until the experiments table landed.
 
 // set_mode has shipped — it is a real write tool now (write-tools.ts), backed
 // by the day_modes repository (0026) and the mode registry. It lived here as a
@@ -91,8 +72,4 @@ export const navigateToStub: CoachTool = {
 };
 
 /** Everything above, for the spec and future wiring — never sent to the model. */
-export const STUB_TOOLS: CoachTool[] = [
-  createExperimentStub,
-  completeMissionItemStub,
-  navigateToStub,
-];
+export const STUB_TOOLS: CoachTool[] = [completeMissionItemStub, navigateToStub];
