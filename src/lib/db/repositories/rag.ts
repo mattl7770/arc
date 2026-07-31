@@ -169,8 +169,16 @@ export function ensureVectorTable(db: Database): boolean {
   try {
     db.run(CREATE_VEC_TABLE);
     vectorTableReady = true;
-  } catch {
-    // "no such module: vec0" off-device — degrade, don't crash.
+  } catch (error) {
+    // "no such module: vec0" is the EXPECTED off-device / node:sqlite case —
+    // degrade quietly. ANY OTHER error means the bundled sqlite-vec rejected
+    // this DDL (e.g. a version-sensitive PARTITION KEY / metadata column — see
+    // the header caveat): surface THAT loudly, because it would otherwise
+    // silently disable RAG forever even after the model ships, with no clue why.
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/no such module: vec0/i.test(message)) {
+      console.warn('[rag] vec0 table CREATE failed unexpectedly — RAG disabled:', message);
+    }
     vectorTableReady = false;
   }
   return vectorTableReady;

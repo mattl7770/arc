@@ -45,6 +45,12 @@ export type IngestResult = {
  * (originTable, originId) first, so re-summarizing a day doesn't duplicate it.
  */
 export async function ingestMemory(db: Database, input: MemoryInput): Promise<IngestResult> {
+  const chunks = chunkText(input.text);
+  // Empty / whitespace-only source → a NO-OP, computed BEFORE the delete-prior
+  // step: an empty re-ingest must never silently wipe an origin's existing
+  // memory (clearing is a separate, explicit operation).
+  if (chunks.length === 0) return { chunkIds: [], embedded: 0 };
+
   if (input.originTable && input.originId) {
     const prior = memoryChunkIdsForOrigin(db, input.originTable, input.originId);
     if (prior.length > 0) {
@@ -55,7 +61,7 @@ export async function ingestMemory(db: Database, input: MemoryInput): Promise<In
 
   const chunkIds: string[] = [];
   let embedded = 0;
-  for (const chunk of chunkText(input.text)) {
+  for (const chunk of chunks) {
     const id = insertMemoryChunk(db, {
       kind: input.kind,
       originTable: input.originTable ?? null,

@@ -254,6 +254,21 @@ console.log('7. ingestMemory persists chunk content even with no embedder (backf
   after === res2.chunkIds.length && res2.chunkIds.length < res.chunkIds.length
     ? ok('re-ingesting the same origin replaces its prior chunks (no duplication)')
     : bad('re-ingest', JSON.stringify({ after, first: res.chunkIds.length, res2 }));
+
+  // An EMPTY re-ingest is a no-op — it must NOT wipe the origin's memory.
+  const preserved = countChunks(db, 'memory');
+  const emptyRes = await ingestMemory(db, {
+    kind: 'note',
+    text: '   \n\n  ',
+    originTable: 'notes',
+    originId: 'n1',
+  });
+  emptyRes.chunkIds.length === 0 && countChunks(db, 'memory') === preserved
+    ? ok('an empty re-ingest is a no-op — prior memory for the origin is preserved, not wiped')
+    : bad(
+        'empty re-ingest wiped memory',
+        JSON.stringify({ preserved, now: countChunks(db, 'memory') })
+      );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
