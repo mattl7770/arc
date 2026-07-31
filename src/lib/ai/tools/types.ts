@@ -38,9 +38,16 @@ export type CoachTool = {
   confirmSummary?: (input: Record<string, unknown>, db: Database) => string;
   /**
    * Run the tool against the on-device database. Returns the tool_result
-   * content (JSON). Throws on invalid input or repository failure.
+   * content (JSON), or a Promise of it — most tools are synchronous SQL, but a
+   * few (e.g. search_knowledge, which embeds the query on-device) are async.
+   * The service layer awaits either. Throws / rejects on invalid input or
+   * repository failure.
    */
-  execute: (db: Database, input: Record<string, unknown>, context: CoachToolContext) => string;
+  execute: (
+    db: Database,
+    input: Record<string, unknown>,
+    context: CoachToolContext
+  ) => string | Promise<string>;
 };
 
 // --- Input validation helpers ------------------------------------------------

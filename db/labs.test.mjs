@@ -765,8 +765,9 @@ console.log('10. Deleting a report keeps history honest');
 console.log('11. Migration 0024 rebuilt `biomarkers` without losing anything');
 {
   const { db, raw } = freshDb();
-  raw.prepare('PRAGMA user_version').get().user_version === 24
-    ? ok('user_version reached 24')
+  raw.prepare('PRAGMA user_version').get().user_version ===
+  Math.max(...MIGRATIONS.map((m) => m.version))
+    ? ok('user_version reached the current migration head')
     : bad('version', String(raw.prepare('PRAGMA user_version').get().user_version));
 
   raw
@@ -875,8 +876,9 @@ console.log('12. The rebuild carries EXISTING lab data across (the real upgrade 
 
   migrate(exec, MIGRATIONS);
 
-  raw.prepare('PRAGMA user_version').get().user_version === 24
-    ? ok('upgrade from 0020 → 0024 applies with data present')
+  raw.prepare('PRAGMA user_version').get().user_version ===
+  Math.max(...MIGRATIONS.map((m) => m.version))
+    ? ok('upgrade from 0020 → head applies with data present')
     : bad('upgrade version');
   const kept = raw.prepare("SELECT * FROM lab_results WHERE id='res-old'").get();
   kept && near(kept.value, 91) && kept.biomarker_id === 'b-old' && kept.lab_name === 'Quest'
