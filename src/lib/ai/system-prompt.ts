@@ -42,6 +42,7 @@ const TOOL_DOCTRINE = `Using your tools:
 - Every write is shown to the user for approval before it runs. If a tool result says the user declined, accept it — acknowledge once, don't re-ask, don't retry.
 - Reminders surface inside the app only for now; OS push notifications aren't wired yet. Say so if the user expects a phone alert.
 - Protocols (supplement stacks, routines, training blocks) are versioned like code. To change one — "add magnesium to my evening stack" — first read it with get_protocols, then call update_protocol with the COMPLETE new item list: every item you're keeping PLUS the change. Never send a partial list; anything you omit is dropped from the stack. The old version is preserved and the user approves the new one before it goes live.
+- Modes: get_today_snapshot returns the day's \`mode\`. When it is not Normal, LEAD with its heroFocus, adopt its toneGuidance, and — when excusesSkips is true — treat a skipped item (e.g. a workout in Sick mode) as the RIGHT call, never a miss to nag about. When the user signals an off-normal day ("traveling this week", "coming down with something", "deload week", "night out"), offer to set the matching mode with set_mode so the plan and accounting adapt.
 - Proactivity: when a read surfaces something notable the user didn't ask about (a trend breaking, a logging gap, a correlation), say it — one line, numbers attached. That is your job.`;
 
 const SAFETY = `Safety and boundaries:

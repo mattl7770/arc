@@ -30,8 +30,10 @@ import {
   dismissReminder,
   listActiveReminders,
 } from '@/lib/db/repositories/reminders';
+import { setMode } from '@/lib/db/repositories/day-modes';
 import { logSymptom } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
+import { getModeDefinition, MODE_KEYS } from '@/lib/modes/registry';
 import { lbToKg, setLineKg } from '@/lib/exercise/format';
 import {
   isLoggableCanonical,
@@ -644,6 +646,57 @@ const updateProtocolTool: CoachTool = {
   },
 };
 
+// --- set_mode (Normal / Travel / Sick / Deload / Social / Custom) ------------
+
+const setModeTool: CoachTool = {
+  name: 'set_mode',
+  description:
+    "Set the day's mode — normal, travel, sick, deload, social, or custom — so the plan, " +
+    "priorities, tone, and adherence adapt (docs/information-architecture.md). 'until' gives an " +
+    "end date (a whole trip); omit for just today; 'normal' resets. The mode reshapes the mission " +
+    'the next time a day is generated (today if not yet generated, plus every future day in ' +
+    'range) and excuses skips where appropriate — a skipped workout in Sick mode is NOT a miss. ' +
+    'Use when the user says their day is off-normal ("traveling this week", "coming down with ' +
+    'something", "deload week", "night out").',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      mode: { type: 'string', enum: [...MODE_KEYS] },
+      until: {
+        type: 'string',
+        description: '"YYYY-MM-DD" end date (inclusive); omit for just today.',
+      },
+      note: { type: 'string', description: 'Optional context, e.g. "red-eye to Tokyo".' },
+    },
+    required: ['mode'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input) => {
+    const args = asRecord(input);
+    const mode = reqEnum(args, 'mode', MODE_KEYS);
+    const until = optDate(args, 'until');
+    if (mode === 'normal') return 'Reset to Normal mode';
+    return `Set ${getModeDefinition(mode).label} mode${until ? ` through ${until}` : ' for today'}`;
+  },
+  execute: (db, input, context) => {
+    const args = asRecord(input);
+    const mode = reqEnum(args, 'mode', MODE_KEYS);
+    const startDate = todayISODate(context.now);
+    // Omitted `until` = JUST TODAY (endDate = today), matching the tool's
+    // documented semantics. Open-ended ("until turned off") is a Home-control
+    // affordance, not reachable through the model — the model always bounds it.
+    const until = optDate(args, 'until') ?? startDate;
+    const id = setMode(db, {
+      mode,
+      startDate,
+      endDate: until,
+      note: optString(args, 'note') ?? null,
+    });
+    return json({ set: true, mode, from: startDate, until, id });
+  },
+};
+
 export const WRITE_TOOLS: CoachTool[] = [
   logMetricTool,
   logMealTool,
@@ -652,6 +705,7 @@ export const WRITE_TOOLS: CoachTool[] = [
   logCaptureTool,
   logNoteTool,
   updateProtocolTool,
+  setModeTool,
   setReminderTool,
   completeReminderTool,
   dismissReminderTool,

@@ -9,6 +9,7 @@ import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { listMission } from '@/lib/db/repositories/mission';
+import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { weekSummary } from '@/lib/db/repositories/exercise';
 import { listTodayMeals, todayTotals } from '@/lib/db/repositories/nutrition';
 import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocols';
@@ -16,6 +17,7 @@ import { isDueOn, listActiveReminders } from '@/lib/db/repositories/reminders';
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
+import { getModeDefinition } from '@/lib/modes/registry';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import type { BiomarkerRow } from '@/lib/db/types';
 
@@ -47,6 +49,8 @@ const getTodaySnapshot: CoachTool = {
   readOnly: true,
   execute: (db, _input, context) => {
     const date = todayISODate(context.now);
+    const mode = getActiveMode(db, date);
+    const modeDef = getModeDefinition(mode);
     const meals = listTodayMeals(db, date);
     const totals = todayTotals(db, date);
     const workouts = db.all<{
@@ -57,6 +61,16 @@ const getTodaySnapshot: CoachTool = {
 
     return json({
       date,
+      // The day's mode adapts plan/priorities/tone/adherence. When not Normal,
+      // heroFocus + toneGuidance tell the Coach how to lead and speak, and
+      // excusesSkips means a skipped item is the RIGHT call, not a miss.
+      mode: {
+        key: mode,
+        label: modeDef.label,
+        ...(modeDef.heroFocus ? { heroFocus: modeDef.heroFocus } : {}),
+        ...(modeDef.coachTone ? { toneGuidance: modeDef.coachTone } : {}),
+        excusesSkips: modeDef.excusesSkips,
+      },
       mission: listMission(db, date).map((m) => ({
         title: m.title,
         status: m.status,
