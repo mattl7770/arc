@@ -79,12 +79,22 @@ export function getOrCreateDailyLog(db: Database, date: string): DailyLogRow {
  * `log_entries` table but are NOT part of the day's plan, so they're excluded
  * here. Planned/seeded entries carry no such flag and pass through.
  */
+/**
+ * The SQL predicate separating a PLANNED mission row from an ad-hoc Log-tab
+ * capture (`value.adhoc`, written by repositories/logs.ts). EVERY query that
+ * reasons about "the day's mission" must carry it — {@link listMission},
+ * {@link countMissionEntries}, and the mode re-derive (mission-generate.ts)
+ * all interpolate this one string so the three can never drift apart. Omitting
+ * it from a DELETE would destroy the user's Log-tab captures.
+ */
+export const PLANNED_ROW_SQL = "json_extract(value, '$.adhoc') IS NULL";
+
 export function listMission(db: Database, date: string): MissionItem[] {
   const log = db.get<{ id: string }>('SELECT id FROM daily_logs WHERE date = ?', [date]);
   if (!log) return [];
   const rows = db.all<LogEntryRow>(
     `SELECT * FROM log_entries
-     WHERE daily_log_id = ? AND json_extract(value, '$.adhoc') IS NULL
+     WHERE daily_log_id = ? AND ${PLANNED_ROW_SQL}
      ORDER BY (scheduled_time IS NULL), scheduled_time, created_at, id`,
     [log.id]
   );
@@ -153,8 +163,7 @@ export function insertMissionItem(
  */
 export function countMissionEntries(db: Database, dailyLogId: string): number {
   const row = db.get<{ c: number }>(
-    `SELECT count(*) c FROM log_entries
-     WHERE daily_log_id = ? AND json_extract(value, '$.adhoc') IS NULL`,
+    `SELECT count(*) c FROM log_entries WHERE daily_log_id = ? AND ${PLANNED_ROW_SQL}`,
     [dailyLogId]
   );
   return row?.c ?? 0;

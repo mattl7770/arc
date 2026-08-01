@@ -5,9 +5,11 @@ import { DateEyebrow } from '@/components/home/date-eyebrow';
 import { HeroCard } from '@/components/home/hero-card';
 import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
+import { ModeControl } from '@/components/home/mode-control';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
+import { useMode } from '@/hooks/use-mode';
 import { useReadiness } from '@/hooks/use-readiness';
 import { useTodayMission } from '@/hooks/use-today-mission';
 
@@ -46,11 +48,16 @@ export default function HomeScreen() {
   const mission = useTodayMission();
   const brief = useDailyBrief();
   const readiness = useReadiness();
+  const modeView = useMode();
 
   return (
     <Screen scroll>
-      <View className="pt-2">
+      {/* The folio line: today on the left, the mode control on the right — a
+          mode is a fact about today, so it belongs beside the date (§Modes).
+          Still unruled; the row is alignment only, not a box. */}
+      <View className="flex-row items-center justify-between pt-2">
         <DateEyebrow />
+        <ModeControl mode={modeView.mode} onSelect={modeView.setMode} />
       </View>
 
       <View className="mt-5">

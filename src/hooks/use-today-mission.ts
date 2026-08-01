@@ -7,6 +7,7 @@ import { listMission, setMissionStatus, toggleMission } from '@/lib/db/repositor
 import { ensureTodaySeeded } from '@/lib/db/seed';
 import { deriveMissionView, type MissionView } from '@/lib/home/derive-mission';
 import { mockDay } from '@/lib/home/mock-day';
+import { subscribeModeChange } from '@/lib/modes/store';
 import type { MissionStatus } from '@/types/home';
 
 export type TodayMission = MissionView & {
@@ -76,6 +77,11 @@ export function useTodayMission(): TodayMission {
     });
     return () => subscription.remove();
   }, [refresh]);
+
+  // Setting a mode re-derives today's rows (mission-generate.rederiveMissionForDay),
+  // so the list must re-read. Focus alone can't cover it: the mode is set from a
+  // modal presented OVER Home, so Home never loses (or regains) focus.
+  useEffect(() => subscribeModeChange(reload), [reload]);
 
   const setStatus = useCallback(
     (id: string, status: MissionStatus) => {
