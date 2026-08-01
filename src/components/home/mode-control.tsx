@@ -42,7 +42,9 @@ export function ModeControl({
         accessibilityRole="button"
         accessibilityLabel={active ? `Mode: ${def.label}. Change` : 'Set mode'}
         onPress={() => setOpen(true)}
-        className="flex-row items-center gap-1.5 rounded-btn px-2 py-0.5 active:bg-paper-deep">
+        // py-2.5 gives a real tap target (the chip's own text is 9.5px); the
+        // negative right margin keeps its optical edge flush with the gutter.
+        className="-mr-2 flex-row items-center gap-1.5 rounded-btn px-2 py-2.5 active:bg-paper-deep">
         {active ? (
           <View className="rounded-btn bg-paper-deep px-2 py-0.5">
             <Text className="font-mono text-[9.5px] uppercase tracking-[1px] text-ink-muted">
@@ -72,8 +74,8 @@ export function ModeControl({
             </Pressable>
           </View>
           <Text className="px-5 pt-1 text-[13px] leading-5 text-ink-secondary">
-            A mode adapts today&rsquo;s plan, what the hero pushes, and how the Coach talks. A
-            skipped item under Travel, Sick, or Social is excused, not a miss.
+            A mode adapts today&rsquo;s plan and how the Coach talks. A skipped item under Travel,
+            Sick, or Social is excused, not a miss.
           </Text>
 
           <ScrollView contentContainerClassName="px-5 pb-10 pt-5">
@@ -106,8 +108,8 @@ export function ModeControl({
               })}
             </View>
             <Text className="mt-3 text-[11px] leading-4 text-ink-muted">
-              Applies to today. Work you&rsquo;ve already logged is kept — only untouched items
-              change.
+              Stays on until you set it back to Normal. Work you&rsquo;ve already logged is kept —
+              only untouched items change.
             </Text>
           </ScrollView>
         </SafeAreaView>

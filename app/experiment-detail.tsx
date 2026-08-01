@@ -83,8 +83,10 @@ export default function ExperimentDetailScreen() {
           <Text className="mt-2 text-[13px] text-ink-muted">None recorded.</Text>
         ) : (
           <View className="mt-2 flex-row flex-wrap gap-2">
-            {experiment.metrics.map((m) => (
-              <View key={m} className="rounded-btn bg-paper-deep px-2 py-1">
+            {/* Keyed by index too: the model isn't forced to emit unique metric
+                names, and duplicate React keys would warn/misrender. */}
+            {experiment.metrics.map((m, i) => (
+              <View key={`${m}-${i}`} className="rounded-btn bg-paper-deep px-2 py-1">
                 <Text className="font-mono text-[11px] text-ink-secondary">{m}</Text>
               </View>
             ))}

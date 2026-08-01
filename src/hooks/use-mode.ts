@@ -32,7 +32,14 @@ export function useMode(): ModeView {
 
   const set = useCallback(
     (next: ModeKey, opts?: { endDate?: string | null }) => {
-      applyMode(next, opts ?? {});
+      // React error boundaries do NOT catch throws from event handlers, so an
+      // unguarded DB failure here would take down the whole app from a tap on
+      // Home. Fail quiet: the mode simply doesn't change.
+      try {
+        applyMode(next, opts ?? {});
+      } catch (error) {
+        console.warn('[modes] could not set mode', error);
+      }
       reload();
     },
     [reload]

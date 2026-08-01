@@ -43,6 +43,9 @@ function emitModeChanged(): void {
 export function applyMode(mode: ModeKey, opts: { endDate?: string | null } = {}): void {
   const db = getDb();
   const today = todayISODate();
+  // Re-tapping the mode that's already on would otherwise append a redundant
+  // day_modes row on every tap.
+  if (getActiveMode(db, today) === mode) return;
   if (mode === 'normal') clearMode(db, today);
   else setMode(db, { mode, startDate: today, endDate: opts.endDate ?? null });
   // Re-shape today's plan to the new mode without destroying work already done.

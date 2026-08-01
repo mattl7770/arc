@@ -21,8 +21,13 @@ import {
   generateMissionForDay,
   rederiveMissionForDay,
 } from '../src/lib/db/repositories/mission-generate.ts';
-import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
+import {
+  getOrCreateDailyLog,
+  insertMissionItem,
+  setMissionStatus,
+} from '../src/lib/db/repositories/mission.ts';
 import { logNote } from '../src/lib/db/repositories/logs.ts';
+import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
 import { getModeDefinition, modeChangesPlan } from '../src/lib/modes/registry.ts';
 import { toolByName } from '../src/lib/ai/tools/index.ts';
 
@@ -369,6 +374,97 @@ console.log('10. re-derive on an ungenerated day just generates it');
   res.added === 1 && entriesFor(raw, DATE).length === 1
     ? ok('a day with no planned rows delegates to generateMissionForDay')
     : bad('delegate', JSON.stringify(res));
+}
+
+console.log('11. re-derive NEVER destroys the first-run mock mission (no protocols)');
+{
+  // The default onboarding state: no protocols, so ensureTodaySeeded plants the
+  // mock day. Two taps (Sick, then Normal) must not empty Home. Adversarial
+  // review reproduced an 11 -> 2 permanent loss here before the fix.
+  const { db, raw } = freshDb();
+  const mock = [
+    { id: 'm1', title: 'Cold shower', status: 'pending', category: 'Morning', why: 'demo' },
+    { id: 'm2', title: 'Creatine', status: 'pending', category: 'Supplements', why: '5 g' },
+    { id: 'm3', title: 'Zone 2 ride', status: 'pending', category: 'Training', why: '35 min' },
+    { id: 'm4', title: 'Magnesium', status: 'pending', category: 'Evening', why: '400 mg' },
+  ];
+  ensureTodaySeeded(db, DATE, mock);
+  const seeded = entriesFor(raw, DATE).length;
+  seeded === 4 ? ok('first-run mock day seeded (4 items)') : bad('seed fixture', seeded);
+
+  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  rederiveMissionForDay(db, DATE);
+  const sickTitles = entriesFor(raw, DATE).map((r) => r.title);
+  // Sick drops the TYPE 'workout', so the mock ride goes; the rest survive.
+  sickTitles.includes('Cold shower') &&
+  sickTitles.includes('Creatine') &&
+  sickTitles.includes('Magnesium') &&
+  !sickTitles.includes('Zone 2 ride')
+    ? ok('Sick keeps the mock items it does not drop, pulls only the training one')
+    : bad('sick over-deleted the mock day', JSON.stringify(sickTitles));
+
+  clearMode(db, DATE);
+  rederiveMissionForDay(db, DATE);
+  const backTitles = entriesFor(raw, DATE).map((r) => r.title);
+  backTitles.includes('Cold shower') &&
+  backTitles.includes('Creatine') &&
+  backTitles.includes('Magnesium')
+    ? ok('back to Normal, the mock mission is still intact (not wiped)')
+    : bad('NORMAL WIPED THE MOCK DAY', JSON.stringify(backTitles));
+}
+
+console.log('12. duplicate titles in one protocol survive a mode round trip');
+{
+  // A protocol legitimately listing the same item twice (two doses). Keying by
+  // title alone collapsed these and lost the second dose permanently.
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack' },
+    {
+      items: [
+        { title: 'Magnesium', scheduled_time: '08:00', dose: '200 mg', notes: null },
+        { title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null },
+        { title: 'Creatine', scheduled_time: '08:00', dose: '5 g', notes: null },
+      ],
+    }
+  );
+  generateMissionForDay(db, DATE);
+  const before = entriesFor(raw, DATE).filter((r) => r.title === 'Magnesium').length;
+  before === 2 ? ok('both Magnesium doses generated') : bad('dose fixture', before);
+
+  setMode(db, { mode: 'social', startDate: DATE, endDate: DATE });
+  rederiveMissionForDay(db, DATE);
+  const during = entriesFor(raw, DATE).filter((r) => r.title === 'Magnesium').length;
+  during === 2 ? ok('both doses survive the switch to Social') : bad('dose lost in Social', during);
+
+  clearMode(db, DATE);
+  rederiveMissionForDay(db, DATE);
+  const after = entriesFor(raw, DATE);
+  const doses = after.filter((r) => r.title === 'Magnesium').length;
+  doses === 2 && after.length === 3
+    ? ok('Normal -> Social -> Normal restores exactly the original 3-item plan')
+    : bad('round trip lost a dose', JSON.stringify(after.map((r) => r.title)));
+}
+
+console.log('13. a preserved PENDING non-generated row is not duplicated by the plan');
+{
+  const { db, raw } = freshDb();
+  const log = getOrCreateDailyLog(db, DATE);
+  // A hand-added pending row whose title matches one of Sick's own items.
+  insertMissionItem(db, log.id, 'habit', {
+    id: 'x1',
+    title: 'Extra fluids',
+    status: 'pending',
+    category: 'Morning',
+    why: 'hand-added',
+  });
+  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  rederiveMissionForDay(db, DATE);
+  const fluids = entriesFor(raw, DATE).filter((r) => r.title === 'Extra fluids').length;
+  fluids === 1
+    ? ok('the mode item does not duplicate an existing pending row of the same name')
+    : bad('duplicated a preserved pending row', fluids);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
