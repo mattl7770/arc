@@ -115,6 +115,9 @@ export default function RootLayout() {
           <Stack.Screen name="screenings" />
           <Stack.Screen name="screening-form" />
           <Stack.Screen name="appointment-form" />
+          {/* INTEGRATOR-MERGE: n-of-1 experiments surface (docs/ai-coach.md §6, migration 0027). */}
+          <Stack.Screen name="experiments" />
+          <Stack.Screen name="experiment-detail" />
         </Stack>
         <StatusBar style="dark" />
         {/* Re-lock / privacy cover. A NATIVE full-screen Modal, not an

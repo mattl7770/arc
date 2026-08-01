@@ -36,6 +36,7 @@ import {
   createExperiment,
   getExperiment,
 } from '@/lib/db/repositories/experiments';
+import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
 import { logSymptom } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { getModeDefinition, MODE_KEYS } from '@/lib/modes/registry';
@@ -701,7 +702,20 @@ const setModeTool: CoachTool = {
     // affordance — the model always bounds a mode it sets.
     const endDate = mode === 'normal' ? null : (until ?? startDate);
     const id = setMode(db, { mode, startDate, endDate, note: optString(args, 'note') ?? null });
-    return json({ set: true, mode, from: startDate, until: endDate, id });
+    // Re-shape today to match, exactly as the Home control does — otherwise the
+    // same intent through two surfaces gives two outcomes: the user says "I'm
+    // coming down with something", the Coach sets Sick, and today's workout
+    // stays on the mission with no rest/fluids items. Preserves logged work.
+    const rederived = rederiveMissionForDay(db, startDate);
+    return json({
+      set: true,
+      mode,
+      from: startDate,
+      until: endDate,
+      id,
+      missionAdded: rederived.added,
+      missionRemoved: rederived.removed,
+    });
   },
 };
 

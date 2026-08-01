@@ -17,7 +17,17 @@ import {
   getActiveModeRow,
   setMode,
 } from '../src/lib/db/repositories/day-modes.ts';
-import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+import {
+  generateMissionForDay,
+  rederiveMissionForDay,
+} from '../src/lib/db/repositories/mission-generate.ts';
+import {
+  getOrCreateDailyLog,
+  insertMissionItem,
+  setMissionStatus,
+} from '../src/lib/db/repositories/mission.ts';
+import { logNote } from '../src/lib/db/repositories/logs.ts';
+import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
 import { getModeDefinition, modeChangesPlan } from '../src/lib/modes/registry.ts';
 import { toolByName } from '../src/lib/ai/tools/index.ts';
 
@@ -263,6 +273,198 @@ console.log('7. get_today_snapshot surfaces the active mode + its guidance');
   typeof snap.mode.heroFocus === 'string'
     ? ok('snapshot reports mode:sick with heroFocus + toneGuidance + excusesSkips')
     : bad('snapshot mode', JSON.stringify(snap.mode));
+}
+
+console.log('8. mid-day re-derive reshapes the day WITHOUT destroying work');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Strength Block', type: 'training_block' },
+    {
+      items: [
+        { title: 'Squats 5x5', scheduled_time: '17:00', dose: null, notes: null },
+        { title: 'Rows 3x10', scheduled_time: '17:30', dose: null, notes: null },
+      ],
+    }
+  );
+  createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack' },
+    { items: [{ title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null }] }
+  );
+
+  // Morning: a Normal day generates 3 protocol items.
+  generateMissionForDay(db, DATE);
+  const morning = entriesFor(raw, DATE);
+  morning.length === 3 ? ok('Normal day generated 3 protocol items') : bad('setup', morning.length);
+
+  // The user completes one workout and logs an ad-hoc note, THEN falls ill.
+  const squats = morning.find((r) => r.title === 'Squats 5x5');
+  const squatsId = raw.prepare('SELECT id FROM log_entries WHERE title = ?').get('Squats 5x5').id;
+  setMissionStatus(db, squatsId, 'completed');
+  const rowsId = raw.prepare('SELECT id FROM log_entries WHERE title = ?').get('Rows 3x10').id;
+  setMissionStatus(db, rowsId, 'partial'); // real progress — must NOT be deleted
+  logNote(db, DATE, 'Throat feels raw');
+  squats ? ok('one workout completed, one partial, one ad-hoc note logged') : bad('fixture');
+
+  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  const res = rederiveMissionForDay(db, DATE);
+
+  const after = entriesFor(raw, DATE);
+  const titles = after.map((r) => r.title);
+  // The COMPLETED + PARTIAL workouts survive even though Sick drops 'workout'.
+  titles.includes('Squats 5x5') && titles.includes('Rows 3x10')
+    ? ok('completed AND partial workouts survive a mode that drops their type')
+    : bad('destroyed real work', JSON.stringify(titles));
+  raw.prepare("SELECT status FROM log_entries WHERE title = 'Squats 5x5'").get().status ===
+    'completed' &&
+  raw.prepare("SELECT status FROM log_entries WHERE title = 'Rows 3x10'").get().status === 'partial'
+    ? ok('their statuses are untouched')
+    : bad('status changed');
+  // The untouched pending supplement is still wanted by Sick (not a dropped type).
+  titles.includes('Magnesium') ? ok('the still-wanted supplement is kept') : bad('lost supplement');
+  // Sick's own items are now present.
+  titles.includes('Rest — no training today') && titles.includes('Immune support')
+    ? ok(`Sick items injected mid-day (added ${res.added})`)
+    : bad('no sick items', JSON.stringify(titles));
+  res.preserved >= 2
+    ? ok(`re-derive reports ${res.preserved} preserved rows (acted-on work)`)
+    : bad('preserved count', JSON.stringify(res));
+
+  // The ad-hoc note is untouched — the worst failure mode.
+  raw.prepare("SELECT count(*) c FROM log_entries WHERE json_extract(value,'$.adhoc') = 1").get()
+    .c === 1
+    ? ok('the ad-hoc Log-tab note is untouched (never in the mission diff)')
+    : bad('AD-HOC CAPTURE DESTROYED');
+
+  // Idempotent: nothing changes on a second call.
+  const again = rederiveMissionForDay(db, DATE);
+  again.added === 0 && again.removed === 0 && entriesFor(raw, DATE).length === after.length
+    ? ok('a second re-derive is a no-op')
+    : bad('not idempotent', JSON.stringify(again));
+}
+
+console.log('9. re-derive removes an UNTOUCHED item the new mode drops');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Strength Block', type: 'training_block' },
+    { items: [{ title: 'Squats 5x5', scheduled_time: '17:00', dose: null, notes: null }] }
+  );
+  generateMissionForDay(db, DATE);
+  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  const res = rederiveMissionForDay(db, DATE);
+  const titles = entriesFor(raw, DATE).map((r) => r.title);
+  !titles.includes('Squats 5x5') && res.removed === 1
+    ? ok('an untouched pending workout IS removed when Sick drops training')
+    : bad('should have removed', JSON.stringify({ titles, res }));
+}
+
+console.log('10. re-derive on an ungenerated day just generates it');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack' },
+    { items: [{ title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null }] }
+  );
+  const res = rederiveMissionForDay(db, DATE);
+  res.added === 1 && entriesFor(raw, DATE).length === 1
+    ? ok('a day with no planned rows delegates to generateMissionForDay')
+    : bad('delegate', JSON.stringify(res));
+}
+
+console.log('11. re-derive NEVER destroys the first-run mock mission (no protocols)');
+{
+  // The default onboarding state: no protocols, so ensureTodaySeeded plants the
+  // mock day. Two taps (Sick, then Normal) must not empty Home. Adversarial
+  // review reproduced an 11 -> 2 permanent loss here before the fix.
+  const { db, raw } = freshDb();
+  const mock = [
+    { id: 'm1', title: 'Cold shower', status: 'pending', category: 'Morning', why: 'demo' },
+    { id: 'm2', title: 'Creatine', status: 'pending', category: 'Supplements', why: '5 g' },
+    { id: 'm3', title: 'Zone 2 ride', status: 'pending', category: 'Training', why: '35 min' },
+    { id: 'm4', title: 'Magnesium', status: 'pending', category: 'Evening', why: '400 mg' },
+  ];
+  ensureTodaySeeded(db, DATE, mock);
+  const seeded = entriesFor(raw, DATE).length;
+  seeded === 4 ? ok('first-run mock day seeded (4 items)') : bad('seed fixture', seeded);
+
+  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  rederiveMissionForDay(db, DATE);
+  const sickTitles = entriesFor(raw, DATE).map((r) => r.title);
+  // Sick drops the TYPE 'workout', so the mock ride goes; the rest survive.
+  sickTitles.includes('Cold shower') &&
+  sickTitles.includes('Creatine') &&
+  sickTitles.includes('Magnesium') &&
+  !sickTitles.includes('Zone 2 ride')
+    ? ok('Sick keeps the mock items it does not drop, pulls only the training one')
+    : bad('sick over-deleted the mock day', JSON.stringify(sickTitles));
+
+  clearMode(db, DATE);
+  rederiveMissionForDay(db, DATE);
+  const backTitles = entriesFor(raw, DATE).map((r) => r.title);
+  backTitles.includes('Cold shower') &&
+  backTitles.includes('Creatine') &&
+  backTitles.includes('Magnesium')
+    ? ok('back to Normal, the mock mission is still intact (not wiped)')
+    : bad('NORMAL WIPED THE MOCK DAY', JSON.stringify(backTitles));
+}
+
+console.log('12. duplicate titles in one protocol survive a mode round trip');
+{
+  // A protocol legitimately listing the same item twice (two doses). Keying by
+  // title alone collapsed these and lost the second dose permanently.
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack' },
+    {
+      items: [
+        { title: 'Magnesium', scheduled_time: '08:00', dose: '200 mg', notes: null },
+        { title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null },
+        { title: 'Creatine', scheduled_time: '08:00', dose: '5 g', notes: null },
+      ],
+    }
+  );
+  generateMissionForDay(db, DATE);
+  const before = entriesFor(raw, DATE).filter((r) => r.title === 'Magnesium').length;
+  before === 2 ? ok('both Magnesium doses generated') : bad('dose fixture', before);
+
+  setMode(db, { mode: 'social', startDate: DATE, endDate: DATE });
+  rederiveMissionForDay(db, DATE);
+  const during = entriesFor(raw, DATE).filter((r) => r.title === 'Magnesium').length;
+  during === 2 ? ok('both doses survive the switch to Social') : bad('dose lost in Social', during);
+
+  clearMode(db, DATE);
+  rederiveMissionForDay(db, DATE);
+  const after = entriesFor(raw, DATE);
+  const doses = after.filter((r) => r.title === 'Magnesium').length;
+  doses === 2 && after.length === 3
+    ? ok('Normal -> Social -> Normal restores exactly the original 3-item plan')
+    : bad('round trip lost a dose', JSON.stringify(after.map((r) => r.title)));
+}
+
+console.log('13. a preserved PENDING non-generated row is not duplicated by the plan');
+{
+  const { db, raw } = freshDb();
+  const log = getOrCreateDailyLog(db, DATE);
+  // A hand-added pending row whose title matches one of Sick's own items.
+  insertMissionItem(db, log.id, 'habit', {
+    id: 'x1',
+    title: 'Extra fluids',
+    status: 'pending',
+    category: 'Morning',
+    why: 'hand-added',
+  });
+  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  rederiveMissionForDay(db, DATE);
+  const fluids = entriesFor(raw, DATE).filter((r) => r.title === 'Extra fluids').length;
+  fluids === 1
+    ? ok('the mode item does not duplicate an existing pending row of the same name')
+    : bad('duplicated a preserved pending row', fluids);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

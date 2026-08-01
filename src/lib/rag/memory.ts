@@ -5,9 +5,16 @@
  * memory chunks — the "deeply familiar with the user" half of the Coach.
  *
  * Content is stored ALWAYS (regular tables, works everywhere); the vector is
- * stored only where the on-device embedder is available. So a memory logged
- * before the embedder ships still persists its text and can be back-embedded
- * later — {@link needsEmbeddingCount} / a future reindex pass fills the gap.
+ * stored only where the on-device embedder is available, so a memory ingested
+ * before the embedder ships persists its text with `embedded: 0` vectors.
+ *
+ * NOTHING IS LOST BY WAITING to auto-fire this from the app's write paths: the
+ * source rows (daily_logs, log_entries, ai_messages, protocol_versions) persist
+ * independently, so when the embedder lands, history can be ingested
+ * retroactively from those tables. That is why ingestion is not yet wired into
+ * the write paths — doing it before retrieval can be validated end-to-end would
+ * add a failure surface to core writes for no reachable benefit.
+ *
  * Re-ingesting the same origin replaces its prior chunks (content + vectors).
  */
 import type { Database } from '@/lib/db/database';

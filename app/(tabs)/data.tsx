@@ -96,6 +96,13 @@ export default function DataScreen() {
       chip: 'setup',
       onPress: () => router.push('/wearables'),
     },
+    {
+      key: 'experiments',
+      label: 'Experiments',
+      icon: 'beaker-outline',
+      chip: 'setup',
+      onPress: () => router.push('/experiments'),
+    },
     { key: 'photos', label: 'Progress photos', icon: 'images-outline', chip: 'later' },
     { key: 'knowledge', label: 'Knowledge base', icon: 'library-outline', chip: 'later' },
     { key: 'export', label: 'Reports & export', icon: 'download-outline', chip: 'later' },
