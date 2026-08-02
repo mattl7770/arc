@@ -420,6 +420,24 @@ export function sleepDailyRows(samples: HealthCategorySample[]): WearableUpsert[
         endTime: session.endISO,
         metadata: meta,
       });
+      // Awake minutes are MEASURED, not derived from stages — a stage-less
+      // writer (WHOOP) still marks its wake periods. Emitted before the stage
+      // guard below, which would otherwise `continue` past it and silently drop
+      // real data; its own `awake > 0` test is what keeps 0 from being claimed.
+      const awake = session.byValue.get(SLEEP_VALUE.awake) ?? 0;
+      if (awake > 0) {
+        rows.push({
+          date: wakeDay,
+          metricType: 'sleep_awake_min',
+          value: round(awake, 0),
+          unit: 'min',
+          sourceDevice: session.device,
+          sourceRawId: dayRawId('sleep_awake_min', wakeDay),
+          startTime: null,
+          endTime: null,
+          metadata: meta,
+        });
+      }
       // Stage rows only when stages were written — for a stage-less writer a
       // zero would read as "no deep sleep at all", which is a finding, not a gap.
       const stages: readonly [number, string][] = [
@@ -437,20 +455,6 @@ export function sleepDailyRows(samples: HealthCategorySample[]): WearableUpsert[
           unit: 'min',
           sourceDevice: session.device,
           sourceRawId: dayRawId(metricType, wakeDay),
-          startTime: null,
-          endTime: null,
-          metadata: meta,
-        });
-      }
-      const awake = session.byValue.get(SLEEP_VALUE.awake) ?? 0;
-      if (awake > 0) {
-        rows.push({
-          date: wakeDay,
-          metricType: 'sleep_awake_min',
-          value: round(awake, 0),
-          unit: 'min',
-          sourceDevice: session.device,
-          sourceRawId: dayRawId('sleep_awake_min', wakeDay),
           startTime: null,
           endTime: null,
           metadata: meta,

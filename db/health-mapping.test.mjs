@@ -316,6 +316,36 @@ console.log('3. sleep — sessions, stages, attribution (spec §3)');
     ? ok('no stage rows when no stages were written (0 ≠ unknown)')
     : bad('whoop stages leaked');
 
+  // Awake minutes are measured, not derived from stages: a stage-less writer
+  // marking 23:00→02:00 asleep, 02:00→02:45 awake, 02:45→07:00 asleep has 45
+  // REAL awake minutes. They must not be dropped alongside the absent stages.
+  const whoopAwakeRows = sleepDailyRows([
+    {
+      value: 1,
+      startISO: local(2026, 7, 28, 23, 0),
+      endISO: local(2026, 7, 29, 2, 0),
+      provenance: whoop,
+    },
+    {
+      value: 2,
+      startISO: local(2026, 7, 29, 2, 0),
+      endISO: local(2026, 7, 29, 2, 45),
+      provenance: whoop,
+    },
+    {
+      value: 1,
+      startISO: local(2026, 7, 29, 2, 45),
+      endISO: local(2026, 7, 29, 7, 0),
+      provenance: whoop,
+    },
+  ]);
+  whoopAwakeRows.find((r) => r.metricType === 'sleep_awake_min')?.value === 45
+    ? ok('stage-less writer keeps its measured awake minutes (45m)')
+    : bad('whoop awake', JSON.stringify(whoopAwakeRows.map((r) => r.metricType)));
+  whoopAwakeRows.find((r) => r.metricType === 'sleep_duration_min')?.value === 435
+    ? ok('…alongside the 435m asleep duration')
+    : bad('whoop awake duration', JSON.stringify(whoopAwakeRows));
+
   // iPhone-style: inBed ONLY → in-bed row, no duration row.
   const phoneRows = sleepDailyRows([
     {
@@ -411,6 +441,13 @@ console.log('5. sync window maths');
     ? ok('20 min ago → syncs')
     : bad('throttle expiry');
   shouldAutoSync('garbage', now) ? ok('corrupt timestamp → sync (self-heal)') : bad('corrupt ts');
+  // A cursor AHEAD of the clock (bad NTP after a restore, or the clock set
+  // forward and then corrected) yields a NEGATIVE elapsed time. Compared
+  // naively against the throttle that reads as "just synced" and freezes every
+  // boot/foreground sync until real time passes the stamp.
+  shouldAutoSync(new Date(2026, 6, 30, 15, 30).toISOString(), now)
+    ? ok('cursor a day in the future → sync (clock skew must not freeze auto-sync)')
+    : bad('future cursor');
 }
 
 console.log('5b. window clamping — the boundary day must never be rewritten partially');

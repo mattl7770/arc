@@ -3,9 +3,11 @@
  * little formatted lines. DB-free so both the UI and the headless tests can
  * import it.
  *
- * Storage is canonical kg (0003_exercise.sql, matching body_metrics); the UI
- * shows lb today, same as the metric registry's weight descriptor, so the
- * future Settings unit toggle stays a display concern.
+ * Storage is canonical kg (0003_exercise.sql, matching body_metrics); every
+ * display goes through the metric registry's weight descriptor under the user's
+ * Settings unit preference, so lb/kg stays purely a display concern. There is
+ * deliberately no unit-free formatter here — one that hardcoded lb was how the
+ * 2.2× display bug got in.
  */
 import { BAR_KG, WARMUP_MIN_WORK_MULTIPLE, WARMUP_RAMP } from './constants';
 import type { RecentSession, SetType, WorkoutKind } from './types';
@@ -60,14 +62,6 @@ export function sessionDetail(session: RecentSession): string {
   }
   if (session.durationMin != null) parts.push(`${Math.round(session.durationMin)} min`);
   return parts.length > 0 ? parts.join(' · ') : KIND_LABEL[session.kind];
-}
-
-/** "8 × 135 lb", "12 reps", "135 lb" — one draft/stored set, in display units. */
-export function setLine(reps: number | null, weightLb: number | null): string {
-  if (reps != null && weightLb != null) return `${reps} × ${weightLb} lb`;
-  if (reps != null) return `${reps} ${reps === 1 ? 'rep' : 'reps'}`;
-  if (weightLb != null) return `${weightLb} lb`;
-  return '—';
 }
 
 // ---------------------------------------------------------------------------

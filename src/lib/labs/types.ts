@@ -94,8 +94,21 @@ export type MappedResult = {
   category: BiomarkerCategory;
   /** The value in the CANONICAL unit — what gets stored. */
   value: number;
-  /** Canonical unit (the catalog's when matched, the printed one when new). */
+  /**
+   * The unit this row's VALUE is expressed in: the catalog's when matched or
+   * converted, the printed one when new — and, for a blocked row, the printed
+   * one (or null when the report printed none), because a blocked value must
+   * never wear a unit it was not measured in.
+   */
   unit: string | null;
+  /**
+   * The catalog's own unit when this row hit the catalog, else null. Carried
+   * separately because on a blocked row `unit` is the PRINTED unit, and the
+   * review screen needs both to say "reported in X, ARC tracks this in Y"
+   * without contradicting itself — or, when nothing was printed, to name the
+   * unit ARC refuses to assume.
+   */
+  catalogUnit: string | null;
   /** The value/unit exactly as printed, for the review line and unit conflicts. */
   reportedValue: number;
   reportedUnit: string | null;

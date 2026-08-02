@@ -11,8 +11,10 @@
  * every stat (the Hevy/Strong rule).
  */
 import type { Database } from '../database';
+import { todayISODate } from '../date';
 import type { DateString } from '../types';
 import { localWeekRange } from './exercise';
+import { dayInstant } from './logs';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
 import type {
   E1rmPoint,
@@ -155,21 +157,25 @@ export function recentMuscleLoads(
   days: number,
   now: Date = new Date()
 ): MuscleLoad[] {
-  const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
+  // The window keys on the PERFORMED day (`w.date`), never on `created_at` (the
+  // insertion instant) — otherwise this half of the ledger selects different
+  // sessions than weeklyMuscleSets, which has always filtered on w.date.
+  const cutoff = todayISODate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - days));
   const rows = db.all<{
     reps: number | null;
     weight_kg: number | null;
     rpe: number | null;
     set_type: SetType;
-    when_iso: string;
+    date: DateString;
+    created_at: string;
     muscle: Muscle;
     role: MuscleRole;
   }>(
-    `SELECT s.reps, s.weight_kg, s.rpe, s.set_type, w.created_at AS when_iso, m.muscle, m.role
+    `SELECT s.reps, s.weight_kg, s.rpe, s.set_type, w.date, w.created_at, m.muscle, m.role
      FROM workout_sets s
      JOIN workouts w ON w.id = s.workout_id
      JOIN exercise_muscles m ON m.exercise_id = s.exercise_id
-     WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup' AND w.created_at >= ?`,
+     WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup' AND w.date >= ?`,
     [cutoff]
   );
   return rows.map((r) => ({
@@ -179,7 +185,19 @@ export function recentMuscleLoads(
     rpe: r.rpe,
     weightKg: r.weight_kg,
     setType: r.set_type,
-    whenIso: r.when_iso,
+    // Keep the exact created_at whenever it genuinely belongs to the session's
+    // own day — that's the dominant path (workout-live writes date = today,
+    // created_at = now), and a session finished yesterday 20:00 read this
+    // morning is 12h of decay, not the 20h that flattening to noon invents.
+    // Only a BACKDATED row falls back to local noon: the Coach's log_workout
+    // accepts a past date, so "on Monday: I benched Saturday" writes date =
+    // Saturday / created_at = Monday, and using that created_at read a
+    // two-days-recovered muscle as trained 0 hours ago. Noon is the honest
+    // midpoint there, and it can't produce the negative Δh muscleFreshness
+    // drops. The comparison is on created_at's LOCAL day (created_at is stored
+    // UTC, so slicing the ISO string would compare a UTC day and misfile every
+    // evening session for a user west of UTC).
+    whenIso: todayISODate(new Date(r.created_at)) === r.date ? r.created_at : dayInstant(r.date),
   }));
 }
 

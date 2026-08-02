@@ -30,6 +30,7 @@ import {
   bodyDailySeries,
   isoDatePlusDays,
   isoDaysAgo,
+  macroIsComplete,
   mean,
   nutritionDailyTotals,
   pearson,
@@ -180,8 +181,18 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
   }
 
   // --- Nutrition trends (per logged day, full days only) ---------------------
+  // Only days where EVERY meal recorded protein. A blank macro stores NULL —
+  // "not recorded", never 0 — so a name-only travel day sums to 0 g and a day
+  // where one of three meals skipped it under-reports by a third. One such day
+  // in a steady 180 g week drags the recent mean to 154 g and the Coach states
+  // "protein intake down 14.3%" about a decline that never happened. Dropping
+  // the day is also what feeds trendInsight's 3-point gate an honest count, so
+  // a mostly-unrecorded week degrades to silence instead of trending on two
+  // points — and `recent.length` in the detail then quotes only the days used.
   const nutrition = nutritionDailyTotals(db, since).filter((d) => d.date < today);
-  const proteinPoints = nutrition.map((d) => ({ date: d.date, value: d.protein_g }));
+  const proteinPoints = nutrition
+    .filter((d) => macroIsComplete(d, 'protein_g'))
+    .map((d) => ({ date: d.date, value: d.protein_g }));
   const proteinTrend = trendInsight(
     {
       metric: 'protein',

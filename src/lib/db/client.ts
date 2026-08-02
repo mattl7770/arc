@@ -40,7 +40,16 @@ function wrap(db: OpDb): Database & MigrationExecutor {
         fn();
         db.executeSync('COMMIT');
       } catch (error) {
-        db.executeSync('ROLLBACK');
+        try {
+          db.executeSync('ROLLBACK');
+        } catch {
+          // SQLite auto-rolls-back and re-enables autocommit on SQLITE_FULL /
+          // IOERR / BUSY / NOMEM / INTERRUPT, so this ROLLBACK then throws
+          // "cannot rollback - no transaction is active". Unguarded, that
+          // nonsense pre-empts `throw error` and a real "disk is full" — or a
+          // failing migration, since migrate.ts wraps each one in here — is
+          // reported as a rollback problem. The original failure must win.
+        }
         throw error;
       }
     },

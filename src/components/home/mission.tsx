@@ -30,6 +30,10 @@ type Props = {
  * pending is ever hidden — including things you are late for. That is the
  * whole distinction from the collapsible sections this screen used to refuse:
  * disclosure is allowed to hide history, never work.
+ *
+ * Callers must not render this with `total === 0`: an empty day has no score,
+ * and "0 of 0" over an empty bar reads as a plan you failed to start. Home
+ * drops the section and the hero states there is no plan instead.
  */
 export function Mission({ leadingSettled, rest, completed, total, onToggle }: Props) {
   const [showSettled, setShowSettled] = useState(false);

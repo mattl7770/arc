@@ -66,7 +66,18 @@ export function bodyDailySeries(
   );
 }
 
-/** Per-day nutrition totals for days that have meals, oldest first. */
+/**
+ * Per-day nutrition totals for days that have meals, oldest first.
+ *
+ * `meals` is how many meals the day holds; each `*_meals` count is how many of
+ * those actually recorded that macro (`count(col)` skips NULLs). The Add-a-meal
+ * form stores a blank macro as NULL — "not recorded", never 0 — so a `sum` is
+ * only an honest total when its count equals `meals`. A day where every meal
+ * left protein blank totals 0 g, and a day where one of three did under-reports
+ * by a third; trending either as a real measurement is how a name-only travel
+ * day becomes a fabricated "protein intake down 14%". Filter with
+ * {@link macroIsComplete} before averaging, trending, or quoting a total.
+ */
 export type NutritionDay = {
   date: string;
   kcal: number;
@@ -74,7 +85,30 @@ export type NutritionDay = {
   carbs_g: number;
   fat_g: number;
   meals: number;
+  kcal_meals: number;
+  protein_meals: number;
+  carbs_meals: number;
+  fat_meals: number;
 };
+
+/** Each macro a {@link NutritionDay} totals, mapped to its recorded-meal count. */
+export const MACRO_MEAL_COUNT = {
+  kcal: 'kcal_meals',
+  protein_g: 'protein_meals',
+  carbs_g: 'carbs_meals',
+  fat_g: 'fat_meals',
+} as const;
+
+export type NutritionMacro = keyof typeof MACRO_MEAL_COUNT;
+
+/**
+ * Whether `day`'s total for `macro` is a complete measurement — every meal that
+ * day recorded it. Partial days under-report and all-blank days read as 0;
+ * neither is a value the Coach may state or trend.
+ */
+export function macroIsComplete(day: NutritionDay, macro: NutritionMacro): boolean {
+  return day.meals > 0 && day[MACRO_MEAL_COUNT[macro]] === day.meals;
+}
 
 export function nutritionDailyTotals(db: Database, sinceDate: string): NutritionDay[] {
   return db.all<NutritionDay>(
@@ -83,7 +117,11 @@ export function nutritionDailyTotals(db: Database, sinceDate: string): Nutrition
        coalesce(sum(protein_g), 0) AS protein_g,
        coalesce(sum(carbs_g), 0)   AS carbs_g,
        coalesce(sum(fat_g), 0)     AS fat_g,
-       count(*)                    AS meals
+       count(*)                    AS meals,
+       count(kcal)                 AS kcal_meals,
+       count(protein_g)            AS protein_meals,
+       count(carbs_g)              AS carbs_meals,
+       count(fat_g)                AS fat_meals
      FROM meals WHERE date >= ?
      GROUP BY date ORDER BY date`,
     [sinceDate]

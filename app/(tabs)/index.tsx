@@ -63,6 +63,7 @@ export default function HomeScreen() {
       <View className="mt-5">
         <HeroCard
           item={mission.next}
+          hasPlan={mission.total > 0}
           onDone={(id) => mission.setStatus(id, 'completed')}
           onSnooze={mission.snooze}
           onSkip={(id) => mission.setStatus(id, 'skipped')}
@@ -73,15 +74,21 @@ export default function HomeScreen() {
         <ReadinessStrip readiness={readiness.readiness} pillars={readiness.pillars} />
       </View>
 
-      <View className="mt-9">
-        <Mission
-          leadingSettled={mission.leadingSettled}
-          rest={mission.rest}
-          completed={mission.completed}
-          total={mission.total}
-          onToggle={mission.toggle}
-        />
-      </View>
+      {/* With no plan at all the checklist has nothing to show, and its header
+          would read "0 of 0" over an empty progress bar — a score for a game
+          that was never played. The hero already says there is no plan and
+          where to make one, so the section drops out entirely. */}
+      {mission.total > 0 ? (
+        <View className="mt-9">
+          <Mission
+            leadingSettled={mission.leadingSettled}
+            rest={mission.rest}
+            completed={mission.completed}
+            total={mission.total}
+            onToggle={mission.toggle}
+          />
+        </View>
+      ) : null}
 
       <View className="mt-9">
         <CoachBrief brief={brief} />

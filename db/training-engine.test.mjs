@@ -80,7 +80,7 @@ function freshDb() {
 
 // Fixed "now" so freshness decay + week math are deterministic.
 const NOW = new Date('2026-07-26T18:00:00.000Z');
-/** Log a session whose created_at we control (freshness keys on created_at). */
+/** Log a session whose created_at (the INSERT instant) we control, independent of `date`. */
 function logAt(db, raw, whenIso, date, name, kind, sets) {
   const id = logWorkout(db, { date, name, kind }, sets);
   raw.prepare('UPDATE workouts SET created_at = ? WHERE id = ?').run(whenIso, id);
@@ -306,6 +306,138 @@ console.log('4. training-stats: PRs, e1RM series, session tops, prefill, muscle 
   loads.some((l) => l.muscle === 'triceps' && l.roleWeight === 0.5)
     ? ok('bench also loads triceps as a secondary (0.5)')
     : bad('secondary load');
+}
+
+// ---------------------------------------------------------------------------
+console.log('4b. recentMuscleLoads dates a session by the day PERFORMED, not the insert');
+{
+  const { db, raw } = freshDb();
+  // All three rows are INSERTED now (created_at = NOW) — exactly what the Coach's
+  // log_workout writes when it forwards a past `date` ("on Saturday I benched").
+  // Keying on created_at read every one of them as "trained 0 hours ago".
+  logAt(
+    db,
+    raw,
+    NOW.toISOString(),
+    '2026-07-24',
+    'Upper A',
+    'strength',
+    Array.from({ length: 5 }, () => ({
+      exercise: 'Bench',
+      exerciseId: 'barbell-bench-press',
+      reps: 5,
+      weightKg: 100,
+      rpe: 8,
+    }))
+  );
+  logAt(db, raw, NOW.toISOString(), '2026-07-06', 'Calves', 'strength', [
+    { exercise: 'Calf raise', exerciseId: 'standing-calf-raise', reps: 12, weightKg: 60, rpe: 8 },
+  ]);
+  // A session performed TODAY, logged 3h ago — its real time-of-day still counts.
+  logAt(db, raw, hoursAgo(3), '2026-07-26', 'Legs', 'strength', [
+    { exercise: 'Squat', exerciseId: 'barbell-back-squat', reps: 5, weightKg: 140, rpe: 9 },
+  ]);
+
+  const ledger = muscleFreshness(recentMuscleLoads(db, 14, NOW), NOW);
+  const chest = ledger.find((m) => m.muscle === 'chest');
+  chest.hoursSinceLast >= 36 && chest.hoursSinceLast <= 60
+    ? ok(`a session dated 2 days ago reads ~2 days of recovery (${chest.hoursSinceLast}h), not 0`)
+    : bad('backdated freshness', JSON.stringify(chest));
+  chest.state === 'fresh'
+    ? ok('5 hard sets two days ago read fresh — no longer suppressing a push routine')
+    : bad('backdated chest still fatigued', JSON.stringify(chest));
+
+  const quads = ledger.find((m) => m.muscle === 'quads');
+  quads.hoursSinceLast === 3
+    ? ok('a session performed TODAY keeps its real time-of-day (3h, not flattened to noon)')
+    : bad('today time-of-day', JSON.stringify(quads));
+
+  // The 14-day window must key on the same day column as weeklyMuscleSets: a
+  // session performed 20 days ago is out, however recently the row was written.
+  const calves = ledger.find((m) => m.muscle === 'calves');
+  calves.hoursSinceLast === null && calves.freshness === 100
+    ? ok('a session dated 20 days ago falls outside the 14-day window despite a fresh insert')
+    : bad('window keys on date', JSON.stringify(calves));
+}
+
+// ---------------------------------------------------------------------------
+console.log('4c. a LIVE-logged past session keeps its exact instant (no noon flattening)');
+{
+  const { db, raw } = freshDb();
+  // All fixtures are built from NOW's LOCAL calendar so the assertions hold in
+  // any machine timezone — created_at is stored UTC and the rule compares its
+  // LOCAL day, which is exactly the distinction under test.
+  const localDay = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const localAt = (dayOffset, hour) =>
+    new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() + dayOffset, hour, 0, 0, 0);
+  const hoursBeforeNow = (d) => Math.floor((NOW.getTime() - d.getTime()) / 3_600_000);
+  const benchSets = (n) =>
+    Array.from({ length: n }, () => ({
+      exercise: 'Bench',
+      exerciseId: 'barbell-bench-press',
+      reps: 5,
+      weightKg: 100,
+      rpe: 9,
+    }));
+
+  // (1) Finished yesterday 20:00 and logged right then — the dominant path
+  // (workout-live writes date = today, created_at = now).
+  const yesterdayEvening = localAt(-1, 20);
+  logAt(
+    db,
+    raw,
+    yesterdayEvening.toISOString(),
+    localDay(yesterdayEvening),
+    'Push',
+    'strength',
+    benchSets(5)
+  );
+  // (2) Backdated by the Coach: inserted NOW, performed 2 days ago.
+  const twoDaysAgo = localAt(-2, 9);
+  logAt(db, raw, NOW.toISOString(), localDay(twoDaysAgo), 'Calves', 'strength', [
+    { exercise: 'Calf raise', exerciseId: 'standing-calf-raise', reps: 12, weightKg: 60, rpe: 8 },
+  ]);
+  // (3) Logged live today, 3h ago.
+  const threeHoursAgo = new Date(NOW.getTime() - 3 * 3_600_000);
+  logAt(db, raw, threeHoursAgo.toISOString(), localDay(threeHoursAgo), 'Legs', 'strength', [
+    { exercise: 'Squat', exerciseId: 'barbell-back-squat', reps: 5, weightKg: 140, rpe: 9 },
+  ]);
+
+  const loads = recentMuscleLoads(db, 14, NOW);
+  const ledger = muscleFreshness(loads, NOW);
+
+  const chest = ledger.find((m) => m.muscle === 'chest');
+  const exactHours = hoursBeforeNow(yesterdayEvening);
+  const noonHours = hoursBeforeNow(localAt(-1, 12)); // what flattening would report
+  chest.hoursSinceLast === exactHours && exactHours !== noonHours
+    ? ok(
+        `a session logged live yesterday 20:00 reads its real ${exactHours}h, not noon's ${noonHours}h`
+      )
+    : bad('live past-day instant flattened', JSON.stringify({ chest, exactHours, noonHours }));
+
+  // The number that actually moves: 8 extra hours of fake decay under-counts
+  // fatigue, so the flattened ledger reads FRESHER than the truth.
+  const flattened = muscleFreshness(
+    loads.map((l) => (l.muscle === 'chest' ? { ...l, whenIso: localAt(-1, 12).toISOString() } : l)),
+    NOW
+  );
+  const flatChest = flattened.find((m) => m.muscle === 'chest');
+  chest.freshness < flatChest.freshness
+    ? ok(
+        `real instant counts more fatigue than noon (${chest.freshness} vs ${flatChest.freshness})`
+      )
+    : bad('freshness unchanged by flattening', JSON.stringify({ chest, flatChest }));
+
+  const calves = ledger.find((m) => m.muscle === 'calves');
+  calves.hoursSinceLast >= 36 && calves.hoursSinceLast <= 60
+    ? ok(`a backdated session (inserted now, dated 2d ago) reads ${calves.hoursSinceLast}h, not 0`)
+    : bad('backdated still reads as just-trained', JSON.stringify(calves));
+
+  const quads = ledger.find((m) => m.muscle === 'quads');
+  quads.hoursSinceLast === 3
+    ? ok('a session logged live today keeps its exact created_at (3h)')
+    : bad('today instant lost', JSON.stringify(quads));
 }
 
 // ---------------------------------------------------------------------------

@@ -493,5 +493,39 @@ console.log('12. recentSummary is empty-safe');
     : bad('empty hrv summary', recentSummary(db, 'hrv', TODAY));
 }
 
+console.log('12b. recentSummary quotes the newest MEASUREMENT, not the newest insert');
+{
+  const { db, raw } = freshDb();
+  const wall = new Date();
+  // Three days back, built from local Y/M/D so a DST shift can't collapse it onto today.
+  const OLDER = todayISODate(new Date(wall.getFullYear(), wall.getMonth(), wall.getDate() - 3));
+  // The genuinely-newer reading is written FIRST; the older-dated one is a
+  // backfill inserted afterwards. created_at is forced strictly later so the
+  // pre-fix `ORDER BY created_at DESC` loses unambiguously (in real inserts the
+  // two often share created_at to the millisecond — strftime's resolution — and
+  // the winner was simply arbitrary).
+  logMetric(db, TODAY, 'hrv', 62);
+  logMetric(db, OLDER, 'hrv', 41);
+  raw.exec(
+    `UPDATE wearable_data SET created_at='2999-01-01T00:00:00.000Z' WHERE metric_type='hrv' AND value=41`
+  );
+  const hrv = recentSummary(db, 'hrv', TODAY);
+  hrv === `Last ${formatCanonical(metricByKey('hrv'), 62)}`
+    ? ok(`wearable: today's HRV wins over a later-inserted backfill → "${hrv}"`)
+    : bad('hrv recent line', hrv);
+
+  // Same shape for the generic branch, whose measurement day lives on the parent
+  // daily_logs row — log_entries has no date column of its own.
+  logMetric(db, TODAY, 'dose', 500);
+  logMetric(db, OLDER, 'dose', 250);
+  raw.exec(
+    `UPDATE log_entries SET created_at='2999-01-01T00:00:00.000Z' WHERE json_extract(value,'$.canonical')=250`
+  );
+  const dose = recentSummary(db, 'dose', TODAY);
+  dose === `Last ${formatCanonical(metricByKey('dose'), 500)}`
+    ? ok(`generic: today's dose wins over a later-inserted backfill → "${dose}"`)
+    : bad('dose recent line', dose);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

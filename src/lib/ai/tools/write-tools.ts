@@ -2,9 +2,10 @@
  * The Coach's write tools — logging on the user's behalf and managing
  * reminders (docs/ai-coach.md, "Tool set"). None are readOnly, so the service
  * layer surfaces EVERY call here to the user for confirmation before execute
- * runs; `confirmSummary` is the one line the confirmation card shows, and it
- * must carry everything consequential about the write — what, how much, and
- * (when not today) which day — so the user never approves blind.
+ * runs; `confirmSummary` is what the confirmation card shows — one line, or a
+ * few when a write needs a diff (update_protocol) — and it must carry
+ * everything consequential about the write: what, how much, and (when not
+ * today) which day, so the user never approves blind.
  *
  * Each wraps an existing repository write — the same code paths the capture
  * screens use — so a Coach-logged meal is indistinguishable from a hand-logged
@@ -118,12 +119,28 @@ function parseMetricInput(
   let canonical: number;
   if (unit !== undefined) {
     const convert = metric.units?.[unit];
-    if (!convert) {
-      throw new Error(
-        `"unit" ${unit} is not valid for ${key}; use ${Object.keys(metric.units ?? {}).join('/') || metric.displayUnit}.`
-      );
+    if (convert) {
+      canonical = convert(value);
+    } else if (unit === spec.unit.toLowerCase()) {
+      // Naming the metric's OWN display unit is a no-op, not an error. Only
+      // `body_fat` needed this: hrv/rhr/dose are single-unit too but carry
+      // `units: { ms: id } / { bpm: id } / { mg: id }`, so their maps already
+      // match above. body_fat has no `units` map, yet the tool description
+      // invites "body_fat %" — so this used to throw `"unit" % is not valid for
+      // body_fat; use %.`, telling the model to use the unit it had just
+      // supplied and burning a round-trip. Match the RESOLVED spec's unit, NOT
+      // metric.displayUnit: for a preference-switched metric those differ, and a
+      // kg-preference user's explicit "lb" must still convert — treating it as a
+      // no-op would store pounds as kilos.
+      canonical = spec.toCanonical(value);
+    } else {
+      // Filtering the rejected token out of the accepted list is what makes it
+      // impossible for this message to name `unit` as its own fix.
+      const accepted = [
+        ...new Set([...Object.keys(metric.units ?? {}), spec.unit.toLowerCase()]),
+      ].filter((u) => u !== unit);
+      throw new Error(`"unit" ${unit} is not valid for ${key}; use ${accepted.join('/')}.`);
     }
-    canonical = convert(value);
   } else {
     canonical = spec.toCanonical(value);
   }
@@ -572,6 +589,62 @@ function parseProtocolItems(input: Record<string, unknown>): ProtocolItem[] {
   });
 }
 
+/** The optional fields a re-transcribed item can silently lose, in card order. */
+const ITEM_FIELDS: readonly { key: 'dose' | 'scheduled_time' | 'notes'; label: string }[] = [
+  { key: 'dose', label: 'dose' },
+  { key: 'scheduled_time', label: 'time' },
+  { key: 'notes', label: 'notes' },
+];
+
+/** Free text on a card can't be allowed to run away — notes are user-authored. */
+const clip = (value: string): string => (value.length > 40 ? `${value.slice(0, 39)}…` : value);
+
+/** An absent field reads as "none", never as an empty gap the eye skips over. */
+const fieldValue = (value: string | null): string => (value === null ? 'none' : clip(value));
+
+/** "Zinc · 15 mg · 21:00" — every field an added/removed item carries. */
+function itemLine(item: ProtocolItem): string {
+  const fields = ITEM_FIELDS.map((f) => item[f.key]).filter((v): v is string => v !== null);
+  return [item.title, ...fields.map(clip)].join(' · ');
+}
+
+/**
+ * What actually changes between the live version and the proposed one.
+ *
+ * The tool contract makes the model re-transcribe every KEPT item, so the
+ * likeliest failure is not a wrong item COUNT but a dropped or mistyped
+ * dose/time/note on an item nobody meant to touch (`normalizeItem` maps an
+ * absent field to null). A count can't show that — a 4-item list with a mangled
+ * dose renders identically to a correct one — and `change_notes` is model prose
+ * that is never checked against the data. So the card shows this diff and the
+ * user approves the DIFF, not the model's description of it.
+ *
+ * Items are matched by title; both sides are normalizeItem-canonical, so a
+ * field compare is a plain string compare. A retitled item reads as a removal
+ * plus an addition, which is the honest rendering of what the write does.
+ */
+function diffProtocolItems(current: ProtocolItem[], next: ProtocolItem[]): string[] {
+  const unmatched = [...current];
+  const lines: string[] = [];
+  for (const item of next) {
+    const before = unmatched.find((c) => c.title === item.title);
+    if (!before) {
+      lines.push(`Added ${itemLine(item)}`);
+      continue;
+    }
+    unmatched.splice(unmatched.indexOf(before), 1);
+    const changes = ITEM_FIELDS.filter((f) => before[f.key] !== item[f.key]).map(
+      (f) => `${f.label} ${fieldValue(before[f.key])} → ${fieldValue(item[f.key])}`
+    );
+    if (changes.length > 0) lines.push(`Changed ${item.title}: ${changes.join(', ')}`);
+  }
+  for (const gone of unmatched) lines.push(`Removed ${itemLine(gone)}`);
+  return lines;
+}
+
+/** How many diff lines the card shows before collapsing the rest into a count. */
+const MAX_DIFF_LINES = 6;
+
 /** Resolve the slug → protocol, with a message that points the model at the fix. */
 function requireProtocol(db: Database, slug: string) {
   const protocol = getProtocolBySlug(db, slug);
@@ -620,15 +693,21 @@ const updateProtocolTool: CoachTool = {
     const args = asRecord(input);
     const protocol = requireProtocol(db, reqString(args, 'protocol_slug'));
     const items = parseProtocolItems(args);
-    const wasCount = parseProtocolContent(getCurrentVersion(db, protocol.id)?.content ?? null).items
-      .length;
+    const current = parseProtocolContent(getCurrentVersion(db, protocol.id)?.content ?? null).items;
     const notes = optString(args, 'change_notes');
+    const diff = diffProtocolItems(current, items);
+    const shown = diff.slice(0, MAX_DIFF_LINES);
+    const hidden = diff.length - shown.length;
     // "(was N)" makes a destructive replace visible — the user must never approve
-    // a stack-wipe thinking it's an add.
-    return (
-      `Update "${protocol.name}": ${items.length} item${items.length === 1 ? '' : 's'} ` +
-      `(was ${wasCount})${notes ? ` — ${notes}` : ''}`
-    );
+    // a stack-wipe thinking it's an add. The diff lines under it are the
+    // authoritative part; `change_notes` is model prose nothing verifies, so it
+    // goes last and says so rather than standing in for the change itself.
+    return [
+      `Update "${protocol.name}": ${items.length} item${items.length === 1 ? '' : 's'} (was ${current.length})`,
+      ...(diff.length === 0 ? ['No item changes — identical to the live version.'] : shown),
+      ...(hidden > 0 ? [`…and ${hidden} more change${hidden === 1 ? '' : 's'}`] : []),
+      ...(notes ? [`Coach's note (unverified): ${notes}`] : []),
+    ].join('\n');
   },
   execute: (db, input) => {
     const args = asRecord(input);

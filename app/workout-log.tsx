@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
 import { Screen } from '@/components/ui/screen';
@@ -9,8 +9,9 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { logWorkout } from '@/lib/db/repositories/exercise';
-import { lbToKg, setLine } from '@/lib/exercise/format';
+import { lbToKg, setLineKg, toCanonicalKg, weightSpec } from '@/lib/exercise/format';
 import type { WorkoutKind } from '@/lib/exercise/types';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
 /**
  * The workout logger, pushed from the Exercise screen in two modes:
@@ -22,8 +23,10 @@ import type { WorkoutKind } from '@/lib/exercise/types';
  *     the screen says so.
  *
  * Either way one save writes the session and its sets in a single transaction
- * (src/lib/db/repositories/exercise.ts). Set weight is entered in lb — the
- * app's display unit today — and stored canonical kg.
+ * (src/lib/db/repositories/exercise.ts). Set weight is entered in the user's
+ * weight unit (Settings › Units, same as every other entry surface) and
+ * converted to canonical kg at the edge — a kg user typing 100 must not have it
+ * read as 100 lb.
  */
 const KINDS: { key: WorkoutKind; label: string }[] = [
   { key: 'strength', label: 'Strength' },
@@ -32,8 +35,20 @@ const KINDS: { key: WorkoutKind; label: string }[] = [
   { key: 'other', label: 'Other' },
 ];
 
-/** One set as drafted on this screen — display units, not yet persisted. */
-type DraftSet = { exercise: string; reps: number | null; weightLb: number | null };
+/**
+ * One set as drafted on this screen — canonical kg already (converted from the
+ * user's unit as it's typed), so nothing downstream has to know which unit the
+ * entry row was in.
+ */
+type DraftSet = { exercise: string; reps: number | null; weightKg: number | null };
+
+/**
+ * The entry cap on one set's load, canonical: this screen's long-standing
+ * 2000 lb fat-finger bound converted once, so it means the same weight whichever
+ * unit is typed — and stays under the schema's `weight_kg < 1000` CHECK
+ * (0003_exercise.sql), which is what it exists to keep the write clear of.
+ */
+const MAX_SET_WEIGHT_KG = lbToKg(2000);
 
 /** "12:34", growing to "1:02:34" past the hour. */
 function formatElapsed(ms: number): string {
@@ -66,6 +81,8 @@ export default function WorkoutLogScreen() {
   const navigation = useNavigation();
   const params = useLocalSearchParams<{ mode?: string }>();
   const mode: 'live' | 'past' = params.mode === 'live' ? 'live' : 'past';
+  const { units } = useUnitPreferences();
+  const spec = useMemo(() => weightSpec(units), [units]);
 
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(startedAt);
@@ -89,13 +106,16 @@ export default function WorkoutLogScreen() {
   }, [mode]);
 
   // Draft-set validation: blank reps/weight are fine (a bodyweight movement, a
-  // timed carry); a non-blank value must be a sane number. The weight cap keeps
-  // the canonical kg under the schema's < 1000 kg fat-finger CHECK.
+  // timed carry); a non-blank value must be a sane number. The typed weight is
+  // converted to canonical kg here so both the cap and the stored row mean the
+  // same load whether the user works in lb or kg.
   const reps = repsText === '' ? null : Number(repsText);
-  const weightLb = weightText === '' ? null : Number(weightText);
+  const weightEntered = weightText === '' ? null : Number(weightText);
+  const weightKg = weightEntered === null ? null : toCanonicalKg(weightEntered, units);
   const repsValid = reps === null || (Number.isInteger(reps) && reps >= 0 && reps < 10000);
   const weightValid =
-    weightLb === null || (Number.isFinite(weightLb) && weightLb > 0 && weightLb < 2000);
+    weightKg === null ||
+    (Number.isFinite(weightKg) && weightKg > 0 && weightKg < MAX_SET_WEIGHT_KG);
   const canAddSet = exercise.trim().length > 0 && repsValid && weightValid;
 
   const entryBlank = exercise.trim() === '' && repsText === '' && weightText === '';
@@ -126,7 +146,7 @@ export default function WorkoutLogScreen() {
   // flag drops so the leftover values aren't re-saved as a phantom set.
   const addDraftSet = () => {
     if (!canAddSet) return;
-    setSets((prev) => [...prev, { exercise: exercise.trim(), reps, weightLb }]);
+    setSets((prev) => [...prev, { exercise: exercise.trim(), reps, weightKg }]);
     setEntryDirty(false);
   };
 
@@ -160,22 +180,16 @@ export default function WorkoutLogScreen() {
     // one-set session shouldn't require both buttons. Only a DIRTY row though:
     // after an Add the fields keep their values, and re-saving those would
     // double-count the last set.
-    const pending = entryDirty && canAddSet ? [{ exercise: exercise.trim(), reps, weightLb }] : [];
+    const pending = entryDirty && canAddSet ? [{ exercise: exercise.trim(), reps, weightKg }] : [];
     const allSets = [...sets, ...pending];
     // A sub-30-second "session" rounds to 0 — store no duration rather than a
     // lying "0 min".
     const elapsedMin = Math.round((Date.now() - startedAt) / 60_000);
     const durationMin = mode === 'live' ? (elapsedMin > 0 ? elapsedMin : null) : duration;
     try {
-      logWorkout(
-        getDb(),
-        { date: todayISODate(), name: name.trim(), kind, durationMin },
-        allSets.map((s) => ({
-          exercise: s.exercise,
-          reps: s.reps,
-          weightKg: s.weightLb == null ? null : lbToKg(s.weightLb),
-        }))
-      );
+      // A DraftSet is already the SetInput shape in canonical kg — the unit
+      // conversion happened at entry, not here.
+      logWorkout(getDb(), { date: todayISODate(), name: name.trim(), kind, durationMin }, allSets);
       savedRef.current = true;
       router.back();
     } catch (error) {
@@ -283,7 +297,7 @@ export default function WorkoutLogScreen() {
                     {s.exercise}
                   </Text>
                   <Text className="font-mono text-[13px] text-ink-secondary">
-                    {setLine(s.reps, s.weightLb)}
+                    {setLineKg(s.reps, s.weightKg, units)}
                   </Text>
                   <Pressable
                     accessibilityRole="button"
@@ -328,11 +342,11 @@ export default function WorkoutLogScreen() {
                 <TextInput
                   value={weightText}
                   onChangeText={changeWeight}
-                  placeholder="Weight (lb)"
+                  placeholder={`Weight (${spec.unit})`}
                   placeholderTextColor={palette.inkMuted}
                   keyboardType="decimal-pad"
                   className="py-2.5 font-mono text-[15px] text-ink"
-                  accessibilityLabel="Weight in pounds"
+                  accessibilityLabel={`Weight in ${spec.unit}`}
                 />
               </Field>
             </View>

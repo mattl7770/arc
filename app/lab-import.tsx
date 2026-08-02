@@ -396,8 +396,11 @@ export default function LabImportScreen() {
                         accessibilityLabel={`${m.displayName} value`}
                         className="w-20 rounded-btn border border-hairline-soft bg-paper-deep px-2 py-1.5 text-right font-mono text-[13px] text-ink"
                       />
+                      {/* An em dash, never blank: a row whose unit the report
+                          omitted would otherwise read as "Lp(a) 75" with
+                          nothing to say the unit is unknown. */}
                       <Text className="w-16 font-mono text-[11px] text-ink-muted">
-                        {m.unit ?? ''}
+                        {m.unit ?? '—'}
                       </Text>
                     </View>
 
@@ -407,10 +410,24 @@ export default function LabImportScreen() {
                         {round(m.reportedValue)} {m.reportedUnit}
                       </Text>
                     ) : null}
-                    {m.status === 'unit_conflict' ? (
+                    {/* Two ways a row gets blocked, and they need different
+                        sentences. `m.unit` is the row's OWN unit — the printed
+                        one here — so the catalog's has to come from
+                        `m.catalogUnit` or the first sentence contradicts
+                        itself ("reported in mg/dL, tracked in mg/dL"). */}
+                    {m.status === 'unit_conflict' && m.reportedUnit ? (
                       <Text className="mt-1 text-xs leading-5 text-ink-secondary">
-                        Reported in {m.reportedUnit}, but ARC tracks this in {m.unit}, and these two
-                        don’t convert. Left out — add it by hand if you know the conversion.
+                        Reported in {m.reportedUnit}, but ARC tracks this in {m.catalogUnit}, and
+                        these two don’t convert. Left out — add it by hand if you know the
+                        conversion.
+                      </Text>
+                    ) : null}
+                    {m.status === 'unit_conflict' && !m.reportedUnit ? (
+                      <Text className="mt-1 text-xs leading-5 text-ink-secondary">
+                        No unit was printed for this result. ARC tracks this marker in{' '}
+                        {m.catalogUnit}, but assuming that would be a guess — plenty of markers are
+                        reported in more than one unit, and the two can differ several times over.
+                        Left out — check the report and add it by hand.
                       </Text>
                     ) : null}
                     {m.status === 'duplicate' ? (
@@ -421,8 +438,12 @@ export default function LabImportScreen() {
                     ) : null}
                     {m.qualifier && m.status !== 'converted' ? (
                       <Text className="mt-1 font-mono text-[10px] text-ink-muted">
+                        {/* The unit is conditional, not a trailing " {unit}": a row whose
+                            unit the report never printed would otherwise render a dangling
+                            space after the number. */}
                         printed as {m.qualifier}
-                        {round(m.reportedValue)} {m.reportedUnit}
+                        {round(m.reportedValue)}
+                        {m.reportedUnit ? ` ${m.reportedUnit}` : ''}
                       </Text>
                     ) : null}
                     {value === null ? (

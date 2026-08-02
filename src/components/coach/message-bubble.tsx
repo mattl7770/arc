@@ -67,13 +67,29 @@ export function MessageBubble({ message, onRetry }: Props) {
         </Text>
       ) : null}
 
+      {/*
+        The retry affordance. "Couldn’t send" is a claim about delivery, so it
+        only holds when nothing arrived — a turn that streamed hundreds of words
+        and then dropped its connection did send, and labelling it a send
+        failure in signal-poor red tells the user their visible answer isn't
+        real. With text on screen it's a plain muted "Retry"; signal-poor stays
+        reserved for the genuinely empty failure.
+      */}
       {message.error ? (
         <Pressable
           accessibilityRole="button"
           onPress={onRetry}
           className="mt-1.5 flex-row items-center gap-1 self-start active:opacity-60">
-          <Ionicons name="refresh" size={13} color={palette.signal.poor} />
-          <Text className="text-xs text-signal-poor">Couldn’t send · Retry</Text>
+          <Ionicons
+            name="refresh"
+            size={13}
+            color={message.content.length > 0 ? palette.inkMuted : palette.signal.poor}
+          />
+          {message.content.length > 0 ? (
+            <Text className="text-xs text-ink-muted">Retry</Text>
+          ) : (
+            <Text className="text-xs text-signal-poor">Couldn’t send · Retry</Text>
+          )}
         </Pressable>
       ) : null}
     </View>

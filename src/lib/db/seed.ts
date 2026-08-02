@@ -19,6 +19,7 @@ import {
 } from './repositories/mission';
 import { getActiveMode } from './repositories/day-modes';
 import { generateMissionForDay } from './repositories/mission-generate';
+import { listProtocols } from './repositories/protocols';
 import type { LogEntryType } from './types';
 import { BIOMARKER_SEED } from '@/lib/labs/catalog';
 import { modeChangesPlan } from '@/lib/modes/registry';
@@ -68,9 +69,9 @@ export function seedReferenceData(db: Database): void {
 /**
  * Ensure `date` has a mission, protocol-first. The user's ACTIVE protocols are
  * the plan: {@link generateMissionForDay} expands their live versions into the
- * day's `log_entries`. The `fallbackMission` (mock-day) is planted ONLY when the
- * generator produced nothing — i.e. a fresh install with no protocols yet — so
- * Home is never empty before the user (or the Coach) has built any protocol.
+ * day's `log_entries`. The `fallbackMission` (mock-day) is planted ONLY on a
+ * genuinely fresh install — a device with NO protocol rows at all — so Home is
+ * never empty before the user (or the Coach) has built any protocol.
  *
  * Both paths are guarded on *planned* entries (`countMissionEntries`), not
  * ad-hoc Log-tab captures — otherwise a note logged before Home opens on a new
@@ -89,8 +90,17 @@ export function ensureTodaySeeded(
   // Protocols drive the day; if any active protocol produced entries, done.
   if (generateMissionForDay(db, date) > 0) return;
 
-  // No protocols (or the day is already populated) — fall back to the mock demo
-  // only when the day is genuinely empty of planned entries.
+  // The demo is for a fresh install ONLY, so the gate is "has the user ever had
+  // a protocol", NOT "did the generator return 0 rows". Gating on the row count
+  // resurrected the fabricated mock day the morning after the user PAUSED (or
+  // deleted, or emptied) their last protocol: 11 invented entries written into
+  // log_entries and rendered as the real plan — and get_today_snapshot hands
+  // them to the Coach with no seed marker. listProtocols includes inactive ones
+  // on purpose; a paused protocol still means the user has a plan.
+  if (listProtocols(db).length > 0) return;
+
+  // No protocol has ever existed — fall back to the mock demo, but only when
+  // the day is genuinely empty of planned entries.
   const log = getOrCreateDailyLog(db, date);
   if (countMissionEntries(db, log.id) > 0) return;
   // A plan-changing mode that produced no entries (e.g. a future Fasting mode

@@ -102,7 +102,58 @@ console.log('4. overlapSentences repeats the boundary sentence across passages')
     : bad('overlap count', `${withOverlap.length} < ${noOverlap.length}`);
 }
 
-console.log('5. estimateTokens is chars/4, rounded up, never negative');
+console.log('5. overlap respects the hard cap and never repeats a whole passage');
+{
+  // Exact-length sentences (one terminator, no whitespace runs to normalize
+  // away) so the packing maths is reproducible rather than approximate.
+  const sentence = (chars, tag) => {
+    const head = `Fact ${tag} `;
+    return head + 'x'.repeat(chars - head.length - 1) + '.';
+  };
+  const run = (n, chars) => Array.from({ length: n }, (_, i) => sentence(chars, i)).join(' ');
+
+  const cases = [
+    // Overlap carried the WHOLE previous passage (slice(-2) of a 1-2 sentence
+    // array), so each passage restated its predecessor and grew past the cap.
+    { name: '6×700-char sentences, overlap 2', text: run(6, 700), opts: { overlapSentences: 2 } },
+    { name: '4×1500-char sentences, overlap 2', text: run(4, 1500), opts: { overlapSentences: 2 } },
+    // Overlap 1 is legal here (3 sentences precede), but the carried 500-char
+    // tail plus a 1199-char sentence is 1700 chars against the 1600 cap.
+    {
+      name: '300/300/500 then a 1199-char sentence, overlap 1',
+      text: [sentence(300, 'a'), sentence(300, 'b'), sentence(500, 'c'), sentence(1199, 'd')].join(
+        ' '
+      ),
+      opts: { overlapSentences: 1 },
+    },
+  ];
+
+  const overCap = [];
+  const supersets = [];
+  const unsplit = [];
+  for (const c of cases) {
+    const chunks = chunkText(c.text, c.opts);
+    if (chunks.length < 2) unsplit.push(c.name);
+    const lengths = chunks.map((k) => k.text.length);
+    if (lengths.some((l) => l > MAX_CHARS)) overCap.push(`${c.name} → ${lengths.join('/')}`);
+    if (chunks.some((k, i) => i > 0 && k.text.includes(chunks[i - 1].text))) supersets.push(c.name);
+  }
+  unsplit.length === 0 ? ok('every overlap fixture splits') : bad('fixture', unsplit.join(' | '));
+  overCap.length === 0
+    ? ok(`overlap passages stay within the hard cap (${MAX_CHARS} chars)`)
+    : bad('overlap breaches the cap', overCap.join(' | '));
+  supersets.length === 0
+    ? ok('no passage restates its predecessor whole (forward progress guaranteed)')
+    : bad('overlap superset', supersets.join(' | '));
+
+  // The shipping default path must be untouched by the clamp/trim above.
+  const plain = run(6, 700);
+  JSON.stringify(chunkText(plain)) === JSON.stringify(chunkText(plain, { overlapSentences: 0 }))
+    ? ok('overlapSentences 0 is byte-identical to the default')
+    : bad('default path changed');
+}
+
+console.log('6. estimateTokens is chars/4, rounded up, never negative');
 {
   estimateTokens('') === 0 &&
   estimateTokens('abcd') === 1 &&

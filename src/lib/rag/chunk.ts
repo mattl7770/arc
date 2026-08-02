@@ -18,7 +18,9 @@
  *
  * Optional `overlapSentences` repeats the tail sentence(s) of each passage at
  * the head of the next, so a retrieved passage keeps a little prior context and
- * an idea spanning a boundary is still findable from either side.
+ * an idea spanning a boundary is still findable from either side. The hard cap
+ * outranks it: carried sentences are dropped rather than pushed over the cap, so
+ * enabling overlap can never produce an oversized (or duplicated) passage.
  *
  * User-history "memory" is chunked by NATURAL unit at the ingestion call site (a
  * day summary, a note, a protocol-version change, one Coach insight) — each unit
@@ -117,7 +119,23 @@ export function chunkText(raw: string, options: ChunkOptions = {}): Chunk[] {
     // without ever exceeding the cap (single sentences are already <= cap).
     if (current.length > 0 && addedChars > targetChars) {
       passages.push(current);
-      current = overlapSentences > 0 ? current.slice(-overlapSentences) : [];
+      // Carry at most one sentence FEWER than the passage just closed. Plain
+      // `slice(-overlapSentences)` returns the WHOLE array once the overlap
+      // reaches the passage length, so the next passage would be a strict
+      // superset of its predecessor — pure duplication in the index, and no
+      // guaranteed forward progress through the sentence stream.
+      const carried = Math.min(overlapSentences, current.length - 1);
+      current = carried > 0 ? current.slice(-carried) : [];
+      // The sentence below is pushed UNCONDITIONALLY (a passage must always
+      // consume something new), so the carried prefix has to leave room for it
+      // under the hard cap — drop leading overlap until it does. Without this a
+      // 500-char tail carried in front of a 1199-char sentence yields a
+      // 1700-char passage against a 1600-char cap: the one invariant this
+      // chunker promises the embedder, broken by the overlap option alone.
+      // Sentences are pre-split to <= maxChars, so an empty prefix always fits.
+      while (current.length > 0 && current.join(' ').length + 1 + sentence.length > maxChars) {
+        current.shift();
+      }
       currentChars = current.join(' ').length;
     }
     current.push(sentence);

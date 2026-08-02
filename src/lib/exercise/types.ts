@@ -312,8 +312,11 @@ export type RoutineInput = {
 
 /**
  * One completed set reduced to what the engine needs: which muscles (with
- * fractional role weight), when, how hard. `whenIso` is the workout's created_at
- * (a real instant), `weightKg`/`reps`/`rpe` may be null for bodyweight/timed work.
+ * fractional role weight), when, how hard. `whenIso` is a real instant: the
+ * workout's created_at when that instant falls on the day the session was
+ * performed (the live-logged case), else local noon of `workouts.date` (a
+ * backdated entry, whose created_at is the insertion time, not the training
+ * time). `weightKg`/`reps`/`rpe` may be null for bodyweight/timed work.
  */
 export type EngineSet = {
   exerciseId: string | null;

@@ -22,6 +22,7 @@ import { e1rmForSet } from '@/lib/exercise/e1rm';
 import {
   displayWeight,
   formatClock,
+  formatWeight,
   setTypeTag,
   toCanonicalKg,
   weightSpec,
@@ -102,6 +103,34 @@ const WEIGHT_LOGGING = new Set<LoggingType>([
   'weight_duration',
   'assisted_bodyweight',
 ]);
+
+/** The schema's fat-finger ceiling on a set's load (0003_exercise.sql). */
+const MAX_WEIGHT_KG = 1000;
+
+/**
+ * Restates the workout_sets CHECK bounds a typed set has to satisfy — reps
+ * `>= 0` and weight `>= 0 AND < 1000` kg (0003_exercise.sql), RPE `>= 1 AND
+ * <= 10` (0013_workout_sets_enrich.sql) — as a phrase naming what is wrong, or
+ * null when the set will store.
+ *
+ * Load-bearing: logWorkout writes the session in ONE transaction, so a single
+ * out-of-range value (typing 0 in the RPE box is the easy one — the field's only
+ * hint is a "—" placeholder) rolls back every block of a 45-minute session, and
+ * the catch can say no more than "Save failed". Checked up front the user is
+ * told which set to fix instead of discarding the session. Never clamp a typed
+ * value into range: a silently-corrected training load is the worse bug.
+ */
+function setRangeError(
+  set: { reps: number | null; weightKg: number | null; rpe: number | null },
+  units: UnitPreferences
+): string | null {
+  if (set.reps != null && set.reps < 0) return 'reps can’t be negative';
+  if (set.weightKg != null && (set.weightKg < 0 || set.weightKg >= MAX_WEIGHT_KG)) {
+    return `weight must be between 0 and ${formatWeight(MAX_WEIGHT_KG, units)}`;
+  }
+  if (set.rpe != null && (set.rpe < 1 || set.rpe > 10)) return 'RPE must be between 1 and 10';
+  return null;
+}
 
 let keySeq = 1;
 const nextKey = () => keySeq++;
@@ -351,24 +380,43 @@ function WorkoutLive({
   const finish = () => {
     if (savedRef.current || !canFinish) return;
     const groups = supersetGroups(blocks);
-    const sets = blocks.flatMap((b, bi) =>
+    const drafts = blocks.flatMap((b, bi) =>
       b.sets
-        .filter((s) => s.done || s.reps.trim() !== '' || s.weight.trim() !== '')
-        .map((s) => {
+        // Index taken BEFORE the filter: the label has to name the row by the
+        // number the user sees on screen, not its position among saved sets.
+        .map((s, si) => ({ s, si }))
+        .filter(({ s }) => s.done || s.reps.trim() !== '' || s.weight.trim() !== '')
+        .map(({ s, si }) => {
           const reps = s.reps.trim() === '' ? null : Number(s.reps);
           const weightKg = s.weight.trim() === '' ? null : toCanonicalKg(Number(s.weight), units);
           const rpe = s.rpe.trim() === '' ? null : Number(s.rpe);
           return {
-            exercise: b.name,
-            exerciseId: b.exerciseId,
-            reps: reps != null && Number.isFinite(reps) ? Math.round(reps) : null,
-            weightKg: weightKg != null && Number.isFinite(weightKg) ? weightKg : null,
-            rpe: rpe != null && Number.isFinite(rpe) ? rpe : null,
-            setType: s.setType,
-            supersetGroup: groups[bi],
+            label: `${b.name}, set ${si + 1}`,
+            set: {
+              exercise: b.name,
+              exerciseId: b.exerciseId,
+              reps: reps != null && Number.isFinite(reps) ? Math.round(reps) : null,
+              weightKg: weightKg != null && Number.isFinite(weightKg) ? weightKg : null,
+              rpe: rpe != null && Number.isFinite(rpe) ? rpe : null,
+              setType: s.setType,
+              supersetGroup: groups[bi],
+            },
           };
         })
     );
+    // Range-check every set before the insert (see setRangeError): one bad value
+    // would roll the whole session back with nothing naming the offender.
+    for (const { label, set } of drafts) {
+      const problem = setRangeError(set, units);
+      if (problem) {
+        Alert.alert(
+          'Check this set',
+          `${label}: ${problem}. Nothing has been saved — fix that value and tap Finish again.`
+        );
+        return;
+      }
+    }
+    const sets = drafts.map((d) => d.set);
     const durationMin = Math.round((Date.now() - startedAt) / 60_000);
     try {
       const db = getDb();

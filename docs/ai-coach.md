@@ -48,7 +48,7 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 | `get_today_snapshot` | — | mission (`log_entries`), `meals`, `workouts`, `symptoms`, ad-hoc captures, reminders due today | Today's full picture in one call |
 | `get_metric_series` | `metric: weight\|body_fat\|waist\|hrv\|rhr\|water`, `days?≤365` | `body_metrics` / `wearable_data` daily series | Daily points + min/avg/max in display units |
 | `get_training_summary` | `days?` (28) | `workouts` (+ recent sessions) | Totals, weekly rates, per-day load |
-| `get_nutrition_summary` | `days?` (14) | `meals` | Per-day kcal/macros + averages across logged days |
+| `get_nutrition_summary` | `days?` (14) | `meals` | Per-day kcal/macros, each with its recorded-meal count, + `averagesOnFullyRecordedDays`: per macro a `{ value, daysCounted }` averaged only over days where EVERY meal recorded that macro (`value` is `null`, never `0`, when no day qualifies — a blank macro is "not recorded") |
 | `get_symptom_history` | `days?` (30) | `symptoms` | Occurrences + counts by name w/ avg severity |
 | `get_biomarkers` | `category?`, `biomarker?` | `biomarkers` ⋈ latest `lab_results` | Latest value per marker + optimal/standard ranges; explicit "no labs imported" when empty |
 | `get_protocols` | — | `protocols` ⋈ live `protocol_versions` | Each stack/routine/block with its live version number + current items (title, time, dose) |

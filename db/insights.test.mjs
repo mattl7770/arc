@@ -273,5 +273,57 @@ console.log('11. correlation treats unlogged days as rest days (0 minutes)');
     : bad('rest-day correlation missed', JSON.stringify(computeInsights(db, NOW)));
 }
 
+console.log('12. an unrecorded macro is not a zero — no fabricated protein decline');
+{
+  // A steady 180 g/day week where ONE day was logged by name only (blank macros
+  // store NULL). Summing that day to 0 g used to read as -14.3% and print
+  // "Protein intake down 14.3%" on Home about a decline that never happened.
+  const { db, raw } = freshDb();
+  for (let d = 8; d <= 20; d++) seedMeal(raw, d, 180);
+  for (let d = 1; d <= 7; d++) seedMeal(raw, d, d === 3 ? null : 180);
+  const insights = computeInsights(db, NOW);
+  !byId(insights, 'trend-protein-down')
+    ? ok('a name-only day is skipped, not counted as 0 g')
+    : bad('name-only day fired', JSON.stringify(byId(insights, 'trend-protein-down')));
+}
+{
+  // The same failure at meal granularity: 3 of the recent days have one of their
+  // three meals blank, so each totals 120 g instead of 180 g → -14.3%.
+  const { db, raw } = freshDb();
+  for (let d = 8; d <= 20; d++) for (let m = 0; m < 3; m++) seedMeal(raw, d, 60);
+  for (let d = 1; d <= 7; d++) {
+    for (let m = 0; m < 3; m++) seedMeal(raw, d, d <= 3 && m === 2 ? null : 60);
+  }
+  const insights = computeInsights(db, NOW);
+  !byId(insights, 'trend-protein-down')
+    ? ok('a partially recorded day (2 of 3 meals) is skipped too')
+    : bad('partial day fired', JSON.stringify(byId(insights, 'trend-protein-down')));
+}
+{
+  // Filtering must feed the evidence gate, not bypass it: 5 name-only days leave
+  // 2 usable readings, under MIN_POINTS_PER_WINDOW, so the honest answer is
+  // silence — even though those 2 days really are far below baseline.
+  const { db, raw } = freshDb();
+  for (let d = 8; d <= 20; d++) seedMeal(raw, d, 180);
+  for (let d = 1; d <= 7; d++) seedMeal(raw, d, d <= 5 ? null : 100);
+  const insights = computeInsights(db, NOW);
+  !byId(insights, 'trend-protein-down')
+    ? ok('2 usable days < the 3-point minimum → no trend claim')
+    : bad('trended on thin data', JSON.stringify(byId(insights, 'trend-protein-down')));
+}
+{
+  // A real decline still fires — and the detail may only claim the days it used.
+  const { db, raw } = freshDb();
+  for (let d = 8; d <= 20; d++) seedMeal(raw, d, 180);
+  for (let d = 1; d <= 7; d++) seedMeal(raw, d, d <= 3 ? null : 120);
+  const insight = byId(computeInsights(db, NOW), 'trend-protein-down');
+  insight && insight.headline.includes('33.3%')
+    ? ok(`a genuine drop across the recorded days still fires ("${insight.headline}")`)
+    : bad('real decline missed', JSON.stringify(insight));
+  insight && insight.detail.includes('(4 readings)') && !insight.detail.includes('(7 readings)')
+    ? ok('detail counts only the 4 complete days, not all 7')
+    : bad('reading count', insight?.detail);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

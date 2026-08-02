@@ -21,7 +21,9 @@
  *      ranges for still lands its values instead of being dropped.
  *   3. **A unit mismatch blocks the row** unless a conversion is *known*. See
  *      {@link convertUnit} — the conversion table is an allowlist, so an
- *      unlisted pair is refused rather than approximated.
+ *      unlisted pair is refused rather than approximated. A row whose unit the
+ *      report never printed is blocked the same way: assuming the catalog's is
+ *      a guess, and it is the one guess nothing downstream would ever show.
  *
  * Pure over the {@link Database} interface, so it is fully headless-testable
  * (db/labs.test.mjs).
@@ -258,6 +260,12 @@ function mapOne(
     displayName: catalogRow?.name ?? result.name,
     biomarkerId: catalogRow?.id ?? null,
     slug,
+    // The catalog's unit, kept alongside the row's own. On a blocked row `unit`
+    // is the printed one, so without this the review screen could only render
+    // "Reported in mg/dL, but ARC tracks this in mg/dL" — or, when the report
+    // printed no unit at all, an empty sentence on the one screen whose job is
+    // letting the user adjudicate their own lab data.
+    catalogUnit: catalogRow?.unit ?? null,
     reportedValue: result.value,
     reportedUnit: result.unit,
     qualifier: result.qualifier,
@@ -279,20 +287,33 @@ function mapOne(
     // unit and the lab's printed range as its standard range.
     status = 'new';
   } else {
-    unit = catalogRow.unit;
     const catalogUnit = normalizeUnit(catalogRow.unit);
     const reportedUnit = normalizeUnit(result.unit);
-    if (catalogUnit === null || reportedUnit === null || catalogUnit === reportedUnit) {
-      // Nothing to disagree about (ratios, indexes, catalog entries with no unit).
+    if (catalogUnit === null || catalogUnit === reportedUnit) {
+      // Nothing to disagree about: the catalog tracks this marker with no unit
+      // at all (ratios, indexes), or both sides name the same one.
+      unit = catalogRow.unit;
       status = 'matched';
+    } else if (reportedUnit === null) {
+      // The catalog HAS a unit and the report printed none. This used to share
+      // the branch above and come back `matched`, which stored the printed
+      // number under the catalog's unit with nothing on the review screen to
+      // say so — and a dropped unit is a routine model omission, not a rare
+      // one. Lp(a) decides it: US labs print it in both nmol/L and mg/dL, so a
+      // bare "75" is either correct or ~2.5x wrong and the report no longer
+      // says which. Blocked, so the assumption can never be committed silently.
+      status = 'unit_conflict';
     } else {
       const converted = convertUnit(slug, result.value, reportedUnit, catalogUnit);
       if (converted === null) {
-        // Blocked. The printed number is kept verbatim — a blocked row must
-        // never show an invented conversion.
+        // Blocked. Value AND unit stay exactly as printed — a blocked row must
+        // never show an invented conversion, and never wear the catalog's unit
+        // over the report's number (that pairing reads as a fact, and "add it
+        // by hand" in review would then transcribe it).
         status = 'unit_conflict';
       } else {
         value = converted;
+        unit = catalogRow.unit;
         status = 'converted';
       }
     }
@@ -300,16 +321,24 @@ function mapOne(
 
   const category = catalogRow?.category ?? result.category ?? 'other';
 
+  // Decided BEFORE the duplicate check below, because `duplicate` is importable
+  // and `unit_conflict` is not: relabelling a blocked row as a duplicate
+  // UN-BLOCKS it. A panel printing serum "Albumin 4.5 g/dL" and then urine
+  // "Albumin 30 mg/dL" is the case — the second row's conversion is refused on
+  // purpose (catalog.ts: mg/dL albumin is a different specimen, ~1000x lower),
+  // and as a duplicate it became a one-tap import of 30 against serum albumin.
+  const blocked = status === 'unit_conflict';
+
   // A slug already claimed by an earlier IMPORTABLE row in this report.
   // Legitimate causes exist — these reports repeat a marker across health areas
   // — but so does a genuine mis-map, and `lab_results` allows one value per
   // biomarker per report. Flag it rather than silently keeping the first.
   if (claimed.has(slug)) {
-    return { ...base, category, value, unit, status: 'duplicate' };
+    return { ...base, category, value, unit, status: blocked ? 'unit_conflict' : 'duplicate' };
   }
   // Only an importable row claims the slug. A blocked unit_conflict must not
   // demote a later, perfectly good copy of the same marker to a duplicate.
-  if (status !== 'unit_conflict') claimed.add(slug);
+  if (!blocked) claimed.add(slug);
 
   return { ...base, category, value, unit, status };
 }

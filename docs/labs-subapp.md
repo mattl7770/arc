@@ -123,7 +123,7 @@ Deliberate refusals:
 | `matched` | Catalog hit, units agree | ☑ on |
 | `converted` | Catalog hit, value converted into the catalog's unit | ☑ on |
 | `new` | No catalog hit — import creates the biomarker | ☑ on |
-| `unit_conflict` | Catalog hit, units differ, no known conversion | ☐ **blocked** |
+| `unit_conflict` | Catalog hit, but the value can't be trusted into the catalog's unit — either the printed unit differs with no known conversion, **or the report printed no unit at all** (assuming the catalog's is the one guess nothing downstream would ever show) | ☐ **blocked** |
 | `duplicate` | An earlier **importable** row already claimed this slug | ☐ off |
 
 Three subtleties that took an adversarial pass to surface, all now regression-tested:
@@ -150,7 +150,7 @@ app/labs.tsx  ── "Import a report" ──▶  app/lab-import.tsx
 
 **Nothing is stored until Save.** Same discipline as `app/meal-estimate.tsx`, for the same reason — and here the stakes are higher, because a lab value is a permanent point on a decades-long series.
 
-The review shows, per row: the catalog name, the printed name when it differs, the status, the value (editable), the unit, and — for a converted row — what was actually printed. A `unit_conflict` explains itself and can't be switched on. The draw date is editable and validated (`YYYY-MM-DD`, not in the future); when the report didn't yield one, the screen says so and blocks saving until it's supplied. A second report on the same draw date raises a warning rather than a block — sometimes there genuinely are two.
+The review shows, per row: the catalog name, the printed name when it differs, the status, the value (editable), the unit, and — for a converted row — what was actually printed. A `unit_conflict` explains itself in one of two ways — units that don't convert, or *no unit printed at all* (which names the catalog's unit and says plainly that assuming it would be a guess) — and can't be switched on either way. Because a blocked row keeps the **printed** unit, `MappedResult` carries `catalogUnit` alongside `unit` so that sentence can name both without contradicting itself; the unit column falls back to an em dash rather than rendering blank. The draw date is editable and validated (`YYYY-MM-DD`, not in the future); when the report didn't yield one, the screen says so and blocks saving until it's supplied. A second report on the same draw date raises a warning rather than a block — sometimes there genuinely are two.
 
 **Key gating.** The parse is the one online step, so the screen is gated on `useSessionKeySet()` and shows an honest "add a key in Settings › Coach" state — the same key and the same model picker the Coach uses, via the same `runCoachTurn`. No second model stack exists.
 

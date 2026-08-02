@@ -139,7 +139,14 @@ export function shouldAutoSync(lastSyncedAt: string | null, now: Date): boolean 
   if (!lastSyncedAt) return true;
   const last = new Date(lastSyncedAt).getTime();
   if (Number.isNaN(last)) return true;
-  return now.getTime() - last >= AUTO_SYNC_THROTTLE_MIN * 60_000;
+  const delta = now.getTime() - last;
+  // A cursor AHEAD of the clock is DUE, not "synced very recently". Bad NTP
+  // after a restore (or the clock set forward and then corrected) stamps
+  // lastSyncedAt in the future; comparing the resulting NEGATIVE delta against
+  // the throttle would suppress every boot and foreground sync until real time
+  // caught up — days of frozen readiness while Settings prints a healthy-looking
+  // "Last synced <future date>". Same guard as syncWindowDays' elapsed-day maths.
+  return delta < 0 || delta >= AUTO_SYNC_THROTTLE_MIN * 60_000;
 }
 
 export type HealthSyncResult = {

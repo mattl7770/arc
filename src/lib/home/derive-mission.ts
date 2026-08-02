@@ -24,11 +24,17 @@ export type MissionView = {
   leadingSettled: MissionItem[];
   /** From the first unsettled item onward — always rendered. */
   rest: MissionItem[];
-  /** The single highest-priority thing to do now (the hero). Null when done. */
+  /**
+   * The single highest-priority thing to do now (the hero). Null both when the
+   * day is finished and when there was never a plan — read it with `total` to
+   * tell those apart (`total === 0` is the empty day). Home must not render a
+   * completion state for a plan that never existed.
+   */
   next: MissionItem | null;
   completed: number;
   /** Acted on in any way: completed or skipped. Drives "imperfect day" credit. */
   settled: number;
+  /** Items generated for today. Zero means no active protocol produced a plan. */
   total: number;
 };
 

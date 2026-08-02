@@ -26,11 +26,13 @@ import { computeInsights, generateDailyBrief } from '../insights';
 import {
   bodyDailySeries,
   isoDaysAgo,
+  macroIsComplete,
   nutritionDailyTotals,
   round1,
   seriesStats,
   trainingDailyTotals,
   wearableDailySeries,
+  type NutritionMacro,
   type SeriesPoint,
 } from '../series';
 import { retrievePassages } from '@/lib/rag/retrieve';
@@ -92,7 +94,11 @@ const getTodaySnapshot: CoachTool = {
       })),
       // The Log feed also lists symptoms; they're already reported (structured)
       // in `symptoms` above, so drop them here rather than double-counting.
-      captures: listTodayEntries(db, context.now)
+      // The unit preference goes in exactly as the Log tab passes it: without it
+      // a kg user's 80 kg weigh-in comes back as "176.4 lb" here while
+      // get_metric_series reports 80 kg, and the model — told never to convert —
+      // holds the same measurement in two units.
+      captures: listTodayEntries(db, context.now, getPreferences(db).units)
         .filter((e) => e.category !== 'Symptom')
         .map((e) => ({
           time: e.time,
@@ -255,8 +261,12 @@ const getNutritionSummary: CoachTool = {
   name: 'get_nutrition_summary',
   description:
     'Nutrition over the last N days (default 14): per-day kcal/protein/carbs/fat totals ' +
-    'and averages across logged days. Call this for anything about diet, protein, ' +
-    'calories, or eating patterns.',
+    'and per-macro averages. A blank macro on a meal is NOT RECORDED, never zero, so each ' +
+    'average counts only the days where EVERY meal recorded that macro — its `daysCounted` ' +
+    'names that denominator (null value = no complete day; say so rather than quoting a ' +
+    'number). In `perDay`, a day whose `*_meals` count is below `meals` is a partial total: ' +
+    'do not quote or trend it. Call this for anything about diet, protein, calories, or ' +
+    'eating patterns.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -268,19 +278,34 @@ const getNutritionSummary: CoachTool = {
   execute: (db, input, context) => {
     const days = daysWindow(asRecord(input), 14);
     const daily = nutritionDailyTotals(db, isoDaysAgo(context.now, days - 1));
-    const loggedDays = daily.length;
-    const avg = (pick: (d: (typeof daily)[number]) => number) =>
-      loggedDays === 0 ? null : round1(daily.reduce((a, d) => a + pick(d), 0) / loggedDays);
+    // Average a macro ONLY over days where every meal recorded it. The
+    // Add-a-meal form stores a blank macro as NULL — "not recorded" — and the
+    // SQL coalesces the sum to 0, so averaging over every logged day counts a
+    // name-only day as a real 0 g protein day and drags the mean down; the
+    // Coach would then quote that fabricated number as a measurement.
+    const macroAverage = (macro: NutritionMacro): { value: number | null; daysCounted: number } => {
+      const complete = daily.filter((d) => macroIsComplete(d, macro));
+      return {
+        value:
+          complete.length === 0
+            ? null
+            : round1(complete.reduce((a, d) => a + d[macro], 0) / complete.length),
+        daysCounted: complete.length,
+      };
+    };
 
     return json({
       days,
-      loggedDays,
+      loggedDays: daily.length,
       perDay: daily,
-      averagesAcrossLoggedDays: {
-        kcal: avg((d) => d.kcal),
-        protein_g: avg((d) => d.protein_g),
-        carbs_g: avg((d) => d.carbs_g),
-        fat_g: avg((d) => d.fat_g),
+      // Each average carries its own denominator — the days where that macro was
+      // fully recorded — so the model can state the coverage instead of implying
+      // the window.
+      averagesOnFullyRecordedDays: {
+        kcal: macroAverage('kcal'),
+        protein_g: macroAverage('protein_g'),
+        carbs_g: macroAverage('carbs_g'),
+        fat_g: macroAverage('fat_g'),
       },
     });
   },

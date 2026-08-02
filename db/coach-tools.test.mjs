@@ -294,9 +294,10 @@ console.log('7. get_nutrition_summary + get_training_summary aggregate honestly'
   run('log_meal', db, { name: 'B', kcal: 800, protein_g: 50 });
   const nutrition = run('get_nutrition_summary', db, { days: 7 });
   nutrition.loggedDays === 1 &&
-  near(nutrition.averagesAcrossLoggedDays.kcal, 1400) &&
-  near(nutrition.averagesAcrossLoggedDays.protein_g, 90)
-    ? ok('nutrition day totals + averages across logged days')
+  near(nutrition.averagesOnFullyRecordedDays.kcal.value, 1400) &&
+  near(nutrition.averagesOnFullyRecordedDays.protein_g.value, 90) &&
+  nutrition.averagesOnFullyRecordedDays.protein_g.daysCounted === 1
+    ? ok('nutrition day totals + averages over fully-recorded days, with the denominator')
     : bad('nutrition', JSON.stringify(nutrition));
 
   run('log_workout', db, { name: 'Zone 2', kind: 'cardio', duration_min: 45 });
@@ -437,7 +438,8 @@ console.log('13. protocols: get_protocols reads live items; update_protocol vers
     : bad('get_protocols', JSON.stringify(view));
 
   // The magnesium scenario: read the current items, resubmit the COMPLETE list
-  // plus the change. The confirmation shows the count delta so a wipe is visible.
+  // plus the change. The confirmation shows the count delta so a wipe is visible,
+  // and the real diff under it so the user approves the change, not the prose.
   const changeInput = {
     protocol_slug: slug,
     items: [
@@ -448,8 +450,14 @@ console.log('13. protocols: get_protocols reads live items; update_protocol vers
     change_notes: 'Bumped magnesium to 400 mg, added zinc',
   };
   const summary = toolByName('update_protocol').confirmSummary(changeInput, db);
-  summary === 'Update "Evening Stack": 3 items (was 2) — Bumped magnesium to 400 mg, added zinc'
-    ? ok(`confirmation shows the item-count delta ("${summary}")`)
+  summary ===
+  [
+    'Update "Evening Stack": 3 items (was 2)',
+    'Changed Magnesium Glycinate: dose 200 mg → 400 mg',
+    'Added Zinc · 15 mg · 21:00',
+    "Coach's note (unverified): Bumped magnesium to 400 mg, added zinc",
+  ].join('\n')
+    ? ok('confirmation shows the count delta, the per-item diff, then the model’s note')
     : bad('update summary', summary);
 
   const out = run('update_protocol', db, changeInput);
@@ -604,6 +612,195 @@ console.log('15. get_training_summary.thisWeek is the calendar week (agrees with
   near(summary.totals.cardioMinutes, 75) && summary.thisWeek.cardioMinutes === 45
     ? ok('rolling 7-day totals include the Sunday session (75); thisWeek excludes it (45)')
     : bad('rolling vs calendar', JSON.stringify(summary));
+}
+
+console.log('16. update_protocol: the card diffs the items, so a silent corruption shows');
+{
+  const { db, raw } = freshDb();
+  const protocolId = createProtocolWithVersion(
+    db,
+    { name: 'Morning Stack', type: 'supplement_stack' },
+    {
+      items: [
+        { title: 'Vitamin D3', scheduled_time: '08:00', dose: '5000 IU', notes: null },
+        { title: 'Creatine', scheduled_time: '08:00', dose: '5 g', notes: null },
+      ],
+    },
+    'seed'
+  );
+  const slug = raw.prepare('SELECT slug FROM protocols WHERE id = ?').get(protocolId).slug;
+  const summaryOf = (items, change_notes) =>
+    toolByName('update_protocol').confirmSummary({ protocol_slug: slug, items, change_notes }, db);
+
+  // The defect: the model re-transcribes a kept item and fattens a dose 10×. The
+  // item COUNT is unchanged, so the old card was byte-identical to a correct call.
+  const mistyped = summaryOf(
+    [
+      { title: 'Vitamin D3', scheduled_time: '08:00', dose: '50000 IU' },
+      { title: 'Creatine', scheduled_time: '08:00', dose: '5 g' },
+    ],
+    'No changes, just re-saving'
+  );
+  mistyped ===
+  [
+    'Update "Morning Stack": 2 items (was 2)',
+    'Changed Vitamin D3: dose 5000 IU → 50000 IU',
+    "Coach's note (unverified): No changes, just re-saving",
+  ].join('\n')
+    ? ok('a 10× dose typo on an untouched item is on the card, contradicting the note')
+    : bad('mistyped dose diff', mistyped);
+
+  // Omission is the likeliest failure — normalizeItem maps an absent field to null.
+  const dropped = summaryOf(
+    [{ title: 'Vitamin D3', scheduled_time: '08:00', dose: '5000 IU' }, { title: 'Creatine' }],
+    'Nothing to see here'
+  );
+  dropped.includes('Changed Creatine: dose 5 g → none, time 08:00 → none')
+    ? ok('a dropped dose/time renders as "→ none", never as an unchanged line')
+    : bad('dropped fields diff', dropped);
+
+  const addRemove = summaryOf(
+    [
+      { title: 'Vitamin D3', scheduled_time: '08:00', dose: '5000 IU' },
+      { title: 'Zinc', dose: '15 mg' },
+    ],
+    'Swap'
+  );
+  addRemove.includes('Added Zinc · 15 mg') && addRemove.includes('Removed Creatine · 5 g · 08:00')
+    ? ok('an added and a removed item are both named, with their fields')
+    : bad('add/remove diff', addRemove);
+
+  const noop = summaryOf(
+    [
+      { title: 'Vitamin D3', scheduled_time: '08:00', dose: '5000 IU' },
+      { title: 'Creatine', scheduled_time: '08:00', dose: '5 g' },
+    ],
+    'Tightened the stack'
+  );
+  noop.includes('No item changes — identical to the live version.')
+    ? ok('a no-op resubmit says so rather than letting the note imply a change')
+    : bad('no-op diff', noop);
+
+  // A big rewrite must not emit an unbounded card.
+  const bigId = createProtocolWithVersion(
+    db,
+    { name: 'Long Routine', type: 'daily_routine' },
+    {
+      items: Array.from({ length: 10 }, (_, i) => ({
+        title: `Step ${i + 1}`,
+        scheduled_time: null,
+        dose: '1 rep',
+        notes: null,
+      })),
+    },
+    'seed'
+  );
+  const bigSlug = raw.prepare('SELECT slug FROM protocols WHERE id = ?').get(bigId).slug;
+  const big = toolByName('update_protocol').confirmSummary(
+    {
+      protocol_slug: bigSlug,
+      items: Array.from({ length: 10 }, (_, i) => ({ title: `Step ${i + 1}`, dose: '2 reps' })),
+      change_notes: 'Doubled everything',
+    },
+    db
+  );
+  big.split('\n').length === 9 && big.includes('…and 4 more changes')
+    ? ok('10 changed items collapse to 6 lines + "…and 4 more changes"')
+    : bad('diff bounding', big);
+}
+
+console.log("17. get_today_snapshot renders the Log feed in the user's chosen units");
+{
+  const { db } = freshDb();
+  setUnitPreference(db, 'weight', 'kg');
+  setUnitPreference(db, 'volume', 'ml');
+  run('log_metric', db, { metric: 'weight', value: 80 });
+  run('log_metric', db, { metric: 'water', value: 500 });
+
+  const snap = run('get_today_snapshot', db);
+  const weight = snap.captures.find((c) => c.category === 'Weight');
+  // The defect: the snapshot dropped the preference, so the model read "176.4 lb"
+  // here and 80 kg from get_metric_series — one weigh-in held in two units, with
+  // a system prompt telling it never to convert.
+  weight && weight.title === '80.0 kg'
+    ? ok(`a kg user's weigh-in reads "${weight.title}" in the snapshot`)
+    : bad('snapshot weight unit', JSON.stringify(snap.captures));
+  const water = snap.captures.find((c) => c.category === 'Water');
+  water && water.title === '500 ml'
+    ? ok(`water reads "${water.title}", not the imperial fallback`)
+    : bad('snapshot water unit', JSON.stringify(snap.captures));
+
+  const series = run('get_metric_series', db, { metric: 'weight', days: 7 });
+  series.unit === 'kg' && near(series.points[0]?.value, 80)
+    ? ok('…and it agrees with get_metric_series: same number, same unit')
+    : bad('snapshot vs series', JSON.stringify(series));
+}
+
+console.log('18. get_nutrition_summary averages skip days a macro was not recorded');
+{
+  const { db } = freshDb();
+  const yesterday = isoDaysAgo(NOW, 1);
+  // Yesterday: both meals recorded protein — a complete day.
+  run('log_meal', db, { name: 'A', kcal: 600, protein_g: 40, date: yesterday });
+  run('log_meal', db, { name: 'B', kcal: 800, protein_g: 50, date: yesterday });
+  // Today: logged by name only. A blank macro is NULL ("not recorded"), never 0.
+  run('log_meal', db, { name: 'Dinner out' });
+
+  const out = run('get_nutrition_summary', db, { days: 7 });
+  const protein = out.averagesOnFullyRecordedDays.protein_g;
+  // The defect: averaging over every logged day counted today as a real 0 g
+  // protein day and halved the mean to 45.
+  near(protein.value, 90) && protein.daysCounted === 1
+    ? ok('protein averages 90 g over its 1 complete day, not 45 across both')
+    : bad('protein average', JSON.stringify(out.averagesOnFullyRecordedDays));
+  out.loggedDays === 2
+    ? ok('loggedDays still reports both days (the partial one stays visible)')
+    : bad('loggedDays', out.loggedDays);
+  const partial = out.perDay.find((d) => d.date === TODAY);
+  partial && partial.meals === 1 && partial.protein_meals === 0
+    ? ok('perDay carries meals vs protein_meals, so a partial total is recognisable')
+    : bad('perDay counts', JSON.stringify(partial));
+  out.averagesOnFullyRecordedDays.fat_g.value === null &&
+  out.averagesOnFullyRecordedDays.fat_g.daysCounted === 0
+    ? ok('a macro no day recorded returns null, never a fabricated 0')
+    : bad('fat average', JSON.stringify(out.averagesOnFullyRecordedDays.fat_g));
+}
+
+console.log("19. log_metric accepts a single-unit metric's own unit token");
+{
+  const { db, raw } = freshDb();
+  // The defect: log_metric's description invites "body_fat %", but body_fat has
+  // no `units` map, so this threw `"unit" % is not valid for body_fat; use %.` —
+  // the model told to use the unit it had just supplied.
+  const out = run('log_metric', db, { metric: 'body_fat', value: 14, unit: '%' });
+  const stored = raw.prepare('SELECT body_fat_pct FROM body_metrics').get();
+  out.logged === true && near(stored?.body_fat_pct, 14, 1e-9)
+    ? ok('body_fat 14 "%" stores 14 % instead of demanding the unit it was given')
+    : bad('body_fat %', JSON.stringify({ out, stored }));
+  toolByName('log_metric').confirmSummary({ metric: 'body_fat', value: 14, unit: '%' }, db) ===
+  'Log body-fat 14 %'
+    ? ok('…and the confirmation card is produced rather than suppressed by a throw')
+    : bad(
+        'body_fat card',
+        toolByName('log_metric').confirmSummary({ metric: 'body_fat', value: 14, unit: '%' }, db)
+      );
+  run('log_metric', db, { metric: 'hrv', value: 48, unit: 'ms' });
+  raw.prepare(`SELECT value FROM wearable_data WHERE metric_type = 'hrv'`).get()?.value === 48
+    ? ok('hrv "ms" is a no-op too (the whole single-unit class, not just body_fat)')
+    : bad('hrv ms');
+
+  let message = '';
+  try {
+    run('log_metric', db, { metric: 'body_fat', value: 14, unit: 'kg' });
+  } catch (e) {
+    message = String(e.message);
+  }
+  message.includes('not valid for body_fat') && message.slice(message.indexOf('use ')) === 'use %.'
+    ? ok(`a genuinely wrong unit still errors, never naming itself as the fix ("${message}")`)
+    : bad('wrong unit', message);
+  raw.prepare('SELECT count(*) c FROM body_metrics').get().c === 1
+    ? ok('the rejected call wrote nothing')
+    : bad('write on rejected unit');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

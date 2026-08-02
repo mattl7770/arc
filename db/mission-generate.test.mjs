@@ -221,5 +221,53 @@ console.log('5. ensureTodaySeeded falls back to the mock mission with no protoco
     : bad('fallback', JSON.stringify(entries.map((e) => e.title)));
 }
 
+console.log('6. a user WITH protocols never gets the mock demo, however empty the day');
+{
+  // The regression: the fallback used to be gated on "the generator returned 0
+  // rows" instead of "the user has never had a protocol". So pausing the last
+  // protocol before a trip (or deleting it, or saving one with no items) planted
+  // 11 FABRICATED mock entries on the next morning's first Home open — rendered
+  // as the real plan and handed to the Coach with no seed marker.
+  const mock = [
+    { id: 'm1', title: 'MOCK ITEM', status: 'pending', category: 'Morning', why: 'demo' },
+  ];
+
+  {
+    const { db, raw } = freshDb();
+    const id = createProtocolWithVersion(
+      db,
+      { name: 'Real Stack', type: 'supplement_stack' },
+      { items: [{ title: 'Omega-3', scheduled_time: '08:00', dose: '2 g', notes: null }] }
+    );
+    setActive(db, id, false);
+    ensureTodaySeeded(db, DATE, mock);
+    const planted = rows(raw, DATE).map((e) => e.title);
+    planted.length === 0
+      ? ok('paused last protocol → empty day (Home shows its empty state), no mock rows')
+      : bad('paused protocol resurrected the demo', JSON.stringify(planted));
+  }
+
+  {
+    const { db, raw } = freshDb();
+    // The editor's canSave permits zero items, so this is reachable.
+    createProtocolWithVersion(db, { name: 'Emptied', type: 'daily_routine' }, { items: [] });
+    ensureTodaySeeded(db, DATE, mock);
+    const planted = rows(raw, DATE).map((e) => e.title);
+    planted.length === 0
+      ? ok('active protocol with no items → empty day, no mock rows')
+      : bad('empty protocol resurrected the demo', JSON.stringify(planted));
+  }
+
+  {
+    const { db, raw } = freshDb();
+    createProtocol(db, { name: 'Draft', type: 'daily_routine' });
+    ensureTodaySeeded(db, DATE, mock);
+    const planted = rows(raw, DATE).map((e) => e.title);
+    planted.length === 0
+      ? ok('version-less protocol still counts as "has a plan", no mock rows')
+      : bad('version-less protocol resurrected the demo', JSON.stringify(planted));
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

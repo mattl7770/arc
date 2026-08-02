@@ -525,12 +525,165 @@ console.log('6d. A blocked row never carries the catalog unit with the printed n
       },
     ],
   });
-  rows[0].status === 'unit_conflict' && rows[0].value === 14
-    ? ok('the blocked row keeps the printed number')
+  rows[0].status === 'unit_conflict' && rows[0].value === 14 && rows[0].unit === 'mg/dL'
+    ? ok('the blocked row keeps the printed number AND the printed unit')
     : bad('blocked row', JSON.stringify(rows[0]));
   rows[1].status === 'matched' && defaultIncluded(rows[1])
     ? ok('a blocked row does not demote a later importable copy to a duplicate')
     : bad('slug claimed by a blocked row', JSON.stringify(rows[1]));
+}
+
+console.log('6e. An already-claimed slug never un-blocks a refused conversion');
+{
+  // The serum/urine albumin trap. A CMP prints "Albumin 4.5 g/dL"; the
+  // urinalysis section prints microalbumin under the same bare name in mg/dL —
+  // a different specimen, ~1000x lower, whose conversion catalog.ts refuses on
+  // purpose. The second row must stay BLOCKED; as a `duplicate` it is
+  // importable, and one tap stores serum albumin = 30 g/dL forever.
+  const { db } = freshDb();
+  const rows = mapExtraction(db, {
+    collectedOn: TODAY,
+    labName: null,
+    qualitative: [],
+    notes: null,
+    results: [
+      {
+        name: 'Albumin',
+        value: 4.5,
+        qualifier: null,
+        unit: 'g/dL',
+        refLow: null,
+        refHigh: null,
+        category: 'organ',
+      },
+      {
+        name: 'Albumin',
+        value: 30,
+        qualifier: null,
+        unit: 'mg/dL',
+        refLow: null,
+        refHigh: null,
+        category: 'organ',
+      },
+    ],
+  });
+  rows[1].status === 'unit_conflict' && !isImportable(rows[1]) && !defaultIncluded(rows[1])
+    ? ok('a refused conversion stays blocked even when the slug is already claimed')
+    : bad('duplicate un-blocked a unit conflict', JSON.stringify(rows[1]));
+  rows[1].value === 30 && rows[1].unit === 'mg/dL'
+    ? ok('...and 30 is labelled mg/dL as printed, never the catalog’s g/dL')
+    : bad('blocked row mislabelled', JSON.stringify({ v: rows[1].value, u: rows[1].unit }));
+  rows[0].status === 'matched' && defaultIncluded(rows[0])
+    ? ok('...while the serum row that claimed the slug still imports')
+    : bad('first albumin row', JSON.stringify(rows[0]));
+}
+
+console.log('6f. A unit the report never printed is not agreement');
+{
+  const { db, raw } = freshDb();
+  // A marker the catalog tracks WITHOUT a unit — genuine agreement, and the
+  // case the null-unit block must not swallow. (Every seeded marker has one, so
+  // plant one the way an earlier `new` row would have.)
+  raw.exec(
+    `INSERT INTO biomarkers (id, slug, name, category, unit)
+     VALUES ('bm-unitless-test', 'free_androgen_index', 'Free Androgen Index', 'hormone', NULL)`
+  );
+  const rows = mapExtraction(db, {
+    collectedOn: TODAY,
+    labName: null,
+    qualitative: [],
+    notes: null,
+    results: [
+      // US labs print Lp(a) in BOTH nmol/L and mg/dL. With the unit dropped —
+      // a routine model omission — a bare 75 is either right or ~2.5x wrong on
+      // a headline cardiovascular marker, and the report no longer says which.
+      {
+        name: 'Lp(a)',
+        value: 75,
+        qualifier: null,
+        unit: null,
+        refLow: null,
+        refHigh: null,
+        category: 'cardiovascular',
+      },
+      {
+        name: 'Free Androgen Index',
+        value: 42,
+        qualifier: null,
+        unit: null,
+        refLow: null,
+        refHigh: null,
+        category: 'hormone',
+      },
+    ],
+  });
+  rows[0].status === 'unit_conflict' && !isImportable(rows[0]) && !defaultIncluded(rows[0])
+    ? ok('a missing printed unit against a unit-bearing marker is blocked, not assumed')
+    : bad('null unit read as agreement', JSON.stringify(rows[0]));
+  rows[0].unit === null
+    ? ok('...and the row never wears the catalog’s nmol/L over a number of unknown unit')
+    : bad('catalog unit assumed', String(rows[0].unit));
+  rows[1].status === 'matched' && defaultIncluded(rows[1])
+    ? ok('a marker the catalog tracks unitless still matches a row that printed none')
+    : bad('unitless marker blocked', JSON.stringify(rows[1]));
+}
+
+console.log('6g. Every row carries the catalog’s unit alongside its own');
+{
+  // `unit` is the unit the row's VALUE is in — the PRINTED one on a blocked
+  // row. So the review screen can't source the catalog's unit from it, and the
+  // sentence it writes came out as "Reported in mg/dL, but ARC tracks this in
+  // mg/dL, and these two don't convert." — self-contradictory on the one screen
+  // that asks the user to adjudicate their own lab data. `catalogUnit` is what
+  // makes both halves of that sentence true.
+  const { db } = freshDb();
+  const row = (name, value, unit) => ({
+    name,
+    value,
+    qualifier: null,
+    unit,
+    refLow: null,
+    refHigh: null,
+    category: 'cardiovascular',
+  });
+  const rows = mapExtraction(db, {
+    collectedOn: TODAY,
+    labName: null,
+    qualitative: [],
+    notes: null,
+    results: [
+      row('Apolipoprotein B', 90, 'mg/dL'),
+      row('Vitamin D, 25-Hydroxy', 120, 'nmol/L'),
+      row('Lipoprotein (a)', 14, 'mg/dL'),
+      // A marker ARC doesn't ship — no catalog row, so no catalog unit.
+      row('Zonulin', 45, 'ng/mL'),
+      // The Lp(a) case that has no printed unit at all: US labs use nmol/L and
+      // mg/dL, ~2.5x apart, so a bare 75 is either right or badly wrong.
+      row('Lp(a)', 75, null),
+    ],
+  });
+  const [apob, vitD, lpaConflict, zonulin, lpaNoUnit] = rows;
+
+  apob.status === 'matched' && apob.unit === 'mg/dL' && apob.catalogUnit === 'mg/dL'
+    ? ok('a matched row’s catalogUnit is its own unit')
+    : bad('matched catalogUnit', JSON.stringify(apob));
+  vitD.status === 'converted' && vitD.unit === 'ng/mL' && vitD.catalogUnit === 'ng/mL'
+    ? ok('a converted row’s catalogUnit is the unit it was converted into')
+    : bad('converted catalogUnit', JSON.stringify(vitD));
+  lpaConflict.status === 'unit_conflict' &&
+  lpaConflict.unit === 'mg/dL' &&
+  lpaConflict.catalogUnit === 'nmol/L'
+    ? ok('a blocked row carries BOTH units — printed in unit, catalog’s in catalogUnit')
+    : bad('conflict catalogUnit', JSON.stringify(lpaConflict));
+  zonulin.status === 'new' && zonulin.unit === 'ng/mL' && zonulin.catalogUnit === null
+    ? ok('a new marker has no catalogUnit (there is no catalog row to have one)')
+    : bad('new catalogUnit', JSON.stringify(zonulin));
+  lpaNoUnit.status === 'unit_conflict' &&
+  !isImportable(lpaNoUnit) &&
+  lpaNoUnit.unit === null &&
+  lpaNoUnit.catalogUnit === 'nmol/L'
+    ? ok('an unprinted unit still blocks, and review can still name ARC’s nmol/L')
+    : bad('null-unit row', JSON.stringify(lpaNoUnit));
 }
 
 console.log('7. A urine marker never folds into its serum namesake');

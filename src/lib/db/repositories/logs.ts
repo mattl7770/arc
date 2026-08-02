@@ -39,8 +39,12 @@ const nowISO = () => new Date().toISOString();
  * metric gets stamped onto its intended day. Noon (not midnight) keeps the
  * reading safely inside the local day so it never flips to an adjacent day at a
  * timezone boundary.
+ *
+ * Exported because it is the app's one convention for "a day, as an instant":
+ * training-stats reuses it to date a backdated workout for the freshness ledger
+ * rather than growing a second, subtly different one.
  */
-function dayInstant(date: string): string {
+export function dayInstant(date: string): string {
   const [y, m, d] = date.split('-').map(Number);
   return new Date(y!, m! - 1, d!, 12, 0, 0, 0).toISOString();
 }
@@ -341,22 +345,35 @@ export function recentSummary(
   const target = metric.target;
   let last: { value: number; at: string } | undefined;
 
+  // "Recent" means the newest MEASUREMENT, never the newest INSERT. Ordering by
+  // created_at quotes a backdated or bulk-imported row (created_at = now) as the
+  // latest reading, and rows written in one batch share created_at to the
+  // millisecond (strftime's resolution), so the winner among ties was arbitrary.
+  // Each branch orders by its own measurement-day column — they differ — with
+  // created_at then id as a deterministic tiebreak.
   if (target.kind === 'body') {
+    // body_metrics has no `date` column: measured_at IS the measurement instant
+    // (local noon for a backdate — see logMetric), so it is already day-keyed.
     last = db.get<{ value: number; at: string }>(
       `SELECT ${target.column} value, measured_at at FROM body_metrics
-       WHERE ${target.column} IS NOT NULL ORDER BY measured_at DESC LIMIT 1`
+       WHERE ${target.column} IS NOT NULL
+       ORDER BY measured_at DESC, created_at DESC, id DESC LIMIT 1`
     );
   } else if (target.kind === 'wearable') {
     last = db.get<{ value: number; at: string }>(
-      `SELECT value, created_at at FROM wearable_data
-       WHERE metric_type = ? ORDER BY created_at DESC LIMIT 1`,
+      `SELECT value, date at FROM wearable_data
+       WHERE metric_type = ?
+       ORDER BY date DESC, created_at DESC, id DESC LIMIT 1`,
       [target.metricType]
     );
   } else {
+    // log_entries carries no day of its own — the measurement day is the parent
+    // daily_logs.date, so the join is what makes this read day-ordered at all.
     const row = db.get<{ value: string | null; at: string }>(
-      `SELECT value, created_at at FROM log_entries
-       WHERE type = 'metric' AND json_extract(value, '$.metricKey') = ?
-       ORDER BY created_at DESC LIMIT 1`,
+      `SELECT le.value value, dl.date at FROM log_entries le
+         JOIN daily_logs dl ON dl.id = le.daily_log_id
+       WHERE le.type = 'metric' AND json_extract(le.value, '$.metricKey') = ?
+       ORDER BY dl.date DESC, le.created_at DESC, le.id DESC LIMIT 1`,
       [metricKey]
     );
     if (row) {
