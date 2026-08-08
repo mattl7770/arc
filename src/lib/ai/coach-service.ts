@@ -7,7 +7,7 @@ import { todayISODate } from '@/lib/db/date';
 import { runCoachTurn, type FetchLike, type WireMessage } from './model-client';
 import { apiKeyStore } from './api-key-store';
 import { buildCoachSystemPrompt } from './system-prompt';
-import { COACH_TOOLS, toolByName, toWireTools } from './tools';
+import { COACH_TOOLS, toolByName, toWireTools, type CoachToolContext } from './tools';
 import type { CoachTurnResult } from './types';
 
 /**
@@ -53,6 +53,21 @@ export type StreamOptions = {
   confirmWrite?: (request: WriteConfirmation) => Promise<boolean>;
   /** Tool activity for the UI ("Reading metric series…"). */
   onToolCall?: (call: { name: string; label: string }) => void;
+  /**
+   * The turn's clock source. Injectable for the same reason
+   * {@link CoachToolContext} takes one — a headless test must be able to place
+   * the turn at a chosen instant, and to move that instant between the moment a
+   * confirmation card is rendered and the moment the user approves it
+   * (db/coach-tools.test.mjs). The app never passes it; on device this is
+   * `new Date`.
+   *
+   * It is a FACTORY, not a fixed `Date`, because a turn is long-lived: reads
+   * spread over minutes of streaming and approval latency, and each tool call
+   * must run against the wall clock as it is when that call happens, not as it
+   * was when the user hit send. What must NOT vary is the clock WITHIN one tool
+   * call — see the single read in `executeTool` below.
+   */
+  now?: () => Date;
 };
 
 /** Bound the request: the model doesn't need the whole thread forever. */
@@ -79,6 +94,10 @@ export async function streamCoachReply(
   if (!apiKey) return mockTurn(history, options);
 
   const db = getDb();
+  // The ONE clock this turn reads. Every `new Date()` that used to be scattered
+  // through this function goes through it, so a test can place the turn — and
+  // move it mid-turn — deterministically.
+  const clock = options.now ?? (() => new Date());
   const windowed = history.slice(-MAX_HISTORY_MESSAGES).filter((m) => m.content.trim().length > 0);
   // The API requires the first message to be a user turn — the window boundary
   // can land mid-pair, so shed any leading assistant turns.
@@ -95,7 +114,10 @@ export async function streamCoachReply(
       fetchImpl: expoFetch as unknown as FetchLike,
     },
     {
-      system: buildCoachSystemPrompt({ date: todayISODate() }),
+      // The date the model is told it is. Read at turn start, which is when the
+      // prompt is built and sent; a tool call minutes later reads the clock
+      // again for itself (below) rather than inheriting this instant.
+      system: buildCoachSystemPrompt({ date: todayISODate(clock()) }),
       messages,
       tools: toWireTools(COACH_TOOLS),
     },
@@ -107,11 +129,30 @@ export async function streamCoachReply(
         const tool = toolByName(name);
         if (!tool) return { content: `Unknown tool: ${name}.`, isError: true };
 
+        // THE turn clock for this tool call — read ONCE, here, above the
+        // confirmation gate, and handed to both halves of the call. This is the
+        // whole fix: the card the user approves and the row that lands must be
+        // computed from the SAME instant.
+        //
+        // Both halves derive a DAY from it (a bare-time one-off reminder pins to
+        // today or tomorrow depending on whether that clock time has gone by; a
+        // log without an explicit `date` lands on today). Reading the clock a
+        // second time after `await confirmWrite` — which suspends for however
+        // long the user takes to decide — lets those two answers disagree
+        // whenever the approval straddles a boundary: a card rendered at
+        // 08:59:30 for "at 09:00" shows a bare time, and the row written at
+        // 09:00:10 is dated tomorrow. One read, one instant, no window.
+        //
+        // Frozen only for the DURATION OF THIS CALL, deliberately: the user
+        // approved what the card said, so the write must be what the card said.
+        // The next tool call reads the clock again.
+        const context: CoachToolContext = { now: clock() };
+
         if (!tool.readOnly) {
           let summary: string;
           try {
             summary =
-              tool.confirmSummary?.(input as Record<string, unknown>, db) ??
+              tool.confirmSummary?.(input as Record<string, unknown>, db, context) ??
               humanizeToolName(tool.name);
           } catch (error) {
             // Invalid input surfaces at summary time — report it, don't gate.
@@ -133,7 +174,7 @@ export async function streamCoachReply(
           // (search_knowledge embeds the query on-device); a rejection lands in
           // the catch below exactly like a synchronous throw.
           return {
-            content: await tool.execute(db, input as Record<string, unknown>, { now: new Date() }),
+            content: await tool.execute(db, input as Record<string, unknown>, context),
           };
         } catch (error) {
           return { content: errorText(error), isError: true };

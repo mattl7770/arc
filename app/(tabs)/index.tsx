@@ -5,6 +5,7 @@ import { DateEyebrow } from '@/components/home/date-eyebrow';
 import { HeroCard } from '@/components/home/hero-card';
 import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
+import { MissionEmpty } from '@/components/home/mission-empty';
 import { ModeControl } from '@/components/home/mode-control';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
@@ -35,20 +36,28 @@ import { useTodayMission } from '@/hooks/use-today-mission';
  *     (checkmarks, the mission progress fill). Everything else is neutral ink,
  *     which is what stops this becoming a dashboard.
  *
- * The mission now reads from and writes to the on-device SQLite database
- * (useTodayMission): completing an item persists across launches, and the day
- * is seeded from mock-day on first open. The Coach brief is real (useDailyBrief,
- * deterministic insights). Readiness, the pillar bar, and the metrics strip are
- * now real too — derived from wearable_data (useReadiness → src/lib/home/
- * readiness.ts, fed by the Apple Health pipeline). With no wearable data they
- * render an honest "no signal yet" state pointing at Settings › Apple Health,
- * never fake numbers.
+ * Everything on this screen is now real. The mission reads from and writes to
+ * the on-device SQLite database (useTodayMission), generated from the user's own
+ * active protocols — completing an item persists across launches. The Coach
+ * brief is the deterministic insights engine (useDailyBrief). Readiness, the
+ * pillar bar, and the metrics strip derive from wearable_data (useReadiness →
+ * src/lib/home/readiness.ts, fed by the Apple Health pipeline); with no wearable
+ * data they render an honest "no signal yet" state pointing at Settings › Apple
+ * Health, never fake numbers.
+ *
+ * **Nothing is mocked and nothing is planted.** With no active protocols the day
+ * is genuinely empty, and the hero + checklist are replaced by MissionEmpty,
+ * which says so and offers the one action that changes it. Rendering the hero
+ * there would be a lie (HeroCard reads a null item as "today is handled") and a
+ * "0 of 0" progress bar would be noise. See src/lib/db/seed.ts for the demo
+ * mission that used to be written into the user's database instead.
  */
 export default function HomeScreen() {
   const mission = useTodayMission();
   const brief = useDailyBrief();
   const readiness = useReadiness();
   const modeView = useMode();
+  const planned = mission.total > 0;
 
   return (
     <Screen scroll>
@@ -61,27 +70,33 @@ export default function HomeScreen() {
       </View>
 
       <View className="mt-5">
-        <HeroCard
-          item={mission.next}
-          onDone={(id) => mission.setStatus(id, 'completed')}
-          onSnooze={mission.snooze}
-          onSkip={(id) => mission.setStatus(id, 'skipped')}
-        />
+        {planned ? (
+          <HeroCard
+            item={mission.next}
+            onDone={(id) => mission.setStatus(id, 'completed')}
+            onSnooze={mission.snooze}
+            onSkip={(id) => mission.setStatus(id, 'skipped')}
+          />
+        ) : (
+          <MissionEmpty hasActiveProtocols={mission.hasActiveProtocols} />
+        )}
       </View>
 
       <View className="mt-8">
         <ReadinessStrip readiness={readiness.readiness} pillars={readiness.pillars} />
       </View>
 
-      <View className="mt-9">
-        <Mission
-          leadingSettled={mission.leadingSettled}
-          rest={mission.rest}
-          completed={mission.completed}
-          total={mission.total}
-          onToggle={mission.toggle}
-        />
-      </View>
+      {planned ? (
+        <View className="mt-9">
+          <Mission
+            leadingSettled={mission.leadingSettled}
+            rest={mission.rest}
+            completed={mission.completed}
+            total={mission.total}
+            onToggle={mission.toggle}
+          />
+        </View>
+      ) : null}
 
       <View className="mt-9">
         <CoachBrief brief={brief} />

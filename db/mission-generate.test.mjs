@@ -1,8 +1,13 @@
 /**
  * Headless test of the protocol → mission generator
- * (src/lib/db/repositories/mission-generate.ts) and the protocol-first
+ * (src/lib/db/repositories/mission-generate.ts) and the protocol-only
  * ensureTodaySeeded (src/lib/db/seed.ts), against real SQLite via node:sqlite.
  * No op-sqlite, no Expo. Run: npm run db:test.
+ *
+ * Cases 5–7 are the regression fence around the fabrication defect fixed on
+ * 2026-08-07: Home used to plant an eleven-item demo mission (two rows
+ * pre-marked `completed`) into the user's health database on every day that had
+ * no active protocol. A day with nothing to plan must now stay EMPTY.
  */
 import { DatabaseSync } from 'node:sqlite';
 
@@ -14,7 +19,11 @@ import {
   setActive,
 } from '../src/lib/db/repositories/protocols.ts';
 import { listMission } from '../src/lib/db/repositories/mission.ts';
-import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+import {
+  generateMissionForDay,
+  rederiveMissionForDay,
+} from '../src/lib/db/repositories/mission-generate.ts';
+import { setMode } from '../src/lib/db/repositories/day-modes.ts';
 import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
 
 let pass = 0;
@@ -184,7 +193,7 @@ console.log('3. protocol type → log_entry type mapping');
     : bad('type mapping', JSON.stringify(entries.map((e) => [e.title, e.type])));
 }
 
-console.log('4. ensureTodaySeeded is protocol-first, mock only as fallback');
+console.log('4. ensureTodaySeeded generates the day from active protocols');
 {
   const { db, raw } = freshDb();
   createProtocolWithVersion(
@@ -194,31 +203,95 @@ console.log('4. ensureTodaySeeded is protocol-first, mock only as fallback');
       items: [{ title: 'Omega-3', scheduled_time: '08:00', dose: '2 g', notes: null }],
     }
   );
-  // A non-empty mock fallback that must be IGNORED because a protocol exists.
-  const mock = [
-    { id: 'm1', title: 'MOCK ITEM', status: 'pending', category: 'Morning', why: 'demo' },
-  ];
-  ensureTodaySeeded(db, DATE, mock);
+  ensureTodaySeeded(db, DATE);
   const entries = rows(raw, DATE);
   entries.length === 1 && entries[0].title === 'Omega-3' && entries[0].protocol_id
-    ? ok('with an active protocol, the day is generated from it (mock ignored)')
-    : bad('protocol-first', JSON.stringify(entries.map((e) => e.title)));
+    ? ok('the day is generated from the protocol, linked by protocol_id')
+    : bad('protocol generation', JSON.stringify(entries.map((e) => e.title)));
+
+  // Every open calls it; the day must not grow.
+  ensureTodaySeeded(db, DATE);
+  ensureTodaySeeded(db, DATE);
+  rows(raw, DATE).length === 1
+    ? ok('repeat calls (every open + every focus) add nothing')
+    : bad('idempotent ensure', rows(raw, DATE).length);
 }
 
-console.log('5. ensureTodaySeeded falls back to the mock mission with no protocols');
+console.log('5. REGRESSION — no protocols means ZERO planted rows, on every day');
 {
   const { db, raw } = freshDb();
-  const mock = [
+  // The real first-run state: a migrated but otherwise untouched database.
+  ensureTodaySeeded(db, DATE);
+  const entries = rows(raw, DATE);
+  entries.length === 0
+    ? ok('a protocol-less day plants nothing at all')
+    : bad('FABRICATED A MISSION', JSON.stringify(entries.map((e) => e.title)));
+
+  const mission = listMission(db, DATE);
+  mission.length === 0
+    ? ok('listMission is empty — Home renders its first-run state, not "2 of 11"')
+    : bad('listMission not empty', JSON.stringify(mission.map((m) => m.title)));
+
+  // Nothing auto-creates protocols, so the old bug replanted daily. Walk a week.
+  const week = ['2026-08-02', '2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06'];
+  for (const d of week) ensureTodaySeeded(db, d);
+  const total = raw.prepare('SELECT count(*) c FROM log_entries').get().c;
+  total === 0
+    ? ok('five more days open, still zero rows written (no daily replant)')
+    : bad('replanted across days', total);
+
+  // No row anywhere may claim to be completed work the user never did.
+  const completed = raw
+    .prepare("SELECT count(*) c FROM log_entries WHERE status = 'completed'")
+    .get().c;
+  completed === 0
+    ? ok('no row is pre-marked completed')
+    : bad('pre-completed rows exist', completed);
+}
+
+console.log('6. an ad-hoc capture does not fabricate around itself');
+{
+  // A user with no protocols who logs something themselves gets exactly that —
+  // their own row, and nothing generated to keep it company.
+  const { db, raw } = freshDb();
+  ensureTodaySeeded(db, DATE);
+  const log = raw.prepare('SELECT id FROM daily_logs WHERE date = ?').get(DATE);
+  log
+    ? ok('the daily_log row itself is still created (the day exists, it is empty)')
+    : bad('no daily_log');
+  ensureTodaySeeded(db, DATE);
+  rows(raw, DATE).length === 0
+    ? ok('re-opening an empty day stays empty')
+    : bad('second open planted rows', rows(raw, DATE).length);
+}
+
+console.log('7. seed:true rows are still honoured (existing devices hold them)');
+{
+  // The fabrication is gone, but devices that ran the old build still contain
+  // `seed: true` rows, and the mode re-derive keys off that marker to avoid
+  // deleting them. The fixture path proves the marker still round-trips.
+  const { db, raw } = freshDb();
+  const fixture = [
     { id: 'm1', title: 'Cold shower', status: 'pending', category: 'Morning', why: 'demo' },
     { id: 'm2', title: 'Creatine', status: 'pending', category: 'Supplements', why: '5 g' },
+    { id: 'm3', title: 'Zone 2 ride', status: 'pending', category: 'Training', why: '35 min' },
   ];
-  ensureTodaySeeded(db, DATE, mock);
+  ensureTodaySeeded(db, DATE, fixture);
   const entries = rows(raw, DATE);
-  entries.length === 2 &&
+  entries.length === 3 &&
   entries.every((e) => e.protocol_id === null) &&
   entries.every((e) => JSON.parse(e.value).seed === true)
-    ? ok('no protocols → mock mission planted, marked seed:true, no protocol_id')
-    : bad('fallback', JSON.stringify(entries.map((e) => e.title)));
+    ? ok('explicit fixture items plant as seed:true with no protocol_id')
+    : bad('fixture path', JSON.stringify(entries.map((e) => e.title)));
+
+  // Sick drops the TYPE 'workout'; every other seed row must survive the
+  // re-derive, or a mode tap would permanently empty an old device's day.
+  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  rederiveMissionForDay(db, DATE);
+  const after = rows(raw, DATE).map((r) => r.title);
+  after.includes('Cold shower') && after.includes('Creatine') && !after.includes('Zone 2 ride')
+    ? ok('re-derive keeps untouched seed rows, pulls only the dropped type')
+    : bad('re-derive damaged seed rows', JSON.stringify(after));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -60,6 +60,33 @@ export type LogEntryType =
 
 export type LogEntryStatus = 'pending' | 'completed' | 'skipped' | 'partial';
 
+/**
+ * `ai_messages.turn_outcome` — how one Coach turn actually ended (0028).
+ * Keep in lockstep with that migration's CHECK.
+ *
+ * The row shape itself (`AiMessageRow`) lives in `src/lib/ai/types.ts` by the
+ * parallel-work convention; the vocabulary lives here because it is the schema's
+ * enum, and the repository intersects the two (`AiMessageRecord`). Mapped 1:1
+ * from `CoachStopReason` plus the client's failure path — see
+ * `outcomeForStopReason` in src/lib/db/repositories/ai-chat.ts.
+ *
+ * - `complete`   — the model ended the turn on its own terms. Also the value
+ *                  for user/system/tool rows.
+ * - `truncated`  — cut off at max_tokens or a context-window overflow. The text
+ *                  stops mid-thought; any tools that already ran stay run.
+ * - `tool_limit` — the agentic loop exhausted its round-trip bound.
+ * - `refused`    — the model declined. Never retried.
+ * - `failed`     — errored or aborted mid-flight, after something was recorded.
+ */
+export type AiTurnOutcome = 'complete' | 'truncated' | 'tool_limit' | 'refused' | 'failed';
+
+/** The outcomes that mean the turn did NOT deliver a finished answer. */
+export const INCOMPLETE_TURN_OUTCOMES: readonly AiTurnOutcome[] = [
+  'truncated',
+  'tool_limit',
+  'failed',
+];
+
 export type WearableDevice =
   | 'oura'
   | 'whoop'

@@ -1,0 +1,56 @@
+-- ============================================================================
+-- ARC 0028 — ai_messages.turn_outcome: how a Coach turn actually ended
+--
+-- 0008 stored a turn's text and its tool-call record but not WHY the turn
+-- stopped. A reply cut off at max_tokens, a turn that exhausted the agentic
+-- loop's round-trip bound, and a turn that died on a network error all landed
+-- in ai_messages looking exactly like a finished answer. That is not a cosmetic
+-- gap: the same turns are the audit trail for writes the model made against the
+-- owner's own health record (log_metric, log_meal, update_protocol, …). A
+-- truncated turn whose approved writes already executed MUST be able to say so
+-- after a reload, and it could not.
+--
+-- The vocabulary is the turn's terminal state, mapped 1:1 from the wire stop
+-- reason the model client already computes (CoachStopReason, src/lib/ai/
+-- types.ts) plus the failure path the client throws:
+--
+--   complete    the model ended the turn on its own terms (stop 'end_turn').
+--               Also the value for every user/system/tool row — a recorded
+--               user turn is trivially whole, and one column beats a nullable
+--               one that only means something for a single role.
+--   truncated   the reply was CUT OFF — 'max_tokens' or a context window
+--               overflow. Text stops mid-thought; tools already run stay run.
+--   tool_limit  the agentic loop hit MAX_MODEL_CALLS_PER_TURN before the model
+--               was finished. Distinct from `truncated`: the prose is intact,
+--               the *work* is what got cut short, so the honest retry differs.
+--   refused     the model declined ('refusal'). Complete in the sense that the
+--               model is done, but not an answer — and never worth retrying.
+--   failed      the turn errored or was aborted mid-flight (CoachTurnError).
+--               Persisted only when text or tool calls exist, i.e. only when
+--               something happened that the record must not lose.
+--
+-- DEFAULT 'complete' is load-bearing twice over: it is what makes ALTER TABLE
+-- ADD COLUMN legal on a NOT NULL column, and it back-fills every row written
+-- before this migration as a finished turn. That is the right reading — every
+-- pre-0028 row was persisted by the old success path or by the CoachTurnError
+-- path, and the overwhelming majority are genuinely complete. The alternative
+-- (nullable, or an 'unknown' member) would make every historical turn render
+-- with a caveat it hasn't earned and poison the vocabulary for the live path.
+--
+-- Not stored here: "superseded". A retry appends a new assistant turn rather
+-- than deleting the fragment it replaces, and superseded-ness is a property of
+-- the ROW'S POSITION, not of how its turn ended — an assistant row directly
+-- followed by another assistant row was replaced. Deriving it at read time
+-- (markSupersededTurns, src/lib/db/repositories/ai-chat.ts) keeps ai_messages
+-- genuinely append-only: 0008's design note is that a message is written once
+-- and never edited, and an UPDATE here would be the first mutation of that
+-- table. It also cannot drift — the live thread and a reloaded one run the
+-- same derivation over the same rows.
+--
+-- Numbered 0028: next free above the current max (0027 experiments). Conventions
+-- per CLAUDE.md §9 / 0001_init.sql: enum vocabulary as text + CHECK. No index —
+-- turn_outcome is read as part of the thread SELECT, never filtered on.
+-- ============================================================================
+ALTER TABLE ai_messages
+  ADD COLUMN turn_outcome text NOT NULL DEFAULT 'complete'
+  CHECK (turn_outcome IN ('complete', 'truncated', 'tool_limit', 'refused', 'failed'));

@@ -17,6 +17,13 @@
  * Every log tool takes an optional "YYYY-MM-DD" `date` for backdating
  * ("yesterday I did 40 min zone 2"); omitted means today. The confirmation
  * line shows a backdate explicitly.
+ *
+ * A day can also be DERIVED rather than given — set_reminder pins the day of a
+ * bare-time one-off, which is tomorrow once that clock time has gone by. Those
+ * summaries take the turn's `context` (the third `confirmSummary` argument,
+ * REQUIRED — see tools/types.ts) so they resolve the day off the very same
+ * clock `execute` will, and name it on the card instead of letting the user
+ * approve "at 09:00" and get a row dated tomorrow.
  */
 import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
@@ -29,6 +36,7 @@ import {
   createReminder,
   dismissReminder,
   listActiveReminders,
+  resolveOneOffDay,
 } from '@/lib/db/repositories/reminders';
 import { setMode } from '@/lib/db/repositories/day-modes';
 import {
@@ -40,6 +48,7 @@ import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
 import { logSymptom } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { getModeDefinition, MODE_KEYS } from '@/lib/modes/registry';
+import { syncAndReportForReminder } from '@/lib/notifications/reminders';
 import { lbToKg, setLineKg } from '@/lib/exercise/format';
 import {
   isLoggableCanonical,
@@ -436,6 +445,54 @@ const logNoteTool: CoachTool = {
 
 const REPEATS = ['once', 'daily', 'weekly'] as const;
 
+/** Weekday / month names spelled out by hand: Hermes ships no `Intl`, so
+ * `toLocaleDateString` is unavailable on device. Sunday-first, matching getDay(). */
+const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+const MONTH_NAMES = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+/** "Sat 8 Aug" for a validated "YYYY-MM-DD". Split componentwise and fed to the
+ * Date CONSTRUCTOR — never `new Date('2026-08-08')`, which some runtimes read as
+ * UTC midnight and would print the wrong weekday west of Greenwich. */
+function humanDay(date: string): string {
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  return `${WEEKDAY_NAMES[new Date(y, m - 1, d).getDay()]} ${d} ${MONTH_NAMES[m - 1]}`;
+}
+
+/**
+ * The day part of a reminder's confirmation line: empty when the reminder lands
+ * TODAY (nothing to warn about), otherwise the day named plainly —
+ * " · tomorrow (Sat 8 Aug)". This is the whole point of threading `context`
+ * into `confirmSummary`: approving "at 09:00" at 22:00 writes a row dated
+ * tomorrow, and the card has to say so.
+ *
+ * Relative wording is only used for a one-off, where the date IS the day the
+ * thing happens. A weekly's date is an anchor picking a weekday, so it is
+ * printed as the ISO day plus its weekday and nothing else.
+ */
+function reminderDaySuffix(date: string | null, repeat: string, now: Date): string {
+  if (date == null) return '';
+  if (repeat !== 'once') return ` · ${date} (${humanDay(date)})`;
+  const dayFrom = (offset: number) =>
+    todayISODate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset));
+  if (date === dayFrom(0)) return '';
+  if (date === dayFrom(1)) return ` · tomorrow (${humanDay(date)})`;
+  if (date === dayFrom(-1)) return ` · yesterday (${humanDay(date)})`;
+  return ` · ${date} (${humanDay(date)})`;
+}
+
 const setReminderTool: CoachTool = {
   name: 'set_reminder',
   description:
@@ -443,8 +500,16 @@ const setReminderTool: CoachTool = {
     'optional "YYYY-MM-DD" date (one-offs: the day it applies; weekly: the anchor ' +
     'weekday), repeat once/daily/weekly. Use when the user asks to be reminded, or ' +
     'propose one yourself when a logging gap warrants a nudge. Check list_reminders ' +
-    'first to avoid duplicates. Note: in-app surfacing only — OS push notifications ' +
-    'are not wired yet; say so if the user expects a phone alert.',
+    'first to avoid duplicates. A ONE-OFF given a time but no date is pinned to a ' +
+    'concrete day as it is saved — today if that clock time is still ahead, otherwise ' +
+    'tomorrow — so it fires once and then lapses; the result\'s "date" field reports ' +
+    'the day it actually landed on, so say that day back to the user. Pass an explicit ' +
+    'date only when the user names one. Delivery: every reminder is saved and surfaces ' +
+    'in the app; one WITH a time is additionally scheduled as an OS notification when ' +
+    'that is possible (the build supports notifications, permission is granted, and the ' +
+    'moment is still ahead). Do not promise a phone alert — the result\'s "notification" ' +
+    'field reports whether one was ACTUALLY scheduled for this reminder and, if not, why. ' +
+    'Relay that, and pass its "note" along verbatim when it says no alert will fire.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -458,30 +523,55 @@ const setReminderTool: CoachTool = {
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input) => {
+  // Takes `context` because the day is DERIVED, not just passed: a bare-time
+  // one-off is pinned as it saves, and after that clock time has gone by the
+  // day it pins to is TOMORROW. Resolving it here through the very function
+  // createReminder uses, against the SAME CoachToolContext instance execute
+  // receives, is what keeps the card and the row from disagreeing. `context` is
+  // required (see tools/types.ts): the service reads the clock once per tool
+  // call, so there is no second read for the two to drift apart across however
+  // long the user takes to approve.
+  confirmSummary: (input, _db, context) => {
     const args = asRecord(input);
     const title = reqString(args, 'title');
     const time = optTime(args, 'time');
     const repeat = optEnum(args, 'repeat', REPEATS) ?? 'once';
+    const now = context.now;
+    const day =
+      optDate(args, 'date') ?? (repeat === 'once' && time ? resolveOneOffDay(time, now) : null);
     const cadence = repeat === 'once' ? '' : ` · ${repeat}`;
-    return `Set reminder "${title}"${time ? ` at ${time}` : ''}${cadence}${dateSuffix(args)}`;
+    const when = reminderDaySuffix(day, repeat, now);
+    return `Set reminder "${title}"${time ? ` at ${time}` : ''}${cadence}${when}`;
   },
-  execute: (db, input) => {
+  // Async because the honest answer isn't knowable until the OS has been asked:
+  // whether a notification exists depends on the running binary, the permission
+  // grant and the clock. So we resync and report the OBSERVED outcome rather
+  // than letting the description promise one (see notifications/reminders.ts).
+  // `date` in the result is read back off the SAVED ROW, not off the input, so
+  // it reports the day a bare-time one-off was actually pinned to (today or
+  // tomorrow — createReminder resolves it once, against context.now).
+  execute: async (db, input, context) => {
     const args = asRecord(input);
     const repeat = optEnum(args, 'repeat', REPEATS) ?? 'once';
     const date = optDate(args, 'date');
     if (repeat === 'weekly' && date === undefined) {
       throw new Error('A weekly reminder needs a "date" anchoring its weekday.');
     }
-    const id = createReminder(db, {
-      title: reqString(args, 'title'),
-      time: optTime(args, 'time') ?? null,
-      date: date ?? null,
-      repeat,
-      createdBy: 'ai',
-      notes: optString(args, 'notes') ?? null,
-    });
-    return json({ created: true, id });
+    const id = createReminder(
+      db,
+      {
+        title: reqString(args, 'title'),
+        time: optTime(args, 'time') ?? null,
+        date: date ?? null,
+        repeat,
+        createdBy: 'ai',
+        notes: optString(args, 'notes') ?? null,
+      },
+      context.now
+    );
+    const saved = listActiveReminders(db).find((r) => r.id === id);
+    const notification = await syncAndReportForReminder(db, id, context.now);
+    return json({ created: true, id, repeat, date: saved?.date ?? null, notification });
   },
 };
 

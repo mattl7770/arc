@@ -119,10 +119,11 @@ export default function ProtocolsScreen() {
         )}
       </View>
 
-      {/* Honest seam marker — the generator is built with Home, not here. */}
+      {/* How an edit here reaches Home — the generator commits a day once, so an
+          edit made today lands on tomorrow's mission. */}
       <Text className="mt-8 text-[11px] leading-4 text-ink-muted">
-        Active protocols will drive Today&rsquo;s Mission — the generator arrives with the Home
-        wiring.
+        Active protocols drive Today&rsquo;s Mission. A day&rsquo;s plan is committed when it is
+        generated, so an edit made today shapes tomorrow&rsquo;s mission.
       </Text>
     </Screen>
   );

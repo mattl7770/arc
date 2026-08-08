@@ -22,7 +22,7 @@ import { getModeDefinition } from '@/lib/modes/registry';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import type { BiomarkerRow } from '@/lib/db/types';
 
-import { computeInsights, generateDailyBrief } from '../insights';
+import { computeInsights, dueRemindersFor, generateDailyBrief } from '../insights';
 import {
   bodyDailySeries,
   isoDaysAgo,
@@ -40,12 +40,22 @@ const json = (value: unknown): string => JSON.stringify(value);
 
 // --- get_today_snapshot ------------------------------------------------------
 
+// The Coach only needs enough of the due set to lead the day; an un-dismissed
+// one-off keeps surfacing forever (see isDueOn), so a user who ignores nudges
+// can accumulate an unbounded tail of them. Cap it — but report `omitted` so the
+// model knows the list is partial instead of confidently under-counting.
+const SNAPSHOT_REMINDER_LIMIT = 10;
+
 const getTodaySnapshot: CoachTool = {
   name: 'get_today_snapshot',
   description:
     "Today's full picture: mission items with status, meals eaten with macro totals, " +
     'workouts, symptoms, ad-hoc captures, and reminders due today. Call this before ' +
-    "answering anything about today ('how am I doing', 'what's left', 'what did I eat').",
+    "answering anything about today ('how am I doing', 'what's left', 'what did I eat'). " +
+    'In `remindersDueToday`, items are ranked with today’s own first and each carries its ' +
+    'pinned `date` and `daysOverdue`: an un-dismissed one-off keeps surfacing past its day, ' +
+    'so anything with daysOverdue > 0 is a carried-over obligation — say so, never present ' +
+    'it as part of today’s plan.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   readOnly: true,
   execute: (db, _input, context) => {
@@ -59,6 +69,13 @@ const getTodaySnapshot: CoachTool = {
       kind: string;
       duration_min: number | null;
     }>('SELECT name, kind, duration_min FROM workouts WHERE date = ? ORDER BY created_at', [date]);
+
+    // Ranked today-first (dueRemindersFor), so the cap below drops the stalest
+    // tail FIRST. It is not a guarantee today's own items survive: with more
+    // than SNAPSHOT_REMINDER_LIMIT due on their own day the cap trims those too.
+    // Either way remindersDueTodayOmitted always reports the count, so the
+    // model is never silently handed a truncated list.
+    const due = dueRemindersFor(db, date);
 
     return json({
       date,
@@ -99,9 +116,17 @@ const getTodaySnapshot: CoachTool = {
           title: e.title,
           category: e.category,
         })),
-      remindersDueToday: listActiveReminders(db)
-        .filter((r) => isDueOn(r, date))
-        .map((r) => ({ id: r.id, title: r.title, time: r.time, repeat: r.repeat })),
+      remindersDueToday: due.slice(0, SNAPSHOT_REMINDER_LIMIT).map(({ reminder, daysOverdue }) => ({
+        id: reminder.id,
+        title: reminder.title,
+        time: reminder.time,
+        // The pinned day (null for a recurring or undated one), so an overdue
+        // nudge is legible as months old rather than as one of today's.
+        date: reminder.date,
+        repeat: reminder.repeat,
+        daysOverdue,
+      })),
+      remindersDueTodayOmitted: Math.max(0, due.length - SNAPSHOT_REMINDER_LIMIT),
     });
   },
 };

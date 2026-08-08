@@ -13,6 +13,7 @@ import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { computeInsights, generateDailyBrief } from '../src/lib/ai/insights.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import { createReminder } from '../src/lib/db/repositories/reminders.ts';
+import { todayISODate } from '../src/lib/db/date.ts';
 
 let pass = 0;
 let fail = 0;
@@ -62,6 +63,7 @@ function freshDb() {
 }
 
 const NOW = new Date();
+const TODAY = todayISODate(NOW);
 let seq = 0;
 const uid = () => `t-${++seq}`;
 
@@ -224,7 +226,10 @@ console.log('8. the daily brief composes insights + reminders due today');
   for (let d = 8; d <= 17; d++) seedWearable(raw, 'hrv', d, 55);
   for (let d = 0; d <= 4; d++) seedWearable(raw, 'hrv', d, 47);
   createReminder(db, { title: 'Take magnesium', time: '21:00', repeat: 'daily' });
-  createReminder(db, { title: 'Not today', date: '1999-01-01' });
+  // Must be a FUTURE day: a one-off's date is a "not before" floor (isDueOn),
+  // so a PAST-dated one is still due today by design — an unfinished nudge
+  // keeps nagging. Only a day that hasn't arrived is genuinely "not today".
+  createReminder(db, { title: 'Not today', date: '2099-01-01' });
 
   const brief = generateDailyBrief(db, NOW);
   brief.includes('HRV down') ? ok('brief leads with the trend') : bad('brief trend', brief);
@@ -271,6 +276,79 @@ console.log('11. correlation treats unlogged days as rest days (0 minutes)');
   insight
     ? ok('train/rest alternation is detected without explicit 0-minute rows')
     : bad('rest-day correlation missed', JSON.stringify(computeInsights(db, NOW)));
+}
+
+console.log('12. a stale one-off cannot evict today’s reminders from the brief');
+{
+  const { db } = freshDb();
+  // Five months-old one-offs, all pinned at early clock times so they outrank
+  // today's real reminders under listActiveReminders' clock-only ordering.
+  // Under the "not before" floor they are all still due today (isDueOn), which
+  // is the point: they must keep nagging WITHOUT hiding the actual plan.
+  for (let i = 0; i < 5; i++) {
+    createReminder(db, {
+      title: `Stale ${i}`,
+      time: `0${i}:30`,
+      date: isoDaysAgo(NOW, 150 - i),
+    });
+  }
+  createReminder(db, { title: 'Take magnesium', time: '21:00', repeat: 'daily' });
+  createReminder(db, { title: 'Weekly review', time: '18:00', repeat: 'weekly', date: TODAY });
+
+  const brief = generateDailyBrief(db, NOW);
+  brief.includes('Take magnesium (21:00)') && brief.includes('Weekly review (18:00)')
+    ? ok('today’s daily + weekly reminders both survive five stale one-offs')
+    : bad('today evicted', brief);
+
+  const onDeck = brief.slice(brief.indexOf('On deck today:'), brief.indexOf('Still open:'));
+  !onDeck.includes('Stale')
+    ? ok('no stale one-off is listed under "On deck today"')
+    : bad('stale in on-deck', onDeck);
+}
+
+console.log('13. an overdue one-off is surfaced, labelled with its age');
+{
+  const { db } = freshDb();
+  createReminder(db, { title: 'Book bloodwork', time: '09:00', date: isoDaysAgo(NOW, 120) });
+  createReminder(db, { title: 'Take magnesium', time: '21:00', repeat: 'daily' });
+
+  const brief = generateDailyBrief(db, NOW);
+  brief.includes('Still open: Book bloodwork (09:00) — 4 mo overdue.')
+    ? ok(`overdue nudge kept, aged, and out of today's line ("${brief}")`)
+    : bad('overdue rendering', brief);
+  brief.includes('On deck today: Take magnesium (21:00).')
+    ? ok('today’s line stays exactly today’s')
+    : bad('on-deck line', brief);
+}
+
+console.log('14. overdue ranking is oldest-first, stable, and counts the tail honestly');
+{
+  const { db } = freshDb();
+  // Deliberately inserted newest-first and with clock times that would invert
+  // the intended order under listActiveReminders' sort.
+  createReminder(db, { title: 'Newest', time: '01:00', date: isoDaysAgo(NOW, 3) });
+  createReminder(db, { title: 'Middle', time: '02:00', date: isoDaysAgo(NOW, 30) });
+  createReminder(db, { title: 'Oldest', time: '03:00', date: isoDaysAgo(NOW, 400) });
+
+  const first = generateDailyBrief(db, NOW);
+  first.includes(
+    'Still open: Oldest (03:00) — 13 mo overdue · Middle (02:00) — 4 wk overdue, and 1 more.'
+  )
+    ? ok(`oldest nag first, second named, remainder counted not hidden ("${first}")`)
+    : bad('overdue ordering', first);
+  generateDailyBrief(db, NOW) === first
+    ? ok('the brief is stable across repeated calls')
+    : bad('unstable brief', `${first} !== ${generateDailyBrief(db, NOW)}`);
+}
+
+console.log('15. an undated legacy one-off is today’s, not "overdue" (no age to claim)');
+{
+  const { db } = freshDb();
+  createReminder(db, { title: 'Someday thing', repeat: 'once' });
+  const brief = generateDailyBrief(db, NOW);
+  brief.includes('On deck today: Someday thing.') && !brief.includes('Still open')
+    ? ok('a floor-less one-off is listed as today’s, never aged')
+    : bad('undated one-off', brief);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
