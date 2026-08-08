@@ -6,6 +6,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
+import { apiKeyStore } from '../src/lib/ai/api-key-store.ts';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
@@ -82,6 +83,18 @@ const NOW = new Date();
 const CTX = { now: NOW };
 const TODAY = todayISODate(NOW);
 const run = (name, db, input = {}) => JSON.parse(toolByName(name).execute(db, input, CTX));
+/** For tools whose execute is async — set_reminder resyncs the OS schedule so it
+ * can report what was really scheduled, which can only be known by asking. */
+const runAsync = async (name, db, input = {}) =>
+  JSON.parse(await toolByName(name).execute(db, input, CTX));
+const rejects = async (fn) => {
+  try {
+    await fn();
+    return false;
+  } catch {
+    return true;
+  }
+};
 
 console.log('0. registry shape: unique names, read/write split, wire mapping');
 {
@@ -119,7 +132,7 @@ console.log('1. get_today_snapshot: empty day is zeros, then reflects writes');
   run('log_workout', db, { name: 'Zone 2', kind: 'cardio', duration_min: 40 });
   run('log_symptom', db, { name: 'Headache', severity: 4 });
   run('log_capture', db, { type: 'supplement', title: 'Creatine · 5 g' });
-  run('set_reminder', db, { title: 'Take magnesium', time: '21:00', repeat: 'daily' });
+  await runAsync('set_reminder', db, { title: 'Take magnesium', time: '21:00', repeat: 'daily' });
 
   const snap = run('get_today_snapshot', db);
   snap.meals.length === 1 &&
@@ -215,7 +228,7 @@ console.log('4. log_symptom and log_meal validate before writing');
 console.log('5. reminders end to end: set → list → complete/dismiss, with guards');
 {
   const { db, raw } = freshDb();
-  const daily = run('set_reminder', db, {
+  const daily = await runAsync('set_reminder', db, {
     title: 'Take magnesium',
     time: '21:00',
     repeat: 'daily',
@@ -223,6 +236,16 @@ console.log('5. reminders end to end: set → list → complete/dismiss, with gu
   raw.prepare('SELECT created_by FROM reminders WHERE id = ?').get(daily.id).created_by === 'ai'
     ? ok('tool-created reminder records created_by = ai')
     : bad('created_by');
+
+  // The result must state what REALLY happened, not what the description hopes:
+  // under node there is no expo-notifications module, so a schedulable reminder
+  // reports module-unavailable and scheduled=false. That is the honesty contract.
+  daily.notification &&
+  daily.notification.scheduled === false &&
+  daily.notification.reason === 'module-unavailable' &&
+  /no phone alert will fire/.test(daily.notification.note)
+    ? ok('set_reminder reports the OBSERVED delivery outcome (module-unavailable here)')
+    : bad('delivery report', JSON.stringify(daily.notification));
 
   const listed = run('list_reminders', db);
   listed.reminders.length === 1 &&
@@ -236,7 +259,87 @@ console.log('5. reminders end to end: set → list → complete/dismiss, with gu
     ? ok('complete_reminder refuses a daily reminder (would end it for good)')
     : bad('recurring completed');
 
-  const once = run('set_reminder', db, { title: 'Book DEXA', repeat: 'once' });
+  const once = await runAsync('set_reminder', db, { title: 'Book DEXA', repeat: 'once' });
+  once.notification &&
+  once.notification.scheduled === false &&
+  once.notification.reason === 'no-time'
+    ? ok('an untimed reminder reports no-time, not a permission excuse')
+    : bad('untimed delivery report', JSON.stringify(once.notification));
+  once.date === null
+    ? ok('an untimed one-off reports date: null (there was no day to pin)')
+    : bad('untimed date', JSON.stringify(once.date));
+
+  // A TIMED one-off gets its day pinned as it is saved, and the tool must report
+  // the day it ACTUALLY landed on — the model relays that day to the user, and
+  // it is the difference between "tomorrow 9am" and a reminder that fires daily
+  // forever. Fixed clock: Fri 2026-08-07 22:00 local, so 09:00 has gone by.
+  {
+    const lateCtx = { now: new Date(2026, 7, 7, 22, 0, 0, 0) };
+    const tool = toolByName('set_reminder');
+    const rolled = JSON.parse(
+      await tool.execute(db, { title: 'Call the clinic', time: '09:00' }, lateCtx)
+    );
+    rolled.date === '2026-08-08' && rolled.repeat === 'once'
+      ? ok('set_reminder at 22:00 for "09:00" reports date 2026-08-08 (tomorrow), truthfully')
+      : bad('rolled one-off report', JSON.stringify(rolled));
+    raw.prepare('SELECT date FROM reminders WHERE id = ?').get(rolled.id).date === '2026-08-08'
+      ? ok('  → and that day is PERSISTED, so no later resync can move it again')
+      : bad('rolled one-off not persisted');
+    // Pinned in the future ⇒ genuinely schedulable, so the honest blocker under
+    // node is the missing native module, not "moment-passed".
+    rolled.notification.scheduled === false && rolled.notification.reason === 'module-unavailable'
+      ? ok('  → schedulable, so it reports module-unavailable (not moment-passed)')
+      : bad('rolled delivery report', JSON.stringify(rolled.notification));
+
+    const sameDay = JSON.parse(
+      await tool.execute(db, { title: 'Take magnesium', time: '23:30' }, lateCtx)
+    );
+    sameDay.date === '2026-08-07'
+      ? ok('set_reminder at 22:00 for "23:30" reports date 2026-08-07 (today)')
+      : bad('same-day one-off report', JSON.stringify(sameDay));
+
+    // An explicitly back-dated one-off is unschedulable and must say so.
+    const backdated = JSON.parse(
+      await tool.execute(db, { title: 'Missed dose', time: '09:00', date: '2026-08-01' }, lateCtx)
+    );
+    backdated.date === '2026-08-01' &&
+    backdated.notification.scheduled === false &&
+    backdated.notification.reason === 'moment-passed'
+      ? ok('an explicitly back-dated one-off keeps its day and reports moment-passed')
+      : bad('backdated report', JSON.stringify(backdated));
+
+    // The CONFIRMATION CARD must name that pinned day before the user approves.
+    // "Set reminder … at 09:00" approved at 22:00 silently writes a row dated
+    // tomorrow, so the summary takes the same turn context execute does and
+    // resolves the day off the same clock. Formatted by hand — Hermes has no Intl.
+    const summaryWith = (input) => tool.confirmSummary(input, db, lateCtx);
+    summaryWith({ title: 'Call the clinic', time: '09:00' }) ===
+    'Set reminder "Call the clinic" at 09:00 · tomorrow (Sat 8 Aug)'
+      ? ok('confirmSummary names the day when a bare-time one-off pins to TOMORROW')
+      : bad('summary tomorrow', summaryWith({ title: 'Call the clinic', time: '09:00' }));
+    summaryWith({ title: 'Take magnesium', time: '23:30' }) ===
+    'Set reminder "Take magnesium" at 23:30'
+      ? ok('  → and stays silent about the day when it pins to today (nothing to warn about)')
+      : bad('summary today', summaryWith({ title: 'Take magnesium', time: '23:30' }));
+    summaryWith({ title: 'Missed dose', time: '09:00', date: '2026-08-01' }) ===
+    'Set reminder "Missed dose" at 09:00 · 2026-08-01 (Sat 1 Aug)'
+      ? ok('  → an explicit day is still shown, ISO plus its weekday')
+      : bad('summary explicit date', summaryWith({ title: 'Missed dose', date: '2026-08-01' }));
+    summaryWith({ title: 'Weigh in', time: '07:30', repeat: 'weekly', date: '2026-08-03' }) ===
+    'Set reminder "Weigh in" at 07:30 · weekly · 2026-08-03 (Mon 3 Aug)'
+      ? ok('  → a weekly anchor is printed as a day, never as "tomorrow"')
+      : bad('summary weekly anchor');
+    // An UNTIMED one-off derives no day at all, so its card must be identical
+    // whatever the clock says — the day suffix appears only when there is a day.
+    const earlyCtx = { now: new Date(2026, 7, 7, 0, 1, 0, 0) };
+    summaryWith({ title: 'Book DEXA' }) === 'Set reminder "Book DEXA"' &&
+    tool.confirmSummary({ title: 'Book DEXA' }, db, earlyCtx) === 'Set reminder "Book DEXA"'
+      ? ok('  → an untimed one-off derives no day, so its card is clock-independent')
+      : bad('summary untimed', summaryWith({ title: 'Book DEXA' }));
+
+    // Housekeeping: these three would otherwise pollute the list assertions below.
+    for (const r of [rolled, sameDay, backdated]) run('dismiss_reminder', db, { id: r.id });
+  }
   const summary = toolByName('complete_reminder').confirmSummary({ id: once.id }, db);
   summary === 'Mark reminder "Book DEXA" done'
     ? ok(`confirmation names the target, never a bare id ("${summary}")`)
@@ -259,7 +362,7 @@ console.log('5. reminders end to end: set → list → complete/dismiss, with gu
   throws(() => run('dismiss_reminder', db, { id: 'nope' }))
     ? ok('unknown reminder id rejected with guidance')
     : bad('unknown id accepted');
-  throws(() => run('set_reminder', db, { title: 'Weekly check', repeat: 'weekly' }))
+  (await rejects(() => runAsync('set_reminder', db, { title: 'Weekly check', repeat: 'weekly' })))
     ? ok('weekly without an anchor date rejected at the tool layer')
     : bad('anchorless weekly accepted');
 }
@@ -604,6 +707,175 @@ console.log('15. get_training_summary.thisWeek is the calendar week (agrees with
   near(summary.totals.cardioMinutes, 75) && summary.thisWeek.cardioMinutes === 45
     ? ok('rolling 7-day totals include the Sunday session (75); thisWeek excludes it (45)')
     : bad('rolling vs calendar', JSON.stringify(summary));
+}
+
+console.log('16. the REAL call site: one turn clock from confirmation card to written row');
+{
+  // Section 5 exercises `confirmSummary` by handing it a context directly — a
+  // path the app never takes. The defect being covered here lived in the CALL
+  // SITE: src/lib/ai/coach-service.ts is the only place a confirmation card is
+  // rendered repo-wide, and it built the card off one `new Date()` and the row
+  // off a second, later one, read AFTER awaiting the user's approval. So this
+  // section drives coach-service itself, model stream and all, with the clock
+  // injected and MOVED while the user "thinks".
+  //
+  // Loading that module under node needs three resolutions Metro/tsc do and raw
+  // node ESM does not: `expo/fetch` (no node-resolvable entry point) and
+  // `@/lib/db/client` (pulls in native op-sqlite) are stubbed to test doubles,
+  // and `./tools` needs directory-index resolution. Nothing else is faked —
+  // the agentic loop, the tool registry, the repositories and the SQLite writes
+  // are the real ones.
+  const { register } = await import('node:module');
+  const LOADER_HOOK = `
+const stub = (source) => ({
+  url: 'data:text/javascript,' + encodeURIComponent(source),
+  shortCircuit: true,
+});
+const STUBS = new Map([
+  ['expo/fetch', stub('export const fetch = (...args) => globalThis.__ARC_TEST_FETCH__(...args);')],
+  ['@/lib/db/client', stub('export const getDb = () => globalThis.__ARC_TEST_DB__;')],
+]);
+export async function resolve(specifier, context, next) {
+  const hit = STUBS.get(specifier);
+  if (hit) return hit;
+  try {
+    return await next(specifier, context);
+  } catch (error) {
+    if (specifier.startsWith('.')) return next(specifier + '/index.ts', context);
+    throw error;
+  }
+}
+`;
+  register('data:text/javascript,' + encodeURIComponent(LOADER_HOOK), import.meta.url);
+  const { streamCoachReply } = await import('../src/lib/ai/coach-service.ts');
+
+  // --- A scripted Messages API stream (the wire shape model-client parses) ---
+  const sse = (events) =>
+    events.map((data) => `event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`).join('');
+
+  const toolUseReply = (name, input) =>
+    sse([
+      { type: 'message_start', message: {} },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_clock', name, input: {} },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+      },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+      { type: 'message_stop' },
+    ]);
+
+  const textReply = (text) =>
+    sse([
+      { type: 'message_start', message: {} },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+      { type: 'message_stop' },
+    ]);
+
+  const responseOf = (body) => {
+    const bytes = new TextEncoder().encode(body);
+    let sent = false;
+    return {
+      ok: true,
+      status: 200,
+      text: async () => body,
+      body: {
+        getReader: () => ({
+          read: async () =>
+            sent ? { done: true } : ((sent = true), { done: false, value: bytes }),
+        }),
+      },
+    };
+  };
+
+  /**
+   * One complete turn: the model calls set_reminder, the confirmation card is
+   * rendered at `startAt`, the user deliberates (the injected clock jumps to
+   * `approveAt`), then approves. Returns the card line, the row that landed,
+   * and how many clock reads happened before vs. after the approval.
+   */
+  async function runTurn({ input, startAt, approveAt }) {
+    const { db, raw } = freshDb();
+    globalThis.__ARC_TEST_DB__ = db;
+    const replies = [toolUseReply('set_reminder', input), textReply('Done.')];
+    globalThis.__ARC_TEST_FETCH__ = async () => responseOf(replies.shift());
+
+    let instant = startAt;
+    let reads = 0;
+    let readsAtCard = -1;
+    let card = null;
+
+    const result = await streamCoachReply(
+      [{ id: 'u1', role: 'user', content: 'remind me', createdAt: 0 }],
+      {
+        onToken: () => {},
+        now: () => {
+          reads++;
+          return instant;
+        },
+        confirmWrite: async (request) => {
+          card = request.summary;
+          readsAtCard = reads;
+          instant = approveAt; // approval latency — the wall clock really moved
+          return true;
+        },
+      }
+    );
+
+    return {
+      card,
+      row: raw.prepare('SELECT title, date FROM reminders').get(),
+      toolResult: JSON.parse(result.toolCalls[0].result),
+      reads,
+      readsAtCard,
+    };
+  }
+
+  await apiKeyStore.setKey('test-key'); // a key set ⇒ the REAL path, not the mock
+
+  // The exact scenario the defect describes: the card is rendered 30 seconds
+  // before 09:00 (so "09:00" is still ahead — today), and approval lands 40
+  // seconds later, past 09:00. Two clock reads would card "today" and write
+  // "tomorrow"; one read cannot.
+  const straddle = await runTurn({
+    input: { title: 'Take creatine', time: '09:00' },
+    startAt: new Date(2026, 7, 7, 8, 59, 30),
+    approveAt: new Date(2026, 7, 7, 9, 0, 10),
+  });
+  straddle.card === 'Set reminder "Take creatine" at 09:00'
+    ? ok('card rendered at 08:59:30 for "09:00" names no day — it lands today')
+    : bad('straddle card', straddle.card);
+  straddle.row.date === '2026-08-07' && straddle.toolResult.date === '2026-08-07'
+    ? ok('  → approved at 09:00:10, the row is STILL dated today, exactly as the card said')
+    : bad('straddle row', JSON.stringify({ row: straddle.row, result: straddle.toolResult }));
+  straddle.reads === straddle.readsAtCard
+    ? ok('  → and execute read no clock of its own (one instant, card to row)')
+    : bad('clock re-read after approval', `${straddle.readsAtCard} → ${straddle.reads}`);
+
+  // Non-triviality: start the same turn AFTER 09:00 and both halves must move
+  // together to tomorrow. A card hardcoded to "today" would pass the test above
+  // and fail this one.
+  const rolled = await runTurn({
+    input: { title: 'Take creatine', time: '09:00' },
+    startAt: new Date(2026, 7, 7, 9, 0, 10),
+    approveAt: new Date(2026, 7, 7, 9, 0, 20),
+  });
+  rolled.card === 'Set reminder "Take creatine" at 09:00 · tomorrow (Sat 8 Aug)' &&
+  rolled.row.date === '2026-08-08' &&
+  rolled.toolResult.date === '2026-08-08'
+    ? ok('the same turn started 40s later cards AND writes tomorrow — the day is truly derived')
+    : bad('rolled turn', JSON.stringify({ card: rolled.card, row: rolled.row }));
+
+  await apiKeyStore.clearKey();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

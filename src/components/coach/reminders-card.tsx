@@ -5,10 +5,16 @@ import { palette } from '@/constants/theme';
 import type { ReminderRow } from '@/lib/reminders/types';
 
 /**
- * Section: active reminders — the in-app surfacing seam for rows the user or
- * the Coach created (0009_reminders.sql). Renders nothing when empty. OS
- * notification delivery is a flagged native dependency; until it lands, this
- * list IS the reminder.
+ * Section: active reminders — the in-app surfacing of rows the user or the
+ * Coach created (0009_reminders.sql). Renders nothing when empty.
+ *
+ * A reminder with a time is ALSO handed to the OS as a local notification, so it
+ * can fire while the app is closed (src/lib/notifications/reminders.ts, resynced
+ * at boot and after every Coach turn) — when the running build has the
+ * notifications native module, permission is granted, and the moment is still
+ * ahead. None of that is guaranteed, so this list is the floor, not a fallback:
+ * an untimed reminder, or a timed one the OS never accepted, lives here and
+ * nowhere else. Nothing in this UI should claim a phone alert will arrive.
  */
 export function RemindersCard({
   reminders,

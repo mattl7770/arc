@@ -65,7 +65,15 @@ const SOON: SoonRow[] = [
   },
 ];
 
-const APP_VERSION = Constants.expoConfig?.version ?? '0.1.0';
+// The single source of truth is app.json's `expo.version`, delivered at runtime
+// through the manifest. There is deliberately NO hardcoded fallback: a literal
+// here has to be hand-synced with app.json and silently rots the moment it
+// isn't (it still read '0.1.0' after app.json moved to 0.2.0, so the About card
+// was reporting a version that had not existed for a while). Importing app.json
+// wouldn't fix it either — that reports the JS bundle's declared version, which
+// can differ from the installed binary's after an OTA update. If the manifest
+// is unavailable we print nothing: no version line is honest, a wrong one is not.
+const APP_VERSION = Constants.expoConfig?.version ?? null;
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -281,7 +289,9 @@ export default function SettingsScreen() {
           <Text className="mt-1 text-[12px] leading-5 text-ink-secondary">
             Architecture for Resilience &amp; Continuity
           </Text>
-          <Text className="mt-2 font-mono text-[11px] text-ink-muted">v{APP_VERSION}</Text>
+          {APP_VERSION ? (
+            <Text className="mt-2 font-mono text-[11px] text-ink-muted">v{APP_VERSION}</Text>
+          ) : null}
         </View>
       </View>
     </Screen>

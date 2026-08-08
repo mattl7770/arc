@@ -63,7 +63,7 @@ console.log('0. daily and weekly build repeating clock triggers');
     : bad('weekly no date');
 }
 
-console.log('1. one-offs schedule a future moment, never a past one');
+console.log('1. one-offs schedule their dated moment, never a past one, never an undated one');
 {
   const future = reminderTrigger(
     reminder({ repeat: 'once', time: '08:00', date: '2026-07-28' }),
@@ -79,16 +79,37 @@ console.log('1. one-offs schedule a future moment, never a past one');
     ? ok('dated PAST one-off → null (would fire immediately)')
     : bad('past dated once');
 
-  const todayFuture = reminderTrigger(reminder({ repeat: 'once', time: '18:00', date: null }), NOW);
-  todayFuture &&
-  todayFuture.type === 'date' &&
-  todayFuture.date.getTime() === new Date(2026, 6, 27, 18, 0, 0, 0).getTime()
-    ? ok('undated one-off, time still ahead today → today at that time')
-    : bad('undated future once', JSON.stringify(todayFuture));
+  // The day of a timed one-off is resolved ONCE, at creation — createReminder
+  // stamps `date` (today if the time is still ahead, else tomorrow). So this
+  // function must NOT resolve it again. What the pre-fix code did: it resolved
+  // an undated one-off to TODAY at its clock time and returned null once that
+  // moment had passed — quiet for the rest of that day, never rolled forward to
+  // tomorrow. The bug bit the NEXT day: that day's first resync (boot, or any
+  // Coach turn) re-resolved "today" against the new date, found a fresh future
+  // moment and scheduled it again — every day, forever, since nothing marks a
+  // one-off done but the user. Undated must now be unschedulable on BOTH sides
+  // of the clock, which is what these two cases pin.
+  reminderTrigger(reminder({ repeat: 'once', time: '18:00', date: null }), NOW) === null
+    ? ok('undated one-off, time still AHEAD today → null (no longer resolved to today)')
+    : bad('undated once, time ahead');
 
   reminderTrigger(reminder({ repeat: 'once', time: '08:00', date: null }), NOW) === null
-    ? ok('undated one-off whose time already passed today → null')
-    : bad('undated past once');
+    ? ok('undated one-off whose time already PASSED → null')
+    : bad('undated once, time passed');
+
+  // The mechanism itself: the SAME undated row, seen on three consecutive days,
+  // each before its clock time — the exact moments the old code handed back a
+  // fresh trigger. All null now.
+  {
+    const legacy = reminder({ repeat: 'once', time: '09:00', date: null });
+    [
+      new Date(2026, 6, 28, 8, 0, 0, 0),
+      new Date(2026, 6, 29, 8, 0, 0, 0),
+      new Date(2026, 6, 30, 8, 0, 0, 0),
+    ].every((m) => reminderTrigger(legacy, m) === null)
+      ? ok('  → and null on each NEW DAY before its time (the per-new-day rescheduling is gone)')
+      : bad('undated once rescheduled on a new day');
+  }
 }
 
 console.log('2. unschedulable reminders return null (in-app only)');

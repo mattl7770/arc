@@ -47,7 +47,9 @@ export default function RootLayout() {
   //    from preview to connected);
   //  - reconcile OS notifications with the active reminders, so a daily/weekly
   //    nudge keeps firing across launches and a reminder changed while the app
-  //    was closed is picked up. No-ops until the native module ships (rebuild);
+  //    was closed is picked up. Self-reporting and best-effort: it no-ops when
+  //    the notifications native module isn't in the running binary or permission
+  //    isn't granted, and the in-app reminders list stands on its own either way;
   //  - pull fresh Apple Health data (throttled), and again whenever the app
   //    returns to the foreground — wearables written while ARC was closed are
   //    waiting in HealthKit. No-ops until enabled + the native module ships.

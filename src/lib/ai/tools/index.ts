@@ -1,8 +1,10 @@
 /**
  * The Coach tool registry — the single list of what the model can do in the
  * app today, plus the mapping to the wire format. docs/ai-coach.md is the
- * spec; this is the implementation. Stubbed future tools (Protocols, Modes,
- * navigation…) live in ./stubs and are deliberately NOT registered.
+ * spec; this is the implementation. The tools still awaiting their feature
+ * (mission write access, Coach navigation) live in ./stubs and are deliberately
+ * NOT registered — everything else, Protocols/Modes/experiments/knowledge
+ * search included, ships here as a real tool.
  */
 import type { WireTool } from '../model-client';
 import { READ_TOOLS } from './read-tools';

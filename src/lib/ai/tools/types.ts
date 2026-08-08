@@ -16,7 +16,12 @@
 import type { Database } from '@/lib/db/database';
 
 export type CoachToolContext = {
-  /** The turn's clock — injectable so headless tests are deterministic. */
+  /**
+   * The clock for ONE tool call — injectable so headless tests are
+   * deterministic, and read exactly once per call by the service layer
+   * (src/lib/ai/coach-service.ts) so {@link CoachTool.confirmSummary} and
+   * {@link CoachTool.execute} cannot disagree about what time it is.
+   */
   now: Date;
 };
 
@@ -34,8 +39,26 @@ export type CoachTool = {
    * ("Log weight 178.0 lb"). Built from validated input; `db` is available so
    * an id-shaped input can be resolved to what it actually names — the user
    * must never approve a bare identifier blind.
+   *
+   * `context` is the SAME {@link CoachToolContext} instance {@link execute}
+   * gets — the service layer reads the clock once per tool call and passes that
+   * one object to both halves. That matters because some writes derive part of
+   * what they store from `now`: set_reminder pins the day of a bare-time
+   * one-off, which is tomorrow once that clock time has gone by. A card built
+   * off a different instant than the row is exactly how "at 09:00" gets
+   * approved and a row dated tomorrow lands.
+   *
+   * REQUIRED, not optional. It was optional once, to spare call sites that
+   * passed only `(input, db)` — and the single real call site then quietly kept
+   * doing that, so the clock-sharing this parameter exists for never happened.
+   * Requiring it makes rendering a card without the turn clock a type error.
+   * A summary that doesn't need the clock simply omits the parameter.
    */
-  confirmSummary?: (input: Record<string, unknown>, db: Database) => string;
+  confirmSummary?: (
+    input: Record<string, unknown>,
+    db: Database,
+    context: CoachToolContext
+  ) => string;
   /**
    * Run the tool against the on-device database. Returns the tool_result
    * content (JSON), or a Promise of it — most tools are synchronous SQL, but a

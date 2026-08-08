@@ -5,6 +5,11 @@ android/
 ios/
 package-lock.json
 
+# Agent worktrees. Each holds a full checkout of a different branch, so
+# `prettier --check .` reports that branch's files as failures and the gate
+# becomes unreadable. They are not part of this tree's source.
+.claude/worktrees/
+
 # Markdown is hand-authored and is the project's source of truth
 # (CLAUDE.md + /docs). Prettier reflows tables and wrapping, which would churn
 # the diff on files people actually read. Format prose by hand.

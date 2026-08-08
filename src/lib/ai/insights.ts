@@ -25,6 +25,7 @@ import { metricByKey, resolveDisplay } from '@/lib/log/metrics';
 import { listActiveReminders, isDueOn } from '@/lib/db/repositories/reminders';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { todayISODate } from '@/lib/db/date';
+import type { ReminderRow } from '@/lib/reminders/types';
 import type { UnitPreferences } from '@/lib/user/types';
 import {
   bodyDailySeries,
@@ -335,25 +336,113 @@ function hrvTrainingCorrelation(
 }
 
 /**
+ * An active reminder that {@link isDueOn} surfaces today, with how late it is.
+ *
+ * `daysOverdue` is 0 for everything that genuinely belongs to today — every
+ * recurring reminder, a one-off pinned to today, and an undated legacy one-off
+ * (no floor, so no age can honestly be claimed). It is positive only for a
+ * one-off whose pinned day has passed and which the user has neither completed
+ * nor dismissed: those keep surfacing by design (see `isDueOn`), but they are
+ * NOT today's plan and must never be presented as such.
+ */
+export type DueReminder = { reminder: ReminderRow; daysOverdue: number };
+
+/**
+ * Today's due reminders, ranked so today's actual plan comes first.
+ *
+ * The ordering is the whole point. `listActiveReminders` sorts by CLOCK TIME
+ * only, which is right for a list of everything but wrong the moment a caller
+ * truncates: an overdue one-off pinned at 06:00 months ago would outrank
+ * today's real daily and weekly reminders unconditionally, and any `slice`
+ * would drop the genuine ones. So: on-their-day items first (in their existing
+ * clock order), then overdue one-offs, oldest nag first. Ties fall back to the
+ * source index, so the result is fully deterministic and does not depend on
+ * `Array.prototype.sort` stability.
+ *
+ * Shared by {@link generateDailyBrief} and the `get_today_snapshot` tool so the
+ * Home brief and the Coach model rank and cap the same set the same way.
+ */
+export function dueRemindersFor(db: Database, today: string): DueReminder[] {
+  const due = listActiveReminders(db)
+    .filter((r) => isDueOn(r, today))
+    .map((reminder, index) => ({
+      reminder,
+      index,
+      daysOverdue:
+        reminder.repeat === 'once' && reminder.date != null && reminder.date < today
+          ? daysBetween(reminder.date, today)
+          : 0,
+    }));
+  due.sort(
+    (a, b) =>
+      Number(a.daysOverdue > 0) - Number(b.daysOverdue > 0) ||
+      b.daysOverdue - a.daysOverdue ||
+      a.index - b.index
+  );
+  return due.map(({ reminder, daysOverdue }) => ({ reminder, daysOverdue }));
+}
+
+/**
+ * A day count as the shortest honest unit — "1 day", "12 days", "5 wk", "4 mo".
+ * Hand-rolled: Hermes has no Intl, so nothing here may reach for it. Same
+ * thresholds as the Screenings ledger's span text, so "3 wk overdue" means the
+ * same thing everywhere in the app.
+ */
+function ageText(days: number): string {
+  if (days < 14) return days === 1 ? '1 day' : `${days} days`;
+  if (days < 70) return `${Math.round(days / 7)} wk`;
+  if (days < 550) return `${Math.round(days / 30.44)} mo`;
+  return `${Math.round(days / 365.25)} yr`;
+}
+
+/** How many of each kind of reminder the brief names before it starts counting. */
+const BRIEF_ON_DECK = 3;
+const BRIEF_OVERDUE = 2;
+
+const reminderText = (r: ReminderRow): string => (r.time ? `${r.title} (${r.time})` : r.title);
+
+/** "A · B, and 3 more" — names the first `limit`, counts the rest rather than hiding it. */
+function joinNamed(items: string[], limit: number): string {
+  const named = items.slice(0, limit).join(' · ');
+  const rest = items.length - limit;
+  return rest > 0 ? `${named}, and ${rest} more` : named;
+}
+
+/**
  * The deterministic morning brief: top insights + today's reminders, composed
  * without a model call, so the brief is real even offline. The Coach may
  * rewrite it in voice; the numbers come from here.
+ *
+ * Overdue one-offs get their own clause with their age, never the "On deck
+ * today" line. Home is sacred (CLAUDE.md §5) and answers "what should I do
+ * right now" — a months-old un-dismissed nudge is a real obligation, so it is
+ * not dropped, but it cannot be allowed to evict today's actual plan or to
+ * masquerade as it.
  */
 export function generateDailyBrief(db: Database, now: Date = new Date()): string {
   const insights = computeInsights(db, now);
   const today = todayISODate(now);
-  const dueToday = listActiveReminders(db).filter((r) => isDueOn(r, today));
+  const due = dueRemindersFor(db, today);
+  const onDeck = due.filter((d) => d.daysOverdue === 0);
+  const overdue = due.filter((d) => d.daysOverdue > 0);
 
   const parts: string[] = [];
   for (const insight of insights.slice(0, 3)) {
     parts.push(`${insight.headline}.`);
   }
-  if (dueToday.length > 0) {
-    const titles = dueToday
-      .slice(0, 3)
-      .map((r) => (r.time ? `${r.title} (${r.time})` : r.title))
-      .join(' · ');
-    parts.push(`On deck today: ${titles}.`);
+  if (onDeck.length > 0) {
+    parts.push(
+      `On deck today: ${joinNamed(
+        onDeck.map((d) => reminderText(d.reminder)),
+        BRIEF_ON_DECK
+      )}.`
+    );
+  }
+  if (overdue.length > 0) {
+    const named = overdue.map(
+      (d) => `${reminderText(d.reminder)} — ${ageText(d.daysOverdue)} overdue`
+    );
+    parts.push(`Still open: ${joinNamed(named, BRIEF_OVERDUE)}.`);
   }
   if (parts.length === 0) {
     return (

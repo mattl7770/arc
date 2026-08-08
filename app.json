@@ -2,7 +2,7 @@
   "expo": {
     "name": "ARC",
     "slug": "arc",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "orientation": "portrait",
     "scheme": "arc",
     "userInterfaceStyle": "light",
@@ -37,7 +37,8 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "ARC uses the camera to scan food barcodes and photograph meals for logging."
+          "cameraPermission": "ARC uses the camera to scan food barcodes and photograph meals for logging.",
+          "microphonePermission": false
         }
       ],
       [

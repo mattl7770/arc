@@ -126,16 +126,16 @@ export default function DataScreen() {
             Bring in your bloodwork
           </Text>
           <Text className="mt-1 text-[12.5px] leading-5 text-ink-secondary">
-            Function Health PDF → 160+ biomarkers, parsed on-device. The importer arrives with the
-            pipeline — preview the ranges it&rsquo;ll grade you against.
+            Function Health PDF → 160+ biomarkers, parsed on-device. Review every row before
+            anything is saved, graded against ARC&rsquo;s longevity-optimal ranges.
           </Text>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Preview lab ranges"
-            onPress={() => router.push('/labs')}
+            accessibilityLabel="Import a lab report"
+            onPress={() => router.push('/lab-import')}
             className="mt-4 flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3.5 active:opacity-70">
-            <Ionicons name="flask-outline" size={18} color={palette.pineOn} />
-            <Text className="text-[15px] font-semibold text-pine-on">Preview lab ranges</Text>
+            <Ionicons name="document-text-outline" size={18} color={palette.pineOn} />
+            <Text className="text-[15px] font-semibold text-pine-on">Import a report</Text>
           </Pressable>
         </View>
       </View>

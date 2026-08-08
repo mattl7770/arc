@@ -6,8 +6,9 @@
  * model: a tool that always fails teaches the model not to call it, so the
  * honest move is to withhold them until their feature lands. Each execute
  * throws with the dependency named, and each entry in docs/ai-coach.md flags
- * what has to ship first (Protocols editor, Modes, expo-notifications, Expo
- * Router navigation seam).
+ * what has to ship first — now down to two: Coach-visible mission item ids, and
+ * an Expo Router navigation seam. (The Protocols editor, Modes, experiments and
+ * expo-notifications dependencies have all landed; those tools are registered.)
  *
  * When a dependency lands: implement execute, move the tool into COACH_TOOLS
  * (src/lib/ai/tools/index.ts), and strike the flag from the spec.

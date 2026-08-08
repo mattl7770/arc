@@ -53,4 +53,11 @@ A **mode** is how ARC handles a day that isn't normal — the concrete form of "
 **The set:** Normal (default) · Travel · Sick · Deload · Social · Custom.
 **Duration:** just today, a date range (a whole trip), or on-until-turned-off.
 **Where:** the **Home** screen — a quiet control near the date/status, because a mode is a fact about *today* set in the moment (landing in a new city, waking up sick); burying it in Settings would add friction exactly when it's needed. A small persistent indicator shows the active mode so it's never silently on; setting it visibly re-derives the mission and re-tones the brief.
-**Data model (later — the override model doesn't exist yet):** a mode on the day (a field on `daily_logs`, or a small `day_modes` table for ranges) plus mode-specific protocol variants the mission generator reads. Recorded now because Protocols and the mission generator must accommodate it when they're built.
+**Data model — BUILT** (engine 2026-07-31, UI 2026-08-01). The override model this section used to describe as hypothetical shipped as migration **0026**, `day_modes` — the "small table for ranges" option, since it supports single-day, date-range, and open-ended-until-turned-off durations. What exists today:
+
+- **`day_modes` (0026)** + a mode registry (Normal · Travel · Sick · Deload · Social · Custom), each mode carrying drop-types, injected items, a `heroFocus`, a `coachTone`, and whether it excuses skips — which is exactly the four-part change described above.
+- **A mode-aware mission generator**, and **`rederiveMissionForDay`** for setting a mode mid-day. That re-derive is a **diff, never a wipe**: untouched pending machine-made items the new mode drops are removed, the new mode's items are added, and anything completed, skipped, **partial**, or ad-hoc is preserved. Declaring you're sick at 3pm must never erase the morning you actually did.
+- **The Home control** (`src/components/home/mode-control.tsx`) — beside the date, deliberately neutral: a paper-deep/mono status chip when a mode is on, a bare muted "Set mode" when it isn't. Home's one pine stays with the hero, because a mode is a *state*, not an action.
+- **The `set_mode` Coach tool** (registered, confirmation-gated) plus the active mode in `get_today_snapshot`, so the Coach both sees and can change the day's context.
+
+Headless coverage: `db/modes.test.mjs`, 39 assertions, including the mid-day re-derive's preserve-work cases.
