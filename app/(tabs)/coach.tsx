@@ -18,6 +18,8 @@ import { PendingWriteCard } from '@/components/coach/pending-write-card';
 import { RemindersCard } from '@/components/coach/reminders-card';
 import { SessionKeyPanel } from '@/components/coach/session-key-panel';
 import { SuggestedPrompts } from '@/components/coach/suggested-prompts';
+import { Block } from '@/components/ui/block';
+import { SectionLabel } from '@/components/ui/section-label';
 import { useCoachChat } from '@/hooks/use-coach-chat';
 import { useReminders } from '@/hooks/use-reminders';
 import { useSessionKeySet } from '@/hooks/use-session-key';
@@ -35,6 +37,41 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * session key pasted it runs the real agentic tool loop (reads + confirmed
  * writes against the local database); without one it stays an honest preview.
  * Write tool calls surface in the PendingWriteCard and run only on Approve.
+ *
+ * ## The surface system
+ *
+ * Four of the six devices appear here, and the container is what tells you what
+ * kind of thing you are reading (src/components/ui/block.tsx):
+ *
+ *   daily-brief-card    margin  prose — the brief is annotation, not a card
+ *   reminders-card      plate   a schedule is a record, and a record is a table
+ *   the thread          well    recessed stock: a capture surface, the turns are
+ *                               marks made on it rather than cards floating over it
+ *   suggested-prompts   plate   the authored empty state, as a list of things
+ *   pending-write-card  stamp   the one next action, in the accent
+ *
+ * Each component owns its own device, so nothing nests; the Views here are
+ * layout and spacing only, and sections are separated by whitespace rather than
+ * by rules — in this design rules enclose objects, never the page. The two rules
+ * that *are* drawn belong to bands: the header, and the composer.
+ *
+ * ## Accent budget
+ *
+ * Exactly the sanctioned set (00-design-spec.md §2): the Coach presence dot (in
+ * the session line and on the brief), the user's own bubbles, the streaming
+ * caret and the thinking dots, and **one** primary action — the composer's send,
+ * which hands the accent over to the pending-write stamp while a decision is
+ * open, so the two never appear together. No signal colour appears anywhere on
+ * this screen: everything here is chrome or workflow state, and the signal
+ * palette is biology only.
+ *
+ * ## The pending write is a live decision
+ *
+ * It renders between the thread and the composer, so nothing in the conversation
+ * can appear beneath it; the live activity line is suppressed while it is open,
+ * because the agentic loop is genuinely suspended and a "reading your data…"
+ * ticker under a gate would be a lie; and the composer is closed with a stated
+ * reason rather than silently inert. See pending-write-card.tsx for the rest.
  */
 export default function CoachScreen() {
   const keySet = useSessionKeySet();
@@ -85,12 +122,15 @@ export default function CoachScreen() {
   };
 
   const hasConversation = chat.messages.length > 0;
+  const decisionOpen = chat.pendingWrite !== null;
 
   return (
     <SafeAreaView edges={['top']} className="flex-1 bg-paper">
-      <View className="border-b border-hairline px-5 pb-3 pt-1">
-        <Text className="font-serif text-2xl font-semibold text-ink">ARC Coach</Text>
-        <Text className="mt-0.5 text-sm text-ink-secondary">{COACH_TAGLINE}</Text>
+      <View className="border-b border-hairline px-5 pb-2.5 pt-1">
+        <Text className="font-serif text-[22px] font-semibold text-ink">ARC Coach</Text>
+        <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+          {COACH_TAGLINE}
+        </Text>
       </View>
 
       <SessionKeyPanel keySet={keySet} />
@@ -101,7 +141,7 @@ export default function CoachScreen() {
         <ScrollView
           ref={scrollRef}
           className="flex-1"
-          contentContainerClassName="px-5 pb-4 pt-4"
+          contentContainerClassName="px-5 pb-5 pt-4"
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
           scrollEventThrottle={16}
@@ -109,20 +149,44 @@ export default function CoachScreen() {
           onContentSizeChange={followIfAtBottom}>
           <DailyBriefCard brief={brief} keySet={keySet} />
 
-          <RemindersCard
-            reminders={reminders}
-            onComplete={onCompleteReminder}
-            onDismiss={onDismissReminder}
-          />
+          {/* RemindersCard renders nothing when the list is empty, so the gap
+              above it is conditioned on the same emptiness — otherwise a user
+              with no reminders gets a 24px hole in the sheet. */}
+          {reminders.length > 0 ? (
+            <View className="mt-6">
+              <RemindersCard
+                reminders={reminders}
+                onComplete={onCompleteReminder}
+                onDismiss={onDismissReminder}
+              />
+            </View>
+          ) : null}
 
-          {chat.messages.map((message) => (
-            <MessageBubble key={message.id} message={message} onRetry={chat.retry} />
-          ))}
-
-          {!hasConversation ? <SuggestedPrompts onPick={chat.send} /> : null}
+          {hasConversation ? (
+            <View className="mt-6">
+              <SectionLabel label="Thread" />
+              <View className="mt-2">
+                <Block device="well">
+                  {chat.messages.map((message, index) => (
+                    // Spacing lives on the thread, not on the turn, so the last
+                    // bubble cannot leave a gap inside the well.
+                    <View key={message.id} className={index === 0 ? '' : 'mt-3.5'}>
+                      <MessageBubble message={message} onRetry={chat.retry} />
+                    </View>
+                  ))}
+                </Block>
+              </View>
+            </View>
+          ) : (
+            <View className="mt-6">
+              <SuggestedPrompts onPick={chat.send} />
+            </View>
+          )}
         </ScrollView>
 
-        {chat.activity && chat.isResponding ? (
+        {/* Suppressed while a decision is open: the loop is suspended waiting on
+            the owner, so a live activity ticker under the gate would be false. */}
+        {chat.activity && chat.isResponding && !decisionOpen ? (
           <View className="px-5 pb-1.5">
             <Text className="font-mono text-[11px] text-ink-muted">· {chat.activity}…</Text>
           </View>
@@ -132,7 +196,11 @@ export default function CoachScreen() {
           <PendingWriteCard pending={chat.pendingWrite} onResolve={chat.resolveWrite} />
         ) : null}
 
-        <ChatInput onSend={chat.send} disabled={chat.isResponding} />
+        <ChatInput
+          onSend={chat.send}
+          disabled={chat.isResponding}
+          blockedReason={decisionOpen ? 'Answer the proposed change to continue' : undefined}
+        />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

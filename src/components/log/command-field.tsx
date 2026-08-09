@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
@@ -14,11 +15,19 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  * The Log tab hero (direction A, "Open Line"): a recessed "Log anything…" field
  * with the screen's one pine action docked to its right.
  *
+ * Conformed Set treatment — the **recessed well** device (00-design-spec.md §1):
+ * paper-dim stock on a paper-deep edge. A capture surface is exactly what a well
+ * is for, so the block *is* the input rather than containing a second sunken box
+ * inside itself — one device per block, and no boxes nested inside boxes.
+ *
  * The pine button does double duty — a **mic** when the field is empty (voice
  * capture arrives with the Coach, Phase 3), a **send** arrow once there's text
  * (functional now). On send, the text runs through the offline parser
  * (src/lib/log/parse.ts): a recognised metric ("weight 178") is logged to its
  * table, everything else is saved as a free note for the Coach.
+ *
+ * This button is the whole accent budget for the Log screen — the quick-add
+ * tiles and the symptom row are deliberately neutral.
  */
 export function CommandField({ onLogged }: { onLogged: () => void }) {
   const [text, setText] = useState('');
@@ -59,18 +68,18 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
   const tapMic = () => setVoiceHint(true);
 
   return (
-    <View className="rounded-card border border-hairline bg-porcelain p-3">
+    <Block device="well">
       {/* items-end (not stretch) keeps the pine action a fixed stamp — a
           multi-line note grows the field, never the accent. */}
       <View className="flex-row items-end gap-2.5">
-        <View className="max-h-28 min-h-[48px] flex-1 justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+        <View className="max-h-28 min-h-[44px] flex-1 justify-center">
           <TextInput
             value={text}
             onChangeText={changeText}
             placeholder="Log anything…"
             placeholderTextColor={palette.inkMuted}
             multiline
-            className="py-2.5 text-[15px] leading-5 text-ink"
+            className="py-2 font-serif text-[15px] leading-5 text-ink"
             accessibilityLabel="Log anything"
           />
         </View>
@@ -79,7 +88,7 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
             accessibilityRole="button"
             accessibilityLabel="Log entry"
             onPress={send}
-            className="h-12 w-[52px] items-center justify-center rounded-btn bg-pine active:opacity-70">
+            className="h-11 w-11 items-center justify-center rounded-btn bg-pine active:opacity-70">
             <Ionicons name="arrow-up" size={22} color={palette.pineOn} />
           </Pressable>
         ) : (
@@ -87,22 +96,22 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
             accessibilityRole="button"
             accessibilityLabel="Voice log"
             onPress={tapMic}
-            className="h-12 w-[52px] items-center justify-center rounded-btn bg-pine active:opacity-70">
+            className="h-11 w-11 items-center justify-center rounded-btn bg-pine active:opacity-70">
             <Ionicons name="mic-outline" size={22} color={palette.pineOn} />
           </Pressable>
         )}
       </View>
 
-      <View className="mt-2.5 flex-row items-start gap-2 px-0.5">
+      <View className="mt-2.5 flex-row items-start gap-2">
         <Ionicons
           name="reader-outline"
           size={13}
           color={palette.inkMuted}
-          style={{ marginTop: 2 }}
+          style={{ marginTop: 3 }}
           accessibilityElementsHidden
           importantForAccessibility="no"
         />
-        <Text className="flex-1 text-xs leading-5 text-ink-muted">
+        <Text className="flex-1 font-serif text-[13px] leading-5 text-ink-muted">
           {voiceHint ? (
             <Text className="text-ink-secondary">Voice capture arrives with the Coach.</Text>
           ) : (
@@ -113,6 +122,6 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
           )}
         </Text>
       </View>
-    </View>
+    </Block>
   );
 }

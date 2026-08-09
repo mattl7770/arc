@@ -3,7 +3,9 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { fmtNum, rangeText } from '@/lib/biomarkers/format';
@@ -24,6 +26,26 @@ import type { LabReportSummary } from '@/lib/labs/types';
  *
  * Both reads run on focus rather than once: an import performed on the pushed
  * screen must be visible the moment the user comes back here.
+ *
+ * ## The surface system
+ *
+ * Every block here is a **ruled plate** — this screen is nothing but records,
+ * and a record is a table (src/components/ui/block.tsx). Each plate carries its
+ * own section label, so sections are separated by whitespace rather than by
+ * page-wide rules.
+ *
+ * **The accent budget is one:** the import action, which is the only thing on
+ * the screen that writes anything. The reference rows are a reading surface and
+ * stay in ink.
+ *
+ * ## Tallies that reconcile
+ *
+ * Each section note states what its plate is responsible for and nothing else:
+ * the Imported note sums the `results` counts of the report rows beneath it,
+ * and each category note counts the measured markers among the rows drawn
+ * directly below. Every row of every group is rendered — nothing is folded —
+ * so neither number can drift from what is visible. A marker with no reading is
+ * an em-dash, never a stand-in figure.
  */
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -59,12 +81,19 @@ function groupByCategory(ranges: BiomarkerRange[]): Group[] {
   return groups;
 }
 
-/** "2026-07-14" → "14 Jul 2026", without pulling in a date library. */
+/** "2026-07-14" → "14 Jul 2026", without pulling in a date library (and without
+ * Intl, which Hermes does not ship). */
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function fmtDate(iso: string): string {
   const [y, m, d] = iso.split('-');
   const month = MONTHS[Number(m) - 1];
   return month ? `${Number(d)} ${month} ${y}` : iso;
+}
+
+/** The measured-marker tally a category plate is responsible for. */
+function measuredNote(items: BiomarkerRange[]): string {
+  const measured = items.filter((b) => b.latestValue != null).length;
+  return measured === 0 ? 'No readings yet' : `${measured} of ${items.length} measured`;
 }
 
 export default function LabsScreen() {
@@ -80,81 +109,99 @@ export default function LabsScreen() {
     }, [])
   );
 
+  // Sums the visible rows — a ledger has to add up to its own total.
+  const totalResults = reports.reduce((sum, r) => sum + r.resultCount, 0);
+
   return (
     <Screen scroll>
       <View className="pt-2">
         <StackHeader title="Labs" />
       </View>
 
+      {/* The one accent on the screen: the only action here that writes. */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Import a lab report"
         onPress={() => router.push('/lab-import')}
-        className="mt-4 h-12 flex-row items-center justify-center gap-2 rounded-btn bg-pine active:opacity-70">
+        className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine px-4 py-3 active:opacity-70">
         <Ionicons name="document-text-outline" size={18} color={palette.pineOn} />
-        <Text className="text-[15px] font-semibold text-pine-on">Import a report</Text>
+        <Text className="font-label text-[15px] font-semibold text-pine-on">Import a report</Text>
       </Pressable>
 
       {reports.length > 0 ? (
-        <View className="mt-6">
-          <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-            Imported
-          </Text>
-          <View className="mt-3 rounded-card border border-hairline bg-porcelain">
-            {reports.map((report, index) => (
-              <View
-                key={report.id}
-                className={`flex-row items-center gap-3 px-4 py-3 ${
-                  index === 0 ? '' : 'border-t border-hairline-soft'
-                }`}>
-                <View className="flex-1">
-                  <Text className="font-mono text-[13px] text-ink">
-                    {fmtDate(report.collectedAt)}
+        <View className="mt-7">
+          <Block device="plate">
+            <SectionLabel label="Imported" note={`${totalResults} results`} />
+            <View className="mt-1">
+              {reports.map((report, index) => (
+                <View
+                  key={report.id}
+                  className={`flex-row items-center gap-3 py-3 ${
+                    index === 0 ? '' : 'border-t border-hairline'
+                  }`}>
+                  <View className="flex-1">
+                    <Text className="font-mono text-[13px] text-ink">
+                      {fmtDate(report.collectedAt)}
+                    </Text>
+                    {report.labName ? (
+                      <Text className="mt-0.5 font-serif text-[11px] text-ink-muted">
+                        {report.labName}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Text className="font-mono text-[11px] text-ink-muted">
+                    {report.resultCount} results
                   </Text>
-                  {report.labName ? (
-                    <Text className="mt-0.5 text-[11px] text-ink-muted">{report.labName}</Text>
-                  ) : null}
                 </View>
-                <Text className="font-mono text-[11px] text-ink-muted">
-                  {report.resultCount} results
-                </Text>
-              </View>
-            ))}
-          </View>
+              ))}
+            </View>
+          </Block>
         </View>
       ) : null}
 
       {groups.map((group, groupIndex) => (
-        <View key={group.category} className={groupIndex === 0 ? 'mt-4' : 'mt-8'}>
-          <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-            {CATEGORY_LABELS[group.category] ?? group.category}
-          </Text>
-          <View className="mt-3 rounded-card border border-hairline bg-porcelain">
-            {group.items.map((b, index) => (
-              <View
-                key={b.slug}
-                className={`flex-row items-center gap-3 px-4 py-3 ${
-                  index === 0 ? '' : 'border-t border-hairline-soft'
-                }`}>
-                <View className="flex-1">
-                  <Text className="font-serif text-[15px] text-ink">{b.name}</Text>
-                  <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                    {rangeText(b)}
-                  </Text>
-                </View>
-                {b.latestValue != null ? (
-                  <View className="flex-row items-baseline gap-1">
-                    <Text className="font-mono text-[15px] text-ink">{fmtNum(b.latestValue)}</Text>
-                    {b.unit ? (
-                      <Text className="font-mono text-[11px] text-ink-muted">{b.unit}</Text>
-                    ) : null}
+        <View key={group.category} className={groupIndex === 0 ? 'mt-5' : 'mt-7'}>
+          <Block device="plate">
+            <SectionLabel
+              label={CATEGORY_LABELS[group.category] ?? group.category}
+              note={measuredNote(group.items)}
+            />
+            <View className="mt-1">
+              {group.items.map((b, index) => (
+                <View
+                  key={b.slug}
+                  accessible
+                  accessibilityLabel={`${b.name}. Optimal ${rangeText(b)}. ${
+                    b.latestValue != null
+                      ? `${fmtNum(b.latestValue)} ${b.unit ?? ''}`
+                      : 'No reading yet'
+                  }.`}
+                  className={`flex-row items-center gap-3 py-3 ${
+                    index === 0 ? '' : 'border-t border-hairline'
+                  }`}>
+                  <View className="flex-1">
+                    <Text className="font-serif text-[15px] text-ink">{b.name}</Text>
+                    <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
+                      {rangeText(b)}
+                    </Text>
                   </View>
-                ) : (
-                  <Text className="text-[12px] text-ink-muted">No reading yet</Text>
-                )}
-              </View>
-            ))}
-          </View>
+                  {b.latestValue != null ? (
+                    <View className="flex-row items-baseline gap-1">
+                      <Text className="font-mono text-[15px] text-ink">
+                        {fmtNum(b.latestValue)}
+                      </Text>
+                      {b.unit ? (
+                        <Text className="font-mono text-[11px] text-ink-muted">{b.unit}</Text>
+                      ) : null}
+                    </View>
+                  ) : (
+                    // No data, no number.
+                    <Text className="font-mono text-[15px] text-ink-muted">—</Text>
+                  )}
+                </View>
+              ))}
+            </View>
+          </Block>
         </View>
       ))}
     </Screen>

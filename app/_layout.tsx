@@ -18,9 +18,15 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
 /**
  * Root layout.
  *
- * ARC is light-mode only: Porcelain Ledger (docs/project-status.md §3) treats
- * bone-white paper as the identity, so there is no dark theme to switch to —
- * app.json pins userInterfaceStyle to "light" and this theme is unconditional.
+ * ARC is light-mode only: the Conformed Set (docs/project-status.md §3) treats
+ * the bone drafting sheet as the identity, so there is no dark theme to switch
+ * to — app.json pins userInterfaceStyle to "light" and this theme is
+ * unconditional. `navColors` is read imperatively from src/constants/theme.ts,
+ * which means this file does NOT follow a Tailwind change; it and
+ * app/(tabs)/_layout.tsx must both be re-checked whenever the palette moves
+ * (docs/design-research/implementation/01-rn-port-guide.md §2). Verified against
+ * the Conformed Set: background and card are the sheet (#E7E4DA), border is the
+ * hairline, primary is the one accent.
  *
  * No auth gate: ARC is single-user and local-first (no accounts). Access is
  * guarded by the Face ID / passcode app lock below (useAppLock, CLAUDE.md §2):
@@ -30,7 +36,7 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * The whole tree sits under an ErrorBoundary because the data layer opens SQLite
  * synchronously and throws on failure.
  */
-const porcelainTheme: Theme = {
+const arcNavTheme: Theme = {
   ...DefaultTheme,
   colors: { ...DefaultTheme.colors, ...navColors },
 };
@@ -75,7 +81,7 @@ export default function RootLayout() {
 
   return (
     <ErrorBoundary>
-      <ThemeProvider value={porcelainTheme}>
+      <ThemeProvider value={arcNavTheme}>
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
           {/* Pushed over the tabs from the Log tab (docs/information-architecture.md). */}
@@ -114,6 +120,8 @@ export default function RootLayout() {
           {/* Pushed from the Data tab. */}
           <Stack.Screen name="protocols" />
           <Stack.Screen name="protocol-edit" />
+          {/* Pushed from the protocol editor: the version timeline. */}
+          <Stack.Screen name="protocol-versions" />
           <Stack.Screen name="screenings" />
           <Stack.Screen name="screening-form" />
           <Stack.Screen name="appointment-form" />

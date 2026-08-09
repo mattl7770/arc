@@ -3,7 +3,9 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -17,7 +19,16 @@ import type { BiologicalSex } from '@/lib/db/types';
  *
  * Date of birth is guarded by a DB CHECK (YYYY-MM-DD shape, year > 1900), so the
  * save is wrapped in try/catch and surfaces an inline note rather than crashing
- * the tap handler. The one pine accent on the screen is the Save action.
+ * the tap handler.
+ *
+ * Conformed Set treatment: each field is **recessed stock** — a capture surface
+ * is a well, so the input itself carries the paper-dim fill on a paper-deep
+ * edge, square. The date of birth is a measured value and stays in mono.
+ *
+ * **Zero accent.** Settings carries none (00-design-spec.md §2), so Save is a
+ * solid *ink* action rather than the pine it used to be. It is still
+ * unmistakably the primary control on the screen — weight, not hue, is what
+ * makes it one.
  */
 const SEX_OPTIONS: { value: BiologicalSex; label: string }[] = [
   { value: 'male', label: 'Male' },
@@ -26,13 +37,9 @@ const SEX_OPTIONS: { value: BiologicalSex; label: string }[] = [
   { value: 'prefer_not_to_say', label: 'Prefer not to say' },
 ];
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
+/** Shared by every text field here: recessed stock, square, no radius. */
+const FIELD =
+  'mt-2 border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] text-ink';
 
 export default function SettingsProfileScreen() {
   const router = useRouter();
@@ -67,22 +74,22 @@ export default function SettingsProfileScreen() {
       </View>
 
       {/* Full name */}
-      <View className="mt-2">
-        <SectionLabel>Full name</SectionLabel>
+      <View className="mt-3">
+        <SectionLabel label="Full name" />
         <TextInput
           value={fullName}
           onChangeText={setFullName}
           placeholder="Your name"
           placeholderTextColor={palette.inkMuted}
           autoCapitalize="words"
-          className="mt-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink"
+          className={FIELD}
           accessibilityLabel="Full name"
         />
       </View>
 
-      {/* Date of birth */}
+      {/* Date of birth — a measured value, so mono. */}
       <View className="mt-8">
-        <SectionLabel>Date of birth</SectionLabel>
+        <SectionLabel label="Date of birth" />
         <TextInput
           value={dob}
           onChangeText={(t) => {
@@ -94,16 +101,16 @@ export default function SettingsProfileScreen() {
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="numbers-and-punctuation"
-          className="mt-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 font-mono text-[15px] text-ink"
+          className="mt-2 border border-paper-deep bg-paper-dim px-3.5 py-3 font-mono text-[15px] text-ink"
           accessibilityLabel="Date of birth"
         />
         {error ? (
           <View className="mt-1.5 flex-row items-center gap-1.5">
             <Ionicons name="alert-circle-outline" size={14} color={palette.inkSecondary} />
-            <Text className="flex-1 text-[11px] text-ink-secondary">{error}</Text>
+            <Text className="flex-1 font-serif text-[11px] text-ink-secondary">{error}</Text>
           </View>
         ) : (
-          <Text className="mt-1.5 text-[11px] text-ink-muted">
+          <Text className="mt-1.5 font-serif text-[11px] text-ink-muted">
             Four-digit year first, e.g. 1990-04-15.
           </Text>
         )}
@@ -111,7 +118,7 @@ export default function SettingsProfileScreen() {
 
       {/* Biological sex */}
       <View className="mt-8">
-        <SectionLabel>Biological sex</SectionLabel>
+        <SectionLabel label="Biological sex" />
         <View className="mt-2 flex-row flex-wrap gap-2">
           {SEX_OPTIONS.map((opt) => {
             const on = sex === opt.value;
@@ -121,11 +128,13 @@ export default function SettingsProfileScreen() {
                 accessibilityRole="button"
                 accessibilityState={{ selected: on }}
                 onPress={() => setSex(opt.value)}
-                className={`rounded-btn border px-3 py-2 active:bg-paper-deep ${
-                  on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline bg-porcelain'
+                className={`min-h-[44px] justify-center rounded-btn border px-3 py-2 active:bg-paper-dim ${
+                  on ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'
                 }`}>
                 <Text
-                  className={`text-[13px] ${on ? 'font-medium text-ink' : 'text-ink-secondary'}`}>
+                  className={`font-label text-[13px] ${
+                    on ? 'font-semibold text-ink' : 'text-ink-secondary'
+                  }`}>
                   {opt.label}
                 </Text>
               </Pressable>
@@ -136,7 +145,7 @@ export default function SettingsProfileScreen() {
 
       {/* Timezone */}
       <View className="mt-8">
-        <SectionLabel>Timezone</SectionLabel>
+        <SectionLabel label="Timezone" />
         <TextInput
           value={timezone}
           onChangeText={setTimezone}
@@ -144,20 +153,28 @@ export default function SettingsProfileScreen() {
           placeholderTextColor={palette.inkMuted}
           autoCapitalize="none"
           autoCorrect={false}
-          className="mt-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink"
+          className={FIELD}
           accessibilityLabel="Timezone"
         />
       </View>
 
-      {/* The one pine action on this screen. */}
+      {/* The primary action — solid ink, because Settings spends no accent. */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Save profile"
         onPress={save}
-        className="mt-8 flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3.5 active:opacity-70">
-        <Ionicons name="checkmark" size={18} color={palette.pineOn} />
-        <Text className="text-[15px] font-semibold text-pine-on">Save</Text>
+        className="mt-8 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-ink py-3.5 active:opacity-70">
+        <Ionicons name="checkmark" size={18} color={palette.paperHi} />
+        <Text className="font-label text-[15px] font-semibold text-paper-hi">Save</Text>
       </Pressable>
+
+      <View className="mt-4">
+        <Block device="margin">
+          <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+            One user, one device, no account — this record never leaves the phone.
+          </Text>
+        </Block>
+      </View>
     </Screen>
   );
 }

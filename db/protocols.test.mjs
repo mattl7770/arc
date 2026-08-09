@@ -17,6 +17,7 @@ import {
   getCurrentVersion,
   getProtocol,
   listProtocols,
+  listVersions,
   reviseProtocol,
   setActive,
   updateProtocolMeta,
@@ -464,6 +465,86 @@ console.log('12. reviseProtocol applies meta + active + version in one transacti
   raw.prepare('SELECT name FROM protocols WHERE id = ?').get(pid).name === 'AM Stack'
     ? ok('…and the rename rolled back with it — no partial save')
     : bad('partial revise persisted');
+}
+
+console.log('13. listVersions: newest first, item counts, honest nulls');
+{
+  const { db, raw } = freshDb();
+
+  // Zero versions — and an id that was never a protocol at all.
+  const bare = createProtocol(db, { name: 'No versions yet', type: 'other' });
+  const none = listVersions(db, bare);
+  Array.isArray(none) && none.length === 0
+    ? ok('a protocol with no versions lists as []')
+    : bad('empty history', JSON.stringify(none));
+  listVersions(db, 'no-such-protocol').length === 0
+    ? ok('an unknown protocol id lists as [] rather than throwing')
+    : bad('unknown id');
+
+  // One version — every field of the view type, and no content blob on it.
+  const solo = createProtocolWithVersion(
+    db,
+    { name: 'Solo', type: 'supplement_stack' },
+    STACK,
+    'Initial stack'
+  );
+  const one = listVersions(db, solo);
+  one.length === 1 ? ok('one saved version lists one row') : bad('one-version length', one.length);
+  const v1 = one[0];
+  v1 &&
+  v1.id === getCurrentVersion(db, solo).id &&
+  v1.versionNumber === 1 &&
+  v1.changeNotes === 'Initial stack' &&
+  v1.createdBy === 'user' &&
+  typeof v1.createdAt === 'string' &&
+  v1.itemCount === 2
+    ? ok('row carries id, version number, notes, authorship, stamp and item count')
+    : bad('one-version row', JSON.stringify(v1));
+  v1 && !('content' in v1)
+    ? ok('the content blob never crosses the boundary')
+    : bad('content leaked', JSON.stringify(v1));
+
+  // Many versions, newest first — and the count tracks each version's OWN
+  // content, not the live one's.
+  const many = createProtocolWithVersion(db, { name: 'Many', type: 'daily_routine' }, STACK, 'v1');
+  addVersion(db, many, { items: [STACK.items[0]] }, 'v2 — trimmed');
+  addVersion(db, many, { items: [] }, 'v3 — emptied', 'ai');
+  const list = listVersions(db, many);
+  JSON.stringify(list.map((v) => v.versionNumber)) === JSON.stringify([3, 2, 1])
+    ? ok('versions come back newest first')
+    : bad('order', JSON.stringify(list.map((v) => v.versionNumber)));
+  JSON.stringify(list.map((v) => v.itemCount)) === JSON.stringify([0, 1, 2])
+    ? ok('each row counts its own snapshot, not the live version')
+    : bad('per-version counts', JSON.stringify(list.map((v) => v.itemCount)));
+  list[0] && list[0].createdBy === 'ai' && list[2] && list[2].createdBy === 'user'
+    ? ok("authorship is per-version ('ai' on the Coach's, 'user' on yours)")
+    : bad('authorship', JSON.stringify(list.map((v) => v.createdBy)));
+  list.every((v) => v.id) && new Set(list.map((v) => v.id)).size === 3
+    ? ok('every row carries its own version id')
+    : bad('ids', JSON.stringify(list.map((v) => v.id)));
+
+  // A version whose content has no items array at all. json_array_length
+  // returns NULL there, and NULL must survive the mapping — an absent count is
+  // not a count of none, and the screen draws the difference.
+  const foreign = createProtocol(db, { name: 'Foreign shape', type: 'other' });
+  raw
+    .prepare(
+      'INSERT INTO protocol_versions (id, protocol_id, version_number, content) VALUES (\'fv1\', ?, 1, \'{"note":"no items key"}\')'
+    )
+    .run(foreign);
+  const noItems = listVersions(db, foreign);
+  noItems.length === 1 && noItems[0].itemCount === null
+    ? ok('content with no items array yields null, not a fabricated 0')
+    : bad('missing items array', JSON.stringify(noItems));
+  const emptyArray = createProtocolWithVersion(db, { name: 'Empty', type: 'other' }, { items: [] });
+  listVersions(db, emptyArray)[0].itemCount === 0
+    ? ok('…while a genuinely empty items array really is 0 — the two stay distinguishable')
+    : bad('empty items array', JSON.stringify(listVersions(db, emptyArray)));
+
+  // The history is scoped to its own protocol.
+  listVersions(db, solo).length === 1 && listVersions(db, many).length === 3
+    ? ok('each protocol sees only its own versions')
+    : bad('scoping');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -3,7 +3,9 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -35,6 +37,14 @@ import type { ScreeningCategory, ScreeningInput } from '@/lib/screenings/types';
  * preview line shows exactly what will be stored. On edit, a stored next_due
  * that merely equals the derivation is shown as the preview, not the override,
  * so later edits keep re-deriving.
+ *
+ * Conformed Set treatment: every field is **recessed stock** (paper-dim on a
+ * paper-deep edge, square), and the two explanatory lines are **margin
+ * annotations**. Dates and cadences are measured values, so they are mono
+ * everywhere they appear.
+ *
+ * Accent budget: exactly one — Save, the single primary action on the screen.
+ * "Mark done today" and "Delete" are neutral ink.
  */
 
 const INTERVAL_CHIPS: { label: string; months: number }[] = [
@@ -45,13 +55,9 @@ const INTERVAL_CHIPS: { label: string; months: number }[] = [
   { label: '10 yr', months: 120 },
 ];
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
+/** Shared by every plain text field here: recessed stock, square, no radius. */
+const FIELD =
+  'mt-2 border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] text-ink';
 
 export default function ScreeningFormScreen() {
   const router = useRouter();
@@ -164,21 +170,21 @@ export default function ScreeningFormScreen() {
         </View>
 
         {/* Name */}
-        <View className="mt-2">
-          <SectionLabel>Screening</SectionLabel>
+        <View className="mt-3">
+          <SectionLabel label="Screening" />
           <TextInput
             value={name}
             onChangeText={setName}
             placeholder="e.g. Colonoscopy"
             placeholderTextColor={palette.inkMuted}
-            className="mt-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink"
+            className={FIELD}
             accessibilityLabel="Screening name"
           />
         </View>
 
         {/* Category */}
         <View className="mt-8">
-          <SectionLabel>Category</SectionLabel>
+          <SectionLabel label="Category" />
           <View className="mt-2 flex-row flex-wrap gap-2">
             {SCREENING_CATEGORIES.map((c) => {
               const on = category === c;
@@ -188,11 +194,13 @@ export default function ScreeningFormScreen() {
                   accessibilityRole="button"
                   accessibilityState={{ selected: on }}
                   onPress={() => setCategory(c)}
-                  className={`rounded-btn border px-3 py-2 active:bg-paper-deep ${
-                    on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline bg-porcelain'
+                  className={`min-h-[44px] justify-center rounded-btn border px-3 py-2 active:bg-paper-dim ${
+                    on ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'
                   }`}>
                   <Text
-                    className={`text-[13px] ${on ? 'font-medium text-ink' : 'text-ink-secondary'}`}>
+                    className={`font-label text-[13px] ${
+                      on ? 'font-semibold text-ink' : 'text-ink-secondary'
+                    }`}>
                     {CATEGORY_LABELS[c]}
                   </Text>
                 </Pressable>
@@ -203,7 +211,7 @@ export default function ScreeningFormScreen() {
 
         {/* Cadence */}
         <View className="mt-8">
-          <SectionLabel>Cadence (optional)</SectionLabel>
+          <SectionLabel label="Cadence (optional)" />
           <View className="mt-2 flex-row flex-wrap items-center gap-2">
             {INTERVAL_CHIPS.map((chip) => {
               const on = intervalMonths === chip.months;
@@ -218,10 +226,12 @@ export default function ScreeningFormScreen() {
                       cur === String(chip.months) ? '' : String(chip.months)
                     )
                   }
-                  className={`rounded-btn border px-3 py-2 active:bg-paper-deep ${
-                    on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline bg-porcelain'
+                  className={`min-h-[44px] justify-center rounded-btn border px-3 py-2 active:bg-paper-dim ${
+                    on ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'
                   }`}>
-                  <Text className={`font-mono text-[13px] ${on ? 'text-ink' : 'text-ink-muted'}`}>
+                  {/* A cadence is a measured value — mono. */}
+                  <Text
+                    className={`font-mono text-[13px] ${on ? 'text-ink' : 'text-ink-secondary'}`}>
                     {chip.label}
                   </Text>
                 </Pressable>
@@ -233,18 +243,18 @@ export default function ScreeningFormScreen() {
               placeholder="months"
               placeholderTextColor={palette.inkMuted}
               keyboardType="number-pad"
-              className="w-24 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-2.5 font-mono text-[13px] text-ink"
+              className="min-h-[44px] w-24 border border-paper-deep bg-paper-dim px-3.5 py-2.5 font-mono text-[13px] text-ink"
               accessibilityLabel="Cadence in months"
             />
           </View>
-          <Text className="mt-1.5 text-[11px] text-ink-muted">
+          <Text className="mt-1.5 font-serif text-[11px] text-ink-muted">
             Whole months between rounds · leave empty for a one-off
           </Text>
         </View>
 
         {/* Last done */}
         <View className="mt-8">
-          <SectionLabel>Last done (optional)</SectionLabel>
+          <SectionLabel label="Last done (optional)" />
           <View className="mt-2 flex-row items-center gap-2">
             <TextInput
               value={lastCompleted}
@@ -252,61 +262,65 @@ export default function ScreeningFormScreen() {
               placeholder="YYYY-MM-DD"
               placeholderTextColor={palette.inkMuted}
               keyboardType="numbers-and-punctuation"
-              className="flex-1 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 font-mono text-[15px] text-ink"
+              className="min-h-[44px] flex-1 border border-paper-deep bg-paper-dim px-3.5 py-3 font-mono text-[15px] text-ink"
               accessibilityLabel="Last done date"
             />
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Set last done to today"
               onPress={() => setLastCompleted(todayISODate())}
-              className="rounded-btn border border-hairline-strong px-3 py-3 active:bg-paper-deep">
-              <Text className="text-[13px] font-medium text-ink-secondary">Today</Text>
+              className="min-h-[44px] justify-center rounded-btn border border-hairline px-3 active:bg-paper-dim">
+              <Text className="font-label text-[13px] font-medium text-ink-secondary">Today</Text>
             </Pressable>
           </View>
         </View>
 
         {/* Next due override */}
         <View className="mt-8">
-          <SectionLabel>Next due (optional)</SectionLabel>
+          <SectionLabel label="Next due (optional)" />
           <TextInput
             value={nextDueOverride}
             onChangeText={setNextDueOverride}
             placeholder="YYYY-MM-DD"
             placeholderTextColor={palette.inkMuted}
             keyboardType="numbers-and-punctuation"
-            className="mt-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 font-mono text-[15px] text-ink"
+            className="mt-2 border border-paper-deep bg-paper-dim px-3.5 py-3 font-mono text-[15px] text-ink"
             accessibilityLabel="Next due date override"
           />
-          <Text className="mt-1.5 text-[11px] text-ink-muted">
-            {storedNextDue
-              ? `Will be stored as due ${dayTextLong(storedNextDue)}`
-              : 'Leave empty to derive from last done + cadence'}
-          </Text>
+          <View className="mt-2">
+            <Block device="margin">
+              <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+                {storedNextDue
+                  ? `Will be stored as due ${dayTextLong(storedNextDue)}`
+                  : 'Leave empty to derive from last done + cadence'}
+              </Text>
+            </Block>
+          </View>
         </View>
 
         {/* Notes */}
         <View className="mt-8">
-          <SectionLabel>Notes (optional)</SectionLabel>
+          <SectionLabel label="Notes (optional)" />
           <TextInput
             value={notes}
             onChangeText={setNotes}
             placeholder="Prep, provider preferences, what to ask…"
             placeholderTextColor={palette.inkMuted}
             multiline
-            className="mt-2 max-h-28 min-h-[64px] rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] leading-5 text-ink"
+            className="mt-2 max-h-28 min-h-[64px] border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] leading-5 text-ink"
             accessibilityLabel="Notes"
           />
         </View>
 
-        {/* The one pine action on this screen. */}
+        {/* The one accent on this screen. */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={editingId ? 'Save screening' : 'Add screening'}
           accessibilityState={{ disabled: !canSave }}
           disabled={!canSave}
           onPress={save}
-          className={`mt-8 flex-row items-center justify-center gap-2 rounded-btn py-3.5 ${
-            canSave ? 'bg-pine active:opacity-70' : 'bg-hairline'
+          className={`mt-8 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn py-3.5 ${
+            canSave ? 'bg-pine active:opacity-70' : 'border border-hairline bg-paper-dim'
           }`}>
           <Ionicons
             name="calendar-outline"
@@ -314,7 +328,9 @@ export default function ScreeningFormScreen() {
             color={canSave ? palette.pineOn : palette.inkMuted}
           />
           <Text
-            className={`text-[15px] font-semibold ${canSave ? 'text-pine-on' : 'text-ink-muted'}`}>
+            className={`font-label text-[15px] font-semibold ${
+              canSave ? 'text-pine-on' : 'text-ink-muted'
+            }`}>
             {editingId ? 'Save screening' : 'Add screening'}
           </Text>
         </Pressable>
@@ -325,9 +341,9 @@ export default function ScreeningFormScreen() {
               accessibilityRole="button"
               accessibilityLabel="Mark done today"
               onPress={markDone}
-              className="mt-3 flex-row items-center justify-center gap-2 rounded-btn border border-hairline-strong py-3 active:bg-paper-deep">
+              className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
               <Ionicons name="checkmark" size={16} color={palette.inkSecondary} />
-              <Text className="text-[14px] font-medium text-ink-secondary">
+              <Text className="font-label text-[14px] font-medium text-ink-secondary">
                 Mark done today · rolls the next due date
               </Text>
             </Pressable>
@@ -336,8 +352,8 @@ export default function ScreeningFormScreen() {
               accessibilityRole="button"
               accessibilityLabel="Delete screening"
               onPress={confirmDelete}
-              className="mt-4 items-center py-2 active:opacity-60">
-              <Text className="text-[13px] text-ink-muted">Delete screening</Text>
+              className="mt-4 min-h-[44px] items-center justify-center active:opacity-60">
+              <Text className="font-label text-[13px] text-ink-muted">Delete screening</Text>
             </Pressable>
           </>
         ) : null}
