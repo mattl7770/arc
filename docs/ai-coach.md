@@ -41,7 +41,7 @@ Everything runs on-device except the model call itself (local-first, offline-exc
 
 Every tool the model can call. **Read tools run freely; every write suspends the loop until the user approves it in the UI** (see §5). Inputs are validated at the tool layer — bad input becomes an `is_error` tool result the model can correct, and never reaches a repository.
 
-> **The registry today: 24 tools — 11 read + 13 write.** `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the five added since are in **§2c**, and the two deliberately withheld are in **§2d**.
+> **The registry today: 32 tools — 14 read + 18 write.** `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the five added since are in **§2c**, the recipes/grocery eight (2026-08-08) in **§2f**, and the two deliberately withheld are in **§2d**.
 
 ### 2a. Shipped — read (execute immediately)
 
@@ -107,8 +107,23 @@ Withheld from the model on purpose: a tool that always fails teaches the model n
 
 - `explain_metric` — curated explainer per metric/biomarker; becomes real once the knowledge corpus is populated.
 - `propose_today_adjustment` — restructure today's mission (needs mission write access; the highest-leverage write of all). `⚑ MATT`: this is where "slightly ruthless" becomes real — how much rope does the Coach get to rearrange a day unprompted?
-- `generate_grocery_list` — meal templates now exist (0018), so this is unblocked and simply unbuilt.
+- ~~`generate_grocery_list`~~ — **superseded (2026-08-08)** by the §2f grocery family: composing a list is the model calling `add_recipe_to_grocery_list` per recipe plus `add_grocery_items` for extras, not a bespoke generator.
 - `log_labs` — manual lab-result entry by voice/chat. The Function PDF pipeline has since shipped and defines the import path; the dedupe rules for a *chat-entered* result are what remain.
+
+### 2f. Recipes & grocery — shipped 2026-08-08 (`docs/recipes-grocery.md` §6)
+
+Three reads + five writes over the 0030/0031 tables. Every id a write consumes is an id a read returned (the `list_reminders → complete_reminder` contract); the grocery writes take **batch** inputs so a multi-item add is ONE confirmation card, not N.
+
+| Tool | Kind | Notes |
+| --- | --- | --- |
+| `get_recipes` | read | The book as summaries (id, title, servings, per-serving kcal **only when the honesty gate passes**, cook stats). Capped with an `omitted` count. |
+| `get_recipe` | read | One recipe in full: ingredient lines **with ids** + resolution state, steps, gated per-serving nutrition. Feeds "what do I need for X", the grocery diff, and `add_recipe_to_grocery_list.exclude`. |
+| `get_grocery_list` | read | Open items grouped by category, each with the id `complete_grocery_items` needs; recipe backlinks resolved to titles; optional in-cart section. |
+| `add_grocery_items` | write | Batch add (`{items:[{name, qty?}]}`, cap 30) — "we're out of milk" territory. Card lists every item; rows land `source='coach'`. Doctrine: read the list first when unsure; never re-add an open duplicate. |
+| `complete_grocery_items` | write | Batch check-off by ids; the card resolves every id to its name; soft state (`checked_at`), never a delete. |
+| `add_recipe_to_grocery_list` | write | A recipe's lines onto the list; `exclude` takes ingredient ids the user already has. Card: `Add 8 ingredients from "Chicken Adobo"…`. |
+| `log_recipe` | write | Cook → meal via snapshot scaling (servings XOR grams-of-cooked-dish; neither → 1 serving). The card shows ~kcal only when nutrition is complete, else `(nutrition incomplete — N ingredients uncounted)`; the result's `uncountedIngredients` makes a partial log a disclosed undercount. |
+| `save_recipe` | write | The Coach designs a recipe in chat → the book, `source='ai'`, lines land **unresolved** (food resolution is the user's explicit act, never the model's). |
 
 ---
 
@@ -234,7 +249,7 @@ Neither `isDueOn` nor the notification path changed; only ranking, labelling and
 - Home reads `generateDailyBrief` ✅. Mission-id exposure for `complete_mission_item` is still undecided — that tool remains withheld (§2d).
 - Row types remain slice-local per convention (`src/lib/ai/types.ts`, `src/lib/reminders/types.ts`).
 
-**Feature deps — status:** Protocols ✅ (`update_protocol` live) · Modes ✅ (`set_mode` live, 0026) · `experiments` ✅ (0027, three tools live) · sqlite-vec + chunking ✅ (0025; `search_knowledge` registered) — **but the on-device embedder model is still missing**, so knowledge retrieval degrades to an honest "not available yet"; `explain_metric` and a populated corpus wait on it. Navigation seam ✗ → `navigate_to` still withheld. `propose_today_adjustment` and `generate_grocery_list` are unblocked but unbuilt.
+**Feature deps — status:** Protocols ✅ (`update_protocol` live) · Modes ✅ (`set_mode` live, 0026) · `experiments` ✅ (0027, three tools live) · sqlite-vec + chunking ✅ (0025; `search_knowledge` registered) — **but the on-device embedder model is still missing**, so knowledge retrieval degrades to an honest "not available yet"; `explain_metric` and a populated corpus wait on it. Navigation seam ✗ → `navigate_to` still withheld. `propose_today_adjustment` is unblocked but unbuilt; `generate_grocery_list` was **superseded** by the §2f grocery family (0031, 2026-08-08).
 
 **Known approximations (reviewed 2026-07-26, accepted for now):**
 - `body_metrics` daily series group by the **UTC** day of `measured_at` while window boundaries are local days — an evening weigh-in near the boundary can land on the adjacent day. Weight thresholds are conservative and the tone is info; the clean fix (store a local `date` alongside, like every other table) is a future migration.
@@ -255,4 +270,4 @@ Neither `isDueOn` nor the notification path changed; only ranking, labelling and
 
 **v3 — PARTLY SHIPPED:** experiment engine ✅ (0027) · photo meal logging ✅ · RAG ~ (schema, chunker, retrieval and `search_knowledge` all shipped at 0025; **the embedder model is the missing piece**) · predictive alerts ✗ · correlations at scale ✗ · voice-first ✗ · navigation ✗.
 
-**Current tool total: 24 registered (11 read + 13 write)**, plus 2 written-but-withheld (§2d).
+**Current tool total: 32 registered (14 read + 18 write)**, plus 2 written-but-withheld (§2d).

@@ -22,8 +22,9 @@ export function normalizeFoodName(name: string): string {
   return name.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-/** LIKE-escape a token so a typed '%' or '_' matches literally (ESCAPE '\'). */
-function escapeLike(token: string): string {
+/** LIKE-escape a token so a typed '%' or '_' matches literally (ESCAPE '\').
+ * Exported for the other tokenized-search repositories (recipes). */
+export function escapeLike(token: string): string {
   return token.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 

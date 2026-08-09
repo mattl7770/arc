@@ -10,6 +10,7 @@ import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { getFood } from '@/lib/db/repositories/foods';
 import { saveMealAsTemplate } from '@/lib/db/repositories/meal-templates';
+import { saveMealAsRecipe } from '@/lib/db/repositories/recipes';
 import {
   deleteMeal,
   getMeal,
@@ -71,6 +72,8 @@ export default function MealDetailScreen() {
   const [deleteArmed, setDeleteArmed] = useState(false);
   // Transient confirmation after saving a template.
   const [savedTemplate, setSavedTemplate] = useState(false);
+  // Transient confirmation after saving into the recipe book.
+  const [savedRecipe, setSavedRecipe] = useState(false);
   // The item whose portion is being edited inline, prefilled from its snapshot.
   const [editing, setEditing] = useState<ItemEdit | null>(null);
 
@@ -83,6 +86,7 @@ export default function MealDetailScreen() {
     // confirmation would misrepresent the current state (and a fresh save is a
     // deliberate new template, not this one re-tapped).
     setSavedTemplate(false);
+    setSavedRecipe(false);
     setEditing(null);
   }, [mealId]);
   useFocusEffect(reload);
@@ -170,6 +174,28 @@ export default function MealDetailScreen() {
     }
     deleteMeal(getDb(), meal.id);
     router.back();
+  };
+
+  // Save this meal into the recipe book (one batch = this meal's amounts).
+  // Alert.prompt is iOS-only — fine, ARC is iOS-only.
+  const saveAsRecipe = () => {
+    Alert.prompt(
+      'Save as recipe',
+      'Name it; servings default to 1 (this meal = one batch).',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Save',
+          onPress: (name?: string) => {
+            const trimmed = (name ?? '').trim() || meal.name;
+            const id = saveMealAsRecipe(getDb(), meal.id, trimmed, 1);
+            if (id) setSavedRecipe(true);
+          },
+        },
+      ],
+      'plain-text',
+      meal.name
+    );
   };
 
   // Save this itemized meal as a reusable template. Alert.prompt is iOS-only —
@@ -352,6 +378,34 @@ export default function MealDetailScreen() {
               </Text>
             </View>
             {savedTemplate ? (
+              <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
+            ) : null}
+          </Pressable>
+        ) : null}
+
+        {/* Save as recipe — the MacroFactor assemble-from-timeline pattern
+            (docs/recipes-grocery.md §2a): items with usable snapshots arrive
+            already food-resolved. Only meaningful for an itemized meal. */}
+        {items.length > 0 ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Save this meal as a recipe"
+            accessibilityState={{ disabled: savedRecipe }}
+            disabled={savedRecipe}
+            onPress={saveAsRecipe}
+            className={`mt-2 flex-row items-center gap-3 rounded-card border border-hairline bg-porcelain px-4 py-3 ${
+              savedRecipe ? '' : 'active:bg-paper-deep'
+            }`}>
+            <Ionicons name="book-outline" size={18} color={palette.inkSecondary} />
+            <View className="flex-1">
+              <Text className="text-[15px] text-ink">Save as recipe</Text>
+              <Text className="mt-0.5 text-xs text-ink-muted">
+                {savedRecipe
+                  ? 'Saved — find it in the recipe book'
+                  : 'Into the book, with these foods as its ingredients'}
+              </Text>
+            </View>
+            {savedRecipe ? (
               <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
             ) : null}
           </Pressable>

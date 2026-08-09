@@ -201,8 +201,8 @@ export function logMealWithItems(
   const itemIds: string[] = [];
   db.transaction(() => {
     db.run(
-      `INSERT INTO meals (id, date, time, name, kcal, protein_g, carbs_g, fat_g, source, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO meals (id, date, time, name, kcal, protein_g, carbs_g, fat_g, source, notes, recipe_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         mealId,
         meal.date,
@@ -214,6 +214,7 @@ export function logMealWithItems(
         sumOrNull(meal.items.map((i) => i.fat_g)),
         meal.source ?? 'manual',
         meal.notes ?? null,
+        meal.recipe_id ?? null,
       ]
     );
     for (const item of meal.items) itemIds.push(insertMealItem(db, mealId, item));
@@ -312,7 +313,7 @@ export function listMealItems(db: Database, mealId: string): MealItemWithServing
      FROM meal_items mi
      LEFT JOIN foods f ON f.id = mi.food_id
      WHERE mi.meal_id = ?
-     ORDER BY mi.created_at, mi.id`,
+     ORDER BY mi.created_at, mi.rowid`,
     [mealId]
   );
 }
@@ -370,13 +371,18 @@ export function relogMeal(
   const meal = getMeal(db, mealId);
   if (!meal) return null;
   const source = meal.source === 'ai_suggested' ? 'ai_suggested' : 'manual';
-  const items = db.all<MealItemWithServing>('SELECT * FROM meal_items WHERE meal_id = ?', [mealId]);
+  const items = db.all<MealItemWithServing>(
+    // Insertion order — a whole batch shares one millisecond created_at, and a
+    // UUID tie-break would scramble it (rowid is monotonic per insert).
+    'SELECT * FROM meal_items WHERE meal_id = ? ORDER BY created_at, rowid',
+    [mealId]
+  );
   if (items.length === 0) {
     // Direct insert rather than logMeal, which stamps source='manual'.
     const id = newId(db);
     db.run(
-      `INSERT INTO meals (id, date, time, name, kcal, protein_g, carbs_g, fat_g, source, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO meals (id, date, time, name, kcal, protein_g, carbs_g, fat_g, source, notes, recipe_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         date,
@@ -388,16 +394,19 @@ export function relogMeal(
         meal.fat_g,
         source,
         meal.notes,
+        meal.recipe_id,
       ]
     );
     return id;
   }
+  // "Log again" of a cooked recipe is cooking it again — provenance carries.
   return logMealWithItems(db, {
     date,
     time,
     name: meal.name,
     notes: meal.notes,
     source,
+    recipe_id: meal.recipe_id,
     items: items.map((i) => ({
       food_id: i.food_id,
       name: i.name,

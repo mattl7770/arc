@@ -31,6 +31,9 @@ export type MealRow = {
   fat_g: number | null;
   source: DataSource;
   notes: string | null;
+  /** The recipe this meal was cooked from (0030) — provenance only, ON DELETE
+   * SET NULL; "times cooked" derives from it. NULL for every other meal. */
+  recipe_id: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -182,6 +185,8 @@ export type NewMealWithItems = {
   notes?: string | null;
   /** 'manual' for hand-logged; 'ai_suggested' when the estimation path saves. */
   source?: Extract<DataSource, 'manual' | 'ai_suggested'>;
+  /** Set by logRecipe (0030) — the meal's cooked-from provenance. */
+  recipe_id?: string | null;
   items: NewMealItem[];
 };
 

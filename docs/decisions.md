@@ -1,5 +1,27 @@
 # Architecture Decision Records (ADR)
 
+## 2026-08-08 — Recipe import adds a third sanctioned non-AI network exception
+
+**Decision:** the app may fetch a recipe source the user **explicitly shared or pasted** — the URL itself, its oEmbed endpoint, and its embed-captioned variant — at import time only. User-initiated, single-shot, never in the background, never polling, and **never media downloads** — caption/metadata text only. This joins Open Food Facts (barcodes) and air quality as the third non-AI exception to offline-except-AI (CLAUDE.md §2). Failure degrades to paste-the-caption / screenshot-vision, which remain first-class UI, not error states.
+
+**Reasoning:** the alternative to a client-side fetch is a proxy server, which the architecture forbids. Empirical verification (2026-08-08, `docs/recipes-grocery.md` §1) showed the caption paths work anonymously from a plain device fetch: Instagram serves the full caption in `og:description` to non-desktop-browser user agents, TikTok's oEmbed is auth-free, YouTube's watch page carries the full description, and recipe websites carry schema.org Recipe JSON-LD (parsed deterministically — no model call at all). Every fetch result is treated as untrusted input: parsed defensively, size-capped before reaching a model prompt, never executed.
+
+**Companion rules:** App Store metadata and UI never use "download from Instagram" phrasing — this is "save recipes you were sent" (the shipped-and-approved category; media downloading is the 5.2.3 rejection case). A URL pasted into Coach *chat* is NOT covered: the Coach has no fetch tool and directs the user to the import screen (`docs/recipes-grocery.md` §6, §9).
+
+**Consequences:** `src/lib/recipes/import.ts` owns the fetch ladder (10s abort, honest offline / blocked / not-found / no-content states); the paste and screenshot rungs must survive any platform change, since every fetch finding is a snapshot in time.
+
+---
+
+## 2026-08-08 — Recipes are first-class tables; the grocery list is one standing list
+
+**Decision:** `recipes` + `recipe_ingredients` shipped as their own tables (migration 0030), superseding `data-model.md`'s old "grocery_lists / recipes (can start as protocol content)" sketch. The grocery list (0031) is **one** standing `grocery_items` list — no `grocery_lists` parent — plus a `grocery_name_prefs` memory table (autocomplete, staples, learned categories). A recipe is *how to cook one batch* (servings, steps, ingredient lines); a meal template stays *what I ate* — neither replaces the other.
+
+**Reasoning:** recipes need ingredient-level structure (explicit food resolution with per-batch snapshots, the 0018 stamp discipline) that protocol content can't carry; a single user has one household list, and a second list would be a later migration, not a shape carried now. Ingredient lines keep `raw_text` as source of truth with a parsed overlay — resolution is explicit, never fuzzy (the labs rule), and nutrition is computed only through the honesty gate (every line resolved-or-negligible, per-macro honest). Cooking a recipe stamps real `meals` + `meal_items` via `logMealWithItems` (snapshot scaling only), with `meals.recipe_id` as SET-NULL provenance so "times cooked" is derived, never counted.
+
+**Consequences:** full design + research digest in `docs/recipes-grocery.md`; schema at 40 tables; the Coach gains the recipe/grocery tool family; `meal_templates` is unchanged.
+
+---
+
 ## 2026-07-25 — Nutrition / Exercise / Capture / Symptoms went real (parallel build)
 
 **Decision:** the four Log sub-surfaces were built for real, replacing the mockups. Nutrition and Exercise were built **in parallel** in separate Claude (Fable) windows on their own worktrees/branches; Capture and Symptoms were built in the main window, which also **integrated** everything.

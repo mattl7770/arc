@@ -188,6 +188,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `/docs/home-screen.md` — Home screen information architecture (detail)
 - `/docs/ai-coach.md` — System prompt, tools, memory design
 - `/docs/wearables-subapp.md` — Apple Health ingestion: library, scopes, mapping, dedup, readiness seam
+- `/docs/recipes-grocery.md` — **the recipe book, grocery list, AI recipe import (Instagram/TikTok/YouTube/websites), and the Coach's recipe/grocery tools** (migrations 0030/0031; the import ADR)
 - `/docs/decisions.md` — Architecture Decision Records
 - `/docs/architecture-migration.md` — **The local-first migration plan** (cloud → on-device), phased. Read before touching the data layer.
 - `/docs/folder-structure.md` — Where code goes

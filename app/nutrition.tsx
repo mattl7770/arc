@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
 import { Screen } from '@/components/ui/screen';
@@ -8,7 +8,9 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
+import { openGroceryCount } from '@/lib/db/repositories/grocery';
 import { logMeal } from '@/lib/db/repositories/nutrition';
+import { recipeCount } from '@/lib/db/repositories/recipes';
 import { useNutrition } from '@/hooks/use-nutrition';
 import { fmtInt, macroLine } from '@/lib/nutrition/format';
 import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
@@ -293,6 +295,15 @@ export default function NutritionScreen() {
   const router = useRouter();
   const { meals, totals, fiberTotal, itemCounts, targets, reload } = useNutrition();
   const [formOpen, setFormOpen] = useState(false);
+  // The Kitchen rows' live counts (docs/recipes-grocery.md §5).
+  const [recipeTotal, setRecipeTotal] = useState(() => recipeCount(getDb()));
+  const [groceryOpen, setGroceryOpen] = useState(() => openGroceryCount(getDb()));
+  useFocusEffect(
+    useCallback(() => {
+      setRecipeTotal(recipeCount(getDb()));
+      setGroceryOpen(openGroceryCount(getDb()));
+    }, [])
+  );
 
   const openForm = () => {
     setFormOpen((open) => !open);
@@ -466,6 +477,30 @@ export default function NutritionScreen() {
             ))}
           </View>
         )}
+      </View>
+
+      {/* Kitchen — the recipe book and the standing grocery list
+          (docs/recipes-grocery.md). */}
+      <View className="mt-8">
+        <SectionLabel>Kitchen</SectionLabel>
+        <View className="mt-2 gap-2">
+          <ReviewRow
+            icon="book-outline"
+            title="Recipes"
+            detail={
+              recipeTotal === 0
+                ? 'Import from a reel, a link, or a meal'
+                : `${recipeTotal} recipe${recipeTotal === 1 ? '' : 's'}`
+            }
+            onPress={() => router.push('/recipes')}
+          />
+          <ReviewRow
+            icon="cart-outline"
+            title="Grocery list"
+            detail={groceryOpen === 0 ? 'The list is clear' : `${groceryOpen} to buy`}
+            onPress={() => router.push('/grocery')}
+          />
+        </View>
       </View>
 
       {/* Review — micronutrients and cross-day trends (read-only, no pine). */}

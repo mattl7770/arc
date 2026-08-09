@@ -878,5 +878,189 @@ export async function resolve(specifier, context, next) {
   await apiKeyStore.clearKey();
 }
 
+console.log('17. recipes + grocery tools (docs/recipes-grocery.md §6)');
+{
+  const { db } = freshDb();
+  const summary = (name, input) => toolByName(name).confirmSummary(input, db, CTX);
+
+  // Empty book reads honestly.
+  const emptyBook = run('get_recipes', db);
+  emptyBook.recipes.length === 0 && emptyBook.omitted === 0
+    ? ok('get_recipes on an empty book → empty, omitted 0')
+    : bad('empty book', JSON.stringify(emptyBook));
+
+  // save_recipe: card, then the row — source 'ai', lines unresolved.
+  const chili = {
+    title: 'High-protein chili',
+    servings: 4,
+    ingredients: [
+      { raw: '500 g lean ground beef' },
+      { raw: '2 cans black beans' },
+      { raw: 'salt to taste' },
+    ],
+    steps: ['Brown the beef.', 'Simmer with the beans.'],
+  };
+  summary('save_recipe', chili) === 'Save recipe "High-protein chili" — 3 ingredients, 4 servings'
+    ? ok('save_recipe card names title, line count, servings')
+    : bad('save_recipe card', summary('save_recipe', chili));
+  const saved = run('save_recipe', db, chili);
+  const { getRecipe, listIngredients, resolveIngredient, setIngredientNegligible } =
+    await import('../src/lib/db/repositories/recipes.ts');
+  const savedRow = getRecipe(db, saved.id);
+  savedRow.source === 'ai' && savedRow.servings === 4
+    ? ok('save_recipe lands source=ai')
+    : bad('save_recipe row', JSON.stringify(savedRow));
+  const chiliLines = listIngredients(db, saved.id);
+  chiliLines.every((l) => l.grams === null) &&
+  chiliLines[0].qty === 500 &&
+  chiliLines[0].unit === 'g'
+    ? ok('lines land UNRESOLVED with the overlay parsed from raw')
+    : bad('save_recipe lines', JSON.stringify(chiliLines[0]));
+  throws(() => summary('save_recipe', { ...chili, ingredients: [] }))
+    ? ok('empty ingredients refused')
+    : bad('empty ingredients');
+  throws(() => summary('save_recipe', { ...chili, servings: 0 }))
+    ? ok('servings 0 refused')
+    : bad('servings 0');
+
+  // get_recipe detail: ids + resolution state; unknown id corrects the model.
+  const detail = run('get_recipe', db, { recipe_id: saved.id });
+  detail.ingredients.length === 3 &&
+  detail.ingredients.every((l) => typeof l.id === 'string' && l.resolved === false) &&
+  detail.nutrition.complete === false &&
+  detail.nutrition.perServing.kcal === null
+    ? ok('get_recipe: ingredient ids + honest incomplete nutrition')
+    : bad('get_recipe', JSON.stringify(detail.nutrition));
+  throws(() => run('get_recipe', db, { recipe_id: 'nope' }))
+    ? ok('get_recipe unknown id → corrective error')
+    : bad('get_recipe unknown');
+
+  // Resolve the two real lines; the salt is negligible → nutrition completes.
+  const { createFood } = await import('../src/lib/db/repositories/foods.ts');
+  const beef = createFood(db, {
+    name: 'Lean ground beef',
+    kcal_100g: 250,
+    protein_g_100g: 26,
+    carbs_g_100g: 0,
+    fat_g_100g: 15,
+  });
+  const beans = createFood(db, {
+    name: 'Black beans',
+    kcal_100g: 130,
+    protein_g_100g: 9,
+    carbs_g_100g: 24,
+    fat_g_100g: 0.5,
+  });
+  resolveIngredient(db, chiliLines[0].id, beef, 500);
+  resolveIngredient(db, chiliLines[1].id, beans, 480);
+  setIngredientNegligible(db, chiliLines[2].id, true);
+  const completeDetail = run('get_recipe', db, { recipe_id: saved.id });
+  // 500g beef = 1250 kcal + 480g beans = 624 kcal → 1874 / 4 = 468.5 → 469 rounded
+  completeDetail.nutrition.complete === true && completeDetail.nutrition.perServing.kcal === 469
+    ? ok('resolution + negligible → gate opens, per-serving kcal rounded')
+    : bad('complete detail', JSON.stringify(completeDetail.nutrition));
+
+  // log_recipe: card carries portion + honest kcal; backdate suffix; XOR guards.
+  summary('log_recipe', { recipe_id: saved.id, servings: 2 }) ===
+  'Log 2 servings of "High-protein chili" (~937 kcal)'
+    ? ok('log_recipe card: portion + ~kcal from the gate')
+    : bad('log_recipe card', summary('log_recipe', { recipe_id: saved.id, servings: 2 }));
+  summary('log_recipe', { recipe_id: saved.id, date: '2026-08-01' }) ===
+  'Log 1 serving of "High-protein chili" (~469 kcal) · 2026-08-01'
+    ? ok('log_recipe card names a backdate')
+    : bad('backdate card', summary('log_recipe', { recipe_id: saved.id, date: '2026-08-01' }));
+  throws(() => summary('log_recipe', { recipe_id: saved.id, servings: 1, grams: 100 }))
+    ? ok('servings AND grams refused before the card')
+    : bad('XOR');
+  throws(() => summary('log_recipe', { recipe_id: saved.id, grams: 100 }))
+    ? ok('grams without a recorded cooked weight refused with the corrective error')
+    : bad('grams refusal');
+  const logged = run('log_recipe', db, { recipe_id: saved.id, servings: 2, time: '19:00' });
+  const { getMeal } = await import('../src/lib/db/repositories/nutrition.ts');
+  const cookedMeal = getMeal(db, logged.mealId);
+  logged.uncountedIngredients === 0 &&
+  cookedMeal.recipe_id === saved.id &&
+  near(cookedMeal.kcal, 937, 1)
+    ? ok('log_recipe stamps the meal with recipe provenance and scaled snapshots')
+    : bad('log_recipe meal', JSON.stringify(cookedMeal));
+
+  // An incomplete recipe's card says so instead of showing a number.
+  const draft = run('save_recipe', db, {
+    title: 'Mystery stew',
+    servings: 2,
+    ingredients: [{ raw: 'some vegetables' }],
+  });
+  summary('log_recipe', { recipe_id: draft.id }) ===
+  'Log 1 serving of "Mystery stew" (nutrition incomplete — 1 ingredient uncounted)'
+    ? ok('incomplete recipe card discloses the undercount, never a number')
+    : bad('incomplete card', summary('log_recipe', { recipe_id: draft.id }));
+
+  // A recipe with nothing loggable refuses BEFORE the card — never an approved
+  // action that then fails (bug-hunt 2026-08-08).
+  const saltWater = run('save_recipe', db, {
+    title: 'Salt water',
+    servings: 1,
+    ingredients: [{ raw: 'water' }, { raw: 'salt to taste' }],
+  });
+  for (const l of listIngredients(db, saltWater.id)) setIngredientNegligible(db, l.id, true);
+  throws(() => summary('log_recipe', { recipe_id: saltWater.id }))
+    ? ok('all-negligible recipe refused before the card')
+    : bad('all-negligible card');
+
+  // add_grocery_items: batch card, coach provenance, guards.
+  const addInput = { items: [{ name: 'Milk', qty: '2' }, { name: 'Spinach' }] };
+  summary('add_grocery_items', addInput) === 'Add 2 items to the grocery list: Milk (2) · Spinach'
+    ? ok('add_grocery_items card lists every item with qty')
+    : bad('grocery card', summary('add_grocery_items', addInput));
+  run('add_grocery_items', db, addInput).added === 2 ? ok('batch add lands') : bad('batch add');
+  const { listOpenGroceryItems, getGroceryItem } =
+    await import('../src/lib/db/repositories/grocery.ts');
+  listOpenGroceryItems(db).every((i) => i.source === 'coach')
+    ? ok('coach-added items carry source=coach')
+    : bad('source coach');
+  throws(() => summary('add_grocery_items', { items: [] }))
+    ? ok('empty batch refused')
+    : bad('empty batch');
+
+  // get_grocery_list: ids + categories; complete_grocery_items resolves names.
+  const list = run('get_grocery_list', db);
+  const milk = list.sections.flatMap((s) => s.items).find((i) => i.name === 'Milk');
+  list.openCount === 2 && typeof milk.id === 'string'
+    ? ok('get_grocery_list returns the ids the write tools need')
+    : bad('grocery list', JSON.stringify(list));
+  summary('complete_grocery_items', { ids: [milk.id] }) === 'Check off 1 item: Milk'
+    ? ok('complete_grocery_items card resolves ids to names')
+    : bad('checkoff card', summary('complete_grocery_items', { ids: [milk.id] }));
+  throws(() => summary('complete_grocery_items', { ids: ['bogus'] }))
+    ? ok('unknown grocery id refused before the card')
+    : bad('unknown grocery id');
+  run('complete_grocery_items', db, { ids: [milk.id] }).checked === 1 &&
+  getGroceryItem(db, milk.id).checked_at !== null
+    ? ok('check-off stamps checked_at (soft state)')
+    : bad('checkoff execute');
+
+  // add_recipe_to_grocery_list: card counts the included lines; exclude works.
+  const addRecipeInput = { recipe_id: saved.id, exclude: [chiliLines[2].id] };
+  summary('add_recipe_to_grocery_list', addRecipeInput) ===
+  'Add 2 ingredients from "High-protein chili" to the grocery list'
+    ? ok('add_recipe_to_grocery_list card: title + included count')
+    : bad('recipe→list card', summary('add_recipe_to_grocery_list', addRecipeInput));
+  run('add_recipe_to_grocery_list', db, addRecipeInput).added === 2
+    ? ok('excluded line stays off the list')
+    : bad('recipe→list execute');
+  const withRecipe = run('get_grocery_list', db);
+  withRecipe.sections.flatMap((s) => s.items).some((i) => i.forRecipe === 'High-protein chili')
+    ? ok('list items carry their recipe backlink title')
+    : bad('forRecipe', JSON.stringify(withRecipe));
+  throws(() =>
+    summary('add_recipe_to_grocery_list', {
+      recipe_id: saved.id,
+      exclude: chiliLines.map((l) => l.id),
+    })
+  )
+    ? ok('all-excluded refused (nothing to add)')
+    : bad('all excluded');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

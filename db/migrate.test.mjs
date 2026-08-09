@@ -409,9 +409,11 @@ console.log('5. 0029 purges ONLY the fabricated seed mission rows');
     : bad('fixture insert', `${before.length} of ${fixture.length}`);
 
   const result = migrate(executor(db), MIGRATIONS);
-  result.applied.length === 1 && result.applied[0] === '0029_purge_seed_mission'
-    ? ok('exactly one migration applied: 0029_purge_seed_mission')
-    : bad('applied 0029 only', JSON.stringify(result.applied));
+  // Floor convention: 0029 applies FIRST from a v28 stage; later migrations
+  // (0030+) legitimately follow it, so only the head of the list is pinned.
+  result.applied[0] === '0029_purge_seed_mission'
+    ? ok(`0029_purge_seed_mission applied first (${result.applied.length} total from v28)`)
+    : bad('applied 0029 first', JSON.stringify(result.applied));
 
   const after = snapshotEntries(db);
   const aliveIds = after.map((r) => r.id);
@@ -525,8 +527,8 @@ console.log('6. 0029 is a no-op on a database with no seed rows');
   JSON.stringify(dailyBefore) === JSON.stringify(snapshotDailyLogs(db))
     ? ok('no-op: daily_logs unchanged')
     : bad('no-op run changed daily_logs');
-  db.prepare('PRAGMA user_version').get().user_version === PURGE_VERSION
-    ? ok(`user_version advanced to ${PURGE_VERSION} anyway (forward-only)`)
+  db.prepare('PRAGMA user_version').get().user_version >= PURGE_VERSION
+    ? ok(`user_version advanced to >= ${PURGE_VERSION} anyway (forward-only; floor)`)
     : bad('user_version after no-op');
   db.close();
 }
