@@ -27,6 +27,12 @@ import {
   parseRecipeExtraction,
   RecipeFetchError,
 } from '../src/lib/recipes/import.ts';
+import { firstUrlIn, recipeImportShareFromPayloads } from '../src/lib/recipes/share-payload.ts';
+import {
+  consumeIncomingShare,
+  isIncomingShareAvailable,
+} from '../src/lib/recipes/incoming-share.ts';
+import { redirectSystemPath } from '../app/+native-intent.ts';
 
 let pass = 0;
 let fail = 0;
@@ -480,6 +486,66 @@ function fakeFetch(routes) {
       ? ok('Stories → unfetchable without any network attempt')
       : bad('stories type', String(e));
   }
+}
+
+// --- 8. Share-sheet delivery (Slice 4's code — the build-gated seam) ----------
+
+{
+  console.log('8. Share payloads → import input');
+  const cases = [
+    [
+      [{ value: 'https://www.instagram.com/reel/ABC123/', type: 'url' }],
+      { kind: 'url', url: 'https://www.instagram.com/reel/ABC123/' },
+    ],
+    // Instagram often shares as TEXT containing the link.
+    [
+      [{ value: 'Check this recipe! https://vm.tiktok.com/ZMabc/ so good', type: 'text' }],
+      { kind: 'url', url: 'https://vm.tiktok.com/ZMabc/' },
+    ],
+    // Bare recipe text → the paste rung, prefilled.
+    [
+      [{ value: 'Chili: 500g beef, 2 cans beans. Simmer.', type: 'text' }],
+      { kind: 'text', text: 'Chili: 500g beef, 2 cans beans. Simmer.' },
+    ],
+    // A screenshot share → the vision rung.
+    [
+      [{ value: 'file:///tmp/screenshot.png', type: 'image' }],
+      { kind: 'photo', uri: 'file:///tmp/screenshot.png' },
+    ],
+    // URL beats image when both arrive.
+    [
+      [
+        { value: 'file:///tmp/thumb.jpg', type: 'image' },
+        { value: 'https://example.com/r', type: 'url' },
+      ],
+      { kind: 'url', url: 'https://example.com/r' },
+    ],
+    [[], null],
+    [null, null],
+    [[{ value: '   ', type: 'text' }], null],
+  ];
+  for (const [payloads, want] of cases) {
+    const got = recipeImportShareFromPayloads(payloads);
+    if (JSON.stringify(got) === JSON.stringify(want)) {
+      ok(`${JSON.stringify(payloads)?.slice(0, 60)} → ${want ? want.kind : 'null'}`);
+    } else bad(JSON.stringify(payloads)?.slice(0, 60), JSON.stringify(got));
+  }
+  if (firstUrlIn('no links here') === null) ok('firstUrlIn: none → null');
+  else bad('firstUrlIn none');
+
+  // Module-absent honesty: under node the expo-sharing require fails, so the
+  // seam reports unavailable and consuming no-ops — the current-binary state.
+  if (!isIncomingShareAvailable() && consumeIncomingShare() === null) {
+    ok('without the native module the seam no-ops (current-binary behavior)');
+  } else bad('module-absent seam');
+
+  // The deep-link redirect: expo-sharing deliveries land on the import screen.
+  if (
+    redirectSystemPath({ path: 'arc://expo-sharing?x=1', initial: false }) === '/recipe-import' &&
+    redirectSystemPath({ path: '/labs', initial: false }) === '/labs'
+  ) {
+    ok('+native-intent routes expo-sharing links to /recipe-import, others pass through');
+  } else bad('native-intent redirect');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

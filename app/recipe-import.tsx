@@ -16,6 +16,7 @@ import {
   RecipeImportUnavailableError,
   type RecipeDraft,
 } from '@/lib/recipes/import';
+import { consumeIncomingShare, readSharedImageBase64 } from '@/lib/recipes/incoming-share';
 
 /**
  * Recipe import (docs/recipes-grocery.md §2c): share/paste a URL → the fetch
@@ -67,9 +68,15 @@ function SectionLabel({ children }: { children: string }) {
 export default function RecipeImportScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ url?: string }>();
-  const [mode, setMode] = useState<Mode>('url');
-  const [url, setUrl] = useState(typeof params.url === 'string' ? params.url : '');
-  const [text, setText] = useState('');
+  const paramUrl = typeof params.url === 'string' && params.url.trim() !== '' ? params.url : null;
+  // A share-sheet delivery (routed here by app/+native-intent.ts) is consumed
+  // once, at state init, and prefills the matching rung — the house pattern of
+  // synchronous initializer reads (consumeIncomingShare replays briefly, so a
+  // double-run initializer can't lose the share).
+  const [incoming] = useState(() => (paramUrl ? null : consumeIncomingShare()));
+  const [mode, setMode] = useState<Mode>(incoming?.kind === 'text' ? 'text' : 'url');
+  const [url, setUrl] = useState(paramUrl ?? (incoming?.kind === 'url' ? incoming.url : ''));
+  const [text, setText] = useState(incoming?.kind === 'text' ? incoming.text : '');
   const [phase, setPhase] = useState<Phase>({ kind: 'input' });
   const abortRef = useRef<AbortController | null>(null);
   const keySet = isRecipeImportAvailable();
@@ -110,13 +117,35 @@ export default function RecipeImportScreen() {
     }
   };
 
-  // A shared URL arriving via the route param starts the ladder immediately.
+  // A URL (route param or URL share) starts the ladder immediately; a shared
+  // screenshot starts the vision rung. Text shares were prefilled at init and
+  // wait for the user's Import tap.
   const autoRan = useRef(false);
   useEffect(() => {
-    if (!autoRan.current && typeof params.url === 'string' && params.url.trim() !== '') {
-      autoRan.current = true;
-      void run({ kind: 'url', url: params.url }, 'Reading the link…');
-    }
+    if (autoRan.current) return;
+    autoRan.current = true;
+    // Deferred a microtask so the first setPhase never lands synchronously
+    // inside the effect (the React Compiler cascading-render rule).
+    queueMicrotask(() => {
+      const startUrl = paramUrl ?? (incoming?.kind === 'url' ? incoming.url : null);
+      if (startUrl) {
+        void run({ kind: 'url', url: startUrl }, 'Reading the link…');
+        return;
+      }
+      if (incoming?.kind === 'photo') {
+        void (async () => {
+          const base64 = await readSharedImageBase64(incoming.uri);
+          if (base64) void run({ kind: 'photo', base64Jpeg: base64 }, 'Reading the screenshot…');
+          else {
+            setPhase({
+              kind: 'failed',
+              message: 'Couldn’t read the shared image — paste the recipe text instead.',
+              suggestPaste: true,
+            });
+          }
+        })();
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -195,9 +224,8 @@ export default function RecipeImportScreen() {
                 className="rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[14px] text-ink"
               />
               <Text className="mt-2 text-[12px] leading-5 text-ink-muted">
-                Or share straight from Instagram/TikTok/Safari to ARC once the share extension is in
-                a build. Recipe sites import without any AI; social captions run through the Coach’s
-                model.
+                Or share straight from Instagram/TikTok/Safari to ARC (needs the next app build).
+                Recipe sites import without any AI; social captions run through the Coach’s model.
               </Text>
             </View>
           ) : (

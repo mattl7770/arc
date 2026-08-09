@@ -55,7 +55,19 @@
           "microphonePermission": false
         }
       ],
-      "expo-sharing",
+      [
+        "expo-sharing",
+        {
+          "ios": {
+            "enabled": true,
+            "activationRule": {
+              "supportsText": true,
+              "supportsWebUrlWithMaxCount": 1,
+              "supportsImageWithMaxCount": 1
+            }
+          }
+        }
+      ],
       [
         "@kingstinct/react-native-healthkit",
         {
