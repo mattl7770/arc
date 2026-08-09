@@ -32,6 +32,33 @@ const parseLocalDate = (date: string): Date => {
 };
 
 /**
+ * Hand-rolled month/weekday names, indexed to match `getDay()` (Sunday-first)
+ * and `getMonth()`.
+ *
+ * Hermes ships without Intl, so `toLocaleDateString(undefined, {...})` silently
+ * ignores its options object on device and returns a different shape than the
+ * web preview shows — which is how a "Mon" column turns into a full date string
+ * on a real iPhone. Same reason, same fix as src/components/home/date-eyebrow.tsx
+ * (and src/lib/ai/tools/write-tools.ts, src/hooks/use-data-overview.ts).
+ */
+const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+const MONTH_SHORT = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+/**
  * The "Recent sessions" day column: Today · Yesterday · a short weekday for the
  * rest of the past week · "Jul 12" beyond that. `today` is passed in (from
  * todayISODate) so the whole list renders against one consistent day.
@@ -42,10 +69,11 @@ export function dayLabel(date: string, today: string): string {
     (parseLocalDate(today).getTime() - parseLocalDate(date).getTime()) / 86_400_000
   );
   if (diffDays === 1) return 'Yesterday';
+  const when = parseLocalDate(date);
   if (diffDays > 1 && diffDays < 7) {
-    return parseLocalDate(date).toLocaleDateString(undefined, { weekday: 'short' });
+    return WEEKDAY_SHORT[when.getDay()] ?? '';
   }
-  return parseLocalDate(date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${MONTH_SHORT[when.getMonth()] ?? ''} ${when.getDate()}`;
 }
 
 /**

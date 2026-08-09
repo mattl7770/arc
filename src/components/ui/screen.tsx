@@ -19,8 +19,19 @@ type ScreenProps = {
 };
 
 /**
- * The one container every screen sits in: safe-area aware, bone-paper
- * background, consistent horizontal gutter.
+ * The one container every screen sits in: safe-area aware, the Conformed Set
+ * sheet as its background, and one consistent horizontal gutter.
+ *
+ * **The contract:** Screen supplies `bg-paper` (#E7E4DA — the sheet) and the
+ * `px-5` gutter. Screens must never re-declare either; a second `px-5` inside
+ * doubles the gutter, and a `bg-paper` re-declaration is the kind of thing that
+ * survives the next palette change and quietly goes stale. Blocks that want to
+ * sit ON the sheet just render — the sheet is already there
+ * (docs/design-research/implementation/00-design-spec.md §2).
+ *
+ * Sections are separated by whitespace, not by rules: in this design rules
+ * enclose objects (a plate edge, the rows of one list), never the page. That is
+ * why this container draws nothing at all.
  */
 export function Screen({ children, scroll = false, edges = ['top'] }: ScreenProps) {
   return (

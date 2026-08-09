@@ -2,7 +2,9 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { useProtocols } from '@/hooks/use-protocols';
@@ -11,23 +13,20 @@ import { protocolTypeLabel } from '@/lib/protocols/format';
 /**
  * Protocols — the versioned stacks and routines, pushed from the Data tab
  * (docs/information-architecture.md: lives in Data for now, first in line to
- * graduate to its own sub-app). Each protocol is a card: name, type, live
- * version + item count, paused state. Tapping opens the editor; the one pine
- * on this screen is "New protocol".
+ * graduate to its own sub-app).
  *
- * The live versions will drive Today's Mission — that generator is a separate,
- * clearly-marked seam (see src/lib/db/repositories/protocols.ts), so this
- * screen says so honestly rather than pretending.
+ * Conformed Set treatment — one **ruled plate**: the protocol list is a record,
+ * and a record is a table, so the stack of separate cards became a single plate
+ * with ruled rows. The closing rationale is a **margin annotation**.
+ *
+ * Accent budget: exactly one — "New protocol", the single primary action on the
+ * screen. The paused chip and the version string are workflow, not biology, so
+ * they stay neutral ink; signal colours never mark chrome.
+ *
+ * The live versions drive Today's Mission — a day's plan is committed when it is
+ * generated, which the closing note states plainly rather than implying an edit
+ * lands immediately.
  */
-
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
-
 export default function ProtocolsScreen() {
   const router = useRouter();
   const { protocols } = useProtocols();
@@ -38,93 +37,104 @@ export default function ProtocolsScreen() {
         <StackHeader title="Protocols" />
       </View>
 
-      <Text className="mt-1 text-[13px] leading-5 text-ink-secondary">
+      <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
         Stacks and routines, versioned like code — every save is a new version, and history is never
         lost.
       </Text>
 
-      {/* The one pine action on this screen. */}
+      {/* The one accent on this screen. */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="New protocol"
         onPress={() => router.push('/protocol-edit')}
-        className="mt-5 flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3.5 active:opacity-70">
+        className="mt-5 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3.5 active:opacity-70">
         <Ionicons name="add" size={19} color={palette.pineOn} />
-        <Text className="text-[15px] font-semibold text-pine-on">New protocol</Text>
+        <Text className="font-label text-[15px] font-semibold text-pine-on">New protocol</Text>
       </Pressable>
 
       <View className="mt-8">
-        {/* The count is a measured value — mono, beside the sans label. */}
-        <View className="flex-row items-baseline justify-between">
-          <SectionLabel>Your protocols</SectionLabel>
-          {protocols.length > 0 ? (
-            <Text className="font-mono text-[11px] text-ink-muted">{protocols.length}</Text>
-          ) : null}
-        </View>
+        {/* The count is a measured value — mono, carried by the label's note slot. */}
+        <SectionLabel
+          label="Your protocols"
+          note={protocols.length > 0 ? String(protocols.length) : undefined}
+        />
 
-        {protocols.length === 0 ? (
-          <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
-            Nothing here yet. A protocol is a stack or routine you run — a supplement stack, a
-            morning routine, a training block. Create the first; every edit after that becomes a new
-            version.
-          </Text>
-        ) : (
-          <View className="mt-3 gap-2">
-            {protocols.map((p) => (
-              <Pressable
-                key={p.id}
-                accessibilityRole="button"
-                accessibilityLabel={`${p.name}. ${protocolTypeLabel(p.type)}, ${
-                  p.versionNumber === null
-                    ? 'no version yet'
-                    : `version ${p.versionNumber}, ${p.itemCount} ${p.itemCount === 1 ? 'item' : 'items'}`
-                }${p.isActive ? '' : ', paused'}. Edit.`}
-                onPress={() => router.push({ pathname: '/protocol-edit', params: { id: p.id } })}
-                className="rounded-card border border-hairline bg-porcelain p-4 active:bg-paper-deep">
-                <View className="flex-row items-center gap-3">
-                  <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">
-                    {p.name}
-                  </Text>
-                  {p.isActive ? null : (
-                    <View className="rounded-btn bg-paper-deep px-2 py-0.5">
-                      <Text className="font-mono text-[9.5px] uppercase tracking-[1px] text-ink-muted">
-                        Paused
-                      </Text>
-                    </View>
-                  )}
-                  <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-                </View>
-
-                {p.description ? (
-                  <Text
-                    className="mt-1 text-[12.5px] leading-5 text-ink-secondary"
-                    numberOfLines={2}>
-                    {p.description}
-                  </Text>
-                ) : null}
-
-                <View className="mt-2 flex-row items-center justify-between">
-                  <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">
-                    {protocolTypeLabel(p.type)}
-                  </Text>
-                  <Text className="font-mono text-[11px] text-ink-muted">
-                    {p.versionNumber === null
+        <View className="mt-3">
+          <Block device="plate">
+            {protocols.length === 0 ? (
+              // Empty is authored, never blank.
+              <View className="py-1">
+                <Text className="font-serif text-[15px] font-semibold text-ink">
+                  No protocols yet
+                </Text>
+                <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
+                  A protocol is a stack or routine you run — a supplement stack, a morning routine,
+                  a training block. Create the first; every edit after that becomes a new version.
+                </Text>
+              </View>
+            ) : (
+              protocols.map((p, index) => (
+                <Pressable
+                  key={p.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${p.name}. ${protocolTypeLabel(p.type)}, ${
+                    p.versionNumber === null
                       ? 'no version yet'
-                      : `v${p.versionNumber} · ${p.itemCount} ${p.itemCount === 1 ? 'item' : 'items'}`}
-                  </Text>
-                </View>
-              </Pressable>
-            ))}
-          </View>
-        )}
+                      : `version ${p.versionNumber}, ${p.itemCount} ${p.itemCount === 1 ? 'item' : 'items'}`
+                  }${p.isActive ? '' : ', paused'}. Edit.`}
+                  onPress={() => router.push({ pathname: '/protocol-edit', params: { id: p.id } })}
+                  className={`min-h-[44px] py-3 active:opacity-60 ${
+                    index === 0 ? '' : 'border-t border-hairline'
+                  }`}>
+                  <View className="flex-row items-center gap-3">
+                    <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">
+                      {p.name}
+                    </Text>
+                    {p.isActive ? null : (
+                      <View className="border border-paper-deep bg-paper-dim px-2 py-0.5">
+                        <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                          Paused
+                        </Text>
+                      </View>
+                    )}
+                    <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+                  </View>
+
+                  {p.description ? (
+                    <Text
+                      className="mt-1 font-serif text-[12.5px] leading-5 text-ink-secondary"
+                      numberOfLines={2}>
+                      {p.description}
+                    </Text>
+                  ) : null}
+
+                  <View className="mt-1.5 flex-row items-center justify-between gap-3">
+                    <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                      {protocolTypeLabel(p.type)}
+                    </Text>
+                    <Text className="font-mono text-[11px] text-ink-muted">
+                      {p.versionNumber === null
+                        ? 'no version yet'
+                        : `v${p.versionNumber} · ${p.itemCount} ${p.itemCount === 1 ? 'item' : 'items'}`}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))
+            )}
+          </Block>
+        </View>
       </View>
 
       {/* How an edit here reaches Home — the generator commits a day once, so an
           edit made today lands on tomorrow's mission. */}
-      <Text className="mt-8 text-[11px] leading-4 text-ink-muted">
-        Active protocols drive Today&rsquo;s Mission. A day&rsquo;s plan is committed when it is
-        generated, so an edit made today shapes tomorrow&rsquo;s mission.
-      </Text>
+      <View className="mt-8">
+        <Block device="margin">
+          <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+            Active protocols drive Today&rsquo;s Mission. A day&rsquo;s plan is committed when it is
+            generated, so an edit made today shapes tomorrow&rsquo;s mission.
+          </Text>
+        </Block>
+      </View>
     </Screen>
   );
 }

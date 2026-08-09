@@ -25,16 +25,33 @@ import { useTodayMission } from '@/hooks/use-today-mission';
  *
  * Sections are separated by whitespace alone. Horizontal rules were tried and
  * removed (owner call, 2026-07-24): two of them around one short block reads
- * as a box, and boxes are what this design is trying not to be. Hairlines are
- * for card edges and rows inside a list, not for slicing up the page.
+ * as a box, and boxes are what this design is trying not to be. Rules enclose
+ * objects — a plate edge, the rows inside one list — never the page.
+ *
+ * ## The surface system
+ *
+ * Home is where the Conformed Set's devices earn their keep: five of the six
+ * appear here, and the container is what tells you what kind of thing you are
+ * looking at before you read a word (src/components/ui/block.tsx).
+ *
+ *   hero-card       stamp   the one next action, in the accent
+ *   readiness-strip field   a verdict — corner ticks, no box
+ *   mission         plate   a record, ruled
+ *   coach-brief     margin  prose, annotated in the margin
+ *   metrics-strip   grid    rules between cells, no outer box
+ *
+ * Each component owns its own device, so nothing here nests one inside
+ * another; the Views below are layout and spacing only.
  *
  * Two things hold the design to its principles:
  *   - The hero is *derived* from the mission, not authored separately, so
  *     "do this next" can never drift out of step with the checklist, and
  *     finishing something advances the screen on its own.
- *   - Pine is reserved for the hero, primary actions, and completion stamps
- *     (checkmarks, the mission progress fill). Everything else is neutral ink,
- *     which is what stops this becoming a dashboard.
+ *   - The accent budget on this screen is exactly three things: the hero,
+ *     completion stamps, and the active tab. Everything else is neutral ink,
+ *     which is what stops this becoming a dashboard. Signal colours are the
+ *     mirror rule — they mark biology (the readiness verdict, the pillars) and
+ *     never chrome, and the accent never marks biology.
  *
  * Everything on this screen is now real. The mission reads from and writes to
  * the on-device SQLite database (useTodayMission), generated from the user's own
@@ -82,12 +99,12 @@ export default function HomeScreen() {
         )}
       </View>
 
-      <View className="mt-8">
+      <View className="mt-7">
         <ReadinessStrip readiness={readiness.readiness} pillars={readiness.pillars} />
       </View>
 
       {planned ? (
-        <View className="mt-9">
+        <View className="mt-7">
           <Mission
             leadingSettled={mission.leadingSettled}
             rest={mission.rest}
@@ -98,11 +115,11 @@ export default function HomeScreen() {
         </View>
       ) : null}
 
-      <View className="mt-9">
+      <View className="mt-7">
         <CoachBrief brief={brief} />
       </View>
 
-      <View className="mt-8">
+      <View className="mt-7">
         <MetricsStrip metrics={readiness.metrics} />
       </View>
     </Screen>

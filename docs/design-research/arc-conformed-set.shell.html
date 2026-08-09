@@ -1,0 +1,130 @@
+<title>ARC — The Conformed Set</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --page-bg:#e7e8e6; --page-panel:#f4f5f3; --page-ink:#181b1a; --page-ink2:#505553;
+  --page-muted:#858b88; --page-border:#d4d6d3; --page-ring:#12454e;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --page-bg:#101211; --page-panel:#191c1b; --page-ink:#eceeed; --page-ink2:#acb3b0;
+    --page-muted:#757c79; --page-border:#292d2b; --page-ring:#4e96a1; }
+}
+:root[data-theme="light"]{ --page-bg:#e7e8e6; --page-panel:#f4f5f3; --page-ink:#181b1a; --page-ink2:#505553;
+  --page-muted:#858b88; --page-border:#d4d6d3; --page-ring:#12454e; }
+:root[data-theme="dark"]{ --page-bg:#101211; --page-panel:#191c1b; --page-ink:#eceeed; --page-ink2:#acb3b0;
+  --page-muted:#757c79; --page-border:#292d2b; --page-ring:#4e96a1; }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--page-bg);color:var(--page-ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;line-height:1.5;}
+.wrap{max-width:1180px;margin:0 auto;padding:40px 24px 20px;}
+
+.kicker{font:600 11px/1 ui-monospace,Menlo,monospace;letter-spacing:2.5px;text-transform:uppercase;
+  color:var(--page-ring);margin:0 0 14px;}
+h1{font:600 clamp(29px,4.2vw,44px)/1.05 "Bahnschrift","Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;
+  margin:0 0 16px;letter-spacing:-.01em;text-wrap:balance;max-width:22ch;}
+.lede{font-size:16px;color:var(--page-ink2);margin:0;max-width:68ch;}
+.lede em{font-style:normal;color:var(--page-ink);font-weight:600}
+.provenance{font-size:13.5px;color:var(--page-muted);margin:14px 0 0;max-width:80ch;}
+.provenance b{color:var(--page-ink2);font-weight:600}
+
+.controls{margin:28px 0 22px;display:flex;flex-direction:column;gap:14px;}
+.controls-top{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;}
+.lineage{flex:1;display:flex;flex-wrap:wrap;gap:10px;}
+.lin-card{background:var(--page-panel);border:1px solid var(--page-border);border-radius:3px;padding:10px 14px;
+  display:flex;flex-direction:column;gap:2px;min-width:170px;}
+.lin-card .ln-from{font:600 9px/1 ui-monospace,Menlo,monospace;letter-spacing:1.3px;text-transform:uppercase;color:var(--page-muted)}
+.lin-card .ln-what{font-size:12.5px;color:var(--page-ink2);line-height:1.45}
+.acc-toggle{display:flex;flex-direction:column;gap:6px;justify-content:center;
+  background:var(--page-panel);border:1px solid var(--page-border);border-radius:3px;padding:10px 14px;flex:none;}
+.acc-toggle .at-label{font:600 9px/1 ui-monospace,Menlo,monospace;letter-spacing:1.4px;text-transform:uppercase;color:var(--page-muted)}
+.acc-btns{display:flex;gap:6px}
+.acc-btn{display:flex;align-items:center;gap:7px;font:600 12px/1 ui-monospace,Menlo,monospace;cursor:pointer;
+  border:1px solid var(--page-border);border-radius:3px;background:transparent;color:var(--page-ink2);padding:7px 11px;}
+.acc-btn .dotc{width:10px;height:10px;border-radius:2px;flex:none}
+.acc-btn[data-acc="petrol"] .dotc{background:#12454E}
+.acc-btn[data-acc="red"] .dotc{background:#A21522}
+.acc-btn[aria-pressed="true"]{border-color:var(--page-ink2);box-shadow:0 0 0 1.5px var(--page-ink2) inset;color:var(--page-ink)}
+.acc-btn:focus-visible{outline:2px solid var(--page-ring);outline-offset:2px}
+.srf-fixed{font:600 11.5px/1 ui-monospace,Menlo,monospace;border:1px solid var(--page-ring);
+  border-radius:3px;background:transparent;color:var(--page-ink);padding:7px 10px;
+  box-shadow:0 0 0 1.5px var(--page-ring) inset;}
+.acc-note{font-size:11.5px;color:var(--page-muted);max-width:220px;line-height:1.45}
+
+.caption{background:var(--page-panel);border:1px solid var(--page-border);border-radius:3px;padding:16px 18px;}
+.caption .cap-tag{font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.3px;color:var(--page-ring);margin:0 0 10px}
+.caption .cap-rev{font-size:13.5px;color:var(--page-ink2);line-height:1.6;margin:0;max-width:96ch;}
+.caption .cap-rev b{color:var(--page-ink);font-weight:600;font-family:ui-monospace,Menlo,monospace;font-size:10px;
+  letter-spacing:1.2px;text-transform:uppercase;display:block;margin-bottom:4px}
+.caption .v-ship{color:#2E8B57;font-weight:700}
+.caption .v-fix{color:#A97B22;font-weight:700}
+
+.hintbar{display:flex;gap:9px;align-items:baseline;margin:18px 0 2px;color:var(--page-muted);font-size:12.5px;flex-wrap:wrap}
+.hintbar .tt{font-weight:600;color:var(--page-ink2)}
+
+.stage{position:relative;width:100%;overflow-x:auto;padding:8px 0 48px;}
+
+@media (prefers-reduced-motion: reduce){*{transition:none !important}}
+
+/* ================= CONFORMED SET STYLES (injected) ================= */
+<!--CONCEPT_STYLES-->
+</style>
+
+<div class="wrap">
+  <p class="kicker">ARC · Blueprint · The Conformed Set</p>
+  <h1>One set, every review comment incorporated.</h1>
+  <p class="lede">The convergence of the whole exploration: ten screens — <em>Home · Coach · Log · Keypad · Nutrition · Exercise · Data · Protocols · Screenings · Settings</em> — compositing the strongest device from each of the six hostile-reviewed sets, rebuilt against every finding those reviews produced. In drafting, a <em>conformed set</em> is the one with all addenda incorporated; that is what this is.</p>
+  <p class="provenance">The fixture itself was corrected first (the Coach thread is now drawn genuinely suspended; the Nutrition ledger sums to its own total; the mission tally reconciles), the red-mode firewall got a real answer (in redline mode, biology-poor shifts to umber and poor fills carry a hatch — the worst biology state is identifiable without hue in both modes), and the set was then re-audited and put through the <b>same hostile review</b> that scored its six predecessors, with a class-by-class regression walk over their findings.</p>
+
+  <div class="controls">
+    <div class="controls-top">
+      <div class="lineage">
+        <div class="lin-card"><span class="ln-from">From Field Copy</span><span class="ln-what">The full mission table, fold-as-tally, ledger discipline, small-multiples Exercise</span></div>
+        <div class="lin-card"><span class="ln-from">From Fair Copy</span><span class="ln-what">The typographic dimension-string hero and the enforced accent budget</span></div>
+        <div class="lin-card"><span class="ln-from">From Trades</span><span class="ln-what">The REV A→B dimensioned revision diff on the Coach's pending write</span></div>
+        <div class="lin-card"><span class="ln-from">From Chainage</span><span class="ln-what">The Screenings horizon timeline — the best screen of the batch</span></div>
+      </div>
+      <div class="acc-toggle">
+        <span class="at-label">Accent</span>
+        <div class="acc-btns" role="group" aria-label="Accent">
+          <button class="acc-btn" data-acc="petrol" aria-pressed="true"><span class="dotc"></span>Petrol</button>
+          <button class="acc-btn" data-acc="red" aria-pressed="false"><span class="dotc"></span>Redline</button>
+        </div>
+        <span class="acc-note">In redline mode, biology-poor shifts to umber + hatch so chrome and biology never share a hue.</span>
+      </div>
+      <div class="acc-toggle">
+        <span class="at-label">Surface system</span>
+        <div class="acc-btns"><span class="srf-fixed">Devices — adopted</span></div>
+        <span class="acc-note">The container encodes the content: ledgers get a ruled plate, readiness corner ticks, prose a margin rule, metrics a ruled grid with no outer box, capture surfaces a recessed stock.</span>
+      </div>
+    </div>
+    <div class="caption">
+      <p class="cap-tag" id="capTag">Convergence round · re-reviewed under the same hostile standard, then fixed and verified</p>
+      <p class="cap-rev"><b>Hostile re-review → fix → verify</b><span id="capRev">The re-review returned <span class="v-fix">0 high</span> / 9 medium / 10 low — against 21 highs across the six parents — and confirmed ~30 of 36 inherited high/medium finding classes dead, including every within-screen high: the pending-write contradiction, the red-mode chrome/biology collapse (the umber+hatch answer "actually restores the firewall"), the unreadable hero, the contrast floor ("genuinely rebuilt, not asserted" — 5.97:1 / 5.17:1 recomputed independently), and every balanced ledger recomputed rather than trusted. All 9 surviving mediums were then fixed and <b style="display:inline;letter-spacing:0;text-transform:none;font-size:13.5px">verified resolved</b> — the freshness meter moved off chrome paint, the water quick-adds sheet drawn (K-02), the keypad typed-state disambiguated, the Protocols version history redrawn at the suspended moment (v2 dashed "proposed · awaiting your OK"), the reminder reconciled to 22:00, the streaming line restored, all in-field buttons grown past 44pt, the camera path honestly marked, and an Alternate-states row added (mission-complete, Coach preview, empty feed, keypad blank). The 10 lows remain as recorded polish items — several are fixture-inherited (the 9:41 status-bar clock vs afternoon entries; the Symptoms 14-day label over a 7-point series; the creatine ad-hoc/planned double-entry).</span></p>
+    </div>
+  </div>
+
+  <div class="hintbar">
+    <span class="tt">Reading it:</span>
+    <span>the ten canonical screens (tab screens, then pushed screens), followed by the alternate-state sheets the fix round added — the Keypad's water quick-adds (K-02), mission-complete, Coach preview, empty feed, and keypad blank. Scroll the lane sideways. Toggle the accent and watch the poor-state biology marks: they shift to umber + hatch in redline, which is the firewall answer being demonstrated.</span>
+  </div>
+</div>
+
+<div class="wrap" style="padding-top:0;padding-bottom:0;max-width:none">
+  <div class="stage" id="stage">
+<!--CONCEPT_SECTIONS-->
+  </div>
+</div>
+
+<script>
+function setAccent(mode){
+  document.querySelectorAll('.stage > section.concept').forEach(s=>{
+    if(mode==='red'){ s.setAttribute('data-accent','red'); } else { s.removeAttribute('data-accent'); }
+  });
+  document.querySelectorAll('.acc-btn').forEach(b=>b.setAttribute('aria-pressed', b.dataset.acc===mode ? 'true':'false'));
+}
+document.querySelectorAll('.acc-btn').forEach(b=>b.addEventListener('click',()=>setAccent(b.dataset.acc)));
+setAccent('petrol');
+
+</script>

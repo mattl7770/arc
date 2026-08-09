@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -17,6 +18,16 @@ import { type CaptureType, logCapture } from '@/lib/db/repositories/logs';
  * form both persist to `log_entries` (marked ad-hoc, so they show in the Log
  * feed, not Home's mission), then return to the Log tab. Supplement folds
  * Medication in later as a type toggle; protocol-linking arrives with Protocols.
+ *
+ * Conformed Set treatment (00-design-spec.md §1): this screen is all controls,
+ * so it carries no content blocks of its own — the shared `SectionLabel` names
+ * each group and whitespace separates them. That absence is a **decision, not
+ * an oversight**: it is form (b) of the capture-surface rule written down in
+ * src/components/ui/block.tsx. Text fields are drawn as **recessed stock** (the
+ * well's paper-dim on paper-deep), because an input well is what they are.
+ * Every dose and duration is mono; every button and chip is the label voice.
+ * The single accent is the CTA — the protocol switch is stamped in ink, since a
+ * toggle is chrome, not the one next action.
  */
 type FieldSpec = { key: string; label: string; placeholder: string };
 type CaptureConfig = {
@@ -79,13 +90,16 @@ const FALLBACK: CaptureConfig = {
   ctaIcon: 'add-outline',
 };
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
+/**
+ * A text field drawn as recessed stock — the well device's own surface, applied
+ * to the control directly. This is form (b) of the capture-surface rule in
+ * src/components/ui/block.tsx: a *group* of labelled fields carries no block,
+ * and each field wears `border-paper-deep bg-paper-dim` itself. Wrapping the
+ * group in a `<Block device="well">` would stack a recess on a recess and force
+ * these inputs up onto plate stock to stay legible — the inversion that rule
+ * exists to stop. An input is never `bg-paper-hi`.
+ */
+const INPUT = 'border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] text-ink';
 
 export default function CaptureScreen() {
   const router = useRouter();
@@ -123,7 +137,7 @@ export default function CaptureScreen() {
       {/* Quick-log strip — one tap logs and returns */}
       {config.quick.length > 0 ? (
         <View className="mt-2">
-          <SectionLabel>{config.quickLabel}</SectionLabel>
+          <SectionLabel label={config.quickLabel} />
           <View className="mt-2 flex-row flex-wrap gap-2">
             {config.quick.map((q) => (
               <Pressable
@@ -131,10 +145,11 @@ export default function CaptureScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={`Log ${q.name} ${q.detail}`}
                 onPress={() => save(`${q.name} · ${q.detail}`)}
-                className="flex-row items-center gap-2 rounded-btn border border-hairline bg-porcelain py-2 pl-3 pr-3.5 active:bg-paper-deep">
+                className="min-h-[44px] flex-row items-center gap-2 rounded-btn border border-hairline bg-paper-hi py-2 pl-3 pr-3.5 active:bg-paper-dim">
                 <Ionicons name="add" size={15} color={palette.inkSecondary} />
                 <View>
-                  <Text className="text-[13px] text-ink">{q.name}</Text>
+                  <Text className="font-label text-[13px] font-semibold text-ink">{q.name}</Text>
+                  {/* A dose is a measurement — mono, always. */}
                   <Text className="font-mono text-[10px] text-ink-muted">{q.detail}</Text>
                 </View>
               </Pressable>
@@ -145,18 +160,20 @@ export default function CaptureScreen() {
 
       {/* Manual add */}
       <View className="mt-8">
-        <SectionLabel>Add one</SectionLabel>
+        <SectionLabel label="Add one" />
         <View className="mt-2 gap-3">
           {config.fields.map((f, index) => (
             <View key={f.key}>
-              <Text className="mb-1 text-xs text-ink-secondary">{f.label}</Text>
+              <Text className="mb-1.5 font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+                {f.label}
+              </Text>
               <TextInput
                 value={fields[f.key] ?? ''}
                 onChangeText={(v) => setFields((prev) => ({ ...prev, [f.key]: v }))}
                 placeholder={f.placeholder}
                 placeholderTextColor={palette.inkMuted}
                 autoFocus={index === 0}
-                className="rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink"
+                className={INPUT}
                 accessibilityLabel={f.label}
               />
             </View>
@@ -167,12 +184,22 @@ export default function CaptureScreen() {
               accessibilityLabel="Part of a protocol"
               accessibilityState={{ checked: protocol }}
               onPress={() => setProtocol((p) => !p)}
-              className="mt-1 flex-row items-center justify-between rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3">
-              <Text className="text-[13px] text-ink-secondary">Part of a protocol</Text>
+              className="mt-1 min-h-[44px] flex-row items-center justify-between border border-paper-deep bg-paper-dim px-3.5 py-3">
+              <Text className="font-serif text-[14px] text-ink-secondary">Part of a protocol</Text>
+              {/* Square track, square knob — corners are square across this
+                  design — and stamped in ink, not pine: a switch is chrome. */}
               <View
-                className={`h-6 w-10 rounded-full px-0.5 ${protocol ? 'bg-pine' : 'bg-hairline'}`}>
+                className={
+                  protocol
+                    ? 'h-6 w-11 justify-center bg-ink p-[3px]'
+                    : 'h-6 w-11 justify-center bg-paper-deep p-[3px]'
+                }>
                 <View
-                  className={`h-5 w-5 rounded-full bg-porcelain ${protocol ? 'ml-auto' : ''}`}
+                  className={
+                    protocol
+                      ? 'ml-auto h-[18px] w-[18px] bg-paper-hi'
+                      : 'h-[18px] w-[18px] bg-paper-hi'
+                  }
                 />
               </View>
             </Pressable>
@@ -180,22 +207,30 @@ export default function CaptureScreen() {
         </View>
       </View>
 
-      {/* The one pine action on this screen. */}
+      {/* The one pine action on this screen. Disabled is a bordered recess:
+          ink-muted clears 4.5:1 on paper-dim, which it does not on hairline. */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={config.cta}
         accessibilityState={{ disabled: !canLog }}
         disabled={!canLog}
         onPress={logManual}
-        className={`mt-6 flex-row items-center justify-center gap-2 rounded-btn py-3.5 ${
-          canLog ? 'bg-pine active:opacity-70' : 'bg-hairline'
-        }`}>
+        className={
+          canLog
+            ? 'mt-6 min-h-[48px] flex-row items-center justify-center gap-2 rounded-btn bg-pine active:opacity-70'
+            : 'mt-6 min-h-[48px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline bg-paper-dim'
+        }>
         <Ionicons
           name={config.ctaIcon}
           size={18}
           color={canLog ? palette.pineOn : palette.inkMuted}
         />
-        <Text className={`text-[15px] font-semibold ${canLog ? 'text-pine-on' : 'text-ink-muted'}`}>
+        <Text
+          className={
+            canLog
+              ? 'font-label text-[12px] font-semibold uppercase tracking-[1px] text-pine-on'
+              : 'font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink-muted'
+          }>
           {config.cta}
         </Text>
       </Pressable>

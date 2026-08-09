@@ -2,7 +2,9 @@ import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Text, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
 import { StackHeader } from '@/components/ui/stack-header';
 import { getDb } from '@/lib/db/client';
@@ -21,9 +23,24 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
 /**
  * Exercise detail — history, estimated-1RM trend, and personal records for one
- * movement (docs/exercise-subapp.md §2). Read-only; pushed from the picker or a
- * workout block. Every measured value is mono; the e1RM trend uses the shared
- * dependency-free Sparkline. No pine — nothing here is an action.
+ * movement (docs/exercise-subapp.md §2). Read-only.
+ *
+ * **Entry point:** the records button on each catalog row in
+ * src/components/exercise/exercise-picker.tsx — reachable from the routine
+ * builder and the live logger, which are the two places that open the picker.
+ * That button is this screen's only door, so it is load-bearing: removing it
+ * strands this file and the `e1rmSeries` / `personalRecords` queries behind it.
+ *
+ * ## The surface system (00-design-spec.md §1)
+ *
+ *   Records          grid   three measured cells, rules between them only
+ *   Estimated 1RM    field  a readout about the lift, corner ticks, no box
+ *   History          plate  a record of sessions, ruled
+ *
+ * **No accent anywhere on this screen.** Nothing here is an action, and the
+ * budget is a ceiling, not a quota. Every measured value is mono — "serif
+ * speaks, mono measures" — and every absent record is an em-dash rather than a
+ * plausible-looking estimate.
  */
 
 type Detail = {
@@ -47,12 +64,30 @@ function read(id: string | undefined): Detail {
   };
 }
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
+/**
+ * The Records grid: three cells, rules BETWEEN them only. A vertical rule needs
+ * a cell on both sides of it, so the last cell never draws one — that dangling
+ * rule would be the outer edge this device exists to avoid (the same correction
+ * carried in src/components/home/metrics-strip.tsx). Whole class strings, never
+ * a built prefix.
+ *
+ * **Every cell answers the same question — "is there a cell after me?" — index
+ * 0 included.** Special-casing the first cell into a class that carries
+ * `border-r` unconditionally is the dangling-rule flaw wearing a different
+ * hat: a one-cell row would then draw a rule down its right-hand side into
+ * empty space. Column position decides the padding; only a following cell
+ * decides the rule.
+ */
+const CELL_FIRST = 'w-1/3 border-r border-t border-hairline py-2.5 pr-2.5';
+/** First column, nothing beside it: same box, no dangling rule. */
+const CELL_FIRST_LAST = 'w-1/3 border-t border-hairline py-2.5 pr-2.5';
+const CELL_MID = 'w-1/3 border-r border-t border-hairline px-2.5 py-2.5';
+const CELL_LAST = 'w-1/3 border-t border-hairline py-2.5 pl-2.5';
+
+function cellClass(index: number, count: number): string {
+  const closes = index + 1 < count;
+  if (index === 0) return closes ? CELL_FIRST : CELL_FIRST_LAST;
+  return closes ? CELL_MID : CELL_LAST;
 }
 
 export default function ExerciseDetailScreen() {
@@ -73,7 +108,7 @@ export default function ExerciseDetailScreen() {
         <View className="pt-2">
           <StackHeader title="Exercise" />
         </View>
-        <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
+        <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
           This exercise no longer exists.
         </Text>
       </Screen>
@@ -87,100 +122,102 @@ export default function ExerciseDetailScreen() {
     .filter(Boolean)
     .join(' · ');
 
+  const records = [
+    {
+      label: 'Best e1RM',
+      value: prs.bestE1rmKg == null ? null : formatWeight(prs.bestE1rmKg, units),
+    },
+    {
+      label: 'Top set',
+      value: prs.maxWeightKg == null ? null : formatWeight(prs.maxWeightKg, units),
+    },
+    {
+      label: 'Best volume',
+      value: prs.bestSetVolumeKg == null ? null : formatWeight(prs.bestSetVolumeKg, units),
+    },
+  ];
+
   return (
     <Screen scroll>
       <View className="pt-2">
         <StackHeader title={exercise.name} />
       </View>
-      <Text className="mt-1 font-mono text-[11px] uppercase tracking-[1px] text-ink-muted">
+      {/* Muscles and equipment are names, not measurements — label voice, not mono. */}
+      <Text className="mt-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
         {meta}
       </Text>
 
-      {/* Personal records */}
+      {/* Personal records — a metric grid, so: rules between cells, no outer box. */}
       <View className="mt-6">
-        <SectionLabel>Records</SectionLabel>
-        <View className="mt-2 flex-row gap-4 rounded-card border border-hairline bg-porcelain p-4">
-          <Stat
-            label="Best e1RM"
-            value={prs.bestE1rmKg == null ? null : formatWeight(prs.bestE1rmKg, units)}
-          />
-          <Stat
-            label="Top set"
-            value={prs.maxWeightKg == null ? null : formatWeight(prs.maxWeightKg, units)}
-            bordered
-          />
-          <Stat
-            label="Best volume"
-            value={prs.bestSetVolumeKg == null ? null : formatWeight(prs.bestSetVolumeKg, units)}
-            bordered
-          />
-        </View>
-      </View>
-
-      {/* e1RM trend */}
-      <View className="mt-8">
-        <SectionLabel>Estimated 1RM</SectionLabel>
-        {series.length >= 2 ? (
-          <View className="mt-2 flex-row items-center justify-between rounded-card border border-hairline bg-porcelain p-4">
-            <View>
-              <Text className="font-mono text-2xl text-ink">
-                {formatWeight(series[series.length - 1]!.e1rm, units)}
-              </Text>
-              <Text className="mt-0.5 text-[11px] uppercase tracking-[1px] text-ink-muted">
-                latest
-              </Text>
-            </View>
-            <Sparkline data={series.map((p) => p.e1rm)} baseline="auto" width={120} height={36} />
-          </View>
-        ) : (
-          <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
-            Log a couple of weighted sessions and the estimated-1RM trend appears here.
-          </Text>
-        )}
-      </View>
-
-      {/* History */}
-      <View className="mt-8">
-        <SectionLabel>History</SectionLabel>
-        {sessions.length === 0 ? (
-          <Text className="mt-2 text-[13px] leading-5 text-ink-muted">Nothing logged yet.</Text>
-        ) : (
-          <View className="mt-1">
-            {sessions.map((s, i) => (
-              <View
-                key={`${s.date}-${i}`}
-                className={`flex-row items-center gap-3 py-3 ${
-                  i === 0 ? '' : 'border-t border-hairline-soft'
-                }`}>
-                <Text className="w-16 text-[11px] uppercase tracking-[1px] text-ink-muted">
-                  {dayLabel(s.date, today)}
+        <Block device="grid">
+          <SectionLabel label="Records" />
+          <View className="mt-2 flex-row">
+            {records.map((r, index) => (
+              <View key={r.label} className={cellClass(index, records.length)}>
+                <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                  {r.label}
                 </Text>
-                <Text className="flex-1 font-mono text-[14px] text-ink">
-                  {setLineKg(s.reps, s.weightKg, units)}
-                  {s.rpe != null ? `  @${s.rpe}` : ''}
-                </Text>
+                {/* No data, no number: an absent record is an em-dash. */}
+                <Text className="mt-1 font-mono text-[15px] text-ink">{r.value ?? '—'}</Text>
               </View>
             ))}
           </View>
-        )}
+        </Block>
+      </View>
+
+      {/* Estimated 1RM — a readout about the lift, so: measured field. */}
+      <View className="mt-7">
+        <Block device="field">
+          <SectionLabel label="Estimated 1RM" />
+          {series.length >= 2 ? (
+            <View className="mt-2 flex-row items-center justify-between">
+              <View>
+                <Text className="font-mono text-2xl text-ink">
+                  {formatWeight(series[series.length - 1]!.e1rm, units)}
+                </Text>
+                <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                  Latest
+                </Text>
+              </View>
+              <Sparkline data={series.map((p) => p.e1rm)} baseline="auto" width={120} height={36} />
+            </View>
+          ) : (
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              Log a couple of weighted sessions and the estimated-1RM trend appears here.
+            </Text>
+          )}
+        </Block>
+      </View>
+
+      {/* History — a record of sessions, so: ruled plate. */}
+      <View className="mt-7">
+        <Block device="plate">
+          <SectionLabel label="History" />
+          {sessions.length === 0 ? (
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              Nothing logged yet.
+            </Text>
+          ) : (
+            <View className="mt-1">
+              {sessions.map((s, i) => (
+                <View
+                  key={`${s.date}-${i}`}
+                  className={`flex-row items-center gap-3 py-2.5 ${
+                    i === 0 ? '' : 'border-t border-hairline'
+                  }`}>
+                  <Text className="w-16 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                    {dayLabel(s.date, today)}
+                  </Text>
+                  <Text className="flex-1 font-mono text-[14px] text-ink">
+                    {setLineKg(s.reps, s.weightKg, units)}
+                    {s.rpe != null ? `  @${s.rpe}` : ''}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </Block>
       </View>
     </Screen>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  bordered,
-}: {
-  label: string;
-  value: string | null;
-  bordered?: boolean;
-}) {
-  return (
-    <View className={`flex-1 ${bordered ? 'border-l border-hairline-soft pl-4' : ''}`}>
-      <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">{label}</Text>
-      <Text className="mt-1 font-mono text-[15px] text-ink">{value ?? '—'}</Text>
-    </View>
   );
 }

@@ -1,5 +1,6 @@
 import { Pressable, Text, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
@@ -15,10 +16,14 @@ import type {
  * Units — display-only preferences. Storage stays canonical SI (kg, cm, ml);
  * these toggles only change how numbers render (src/lib/user/types.ts). Each
  * category is a two-option segmented control that persists immediately via the
- * useUnitPreferences hook. No pine needed — this is pure preference, not action.
+ * useUnitPreferences hook.
  *
- * Selected = neutral pressed state (border-hairline-strong bg-paper-deep);
- * unselected is a plain hairline. Same vocabulary as the Log metric chips.
+ * Conformed Set treatment: one **ruled plate** — a settings list is a record —
+ * with the rationale below it as a **margin annotation**.
+ *
+ * **Zero accent**, which this screen already was: selection is a neutral
+ * pressed state (border-ink on paper-dim), never a hue. Unit symbols are
+ * measured values, so the segments are set in mono.
  */
 
 type Option<T extends string> = { value: T; label: string };
@@ -65,8 +70,8 @@ function Segment<T extends string>({
             accessibilityState={{ selected: on }}
             accessibilityLabel={opt.label}
             onPress={() => onChange(opt.value)}
-            className={`min-w-[52px] items-center rounded-btn border px-3 py-2 active:bg-paper-deep ${
-              on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline'
+            className={`min-h-[44px] min-w-[52px] items-center justify-center rounded-btn border px-3 py-2 active:bg-paper-dim ${
+              on ? 'border-ink bg-paper-dim' : 'border-hairline'
             }`}>
             <Text
               className={`font-mono text-[13px] ${
@@ -81,6 +86,10 @@ function Segment<T extends string>({
   );
 }
 
+/**
+ * One ruled line of the plate. No horizontal padding — the plate supplies the
+ * gutter, and the rule runs between rows rather than around them.
+ */
 function Row({
   label,
   first,
@@ -92,10 +101,10 @@ function Row({
 }) {
   return (
     <View
-      className={`flex-row items-center justify-between gap-3 px-4 py-3 ${
-        first ? '' : 'border-t border-hairline-soft'
+      className={`min-h-[44px] flex-row items-center justify-between gap-3 py-2.5 ${
+        first ? '' : 'border-t border-hairline'
       }`}>
-      <Text className="text-[15px] text-ink">{label}</Text>
+      <Text className="font-serif text-[15px] text-ink">{label}</Text>
       {children}
     </View>
   );
@@ -110,36 +119,43 @@ export default function SettingsUnitsScreen() {
         <StackHeader title="Units" />
       </View>
 
-      <View className="mt-2 rounded-card border border-hairline bg-porcelain">
-        <Row label="Weight" first>
-          <Segment value={units.weight} options={WEIGHT} onChange={(v) => setUnit('weight', v)} />
-        </Row>
-        <Row label="Distance">
-          <Segment
-            value={units.distance}
-            options={DISTANCE}
-            onChange={(v) => setUnit('distance', v)}
-          />
-        </Row>
-        <Row label="Volume">
-          <Segment value={units.volume} options={VOLUME} onChange={(v) => setUnit('volume', v)} />
-        </Row>
-        <Row label="Length">
-          <Segment value={units.length} options={LENGTH} onChange={(v) => setUnit('length', v)} />
-        </Row>
-        <Row label="Temperature">
-          <Segment
-            value={units.temperature}
-            options={TEMPERATURE}
-            onChange={(v) => setUnit('temperature', v)}
-          />
-        </Row>
+      <View className="mt-3">
+        <Block device="plate">
+          <Row label="Weight" first>
+            <Segment value={units.weight} options={WEIGHT} onChange={(v) => setUnit('weight', v)} />
+          </Row>
+          <Row label="Distance">
+            <Segment
+              value={units.distance}
+              options={DISTANCE}
+              onChange={(v) => setUnit('distance', v)}
+            />
+          </Row>
+          <Row label="Volume">
+            <Segment value={units.volume} options={VOLUME} onChange={(v) => setUnit('volume', v)} />
+          </Row>
+          <Row label="Length">
+            <Segment value={units.length} options={LENGTH} onChange={(v) => setUnit('length', v)} />
+          </Row>
+          <Row label="Temperature">
+            <Segment
+              value={units.temperature}
+              options={TEMPERATURE}
+              onChange={(v) => setUnit('temperature', v)}
+            />
+          </Row>
+        </Block>
       </View>
 
-      <Text className="mt-4 px-1 text-[11px] leading-4 text-ink-muted">
-        Storage stays metric; this only changes how numbers display. Weight, volume, and length
-        apply now; distance and temperature take effect as workouts and environment tracking land.
-      </Text>
+      <View className="mt-5">
+        <Block device="margin">
+          <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+            Storage stays metric; this only changes how numbers display. Weight, volume, and length
+            apply now; distance and temperature take effect as workouts and environment tracking
+            land.
+          </Text>
+        </Block>
+      </View>
     </Screen>
   );
 }

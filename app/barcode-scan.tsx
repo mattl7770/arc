@@ -4,7 +4,9 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -26,6 +28,21 @@ import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
  * NATIVE DEP: expo-camera → the app must be rebuilt (EAS) before this runs on
  * device. Pushed with an optional `mealId` (add to that meal) or from Nutrition
  * (creates a day-part meal on the first add, like food search).
+ *
+ * Conformed Set treatment: the resolved product opens on a **ruled plate** — it
+ * is a catalog record (name, brand, energy, provenance), and the portion editor
+ * inside it draws no device of its own, exactly as in app/food-search.tsx, which
+ * is the same editor. Only its grams input takes the recessed treatment, because
+ * an input is a well at control scale; the steppers carry a hairline and no fill.
+ * A `<Block device="well">` here would invert the surface system — a recessed
+ * container can only hold raised controls, and an input is never `bg-paper-hi`
+ * (the rule in src/components/ui/block.tsx). The follow-on choices are their own
+ * plate. The miss path is a **margin annotation**, because its reason is prose.
+ * The scanned code is a measured value, so it is mono everywhere it appears; it
+ * is real data the next scan matches on, not a decorative reference.
+ *
+ * **Accent budget: one per phase.** Add (portion), Add manually (miss), Allow
+ * camera (permission) — never two at once, because the phases are exclusive.
  */
 
 type Phase =
@@ -53,6 +70,37 @@ const offFetch = (
   url: string,
   init?: { method?: string; headers?: Record<string, string>; signal?: AbortSignal }
 ) => fetch(url, init);
+
+/** One ruled row of the follow-on plate. */
+function ScanRow({
+  icon,
+  label,
+  first,
+  accessibilityLabel,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  first: boolean;
+  accessibilityLabel: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      onPress={onPress}
+      className={
+        first
+          ? 'min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60'
+          : 'min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60'
+      }>
+      <Ionicons name={icon} size={17} color={palette.inkSecondary} />
+      <Text className="flex-1 font-serif text-[15px] text-ink">{label}</Text>
+      <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+    </Pressable>
+  );
+}
 
 export default function BarcodeScanScreen() {
   const router = useRouter();
@@ -182,6 +230,7 @@ export default function BarcodeScanScreen() {
     phase.kind === 'portion' && gramsPreview != null && phase.food.kcal_100g != null
       ? (phase.food.kcal_100g * gramsPreview) / 100
       : null;
+  const canAdd = gramsPreview != null && gramsPreview > 0;
 
   return (
     <Screen scroll>
@@ -198,23 +247,27 @@ export default function BarcodeScanScreen() {
       {/* Camera / permission — only while actively scanning. */}
       {phase.kind === 'scanning' ? (
         !permission ? (
-          <Text className="mt-6 text-[13px] text-ink-muted">Preparing the camera…</Text>
+          <Text className="mt-6 font-serif text-[14px] text-ink-secondary">
+            Preparing the camera…
+          </Text>
         ) : !permission.granted ? (
           <View className="mt-6">
-            <Text className="text-[13px] leading-5 text-ink-secondary">
+            <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
               Barcode scanning needs camera access.
             </Text>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Allow camera"
               onPress={requestPermission}
-              className="mt-3 flex-row items-center justify-center rounded-btn bg-pine px-4 py-3 active:opacity-70">
-              <Text className="text-[14px] font-semibold text-pine-on">Allow camera</Text>
+              className="mt-3 min-h-[44px] items-center justify-center rounded-btn bg-pine px-4 active:opacity-70">
+              <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-pine-on">
+                Allow camera
+              </Text>
             </Pressable>
           </View>
         ) : (
           <View className="mt-4">
-            <View className="aspect-square w-full overflow-hidden rounded-card border border-hairline bg-ink">
+            <View className="aspect-square w-full overflow-hidden border border-hairline bg-ink">
               <CameraView
                 style={{ flex: 1 }}
                 barcodeScannerSettings={{
@@ -223,7 +276,7 @@ export default function BarcodeScanScreen() {
                 onBarcodeScanned={({ data }) => void onScanned(data)}
               />
             </View>
-            <Text className="mt-3 text-center text-xs text-ink-muted">
+            <Text className="mt-3 text-center font-serif text-[13px] leading-5 text-ink-muted">
               Point at a product barcode. Found items cache for offline next time.
             </Text>
           </View>
@@ -232,29 +285,33 @@ export default function BarcodeScanScreen() {
 
       {phase.kind === 'resolving' ? (
         <View className="mt-6 flex-row items-center gap-3">
-          <ActivityIndicator color={palette.pine} />
+          <ActivityIndicator color={palette.ink} />
           <View>
             <Text className="font-mono text-[13px] text-ink">{phase.barcode}</Text>
-            <Text className="mt-1 text-[13px] text-ink-muted">Looking it up…</Text>
+            <Text className="mt-1 font-serif text-[13px] text-ink-muted">Looking it up…</Text>
           </View>
         </View>
       ) : null}
 
-      {/* Resolved → portion sheet. */}
+      {/* Resolved → the record, with the portion decision drawn inside it. */}
       {phase.kind === 'portion' ? (
         <View className="mt-4">
-          <View className="rounded-card border border-hairline bg-porcelain p-4">
-            <Text className="text-[15px] text-ink">
+          <Block device="plate">
+            <SectionLabel
+              label="Portion"
+              note={phase.fromOff ? 'Open Food Facts' : 'Saved earlier'}
+            />
+
+            <Text className="mt-2 font-serif text-[15px] leading-5 text-ink">
               {phase.food.name}
               {phase.food.brand ? (
-                <Text className="text-ink-muted"> · {phase.food.brand}</Text>
+                <Text className="font-serif text-ink-muted"> · {phase.food.brand}</Text>
               ) : null}
             </Text>
-            <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
+            <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
               {phase.food.kcal_100g != null
                 ? `${fmtInt(phase.food.kcal_100g)} kcal / 100 g`
                 : 'no energy recorded'}
-              {phase.fromOff ? ' · Open Food Facts' : ' · saved earlier'}
             </Text>
 
             <View className="mt-3 flex-row items-center gap-2">
@@ -263,6 +320,7 @@ export default function BarcodeScanScreen() {
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="Less"
+                    hitSlop={6}
                     onPress={() => {
                       const next = Math.min(50, Math.max(0.5, qty - 0.5));
                       setMode('serving');
@@ -270,7 +328,7 @@ export default function BarcodeScanScreen() {
                       const g = gramsForQty(phase.food, next);
                       if (g != null) setGramsText(fmtQty(g));
                     }}
-                    className="h-9 w-9 items-center justify-center rounded-btn border border-hairline-strong active:bg-paper-deep">
+                    className="h-9 w-9 items-center justify-center rounded-btn border border-hairline active:opacity-60">
                     <Ionicons name="remove" size={16} color={palette.ink} />
                   </Pressable>
                   <Text className="w-14 text-center font-mono text-[15px] text-ink">
@@ -279,6 +337,7 @@ export default function BarcodeScanScreen() {
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="More"
+                    hitSlop={6}
                     onPress={() => {
                       const next = Math.min(50, Math.max(0.5, qty + 0.5));
                       setMode('serving');
@@ -286,10 +345,10 @@ export default function BarcodeScanScreen() {
                       const g = gramsForQty(phase.food, next);
                       if (g != null) setGramsText(fmtQty(g));
                     }}
-                    className="h-9 w-9 items-center justify-center rounded-btn border border-hairline-strong active:bg-paper-deep">
+                    className="h-9 w-9 items-center justify-center rounded-btn border border-hairline active:opacity-60">
                     <Ionicons name="add" size={16} color={palette.ink} />
                   </Pressable>
-                  <Text className="ml-1 text-xs text-ink-secondary">
+                  <Text className="ml-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
                     × {phase.food.serving_name}
                   </Text>
                 </View>
@@ -303,69 +362,86 @@ export default function BarcodeScanScreen() {
                   }}
                   keyboardType="decimal-pad"
                   accessibilityLabel="Grams"
-                  className="w-16 rounded-btn border border-hairline-soft bg-paper-deep px-2 py-2 text-right font-mono text-[13px] text-ink"
+                  className="w-16 border border-paper-deep bg-paper-dim px-2 py-2 text-right font-mono text-[13px] text-ink"
                 />
-                <Text className="text-xs text-ink-secondary">g</Text>
+                <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
               </View>
             </View>
 
             <View className="mt-3 flex-row items-center justify-between">
-              <Text className="font-mono text-[11px] text-ink-muted">
+              <Text className="font-mono text-[10px] text-ink-muted">
                 {kcalPreview != null ? `≈ ${fmtInt(kcalPreview)} kcal` : 'no energy recorded'}
               </Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Add ${phase.food.name}`}
-                disabled={gramsPreview == null || gramsPreview <= 0}
+                accessibilityState={{ disabled: !canAdd }}
+                disabled={!canAdd}
                 onPress={() => addPortion(phase.food)}
-                className={`rounded-btn px-4 py-2 ${
-                  gramsPreview != null && gramsPreview > 0
-                    ? 'bg-pine active:opacity-70'
-                    : 'bg-hairline'
-                }`}>
+                className={
+                  canAdd
+                    ? 'min-h-[44px] justify-center rounded-btn bg-pine px-5 active:opacity-70'
+                    : 'min-h-[44px] justify-center rounded-btn border border-paper-deep px-5'
+                }>
                 <Text
-                  className={`text-[13px] font-semibold ${
-                    gramsPreview != null && gramsPreview > 0 ? 'text-pine-on' : 'text-ink-muted'
-                  }`}>
+                  className={
+                    canAdd
+                      ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine-on'
+                      : 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+                  }>
                   Add
                 </Text>
               </Pressable>
             </View>
-          </View>
+          </Block>
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Scan another"
-            onPress={resumeScanning}
-            className="mt-2 flex-row items-center justify-center gap-2 rounded-card border border-hairline bg-porcelain px-4 py-3 active:bg-paper-deep">
-            <Ionicons name="barcode-outline" size={17} color={palette.inkSecondary} />
-            <Text className="text-[13px] text-ink">Scan another</Text>
-          </Pressable>
+          <View className="mt-2">
+            <Block device="plate">
+              <ScanRow
+                icon="barcode-outline"
+                label="Scan another"
+                first
+                accessibilityLabel="Scan another"
+                onPress={resumeScanning}
+              />
+            </Block>
+          </View>
         </View>
       ) : null}
 
       {/* Miss → manual fallback. */}
       {phase.kind === 'notfound' ? (
         <View className="mt-6">
-          <Text className="font-mono text-[13px] text-ink">{phase.barcode}</Text>
-          <Text className="mt-1 text-[13px] leading-5 text-ink-muted">{phase.reason}</Text>
+          <Block device="margin">
+            <Text className="font-mono text-[13px] text-ink">{phase.barcode}</Text>
+            <Text className="mt-1 font-serif text-[14px] leading-6 text-ink-secondary">
+              {phase.reason}
+            </Text>
+          </Block>
+
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Add this food manually"
             onPress={() =>
               router.replace({ pathname: '/food-new', params: { barcode: phase.barcode } })
             }
-            className="mt-4 flex-row items-center justify-center rounded-btn bg-pine px-4 py-3 active:opacity-70">
-            <Text className="text-[14px] font-semibold text-pine-on">Add manually</Text>
+            className="mt-4 min-h-[44px] items-center justify-center rounded-btn bg-pine px-4 active:opacity-70">
+            <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-pine-on">
+              Add manually
+            </Text>
           </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Scan another"
-            onPress={resumeScanning}
-            className="mt-2 flex-row items-center justify-center gap-2 rounded-card border border-hairline bg-porcelain px-4 py-3 active:bg-paper-deep">
-            <Ionicons name="barcode-outline" size={17} color={palette.inkSecondary} />
-            <Text className="text-[13px] text-ink">Scan another</Text>
-          </Pressable>
+
+          <View className="mt-2">
+            <Block device="plate">
+              <ScanRow
+                icon="barcode-outline"
+                label="Scan another"
+                first
+                accessibilityLabel="Scan another"
+                onPress={resumeScanning}
+              />
+            </Block>
+          </View>
         </View>
       ) : null}
 
@@ -374,8 +450,10 @@ export default function BarcodeScanScreen() {
           accessibilityRole="button"
           accessibilityLabel="Done"
           onPress={() => router.back()}
-          className="mt-6 items-center py-2 active:opacity-60">
-          <Text className="text-[13px] font-semibold text-ink">Done</Text>
+          className="mt-6 min-h-[44px] items-center justify-center active:opacity-60">
+          <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
+            Done
+          </Text>
         </Pressable>
       ) : null}
     </Screen>

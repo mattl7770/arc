@@ -4,7 +4,9 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, Pressable, Switch, Text, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { useAppLockPreference } from '@/hooks/use-app-lock-preference';
 import { useSessionKeySet } from '@/hooks/use-session-key';
@@ -15,34 +17,73 @@ import { isHealthKitSupported } from '@/lib/health/healthkit';
 
 /**
  * Settings — a calm index into the profile, unit preferences, security & data,
- * and the surfaces still to be built. This is an action-light tab, so it stays
- * at the pine ceiling's floor: exactly ONE pine accent — the app-lock switch's
- * on-track — while the three nav rows (Profile / Units / Coach) and the export
- * action are neutral, and every not-yet-built row is visibly muted with a
- * neutral "not ready" chip. No signal colour — those stay reserved for
- * biological states (docs/project-status.md).
+ * and the surfaces still to be built.
  *
- * Profile + Units + Coach push to their own screens; App lock and Export act
- * in place. The name subtitle re-reads on focus (the use-log-feed.ts
+ * Conformed Set treatment — every group is a **ruled plate**: a settings list is
+ * a record of what is set, and a record is a table (00-design-spec.md §1). The
+ * About block is the exception, and takes the **margin annotation** device
+ * because it is prose about the app rather than a list of settings.
+ *
+ * ## Zero accent, deliberately
+ *
+ * "Settings carries no accent at all" is explicit in the spec (§2, accent
+ * budget). The app-lock switch used to burn the screen's one pine on its
+ * on-track; it is now ink. An accent here would compete with the one place the
+ * accent is supposed to mean something — the single directive action on a
+ * screen — and settings has no such action. No signal colour either: those mark
+ * biological state only, never chrome.
+ *
+ * Profile + Units + Coach + Apple Health push to their own screens; App lock and
+ * Export act in place. The name subtitle re-reads on focus (the use-log-feed.ts
  * useFocusEffect pattern) so an edit shows up on return.
  */
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
-
-/** The neutral "not ready" chip — same chrome as the Data tab, never a hue. */
+/** The neutral "not ready" chip — a status word, so the label voice, never mono. */
 function Chip({ children }: { children: string }) {
   return (
-    <View className="rounded-btn bg-paper-deep px-2 py-0.5">
-      <Text className="font-mono text-[9.5px] uppercase tracking-[1px] text-ink-muted">
+    <View className="border border-paper-deep bg-paper-dim px-2 py-0.5">
+      <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
         {children}
       </Text>
     </View>
+  );
+}
+
+/**
+ * One ruled line of a settings plate. No horizontal padding: the plate supplies
+ * the gutter and the rule runs between rows, not around them. `first` skips the
+ * top rule because the plate edge already closes that side.
+ */
+function NavRow({
+  icon,
+  label,
+  sub,
+  first,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  sub: string;
+  first?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      className={`min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60 ${
+        first ? '' : 'border-t border-hairline'
+      }`}>
+      <Ionicons name={icon} size={18} color={palette.inkSecondary} />
+      <View className="flex-1">
+        <Text className="font-serif text-[15px] text-ink">{label}</Text>
+        <Text className="mt-0.5 font-serif text-[12px] text-ink-muted" numberOfLines={1}>
+          {sub}
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+    </Pressable>
   );
 }
 
@@ -145,153 +186,133 @@ export default function SettingsScreen() {
       {/* Header — this tab owns its own header (not StackHeader). */}
       <View className="pt-2">
         <Text className="font-serif text-[26px] font-semibold text-ink">Settings</Text>
-        <Text className="mt-1 text-[13px] leading-5 text-ink-secondary">
+        <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
           Your profile, how numbers read, and what&rsquo;s still to come.
         </Text>
       </View>
 
-      {/* You — the two live, editable destinations. */}
-      <View className="mt-6">
-        <View className="rounded-card border border-hairline bg-porcelain">
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Profile"
-            onPress={() => router.push('/settings-profile')}
-            className="flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep">
-            <Ionicons name="person-outline" size={18} color={palette.inkSecondary} />
-            <View className="flex-1">
-              <Text className="text-[15px] text-ink">Profile</Text>
-              <Text className="mt-0.5 text-[12px] text-ink-muted" numberOfLines={1}>
-                {profileSub}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Units"
-            onPress={() => router.push('/settings-units')}
-            className="flex-row items-center gap-3 border-t border-hairline-soft px-4 py-3 active:bg-paper-deep">
-            <Ionicons name="swap-horizontal-outline" size={18} color={palette.inkSecondary} />
-            <View className="flex-1">
-              <Text className="text-[15px] text-ink">Units</Text>
-              <Text className="mt-0.5 text-[12px] text-ink-muted">Weight, distance, and more</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Coach"
-            onPress={() => router.push('/settings-coach')}
-            className="flex-row items-center gap-3 border-t border-hairline-soft px-4 py-3 active:bg-paper-deep">
-            <Ionicons name="sparkles-outline" size={18} color={palette.inkSecondary} />
-            <View className="flex-1">
-              <Text className="text-[15px] text-ink">Coach</Text>
-              <Text className="mt-0.5 text-[12px] text-ink-muted">
-                {keySet ? 'Model connected' : 'API key and model'}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Apple Health"
-            onPress={() => router.push('/settings-health')}
-            className="flex-row items-center gap-3 border-t border-hairline-soft px-4 py-3 active:bg-paper-deep">
-            <Ionicons name="heart-outline" size={18} color={palette.inkSecondary} />
-            <View className="flex-1">
-              <Text className="text-[15px] text-ink">Apple Health</Text>
-              <Text className="mt-0.5 text-[12px] text-ink-muted">{healthSub}</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-          </Pressable>
+      {/* You — the live, editable destinations. */}
+      <View className="mt-7">
+        <SectionLabel label="You" />
+        <View className="mt-3">
+          <Block device="plate">
+            <NavRow
+              first
+              icon="person-outline"
+              label="Profile"
+              sub={profileSub}
+              onPress={() => router.push('/settings-profile')}
+            />
+            <NavRow
+              icon="swap-horizontal-outline"
+              label="Units"
+              sub="Weight, distance, and more"
+              onPress={() => router.push('/settings-units')}
+            />
+            <NavRow
+              icon="sparkles-outline"
+              label="Coach"
+              sub={keySet ? 'Model connected' : 'API key and model'}
+              onPress={() => router.push('/settings-coach')}
+            />
+            <NavRow
+              icon="heart-outline"
+              label="Apple Health"
+              sub={healthSub}
+              onPress={() => router.push('/settings-health')}
+            />
+          </Block>
         </View>
       </View>
 
       {/* Security & data — the lock on the front door and the way out with
-          everything. The switch's on-state is this screen's one pine accent. */}
+          everything. Both are neutral ink: settings spends no accent. */}
       <View className="mt-8">
-        <SectionLabel>Security &amp; data</SectionLabel>
-        <View className="mt-3 rounded-card border border-hairline bg-porcelain">
-          {/* Not an `accessible` container — the Switch must stay individually
-              focusable/toggleable for VoiceOver (unlike the static SOON rows). */}
-          <View className="flex-row items-center gap-3 px-4 py-3">
-            <Ionicons name="lock-closed-outline" size={18} color={palette.inkSecondary} />
-            <View className="flex-1">
-              <Text className="text-[15px] text-ink">App lock</Text>
-              <Text className="mt-0.5 text-[12px] text-ink-muted">
-                Face ID or passcode when ARC opens
-              </Text>
+        <SectionLabel label="Security & data" />
+        <View className="mt-3">
+          <Block device="plate">
+            {/* Not an `accessible` container — the Switch must stay individually
+                focusable/toggleable for VoiceOver (unlike the static SOON rows). */}
+            <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+              <Ionicons name="lock-closed-outline" size={18} color={palette.inkSecondary} />
+              <View className="flex-1">
+                <Text className="font-serif text-[15px] text-ink">App lock</Text>
+                <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                  Face ID or passcode when ARC opens
+                </Text>
+              </View>
+              {appLock.supported ? (
+                <Switch
+                  accessibilityLabel="App lock"
+                  value={appLock.enabled}
+                  onValueChange={(next) => void handleLockToggle(next)}
+                  trackColor={{ true: palette.ink, false: palette.hairlineStrong }}
+                  ios_backgroundColor={palette.hairlineStrong}
+                />
+              ) : (
+                <Chip>Needs a build</Chip>
+              )}
             </View>
-            {appLock.supported ? (
-              <Switch
-                accessibilityLabel="App lock"
-                value={appLock.enabled}
-                onValueChange={(next) => void handleLockToggle(next)}
-                trackColor={{ true: palette.pine, false: palette.hairlineStrong }}
-                ios_backgroundColor={palette.hairlineStrong}
-              />
-            ) : (
-              <Chip>Needs a build</Chip>
-            )}
-          </View>
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Export data"
-            accessibilityState={{ disabled: exporting }}
-            disabled={exporting}
-            onPress={() => void handleExport()}
-            className="flex-row items-center gap-3 border-t border-hairline-soft px-4 py-3 active:bg-paper-deep">
-            <Ionicons name="download-outline" size={18} color={palette.inkSecondary} />
-            <View className="flex-1">
-              <Text className="text-[15px] text-ink">Export data</Text>
-              <Text className="mt-0.5 text-[12px] text-ink-muted" numberOfLines={1}>
-                {exporting ? 'Writing…' : (exportNote ?? 'Everything, offline, as one JSON file')}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-          </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Export data"
+              accessibilityState={{ disabled: exporting }}
+              disabled={exporting}
+              onPress={() => void handleExport()}
+              className="min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60">
+              <Ionicons name="download-outline" size={18} color={palette.inkSecondary} />
+              <View className="flex-1">
+                <Text className="font-serif text-[15px] text-ink">Export data</Text>
+                <Text className="mt-0.5 font-serif text-[12px] text-ink-muted" numberOfLines={1}>
+                  {exporting ? 'Writing…' : (exportNote ?? 'Everything, offline, as one JSON file')}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+            </Pressable>
+          </Block>
         </View>
       </View>
 
       {/* Not yet built — visible so the shape is honest, muted so it stays quiet. */}
       <View className="mt-8">
-        <SectionLabel>Not yet built</SectionLabel>
-        <View className="mt-3 rounded-card border border-hairline bg-porcelain">
-          {SOON.map((row, index) => (
-            <View
-              key={row.key}
-              accessible
-              accessibilityLabel={`${row.label}. ${row.sub}. ${row.chip}.`}
-              className={`flex-row items-center gap-3 px-4 py-3 ${
-                index === 0 ? '' : 'border-t border-hairline-soft'
-              }`}>
-              <Ionicons name={row.icon} size={18} color={palette.inkMuted} />
-              <View className="flex-1">
-                <Text className="text-[15px] text-ink-muted">{row.label}</Text>
-                <Text className="mt-0.5 text-[12px] text-ink-muted">{row.sub}</Text>
+        <SectionLabel label="Not yet built" />
+        <View className="mt-3">
+          <Block device="plate">
+            {SOON.map((row, index) => (
+              <View
+                key={row.key}
+                accessible
+                accessibilityLabel={`${row.label}. ${row.sub}. ${row.chip}.`}
+                className={`min-h-[44px] flex-row items-center gap-3 py-3 ${
+                  index === 0 ? '' : 'border-t border-hairline'
+                }`}>
+                <Ionicons name={row.icon} size={18} color={palette.inkMuted} />
+                <View className="flex-1">
+                  <Text className="font-serif text-[15px] text-ink-muted">{row.label}</Text>
+                  <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">{row.sub}</Text>
+                </View>
+                <Chip>{row.chip}</Chip>
               </View>
-              <Chip>{row.chip}</Chip>
-            </View>
-          ))}
+            ))}
+          </Block>
         </View>
       </View>
 
-      {/* About — app name + a mono version line. */}
+      {/* About — prose plus one measured value, so the margin annotation device
+          rather than a plate. The version is the only mono on this screen. */}
       <View className="mt-8">
-        <SectionLabel>About</SectionLabel>
-        <View className="mt-3 rounded-card border border-hairline bg-porcelain px-4 py-4">
-          <Text className="font-serif text-[16px] text-ink">ARC</Text>
-          <Text className="mt-1 text-[12px] leading-5 text-ink-secondary">
-            Architecture for Resilience &amp; Continuity
-          </Text>
-          {APP_VERSION ? (
-            <Text className="mt-2 font-mono text-[11px] text-ink-muted">v{APP_VERSION}</Text>
-          ) : null}
+        <SectionLabel label="About" />
+        <View className="mt-3">
+          <Block device="margin">
+            <Text className="font-serif text-[16px] text-ink">ARC</Text>
+            <Text className="mt-1 font-serif text-[12px] leading-5 text-ink-secondary">
+              Architecture for Resilience &amp; Continuity
+            </Text>
+            {APP_VERSION ? (
+              <Text className="mt-2 font-mono text-[11px] text-ink-muted">v{APP_VERSION}</Text>
+            ) : null}
+          </Block>
         </View>
       </View>
     </Screen>

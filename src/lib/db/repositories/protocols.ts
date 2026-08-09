@@ -26,6 +26,7 @@ import type {
   ProtocolType,
   ProtocolVersionRow,
   SqliteBool,
+  Timestamp,
 } from '../types';
 import type { NewProtocol, ProtocolContent, ProtocolListItem } from '@/lib/protocols/types';
 
@@ -208,14 +209,79 @@ export function getCurrentVersion(
 }
 
 /**
+ * How many items a version's content holds, counted by json1 **in SQL** so no
+ * caller has to parse a content blob just to size it. Requires the
+ * `protocol_versions` table to be aliased `v`.
+ *
+ * NULL — not 0 — when content carries no `items` array at all, which is the
+ * honest answer for a foreign-shaped version and reads as an em-dash rather
+ * than a fabricated zero. One expression, shared by every reader, so two
+ * screens can never disagree about a count.
+ */
+const ITEM_COUNT_COLUMN = `json_array_length(v.content, '$.items') AS item_count`;
+
+/**
+ * One row of the version-history screen: the immutable version record minus its
+ * `content` blob, plus the item count that blob would have yielded. The blob
+ * itself never crosses this boundary — the history screen reads the shape of
+ * each version, never its contents.
+ */
+export type ProtocolVersionListItem = {
+  id: string;
+  versionNumber: number;
+  changeNotes: string | null;
+  createdBy: Authorship;
+  createdAt: Timestamp;
+  /**
+   * Items in that version's content, or null when the content holds no `items`
+   * array. Deliberately NOT coalesced to 0: an absent count is not a count of
+   * none, and the screen draws the difference.
+   */
+  itemCount: number | null;
+};
+
+/**
+ * The full version history of one protocol, **newest first** — what the version
+ * screen reads. `version_number` is unique per protocol and monotonic, so it is
+ * the real ordering; `created_at` only breaks a tie that the schema's UNIQUE
+ * (protocol_id, version_number) already makes impossible, and is kept as a
+ * belt-and-braces second key. Unknown protocol ids and version-less protocols
+ * both read as [].
+ */
+export function listVersions(db: Database, protocolId: string): ProtocolVersionListItem[] {
+  const rows = db.all<{
+    id: string;
+    version_number: number;
+    change_notes: string | null;
+    created_by: Authorship;
+    created_at: Timestamp;
+    item_count: number | null;
+  }>(
+    `SELECT v.id, v.version_number, v.change_notes, v.created_by, v.created_at,
+            ${ITEM_COUNT_COLUMN}
+     FROM protocol_versions v
+     WHERE v.protocol_id = ?
+     ORDER BY v.version_number DESC, v.created_at DESC`,
+    [protocolId]
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    versionNumber: r.version_number,
+    changeNotes: r.change_notes,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+    itemCount: r.item_count,
+  }));
+}
+
+/**
  * Every protocol for the list screen — active first, then by name — each with
- * its live version number and item count (json1 counts `$.items` in SQL, so
- * the list never parses content). Empty-safe.
+ * its live version number and item count. Empty-safe.
  */
 export function listProtocols(db: Database): ProtocolListItem[] {
   const rows = db.all<ProtocolRow & { version_number: number | null; item_count: number | null }>(
     `SELECT p.*, v.version_number AS version_number,
-            json_array_length(v.content, '$.items') AS item_count
+            ${ITEM_COUNT_COLUMN}
      FROM protocols p
      LEFT JOIN protocol_versions v ON v.id = p.current_version_id
      ORDER BY p.is_active DESC, p.name COLLATE NOCASE, p.id`

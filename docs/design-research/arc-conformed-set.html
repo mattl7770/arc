@@ -1,0 +1,1814 @@
+<title>ARC — The Conformed Set</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --page-bg:#e7e8e6; --page-panel:#f4f5f3; --page-ink:#181b1a; --page-ink2:#505553;
+  --page-muted:#858b88; --page-border:#d4d6d3; --page-ring:#12454e;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --page-bg:#101211; --page-panel:#191c1b; --page-ink:#eceeed; --page-ink2:#acb3b0;
+    --page-muted:#757c79; --page-border:#292d2b; --page-ring:#4e96a1; }
+}
+:root[data-theme="light"]{ --page-bg:#e7e8e6; --page-panel:#f4f5f3; --page-ink:#181b1a; --page-ink2:#505553;
+  --page-muted:#858b88; --page-border:#d4d6d3; --page-ring:#12454e; }
+:root[data-theme="dark"]{ --page-bg:#101211; --page-panel:#191c1b; --page-ink:#eceeed; --page-ink2:#acb3b0;
+  --page-muted:#757c79; --page-border:#292d2b; --page-ring:#4e96a1; }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--page-bg);color:var(--page-ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;line-height:1.5;}
+.wrap{max-width:1180px;margin:0 auto;padding:40px 24px 20px;}
+
+.kicker{font:600 11px/1 ui-monospace,Menlo,monospace;letter-spacing:2.5px;text-transform:uppercase;
+  color:var(--page-ring);margin:0 0 14px;}
+h1{font:600 clamp(29px,4.2vw,44px)/1.05 "Bahnschrift","Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;
+  margin:0 0 16px;letter-spacing:-.01em;text-wrap:balance;max-width:22ch;}
+.lede{font-size:16px;color:var(--page-ink2);margin:0;max-width:68ch;}
+.lede em{font-style:normal;color:var(--page-ink);font-weight:600}
+.provenance{font-size:13.5px;color:var(--page-muted);margin:14px 0 0;max-width:80ch;}
+.provenance b{color:var(--page-ink2);font-weight:600}
+
+.controls{margin:28px 0 22px;display:flex;flex-direction:column;gap:14px;}
+.controls-top{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;}
+.lineage{flex:1;display:flex;flex-wrap:wrap;gap:10px;}
+.lin-card{background:var(--page-panel);border:1px solid var(--page-border);border-radius:3px;padding:10px 14px;
+  display:flex;flex-direction:column;gap:2px;min-width:170px;}
+.lin-card .ln-from{font:600 9px/1 ui-monospace,Menlo,monospace;letter-spacing:1.3px;text-transform:uppercase;color:var(--page-muted)}
+.lin-card .ln-what{font-size:12.5px;color:var(--page-ink2);line-height:1.45}
+.acc-toggle{display:flex;flex-direction:column;gap:6px;justify-content:center;
+  background:var(--page-panel);border:1px solid var(--page-border);border-radius:3px;padding:10px 14px;flex:none;}
+.acc-toggle .at-label{font:600 9px/1 ui-monospace,Menlo,monospace;letter-spacing:1.4px;text-transform:uppercase;color:var(--page-muted)}
+.acc-btns{display:flex;gap:6px}
+.acc-btn{display:flex;align-items:center;gap:7px;font:600 12px/1 ui-monospace,Menlo,monospace;cursor:pointer;
+  border:1px solid var(--page-border);border-radius:3px;background:transparent;color:var(--page-ink2);padding:7px 11px;}
+.acc-btn .dotc{width:10px;height:10px;border-radius:2px;flex:none}
+.acc-btn[data-acc="petrol"] .dotc{background:#12454E}
+.acc-btn[data-acc="red"] .dotc{background:#A21522}
+.acc-btn[aria-pressed="true"]{border-color:var(--page-ink2);box-shadow:0 0 0 1.5px var(--page-ink2) inset;color:var(--page-ink)}
+.acc-btn:focus-visible{outline:2px solid var(--page-ring);outline-offset:2px}
+.srf-fixed{font:600 11.5px/1 ui-monospace,Menlo,monospace;border:1px solid var(--page-ring);
+  border-radius:3px;background:transparent;color:var(--page-ink);padding:7px 10px;
+  box-shadow:0 0 0 1.5px var(--page-ring) inset;}
+.acc-note{font-size:11.5px;color:var(--page-muted);max-width:220px;line-height:1.45}
+
+.caption{background:var(--page-panel);border:1px solid var(--page-border);border-radius:3px;padding:16px 18px;}
+.caption .cap-tag{font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.3px;color:var(--page-ring);margin:0 0 10px}
+.caption .cap-rev{font-size:13.5px;color:var(--page-ink2);line-height:1.6;margin:0;max-width:96ch;}
+.caption .cap-rev b{color:var(--page-ink);font-weight:600;font-family:ui-monospace,Menlo,monospace;font-size:10px;
+  letter-spacing:1.2px;text-transform:uppercase;display:block;margin-bottom:4px}
+.caption .v-ship{color:#2E8B57;font-weight:700}
+.caption .v-fix{color:#A97B22;font-weight:700}
+
+.hintbar{display:flex;gap:9px;align-items:baseline;margin:18px 0 2px;color:var(--page-muted);font-size:12.5px;flex-wrap:wrap}
+.hintbar .tt{font-weight:600;color:var(--page-ink2)}
+
+.stage{position:relative;width:100%;overflow-x:auto;padding:8px 0 48px;}
+
+@media (prefers-reduced-motion: reduce){*{transition:none !important}}
+
+/* ================= CONFORMED SET STYLES (injected) ================= */
+/* ===== conformed ===== */
+/* ================================================================
+   ARC — "Conformed Set"  ·  the convergence composite
+   Every review comment from the six hostile passes over Field Copy,
+   Fair Copy, Trades, Chainage, Ledger and Margin incorporated. This
+   is the drawing set with the redlines resolved, not a seventh
+   variation.
+
+   Composited from the four KEEPER sources:
+     Field Copy — 11-row mission table grammar, fold-as-tally row,
+                  dense ledger discipline, Exercise small multiples
+     Fair Copy  — typographic dimension-string hero, accent budget,
+                  whitespace-as-separation, one-drawn-object restraint
+     Trades     — Coach's REV A→REV B dimensioned bar-diff, title
+                  block chrome
+     Chainage   — the Screenings horizon timeline
+
+   Fixes applied for the repeated finding classes: pending-write
+   drawn SUSPENDED (no post-approval turns, future-tense caption);
+   red-mode now shifts --bio-poor to umber AND poor fills carry a
+   diagonal hatch in both modes; no invented reference codes / tile
+   keys / section-number badges; no designer-voice UI copy; product
+   nouns kept; every tap target ≥39px at this drawing scale (=44pt
+   at 390pt device width, phone drawn at 344px); --ink-faint redrawn
+   to clear 4.5:1 on paper AND paper-dim; ledgers reconcile to their
+   own totals; no gantt/chain duplicating the mission list.
+
+   Round-2 redlines: freshness meter fill moved off --accent to
+   --bio-optimal (biology, not chrome); water quick-adds + blank
+   keypad state drawn (K-02) so .cf-quickadd is no longer dead CSS;
+   typed weight (178.0) disambiguated from "Last 178.4"; version
+   history drawn at the suspended moment — v1 current, v2 proposed
+   (dashed); Coach reminder aligned to the mission's 22:00; the mono
+   streaming activity line restored between pending card and disabled
+   composer; in-field circle buttons carry 40px hits (≈48pt) via
+   padded background-clip, same annotation the pencil uses; one
+   shared "camera build" marker under the Nutrition capture field;
+   an alternate-states row added (H-02, C-02, S-02, K-02).
+
+   Every selector begins with #c-conformed.
+   ================================================================ */
+
+#c-conformed {
+  /* ---- ground: neutral drafting bone — reads clean under either
+     accent mode ---- */
+  --paper: #E7E4DA;
+  --paper-hi: #F5F3EC;
+  --paper-dim: #D9D5C8;
+  --paper-deep: #C6C1B0;
+  --paper-line: #A9A28E;
+  --paper-grid: rgba(28, 24, 14, 0.06);
+
+  --ink: #1C1911;
+  --ink-soft: #443F30;
+  --ink-faint: #5C5340; /* darkened from source keepers: clears 4.5:1 on
+                            BOTH --paper (5.97:1) and --paper-dim (5.17:1) */
+
+  --desk: #0A0B0C;
+  --desk-2: #060707;
+  --desk-grid: rgba(178, 182, 176, 0.10);
+  --desk-grid-strong: rgba(178, 182, 176, 0.20);
+  --desk-ink: #D7D8D3;
+  --desk-ink-dim: #86887F;
+
+  /* ---- the one accent: DEFAULT = petrol. Every accent paint in
+     this file routes through these custom props — the single
+     override rule below is the only place either mode is set. ---- */
+  --accent: #12454E;
+  --accent-deep: #082A30;
+  --accent-bright: #4E96A1;
+  --accent-soft: rgba(18, 69, 78, 0.10);
+  --accent-soft-2: rgba(18, 69, 78, 0.24);
+
+  /* ---- biology signal colours — firewalled to pillars / freshness
+     / biomarker states / overdue text ONLY, never interface chrome.
+     Identical across accent modes EXCEPT --bio-poor, which shifts in
+     red mode below so chrome-crimson and biology-poor can never
+     collapse into one hue. ---- */
+  --bio-optimal: #2E8B57;
+  --bio-optimal-ink: #185A36;
+  --bio-good: #2C6C95;
+  --bio-good-ink: #24567A;
+  --bio-caution: #A97B22;
+  --bio-caution-ink: #6E4F15;
+  --bio-poor: #AA402C;
+  --bio-poor-ink: #8F3524;
+
+  --font-label: "Bahnschrift SemiCondensed", "Bahnschrift", "Franklin Gothic Medium", "Segoe UI Semibold", "Century Gothic", sans-serif;
+  --font-mono: "Consolas", "Cascadia Mono", ui-monospace, "SF Mono", "Menlo", monospace;
+  --font-serif: "Constantia", "Sitka Text", "Palatino Linotype", Georgia, Cambria, serif;
+
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 46px 26px 58px;
+  overflow-x: auto;
+  background-color: var(--desk);
+  background-image:
+    radial-gradient(ellipse at 50% 15%, rgba(0,0,0,0) 45%, rgba(0,0,0,0.42) 100%),
+    repeating-linear-gradient(0deg, var(--desk-grid-strong) 0 1px, transparent 1px 74px),
+    repeating-linear-gradient(90deg, var(--desk-grid-strong) 0 1px, transparent 1px 74px),
+    repeating-linear-gradient(0deg, var(--desk-grid) 0 1px, transparent 1px 14px),
+    repeating-linear-gradient(90deg, var(--desk-grid) 0 1px, transparent 1px 14px);
+  color: var(--desk-ink);
+  font-family: var(--font-label);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- RED accent mode: accent-family tokens swap, AND --bio-poor
+   shifts to a structurally distinct umber so chrome-red and the
+   worst biology state can never read as one hue. This is the fix
+   every one of the six hostile reviews demanded. ---- */
+#c-conformed[data-accent="red"] {
+  --accent: #C4222E;
+  --accent-deep: #A21522;
+  --accent-bright: #E0202F;
+  --accent-soft: rgba(196, 34, 46, 0.10);
+  --accent-soft-2: rgba(196, 34, 46, 0.24);
+  --bio-poor: #7A4A1E;
+  --bio-poor-ink: #5E3A16;
+}
+
+#c-conformed, #c-conformed *, #c-conformed *::before, #c-conformed *::after { box-sizing: border-box; }
+#c-conformed svg { display: block; overflow: visible; }
+#c-conformed b, #c-conformed strong { font-weight: 700; }
+#c-conformed i, #c-conformed em { font-style: italic; }
+#c-conformed .cf-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+@media (prefers-reduced-motion: reduce) {
+  #c-conformed *, #c-conformed *::before, #c-conformed *::after {
+    transition-duration: .001ms !important;
+    animation-duration: .001ms !important;
+  }
+}
+
+/* =================================================================
+   ROW / UNIT / PHONE / SCREEN / TITLE BLOCK — all presentation
+   chrome (registration marks, title blocks, sheet labels) lives
+   OUTSIDE the screen, in the desk frame. Nothing inside the phone
+   duplicates it.
+   ================================================================= */
+
+#c-conformed .cf-row { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: center; gap: 30px; min-width: max-content; margin: 0 auto; }
+#c-conformed .cf-unit { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+#c-conformed .cf-rowcap { margin: 44px 0 20px; text-align: center; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--desk-ink-dim); }
+
+/* mission-complete stamp (H-02) — completion is a sanctioned accent use */
+#c-conformed .cf-donecircle { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: var(--paper-hi); display: flex; align-items: center; justify-content: center; margin: 4px auto 10px; }
+
+#c-conformed .cf-phone {
+  position: relative;
+  width: 344px;
+  flex: 0 0 auto;
+  border-radius: 40px;
+  padding: 9px;
+  background: linear-gradient(166deg, #1B1D1E, #060707 85%);
+  box-shadow: 0 22px 46px rgba(0,0,0,0.5), 0 2px 0 rgba(255,255,255,0.03) inset, 0 0 0 1px rgba(178,182,176,0.14);
+}
+#c-conformed .cf-phone::before {
+  content: ""; position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
+  width: 80px; height: 18px; border-radius: 0 0 10px 10px; background: #030404; z-index: 3;
+}
+#c-conformed .cf-reg { position: absolute; width: 12px; height: 12px; pointer-events: none; opacity: .7; }
+#c-conformed .cf-reg--tl { top: -6px; left: -6px; border-top: 1px solid var(--desk-grid-strong); border-left: 1px solid var(--desk-grid-strong); }
+#c-conformed .cf-reg--br { bottom: -6px; right: -6px; border-bottom: 1px solid var(--desk-grid-strong); border-right: 1px solid var(--desk-grid-strong); }
+
+#c-conformed .cf-screen {
+  position: relative; border-radius: 32px; background-color: var(--paper);
+  background-image:
+    repeating-linear-gradient(0deg, var(--paper-grid) 0 1px, transparent 1px 9px),
+    repeating-linear-gradient(90deg, var(--paper-grid) 0 1px, transparent 1px 9px);
+  overflow: hidden; color: var(--ink);
+  display: flex; flex-direction: column; min-height: 580px;
+}
+
+/* status bar — the fixture's honest 9:41, drawn once, everywhere */
+#c-conformed .cf-statusbar { display: flex; align-items: center; justify-content: space-between; padding: 7px 20px 0; flex: none; }
+#c-conformed .cf-statustime { font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: var(--ink); letter-spacing: 0.01em; }
+#c-conformed .cf-statusglyphs { display: flex; align-items: center; gap: 4px; color: var(--ink); }
+
+#c-conformed .cf-content { padding: 10px 16px 18px; display: flex; flex-direction: column; gap: 22px; flex: 1; }
+#c-conformed .cf-homebar { display: flex; justify-content: center; padding: 6px 0 5px; flex: none; }
+#c-conformed .cf-homebar span { width: 100px; height: 4px; border-radius: 3px; background: rgba(20,17,12,.28); }
+
+#c-conformed .cf-tblock { display: flex; width: 344px; border: 1px solid var(--desk-grid-strong); border-radius: 2px; overflow: hidden; background: rgba(178,182,176,0.03); }
+#c-conformed .cf-tblock > div { padding: 6px 9px; border-right: 1px solid var(--desk-grid-strong); font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.03em; color: var(--desk-ink-dim); white-space: nowrap; }
+#c-conformed .cf-tblock > div:last-child { border-right: none; }
+#c-conformed .cf-tblock > div:first-child { flex: 1; }
+#c-conformed .cf-tblock-name { color: var(--desk-ink); font-family: var(--font-label); font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; font-size: 10.5px; }
+#c-conformed .cf-unit-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.09em; color: var(--desk-ink-dim); }
+
+/* =================================================================
+   SHELL CHROME — tab bar (5 tab screens) / stack header (5 pushed)
+   ================================================================= */
+
+#c-conformed .cf-tabbar { display: grid; grid-template-columns: repeat(5,1fr); border-top: 1px solid var(--paper-line); padding: 9px 4px 11px; flex: none; background: var(--paper-hi); }
+#c-conformed .cf-tab { display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--ink-faint); padding: 3px 0; }
+#c-conformed .cf-tab svg { stroke: var(--ink-faint); }
+#c-conformed .cf-tab span { font-family: var(--font-label); font-size: 9px; letter-spacing: 0.03em; text-transform: uppercase; }
+#c-conformed .cf-tab--active { color: var(--accent-deep); }
+#c-conformed .cf-tab--active svg { stroke: var(--accent-deep); }
+#c-conformed .cf-tab--active span { font-weight: 700; }
+
+#c-conformed .cf-stackhdr { display: flex; align-items: center; gap: 8px; padding: 4px 0 2px; flex: none; }
+#c-conformed .cf-back { display: flex; align-items: center; gap: 4px; color: var(--ink-soft); min-height: 39px; padding: 6px 2px; margin: -6px 0 -6px -2px; }
+#c-conformed .cf-back span { font-family: var(--font-label); font-size: 10px; font-weight: 700; letter-spacing: 0.03em; }
+#c-conformed .cf-stack-title { font-family: var(--font-serif); font-size: 17px; font-weight: 700; color: var(--ink); margin-left: 2px; }
+
+/* =================================================================
+   HEADER TYPOGRAPHY
+   ================================================================= */
+
+#c-conformed .cf-brandrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#c-conformed .cf-brand { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.05em; color: var(--ink-soft); }
+#c-conformed .cf-brand b { color: var(--ink); font-weight: 700; letter-spacing: 0.12em; }
+
+#c-conformed .cf-modechip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--paper-line); font-family: var(--font-label); font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 4px 8px; color: var(--ink-soft); background: var(--paper-hi); }
+
+#c-conformed .cf-pagehdr-eyebrow { font-family: var(--font-label); font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); }
+#c-conformed .cf-pagehdr-title { font-family: var(--font-serif); font-size: 25px; color: var(--ink); margin-top: 2px; line-height: 1.05; }
+
+#c-conformed .cf-verdict { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-serif); font-size: 15px; font-weight: 700; font-style: italic; color: var(--ink); }
+#c-conformed .cf-verdict::before { content: ""; width: 7px; height: 7px; flex: none; background: var(--bio-caution); }
+#c-conformed .cf-verdict-cap { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); font-style: normal; }
+
+#c-conformed .cf-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--ink); font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.02em; padding: 3px 8px; border-radius: 10px; color: var(--ink-soft); background: var(--paper-hi); }
+#c-conformed .cf-chip-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ink-soft); flex: none; }
+#c-conformed .cf-sessline { display: flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-faint); }
+#c-conformed .cf-presence { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+
+/* =================================================================
+   SECTION LABELS — plain uppercase eyebrows, no invented number
+   badges, no page-spanning rule. Whitespace (the .cf-content gap)
+   is the only section separator.
+   ================================================================= */
+
+#c-conformed .cf-sec { display: flex; align-items: baseline; gap: 8px; }
+#c-conformed .cf-sec-t { font-family: var(--font-label); font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); }
+#c-conformed .cf-sec-note { margin-left: auto; font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); white-space: nowrap; }
+/* Every content block sits on its own sheet-white plate, matching the hero's
+   treatment (paper-hi fill + hairline) so mission / brief / metrics / ledgers
+   read off the page rather than out of it. Blocks that already carry their own
+   card or hero opt out, so nothing double-boxes. */
+#c-conformed .cf-block { display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--paper-line); background: var(--paper-hi); padding: 12px 13px 13px; }
+#c-conformed .cf-block:has(> .cf-card),
+#c-conformed .cf-block:has(> .cf-hero) { border: 0; background: none; padding: 0; }
+/* the last ruled row inside a plate needs no closing rule — the plate edge is it */
+#c-conformed .cf-block > .cf-list > .cf-lrow:last-child,
+#c-conformed .cf-block > .cf-mission > .cf-mrow:last-child { border-bottom: 0; }
+
+/* =================================================================
+   SURFACE SYSTEM — "devices" (adopted).
+   A plate on every block reads flat: if all 34 blocks are boxed
+   identically the container carries no information. Here the
+   CONTAINER ENCODES WHAT KIND OF CONTENT IT HOLDS, so hierarchy and
+   variety come from the drafting vocabulary itself:
+     ledger / schedule  -> ruled plate      (a record is a table)
+     readiness          -> corner ticks     (a measured field)
+     prose / brief      -> left margin rule (an annotation)
+     metrics            -> ruled grid, no outer box (the grid IS it)
+     capture surfaces   -> recessed stock   (an input well)
+   Blocks are identified here by the content container they own
+   (:has()), which keeps the markup unchanged. NOTE FOR THE RN PORT:
+   :has() and ::before/::after do not exist in React Native — ship
+   these as explicit component variants instead. See the port guide.
+   ================================================================= */
+
+/* ---- DEVICES — each content type gets its correct drafting
+   container, so variety comes from the blueprint vocabulary
+   itself rather than from arbitrary styling.                      */
+/* readiness = a measured field: corner ticks, no enclosing box */
+#c-conformed .cf-block:has(> .cf-verdict) {
+  border: 0; background: none; padding: 11px 12px; position: relative;
+}
+#c-conformed .cf-block:has(> .cf-verdict)::before,
+#c-conformed .cf-block:has(> .cf-verdict)::after {
+  content: ""; position: absolute; width: 11px; height: 11px; pointer-events: none;
+}
+#c-conformed .cf-block:has(> .cf-verdict)::before {
+  left: 0; top: 0; border-left: 1px solid var(--ink-faint); border-top: 1px solid var(--ink-faint);
+}
+#c-conformed .cf-block:has(> .cf-verdict)::after {
+  right: 0; bottom: 0; border-right: 1px solid var(--ink-faint); border-bottom: 1px solid var(--ink-faint);
+}
+/* the brief is a margin annotation */
+#c-conformed .cf-block:has(> .cf-note) {
+  border: 0; background: none; padding: 1px 0 1px 11px;
+  border-left: 2px solid var(--paper-line);
+}
+/* metrics: the ruled grid IS the object — no outer box needed */
+#c-conformed .cf-block:has(> .cf-dims) {
+  border: 0; background: none; padding: 0;
+}
+#c-conformed .cf-block > .cf-dims { gap: 0; }
+#c-conformed .cf-block > .cf-dims > .cf-dim {
+  padding: 9px 10px; border-top: 1px solid var(--paper-line);
+}
+#c-conformed .cf-block > .cf-dims > .cf-dim:nth-child(odd) {
+  border-right: 1px solid var(--paper-line); padding-left: 0;
+}
+/* capture surfaces recess, the way an input well does */
+#c-conformed .cf-block:has(> .cf-command),
+#c-conformed .cf-block:has(> .cf-thread) {
+  background: var(--paper-dim); border-color: var(--paper-deep);
+}
+
+
+/* =================================================================
+   PILLAR STRIP — readiness, biology only, never chrome
+   ================================================================= */
+
+#c-conformed .cf-pillars { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+#c-conformed .cf-pillar { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 2px; border: 1px solid var(--paper-line); background: var(--paper-dim); }
+#c-conformed .cf-swatch { width: 10px; height: 10px; border: 1px solid var(--ink); flex: none; }
+#c-conformed .cf-swatch--optimal { background: var(--bio-optimal); }
+#c-conformed .cf-swatch--good { background: var(--bio-good); }
+#c-conformed .cf-swatch--caution { background: var(--bio-caution); }
+#c-conformed .cf-swatch--poor {
+  background-color: var(--bio-poor);
+  background-image: repeating-linear-gradient(135deg, rgba(0,0,0,.34) 0 2px, transparent 2px 5px);
+}
+#c-conformed .cf-pillar span { font-family: var(--font-label); font-size: 9px; letter-spacing: 0.03em; text-transform: uppercase; color: var(--ink-soft); }
+#c-conformed .cf-pillar b { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.01em; text-transform: uppercase; font-weight: 700; }
+#c-conformed .cf-t-optimal { color: var(--bio-optimal-ink); }
+#c-conformed .cf-t-good { color: var(--bio-good-ink); }
+#c-conformed .cf-t-caution { color: var(--bio-caution-ink); }
+#c-conformed .cf-t-poor { color: var(--bio-poor-ink); }
+#c-conformed .cf-verdict-line { font-family: var(--font-serif); font-size: 10.8px; line-height: 1.5; color: var(--ink-soft); max-width: none; }
+
+/* =================================================================
+   BUTTONS — every drawn height clears 39px at this scale (=44pt at
+   the 390pt device width the 344px phone represents)
+   ================================================================= */
+
+#c-conformed .cf-btnrow { display: grid; gap: 7px; }
+#c-conformed .cf-btnrow--3 { grid-template-columns: 1fr 1fr 1fr; }
+#c-conformed .cf-herorow { display: flex; gap: 7px; }
+#c-conformed .cf-herorow .cf-btn--solid { flex: 2; }
+#c-conformed .cf-herorow .cf-btn--ghost { flex: 1; }
+#c-conformed .cf-herofoot { display: flex; justify-content: center; }
+
+#c-conformed .cf-btn { display: flex; align-items: center; justify-content: center; text-align: center; font-family: var(--font-label); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 13px 10px; border: 1.4px solid var(--ink); color: var(--ink-soft); background: transparent; min-height: 39px; }
+#c-conformed .cf-btn--solid { background: var(--accent); border-color: var(--accent-deep); color: var(--paper-hi); }
+#c-conformed .cf-btn--ghost { background: transparent; border-color: var(--ink); color: var(--ink-soft); }
+#c-conformed .cf-btn--bare { border-color: transparent; color: var(--ink-faint); padding: 13px 6px; }
+#c-conformed .cf-btn--block { width: 100%; }
+#c-conformed .cf-btn--disabled { background: var(--paper-dim); border-color: var(--paper-line); color: var(--ink-faint); } /* --ink-faint on --paper-dim = 5.17:1 */
+
+#c-conformed .cf-miniacts { display: flex; gap: 8px; flex: none; }
+#c-conformed .cf-miniact { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft); border: 1px solid var(--paper-line); padding: 13px 11px; display: flex; align-items: center; }
+
+/* =================================================================
+   CARDS — generic bordered object; --accent gets the top hatch (the
+   ONE accent surface allowed on its screen)
+   ================================================================= */
+
+#c-conformed .cf-card { position: relative; border: 1px solid var(--paper-line); background: var(--paper-hi); padding: 13px 14px 14px; }
+#c-conformed .cf-card--accent { border: 1.5px solid var(--accent); }
+#c-conformed .cf-card--accent::before { content: ""; position: absolute; top: -1.5px; left: -1.5px; right: -1.5px; height: 3px; background: repeating-linear-gradient(-45deg, var(--accent) 0 5px, var(--ink) 5px 10px); }
+#c-conformed .cf-card-eyebrow { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-deep); margin: 3px 0 3px; }
+#c-conformed .cf-card-title { font-family: var(--font-serif); font-size: 14.5px; font-weight: 700; color: var(--ink); margin-bottom: 4px; }
+#c-conformed .cf-card-body { font-family: var(--font-serif); font-size: 10.8px; line-height: 1.46; color: var(--ink-soft); margin-bottom: 11px; }
+#c-conformed .cf-card-2up { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 8px; }
+#c-conformed .cf-needsbuild { display: block; margin-top: 5px; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.02em; color: var(--ink-faint); }
+
+/* note block (Coach daily brief, Home coach brief) */
+/* the block plate now supplies the box; the note is just its prose */
+#c-conformed .cf-note { border: 0; }
+#c-conformed .cf-note-body { padding: 0; font-family: var(--font-serif); font-size: 10.8px; line-height: 1.5; color: var(--ink-soft); }
+
+/* reminder row (Coach) */
+#c-conformed .cf-reminder { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+#c-conformed .cf-reminder-body { flex: 1; min-width: 0; }
+#c-conformed .cf-reminder-t { font-family: var(--font-serif); font-size: 11.5px; color: var(--ink); }
+#c-conformed .cf-reminder-meta { font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); margin-top: 2px; }
+
+/* =================================================================
+   ROW / LIST SYSTEM — the RECORD grammar's base unit, reused across
+   Log's feed, Nutrition's eaten-today, Data, Protocols, Screenings,
+   Settings. Times are the sole ordinal — no invented "No" column.
+   ================================================================= */
+
+#c-conformed .cf-list { display: flex; flex-direction: column; }
+#c-conformed .cf-lrow { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--paper-line); min-height: 39px; }
+#c-conformed .cf-lrow:last-child { border-bottom: none; }
+#c-conformed .cf-lrow--tap { cursor: pointer; }
+#c-conformed .cf-lrow--muted { opacity: 1; }
+#c-conformed .cf-lrow--muted .cf-lrow-t { color: var(--ink-soft); }
+#c-conformed .cf-lrow-time { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-faint); padding-top: 2px; width: 34px; flex: none; font-variant-numeric: tabular-nums; }
+#c-conformed .cf-lrow-day { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--ink-faint); padding-top: 2px; width: 30px; flex: none; }
+#c-conformed .cf-lrow-body { flex: 1; min-width: 0; align-self: center; }
+#c-conformed .cf-lrow-t { font-family: var(--font-serif); font-size: 11.5px; line-height: 1.38; color: var(--ink); }
+#c-conformed .cf-lrow-t--note { font-style: italic; }
+#c-conformed .cf-lrow-t--sans { font-family: var(--font-label); font-weight: 700; font-size: 10.5px; font-style: normal; }
+#c-conformed .cf-lrow-sub { font-family: var(--font-serif); font-size: 10px; color: var(--ink-faint); margin-top: 2px; }
+#c-conformed .cf-lrow-cap { font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.02em; text-transform: uppercase; color: var(--ink-faint); margin-top: 3px; }
+#c-conformed .cf-lrow-meta { flex: none; text-align: right; align-self: center; font-family: var(--font-mono); font-size: 11px; color: var(--ink); font-weight: 700; white-space: nowrap; }
+#c-conformed .cf-lrow-meta small { display: block; font-size: 9px; font-weight: 400; color: var(--ink-faint); margin-top: 2px; }
+#c-conformed .cf-lrow-tag { flex: none; align-self: center; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.03em; color: var(--ink-faint); border: 1px solid var(--paper-line); padding: 3px 7px; white-space: nowrap; }
+#c-conformed .cf-lrow-chev { color: var(--ink-faint); flex: none; align-self: center; }
+#c-conformed .cf-groupcap { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-faint); margin: 4px 0 -2px; }
+#c-conformed .cf-groupcap:first-child { margin-top: 0; }
+
+/* biomarker bracket rows */
+#c-conformed .cf-brow { padding: 9px 0; border-bottom: 1px solid var(--paper-line); display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+#c-conformed .cf-brow:last-child { border-bottom: none; }
+#c-conformed .cf-brow-name { font-family: var(--font-serif); font-weight: 700; font-size: 11px; color: var(--ink); }
+#c-conformed .cf-brow-range { display: block; font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); margin-top: 1px; }
+#c-conformed .cf-brow-val { font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); white-space: nowrap; }
+
+/* =================================================================
+   THIN MEASURED BARS — macro / freshness / kcal progress, reused
+   ================================================================= */
+
+#c-conformed .cf-bartrack { position: relative; height: 6px; background: var(--paper-dim); border: 1px solid var(--paper-line); margin-top: 6px; }
+#c-conformed .cf-barfill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ink-soft); }
+#c-conformed .cf-barfill--accent { background: var(--accent); }
+#c-conformed .cf-barfill--optimal { background: var(--bio-optimal); }
+#c-conformed .cf-barfill--caution { background: var(--bio-caution); }
+#c-conformed .cf-barfill--poor {
+  background-color: var(--bio-poor);
+  background-image: repeating-linear-gradient(135deg, rgba(0,0,0,.34) 0 2px, transparent 2px 5px);
+}
+
+/* =================================================================
+   DIMENSION GRID — footer metrics (2x2 / 3col), typographic only,
+   no decorative flatline sparks
+   ================================================================= */
+
+#c-conformed .cf-dims { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 12px; }
+#c-conformed .cf-dims--3 { grid-template-columns: repeat(3, 1fr); }
+#c-conformed .cf-dim { display: flex; flex-direction: column; gap: 2px; padding-top: 9px; border-top: 1px solid var(--paper-line); }
+#c-conformed .cf-dim-k { font-family: var(--font-label); font-size: 9px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); }
+#c-conformed .cf-dim-v { font-family: var(--font-mono); font-size: 15px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+#c-conformed .cf-dim-v small { font-weight: 500; color: var(--ink-faint); font-size: 9.5px; margin-left: 2px; }
+#c-conformed .cf-dim-sub { font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); }
+
+/* progress ticks */
+#c-conformed .cf-progress { display: flex; align-items: center; gap: 6px; }
+#c-conformed .cf-ticks { display: flex; gap: 1.6px; }
+#c-conformed .cf-ticks i { width: 3px; height: 8px; background: var(--paper-line); display: block; }
+#c-conformed .cf-ticks i.on { background: var(--accent); }
+#c-conformed .cf-progress b { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-soft); font-weight: 700; }
+
+/* =================================================================
+   HOME — Fair Copy typographic hero + Field Copy mission table
+   ================================================================= */
+
+#c-conformed .cf-hero { position: relative; border: 1.5px solid var(--accent); background: var(--paper-hi); padding: 15px 15px 14px; }
+#c-conformed .cf-hero-tag { font-family: var(--font-label); font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-deep); }
+#c-conformed .cf-hero-title { font-family: var(--font-serif); font-size: 20px; line-height: 1.18; color: var(--ink); margin-top: 5px; }
+#c-conformed .cf-hero-dim { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+/* min-width:0 lets the dimension rule shrink under the figure it measures —
+   without it the flex item floors at its intrinsic width and pushes the
+   "07:30 · 35 MIN · TRAINING" string off the sheet */
+#c-conformed .cf-hero-dim svg { flex: 1; min-width: 0; }
+#c-conformed .cf-hero-dim-v { font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: var(--ink); white-space: nowrap; flex: none; }
+#c-conformed .cf-hero-why { margin-top: 11px; font-family: var(--font-serif); font-style: italic; font-size: 11px; line-height: 1.5; color: var(--ink-soft); }
+#c-conformed .cf-hero .cf-herorow, #c-conformed .cf-hero .cf-herofoot { margin-top: 13px; }
+
+#c-conformed .cf-fold { display: flex; align-items: center; gap: 8px; padding: 12px 0; color: var(--ink-faint); min-height: 39px; }
+#c-conformed .cf-fold svg { flex: none; }
+#c-conformed .cf-fold-txt { font-family: var(--font-label); font-size: 9.5px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--ink-soft); }
+#c-conformed .cf-fold-tally { margin-left: auto; font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); white-space: nowrap; }
+#c-conformed .cf-fold-tally b { color: var(--ink-soft); font-weight: 700; }
+
+#c-conformed .cf-mission { display: flex; flex-direction: column; }
+#c-conformed .cf-mrow { display: grid; grid-template-columns: 17px 1fr; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--paper-line); align-items: center; min-height: 39px; }
+#c-conformed .cf-mrow:last-child { border-bottom: none; }
+#c-conformed .cf-mrow--active { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); margin: 0 -10px; padding: 11px 10px; }
+#c-conformed .cf-mcircle { width: 15px; height: 15px; border-radius: 50%; border: 1.5px solid var(--paper-line); margin-top: 2px; }
+#c-conformed .cf-mcircle--active { border-color: var(--accent); border-width: 2px; }
+#c-conformed .cf-mrow-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+#c-conformed .cf-mtime { font-family: var(--font-mono); font-size: 10px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+#c-conformed .cf-mtitle { font-family: var(--font-serif); font-size: 11.5px; color: var(--ink); }
+#c-conformed .cf-mrow--active .cf-mtitle { font-weight: 700; }
+#c-conformed .cf-mcat { margin-left: auto; font-family: var(--font-label); font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); white-space: nowrap; }
+#c-conformed .cf-mwhy { font-family: var(--font-serif); font-style: italic; font-size: 10.4px; line-height: 1.46; color: var(--ink-soft); margin-top: 5px; }
+
+/* =================================================================
+   COACH — thread, reminder, REV A→REV B dimensioned bar-diff
+   ================================================================= */
+
+#c-conformed .cf-thread { display: flex; flex-direction: column; }
+#c-conformed .cf-turn { display: grid; grid-template-columns: 36px 1fr; gap: 9px; padding: 9px 0; border-bottom: 1px solid var(--paper-line); }
+#c-conformed .cf-turn:last-child { border-bottom: none; }
+#c-conformed .cf-turn-t { font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); padding-top: 2px; font-variant-numeric: tabular-nums; }
+#c-conformed .cf-turn-who { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 3px; }
+#c-conformed .cf-turn--user .cf-turn-who { color: var(--accent-deep); }
+#c-conformed .cf-turn-msg { font-family: var(--font-serif); font-size: 11px; line-height: 1.48; color: var(--ink); }
+#c-conformed .cf-turn--user .cf-turn-msg { background: var(--accent); color: var(--paper-hi); display: inline-block; padding: 7px 11px; border-radius: 12px 3px 12px 12px; }
+#c-conformed .cf-turn:not(.cf-turn--user) .cf-turn-msg { border: 1px solid var(--paper-line); background: var(--paper-hi); display: inline-block; padding: 8px 11px; border-radius: 3px 12px 12px 12px; }
+#c-conformed .cf-turn-msg b { font-family: var(--font-mono); font-weight: 700; }
+
+#c-conformed .cf-rev { position: relative; border: 1.5px solid var(--accent); background: var(--paper-hi); padding: 13px 14px 14px; }
+#c-conformed .cf-rev::before { content: ""; position: absolute; top: -1.5px; left: -1.5px; right: -1.5px; height: 3px; background: repeating-linear-gradient(-45deg, var(--accent) 0 5px, var(--ink) 5px 10px); }
+#c-conformed .cf-rev-head { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--accent-deep); margin: 4px 0 5px; }
+#c-conformed .cf-rev-proto { font-family: var(--font-serif); font-weight: 700; font-size: 15px; color: var(--ink); }
+#c-conformed .cf-rev-lane { font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); letter-spacing: 0.02em; margin-top: 2px; }
+#c-conformed .cf-rev-hrv { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-soft); margin-top: 8px; }
+
+#c-conformed .cf-revtrack { position: relative; height: 26px; margin-top: 12px; }
+#c-conformed .cf-revbar { position: absolute; left: 0; top: 7px; bottom: 7px; }
+#c-conformed .cf-revbar--ghost { border: 1.5px dashed var(--ink-faint); background: transparent; }
+#c-conformed .cf-revbar--new { background: var(--accent); }
+#c-conformed .cf-revbar--cut { position: absolute; top: 7px; bottom: 7px; background-image: repeating-linear-gradient(45deg, var(--accent-deep) 0 2px, transparent 2px 5px); opacity: .8; border-right: 1.5px dashed var(--ink-faint); }
+#c-conformed .cf-revcap { position: absolute; top: -2px; transform: translateX(-100%); font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; white-space: nowrap; }
+#c-conformed .cf-revcap--old { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: var(--accent-deep); }
+#c-conformed .cf-revcap--new { color: var(--accent-deep); }
+#c-conformed .cf-revcap i { font-style: normal; font-weight: 400; letter-spacing: 0.04em; margin-right: 4px; color: var(--ink-faint); }
+
+#c-conformed .cf-dimsvg { width: 100%; height: 30px; display: block; margin-top: 10px; }
+#c-conformed .cf-dimext { stroke: var(--ink-soft); stroke-width: 1; }
+#c-conformed .cf-dimline { stroke: var(--ink); stroke-width: 1.1; }
+#c-conformed .cf-dimarrow { fill: var(--ink); }
+#c-conformed .cf-dimtext { font-family: var(--font-mono); font-size: 11px; font-weight: 700; } /* renders ~9.6px after the 263/300 viewBox scale — clears the 9px floor with margin */
+#c-conformed .cf-dimtext .old { fill: var(--ink-faint); font-weight: 400; text-decoration: line-through; }
+#c-conformed .cf-dimtext .new { fill: var(--accent-deep); font-weight: 700; }
+#c-conformed .cf-dimtext .unit { fill: var(--ink-soft); font-weight: 400; }
+#c-conformed .cf-dimtext .delta { fill: var(--ink-soft); font-weight: 700; }
+
+#c-conformed .cf-rev-note { font-family: var(--font-serif); font-style: italic; font-size: 10px; color: var(--ink-faint); margin: 11px 0 12px; }
+#c-conformed .cf-rev .cf-btnrow--3 { margin-top: 0; }
+
+/* streaming activity line — fixture-required between the pending
+   card and the disabled composer while the loop is suspended */
+#c-conformed .cf-activity { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-faint); padding: 0 3px; }
+
+#c-conformed .cf-composer { display: flex; align-items: center; gap: 8px; border: 1px solid var(--ink); padding: 8px 8px 8px 13px; border-radius: 20px; min-height: 39px; }
+#c-conformed .cf-composer--disabled { border-color: var(--paper-line); background: var(--paper-dim); }
+#c-conformed .cf-composer-mic { color: var(--ink-faint); flex: none; }
+#c-conformed .cf-composer-text { flex: 1; font-family: var(--font-serif); font-style: italic; font-size: 10.5px; color: var(--ink-faint); }
+/* drawn 24px circle, 40px hit (≈48pt at the 326px→390pt scale):
+   padded background-clip + negative margin — the pencil's extended-
+   hit annotation, applied to every in-field circle button */
+#c-conformed .cf-send { width: 40px; height: 40px; padding: 8px; margin: -8px; border-radius: 50%; background: var(--accent); background-clip: content-box; display: flex; align-items: center; justify-content: center; flex: none; }
+#c-conformed .cf-send--muted { background-color: var(--paper-line); }
+
+/* =================================================================
+   LOG — command field, tiles, symptom row
+   ================================================================= */
+
+#c-conformed .cf-command { display: flex; align-items: center; gap: 10px; border: 1.4px solid var(--ink); border-radius: 26px; background: var(--paper-dim); padding: 11px 8px 11px 16px; min-height: 39px; }
+#c-conformed .cf-command-text { flex: 1; font-family: var(--font-serif); font-style: italic; font-size: 11.5px; color: var(--ink-faint); }
+/* drawn 34px, hit 40px (≈48pt) — see .cf-send annotation */
+#c-conformed .cf-command-btn { width: 40px; height: 40px; padding: 3px; margin: -3px; border-radius: 50%; background: var(--accent); background-clip: content-box; display: flex; align-items: center; justify-content: center; flex: none; }
+#c-conformed .cf-helper { font-family: var(--font-serif); font-size: 10.2px; line-height: 1.44; color: var(--ink-faint); }
+
+#c-conformed .cf-tilegrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+#c-conformed .cf-tile { display: flex; align-items: center; justify-content: space-between; gap: 4px; border: 1px solid var(--paper-line); background: var(--paper-hi); padding: 13px 10px; min-height: 44px; }
+#c-conformed .cf-tile-t { font-family: var(--font-label); font-size: 10px; font-weight: 700; color: var(--ink); }
+#c-conformed .cf-tile-chev { color: var(--ink-faint); flex: none; }
+
+#c-conformed .cf-linkrow { display: flex; align-items: center; gap: 10px; border: 1px solid var(--paper-line); background: var(--paper-hi); padding: 12px 13px; min-height: 44px; }
+#c-conformed .cf-linkrow-body { flex: 1; min-width: 0; }
+#c-conformed .cf-linkrow-t { font-family: var(--font-label); font-size: 10.5px; font-weight: 700; color: var(--ink); }
+#c-conformed .cf-linkrow-s { font-family: var(--font-serif); font-size: 10px; color: var(--ink-faint); margin-top: 2px; }
+#c-conformed .cf-chev { color: var(--ink-faint); flex: none; }
+
+/* =================================================================
+   KEYPAD — chip rail, instrument readout, keys
+   ================================================================= */
+
+#c-conformed .cf-chiprail { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+#c-conformed .cf-metricchip { flex: none; font-family: var(--font-label); font-size: 10px; font-weight: 700; letter-spacing: 0.02em; padding: 13px 13px; border: 1.3px solid var(--paper-line); color: var(--ink-soft); background: var(--paper-hi); white-space: nowrap; }
+#c-conformed .cf-metricchip--active { border-color: var(--ink); color: var(--ink); background: var(--ink); color: var(--paper-hi); }
+
+#c-conformed .cf-readout { text-align: center; padding: 16px 0 4px; }
+#c-conformed .cf-readout-v { font-family: var(--font-mono); font-size: 48px; font-weight: 700; color: var(--ink); letter-spacing: -0.02em; line-height: 1; }
+#c-conformed .cf-readout-v small { font-size: 18px; font-weight: 500; color: var(--ink-faint); margin-left: 3px; }
+#c-conformed .cf-recent { text-align: center; font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-faint); margin-top: 7px; }
+
+#c-conformed .cf-quickadds { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
+#c-conformed .cf-quickadd { border: 1.2px solid var(--paper-line); background: var(--paper-hi); padding: 13px 4px; text-align: center; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; color: var(--ink-soft); min-height: 39px; display: flex; align-items: center; justify-content: center; }
+
+#c-conformed .cf-keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; }
+#c-conformed .cf-key { text-align: center; padding: 13px 0; font-family: var(--font-mono); font-size: 20px; font-weight: 700; color: var(--ink); }
+#c-conformed .cf-key--fn { color: var(--ink-faint); font-size: 16px; }
+
+/* =================================================================
+   NUTRITION — kcal/macro readouts, capture card, form
+   ================================================================= */
+
+#c-conformed .cf-kcal { display: flex; align-items: baseline; gap: 8px; }
+#c-conformed .cf-kcal-v { font-family: var(--font-mono); font-size: 32px; font-weight: 700; color: var(--ink); letter-spacing: -0.01em; }
+#c-conformed .cf-kcal-of { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); }
+#c-conformed .cf-macros { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 14px; }
+#c-conformed .cf-macro-k { font-family: var(--font-label); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+#c-conformed .cf-macro-v { font-family: var(--font-mono); font-size: 14px; font-weight: 700; color: var(--ink); margin-top: 3px; }
+#c-conformed .cf-macro-v small { font-weight: 400; color: var(--ink-faint); font-size: 9.5px; }
+#c-conformed .cf-macro-note { font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); margin-top: 6px; }
+
+#c-conformed .cf-capturefield { display: flex; align-items: center; gap: 9px; border: 1.3px solid var(--ink); border-radius: 22px; background: var(--paper-hi); padding: 9px 8px 9px 15px; min-height: 39px; }
+#c-conformed .cf-capturefield-text { flex: 1; font-family: var(--font-serif); font-style: italic; font-size: 11px; color: var(--ink-faint); }
+/* drawn 30px, hit 40px (≈48pt) — see .cf-send annotation */
+#c-conformed .cf-capturefield-btn { width: 40px; height: 40px; padding: 5px; margin: -5px; border-radius: 50%; background: var(--accent); background-clip: content-box; display: flex; align-items: center; justify-content: center; flex: none; }
+#c-conformed .cf-capturefield-sub { font-family: var(--font-serif); font-size: 10px; color: var(--ink-faint); margin-top: 8px; line-height: 1.42; }
+
+#c-conformed .cf-form { display: flex; flex-direction: column; gap: 12px; }
+#c-conformed .cf-frow { display: flex; align-items: baseline; gap: 10px; border-bottom: 1px solid var(--paper-line); padding-bottom: 8px; }
+#c-conformed .cf-frow-k { font-family: var(--font-label); font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); width: 60px; flex: none; }
+#c-conformed .cf-frow-v { font-family: var(--font-mono); font-size: 12px; color: var(--ink); flex: 1; }
+#c-conformed .cf-frow-v.placeholder { color: var(--ink-faint); font-family: var(--font-serif); font-style: italic; }
+
+/* =================================================================
+   EXERCISE — train card, freshness meter + rows, this-week columns
+   ================================================================= */
+
+#c-conformed .cf-exnames { font-family: var(--font-serif); font-size: 10.5px; color: var(--ink-soft); margin-top: 9px; }
+#c-conformed .cf-cols3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+#c-conformed .cf-col3-k { font-family: var(--font-label); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+#c-conformed .cf-col3-v { font-family: var(--font-mono); font-size: 16px; font-weight: 700; color: var(--ink); margin-top: 4px; }
+#c-conformed .cf-col3-v small { font-size: 9.5px; font-weight: 400; color: var(--ink-faint); }
+#c-conformed .cf-col3-sub { font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); margin-top: 2px; }
+
+#c-conformed .cf-freshmeter { position: relative; margin-top: 22px; }
+#c-conformed .cf-freshtrack { position: relative; height: 8px; background: var(--paper-dim); border: 1px solid var(--paper-line); }
+#c-conformed .cf-freshfill { position: absolute; top: 0; bottom: 0; left: 0; background: var(--bio-optimal); } /* 82% fresh is a biological state — bio-optimal, never chrome accent; accent inside the card belongs to Start alone */
+#c-conformed .cf-freshtick { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--paper-line); }
+#c-conformed .cf-freshpin { position: absolute; top: -20px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; }
+#c-conformed .cf-freshpin-v { font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: var(--ink); white-space: nowrap; }
+#c-conformed .cf-freshpin::after { content: ""; width: 1px; height: 10px; background: var(--ink-faint); margin-top: 1px; }
+#c-conformed .cf-freshscale { display: flex; justify-content: space-between; margin-top: 4px; font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); }
+
+#c-conformed .cf-mrow2 { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--paper-line); min-height: 39px; }
+#c-conformed .cf-mrow2:last-child { border-bottom: none; }
+#c-conformed .cf-mrow2-name { font-family: var(--font-label); font-size: 10px; font-weight: 700; color: var(--ink); width: 82px; flex: none; }
+#c-conformed .cf-mrow2-bar { flex: 1; height: 7px; background: var(--paper-dim); border: 1px solid var(--paper-line); position: relative; }
+#c-conformed .cf-mrow2-fill { position: absolute; top: 0; bottom: 0; left: 0; }
+#c-conformed .cf-mrow2-fill--optimal { background: var(--bio-optimal); }
+#c-conformed .cf-mrow2-fill--caution { background: var(--bio-caution); }
+#c-conformed .cf-mrow2-fill--poor {
+  background-color: var(--bio-poor);
+  background-image: repeating-linear-gradient(135deg, rgba(0,0,0,.34) 0 2px, transparent 2px 5px);
+}
+#c-conformed .cf-mrow2-v { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; width: 32px; text-align: right; flex: none; }
+
+#c-conformed .cf-progcard { border: 1px solid var(--paper-line); background: var(--paper-hi); padding: 12px 13px; }
+#c-conformed .cf-progcard-head { display: flex; align-items: center; gap: 8px; }
+#c-conformed .cf-progcard-name { font-family: var(--font-serif); font-size: 13.5px; font-weight: 700; color: var(--ink); flex: 1; }
+#c-conformed .cf-progcard-sub { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-faint); margin-top: 3px; }
+#c-conformed .cf-progcard-foot { display: flex; align-items: baseline; justify-content: space-between; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--paper-line); }
+#c-conformed .cf-progcard-type { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); }
+#c-conformed .cf-progcard-ver { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-soft); }
+#c-conformed .cf-progchip { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--paper-line); border-radius: 8px; padding: 2px 7px; }
+#c-conformed .cf-pencil { flex: none; color: var(--ink-faint); padding: 14px; margin: -14px; }
+
+/* =================================================================
+   DATA — trend rows, sparklines, biomarker list, full-file list
+   ================================================================= */
+
+#c-conformed .cf-trendrow { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--paper-line); }
+#c-conformed .cf-trendrow:last-child { border-bottom: none; }
+#c-conformed .cf-trendrow-body { flex: 1; min-width: 0; }
+#c-conformed .cf-trendrow-t { font-family: var(--font-label); font-weight: 700; font-size: 11px; color: var(--ink); }
+#c-conformed .cf-trendrow-s { font-family: var(--font-serif); font-size: 9.8px; color: var(--ink-faint); margin-top: 1px; }
+#c-conformed .cf-trendrow-spark { flex: none; }
+#c-conformed .cf-trendrow-meta { flex: none; text-align: right; }
+#c-conformed .cf-trendrow-val { font-family: var(--font-mono); font-size: 12.5px; font-weight: 700; color: var(--ink); }
+#c-conformed .cf-trendrow-val small { font-size: 9.5px; font-weight: 400; color: var(--ink-faint); }
+#c-conformed .cf-trendrow-delta { display: block; font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); margin-top: 2px; }
+
+/* =================================================================
+   PROTOCOLS — record cards + version-history timeline
+   ================================================================= */
+
+#c-conformed .cf-protocard { border: 1px solid var(--paper-line); background: var(--paper-hi); padding: 12px 13px; }
+#c-conformed .cf-protocard-head { display: flex; align-items: center; gap: 8px; }
+#c-conformed .cf-protocard-name { font-family: var(--font-serif); font-size: 13.5px; font-weight: 700; color: var(--ink); flex: 1; }
+#c-conformed .cf-protocard-desc { font-family: var(--font-serif); font-size: 10.2px; color: var(--ink-soft); margin-top: 5px; line-height: 1.42; }
+#c-conformed .cf-protocard-rev { font-family: var(--font-serif); font-style: italic; font-size: 9.8px; color: var(--ink-soft); margin-top: 5px; }
+#c-conformed .cf-protocard-foot { display: flex; align-items: baseline; justify-content: space-between; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--paper-line); }
+#c-conformed .cf-protocard-type { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); }
+#c-conformed .cf-protocard-ver { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-soft); }
+
+#c-conformed .cf-vhist { border: 1px solid var(--paper-line); background: var(--paper-hi); padding: 13px 14px 14px; }
+#c-conformed .cf-vnode-row { display: grid; grid-template-columns: 16px 1fr; gap: 10px; position: relative; padding-bottom: 14px; }
+#c-conformed .cf-vnode-row:last-child { padding-bottom: 0; }
+#c-conformed .cf-vnode-row::before { content: ""; position: absolute; left: 7px; top: 16px; bottom: -2px; width: 1px; background: var(--paper-line); }
+#c-conformed .cf-vnode-row:last-child::before { display: none; }
+#c-conformed .cf-vnode { width: 15px; height: 15px; border-radius: 50%; border: 1.6px solid var(--ink-soft); background: var(--paper-hi); margin-top: 1px; z-index: 1; }
+#c-conformed .cf-vnode--current { background: var(--accent); border-color: var(--accent-deep); }
+#c-conformed .cf-vnode--prior { border-style: dashed; border-color: var(--ink-faint); }
+#c-conformed .cf-vnode--proposed { border-style: dashed; border-color: var(--ink-soft); background: var(--paper-hi); } /* not yet written — awaiting the Coach card's OK */
+#c-conformed .cf-vnode-ver { font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: var(--ink); }
+#c-conformed .cf-vnode-date { font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); margin-left: 6px; }
+#c-conformed .cf-vnode-note { font-family: var(--font-serif); font-size: 10.4px; color: var(--ink-soft); margin-top: 3px; line-height: 1.4; }
+#c-conformed .cf-vhist-cap { font-family: var(--font-serif); font-style: italic; font-size: 10px; color: var(--ink-faint); margin-top: 12px; padding-top: 11px; border-top: 1px dashed var(--paper-line); }
+
+/* =================================================================
+   SCREENINGS — Chainage's horizon timeline
+   ================================================================= */
+
+#c-conformed .cf-axiswrap { border: 1px solid var(--ink); background: var(--paper-hi); padding: 10px 10px 8px; }
+#c-conformed .cf-axis-svg { width: 100%; height: auto; display: block; }
+#c-conformed .cf-axis-line { stroke: var(--ink); stroke-width: 1; }
+#c-conformed .cf-stake { stroke: var(--paper-line); stroke-width: 1; }
+#c-conformed .cf-stake--now { stroke: var(--ink-soft); stroke-width: 1.4; }
+#c-conformed .cf-now-flag { fill: var(--ink-soft); }
+#c-conformed .cf-diamond { fill: var(--ink-soft); stroke: var(--paper-hi); stroke-width: 1; }
+#c-conformed .cf-diamond--near { fill: var(--ink); stroke: var(--paper-hi); stroke-width: 1; }
+#c-conformed .cf-svg-cap { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em; fill: var(--ink-soft); } /* renders ~9.5px after the 272/316 viewBox scale — clears the 9px floor with margin */
+#c-conformed .cf-svg-cap.faint { fill: var(--ink-faint); }
+#c-conformed .cf-svg-cap.strong { fill: var(--ink); font-weight: 700; }
+
+/* =================================================================
+   SETTINGS — About block, no page-wide rule
+   ================================================================= */
+
+#c-conformed .cf-about { text-align: center; font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-faint); line-height: 1.75; }
+#c-conformed .cf-about-brand { font-family: var(--font-label); font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+#c-conformed .cf-about-name { font-family: var(--font-serif); font-size: 11.5px; color: var(--ink-soft); margin-top: 3px; }
+
+/* =================================================================
+   Responsive floor
+   ================================================================= */
+@media (max-width: 460px) {
+  #c-conformed { padding: 26px 12px 36px; }
+  #c-conformed .cf-row { gap: 18px; }
+}
+
+</style>
+
+<div class="wrap">
+  <p class="kicker">ARC · Blueprint · The Conformed Set</p>
+  <h1>One set, every review comment incorporated.</h1>
+  <p class="lede">The convergence of the whole exploration: ten screens — <em>Home · Coach · Log · Keypad · Nutrition · Exercise · Data · Protocols · Screenings · Settings</em> — compositing the strongest device from each of the six hostile-reviewed sets, rebuilt against every finding those reviews produced. In drafting, a <em>conformed set</em> is the one with all addenda incorporated; that is what this is.</p>
+  <p class="provenance">The fixture itself was corrected first (the Coach thread is now drawn genuinely suspended; the Nutrition ledger sums to its own total; the mission tally reconciles), the red-mode firewall got a real answer (in redline mode, biology-poor shifts to umber and poor fills carry a hatch — the worst biology state is identifiable without hue in both modes), and the set was then re-audited and put through the <b>same hostile review</b> that scored its six predecessors, with a class-by-class regression walk over their findings.</p>
+
+  <div class="controls">
+    <div class="controls-top">
+      <div class="lineage">
+        <div class="lin-card"><span class="ln-from">From Field Copy</span><span class="ln-what">The full mission table, fold-as-tally, ledger discipline, small-multiples Exercise</span></div>
+        <div class="lin-card"><span class="ln-from">From Fair Copy</span><span class="ln-what">The typographic dimension-string hero and the enforced accent budget</span></div>
+        <div class="lin-card"><span class="ln-from">From Trades</span><span class="ln-what">The REV A→B dimensioned revision diff on the Coach's pending write</span></div>
+        <div class="lin-card"><span class="ln-from">From Chainage</span><span class="ln-what">The Screenings horizon timeline — the best screen of the batch</span></div>
+      </div>
+      <div class="acc-toggle">
+        <span class="at-label">Accent</span>
+        <div class="acc-btns" role="group" aria-label="Accent">
+          <button class="acc-btn" data-acc="petrol" aria-pressed="true"><span class="dotc"></span>Petrol</button>
+          <button class="acc-btn" data-acc="red" aria-pressed="false"><span class="dotc"></span>Redline</button>
+        </div>
+        <span class="acc-note">In redline mode, biology-poor shifts to umber + hatch so chrome and biology never share a hue.</span>
+      </div>
+      <div class="acc-toggle">
+        <span class="at-label">Surface system</span>
+        <div class="acc-btns"><span class="srf-fixed">Devices — adopted</span></div>
+        <span class="acc-note">The container encodes the content: ledgers get a ruled plate, readiness corner ticks, prose a margin rule, metrics a ruled grid with no outer box, capture surfaces a recessed stock.</span>
+      </div>
+    </div>
+    <div class="caption">
+      <p class="cap-tag" id="capTag">Convergence round · re-reviewed under the same hostile standard, then fixed and verified</p>
+      <p class="cap-rev"><b>Hostile re-review → fix → verify</b><span id="capRev">The re-review returned <span class="v-fix">0 high</span> / 9 medium / 10 low — against 21 highs across the six parents — and confirmed ~30 of 36 inherited high/medium finding classes dead, including every within-screen high: the pending-write contradiction, the red-mode chrome/biology collapse (the umber+hatch answer "actually restores the firewall"), the unreadable hero, the contrast floor ("genuinely rebuilt, not asserted" — 5.97:1 / 5.17:1 recomputed independently), and every balanced ledger recomputed rather than trusted. All 9 surviving mediums were then fixed and <b style="display:inline;letter-spacing:0;text-transform:none;font-size:13.5px">verified resolved</b> — the freshness meter moved off chrome paint, the water quick-adds sheet drawn (K-02), the keypad typed-state disambiguated, the Protocols version history redrawn at the suspended moment (v2 dashed "proposed · awaiting your OK"), the reminder reconciled to 22:00, the streaming line restored, all in-field buttons grown past 44pt, the camera path honestly marked, and an Alternate-states row added (mission-complete, Coach preview, empty feed, keypad blank). The 10 lows remain as recorded polish items — several are fixture-inherited (the 9:41 status-bar clock vs afternoon entries; the Symptoms 14-day label over a 7-point series; the creatine ad-hoc/planned double-entry).</span></p>
+    </div>
+  </div>
+
+  <div class="hintbar">
+    <span class="tt">Reading it:</span>
+    <span>the ten canonical screens (tab screens, then pushed screens), followed by the alternate-state sheets the fix round added — the Keypad's water quick-adds (K-02), mission-complete, Coach preview, empty feed, and keypad blank. Scroll the lane sideways. Toggle the accent and watch the poor-state biology marks: they shift to umber + hatch in redline, which is the firewall answer being demonstrated.</span>
+  </div>
+</div>
+
+<div class="wrap" style="padding-top:0;padding-bottom:0;max-width:none">
+  <div class="stage" id="stage">
+<section id="c-conformed" class="concept is-active" data-key="conformed">
+<svg class="cf-sprite" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="cf-i-chev" viewBox="0 0 7 11"><path d="M1,1 L6,5.5 L1,10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="cf-i-back" viewBox="0 0 9 14"><path d="M8,1 L2,7 L8,13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="cf-i-caret" viewBox="0 0 8 6"><path d="M1,1.5 L4,4.5 L7,1.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="cf-i-mic" viewBox="0 0 14 16"><rect x="5" y="1.5" width="4" height="7.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.6,7.5 a4.4,4.4 0 0 0 8.8,0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="7" y1="11.9" x2="7" y2="14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="4.5" y1="14" x2="9.5" y2="14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+    <symbol id="cf-i-send" viewBox="0 0 12 12"><path d="M1,11 L11,6 L1,1 L1,5 L7,6 L1,7 Z" fill="currentColor"/></symbol>
+    <symbol id="cf-i-check" viewBox="0 0 12 10"><path d="M1,5.5 L4.5,9 L11,1.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="cf-i-camera" viewBox="0 0 16 14"><path d="M1,4 H4.5L6,1.5H10L11.5,4H15V13H1Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="8.3" r="2.9" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
+    <symbol id="cf-i-pencil" viewBox="0 0 16 16"><path d="M2.5,13.5 L3.3,10.2 L10.6,2.9 a1.7,1.7 0 0 1 2.5,2.5 L5.8,12.7 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><line x1="9.3" y1="4.2" x2="11.8" y2="6.7" stroke="currentColor" stroke-width="1.3"/></symbol>
+    <symbol id="cf-i-tab-home" viewBox="0 0 18 18"><path d="M3,9 L9,3.5 L15,9 M5,8 V15 H13 V8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+    <symbol id="cf-i-tab-coach" viewBox="0 0 18 18"><path d="M3,4 H15 V12 H8 L5,15 V12 H3 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+    <symbol id="cf-i-tab-log" viewBox="0 0 18 18"><rect x="3" y="3" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9,6.5 V11.5 M6.5,9 H11.5" stroke="currentColor" stroke-width="1.3"/></symbol>
+    <symbol id="cf-i-tab-data" viewBox="0 0 18 18"><path d="M4,14 V9 M9,14 V5 M14,14 V11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="cf-i-tab-settings" viewBox="0 0 18 18"><circle cx="9" cy="9" r="3.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9,2.5 V4.3 M9,13.7 V15.5 M2.5,9 H4.3 M13.7,9 H15.5 M4.9,4.9 L6.1,6.1 M11.9,11.9 L13.1,13.1 M13.1,4.9 L11.9,6.1 M6.1,11.9 L4.9,13.1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></symbol>
+    <symbol id="cf-i-signal" viewBox="0 0 18 12"><rect x="0" y="7" width="3" height="5" rx="0.6" fill="currentColor"/><rect x="5" y="5" width="3" height="7" rx="0.6" fill="currentColor"/><rect x="10" y="3" width="3" height="9" rx="0.6" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx="0.6" fill="currentColor"/></symbol>
+    <symbol id="cf-i-wifi" viewBox="0 0 16 12"><path d="M1,4.5 a10,10 0 0 1 14,0 M3.6,7.3 a6.2,6.2 0 0 1 8.8,0 M6.2,10 a2.5,2.5 0 0 1 3.6,0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="cf-i-battery" viewBox="0 0 25 12"><rect x="0.75" y="0.75" width="20.5" height="10.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.1"/><rect x="2.25" y="2.25" width="16" height="7.5" rx="1.3" fill="currentColor"/><rect x="22" y="4" width="2" height="4" rx="1" fill="currentColor"/></symbol>
+  </defs>
+</svg>
+
+<div class="cf-row">
+
+<!-- ============================================================ 01 · HOME -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-brandrow">
+      <div class="cf-brand"><b>ARC</b> &nbsp;·&nbsp; TUE 28 JUL</div>
+      <span class="cf-modechip">Normal</span>
+    </div>
+
+    <div class="cf-hero">
+      <div class="cf-hero-tag">Training · Do this next</div>
+      <div class="cf-hero-title">Zone 2 — keep it easy, 35 min</div>
+      <div class="cf-hero-dim">
+        <svg viewBox="0 0 140 8" preserveAspectRatio="none" width="100%" height="8">
+          <line x1="1" y1="5" x2="139" y2="5" style="stroke:var(--ink-soft)" stroke-width="1"/>
+          <line x1="1" y1="1" x2="1" y2="8" style="stroke:var(--ink-soft)" stroke-width="1"/>
+          <line x1="139" y1="1" x2="139" y2="8" style="stroke:var(--ink-soft)" stroke-width="1"/>
+        </svg>
+        <span class="cf-hero-dim-v">07:30 · 35 MIN · TRAINING</span>
+      </div>
+      <p class="cf-hero-why">Recovery is guarded for a third morning. Conversational pace only — nose-breathing, no intervals. Protecting tonight's sleep matters more than the session.</p>
+      <div class="cf-herorow"><span class="cf-btn cf-btn--solid">Done</span><span class="cf-btn cf-btn--ghost">Snooze</span></div>
+      <div class="cf-herofoot"><span class="cf-btn cf-btn--bare">Skip</span></div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Readiness</span></div>
+      <div class="cf-verdict"><span class="cf-verdict-cap">Verdict</span>Guarded</div>
+      <div class="cf-pillars">
+        <div class="cf-pillar"><i class="cf-swatch cf-swatch--caution"></i><span>Sleep</span><b class="cf-t-caution">Caution</b></div>
+        <div class="cf-pillar"><i class="cf-swatch cf-swatch--poor"></i><span>Recov</span><b class="cf-t-poor">Poor</b></div>
+        <div class="cf-pillar"><i class="cf-swatch cf-swatch--good"></i><span>Nutr</span><b class="cf-t-good">Good</b></div>
+        <div class="cf-pillar"><i class="cf-swatch cf-swatch--optimal"></i><span>Strain</span><b class="cf-t-optimal">Optimal</b></div>
+      </div>
+      <p class="cf-verdict-line">HRV 41 ms, down from your 30-day 58. Sleep 6h 12m, 72% efficiency. Everything today bends toward recovery.</p>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Today's Mission</span><span class="cf-sec-note"><span class="cf-progress"><span class="cf-ticks"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><b>3 of 11</b></span></span></div>
+      <div class="cf-fold"><svg width="9" height="7" viewBox="0 0 8 6"><use href="#cf-i-caret"/></svg><span class="cf-fold-txt">5 earlier today</span><span class="cf-fold-tally"><b>3 done</b> · 2 skipped</span></div>
+      <div class="cf-mission">
+        <div class="cf-mrow cf-mrow--active">
+          <span class="cf-mcircle cf-mcircle--active"></span>
+          <div>
+            <div class="cf-mrow-line"><span class="cf-mtime">07:30</span><span class="cf-mtitle">Zone 2 — easy 35 min</span><span class="cf-mcat">Training</span></div>
+            <p class="cf-mwhy">This is your next action. Easy effort protects HRV while keeping the aerobic base.</p>
+          </div>
+        </div>
+        <div class="cf-mrow"><span class="cf-mcircle"></span><div class="cf-mrow-line"><span class="cf-mtime">08:30</span><span class="cf-mtitle">Protein breakfast — 40g</span><span class="cf-mcat">Nutrition</span></div></div>
+        <div class="cf-mrow"><span class="cf-mcircle"></span><div class="cf-mrow-line"><span class="cf-mtime">12:30</span><span class="cf-mtitle">Creatine 5g + omega-3</span><span class="cf-mcat">Supplements</span></div></div>
+        <div class="cf-mrow"><span class="cf-mcircle"></span><div class="cf-mrow-line"><span class="cf-mtime">18:00</span><span class="cf-mtitle">Walk 20 min after dinner</span><span class="cf-mcat">Movement</span></div></div>
+        <div class="cf-mrow"><span class="cf-mcircle"></span><div class="cf-mrow-line"><span class="cf-mtime">21:30</span><span class="cf-mtitle">Magnesium glycinate 300mg</span><span class="cf-mcat">Supplements</span></div></div>
+        <div class="cf-mrow"><span class="cf-mcircle"></span><div class="cf-mrow-line"><span class="cf-mtime">22:00</span><span class="cf-mtitle">Screens off · wind-down</span><span class="cf-mcat">Sleep</span></div></div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Coach Brief</span></div>
+      <div class="cf-note">
+        <div class="cf-note-body">Your HRV dropped for the third straight morning and sleep ran short again. This isn't a day to push — I've pulled the intervals and kept cardio easy. Eat protein early, get ten minutes of sun before noon, and treat lights-out at 22:00 as the real workout. One good night resets this.</div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Metrics — Today</span></div>
+      <div class="cf-dims">
+        <div class="cf-dim"><span class="cf-dim-k">Sleep</span><span class="cf-dim-v">6h 12m</span><span class="cf-dim-sub cf-t-caution">72% eff · caution</span></div>
+        <div class="cf-dim"><span class="cf-dim-k">HRV</span><span class="cf-dim-v">41<small>ms</small></span><span class="cf-dim-sub cf-t-poor">↓ from 58 · 30d base</span></div>
+        <div class="cf-dim"><span class="cf-dim-k">Steps</span><span class="cf-dim-v">3,240</span><span class="cf-dim-sub">of 8,000</span></div>
+        <div class="cf-dim"><span class="cf-dim-k">Hydration</span><span class="cf-dim-v">22<small>oz</small></span><span class="cf-dim-sub cf-t-caution">of 90 · caution</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="cf-tabbar">
+    <div class="cf-tab cf-tab--active"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-home"/></svg><span>Home</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-coach"/></svg><span>Coach</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-log"/></svg><span>Log</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-data"/></svg><span>Data</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-settings"/></svg><span>Settings</span></div>
+  </div>
+
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Home</span></div><div>SHEET H-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">01 · HOME</div></div>
+
+<!-- ============================================================ 02 · COACH -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-pagehdr-title" style="font-size:22px">Coach</div>
+
+    <div class="cf-sessline"><span class="cf-presence"></span>Model connected · manage in Settings.<span class="cf-chip" style="margin-left:auto"><span class="cf-chip-dot"></span>OPUS 5</span></div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Daily Brief</span></div>
+      <div class="cf-note">
+        <div class="cf-note-body">Your HRV dropped for the third straight morning and sleep ran short again. This isn't a day to push — I've pulled the intervals and kept cardio easy. Eat protein early, get ten minutes of sun before noon, and treat lights-out at 22:00 as the real workout. One good night resets this.</div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Reminders</span></div>
+      <div class="cf-lrow" style="padding:0">
+        <div class="cf-reminder" style="flex:1">
+          <div class="cf-reminder-body"><div class="cf-reminder-t">Screens off — wind-down</div><div class="cf-reminder-meta">22:00 · daily · via Coach</div></div>
+          <div class="cf-miniacts"><span class="cf-miniact">Done</span><span class="cf-miniact">Dismiss</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Thread</span><span class="cf-sec-note">07:41–07:42</span></div>
+      <div class="cf-thread">
+        <div class="cf-turn"><span class="cf-turn-t">07:41</span><div><div class="cf-turn-who">Coach</div><div class="cf-turn-msg">Morning. Recovery's still guarded — third day down. I've adjusted today to protect it rather than fight it.</div></div></div>
+        <div class="cf-turn cf-turn--user"><span class="cf-turn-t">07:42</span><div><div class="cf-turn-who">You</div><div class="cf-turn-msg">why did you cut my intervals?</div></div></div>
+        <div class="cf-turn"><span class="cf-turn-t">07:42</span><div><div class="cf-turn-who">Coach</div><div class="cf-turn-msg">HRV is <b>41 ms</b> against a 30-day baseline of <b>58</b>, and you've slept under 6.5h twice this week. Hard intervals now dig the hole deeper. Easy Zone 2 keeps the aerobic stimulus without the autonomic cost — we bring intervals back once HRV recovers toward 55.</div></div></div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Proposed Change · Needs Your OK</span></div>
+      <div class="cf-rev">
+        <div class="cf-rev-head">Protocol revision · pending</div>
+        <div class="cf-rev-proto">Base Training</div>
+        <div class="cf-rev-lane">Tuesday · Zone 2 · this week only</div>
+        <div class="cf-rev-hrv">Evidence — HRV 41 vs 58 · 30-day baseline</div>
+        <div class="cf-revtrack">
+          <div class="cf-revbar cf-revbar--ghost" style="width:90%"></div>
+          <div class="cf-revbar--cut" style="left:70%;width:20%"></div>
+          <div class="cf-revbar cf-revbar--new" style="width:70%"></div>
+          <span class="cf-revcap cf-revcap--old" style="left:90%"><i>V1</i>45</span>
+          <span class="cf-revcap cf-revcap--new" style="left:70%"><i>V2</i>35</span>
+        </div>
+        <svg class="cf-dimsvg" viewBox="0 0 300 30" role="img" aria-label="Dimension string: forty-five minutes struck through, reduced to thirty-five minutes, a delta of minus ten minutes.">
+          <line class="cf-dimext" x1="0" y1="0" x2="0" y2="14"/>
+          <line class="cf-dimext" x1="210" y1="0" x2="210" y2="14"/>
+          <line class="cf-dimline" x1="0" y1="14" x2="210" y2="14"/>
+          <polygon class="cf-dimarrow" points="0,14 6,11.5 6,16.5"/>
+          <polygon class="cf-dimarrow" points="210,14 204,11.5 204,16.5"/>
+          <text class="cf-dimtext" x="105" y="26" text-anchor="middle"><tspan class="old">45</tspan><tspan class="unit"> → </tspan><tspan class="new">35 MIN</tspan><tspan class="unit"> · </tspan><tspan class="delta">-10 MIN</tspan></text>
+        </svg>
+        <div class="cf-rev-note">On approve: a new protocol version (v2) is written; v1 is kept.</div>
+        <div class="cf-btnrow cf-btnrow--3"><span class="cf-btn cf-btn--solid">Approve</span><span class="cf-btn cf-btn--ghost">Edit</span><span class="cf-btn cf-btn--bare">Reject</span></div>
+      </div>
+    </div>
+
+    <div class="cf-activity">· reading your data…</div>
+
+    <div class="cf-composer cf-composer--disabled">
+      <svg class="cf-composer-mic" width="12" height="14" viewBox="0 0 14 16"><use href="#cf-i-mic"/></svg>
+      <div class="cf-composer-text">Message Coach…</div>
+      <div class="cf-send cf-send--muted"><svg width="10" height="10" viewBox="0 0 12 12" style="color:var(--paper-hi)"><use href="#cf-i-send"/></svg></div>
+    </div>
+
+  </div>
+
+  <div class="cf-tabbar">
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-home"/></svg><span>Home</span></div>
+    <div class="cf-tab cf-tab--active"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-coach"/></svg><span>Coach</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-log"/></svg><span>Log</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-data"/></svg><span>Data</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-settings"/></svg><span>Settings</span></div>
+  </div>
+
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Coach</span></div><div>SHEET C-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">02 · COACH</div></div>
+
+<!-- ============================================================ 03 · LOG -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-pagehdr-eyebrow">Tuesday, 28 July</div>
+    <div class="cf-pagehdr-title" style="margin-top:-6px">Log</div>
+
+    <div class="cf-block">
+      <div class="cf-command">
+        <div class="cf-command-text">Log anything…</div>
+        <div class="cf-command-btn"><svg width="14" height="15" viewBox="0 0 14 16" style="color:var(--paper-hi)"><use href="#cf-i-mic"/></svg></div>
+      </div>
+      <div class="cf-helper">Type to log. A number with a metric ("weight 178") files it; anything else is saved as a note for Coach.</div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Quick Add</span></div>
+      <div class="cf-tilegrid">
+        <div class="cf-tile"><span class="cf-tile-t">Supplement</span></div>
+        <div class="cf-tile"><span class="cf-tile-t">Water</span></div>
+        <div class="cf-tile"><span class="cf-tile-t">Nutrition</span><svg class="cf-tile-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+        <div class="cf-tile"><span class="cf-tile-t">Weight</span></div>
+        <div class="cf-tile"><span class="cf-tile-t">Therapy</span></div>
+        <div class="cf-tile"><span class="cf-tile-t">Workout</span><svg class="cf-tile-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+      </div>
+    </div>
+
+    <div class="cf-linkrow">
+      <div class="cf-linkrow-body"><div class="cf-linkrow-t">Log a symptom</div><div class="cf-linkrow-s">Headache, pain, GI, energy — with severity</div></div>
+      <svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Logged Today</span></div>
+      <div class="cf-list">
+        <div class="cf-lrow"><span class="cf-lrow-time">14:02</span><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--note">left knee a little stiff after the run</div><div class="cf-lrow-cap">Note · for Coach</div></div></div>
+        <div class="cf-lrow"><span class="cf-lrow-time">13:10</span><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Water +16 oz</div><div class="cf-lrow-cap">Water · 22 oz today</div></div></div>
+        <div class="cf-lrow"><span class="cf-lrow-time">08:40</span><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Weight 178.4 lb</div><div class="cf-lrow-cap">Body</div></div></div>
+        <div class="cf-lrow"><span class="cf-lrow-time">08:05</span><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Creatine 5 g</div><div class="cf-lrow-cap">Supp</div></div></div>
+        <div class="cf-lrow"><span class="cf-lrow-time">07:15</span><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Vitamin D 4000 IU</div><div class="cf-lrow-cap">Supp</div></div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="cf-tabbar">
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-home"/></svg><span>Home</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-coach"/></svg><span>Coach</span></div>
+    <div class="cf-tab cf-tab--active"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-log"/></svg><span>Log</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-data"/></svg><span>Data</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-settings"/></svg><span>Settings</span></div>
+  </div>
+
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Log</span></div><div>SHEET L-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">03 · LOG</div></div>
+
+<!-- ============================================================ 04 · KEYPAD -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-stackhdr">
+      <div class="cf-back"><svg width="9" height="14" viewBox="0 0 9 14"><use href="#cf-i-back"/></svg><span>Log</span></div>
+      <div class="cf-stack-title">Weight</div>
+    </div>
+
+    <div class="cf-chiprail">
+      <span class="cf-metricchip cf-metricchip--active">Weight</span>
+      <span class="cf-metricchip">Water</span>
+      <span class="cf-metricchip">Body-fat</span>
+      <span class="cf-metricchip">Waist</span>
+      <span class="cf-metricchip">HRV</span>
+      <span class="cf-metricchip">Resting HR</span>
+      <span class="cf-metricchip">Dose</span>
+    </div>
+
+    <div class="cf-readout"><span class="cf-readout-v">178.0<small>lb</small></span></div>
+    <div class="cf-recent">Last 178.4 lb</div>
+
+    <div class="cf-keys">
+      <span class="cf-key">1</span><span class="cf-key">2</span><span class="cf-key">3</span>
+      <span class="cf-key">4</span><span class="cf-key">5</span><span class="cf-key">6</span>
+      <span class="cf-key">7</span><span class="cf-key">8</span><span class="cf-key">9</span>
+      <span class="cf-key cf-key--fn">.</span><span class="cf-key">0</span><span class="cf-key cf-key--fn">⌫</span>
+    </div>
+
+    <span class="cf-btn cf-btn--solid cf-btn--block">Log Weight</span>
+
+  </div>
+
+  <div class="cf-homebar"><span></span></div>
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Keypad</span></div><div>SHEET K-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">04 · KEYPAD</div></div>
+
+<!-- ============================================================ 05 · NUTRITION -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-stackhdr">
+      <div class="cf-back"><svg width="9" height="14" viewBox="0 0 9 14"><use href="#cf-i-back"/></svg><span>Log</span></div>
+      <div class="cf-stack-title">Nutrition</div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Today</span></div>
+      <div class="cf-kcal"><span class="cf-kcal-v">2,180</span><span class="cf-kcal-of">of 2,400 kcal target</span></div>
+      <div class="cf-bartrack"><span class="cf-barfill" style="width:90.8%"></span></div>
+      <div class="cf-macros">
+        <div><div class="cf-macro-k">Protein</div><div class="cf-macro-v">132<small>/180g</small></div><div class="cf-bartrack"><span class="cf-barfill" style="width:73%"></span></div></div>
+        <div><div class="cf-macro-k">Carbs</div><div class="cf-macro-v">210<small>g</small></div><div class="cf-macro-note">not targeted</div></div>
+        <div><div class="cf-macro-k">Fat</div><div class="cf-macro-v">68<small>g</small></div><div class="cf-macro-note">not targeted</div></div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Log A Meal</span></div>
+      <div class="cf-card cf-card--accent">
+        <div class="cf-card-eyebrow">Describe or snap a meal</div>
+        <div class="cf-capturefield">
+          <div class="cf-capturefield-text">Type it, or photograph the plate…</div>
+          <div class="cf-capturefield-btn"><svg width="15" height="13" viewBox="0 0 16 14" style="color:var(--paper-hi)"><use href="#cf-i-camera"/></svg></div>
+        </div>
+        <div class="cf-capturefield-sub">You review before it logs.</div>
+        <span class="cf-needsbuild">Photo &amp; barcode arrive with the camera build.</span>
+        <div class="cf-card-2up">
+          <span class="cf-btn cf-btn--ghost">Add food</span>
+          <span class="cf-btn cf-btn--ghost">Scan</span>
+        </div>
+      </div>
+      <div class="cf-form">
+        <div class="cf-frow"><span class="cf-frow-k">Meal</span><span class="cf-frow-v placeholder">e.g. Salmon + lentils</span></div>
+        <div class="cf-frow"><span class="cf-frow-k">Time</span><span class="cf-frow-v">12:30</span></div>
+        <div class="cf-frow"><span class="cf-frow-k">kcal</span><span class="cf-frow-v placeholder">—</span></div>
+        <div class="cf-frow"><span class="cf-frow-k">Protein g</span><span class="cf-frow-v placeholder">—</span></div>
+        <div class="cf-frow"><span class="cf-frow-k">Carbs g</span><span class="cf-frow-v placeholder">—</span></div>
+        <div class="cf-frow"><span class="cf-frow-k">Fat g</span><span class="cf-frow-v placeholder">—</span></div>
+        <span class="cf-btn cf-btn--ghost">Save meal</span>
+      </div>
+      <div class="cf-linkrow"><div class="cf-linkrow-body"><div class="cf-linkrow-t">From a template</div></div><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Eaten Today</span></div>
+      <div class="cf-list">
+        <div class="cf-lrow"><span class="cf-lrow-time">08:30</span><div class="cf-lrow-body"><div class="cf-lrow-t">Protein breakfast</div><div class="cf-lrow-cap">40P</div></div><span class="cf-lrow-meta">620<small>kcal</small></span></div>
+        <div class="cf-lrow"><span class="cf-lrow-time">12:40</span><div class="cf-lrow-body"><div class="cf-lrow-t">Salmon + lentils</div><div class="cf-lrow-cap">42P · 55C · 18F · 3 items</div></div><span class="cf-lrow-meta">740<small>kcal</small></span></div>
+        <div class="cf-lrow"><span class="cf-lrow-time">16:10</span><div class="cf-lrow-body"><div class="cf-lrow-t">Greek yogurt + berries</div><div class="cf-lrow-cap">20P</div></div><span class="cf-lrow-meta">280<small>kcal</small></span></div>
+        <div class="cf-lrow"><span class="cf-lrow-time">17:20</span><div class="cf-lrow-body"><div class="cf-lrow-t">Yogurt bowl + almonds</div><div class="cf-lrow-cap">30P</div></div><span class="cf-lrow-meta">540<small>kcal</small></span></div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Review</span></div>
+      <div class="cf-linkrow"><div class="cf-linkrow-body"><div class="cf-linkrow-t">Micronutrients</div><div class="cf-linkrow-s">Today's totals vs reference</div></div><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+      <div class="cf-linkrow" style="margin-top:7px"><div class="cf-linkrow-body"><div class="cf-linkrow-t">History</div><div class="cf-linkrow-s">Energy &amp; macros over time</div></div><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+    </div>
+
+  </div>
+
+  <div class="cf-homebar"><span></span></div>
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Nutrition</span></div><div>SHEET N-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">05 · NUTRITION</div></div>
+
+<!-- ============================================================ 06 · EXERCISE -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-stackhdr">
+      <div class="cf-back"><svg width="9" height="14" viewBox="0 0 9 14"><use href="#cf-i-back"/></svg><span>Log</span></div>
+      <div class="cf-stack-title">Exercise</div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Train Today</span><span class="cf-sec-note">Base Block · wk 3 of 8</span></div>
+      <div class="cf-card cf-card--accent">
+        <div class="cf-card-title" style="margin-bottom:0">Lower A — Squat focus</div>
+        <div class="cf-exnames">Squat · RDL · Split squat · Calf raise</div>
+        <div class="cf-freshmeter">
+          <div class="cf-freshpin" style="left:82%"><span class="cf-freshpin-v">82% FRESH</span></div>
+          <div class="cf-freshtrack"><span class="cf-freshfill" style="width:82%"></span><span class="cf-freshtick" style="left:25%"></span><span class="cf-freshtick" style="left:50%"></span><span class="cf-freshtick" style="left:75%"></span></div>
+          <div class="cf-freshscale"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+        </div>
+        <p class="cf-card-body" style="margin-top:14px;margin-bottom:11px">Recovery is guarded — keep loads at RPE 7 and stop two reps shy.</p>
+        <span class="cf-btn cf-btn--solid cf-btn--block">Start</span>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Weekly Volume</span></div>
+      <p class="cf-verdict-line" style="max-width:none">On track — every trained muscle is inside its productive range this week.</p>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Muscle Freshness</span></div>
+      <div>
+        <div class="cf-mrow2"><span class="cf-mrow2-name">Quads</span><div class="cf-mrow2-bar"><span class="cf-mrow2-fill cf-mrow2-fill--optimal" style="width:82%"></span></div><span class="cf-mrow2-v cf-t-optimal">82%</span></div>
+        <div class="cf-mrow2"><span class="cf-mrow2-name">Hamstrings</span><div class="cf-mrow2-bar"><span class="cf-mrow2-fill cf-mrow2-fill--caution" style="width:64%"></span></div><span class="cf-mrow2-v cf-t-caution">64%</span></div>
+        <div class="cf-mrow2"><span class="cf-mrow2-name">Back</span><div class="cf-mrow2-bar"><span class="cf-mrow2-fill cf-mrow2-fill--optimal" style="width:91%"></span></div><span class="cf-mrow2-v cf-t-optimal">91%</span></div>
+        <div class="cf-mrow2"><span class="cf-mrow2-name">Chest</span><div class="cf-mrow2-bar"><span class="cf-mrow2-fill cf-mrow2-fill--poor" style="width:45%"></span></div><span class="cf-mrow2-v cf-t-poor">45%</span></div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">This Week</span></div>
+      <div class="cf-cols3">
+        <div><div class="cf-col3-k">Zone 2</div><div class="cf-col3-v">35<small>min</small></div></div>
+        <div><div class="cf-col3-k">Strength</div><div class="cf-col3-v">3<small>sess</small></div></div>
+        <div><div class="cf-col3-k">VO₂max</div><div class="cf-col3-v">—</div><div class="cf-col3-sub">no wearable yet</div></div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Programs</span></div>
+      <div class="cf-progcard">
+        <div class="cf-progcard-head"><span class="cf-progcard-name">Base Block</span><span class="cf-progchip">Week 3</span></div>
+        <div class="cf-progcard-foot"><span class="cf-progcard-type">Running</span><span class="cf-progcard-ver">8 wk · 4 days</span></div>
+      </div>
+      <span class="cf-btn cf-btn--ghost cf-btn--block" style="margin-top:9px">+ New program</span>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Routines</span></div>
+      <div class="cf-progcard">
+        <div class="cf-progcard-head">
+          <span class="cf-progcard-name">Lower A — Squat focus</span>
+          <svg class="cf-pencil" width="11" height="11" viewBox="0 0 16 16"><use href="#cf-i-pencil"/></svg>
+        </div>
+        <div class="cf-progcard-sub">Tap to start · last Tuesday</div>
+        <div class="cf-progcard-foot"><span class="cf-progcard-type">Base Block</span><span class="cf-progcard-ver">4 ex · 14 sets</span></div>
+      </div>
+      <span class="cf-btn cf-btn--ghost cf-btn--block" style="margin-top:9px">+ New routine</span>
+    </div>
+
+    <div class="cf-linkrow">
+      <div class="cf-linkrow-body"><div class="cf-linkrow-t">Quick log</div><div class="cf-linkrow-s">Cardio, mobility, or a past session</div></div>
+      <svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Recent Sessions</span></div>
+      <div class="cf-list">
+        <div class="cf-lrow"><span class="cf-lrow-day">Mon</span><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Upper A — Push focus</div><div class="cf-lrow-cap">Strength</div></div><span class="cf-lrow-meta">5 ex<small>16 sets</small></span></div>
+        <div class="cf-lrow"><span class="cf-lrow-day">Sun</span><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Zone 2 — easy run</div><div class="cf-lrow-cap">Cardio</div></div><span class="cf-lrow-meta">35<small>min</small></span></div>
+        <div class="cf-lrow"><span class="cf-lrow-day">Sat</span><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Lower B — Hinge focus</div><div class="cf-lrow-cap">Strength</div></div><span class="cf-lrow-meta">6 ex<small>18 sets</small></span></div>
+        <div class="cf-lrow"><span class="cf-lrow-day">Thu</span><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Upper B — Pull focus</div><div class="cf-lrow-cap">Strength</div></div><span class="cf-lrow-meta">5 ex<small>14 sets</small></span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="cf-homebar"><span></span></div>
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Exercise</span></div><div>SHEET E-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">06 · EXERCISE</div></div>
+
+<!-- ============================================================ 07 · DATA -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-pagehdr-eyebrow">Tue · Jul 28</div>
+    <div class="cf-pagehdr-title" style="margin-top:-6px;font-size:22px">Data</div>
+
+    <div class="cf-card cf-card--accent">
+      <div class="cf-card-eyebrow">Bring in your bloodwork</div>
+      <div class="cf-card-body">Function Health PDF → 160+ biomarkers, parsed on-device.</div>
+      <span class="cf-btn cf-btn--solid cf-btn--block">Preview lab ranges</span>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Trends</span></div>
+      <div class="cf-list">
+        <div class="cf-trendrow">
+          <div class="cf-trendrow-body"><div class="cf-trendrow-t">Weight</div><div class="cf-trendrow-s">Last 30 days</div></div>
+          <svg class="cf-trendrow-spark" width="46" height="18" viewBox="0 0 64 20"><polyline points="0,2.0 10.67,4.46 21.33,8.15 32,11.85 42.67,11.23 53.33,14.92 64,18" fill="none" style="stroke:var(--ink-soft)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><circle cx="64" cy="18" r="2" style="fill:var(--ink)"/></svg>
+          <div class="cf-trendrow-meta"><span class="cf-trendrow-val">178.4<small>lb</small></span><span class="cf-trendrow-delta">↓ 2.6 lb</span></div>
+        </div>
+        <div class="cf-trendrow">
+          <div class="cf-trendrow-body"><div class="cf-trendrow-t">Nutrition</div><div class="cf-trendrow-s">Energy today</div></div>
+          <svg class="cf-trendrow-spark" width="46" height="18" viewBox="0 0 64 20"><polyline points="0,7.16 10.67,14.90 21.33,2 32,18 42.67,9.74 53.33,16.19 64,12.84" fill="none" style="stroke:var(--ink-soft)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><circle cx="64" cy="12.84" r="2" style="fill:var(--ink)"/></svg>
+          <div class="cf-trendrow-meta"><span class="cf-trendrow-val">2,180<small>kcal</small></span><span class="cf-trendrow-delta">today</span></div>
+        </div>
+        <div class="cf-trendrow">
+          <div class="cf-trendrow-body"><div class="cf-trendrow-t">Training</div><div class="cf-trendrow-s">Zone 2 · this week</div></div>
+          <svg class="cf-trendrow-spark" width="46" height="18" viewBox="0 0 64 20"><polyline points="0,18 10.67,10 21.33,10 32,2 42.67,10 53.33,2 64,2" fill="none" style="stroke:var(--ink-soft)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><circle cx="64" cy="2" r="2" style="fill:var(--ink)"/></svg>
+          <div class="cf-trendrow-meta"><span class="cf-trendrow-val">35<small>min</small></span><span class="cf-trendrow-delta">4 sess/wk</span></div>
+        </div>
+        <div class="cf-trendrow">
+          <div class="cf-trendrow-body"><div class="cf-trendrow-t">Symptoms</div><div class="cf-trendrow-s">Last 14 days</div></div>
+          <svg class="cf-trendrow-spark" width="46" height="18" viewBox="0 0 64 20"><polyline points="0,18 10.67,10 21.33,18 32,2 42.67,10 53.33,18 64,2" fill="none" style="stroke:var(--ink-soft)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><circle cx="64" cy="2" r="2" style="fill:var(--ink)"/></svg>
+          <div class="cf-trendrow-meta"><span class="cf-trendrow-val">2<small>today</small></span><span class="cf-trendrow-delta">2 this wk</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Biomarkers</span><span class="cf-sec-note">no readings yet</span></div>
+      <div>
+        <div class="cf-brow"><div><span class="cf-brow-name">ApoB</span><span class="cf-brow-range">optimal &lt; 80 mg/dL</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">LDL Cholesterol</span><span class="cf-brow-range">optimal &lt; 100 mg/dL</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">HDL Cholesterol</span><span class="cf-brow-range">optimal &gt; 50 mg/dL</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">Triglycerides</span><span class="cf-brow-range">optimal &lt; 80 mg/dL</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">Lp(a)</span><span class="cf-brow-range">optimal &lt; 75 nmol/L</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">Homocysteine</span><span class="cf-brow-range">optimal &lt; 9 umol/L</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">hs-CRP</span><span class="cf-brow-range">optimal &lt; 1 mg/L</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">HbA1c</span><span class="cf-brow-range">optimal &lt; 5.4%</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">Fasting Glucose</span><span class="cf-brow-range">optimal 70–90 mg/dL</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">Fasting Insulin</span><span class="cf-brow-range">optimal &lt; 5 uIU/mL</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">Vitamin D</span><span class="cf-brow-range">optimal 40–60 ng/mL</span></div><span class="cf-brow-val">No reading yet</span></div>
+        <div class="cf-brow"><div><span class="cf-brow-name">Ferritin</span><span class="cf-brow-range">optimal 30–150 ng/mL</span></div><span class="cf-brow-val">No reading yet</span></div>
+      </div>
+      <div class="cf-lrow cf-lrow--tap" style="padding-left:0;padding-right:0"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">See all reference ranges</div><div class="cf-lrow-cap" style="text-transform:none;margin-top:1px">Import labs to populate</div></div><svg class="cf-lrow-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">The Full File</span></div>
+      <div class="cf-list">
+        <div class="cf-lrow cf-lrow--tap"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Labs &amp; reports</div></div><span class="cf-lrow-tag">Set up</span><svg class="cf-lrow-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+        <div class="cf-lrow cf-lrow--tap"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Protocols</div><div class="cf-lrow-sub">3 active · versioned</div></div><span class="cf-lrow-tag">Open ›</span></div>
+        <div class="cf-lrow cf-lrow--tap"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Screenings &amp; calendar</div><div class="cf-lrow-sub">colonoscopy in 3 wks</div></div><span class="cf-lrow-tag">Open ›</span></div>
+        <div class="cf-lrow cf-lrow--muted"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Progress photos</div></div><span class="cf-lrow-tag">Later</span></div>
+        <div class="cf-lrow cf-lrow--muted"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Knowledge base</div></div><span class="cf-lrow-tag">Later</span></div>
+        <div class="cf-lrow cf-lrow--muted"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Reports &amp; export</div></div><span class="cf-lrow-tag">Later</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="cf-tabbar">
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-home"/></svg><span>Home</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-coach"/></svg><span>Coach</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-log"/></svg><span>Log</span></div>
+    <div class="cf-tab cf-tab--active"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-data"/></svg><span>Data</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-settings"/></svg><span>Settings</span></div>
+  </div>
+
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Data</span></div><div>SHEET D-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">07 · DATA</div></div>
+
+<!-- ============================================================ 08 · PROTOCOLS -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-stackhdr">
+      <div class="cf-back"><svg width="9" height="14" viewBox="0 0 9 14"><use href="#cf-i-back"/></svg><span>Data</span></div>
+      <div class="cf-stack-title">Protocols</div>
+    </div>
+
+    <span class="cf-btn cf-btn--solid cf-btn--block">+ New protocol</span>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Your Protocols</span></div>
+      <div class="cf-protocard">
+        <div class="cf-protocard-head"><span class="cf-protocard-name">Morning Stack</span><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+        <div class="cf-protocard-desc">Creatine, vitamin D, omega-3 — taken with breakfast.</div>
+        <div class="cf-protocard-foot"><span class="cf-protocard-type">Supplement stack</span><span class="cf-protocard-ver">v4 · 6 items</span></div>
+      </div>
+      <div class="cf-protocard" style="margin-top:9px">
+        <div class="cf-protocard-head"><span class="cf-protocard-name">Base Training</span><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+        <div class="cf-protocard-rev">Proposed: reduce Tue Z2 — HRV guarded · awaiting your OK</div>
+        <div class="cf-protocard-foot"><span class="cf-protocard-type">Training block</span><span class="cf-protocard-ver">v1 · 4 items</span></div>
+      </div>
+      <div class="cf-protocard" style="margin-top:9px">
+        <div class="cf-protocard-head"><span class="cf-protocard-name">Evening Wind-down</span><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+        <div class="cf-protocard-desc">Magnesium, screens off, lights out by 22:00.</div>
+        <div class="cf-protocard-foot"><span class="cf-protocard-type">Daily routine</span><span class="cf-protocard-ver">v1 · 3 items</span></div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Base Training — Version History</span></div>
+      <div class="cf-vhist">
+        <div class="cf-vnode-row">
+          <span class="cf-vnode cf-vnode--proposed"></span>
+          <div><span class="cf-vnode-ver">v2</span><span class="cf-vnode-date">proposed · awaiting your OK</span><div class="cf-vnode-note">Reduce Tuesday Zone 2 from 45 to 35 min, this week only — HRV guarded. Written only on approve.</div></div>
+        </div>
+        <div class="cf-vnode-row">
+          <span class="cf-vnode cf-vnode--current"></span>
+          <div><span class="cf-vnode-ver">v1</span><span class="cf-vnode-date">3 Jul 26 · current</span><div class="cf-vnode-note">Original block — Tuesday Zone 2 at 45 min.</div></div>
+        </div>
+        <div class="cf-vhist-cap">Every save keeps the version before it — history is never lost.</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="cf-homebar"><span></span></div>
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Protocols</span></div><div>SHEET P-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">08 · PROTOCOLS</div></div>
+
+<!-- ============================================================ 09 · SCREENINGS -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-stackhdr">
+      <div class="cf-back"><svg width="9" height="14" viewBox="0 0 9 14"><use href="#cf-i-back"/></svg><span>Data</span></div>
+      <div class="cf-stack-title">Screenings</div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Preventive Horizon</span><span class="cf-sec-note">AUG–JAN</span></div>
+      <div class="cf-axiswrap">
+        <svg class="cf-axis-svg" viewBox="0 0 316 70" role="img" aria-label="A six month horizon from August to January. A milestone diamond for the colonoscopy sits three weeks out, just past the August mark. A second diamond for the yearly skin check sits at September 12. The undated DEXA is not plotted.">
+          <line class="cf-axis-line" x1="20" y1="40" x2="300" y2="40"/>
+          <line class="cf-stake--now" x1="20" y1="30" x2="20" y2="50"/>
+          <polygon class="cf-now-flag" points="16,23 24,23 20,29"/>
+          <line class="cf-stake" x1="76" y1="36" x2="76" y2="44"/>
+          <line class="cf-stake" x1="132" y1="36" x2="132" y2="44"/>
+          <line class="cf-stake" x1="188" y1="36" x2="188" y2="44"/>
+          <line class="cf-stake" x1="244" y1="36" x2="244" y2="44"/>
+          <line class="cf-stake" x1="300" y1="36" x2="300" y2="44"/>
+          <text class="cf-svg-cap strong" x="20" y="62" text-anchor="middle">AUG</text>
+          <text class="cf-svg-cap faint" x="76" y="62" text-anchor="middle">SEP</text>
+          <text class="cf-svg-cap faint" x="132" y="62" text-anchor="middle">OCT</text>
+          <text class="cf-svg-cap faint" x="188" y="62" text-anchor="middle">NOV</text>
+          <text class="cf-svg-cap faint" x="244" y="62" text-anchor="middle">DEC</text>
+          <text class="cf-svg-cap faint" x="300" y="62" text-anchor="middle">JAN</text>
+          <polygon class="cf-diamond--near" points="52.5,32 58.5,40 52.5,48 46.5,40"/>
+          <text class="cf-svg-cap strong" x="52.5" y="20" text-anchor="middle">+3WK</text>
+          <text class="cf-svg-cap faint" x="52.5" y="9" text-anchor="middle">COLONOSCOPY</text>
+          <polygon class="cf-diamond" points="97.7,33 102.7,40 97.7,47 92.7,40"/>
+          <text class="cf-svg-cap faint" x="97.7" y="22" text-anchor="middle">SKIN CHECK</text>
+        </svg>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-groupcap">Due soon</div>
+      <div class="cf-lrow"><div class="cf-lrow-body"><div class="cf-lrow-t">Colonoscopy</div><div class="cf-lrow-sub">Colorectal · every 10 years</div></div><span class="cf-lrow-meta">in 3 weeks</span><svg class="cf-lrow-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+      <div class="cf-groupcap">Scheduled</div>
+      <div class="cf-lrow"><div class="cf-lrow-body"><div class="cf-lrow-t">Skin check</div><div class="cf-lrow-sub">Dermatology · yearly</div></div><span class="cf-lrow-meta">Sep 12</span><svg class="cf-lrow-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+      <div class="cf-groupcap">Not scheduled</div>
+      <div class="cf-lrow"><div class="cf-lrow-body"><div class="cf-lrow-t">DEXA</div><div class="cf-lrow-sub">Imaging · every 2 years</div></div><span class="cf-lrow-meta" style="color:var(--ink-faint)">No date</span><svg class="cf-lrow-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+    </div>
+
+    <span class="cf-btn cf-btn--solid cf-btn--block">+ Add screening</span>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Calendar</span></div>
+      <div class="cf-lrow"><div class="cf-lrow-body"><div class="cf-lrow-t">Colonoscopy</div><div class="cf-lrow-sub">Dr. Patel · Denver GI</div></div><span class="cf-lrow-meta">Aug 18<small>09:00</small></span></div>
+      <span class="cf-btn cf-btn--ghost cf-btn--block" style="margin-top:9px">+ Add to calendar</span>
+    </div>
+
+  </div>
+
+  <div class="cf-homebar"><span></span></div>
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Screenings</span></div><div>SHEET S-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">09 · SCREENINGS</div></div>
+
+<!-- ============================================================ 10 · SETTINGS -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-pagehdr-title" style="font-size:22px">Settings</div>
+
+    <div class="cf-list">
+      <div class="cf-lrow cf-lrow--tap"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Profile</div><div class="cf-lrow-sub">Matt</div></div><svg class="cf-lrow-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+      <div class="cf-lrow cf-lrow--tap"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Units</div><div class="cf-lrow-sub">Weight, distance, and more</div></div><svg class="cf-lrow-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+      <div class="cf-lrow cf-lrow--tap"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Coach</div><div class="cf-lrow-sub">Model connected</div></div><svg class="cf-lrow-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Not Yet Built</span></div>
+      <div class="cf-list">
+        <div class="cf-lrow cf-lrow--muted"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">App lock — Face ID</div></div><span class="cf-lrow-tag">Needs a build</span></div>
+        <div class="cf-lrow cf-lrow--muted"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Apple Health</div></div><span class="cf-lrow-tag">Needs a build</span></div>
+        <div class="cf-lrow cf-lrow--muted"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Backup &amp; restore</div><div class="cf-lrow-sub">Encrypted iCloud snapshot · Phase 4</div></div><span class="cf-lrow-tag">Soon</span></div>
+        <div class="cf-lrow cf-lrow--muted"><div class="cf-lrow-body"><div class="cf-lrow-t cf-lrow-t--sans">Data export</div></div><span class="cf-lrow-tag">Soon</span></div>
+      </div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">About</span></div>
+      <div class="cf-about">
+        <div class="cf-about-brand">ARC</div>
+        <div class="cf-about-name">Architecture for Resilience &amp; Continuity</div>
+        <div style="margin-top:5px">v0.1.0</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="cf-tabbar">
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-home"/></svg><span>Home</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-coach"/></svg><span>Coach</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-log"/></svg><span>Log</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-data"/></svg><span>Data</span></div>
+    <div class="cf-tab cf-tab--active"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-settings"/></svg><span>Settings</span></div>
+  </div>
+
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Settings</span></div><div>SHEET ST-01</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">10 · SETTINGS</div></div>
+
+</div>
+
+<div class="cf-rowcap">Alternate states</div>
+
+<div class="cf-row">
+
+<!-- ============================================================ 11 · HOME — TODAY IS HANDLED -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-brandrow">
+      <div class="cf-brand"><b>ARC</b> &nbsp;·&nbsp; TUE 28 JUL</div>
+      <span class="cf-modechip">Normal</span>
+    </div>
+
+    <div class="cf-card" style="text-align:center;padding:24px 16px 22px">
+      <div class="cf-donecircle"><svg width="13" height="11" viewBox="0 0 12 10"><use href="#cf-i-check"/></svg></div>
+      <div class="cf-card-title" style="font-size:20px;margin-bottom:6px">Today is handled.</div>
+      <div class="cf-card-body" style="margin-bottom:0;max-width:28ch;margin-left:auto;margin-right:auto">All 11 mission items are settled — 9 done, 2 skipped. Nothing left needs you today.</div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Today's Mission</span><span class="cf-sec-note"><span class="cf-progress"><span class="cf-ticks"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><b>9 of 11</b></span></span></div>
+      <div class="cf-fold"><svg width="9" height="7" viewBox="0 0 8 6"><use href="#cf-i-caret"/></svg><span class="cf-fold-txt">11 earlier today</span><span class="cf-fold-tally"><b>9 done</b> · 2 skipped</span></div>
+    </div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Coach Brief</span></div>
+      <div class="cf-note">
+        <div class="cf-note-body">Your HRV dropped for the third straight morning and sleep ran short again. This isn't a day to push — I've pulled the intervals and kept cardio easy. Eat protein early, get ten minutes of sun before noon, and treat lights-out at 22:00 as the real workout. One good night resets this.</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="cf-tabbar">
+    <div class="cf-tab cf-tab--active"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-home"/></svg><span>Home</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-coach"/></svg><span>Coach</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-log"/></svg><span>Log</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-data"/></svg><span>Data</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-settings"/></svg><span>Settings</span></div>
+  </div>
+
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Home</span></div><div>SHEET H-02</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">11 · HOME — TODAY IS HANDLED</div></div>
+
+<!-- ============================================================ 12 · COACH — PREVIEW MODE -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-pagehdr-title" style="font-size:22px">Coach</div>
+
+    <div class="cf-sessline"><span class="cf-presence" style="background:var(--paper-line)"></span>Preview mode — no model connected.<span class="cf-chip" style="margin-left:auto"><span class="cf-chip-dot"></span>PREVIEW</span></div>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Suggested Prompts</span></div>
+      <div class="cf-linkrow"><div class="cf-linkrow-body"><div class="cf-linkrow-t">How's my recovery today?</div></div><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+      <div class="cf-linkrow" style="margin-top:7px"><div class="cf-linkrow-body"><div class="cf-linkrow-t">What should I prioritize?</div></div><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+      <div class="cf-linkrow" style="margin-top:7px"><div class="cf-linkrow-body"><div class="cf-linkrow-t">Adjust today's plan</div></div><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+      <div class="cf-linkrow" style="margin-top:7px"><div class="cf-linkrow-body"><div class="cf-linkrow-t">Explain my HRV trend</div></div><svg class="cf-chev" width="7" height="11" viewBox="0 0 7 11"><use href="#cf-i-chev"/></svg></div>
+    </div>
+
+    <div class="cf-composer">
+      <svg class="cf-composer-mic" width="12" height="14" viewBox="0 0 14 16"><use href="#cf-i-mic"/></svg>
+      <div class="cf-composer-text">Message the Coach</div>
+      <div class="cf-send cf-send--muted"><svg width="10" height="10" viewBox="0 0 12 12" style="color:var(--paper-hi)"><use href="#cf-i-send"/></svg></div>
+    </div>
+
+  </div>
+
+  <div class="cf-tabbar">
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-home"/></svg><span>Home</span></div>
+    <div class="cf-tab cf-tab--active"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-coach"/></svg><span>Coach</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-log"/></svg><span>Log</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-data"/></svg><span>Data</span></div>
+    <div class="cf-tab"><svg width="16" height="16" viewBox="0 0 18 18"><use href="#cf-i-tab-settings"/></svg><span>Settings</span></div>
+  </div>
+
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Coach</span></div><div>SHEET C-02</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">12 · COACH — PREVIEW MODE</div></div>
+
+<!-- ============================================================ 13 · SCREENINGS — EMPTY LEDGER -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-stackhdr">
+      <div class="cf-back"><svg width="9" height="14" viewBox="0 0 9 14"><use href="#cf-i-back"/></svg><span>Data</span></div>
+      <div class="cf-stack-title">Screenings</div>
+    </div>
+
+    <div class="cf-card" style="padding:20px 16px 18px">
+      <div class="cf-card-title">The preventive ledger</div>
+      <div class="cf-card-body" style="margin-bottom:0">The exams that guard the long game — colonoscopy, skin checks, imaging, dental, vision — each with its cadence, so nothing quietly slips a year.</div>
+    </div>
+
+    <span class="cf-btn cf-btn--solid cf-btn--block">+ Add screening</span>
+
+    <div class="cf-block">
+      <div class="cf-sec"><span class="cf-sec-t">Calendar</span></div>
+      <div class="cf-lrow"><div class="cf-lrow-body"><div class="cf-lrow-t" style="color:var(--ink-faint);font-style:italic">Nothing booked.</div></div></div>
+      <span class="cf-btn cf-btn--ghost cf-btn--block" style="margin-top:9px">+ Add to calendar</span>
+    </div>
+
+  </div>
+
+  <div class="cf-homebar"><span></span></div>
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Screenings</span></div><div>SHEET S-02</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">13 · SCREENINGS — EMPTY LEDGER</div></div>
+
+<!-- ============================================================ 14 · KEYPAD — WATER QUICK-ADDS (blank state) -->
+<div class="cf-unit"><div class="cf-phone">
+<span class="cf-reg cf-reg--tl"></span><span class="cf-reg cf-reg--br"></span>
+<div class="cf-screen">
+
+  <div class="cf-statusbar">
+    <span class="cf-statustime">9:41</span>
+    <span class="cf-statusglyphs"><svg width="16" height="11" viewBox="0 0 18 12"><use href="#cf-i-signal"/></svg><svg width="14" height="10" viewBox="0 0 16 12"><use href="#cf-i-wifi"/></svg><svg width="22" height="11" viewBox="0 0 25 12"><use href="#cf-i-battery"/></svg></span>
+  </div>
+
+  <div class="cf-content">
+
+    <div class="cf-stackhdr">
+      <div class="cf-back"><svg width="9" height="14" viewBox="0 0 9 14"><use href="#cf-i-back"/></svg><span>Log</span></div>
+      <div class="cf-stack-title">Water</div>
+    </div>
+
+    <div class="cf-chiprail">
+      <span class="cf-metricchip">Weight</span>
+      <span class="cf-metricchip cf-metricchip--active">Water</span>
+      <span class="cf-metricchip">Body-fat</span>
+      <span class="cf-metricchip">Waist</span>
+      <span class="cf-metricchip">HRV</span>
+      <span class="cf-metricchip">Resting HR</span>
+      <span class="cf-metricchip">Dose</span>
+    </div>
+
+    <div class="cf-readout"><span class="cf-readout-v" style="color:var(--ink-faint)">0<small>oz</small></span></div>
+    <div class="cf-recent">22 oz logged today — usually auto from Apple Health</div>
+
+    <div class="cf-quickadds">
+      <span class="cf-quickadd">Glass +8 oz</span>
+      <span class="cf-quickadd">Bottle +16 oz</span>
+      <span class="cf-quickadd">Large +24 oz</span>
+    </div>
+
+    <div class="cf-keys">
+      <span class="cf-key">1</span><span class="cf-key">2</span><span class="cf-key">3</span>
+      <span class="cf-key">4</span><span class="cf-key">5</span><span class="cf-key">6</span>
+      <span class="cf-key">7</span><span class="cf-key">8</span><span class="cf-key">9</span>
+      <span class="cf-key cf-key--fn">.</span><span class="cf-key">0</span><span class="cf-key cf-key--fn">⌫</span>
+    </div>
+
+    <span class="cf-btn cf-btn--disabled cf-btn--block">Log Water</span>
+
+  </div>
+
+  <div class="cf-homebar"><span></span></div>
+</div></div>
+<div class="cf-tblock"><div><span class="cf-tblock-name">Keypad</span></div><div>SHEET K-02</div><div>SCALE NTS</div><div>28 JUL 26</div></div>
+<div class="cf-unit-label">14 · KEYPAD — WATER QUICK-ADDS</div></div>
+
+</div>
+
+</section>
+  </div>
+</div>
+
+<script>
+function setAccent(mode){
+  document.querySelectorAll('.stage > section.concept').forEach(s=>{
+    if(mode==='red'){ s.setAttribute('data-accent','red'); } else { s.removeAttribute('data-accent'); }
+  });
+  document.querySelectorAll('.acc-btn').forEach(b=>b.setAttribute('aria-pressed', b.dataset.acc===mode ? 'true':'false'));
+}
+document.querySelectorAll('.acc-btn').forEach(b=>b.addEventListener('click',()=>setAccent(b.dataset.acc)));
+setAccent('petrol');
+
+</script>

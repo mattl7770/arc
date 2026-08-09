@@ -2,7 +2,7 @@
 
 **Living document.** This is the running board for what's done, what's next, and how the app is put together. Update it in the same change that changes reality — a status line that lies is worse than none.
 
-**Last updated:** 2026-08-08
+**Last updated:** 2026-08-09 (§3 doc-truth pass: the text floor, the hairline contrast, four drifted counts, and the dead-token wording — every figure re-measured, commands quoted inline)
 **Current phase:** Foundation → the local data layer and the whole Log-tab capture surface are real; Labs + Wearables are the first ingestion pipelines
 **Describes:** `main`. (This file deliberately no longer names a working branch — a branch name in a doc is stale the day the branch merges. Feature work happens on short-lived `claude/*` branches and this file is updated as it integrates.)
 
@@ -107,7 +107,8 @@
 - [x] Five-section IA on mock data (`docs/home-screen.md`)
 - [x] Derived "Do this next" hero (completing it advances the screen)
 - [x] Header redesign (2026-07-24): date-only above the hero; readiness verdict + pillar segment bar (mock-up option D) moved below it
-- [x] **Porcelain Ledger restyle** (2026-07-24): full app retheme — new tokens, serif/mono voices, light-only; philosophy in §3, alternatives archived in `docs/design-directions.md`
+- [x] ~~**Porcelain Ledger restyle** (2026-07-24)~~ — shipped and ran for two weeks; **superseded 2026-08-08** by the entry below. Kept as history: it is where the light-only decision, the `platformSelect` font-stack gotcha and the no-shadows rule come from, and all three still hold
+- [x] ⚠️ **Conformed Set restyle** (2026-08-08): the whole app, not one screen — the `<Block device>` surface system, petrol accent, the label/serif/mono voices, square corners, two cuts per biological signal. Philosophy and the full token set in §3; ADR in `docs/decisions.md`; spec in `docs/design-research/implementation/00-design-spec.md`. **Verified by typecheck/lint/tests only — never rendered on a device**, and the type-scale sweep was deliberately skipped (§3, "What is unverified")
 - [x] **De-boxing pass** (2026-07-24, after device review): section-dividing hairlines removed from the date and the metrics strip; quick actions dock cut entirely
 - [x] **Chronological mission** (2026-07-24): one time-sorted list, category demoted to a row label; leading run of finished items auto-collapses so the list opens at *now* (`derive-mission.ts` owns sort + fold)
 - [x] **Mission reads/writes the on-device DB** (Phase 1b): `useTodayMission` → `daily_logs` / `log_entries`; status persists across launches; foreground refresh handles the midnight rollover
@@ -176,14 +177,16 @@
 
 The **Coach is agentic and real**, not a mock: a direct streaming model call with **24 registered tools (11 read + 13 write)**, confirmation-gated writes, persisted threads, versioned protocol edits, modes, and experiments. The honest mock is only the fallback when no API key is set. Home's brief, mission and readiness/metrics are all real — readiness derives from `wearable_data` and shows an honest "no signal yet" until the Apple Health pipeline (built 2026-07-29) goes live with the next EAS build. Since 2026-08-07 a fresh install shows an honest empty state rather than a fabricated day, and since 2026-08-08 migration **0029** purges the fabricated rows that had already accumulated on the owner's device (irreversible — see the Database section).
 
-What's genuinely *not* done: the on-device RAG **embedder** (its schema and plumbing shipped at 0025), Phase 4 media + encrypted iCloud backup, an app-level test runner and CI, and the EAS rebuild that activates the remaining native modules.
+The visual system changed wholesale on 2026-08-08: **the Conformed Set replaced Porcelain Ledger across every screen** (see §3 and the ADR). It is presentation-only — no data, hook or navigation change, and no new dependency — but **none of it has been seen on a device**, so treat §3 as a specification rather than a report.
+
+What's genuinely *not* done: the on-device RAG **embedder** (its schema and plumbing shipped at 0025), Phase 4 media + encrypted iCloud backup, an app-level test runner and CI, the EAS rebuild that activates the remaining native modules — and the **on-device look/feel check of the restyle**, which that same build is the prerequisite for.
 
 ### Subsystems
 | Area | Status | Notes |
 | --- | --- | --- |
 | Build & tooling | ✅ | tsc, lint, prettier all green; iOS + web bundle (iOS-only target) |
 | Navigation shell | ✅ | Five tabs + not-found, file-based routing (no `/login` — single-user) |
-| Design system | ✅ | Tokens defined and compiling; see §3 |
+| Design system | ✅ / ⚠️ | **The Conformed Set, adopted 2026-08-08, superseding Porcelain Ledger** — the surface system (`<Block device>`, 137 call sites / 58 files), petrol accent, three type voices, square corners, two cuts per biological signal. Tokens defined and compiling, `tsc` + lint green. **⚠️ Never seen on a device**; **⚠️ the rules sit below WCAG 1.4.11's 3:1 non-text floor** (`hairline` 2.29 on paper-hi / 2.00 on paper — accepted for plate edges, open for the `well` at 1.42; §3); and three first-of-kind details (`Avenir Next Condensed`, `border-dashed`, rotated-diamond markers) fail *silently* if unsupported. The type-scale sweep was deliberately skipped. Full spec + the unverified list: §3 |
 | Database schema | ✅ | **Ported to SQLite** (`db/migrations/0001_init.sql`), 20-check validation; Postgres origin retired |
 | Local DB engine | ✅ | `op-sqlite` + `sqliteVec` running on device (persistence confirmed); migration runner + repositories + seed + pre-migration backup; op-sqlite isolated to `client.ts`. **Counts (migrations · head · tables · repositories) live only in the [schema inventory of record](#schema-inventory-of-record)** (§1 › Database) — not restated here |
 | DB types | ✅ | Hand-authored row types (`src/lib/db/types.ts`); the Supabase generator is deleted |
@@ -214,6 +217,7 @@ What's genuinely *not* done: the on-device RAG **embedder** (its schema and plum
 
 ### Known caveats (things that will bite if forgotten)
 - ⚠️ **`op-sqlite` is active; the added native modules activate across TWO `eas build`s.** The **current queued build** activates five: `expo-secure-store` (Coach key → Keychain), `expo-notifications` (reminder nudges), `expo-camera` + `expo-image-manipulator` (nutrition barcode/photo), and `expo-local-authentication` (app lock). The **next build** must add three more (merged 2026-07-29): `expo-sharing` (export's share sheet — export itself already works because `expo-file-system` ships with `expo`, so writing to Documents is live now; `expo-file-system` is also pinned as a direct dep for the labs PDF picker) and **`@kingstinct/react-native-healthkit` + `react-native-nitro-modules`** (Apple Health ingestion, read-only, no background delivery, config plugin set). All are in `package.json` + `app.json`; each degrades gracefully (no crash) until its build ships. `expo-doctor` is 19/20 — the one failure is upstream SDK-57 patch drift on pre-existing expo packages (`npx expo install --check` clears it). The RAG embedder (`onnxruntime-react-native`, `docs/rag-embeddings.md`) is deliberately **not** in either build — it gets its own.
+- ⚠️ **The Conformed Set restyle has NEVER been rendered on a device, and three of its details fail SILENTLY.** Adopted 2026-08-08 across the whole app; verification to date is `tsc`, ESLint, Prettier and the headless suites, none of which says anything about how it looks (and the web preview is a logic-check surface only — never a look/feel judgement). The three that break quietly rather than loudly: **`Avenir Next Condensed`** (the label voice — it falls through a CSS stack inside `font-label`, but `app/(tabs)/_layout.tsx` sets it imperatively as a **single string with no fallback list**, so a missing family drops just the five tab labels to the system face); **`border-dashed`** (`app/protocol-versions.tsx`); and the **rotated-square diamond markers** (`app/screenings.tsx`). All three are first-of-kind in this tree. The restyle needs no build of its own — it added no dependency — but it cannot be judged until the pending EAS build ships. Details and the fallback to reach for: §3, "What is unverified".
 - ⚠️ **A migration must never land on a number below `PRAGMA user_version` — the runner skips it SILENTLY.** `pendingMigrations` filters `version > currentVersion`, so once a device has run 0024 a migration merged later as `0019_rag.sql` is never applied: no error, just missing tables and a "no such table" at first use. The reserved-gap convention (0019 = RAG) is now **void** — 0021 (wearables) and 0024 (labs) have shipped past it. **All future migrations must be numbered 0025+**; 0005, 0006, 0010, 0019, 0022, 0023 are permanently dead gaps (unfillable on any device that reached 0024). The RAG plan doc has been renumbered to 0025 accordingly. Surfaced by the 2026-07-29 adversarial review.
 - ⚠️ **`0029_purge_seed_mission.sql` is the ONLY migration that deletes user data, and it has NOT run yet — it fires the first time a build carrying it launches.** Take a manual copy of `arc.db` off the device *before* that build first opens: the in-app snapshot is best-effort (see below) and there is no server backup, so a manual copy is the only guaranteed route back. Never edit it (forward-only), never loosen its predicate, and never copy it as a template without re-deriving the marker: its safety rests on `insertMissionItem` being the single writer of `value.$.seed` in the whole repo, which a future writer could quietly falsify. Full record — predicate, why status is unfiltered, and the honest (best-effort, possibly-absent) recovery path — in the Database section above. If another destructive migration is ever needed, make `backupBeforeMigrate` **abort** the boot on failure for that run instead of warning and proceeding; today it cannot guarantee the snapshot it is credited with.
 - ⚠️ **SQLite needs `PRAGMA foreign_keys = ON` per connection** (it defaults OFF) — the data layer must set it on every open, or the FKs in `0001_init.sql` silently won't enforce. `recursive_triggers` must stay OFF (default) so `updated_at` triggers don't recurse.
@@ -233,92 +237,184 @@ What's genuinely *not* done: the on-device RAG **embedder** (its schema and plum
 
 ---
 
-## 3. Design & Styling — Porcelain Ledger
+## 3. Design & Styling — the Conformed Set
 
-> **The philosophy in one line:** ARC is a beautifully printed lab report that happens to be alive.
+> **The philosophy in one line:** ARC is a working drawing set — the day is *drafted*, not listed.
 
-Chosen 2026-07-24 from a six-direction exploration (all six specs archived in `docs/design-directions.md` — read that file before proposing any new visual direction). The interface earns trust the way a well-set medical document does: typography, whitespace, hairline rules, and one deep pine-green stamp of authority. Nothing glows, nothing gamifies, nothing is decorated. Bone-white paper is the identity; it will look the same in twenty years, which is the point of an app built for decades.
+**Adopted 2026-08-08, superseding Porcelain Ledger** (chosen 2026-07-24, shipped for two weeks). Where Porcelain Ledger was a printed lab report, this is the architect's set that produced it: the same calm and the same restraint, but **the container tells you what kind of thing it holds**. It leans on ARC's own name — *Architecture for Resilience & Continuity* — without ever making the user learn the metaphor.
 
-**How to make something look like ARC:** set it on paper, wrap it in a hairline, headline it in serif, print its numbers in mono, and only reach for pine if it is the one thing that matters on the screen.
+Provenance: a six-set exploration, each set fully specified and hostile-reviewed for usability and anti-slop (89 findings), converged into this one, re-reviewed to **zero high findings**, then fixed and verified. The full trail is `docs/design-research/`; the spec of record is **`docs/design-research/implementation/00-design-spec.md`**, the RN port notes are `01-rn-port-guide.md`, what actually shipped is `02-migration-plan.md`, and the ADR is in `docs/decisions.md`. The earlier six directions (including Porcelain Ledger) are archived in `docs/design-directions.md` — read that before proposing any new one.
 
-Tokens live in `tailwind.config.js` (source of truth for every `className`) and are mirrored in `src/constants/theme.ts` for the few APIs that need literal colour strings (navigation theme, icon `color` props). **Any palette change must touch both files.**
+**How to make something look like ARC:** pick the block's *device* first, name it in the label voice, set its prose in serif and every measured value in mono, keep the corners square — and only reach for the accent if it is the one thing on the screen that matters.
+
+Tokens live in `tailwind.config.js` (source of truth for every `className`) and are mirrored in `src/constants/theme.ts` for the few APIs that need literal colour strings. **Any palette change must touch both** — plus two files that hold their own copy and do *not* follow a Tailwind change: `app.json` (splash `backgroundColor`) and `app/(tabs)/_layout.tsx` (the tab bar, styled imperatively from `palette`).
+
+> ⚠️ **Read this section as a specification, not as a report of how the app looks. NOTHING IN THE CONFORMED SET HAS BEEN SEEN ON A DEVICE** — see "What is unverified" at the end of this section before trusting any visual claim here.
+
+### The surface system — "devices" (the load-bearing idea)
+
+This, not the palette, is the design. Under Porcelain Ledger every block was a card, so the container carried no information. Here **each kind of content gets its correct drafting device**, and hierarchy comes from the drawing vocabulary instead of arbitrary styling. The primitive is `<Block device="…">` (`src/components/ui/block.tsx`), in use at **137 call sites across 58 files** — plate 64 · margin 35 · well 17 · field 9 · grid 7 · stamp 5.
+
+> **Counted 2026-08-09, re-run rather than re-derived:** `rg -o 'device="(plate|field|margin|grid|well|stamp)"' app src | wc -l` → **137**, and the same pattern under `rg -l … | wc -l` → **58**. *(The file count read **54** here, on the Status Board and in the ADR until 2026-08-09; 137 was right the whole time. A count with three homes drifts in two of them — if this number changes, change all three, or better, delete two of them.)*
+
+| Content | Device | Treatment |
+| --- | --- | --- |
+| Schedules, ledgers, record lists (mission, Data trends, Settings rows, Protocols, Screenings) | **`plate`** — a record is a table | `border border-hairline bg-paper-hi px-3.5 py-3`, ruled rows inside |
+| Readiness / status verdict | **`field`** — a measured field, not a box | transparent; 11px L-shaped corner ticks top-left + bottom-right, drawn as two absolutely-positioned bordered Views |
+| Prose (Coach brief, rationale) | **`margin`** — an annotation in the margin | transparent; `border-l-2 border-hairline` + indent |
+| Metric grids | **`grid`** — the grid *is* the object | no outer box; hairlines **between** cells only. The container class is deliberately empty; the rules live on the cells |
+| Capture surfaces (command field, chat thread) | **`well`** — recessed stock | `border border-paper-deep bg-paper-dim` |
+| The one next action | **`stamp`** | `border-[1.5px] border-pine bg-paper-hi` |
+
+**Rule: a block gets exactly one device, and devices NEVER nest.** No plate inside a plate, no field inside a stamp. If a section seems to need two, it is two sections. (A plain `<View>` used for layout is not a device and may sit anywhere.) This is **enforced at runtime in `__DEV__`** — a nested Block logs a `console.error` naming both devices — because prose was the only guard on a primitive that gets copied across ~40 screens.
+
+Two traps the primitive's own doc comment records, and the reason to read it before writing a new surface:
+
+- **`grid`: the last cell takes no trailing rule.** "Between cells" means a rule needs a cell on *both* sides. The obvious two-column implementation gives every even-indexed cell a `border-r`, which with an odd number of cells draws a rule into empty space off the final cell — the outer edge the device exists to avoid. Both the port guide's snippet and the mockup's CSS carry this flaw; `src/components/home/metrics-strip.tsx` has the correct form, so copy from there.
+- **`well`: either the block IS the field, or the field IS the well — never both.** A capture surface is either a `well` wrapping a *bare* `TextInput`, or a group of inputs each wearing `border-paper-deep bg-paper-dim` with no block at all. A well *containing* an input that has its own surface stacks two recesses, and the only way to keep the inner one legible is to raise it onto plate stock — which inverts the whole system. **The rule to check a diff against: an input is never `bg-paper-hi`.** This reaches every control, not only text fields; it does *not* reach content (a chat turn lying on the thread well is a card, and stays raised).
 
 ### Colour
 
+Ground is a neutral drafting bone. Note the **key names are unchanged from Porcelain Ledger — only the values moved** (`palette` is imported by **51 files**, almost all for Ionicons `color` props, and a rename bought nothing but matching names). **Read `pine` as "the one accent" and `hairline` as "the rule".** *(Measured 2026-08-09: `rg -lU "import\s*\{[^}]*\bpalette\b[^}]*\}\s*from\s*'[^']*constants/theme'" app src | wc -l` → **51**; 52 files import *something* from that module — `app/_layout.tsx` takes only `navColors`. The figure read **~44** here and in two other places until now: it was true when the kit was written and the restyle sweep has since added importers, which is exactly why a hand-copied count drifts.)*
+
 | Token | Hex | Meaning and use |
 | --- | --- | --- |
-| `paper` | `#F6F3EC` | The page. Every screen's background. Bone-white, slightly warm. |
-| `paper-deep` | `#EFEADD` | Recessed paper: input fields, quiet chips (the PREVIEW badge). |
-| `porcelain` | `#FDFCF8` | Card surface — a shade whiter than the page, like coated stock. Cards sit *on* paper. |
-| `hairline` | `#E3DCCE` | The default rule: **card borders**. Not for slicing the page into sections — see "rules enclose objects" below. |
-| `hairline-soft` | `#EFEADD` | Row separators inside a list (mission rows). |
-| `hairline-strong` | `#C9C0AC` | Ghost-button borders, unchecked checkbox rings. |
-| `ink` | `#1C1917` | Primary text. Warm near-black, never pure black. |
-| `ink-secondary` | `#544E45` | Supporting text: briefs, item "why" lines, details. |
-| `ink-muted` | `#8B8272` | Incidental: eyebrows, labels, timestamps, disabled, completed items. |
-| `pine` | `#1E5C46` | **The one accent.** See discipline rule below. |
-| `pine-on` | `#F8F6EF` | Text/icons on solid pine. |
-| `pine-soft` | `#E7EEE6` | The hero card's background — the only tinted surface in the app. |
-| `pine-tint` | `#CBDCCB` | The hero card's side/bottom border. |
-| `signal-optimal` | `#22684E` | Readiness: optimal. |
-| `signal-good` | `#77803A` | Readiness: good (olive). |
-| `signal-caution` | `#B07C2A` | Readiness: caution. |
-| `signal-poor` | `#96382C` | Readiness: poor. |
-| `signal-unknown` | `#8B8272` | No data — same value as ink-muted, deliberately. |
+| `paper` | `#E7E4DA` | The sheet. Every screen's background. |
+| `paper-hi` | `#F5F3EC` | Plates — cards, ruled records. |
+| `paper-dim` | `#D9D5C8` | Recessed stock — input wells, the chat thread. |
+| `paper-deep` | `#C6C1B0` | Recessed edges. |
+| `porcelain` | `#F5F3EC` | 🩹 Alias of `paper-hi`. **Shim — zero consumers as of 2026-08-09.** Use `bg-paper-hi`. |
+| `hairline` | `#A9A28E` | **The rule**: plate borders, row separators. One weight does almost all the work. Measured against WCAG 1.4.11 below — it does **not** clear 3:1, and that is a recorded decision, not an oversight. |
+| `hairline-soft` | `#C6C1B0` | 🩹 **Shim — zero consumers as of 2026-08-09.** At 1.62:1 on paper-hi it is barely a rule at all; do not reach for it. |
+| `hairline-strong` | `#A9A28E` | **Byte-identical to `hairline`** — it could not render differently even if used. As a class, zero consumers; **the `palette.hairlineStrong` mirror is live**, in `app/(tabs)/settings.tsx` (a `Switch`'s `trackColor` + `ios_backgroundColor`), so it cannot be retired from `src/constants/theme.ts` without editing that screen. |
+| `ink` | `#1C1911` | Primary text. |
+| `ink-secondary` | `#443F30` | Supporting text, prose. |
+| `ink-muted` | `#5C5340` | The metadata layer: labels, captions, timestamps, corner ticks. |
+| `pine` | `#12454E` | **The one accent — petrol.** Redline `#C4222E` was the alternative; see the ADR for why it lost. |
+| `pine-deep` | `#082A30` | The accent, darkened. |
+| `pine-bright` | `#4E96A1` | The accent, lifted. 🩹 **Zero consumers as of 2026-08-09** — it exists so the two token files stay byte-comparable. |
+| `pine-on` | `#F5F3EC` | Text/icons on the solid accent. Live (33 class uses + 21 `palette.pineOn`). |
+| `pine-soft` | `#E7EEE6` | 🩹 **Zero consumers as of 2026-08-09, and the first candidate for retirement.** It is a leftover *green* tint from the pre-petrol pine (R231 **G238** B230 — green-dominant), whereas petrol `#12454E` is blue-dominant (G69 **B78**): a real tint of the current accent would lean blue. It no longer harmonises with the accent it is named after. The hero is a `stamp` now (plate fill inside a 1.5px accent border), so the tinted-surface idea it served is gone too. |
+| `pine-tint` | `#9FBEC2` | 🩹 **Zero consumers as of 2026-08-09.** Unlike `pine-soft` this one *is* blue-dominant, so it would at least harmonise if a use ever appeared. |
 
-> **The pine discipline rule (sacred):** pine appears on exactly five things — the "Do this next" hero (its soft surface, top rule, eyebrow, and Done button), primary actions (send button, a card's single CTA like "Open chat"), **completion stamps** (checkmark circles, the mission progress fill — completion is what pine *means*), the user's own chat bubbles, and the active tab. Plus two sanctioned micro-accents: the 1.5px "Coach presence" dot beside ARC-Coach eyebrows and the streaming caret. Nothing else. Not links-in-general, not decorations, not headings. If everything is emphasised, nothing is directive — the entire design stands on this restraint.
+**🩹 = a Porcelain-era shim with no consumer. DECIDED 2026-08-09: they are KEPT, but the compatibility wording is retired.** **Seven** tokens — `porcelain`, `rounded-card`, `hairline-soft`, `hairline-strong`, `pine-soft`, `pine-bright` and `pine-tint` (the last one turned up in the sweep and had not been suspected) — were described here and in both token files as "kept so existing `bg-porcelain` usages don't break", "any surviving usage flattens automatically" and "retained for compatibility with components written against Porcelain". Every one of those phrases asserts a live consumer. **Swept 2026-08-09 across all 191 source files in `app/` + `src/`, for both the Tailwind class and the `palette.*` mirror: there are none.** Porcelain Ledger was fully swept when the Conformed Set landed; there is nothing left to be compatible *with*. So the tokens stay — a dead token costs one line in a config and deleting it is the kind of tidy-up that breaks a branch someone else is holding — but they are now labelled **"shim — zero consumers as of `<date>`"**, because "retained for compatibility" reads as evidence of use and is the reason nobody checked for two weeks. **One correction inside that sweep:** `hairline-strong` is *not* fully dead — the class has no uses, but `palette.hairlineStrong` is read twice in `app/(tabs)/settings.tsx`. Anything that retires it must edit that screen first. **If these are ever retired, `pine-soft` goes first** (it is off-hue, see the table), and the standing mirror rule applies: `tailwind.config.js` **and** `src/constants/theme.ts` in the same change. Command: `rg -n --text -e 'porcelain' -e 'rounded-card' -e 'hairline-soft' -e 'hairline-strong' -e 'pine-soft' -e 'pine-bright' -e 'pine-tint' -e 'pineSoft' -e 'pineBright' -e 'pineTint' -e 'hairlineSoft' -e 'hairlineStrong' app src` — every hit is a definition or a comment except the two in `settings.tsx`.
 
-> Signal colours mark **biological states only** (readiness dot, segment bar, metric values carrying a verdict) — never UI chrome. Known accepted weakness from the design critique: `good` (olive) sits between `optimal` (green) and `caution` (amber) as a saturation slide rather than a distinct hue; direction F's categorical green/blue/gold/red taxonomy is the fix if the segment bar ever reads ambiguously on device.
+**Contrast, measured.** `ink-muted` clears 4.5:1 on paper (5.97), paper-hi (6.84) and paper-dim (5.17) — but **fails on `paper-deep` (4.21)**. No screen puts it there today and none should: on `paper-deep` the metadata voice is `ink-secondary` (5.83).
+
+**The rules themselves are the one thing in this palette that does NOT clear its threshold — recorded here rather than omitted.** Text carries a 4.5:1 floor, but WCAG 1.4.11 puts a separate **3:1** floor on non-text visuals, and `hairline` `#A9A28E` draws every plate edge and every row separator in the app. Measured 2026-08-09 against the surfaces it actually sits on: **paper-hi 2.29:1 · paper 2.00:1** (and paper-dim 1.73, paper-deep 1.41). All four are under 3:1. `hairline-soft` `#C6C1B0` is weaker still (1.62 on paper-hi, 1.42 on paper) but has no consumers — see the token table. Two adjacent numbers, since a boundary is only as visible as its weakest edge: the **`well` device's border** `paper-deep` vs the page reads **1.42:1**, and the fill step that also signals a recess (`paper-dim` vs `paper`) reads **1.15:1**.
+
+**The decision, stated explicitly so the numbers above are not mistaken for a pass:**
+
+- **Plate borders, row separators and the `margin` rule are judged decorative and exempt, and they stay at `#A9A28E`.** 1.4.11 covers visuals *required* to identify a control or understand content. These enclose text that is itself at 5.97:1 or better; no value, state or action becomes unavailable if the rule is invisible, and the alternative — a rule dark enough to pass — is precisely the heavy furniture the de-boxing pass removed. **The honest tension, recorded rather than argued away:** this section calls the surface system "the load-bearing idea" *because the container encodes what it holds*, which is exactly the claim a decorative exemption denies. Both cannot be fully true. The reconciliation is that the device conveys **emphasis and kind**, never unique information — every block also names itself in the label voice — so a reader who cannot see the rule loses nuance, not content.
+- **The `well` boundary at 1.42:1 is NOT covered by that argument and is an open item**, because a well marks an *input* — a UI component, which 1.4.11 covers by name. It is not being changed sight-unseen: the recess reads as much from its fill as from its border, and no device has rendered this system yet. **Judge it on the first device review, together with the rest of §3.**
+- **If the device review says the rules read as mush, the follow-up is a darker `hairline`, not a heavier one.** The measured landing point: `#7E7767` clears 3:1 on both real surfaces (**4.01 on paper-hi, 3.50 on paper**) at the same 1px weight. `#847D6C` is the marginal option (3.69 / 3.22). Any such change is a palette change and must touch `tailwind.config.js` **and** `src/constants/theme.ts` together.
+
+Every ratio in this section (and in the two token files) is WCAG 2.x relative luminance, recomputed 2026-08-09 rather than copied: `L = 0.2126R + 0.7152G + 0.0722B` over sRGB channels linearised at the 0.03928 knee, `(L₁+0.05)/(L₂+0.05)`. All 20+ figures previously asserted here reproduced to the stated precision; the hairline row is the one that had never been written down.
+
+#### Biological signals — TWO CUTS PER STATE, and they are not interchangeable
+
+| State | `signal-{state}` — the **SWATCH** | `signal-{state}-ink` — the **TEXT** cut |
+| --- | --- | --- |
+| optimal | `#2E8B57` | `#185A36` |
+| good | `#2C6C95` | `#24567A` |
+| caution | `#A97B22` | `#6E4F15` |
+| poor | `#AA402C` | `#8F3524` |
+| unknown | `#5C5340` — the metadata ink itself. An absent reading is absent, not a state, so it needs no separate cut. | (none) |
+
+- **The swatch is for fills and icons**, where the 3:1 non-text threshold applies. It is **not a text colour and never was**: as text on `paper-hi` the four swatches measure **3.82 / 5.13 / 3.41 / 5.44** — two fail outright, and the two that pass do so by luck of hue.
+- **The ink cut is the same hue darkened until it clears 4.5:1.** On paper: 6.46 / 6.14 / 5.91 / 6.11. On paper-hi: 7.40 / 7.04 / 6.77 / 7.00. On paper-dim: 5.60 / 5.32 / 5.12 / 5.29. On **paper-deep only `optimal` clears (4.56)**; the other three land at 4.17–4.34, so **signal text does not belong on `paper-deep`**.
+- **Which to reach for:** anything read as words or digits takes the ink cut. A glyph that carries its meaning by *shape* as well as colour — an icon — may stay on the swatch. Reaching for the swatch to colour a value is the most likely way to fail contrast in this system.
+
+> **The firewall rule (sacred), and it runs BOTH ways.** Signal colours mark **biological state only** — pillars, freshness, biomarker states, overdue screenings. Never interface chrome. Conversely **the accent never marks biology.** This was a finding in all six hostile reviews. It is also why the accent is petrol: redline would have forced `poor` to umber `#7A4A1E`, because crimson chrome and rust biology read as one hue at swatch size — permanent strain on the firewall in a product whose worst health state is red. The firewall reaches the nav theme too: React Navigation's `notification` slot (tab-bar badges — pure chrome) takes the accent, **not** `signal.caution` as it did under Porcelain.
+
+> **The accent budget (a ceiling, not a quota).** The accent appears only on: the Home hero, **one** primary action per screen, completion stamps, the user's own chat bubbles, the active tab, and the Coach presence dot. **Settings and reference surfaces carry ZERO accent** — the read-only Experiments screens are the worked example: a "Conclude" button there would invite a verdict with no numbers behind it. If everything is emphasised, nothing is directive.
 
 ### Light only — by decision, not omission
-ARC is **light-mode only**: `userInterfaceStyle: "light"` in app.json, an unconditional nav theme in `app/_layout.tsx`, `StatusBar style="dark"`, and **zero `dark:` variants anywhere in the codebase** (a grep for `dark:` in app/ and src/ should return nothing — if it returns something, someone broke the system). Paper is the identity; a "dark porcelain" would be a different, worse design. If ARC ever needs a night mode, the archived **Night Watch (B)** direction is the designed candidate — it would be a second complete theme, not `dark:` variants bolted onto this one. See the ADR in `docs/decisions.md`.
+
+ARC is **light-mode only**: `userInterfaceStyle: "light"` in app.json, an unconditional nav theme in `app/_layout.tsx`, `StatusBar style="dark"`, and **zero `dark:` variants anywhere in the codebase** (a grep for `dark:` in app/ and src/ should return nothing — if it returns something, someone broke the system). Paper is the identity. This survives the restyle unchanged. If ARC ever needs a night mode, the archived **Night Watch (B)** direction is the designed candidate — a second complete theme, not `dark:` variants bolted onto this one.
 
 ### Typography — three voices
-| Voice | Family | Used for | Class |
+
+| Voice | Stack | Used for | Class |
 | --- | --- | --- | --- |
-| **Serif** (authority) | Iowan Old Style → Palatino → Georgia (iOS system serifs) | Headlines, screen titles, the readiness verdict, "Today's Mission", "Today is handled" | `font-serif font-semibold` |
-| **Sans** (voice) | System default | Body text, briefs, item titles, buttons, chat | (default) |
-| **Mono** (data) | Menlo → Courier New | **Every measured value**: times (07:15), counters (3 of 11), metric values (42 ms), hero metadata line, segment-bar labels, the PREVIEW badge | `font-mono` |
+| **Label** | Avenir Next Condensed → Helvetica Neue → system-ui → sans-serif | Uppercase section labels, eyebrows, chips, and **every button at every weight** | `font-label` |
+| **Serif** | Iowan Old Style → Palatino → Georgia | Prose — briefs, Coach turns, why-lines, item titles | `font-serif` |
+| **Mono** | Menlo → Courier New → monospace | **Every measured value** — times, counters, versions, metrics, dimension strings | `font-mono` |
 
-The serif/mono split carries meaning: **serif speaks, mono measures.** A number set in mono is a datum; if you find a standalone measurement in sans, fix it. One deliberate exception: numbers **inside prose** (the readiness detail line, the Coach's sentences) stay sans — splitting fonts mid-sentence reads worse than the rule is worth. Eyebrows are 11px uppercase with `tracking-[2px]` (the "2px tracking" of the spec — not `tracking-widest`, which is em-relative).
+**"Serif speaks, mono measures."** A standalone measurement set in the label or serif face is a bug. **No `Text` may be faceless** — a tracked-caps label left in the default system face is the same bug as a measurement left out of mono, and the label voice is the one the app had been shipping without entirely.
 
-> ⚠️ **Font-stack gotcha (cost an hour):** define `fontFamily` in tailwind.config.js as a plain **array** of family names. Do NOT use `nativewind/theme`'s `platformSelect` — its custom-function CSS syntax cannot carry a family name containing spaces, and "Iowan Old Style" silently compiled to an **empty declaration** (verified in the bundle's style registry). Plain CSS stacks parse correctly; native picks the first family.
+**"Buttons" means every button.** Filled primary, outlined secondary and bare text buttons all take the label voice, as do chips: the face is what makes a control read as a control. Weight is expressed by **size and casing, never by face** — full-width primary actions at ~15px sentence case, compact and inline actions at 11–13px uppercase with ~1.2px tracking. The one exception is a measured value *inside* a label (`v3`, `280 g`, `12 sets`), which stays mono.
 
-### Shape & rhythm
-- Cards: `rounded-card` (10px). Buttons: `rounded-btn` (6px). **No pills, no 24px super-rounding** — this is print, not bubblegum. Chat bubbles use `rounded-card` with one squared corner (`rounded-br-sm` user / `rounded-bl-sm` coach) like a ledger tab.
-- **No shadows, no elevation, no glow — anywhere.** Layering is done with hairline borders and the paper/porcelain two-tone.
-- The hero is "a stamped ledger entry": `border border-pine-tint` + `border-t-[3px] border-t-pine` on `bg-pine-soft`.
-- **Rules enclose objects, never pages** (owner call, 2026-07-24, after device review). A hairline is correct on a **card edge** and **between rows of one list**, because both times it is drawing the boundary of a single object. A rule laid across the page to separate two sections is furniture: put one above a short block and one below it and you have drawn a box around it — which is exactly what the owner flagged. **Sections are separated by whitespace only.** If a section can't hold its own without a rule, it needs a heading or more air, not a line.
-- Section rhythm on Home: `mt-5`–`mt-9`; airy density is part of the calm, and since the de-boxing pass it is the *only* thing separating sections, so don't tighten it casually.
+Shared primitive: `SectionLabel` (`src/components/ui/section-label.tsx`) — the label voice at 10px with an optional right-aligned **mono** note for a tally. Several screens still define their own local `SectionLabel`; sweeping them onto the shared one is a separate pass.
+
+> ⚠️ **Font-stack gotcha (carried forward — it cost an hour once already):** define `fontFamily` in tailwind.config.js as a plain **array** of family names. Do NOT use `nativewind/theme`'s `platformSelect` — its custom-function CSS syntax cannot carry a family name containing spaces, and "Iowan Old Style" silently compiled to an **empty declaration** (verified in the bundle's style registry). Plain CSS stacks parse correctly; native walks the list and picks the first family it has.
+
+> ⚠️ **These are iOS-native substitutions, not the mockup's faces.** The mockup was authored in a browser on Windows and specified **Bahnschrift SemiCondensed** (label) and **Constantia** (serif); **neither exists on iOS.** Shipping a real face via `expo-font` remains available if the label voice reads generic on hardware. Do not copy the Windows stacks back in.
+
+### Geometry & rhythm
+
+- **Corners are square.** `rounded-card` is mapped to **`0px`** rather than deleted. It is a 🩹 shim with **zero consumers as of 2026-08-09** — the "so any surviving usage flattens automatically" framing this line used to carry implied there were survivors; there are not, the sweep took them all. Buttons take `rounded-btn` (2px) at most. This is the visible departure from Porcelain Ledger's 10px cards.
+- **No shadows, no elevation, no glow, no gradients — anywhere.** Layering is borders plus the `paper` / `paper-hi` / `paper-dim` triad.
+- **Rules enclose objects, never pages** (owner call, 2026-07-24 — survives the restyle intact). A hairline is correct on a **plate edge** and **between rows of one list**, because both times it draws the boundary of a single object. A rule laid across the page to separate two sections is furniture: one above a short block and one below it draws a box around it. **Sections are separated by whitespace only.**
+- **Tap targets ≥ 44pt.** Single-line rows need an explicit min-height.
+- **Text floor: 10px — and it IS load-bearing, because there is no headroom beneath it.** Measured 2026-08-09 over `app/` + `src/`: the smallest type anywhere in the app is exactly **`text-[10px]`, at 139 occurrences**, and **nothing is smaller** — not one arbitrary size below it, no named Tailwind size below it (the smallest named size in use is `text-sm` = 14px), and the single imperative size set outside a class (`app/(tabs)/_layout.tsx:55`, the tab labels) is also `fontSize: 10`. So the metadata layer sits *on* the floor rather than above it: `SectionLabel`, every eyebrow, caption, tally and timestamp is a 10px glyph with nowhere left to go, and the next "just slightly smaller" label breaks the floor instead of approaching it. *(This line previously read "nothing below 10px. The metadata layer sits at 9.5–10px so the floor is never load-bearing" — self-contradicting on its face, no 9.5px type has ever existed in the tree, and the conclusion was the exact reverse of the measurement.)* Command: `rg -o 'text-\[[0-9]+(\.[0-9]+)?px\]' app src | sort | uniq -c | sort -k2 -V`.
+- Section rhythm on Home: `mt-5`–`mt-9`; airy density is part of the calm and, since the de-boxing pass, the *only* thing separating sections.
 - One shared container: `Screen` (`src/components/ui/screen.tsx`) — safe-area, `px-5` gutter, `bg-paper`.
-- Tap targets are whole rows/cards; the IA target is ≤ 2 taps to act.
+- **Ionicons only**, and no new dependency: the corner ticks and the diamond markers are bordered / rotated Views precisely so `react-native-svg` stays out of the tree.
 
-### Surface treatments (the recipes)
-- **Card:** `rounded-card border border-hairline bg-porcelain p-4`.
-- **Hero:** pine-soft + pine top rule (above); serif title; mono metadata; Done = solid pine `rounded-btn`; Snooze = `border-hairline-strong` ghost; Skip = bare muted text.
-- **Eyebrow:** `text-[11px] uppercase tracking-[2px] text-ink-muted` (+ `font-medium` when it labels a section). The date eyebrow is bare — no folio rule under it (see "rules enclose objects" above).
-- **Segment bar:** flat `h-[6px]` rectangles, `rounded-[1px]`, `gap-0.5`, mono-caps labels beneath. A typeset gauge, not a chart.
-- **Mission row:** hairline-soft separators; pine-filled circle when done; times in mono; completed text drops to ink-muted.
-- **Chat:** user = solid pine slip, right; coach = bordered porcelain slip, left. The Coach reads as typeset prose, not chat froth.
-- **Metrics:** mono `text-lg font-semibold` values coloured by signal only when they carry a verdict; labels are eyebrows. No section heading — every cell already carries a caps label, and stacking caps on caps is noise; the 2×2 grid is its own boundary.
+### Honesty rules (design requirements, not copy suggestions — each was a real hostile-review finding)
+
+- **Ledgers must sum to their own totals.** If the Today card says 2,180 kcal, the visible meals must add to 2,180.
+- **Tallies must reconcile.** "3 of 11" with a fold means folded + visible = 11, and *skipped ≠ done*.
+- **Empty is authored, never blank.** "No reading yet", "Import labs to populate", "Nothing logged yet today."
+- **No data, no number.** A metric with no source is an em-dash — never a plausible-looking estimate. No denominators until targets exist.
+- **A pending write is a live decision.** The confirmation card is the *last* thread object, its consequence in future tense ("On approve: v2 is written; v1 is kept"), nothing after it, composer disabled. Never draw a decision and its outcome simultaneously.
+- **No invented reference codes.** No sheet numbers, tile keys or designator badges that key no user action. Drafting chrome must pay rent or go — which is why the mockup's desk background, registration marks and title blocks do **not** ship.
+- **Product nouns, not conceit vocabulary.** It is "Today's Mission", not "Issue Schedule". The user should never have to learn the metaphor.
 
 ### Patterns worth reusing
-- **Derived emphasis:** the hero isn't authored separately — it's the first unresolved mission item (`src/lib/home/derive-mission.ts`). One source of truth, so the UI can't contradict itself.
-- **Whole-string class maps** for dynamic styles (`src/components/home/signal.tsx`): Tailwind only sees class names that appear literally in source — never build `bg-signal-${level}`.
-- **Explicit hairlines**, not `divide-y` — that utility needs a CSS sibling selector RN doesn't have.
 
-### Open design questions
-- ⚠️ **Serif rendering on device** — Iowan Old Style at 600 weight on a real iPhone; if it renders as fake-bold or too bookish, Palatino is the next candidate in the stack. *Not raised in the 2026-07-24 device review, which is weak evidence it's fine — the owner was looking at boxes, not letterforms. Still unconfirmed.*
-- ⚠️ **Pine-soft hero on paper** — enough contrast between `#E7EEE6` and `#F6F3EC` at real brightness? If the hero doesn't pop, deepen pine-soft before reaching for shadows (there are no shadows). *Same caveat: not raised, not confirmed.*
-- ⚠️ **Does the metrics strip still land without its rule?** It is now the last thing on the screen with nothing but whitespace above it. If it reads as orphaned rather than quiet, the fix is more space or a serif heading — not the rule back.
-- 📋 Extract shared primitives (Card, Eyebrow, GhostButton) once a third screen needs them, not before.
-- 📋 Ionicons work but read slightly rounded against the print aesthetic; a stroke-consistent set is a candidate refinement.
+- **Pick the device first.** The container is the first decision, before any styling — it is what says what kind of thing the reader is looking at.
+- **Derived emphasis:** the hero isn't authored separately — it's the first unresolved mission item (`src/lib/home/derive-mission.ts`). One source of truth, so the UI can't contradict itself.
+- **Whole-string class maps** for dynamic styles (`src/components/home/signal.tsx` — its SPOKEN / CONDITION / MARK maps are the reference for encoding state without relying on hue). Tailwind only sees class names that appear literally in source — **never build `bg-signal-${level}`**.
+- **Explicit hairlines**, not `divide-*` — that utility needs a CSS sibling selector RN doesn't have.
+
+### What is unverified, and what was deliberately not done
+
+**⚠️ NOTHING HAS BEEN SEEN ON A DEVICE.** Verification is `npx tsc --noEmit`, `npx eslint app src`, Prettier and the headless suites — none of which is evidence about how anything *looks*. Per the standing rule, the web preview is a logic-check surface only, never a look/feel judgement. **Three things are first-of-kind in this tree and fail SILENTLY when unsupported:**
+
+- **`Avenir Next Condensed`** — the label voice. Inside `font-label` it heads a CSS stack, so native falls through to Helvetica Neue if it is missing. **But `app/(tabs)/_layout.tsx` sets `fontFamily` imperatively as a single string, and React Native takes no fallback list there** — if iOS lacks that exact family, the five tab labels drop to the system face while every other label in the app renders correctly. If that happens, set it to `'Helvetica Neue'` (also iOS-native, next in the stack) rather than leaving it unset.
+- **`border-dashed`** (`app/protocol-versions.tsx`) — the proposed/suspended version marker. First dashed border in the app.
+- **Rotated-square diamond markers** (`app/screenings.tsx`, `transform: [{ rotate: '45deg' }]`) — the horizon-axis terminals. First transform used as a visual mark.
+
+This restyle added no dependency, so it needs no EAS build **of its own** — but it cannot be judged until the pending build ships. Everything above describing how the app looks is a specification awaiting confirmation.
+
+**The type SCALE sweep was NOT done, and that is a deliberate call, not an oversight.** The three type *voices* ship, because a voice is a `fontFamily` token the whole app inherits. The *scale* does not: **`tailwind.config.js` defines no `fontSize` or `letterSpacing` tokens, and 63 files still carry arbitrary type values** — **627** arbitrary `text-[Npx]` and **147** arbitrary `tracking-[…]` occurrences. It was judged optional because it is an **enforceability** refactor — it stops the next person inventing a fourteenth size — with the highest file count in the whole plan and the lowest visual return. See `02-migration-plan.md` Phase 5.
+
+> **Counted 2026-08-09 over the working tree** (191 source files under `app/` + `src/`), stamped so the next reader re-runs instead of re-deriving:
+>
+> | Figure | Command | Result |
+> | --- | --- | --- |
+> | arbitrary sizes | `rg -o 'text-\[[0-9]+(\.[0-9]+)?px\]' app src \| wc -l` | **627** |
+> | arbitrary tracking | `rg -o 'tracking-\[[^]]+\]' app src \| wc -l` | **147** |
+> | files carrying either | `rg -l '(text-\[[0-9.]+px\]\|tracking-\[[^]]+\])' app src \| wc -l` | **63** |
+>
+> **Basis: the working tree, which is what ships.** The tracked-only figure is **612** — four files on this branch are not yet committed, and two of them carry arbitrary sizes (`app/protocol-versions.tsx` ×13, `src/components/ui/section-label.tsx` ×2). The **627** replaces a stated **597**; the 147 and the 63 were re-measured and were already correct. The distribution, which is also the evidence for the text floor above: 10px ×139 · 11px ×73 · 12px ×57 · 12.5px ×17 · 13px ×130 · 13.5px ×1 · 14px ×48 · 15px ×129 · 16px ×12 · 17px ×7 · 19px ×3 · 20px ×1 · 21px ×3 · 22px ×3 · 26px ×3 · 30px ×1 — **sixteen distinct sizes**, which is the argument for the sweep in one line.
+
+**Also still open:**
+
+- ⚠️ **Serif rendering on device** — Iowan Old Style at 600 weight. Unconfirmed under Porcelain Ledger and still unconfirmed; Palatino is the next candidate in the stack.
+- ⚠️ **The rules are below WCAG 1.4.11's 3:1 non-text floor** — `hairline` at 2.29 (paper-hi) / 2.00 (paper), and the `well` border at 1.42. Accepted for plate edges and separators, **open for the `well`**; both go to the first device review. Numbers, reasoning and the darker candidate: "Contrast, measured" above.
+- 📋 **Seven palette/radius tokens are shims with zero consumers** (`porcelain`, `rounded-card`, `hairline-soft`, `hairline-strong` as a class, `pine-soft`, `pine-bright`, `pine-tint`). Kept deliberately; retire `pine-soft` first if the set is ever pruned, and check `palette.hairlineStrong`'s two live reads in `app/(tabs)/settings.tsx` before touching that one.
+- 📋 Several screens define a local `SectionLabel`; sweep them onto the shared primitive.
+- 📋 Ionicons read slightly rounded against the drafting aesthetic; a stroke-consistent set is a candidate refinement — and it would be a new dependency, so it is not free.
 
 ---
 
 ## Related documents
 - `CLAUDE.md` — product brain, principles, conventions
-- `docs/design-directions.md` — the six explored visual directions + critique; A (Porcelain Ledger) chosen
+- `docs/design-directions.md` — the visual-direction archive: the 2026-07-24 six-direction exploration (A, Porcelain Ledger, chosen then) **plus the Conformed Set, chosen 2026-08-08 and current**
+- `docs/design-research/` — the six-set Conformed Set exploration and its hostile reviews. `design-research/implementation/00-design-spec.md` is the visual spec of record; `02-migration-plan.md` records what actually shipped
 - `docs/data-model.md` — schema intent + what shipped
 - `docs/decisions.md` — architecture decision records
 - `docs/home-screen.md` — Home IA + implementation notes
