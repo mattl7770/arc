@@ -477,7 +477,6 @@ function WorkoutLive({
               <View key={block.key} className={bi === 0 ? '' : 'mt-5'}>
                 <ExerciseBlock
                   block={block}
-                  group={groups[bi] ?? null}
                   groupStart={groups[bi] != null && groups[bi] !== groups[bi - 1]}
                   units={units}
                   spec={spec}
@@ -600,13 +599,11 @@ function WorkoutLive({
  * the set rows all live on the same plate, because they are one record: a set
  * table is the most literal "a record is a table" surface in ARC.
  *
- * The block carries no device of its own beyond that plate — the superset rule
- * around it is a plain layout `View`, not a second device, and devices never
- * nest (src/components/ui/block.tsx).
+ * The block carries no device of its own beyond that plate, and nothing is drawn
+ * around it: the superset left rule was cut on 2026-08-10 (see the call site).
  */
 function ExerciseBlock({
   block,
-  group,
   groupStart,
   units,
   spec,
@@ -618,7 +615,6 @@ function ExerciseBlock({
   onRemove,
 }: {
   block: LiveBlock;
-  group: number | null;
   groupStart: boolean;
   units: UnitPreferences;
   spec: ReturnType<typeof weightSpec>;
@@ -631,8 +627,14 @@ function ExerciseBlock({
 }) {
   const showWeight = WEIGHT_LOGGING.has(block.loggingType);
   return (
-    // Supersetted blocks carry a left rule tying the group. Layout only.
-    <View className={group != null ? 'border-l border-hairline pl-3' : ''}>
+    // Supersetted blocks used to carry a left rule tying the group together.
+    // Cut 2026-08-10: it is the same lone vertical stroke the `margin` device
+    // lost, and it ran down the outside of plates that are already drawn — a
+    // half-drawn box around boxes. The "Superset" label above the first block
+    // is what names the group, and it survives a screenshot better than a rule
+    // whose meaning has to be guessed. With the rule gone the block no longer
+    // needs the group id at all — only `groupStart`, which the caller derives.
+    <View>
       {groupStart ? (
         <Text className="mb-1 font-label text-[10px] uppercase tracking-[2px] text-ink-muted">
           Superset

@@ -31,8 +31,8 @@ import type { ScreeningRow, UpcomingAppointment } from '@/lib/screenings/types';
  *
  * Above the ledger sits the **Preventive Horizon** — a measured 0 → 6wk+ axis
  * that places every dated screening and booking on a real timeline, so "what is
- * coming and when" is read off a drawing rather than out of a list. It is
- * itself a plate (a schedule is a record), and the long note above
+ * coming and when" is read off a drawing rather than out of a list. It carries
+ * no enclosure of its own (see {@link HorizonAxis}), and the long note above
  * {@link buildHorizon} covers the four honesty problems it has to solve. Its
  * only colour is the caution signal on an overdue marker; see the firewall note
  * below.
@@ -444,15 +444,23 @@ function horizonLabel(horizon: Horizon, today: string): string {
 }
 
 /**
- * The axis block. Inset by `mx-5` inside the plate so the centred NOW and
- * 6 WK captions have room to hang past the ends of the rail without touching
- * the plate edge.
+ * The axis block. Inset by `mx-5` so the centred NOW and 6 WK captions have room
+ * to hang past the ends of the rail without reaching the sheet's gutter.
+ *
+ * **No enclosure.** This used to be a `<Block device="plate">` on the reading
+ * that a schedule is a record. On hardware a box drawn around a drawing that is
+ * ITSELF made of rules reads as one more stray line (owner, 2026-08-10) — and
+ * the grid device lost its marks for exactly this reason: the axis IS the
+ * object, built from alignment, stakes and one marker per real item, and an
+ * outer box adds a second enclosure that carries no information the drawing
+ * does not already carry. Same call, same rationale (src/components/ui/block.tsx,
+ * "a grid draws no rules").
  */
 function HorizonAxis({ horizon, today }: { horizon: Horizon; today: string }) {
   const empty = horizon.lanes.length === 0 && horizon.beyond.length === 0;
 
   return (
-    <Block device="plate">
+    <View>
       {empty ? (
         // Authored, not blank: a rail with nothing on it would be chrome.
         <Text className="font-serif text-[12.5px] leading-5 text-ink-secondary">
@@ -472,13 +480,11 @@ function HorizonAxis({ horizon, today }: { horizon: Horizon; today: string }) {
         </View>
       )}
 
+      {/* The overflow notes. Separated by air, not by a rule: with no plate to
+          run between, a hairline here would close nothing and read as a stroke
+          lying loose on the sheet. */}
       {horizon.hidden > 0 || horizon.undated > 0 ? (
-        <View
-          className={
-            empty
-              ? 'mt-3 gap-1 border-t border-hairline pt-2'
-              : 'mt-2 gap-1 border-t border-hairline pt-2'
-          }>
+        <View className="mt-4 gap-1">
           {horizon.hidden > 0 ? (
             <HorizonNote count={horizon.hidden} text="more within 6 wk — listed below" />
           ) : null}
@@ -487,7 +493,7 @@ function HorizonAxis({ horizon, today }: { horizon: Horizon; today: string }) {
           ) : null}
         </View>
       ) : null}
-    </Block>
+    </View>
   );
 }
 
@@ -636,16 +642,16 @@ export default function ScreeningsScreen() {
 
       {/* b. The ledger — screenings grouped by due status, overdue first. */}
       {emptyLedger ? (
-        <View className="mt-4">
-          <Block device="plate">
-            <Text className="font-serif text-[17px] font-semibold text-ink">
-              The preventive ledger
-            </Text>
-            <Text className="mt-1 font-serif text-[12.5px] leading-5 text-ink-secondary">
-              The exams that guard the long game — colonoscopy, skin checks, imaging, dental, vision
-              — each with its cadence, so nothing quietly slips a year.
-            </Text>
-          </Block>
+        // Authored, never blank — and never boxed: this is a paragraph, and a
+        // border around one paragraph encloses no object.
+        <View className="mt-6">
+          <Text className="font-serif text-[17px] font-semibold text-ink">
+            The preventive ledger
+          </Text>
+          <Text className="mt-1.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
+            The exams that guard the long game — colonoscopy, skin checks, imaging, dental, vision —
+            each with its cadence, so nothing quietly slips a year.
+          </Text>
         </View>
       ) : (
         GROUP_ORDER.map((key) => {
@@ -717,12 +723,13 @@ export default function ScreeningsScreen() {
           label="Calendar"
           note={appointments.length > 0 ? String(appointments.length) : undefined}
         />
-        <View className="mt-3">
-          <Block device="plate">
-            {appointments.length === 0 ? (
-              <Text className="py-1 font-serif text-[13px] text-ink-muted">Nothing booked</Text>
-            ) : (
-              appointments.map((a, index) => (
+        {/* Nothing booked is a sentence, not a record — so it is not plated. */}
+        {appointments.length === 0 ? (
+          <Text className="mt-2 font-serif text-[13px] text-ink-muted">Nothing booked</Text>
+        ) : (
+          <View className="mt-3">
+            <Block device="plate">
+              {appointments.map((a, index) => (
                 <AppointmentRowView
                   key={a.id}
                   appt={a}
@@ -732,10 +739,10 @@ export default function ScreeningsScreen() {
                     router.push({ pathname: '/appointment-form', params: { id: a.id } })
                   }
                 />
-              ))
-            )}
-          </Block>
-        </View>
+              ))}
+            </Block>
+          </View>
+        )}
 
         <Pressable
           accessibilityRole="button"

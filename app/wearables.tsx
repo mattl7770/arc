@@ -167,21 +167,23 @@ export default function WearablesScreen() {
         </View>
       ))}
 
-      {/* Recent workouts as ingested from other apps/devices. */}
-      <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel
-            label="Workouts"
-            note={workouts.length === 0 ? 'None ingested' : `${workouts.length} ingested`}
-          />
-          <View className="mt-1">
-            {workouts.length === 0 ? (
-              <Text className="py-3 font-serif text-[13px] leading-5 text-ink-muted">
-                Nothing has come through Apple Health yet — sessions logged in ARC live in the
-                Exercise tab.
-              </Text>
-            ) : (
-              workouts.map((workout, index) => (
+      {/* Recent workouts as ingested from other apps/devices. With none
+          ingested the block is a label and one sentence, which is not a record —
+          so the plate only goes round the rows when there are rows. */}
+      {workouts.length === 0 ? (
+        <View className="mt-7">
+          <SectionLabel label="Workouts" note="None ingested" />
+          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
+            Nothing has come through Apple Health yet — sessions logged in ARC live in the Exercise
+            tab.
+          </Text>
+        </View>
+      ) : (
+        <View className="mt-7">
+          <Block device="plate">
+            <SectionLabel label="Workouts" note={`${workouts.length} ingested`} />
+            <View className="mt-1">
+              {workouts.map((workout, index) => (
                 <View
                   key={`${workout.date}-${index}`}
                   accessible
@@ -211,11 +213,11 @@ export default function WearablesScreen() {
                     ) : null}
                   </View>
                 </View>
-              ))
-            )}
-          </View>
-        </Block>
-      </View>
+              ))}
+            </View>
+          </Block>
+        </View>
+      )}
 
       {/* Sync footer — quiet, mono, honest. Unruled: a rule here would close a
           box around the page rather than around an object. */}

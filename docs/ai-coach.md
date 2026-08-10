@@ -1,7 +1,7 @@
 # ARC AI Coach — Capability Specification
 
 **Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, and protocol write-back (2026-07-27)
-**Last updated:** 2026-07-27
+**Last updated:** 2026-08-10 (§6 voice rewritten: STE register, em dashes and markdown banned)
 
 This is the concrete capability surface of the Coach: every tool it has (shipped, stubbed, or planned), its proactive behaviors, memory, safety rails, and the sequenced long tail — each item flagged with what it depends on. **Items marked `⚑ MATT` are product decisions to steer before the long tail gets built.**
 
@@ -30,8 +30,8 @@ Everything runs on-device except the model call itself (local-first, offline-exc
 | Service seam | `src/lib/ai/coach-service.ts` | The ONE model-call site. Real agentic path when a key is set; honest mock otherwise. Owns the write-confirmation gate. |
 | Persistence | `db/migrations/0008_ai_chat.sql` + `src/lib/db/repositories/ai-chat.ts` | Conversations + append-only messages with the per-turn tool-call record. |
 | Reminders | `db/migrations/0009_reminders.sql` + `src/lib/db/repositories/reminders.ts` | The nudge store + in-app surfacing. |
-| System prompt | `src/lib/ai/system-prompt.ts` | §6 voice + tool doctrine + safety rails (the refined form of §7 below). |
-| UI | `app/(tabs)/coach.tsx` + `src/components/coach/*` | Thread, brief, reminders list, write-confirmation card, session-key panel. Key + model managed in `app/settings-coach.tsx`. |
+| System prompt | `src/lib/ai/system-prompt.ts` | §6 character + §6 voice (STE register, anti-LLM-tells) + tool doctrine + safety rails (the refined form of §7 below). |
+| UI | `app/(tabs)/coach.tsx` + `src/components/coach/*` | Thread, reminders list, write-confirmation card, session-key panel. **No brief** — it was removed from this tab on 2026-08-10 (owner: *"it is already on the home screen"*); `src/components/coach/daily-brief-card.tsx` is deleted and the tab no longer imports `generateDailyBrief`. See §3 › Daily brief. Key + model managed in `app/settings-coach.tsx`. |
 
 **Key handling:** the key is the app's one secret. It's stored in the **iOS Keychain** via `expo-secure-store` (`src/lib/ai/api-key-store.ts`) — never in SQLite, the JS bundle, logs, or the system prompt — with an in-memory mirror hydrated at boot (`app/_layout.tsx`) so the hot read path stays synchronous. Managed in **Settings › Coach** (paste / replace / clear + model pick) and quick-connectable from the Coach screen. `expo-secure-store` is a native dep: until the next EAS dev build ships it, the store degrades to memory-only (session-lived) and the UI says so plainly. The key rides only the `x-api-key` header on the direct call to Anthropic — the user pastes their own key; ARC never sees it server-side (there is no server).
 
@@ -150,7 +150,11 @@ The Coach's proactivity is **deterministic detection + model narration** — the
 
 ### Daily brief
 
-`generateDailyBrief(db, now)` composes top insights + reminders due today into 1–3 sentences with no model call, so the brief is real even offline. Surfaced on the Coach screen's brief card **and on Home** — the integrator step is **done**: Home reads `generateDailyBrief` through `useDailyBrief`, and `src/lib/home/mock-day.ts` has since been deleted outright. Later: the model rewrites the deterministic skeleton in voice (one cheap call on app open) — the numbers stay the engine's.
+`generateDailyBrief(db, now)` composes top insights + reminders due today into 1–3 sentences with no model call, so the brief is real even offline. **It is surfaced in exactly one place: Home** (`src/components/home/coach-brief.tsx` ← `useDailyBrief`). `src/lib/home/mock-day.ts` was deleted outright when Home was wired to it.
+
+**The Coach tab's brief card was removed 2026-08-10** — owner: *"it is already on the home screen"*. It printed the same `generateDailyBrief` string one tab away from Home's, so the second copy bought nothing and cost a duplicated focus-reload. `src/components/coach/daily-brief-card.tsx` is deleted; `app/(tabs)/coach.tsx` no longer imports `generateDailyBrief`, and `onTurnComplete` no longer has a brief to refresh. Reminders are now the first thing in that scroll. If a brief ever returns to the Coach, it should be a *different* artefact than Home's, not a mirror of it.
+
+Later: the model rewrites the deterministic skeleton in voice (one cheap call on app open) — the numbers stay the engine's.
 
 **Reminders in the brief are split, not merged (2026-08-08).** Home is sacred (CLAUDE.md §5) and answers "what should I do right now", so a carried-over nudge may never be printed as if it were today's plan:
 
@@ -197,20 +201,43 @@ Enforced in code, not vibes:
 
 ---
 
-## 6. Personality & tone (unchanged, now enforced in the prompt)
+## 6. Personality & voice
+
+### Character (unchanged)
 
 - Calm, precise, evidence-seeking, honest about uncertainty
-- Slightly ruthless about prioritization ("this is low leverage — skip it")
+- Slightly ruthless about prioritization ("that is low leverage. Skip it.")
 - Deeply familiar; direct but respectful; never hypey
-- Quantified over vague: "HRV is down 14% vs your 30-day baseline"
+- Quantified over vague: "HRV is down 14% against your 30-day baseline"
 - Phone-screen concise; leads with the answer
 
-**Example voice:**
-"Recovery is meaningfully down (HRV -14% vs your 30-day baseline). I'm dropping today's strength volume 25% and moving the Zone 2 block to tomorrow. Highest leverage move right now is the 12-minute walk and morning light. Want me to adjust the rest of the day?"
+### Voice (rewritten 2026-08-10)
+
+Owner report: the Coach *"speaks a bit AIy, i.e. with emdashes and the like."* The em dash is the tell, not the cause. The `VOICE` block in `src/lib/ai/system-prompt.ts` now names the register concretely and pairs it with a controlled-language positive half.
+
+**Two causes, both fixed rather than papered over:**
+
+1. **The prompt was teaching the register it was supposed to prevent.** The old voice bullets — and `TOOL_DOCTRINE`, which is far longer — are written in dense em-dash prose. A model imitates the style of its own system prompt, so an abstract "be calm and precise" was competing with ~40 worked examples of the opposite and losing. `VOICE` is now written **without em dashes** (the only ones left sit inside the labelled `NOT:` examples), and it closes by telling the model not to copy the punctuation of the dense sections below it.
+2. **Markdown is never rendered.** `src/components/coach/message-bubble.tsx` puts `message.content` straight into a React Native `<Text>`; there is no markdown renderer anywhere in the thread. So `**bold**` reaches the phone as literal asterisks. **"No markdown" is a correctness rule here, not a taste one** — revisit that bullet only if a renderer is ever added.
+
+**Named and banned** (a vague "sound natural" does nothing): em dashes · "it's not just X, it's Y" and other reframing flourishes · adjective triads and three-clause rhythm · hedge stacks ("might be worth potentially considering") · restating the question before answering · summarizing what it just said · opening with "Great question" · closing with a generic offer of further help · markdown and emoji.
+
+Note the one carve-out: a **specific** proposed next action ("Want me to move the rest of the day?") is not the banned closing offer. That distinction is drawn in the prompt and shown in its example.
+
+**Simplified Technical English, the parts that fit.** STE is the aerospace-maintenance controlled language (ASD-STE100). Adopted: one idea per sentence · sentences under ~20 words · active voice · instructions as imperatives · **the same word for the same thing every time** (if the protocol is the Evening Stack, it is the Evening Stack in every sentence, never "your nightly regimen") · plain nouns instead of metaphor · no empty qualifiers (very, quite, actually, somewhat) · noun clusters capped at three.
+
+**Deliberately NOT adopted:** STE's telegraphic register. The prompt explicitly keeps articles and ordinary grammar, because this is the user's chief of staff, not a parts catalogue. It also carries an explicit licence to say a hard thing plainly, so that "slightly ruthless" survives the compression rather than being flattened into hedged politeness.
+
+**Example voice** (the prompt's own `THIS:` case):
+"Recovery is down. HRV averaged 41 ms over the last 7 days, against 48 ms on your 30-day baseline. Cut today's strength volume by 25% and keep the Zone 2 block. Want me to move the rest of the day?"
+
+**Not yet verified on device.** This is a prompt change, so nothing here is proven until the owner reads a real reply on hardware. The two mechanical claims *are* verified by reading the code: `VOICE` reaches the model (`buildCoachSystemPrompt` concatenates it), and the bubble renders plain text.
 
 ## 7. System prompt
 
-The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + tool doctrine + safety rails + date/context tail) and is the refined form of the old skeleton. Keep the two in sync; note voice changes in `docs/decisions.md`.
+The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + voice + tool doctrine + safety rails + date/context tail) and is the refined form of the old skeleton. Keep the two in sync; note voice changes in `docs/decisions.md`.
+
+**Cache note.** The whole system string is one cached block (`buildMessagesRequest`, `model-client.ts`) with a single breakpoint at its end; the tool list carries the second. Adding `VOICE` did not move either breakpoint — it invalidates the cache exactly once, on first send after deploy. But the block is billed on **every** turn, so keep prompt edits concrete and short: a "write this, not that" pair earns its tokens, a paragraph of adjectives does not.
 
 ---
 

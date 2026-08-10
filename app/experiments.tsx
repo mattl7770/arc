@@ -28,14 +28,20 @@ import { progressPhrase, windowLabel } from '@/lib/experiments/format';
  * label voice; windows and day counts are measured values and stay in mono.
  */
 
-/** A neutral workflow chip — a status word, so the label voice, never mono. */
-function Chip({ children }: { children: string }) {
+/**
+ * A neutral workflow tag — a status word, so the label voice, never mono.
+ *
+ * Unboxed. It used to wear the well's own stock (`border-paper-deep bg-paper-dim`),
+ * which was wrong twice over: a recess says "type into me", and a border around
+ * two words is a mark the reader has to interpret before it tells them anything.
+ * The word appears on the rows that are ready and on no others — that presence
+ * IS the distinction (app/protocol-versions.tsx draws "Current" the same way).
+ */
+function Tag({ children }: { children: string }) {
   return (
-    <View className="border border-paper-deep bg-paper-dim px-2 py-0.5">
-      <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-        {children}
-      </Text>
-    </View>
+    <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+      {children}
+    </Text>
   );
 }
 
@@ -62,7 +68,7 @@ function RunningRow({
         <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">
           {experiment.title}
         </Text>
-        {experiment.ready ? <Chip>Read out</Chip> : null}
+        {experiment.ready ? <Tag>Read out</Tag> : null}
         <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
       </View>
       <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary" numberOfLines={2}>
@@ -120,23 +126,24 @@ export default function ExperimentsScreen() {
       <View className="pt-2">
         <StackHeader title="Experiments" />
       </View>
+      {/* Not a description of the screen — the one thing you can do on it. The
+          Coach designs and concludes experiments, so "ask the Coach" is the
+          only route in, and without this line there is nothing on the sheet
+          that says so. */}
       <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
-        n-of-1: change one thing, watch the metrics, decide if it held. Ask the Coach to start one.
+        Ask the Coach to start one.
       </Text>
 
       {isEmpty ? (
-        // Empty is authored, never blank.
+        // Authored, never blank — and unboxed: a border around one paragraph
+        // encloses no object.
         <View className="mt-8">
-          <Block device="plate">
-            <Text className="font-serif text-[16px] font-semibold text-ink">
-              No experiments yet
-            </Text>
-            <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-              An experiment is one deliberate change tested against your own data — &ldquo;does 400
-              mg magnesium at night lift my HRV?&rdquo; Ask the Coach to design one; it picks the
-              metrics, sets the window, and reads out the verdict when the window closes.
-            </Text>
-          </Block>
+          <Text className="font-serif text-[16px] font-semibold text-ink">No experiments yet</Text>
+          <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
+            An experiment is one deliberate change tested against your own data — &ldquo;does 400 mg
+            magnesium at night lift my HRV?&rdquo; Ask the Coach to design one; it picks the
+            metrics, sets the window, and reads out the verdict when the window closes.
+          </Text>
         </View>
       ) : null}
 

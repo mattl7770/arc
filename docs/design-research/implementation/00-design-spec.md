@@ -111,7 +111,7 @@ Ground is a neutral drafting bone that reads clean under either accent.
 **The shipped implementation** (`src/components/ui/screen.tsx`) is a **repeat-tiled PNG**, because React Native has no `repeating-linear-gradient` and this had to land with **zero new native dependencies** (the owner runs a dev client; a new package costs a ~20-minute cloud rebuild). The alternative — absolutely-positioned hairline `View`s — was rejected on arithmetic: a 9pt pitch over a 390 × 850pt screen is ~140 nodes per screenful and several hundred on a long scroll, for a texture.
 
 - Tile: one 9pt cell, a 1pt rule on its top and left edge, transparent elsewhere. Shipped at `assets/images/paper-grid.png` / `@2x` / `@3x` (80–102 bytes each) so the rule lands crisp at native density instead of being smeared by a 3× upscale.
-- Ink `#1C1911` is baked at **full alpha**; the 6% is the layer's `opacity`. That is deliberate — it makes the calibration a **single number**.
+- Ink `#1C1911` is baked at **full alpha**; the strength is the layer's `opacity`. That is deliberate — it makes the calibration a **single number**.
 - Drawn once, by `Screen`, **behind** everything and **outside** the `SafeAreaView` so it runs edge to edge with no seam at the status-bar inset.
 - **It does not scroll.** The paper is the fixed thing; content moves over it. Matches the mockup (`--paper-grid` is on the screen, not on the content) and costs nothing per frame.
 - `pointerEvents="none"` and `accessibilityElementsHidden` — inert to touch and invisible to VoiceOver.
@@ -121,11 +121,29 @@ Ground is a neutral drafting bone that reads clean under either accent.
 | | Value | Why |
 | --- | --- | --- |
 | `pitch` | **9pt** | Straight from the mockup. The mockup phone is ~1 CSS px ≈ 1pt, so 9 transfers 1:1 and the angular size on device matches what was reviewed. |
-| `opacity` | **0.06** | 6% ink over a **21% ruled area** is **~1.26% average darkening** of `#E7E4DA` — you find it when you look for it. |
+| `opacity` | **0.20** | Puts a grid line at **1.51:1** against the sheet — half the weight of a `hairline`, which is the intent this section always stated. Raised from 0.06 on 2026-08-10; see below. |
 
-> **Arithmetic corrected 2026-08-09.** This row read *"an 11% ruled area (1pt rule per 9pt cell) … ~0.7% average darkening"*, and `src/constants/theme.ts` carried the same sentence. Both counted **one** edge. The tile rules its **top edge and its left edge**, so a 9 × 9 cell is **17 of 81 opaque pixels = 20.99%** — verified by decoding the shipped PNGs, and identical at every density (@2x 68/324, @3x 153/729). 0.06 × 0.2099 = **1.26%**. **The render was never wrong and neither was the mockup**: `.cf-screen` stacks a `0deg` *and* a `90deg` `repeating-linear-gradient`, so two edges per cell is exactly what was reviewed. Only the stated reasoning was wrong — which matters, because the reasoning is what the next person tunes against.
+**Tile geometry is verified, not assumed.** Decoding the three shipped PNGs: the tile rules its **top edge and its left edge**, so a 9 × 9 cell is **17 of 81 opaque pixels = 20.99%** — identical at every density (@2x 68/324, @3x 153/729). The rule is **1pt at every density** (1/2/3 px on a 9/18/27 px tile), the pitch is a whole number of physical pixels at 1x/2x/3x so the tile is never resampled, and the ink is a flat `#1C1911` at alpha 255. **The render was never wrong and neither was the mockup**: `.cf-screen` stacks a `0deg` *and* a `90deg` `repeating-linear-gradient`, so two edges per cell is exactly what was reviewed.
 
-**The number that justifies the calibration is contrast, not coverage.** Composited over `paper` `#E7E4DA`, a grid line measures **1.12:1** against the sheet. `paper-line` `#A9A28E` — the surface system's real rule, on the same ground — measures **2.00:1**. The grid sits at a bit over half the weight of the faintest thing that means *"this encloses an object"*, so it does not compete with the rules; that gap, not the coverage figure, is the thing to preserve if the dial ever moves. **If the grid starts reading as a rule it is too strong**, because a page-wide rule contradicts §4's "rules enclose objects, never pages". Sane range **0.04–0.10** (1.08:1 – 1.22:1 against the sheet); past ~0.12 it fights every plate edge. `opacity` is the dial — change it there and nowhere else.
+**The number that justifies the calibration is contrast, not coverage.** Composited over `paper` `#E7E4DA` and quantised to 8-bit the way iOS actually composites, against a ceiling of `paper-line` `#A9A28E` = **2.00:1** (the surface system's real rule, on the same ground):
+
+| `opacity` | Line colour | vs sheet | Weight vs `hairline` | |
+| --- | --- | --- | --- | --- |
+| 0.06 | `#DBD8CE` | 1.12:1 | 12% | the old value — **invisible on device** |
+| 0.10 | `#D3D0C6` | 1.21:1 | 21% | |
+| 0.14 | `#CBC8BE` | 1.32:1 | 32% | |
+| **0.20** | **`#BEBBB2`** | **1.51:1** | **51%** | **shipped** |
+| 0.26 | `#B2AFA6` | 1.72:1 | 72% | |
+| 0.30 | `#AAA79E` | 1.89:1 | 89% | too close to a real rule |
+| 0.35 | `#A09D94` | 2.13:1 | 113% | over the ceiling |
+
+> **Calibration corrected 2026-08-10, after the owner reported a second time that the sheet still read as blank.** This was never a rendering fault — the layer draws on all seven full-screen roots, the tiles bundle, and nothing paints over it. The dial was simply set below the eye's detection threshold, and **an arithmetic error in this very paragraph concealed that for two rounds**: it read *"the grid sits at a bit over half the weight of the faintest thing that means 'this encloses an object'"*, taking 1.12:1 against 2.00:1 as ≈56%. But a contrast ratio is anchored at **1.0, not 0** — a mark's weight is how far it *departs* from that anchor. The grid departed by 0.12 and the hairline by 1.00, so the grid was at **12%** of a hairline, roughly an eighth of the stated intent. The prose was right; the number under it was not, and re-checking the *coverage* figure (which two rounds did) could never surface it.
+
+Two lessons worth keeping. **Compare departures from the anchor, never the ratios themselves** — that is the specific mistake that shipped an invisible grid twice. And **a browser on a bright desktop monitor is not a phone**: the mockup's 6% was chosen there and did not survive the transfer, so any value taken from `arc-conformed-set.html` is a starting point to be re-measured on hardware, not a spec.
+
+**Why the dial and not the pitch.** A 1pt rule at 1.12:1 is under threshold at *any* spacing, so coarsening the pitch would only have produced fewer invisible lines. At 9pt the grid is ~1 mm on a @3x phone and subtends ~11 arcmin at reading distance — an order of magnitude above visual acuity. The spacing was never what failed to register; the individual rule's contrast was. 9pt stays.
+
+**The guard rail, restated.** A plate edge must stay unmistakably about twice the departure of the texture beneath it — that gap is what keeps §4's *"rules enclose objects, never pages"* true, and it is the thing to preserve if the dial moves again. Sane range **0.16–0.24** (1.37:1 – 1.65:1). **If the grid starts reading as a rule rather than as tooth in the paper it is too strong** — but the failure twice running was the opposite one, so err high rather than low. `opacity` is the dial — change it there and nowhere else.
 
 **Changing the pitch** means regenerating the three tiles (it is baked into the PNG; `paperGrid.pitch` is documentation, nothing reads it). Recipe, with Node's built-in `zlib` and no dependency: write an RGBA PNG of `pitch × scale` square for scale 1/2/3, filter byte `0` on every row, alpha `255` where `y < scale || x < scale` and `0` elsewhere, RGB `28,25,17` (#1C1911, `palette.ink`) throughout — note the mockup's `rgba(28,24,14,.06)` is the CSS original, not the baked value; `deflateSync` the scanlines into `IDAT`; name them `paper-grid.png`, `paper-grid@2x.png`, `paper-grid@3x.png`.
 

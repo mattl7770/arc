@@ -5,7 +5,6 @@ import { Pressable, Text, View } from 'react-native';
 import { CommandField } from '@/components/log/command-field';
 import { QuickAddGrid } from '@/components/log/quick-add-grid';
 import { RecentLogs } from '@/components/log/recent-logs';
-import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import { useLogFeed } from '@/hooks/use-log-feed';
@@ -22,12 +21,12 @@ import { useLogFeed } from '@/hooks/use-log-feed';
  * on capture and whenever the tab regains focus (returning from the keypad).
  *
  * Conformed Set treatment (00-design-spec.md §1) — one device per block, and
- * three of them on this sheet: the command field is a **recessed well** (it is
- * an input), the quick-adds are a **ruled grid** (equal peers, rules between
- * cells only), and "Logged today" is a **ruled plate** (a record is a table).
- * The symptom row is its own small plate. The screen's single accent is the
- * command field's send/mic action — the tiles are deliberately neutral, because
- * none of them is "the one next action".
+ * two of them on this sheet: the command field is a **recessed well** (it is an
+ * input) and "Logged today" is a **ruled plate** (a record is a table). The
+ * quick-adds are a grid, which draws no rules at all, and the symptom row is a
+ * bare row — it used to be a plate of its own, a box around one line. The
+ * screen's single accent is the command field's send/mic action — the tiles are
+ * deliberately neutral, because none of them is "the one next action".
  */
 
 /**
@@ -92,26 +91,26 @@ export default function LogScreen() {
         <QuickAddGrid />
       </View>
 
-      {/* Symptom capture — a distinct "something's off" entry, kept separate from
-          the routine quick-adds. A record you can open: the plate device. It
-          carries no accent; the command field owns this screen's one pine. */}
-      <View className="mt-5">
-        <Block device="plate">
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Log a symptom"
-            onPress={() => router.push('/symptom')}
-            className="min-h-[44px] flex-row items-center gap-3 active:opacity-60">
-            <Ionicons name="pulse-outline" size={18} color={palette.inkSecondary} />
-            <View className="flex-1">
-              <Text className="font-label text-[13px] font-semibold text-ink">Log a symptom</Text>
-              <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-muted">
-                Headache, pain, GI, energy — with severity
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-          </Pressable>
-        </Block>
+      {/* Symptom capture — a distinct "something's off" entry, kept separate
+          from the routine quick-adds. It carries no accent (the command field
+          owns this screen's one pine) and no enclosure: it was drawn as a plate,
+          which put a box around a single row sitting between the quick-add grid
+          and the day's record. A plate closes a record; one row is not one. */}
+      <View className="mt-6">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Log a symptom"
+          onPress={() => router.push('/symptom')}
+          className="min-h-[44px] flex-row items-center gap-3 active:opacity-60">
+          <Ionicons name="pulse-outline" size={18} color={palette.inkSecondary} />
+          <View className="flex-1">
+            <Text className="font-label text-[13px] font-semibold text-ink">Log a symptom</Text>
+            <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-muted">
+              Headache, pain, GI, energy — with severity
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+        </Pressable>
       </View>
 
       <View className="mt-6">

@@ -150,23 +150,53 @@ export const palette = {
  * TUNING. `opacity` is the dial — change it here and nowhere else. Ink is baked
  * into the tile at full alpha precisely so this one number is the whole control.
  *
- * The arithmetic, decoded from the shipped PNGs rather than assumed (this
- * comment and 00-design-spec.md §4a both claimed "an 11% ruled area … ~0.7%
- * average darkening" until 2026-08-09, which counted only ONE edge): the tile
- * rules its top edge AND its left edge, so a 9×9 cell is **17 of 81 opaque
- * pixels = 21.0% ruled** — identical at @2x (68/324) and @3x (153/729). At 6%
- * that is **~1.26% average darkening** of the sheet. The doubled figure is the
- * correct one and the render was never wrong: the mockup stacks a 0deg AND a
- * 90deg `repeating-linear-gradient`, so two edges is what it always drew.
+ * GEOMETRY, decoded from the shipped PNGs rather than assumed. The tile rules
+ * its top edge AND its left edge, so a 9×9 cell is **17 of 81 opaque pixels =
+ * 21.0% ruled** — identical at @2x (68/324) and @3x (153/729). The rule is 1pt
+ * at every density (1px/2px/3px on a 9/18/27px tile), the pitch is an integer
+ * number of physical pixels at 1x/2x/3x so nothing is ever resampled, and the
+ * ink is a flat #1C1911 at alpha 255. The tiles are correct and always were.
  *
- * The number that actually justifies the calibration is the contrast, not the
- * coverage: composited over `paper` #E7E4DA, a grid line measures **1.12:1**
- * against the sheet, while `hairline` #A9A28E — the surface system's real rule —
- * measures **2.00:1** on the same ground. The grid sits at a bit over half the
- * weight of the faintest thing that means "this encloses an object", so it reads
- * as texture you find when you look for it rather than as a rule competing with
- * every plate edge. **If the grid starts reading as a rule it is too strong.**
- * Sane range 0.04–0.10 (1.08:1 – 1.22:1); past ~0.12 it fights every plate edge.
+ * CALIBRATION — corrected 2026-08-10, after the owner reported for the SECOND
+ * time that the sheet still read as blank. It was never a rendering fault: the
+ * layer draws on all seven roots and the tiles are sound. The dial was simply
+ * set to a value below the eye's detection threshold, and the comment that
+ * justified it contained an arithmetic error that hid this for two rounds.
+ *
+ * The error: this comment used to say the grid "sits at a bit over half the
+ * weight" of `hairline`, reading 1.12:1 against 2.00:1 as ≈56%. But a contrast
+ * ratio is anchored at 1.0, not 0 — the weight of a mark is how far it departs
+ * from that anchor. The grid departed by 0.12 and the hairline by 1.00, so the
+ * grid was at **12%** of a hairline's weight, not 56%. The stated intent was
+ * right all along; the number under it implemented something eight times
+ * fainter, and no amount of re-checking the coverage figure could reveal that.
+ *
+ * The measurements, composited over `paper` #E7E4DA and quantised to 8-bit the
+ * way iOS actually composites them (`hairline` #A9A28E = 2.00:1 is the ceiling):
+ *
+ *   opacity   line colour   vs sheet   weight vs hairline
+ *     0.06     #DBD8CE       1.12:1      12%   ← was: invisible on device
+ *     0.10     #D3D0C6       1.21:1      21%
+ *     0.14     #CBC8BE       1.32:1      32%
+ *     0.20     #BEBBB2       1.51:1      51%   ← chosen
+ *     0.26     #B2AFA6       1.72:1      72%
+ *     0.30     #AAA79E       1.89:1      89%   ← too close to a real rule
+ *     0.35     #A09D94       2.13:1     113%   ← exceeds the ceiling
+ *
+ * **0.20 is the value the prose always described**: a mark at half the weight of
+ * the faintest thing that means "this encloses an object". A plate edge stays
+ * unmistakably twice the departure of the texture under it, which is the gap
+ * that keeps §4's "rules enclose objects, never pages" true, and it leaves ~0.5
+ * of ratio in hand before the grid reaches hairline weight. Sane range
+ * **0.16–0.24** (1.37:1 – 1.65:1). **If the grid starts reading as a rule rather
+ * than as tooth in the paper it is too strong** — but note that the failure for
+ * two rounds running was the opposite one, so err high rather than low.
+ *
+ * Why the dial and not the pitch: a 1pt rule at 1.12:1 is under threshold at any
+ * spacing, so coarsening the pitch would only have produced fewer invisible
+ * lines. 9pt is ~1mm on a @3x phone and subtends ~11 arcmin at reading distance
+ * — an order of magnitude above visual acuity, so the spacing was never what was
+ * failing to register. The individual rule's contrast was.
  *
  * `pitch` is BAKED INTO THE PNG and is here to be read, not assigned — nothing
  * consumes it. Changing the pitch means regenerating the three tiles; the
@@ -175,8 +205,12 @@ export const palette = {
 export const paperGrid = {
   /** Points between rules. Matches the mockup's `--paper-grid` at 9px. */
   pitch: 9,
-  /** The dial. `rgba(28, 24, 14, 0.06)` in the mockup = ink at 6%. */
-  opacity: 0.06,
+  /**
+   * The dial. The mockup's `rgba(28, 24, 14, .06)` was picked in a browser on a
+   * bright desktop monitor and did not survive the transfer to a phone; 0.20 is
+   * the calibrated device value. See the table above before changing it.
+   */
+  opacity: 0.2,
 } as const;
 
 /**

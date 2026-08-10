@@ -24,13 +24,11 @@ import type { PendingWrite } from '@/types/coach';
  *      The card said "Coach wants to" and showed the summary — a request with no
  *      stated outcome, which is the half of the decision the owner is actually
  *      being asked about. It now draws the outcome as a two-lane revision diff:
- *      what the record says NOW, and what it will say ON APPROVE. That is the
- *      mockup's dimensioned old→new REV bar-diff, ported to bordered Views —
- *      there is no react-native-svg in this app and that stays true (port guide
- *      §5).
+ *      what the record says NOW, and what it will say ON APPROVE. The lanes are
+ *      set in type alone — no rules, no indent (see the note at the call site).
  *   3. **The decision and its outcome are never drawn at once.** The ON APPROVE
- *      lane is a future, not a receipt: it is set apart by a rule and a tense,
- *      and it disappears the instant the decision is made. The screen also
+ *      lane is a future, not a receipt: it is set apart by its label and its
+ *      tense, and it disappears the instant the decision is made. The screen also
  *      suppresses the live activity line while this card is open — the loop is
  *      suspended, so "reading your data…" underneath a gate would be a lie.
  *   4. **The composer is disabled.** The screen passes a `blockedReason` to
@@ -71,11 +69,18 @@ export function PendingWriteCard({
           {humanizeToolName(pending.tool)}
         </Text>
 
-        {/* The revision diff — current state above, proposed state below, the
-            two told apart by the weight and colour of their rules rather than
-            by any number neither of them has. */}
+        {/* The revision diff — current state above, proposed state below.
+            **No lane rules.** Each lane used to carry a 2px left rule (neutral
+            for Now, pine for On approve) with a 10px indent. That is the exact
+            mark the `margin` device lost on 2026-08-09 for the exact reason:
+            beside a paragraph it is not annotating, a lone vertical stroke
+            reads as a rendering artefact rather than as structure, and the
+            owner has now raised stray rules twice (2026-08-10). The tense and
+            the two labels were always what told the lanes apart — "Now" in
+            muted ink, "On approve" in pine — and they still do, inside a stamp
+            that is already drawn. Nothing here needed a second enclosure. */}
         <View className="mt-3">
-          <View className="border-l-2 border-paper-deep pl-2.5">
+          <View>
             <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
               Now
             </Text>
@@ -84,7 +89,7 @@ export function PendingWriteCard({
             </Text>
           </View>
 
-          <View className="mt-2.5 border-l-2 border-pine pl-2.5">
+          <View className="mt-2.5">
             <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
               On approve
             </Text>

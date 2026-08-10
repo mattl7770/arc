@@ -283,20 +283,25 @@ export default function WorkoutLogScreen() {
           ) : null}
         </View>
 
-        {/* Sets — a record is a table, so the drafted list is a ruled plate. */}
+        {/* Sets — a record is a table, so the drafted list is a ruled plate,
+            and the plate is drawn ONLY once a set is drafted. A plate closes a
+            record; an empty draft has no record to close, only a paragraph —
+            and a border around one paragraph is the box-around-a-single-thing
+            the owner keeps seeing. This screen always opens in that state. Same
+            shape as app/protocols.tsx. */}
         <View className="mt-7">
-          <Block device="plate">
-            <SectionLabel
-              label="Sets"
-              note={sets.length > 0 ? `${sets.length} drafted` : undefined}
-            />
-
-            {sets.length === 0 ? (
+          {sets.length === 0 ? (
+            <View>
+              <SectionLabel label="Sets" />
               <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
                 Nothing drafted yet. Add sets below — or save a session with none, for cardio and
                 mobility work.
               </Text>
-            ) : (
+            </View>
+          ) : (
+            <Block device="plate">
+              <SectionLabel label="Sets" note={`${sets.length} drafted`} />
+
               <View className="mt-1">
                 {sets.map((s, index) => (
                   <View
@@ -322,8 +327,8 @@ export default function WorkoutLogScreen() {
                   </View>
                 ))}
               </View>
-            )}
-          </Block>
+            </Block>
+          )}
 
           {/* Entry row — recessed stock on the sheet, not a device. */}
           <View className="mt-2">

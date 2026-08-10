@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef } from 'react';
 import {
   KeyboardAvoidingView,
   type NativeScrollEvent,
@@ -9,10 +9,8 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
 
 import { ChatInput } from '@/components/coach/chat-input';
-import { DailyBriefCard } from '@/components/coach/daily-brief-card';
 import { MessageBubble } from '@/components/coach/message-bubble';
 import { PendingWriteCard } from '@/components/coach/pending-write-card';
 import { RemindersCard } from '@/components/coach/reminders-card';
@@ -22,27 +20,33 @@ import { PaperGrid } from '@/components/ui/screen';
 import { useCoachChat } from '@/hooks/use-coach-chat';
 import { useReminders } from '@/hooks/use-reminders';
 import { useSessionKeySet } from '@/hooks/use-session-key';
-import { generateDailyBrief } from '@/lib/ai/insights';
-import { COACH_TAGLINE } from '@/lib/ai/system-prompt';
 import { getDb } from '@/lib/db/client';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 
 /**
  * Coach — the conversational surface (docs/ai-coach.md).
  *
- * The thread opens with today's brief — computed deterministically from the
- * on-device data (src/lib/ai/insights.ts), no model call — and the active
- * reminders. The model call lives behind src/lib/ai/coach-service.ts: with a
- * session key pasted it runs the real agentic tool loop (reads + confirmed
- * writes against the local database); without one it stays an honest preview.
- * Write tool calls surface in the PendingWriteCard and run only on Approve.
+ * The screen is the conversation and nothing else: the active reminders, the
+ * thread, and the composer. The model call lives behind
+ * src/lib/ai/coach-service.ts — with a session key pasted it runs the real
+ * agentic tool loop (reads + confirmed writes against the local database);
+ * without one it stays an honest preview. Write tool calls surface in the
+ * PendingWriteCard and run only on Approve.
+ *
+ * **The daily brief is not here** (owner, 2026-08-10: "Today's brief in the
+ * coach tab can be removed. It is already on the home screen."). It opened the
+ * thread as a `margin` block, restating verbatim what Home's coach-brief.tsx
+ * already prints one tab away — the same `generateDailyBrief(getDb())` string,
+ * read twice a day by the same person. Home is where the day is decided, so
+ * Home keeps it; this screen is where the day is discussed. The component and
+ * its focus-reload went with it, and `onTurnComplete` no longer has a brief to
+ * refresh.
  *
  * ## The surface system
  *
  * Three devices appear here, and the container is what tells you what kind of
  * thing you are reading (src/components/ui/block.tsx):
  *
- *   daily-brief-card    margin  prose — the brief is annotation, not a card
  *   reminders-card      plate   a schedule is a record, and a record is a table
  *   suggested-prompts   plate   the authored empty state, as a list of things
  *   pending-write-card  stamp   the one next action, in the accent
@@ -90,9 +94,8 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  *
  * ## Accent budget
  *
- * Exactly the sanctioned set (00-design-spec.md §2): the Coach presence dot (in
- * the session line and on the brief), the user's own bubbles, the streaming
- * caret and the thinking dots, and **one** primary action — the composer's send,
+ * Exactly the sanctioned set (00-design-spec.md §2): the user's own bubbles, the
+ * streaming caret and the thinking dots, and **one** primary action — the composer's send,
  * which hands the accent over to the pending-write stamp while a decision is
  * open, so the two never appear together. No signal colour appears anywhere on
  * this screen: everything here is chrome or workflow state, and the signal
@@ -110,19 +113,12 @@ export default function CoachScreen() {
   const keySet = useSessionKeySet();
   const { reminders, reload: reloadReminders, complete, dismiss } = useReminders();
 
-  // Deterministic brief — re-read on focus and after any Coach turn (a tool
-  // may have logged data that moves an insight).
-  const [brief, setBrief] = useState(() => generateDailyBrief(getDb()));
-  const reloadBrief = useCallback(() => setBrief(generateDailyBrief(getDb())), []);
-  useFocusEffect(reloadBrief);
-
   const onTurnComplete = useCallback(() => {
     reloadReminders();
-    reloadBrief();
     // A turn may have set/completed/dismissed a reminder — re-mirror the OS
     // notification schedule so a while-closed nudge tracks the change.
     void syncReminderNotifications(getDb());
-  }, [reloadReminders, reloadBrief]);
+  }, [reloadReminders]);
 
   // Completing/dismissing from the card also changes what should fire.
   const onCompleteReminder = useCallback(
@@ -155,6 +151,7 @@ export default function CoachScreen() {
   };
 
   const hasConversation = chat.messages.length > 0;
+  const hasReminders = reminders.length > 0;
   const decisionOpen = chat.pendingWrite !== null;
 
   return (
@@ -164,16 +161,16 @@ export default function CoachScreen() {
           status-bar inset with no seam. */}
       <PaperGrid />
       <SafeAreaView edges={['top']} className="flex-1">
+        {/* Title only. The line under it — "Calm, precise, and grounded in your
+            data" — described the app's manner back at the owner and told them
+            nothing they could act on; it is gone by their call (2026-08-10). */}
         <View className="border-b border-hairline px-5 pb-2.5 pt-1">
           <Text className="font-serif text-[22px] font-semibold text-ink">ARC Coach</Text>
-          <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
-            {COACH_TAGLINE}
-          </Text>
         </View>
 
-        {/* Renders nothing once a key is set — see session-key-panel.tsx. With a
-          model connected the screen opens straight into the conversation, and
-          the header's own rule is then the only one closing the band. */}
+        {/* Renders nothing once a key is set — see session-key-panel.tsx. Its
+          collapsed form draws no rule of its own, so the header's hairline above
+          is the only one closing this band whether or not the panel is up. */}
         <SessionKeyPanel keySet={keySet} />
 
         <KeyboardAvoidingView
@@ -188,27 +185,26 @@ export default function CoachScreen() {
             scrollEventThrottle={16}
             onScroll={onScroll}
             onContentSizeChange={followIfAtBottom}>
-            <DailyBriefCard brief={brief} keySet={keySet} />
-
-            {/* RemindersCard renders nothing when the list is empty, so the gap
-              above it is conditioned on the same emptiness — otherwise a user
-              with no reminders gets a 24px hole in the sheet. */}
-            {reminders.length > 0 ? (
-              <View className="mt-6">
-                <RemindersCard
-                  reminders={reminders}
-                  onComplete={onCompleteReminder}
-                  onDismiss={onDismissReminder}
-                />
-              </View>
+            {/* With the brief gone, reminders are the first thing in the scroll
+              view — so the section gap has to move onto whatever follows them
+              rather than sit on top of the first block. `hasReminders` is what
+              every section below keys its top margin off; the container's own
+              `pt-4` is the only air above the first one. RemindersCard renders
+              nothing when the list is empty, hence the same test guards both. */}
+            {hasReminders ? (
+              <RemindersCard
+                reminders={reminders}
+                onComplete={onCompleteReminder}
+                onDismiss={onDismissReminder}
+              />
             ) : null}
 
             {hasConversation ? (
               // No enclosure and no label: the conversation sits straight on the
               // sheet (see the surface note above). The gap is one step wider than
               // a section gap because the turns no longer have a container holding
-              // them apart from the cards above.
-              <View className="mt-7">
+              // them apart from the card above.
+              <View className={hasReminders ? 'mt-7' : ''}>
                 {chat.messages.map((message, index) => (
                   // Spacing lives on the thread, not on the turn, so the last
                   // bubble cannot push a gap against the composer. Turns need a
@@ -219,7 +215,7 @@ export default function CoachScreen() {
                 ))}
               </View>
             ) : (
-              <View className="mt-6">
+              <View className={hasReminders ? 'mt-6' : ''}>
                 <SuggestedPrompts onPick={chat.send} />
               </View>
             )}

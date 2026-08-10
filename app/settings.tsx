@@ -34,10 +34,11 @@ import { isHealthKitSupported } from '@/lib/health/healthkit';
  * exactly like Labs, Protocols and Wearables. A hidden tab would have left the
  * bar visible with nothing lit and no way back except tapping another tab.
  *
- * Conformed Set treatment — every group is a **ruled plate**: a settings list is
- * a record of what is set, and a record is a table (00-design-spec.md §1). The
- * About block is the exception, and takes the **margin annotation** device
- * because it is prose about the app rather than a list of settings.
+ * Conformed Set treatment — a group of settings is a **ruled plate**: a settings
+ * list is a record of what is set, and a record is a table (00-design-spec.md
+ * §1). Two blocks are not: About takes the **margin annotation** device because
+ * it is prose about the app rather than a list of settings, and "Not yet built"
+ * is a single row, which a plate would box rather than close.
  *
  * ## Zero accent, deliberately
  *
@@ -53,14 +54,18 @@ import { isHealthKitSupported } from '@/lib/health/healthkit';
  * useFocusEffect pattern) so an edit shows up on return.
  */
 
-/** The neutral "not ready" chip — a status word, so the label voice, never mono. */
-function Chip({ children }: { children: string }) {
+/**
+ * The neutral "not ready" tag — a status word, so the label voice, never mono.
+ *
+ * Unboxed. It wore the well's own stock (`border-paper-deep bg-paper-dim`),
+ * which said "type into me" about a word you cannot touch, and put a rectangle
+ * around two syllables inside an already-ruled plate.
+ */
+function Tag({ children }: { children: string }) {
   return (
-    <View className="border border-paper-deep bg-paper-dim px-2 py-0.5">
-      <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-        {children}
-      </Text>
-    </View>
+    <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+      {children}
+    </Text>
   );
 }
 
@@ -263,7 +268,7 @@ export default function SettingsScreen() {
                   ios_backgroundColor={palette.hairlineStrong}
                 />
               ) : (
-                <Chip>Needs a build</Chip>
+                <Tag>Needs a build</Tag>
               )}
             </View>
 
@@ -287,28 +292,36 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      {/* Not yet built — visible so the shape is honest, muted so it stays quiet. */}
+      {/* Not yet built — visible so the shape is honest, muted so it stays
+          quiet. Unplated: this is one row today, and a plate around a single row
+          draws a box around a line.
+
+          NO INTER-ROW RULE, and that holds however long this list grows. The
+          rule is general (ADR 2026-08-10, `docs/decisions.md`): a hairline
+          separates rows *inside* an enclosure; with no plate to run between it
+          closes nothing and reads as a stroke lying loose on the sheet. Rows
+          are separated by air — `py-3` on each gives 24pt between them, which
+          is the separation. Same call as `app/screenings.tsx` and
+          `app/protocol-edit.tsx`. This used to carry an `index === 0` guard
+          that suppressed the rule on the only row there is, so the list looked
+          correct while the disagreement sat armed for whoever added row two. */}
       <View className="mt-8">
         <SectionLabel label="Not yet built" />
-        <View className="mt-3">
-          <Block device="plate">
-            {SOON.map((row, index) => (
-              <View
-                key={row.key}
-                accessible
-                accessibilityLabel={`${row.label}. ${row.sub}. ${row.chip}.`}
-                className={`min-h-[44px] flex-row items-center gap-3 py-3 ${
-                  index === 0 ? '' : 'border-t border-hairline'
-                }`}>
-                <Ionicons name={row.icon} size={18} color={palette.inkMuted} />
-                <View className="flex-1">
-                  <Text className="font-serif text-[15px] text-ink-muted">{row.label}</Text>
-                  <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">{row.sub}</Text>
-                </View>
-                <Chip>{row.chip}</Chip>
+        <View className="mt-1">
+          {SOON.map((row) => (
+            <View
+              key={row.key}
+              accessible
+              accessibilityLabel={`${row.label}. ${row.sub}. ${row.chip}.`}
+              className="min-h-[44px] flex-row items-center gap-3 py-3">
+              <Ionicons name={row.icon} size={18} color={palette.inkMuted} />
+              <View className="flex-1">
+                <Text className="font-serif text-[15px] text-ink-muted">{row.label}</Text>
+                <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">{row.sub}</Text>
               </View>
-            ))}
-          </Block>
+              <Tag>{row.chip}</Tag>
+            </View>
+          ))}
         </View>
       </View>
 

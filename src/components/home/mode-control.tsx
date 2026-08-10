@@ -202,9 +202,14 @@ export function ModeControl({
                 <Ionicons name="close" size={20} color={palette.inkSecondary} />
               </Pressable>
             </View>
+            {/* One operative sentence. The line that opened this — "A mode
+                reshapes today's plan, changes what Home leads with, and changes
+                how the Coach talks" — described the feature back at the owner
+                before they had picked anything, which is the kind of line they
+                asked to be swept out (2026-08-10). What is left is the one rule
+                that changes what picking a mode means for the day. */}
             <Text className="px-5 pt-1 font-serif text-[13px] leading-5 text-ink-secondary">
-              A mode reshapes today&rsquo;s plan, changes what Home leads with, and changes how the
-              Coach talks. A skipped item under Travel, Sick, or Social is excused, not a miss.
+              A skipped item under Travel, Sick, or Social is excused, not a miss.
             </Text>
 
             <ScrollView contentContainerClassName="px-5 pb-10 pt-5">

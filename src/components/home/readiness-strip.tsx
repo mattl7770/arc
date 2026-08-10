@@ -34,11 +34,24 @@ type Props = {
  * swatches, and a detail line — separated from its neighbours by air, like
  * every other section on this screen.
  *
- * The pillars stay boxed cells rather than a segment bar: a swatch reads as a
- * *sample* of a state, which is what a pillar is, and that box encloses real
- * content rather than gesturing at a drafting metaphor. Every colour here is a
- * signal colour and every signal colour here is biology — the accent is not
- * permitted anywhere in this block.
+ * ## The pillar cells lost their boxes too (2026-08-10)
+ *
+ * They were four `border-hairline bg-paper-dim` cells in a row. The argument for
+ * them was that a swatch reads as a *sample* of a state — but four equal boxes
+ * abreast is a grid, and **a grid draws no rules** (block.tsx): the row is held
+ * by `flex-1` columns and a 6px gutter whether or not anything is drawn around
+ * them. The owner raised the stray-mark point a second time on 2026-08-10 ("more
+ * lines on things that shouldn't have them"), and four hairline boxes directly
+ * under the one unboxed verdict line on the sheet is the loudest remaining
+ * instance on Home.
+ *
+ * Dropping the `paper-dim` fill with them *improves* the numbers this block was
+ * tuned against: the signal ink cut measures 5.12–5.60:1 on paper-dim and
+ * 5.91–6.46:1 on the sheet (the same figures metrics-strip.tsx cites for the
+ * same words on the same stock). Nothing here got harder to read.
+ *
+ * Every colour that remains is a signal colour and every signal colour here is
+ * biology — the accent is not permitted anywhere in this block.
  *
  * ## A cell is a reading: name, mark, condition
  *
@@ -76,7 +89,7 @@ export function ReadinessStrip({ readiness, pillars }: Props) {
             accessible
             accessibilityRole="text"
             accessibilityLabel={`${pillar.label}, ${signalConditionSpoken(pillar.level)}`}
-            className="flex-1 items-center gap-1 border border-hairline bg-paper-dim px-0.5 py-2">
+            className="flex-1 items-center gap-1 px-0.5 py-2">
             <View className={signalMarkClass(pillar.level)} />
             <Text className="font-label text-[10px] uppercase tracking-[0.5px] text-ink-secondary">
               {pillar.label}

@@ -3,7 +3,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -29,8 +28,27 @@ import { type ProtocolDetail, useProtocol } from '@/hooks/use-protocols';
  * the live pointer, unless the items are unchanged (no no-op versions).
  *
  * Conformed Set treatment: every field is **recessed stock** (a capture surface
- * is a well — paper-dim on a paper-deep edge, square), and the items under edit
- * are a **ruled plate**, because the item list is the record being drafted.
+ * is a well — paper-dim on a paper-deep edge, square) and NOTHING on this screen
+ * is boxed. This whole screen is a form, and a form is controls, not content —
+ * form (b) of the capture-surface rule in src/components/ui/block.tsx: a group
+ * of fields carries no block at all, is named by a `SectionLabel`, and is
+ * separated from its neighbours by whitespace.
+ *
+ * The items used to sit inside a `<Block device="plate">` on the argument that
+ * the item list is "the record being drafted". On hardware that read as boxes
+ * stacked on boxes (owner, 2026-08-10, on the CREATE path specifically), and the
+ * reading was right: a plate is `border-hairline` on RAISED paper-hi, every
+ * field inside it is `border-paper-deep` on RECESSED paper-dim, so the block
+ * drew a raised box whose entire contents were recessed boxes — the surface
+ * inversion block.tsx exists to stop, pointing the other way. The rules BETWEEN
+ * the item rows went with it: a rule separates rows inside an enclosure, and
+ * with the enclosure gone they are strokes floating on the sheet, which is the
+ * artefact reading that cost the grid and margin devices their marks.
+ *
+ * The `<Block>` nesting guard could not catch this: the inner surfaces are plain
+ * `TextInput`s, not blocks, so nothing was nested as far as the runtime could
+ * see. capture.tsx, symptom.tsx, screening-form.tsx and appointment-form.tsx are
+ * the reference form and always were.
  *
  * Accent budget: exactly one — Save. It is the single primary action on the
  * screen and the one sanctioned accent here; the type chips, the status chips,
@@ -104,7 +122,6 @@ function Chip({
 }
 
 type FieldProps = {
-  label?: string;
   value: string;
   onChange: (next: string) => void;
   placeholder?: string;
@@ -116,7 +133,6 @@ type FieldProps = {
 };
 
 function FormField({
-  label,
   value,
   onChange,
   placeholder,
@@ -128,11 +144,6 @@ function FormField({
 }: FieldProps) {
   return (
     <View className="flex-1">
-      {label ? (
-        <Text className="mb-1 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-          {label}
-        </Text>
-      ) : null}
       <TextInput
         value={value}
         onChangeText={onChange}
@@ -338,59 +349,58 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
       </View>
 
       {/* The versioned content — every save of these becomes a new version.
-          One ruled plate: the item list is the record being drafted. */}
+          No plate and no rules: a form is controls, and one item is separated
+          from the next by air (the gap between items is deliberately wider than
+          the gap between the two rows WITHIN an item, which is what groups
+          them). */}
       <View className="mt-8">
         {/* No tally here on purpose: blank rows are dropped at save, so a count
             of the rows on screen would not be the count that gets written. */}
         <SectionLabel label="Items" />
-        <View className="mt-2">
-          <Block device="plate">
-            {items.map((it, index) => (
-              <View key={it.key} className={index === 0 ? 'py-2' : 'border-t border-hairline py-2'}>
-                <View className="flex-row items-center gap-2">
-                  <FormField
-                    value={it.title}
-                    onChange={(title) => updateItem(it.key, { title })}
-                    placeholder="e.g. Creatine"
-                    accessibilityLabel="Item title"
-                  />
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Remove item"
-                    onPress={() => removeItem(it.key)}
-                    className="h-11 w-11 items-center justify-center rounded-btn active:bg-paper-dim">
-                    <Ionicons name="close" size={18} color={palette.inkMuted} />
-                  </Pressable>
-                </View>
-                <View className="mt-2 flex-row gap-2">
-                  <View className="w-24">
-                    <FormField
-                      value={it.time}
-                      onChange={(time) => updateItem(it.key, { time })}
-                      placeholder="07:30"
-                      keyboardType="numbers-and-punctuation"
-                      maxLength={5}
-                      mono
-                      accessibilityLabel="Item time"
-                    />
-                  </View>
-                  <FormField
-                    value={it.dose}
-                    onChange={(dose) => updateItem(it.key, { dose })}
-                    placeholder="Dose or note — 5 g, with food…"
-                    accessibilityLabel="Item dose or note"
-                  />
-                </View>
+        {items.map((it, index) => (
+          <View key={it.key} className={index === 0 ? 'mt-2' : 'mt-5'}>
+            <View className="flex-row items-center gap-2">
+              <FormField
+                value={it.title}
+                onChange={(title) => updateItem(it.key, { title })}
+                placeholder="e.g. Creatine"
+                accessibilityLabel="Item title"
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Remove item"
+                onPress={() => removeItem(it.key)}
+                className="h-11 w-11 items-center justify-center rounded-btn active:bg-paper-dim">
+                <Ionicons name="close" size={18} color={palette.inkMuted} />
+              </Pressable>
+            </View>
+            <View className="mt-2 flex-row gap-2">
+              <View className="w-24">
+                <FormField
+                  value={it.time}
+                  onChange={(time) => updateItem(it.key, { time })}
+                  placeholder="07:30"
+                  keyboardType="numbers-and-punctuation"
+                  maxLength={5}
+                  mono
+                  accessibilityLabel="Item time"
+                />
               </View>
-            ))}
-          </Block>
-        </View>
+              <FormField
+                value={it.dose}
+                onChange={(dose) => updateItem(it.key, { dose })}
+                placeholder="Dose or note — 5 g, with food…"
+                accessibilityLabel="Item dose or note"
+              />
+            </View>
+          </View>
+        ))}
 
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Add item"
           onPress={addItem}
-          className="mt-2 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+          className="mt-5 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
           <Ionicons name="add" size={17} color={palette.inkSecondary} />
           <Text className="font-label text-[13px] font-medium text-ink">Add item</Text>
         </Pressable>
