@@ -69,12 +69,14 @@ export default function ExperimentDetailScreen() {
       <Text className="mt-1 font-serif text-[22px] font-semibold leading-7 text-ink">
         {experiment.title}
       </Text>
+      {/* Status and window on one line, unboxed. The status was a bordered
+          badge in well stock; a recess says "type into me", and a border around
+          one word is decoration. The word beside a mono date is legible as
+          status without a stroke around it. */}
       <View className="mt-2 flex-row items-center gap-2">
-        <View className="border border-paper-deep bg-paper-dim px-2 py-0.5">
-          <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-            {STATUS_LABELS[experiment.status]}
-          </Text>
-        </View>
+        <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+          {STATUS_LABELS[experiment.status]}
+        </Text>
         {/* A window is a measured value — mono. */}
         <Text className="font-mono text-[11px] text-ink-muted">
           {windowLabel(experiment.start_date, experiment.end_date)}
@@ -92,15 +94,15 @@ export default function ExperimentDetailScreen() {
         {experiment.metrics.length === 0 ? (
           <Text className="mt-2 font-serif text-[13px] text-ink-muted">None recorded.</Text>
         ) : (
-          <View className="mt-2 flex-row flex-wrap gap-2">
-            {/* Keyed by index too: the model isn't forced to emit unique metric
-                names, and duplicate React keys would warn/misrender. */}
-            {experiment.metrics.map((m, i) => (
-              <View key={`${m}-${i}`} className="border border-paper-deep bg-paper-dim px-2 py-1">
-                <Text className="font-mono text-[11px] text-ink-secondary">{m}</Text>
-              </View>
-            ))}
-          </View>
+          /* One mono run, middot-separated, rather than a bordered box per
+             metric. A metric key is a measured name and reads as one in mono;
+             boxing each of six of them drew six little enclosures around single
+             words. Joined into a single Text so it wraps as prose does — which
+             also sidesteps React keys entirely, and the model is not forced to
+             emit unique metric names. */
+          <Text className="mt-2 font-mono text-[12px] leading-5 text-ink-secondary">
+            {experiment.metrics.join(' · ')}
+          </Text>
         )}
       </View>
 

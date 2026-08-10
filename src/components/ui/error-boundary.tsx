@@ -1,7 +1,6 @@
 import { Component, type ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
 import { PaperGrid } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 
@@ -17,10 +16,19 @@ type State = { error: Error | null };
  *
  * Error boundaries must be class components; this is the one class in the app.
  *
- * Conformed Set treatment — the **ruled plate**. A failure is still a record of
- * something that happened, and a plate is what states a record; the alternative
- * (loose text floating on the sheet) is exactly the blank-gate look this design
- * refuses. **No accent:** the budget is a ceiling, not a quota, and there is
+ * Conformed Set treatment — **no device**, matching MissionEmpty and
+ * `app/+not-found.tsx`, the other two authored message screens. This argued the
+ * opposite until 2026-08-10 — *"a failure is still a record of something that
+ * happened, and a plate is what states a record"* — and it is recorded here
+ * rather than deleted, because the reasoning is exactly the one docs/decisions.md
+ * §1a overrules. A plate closes a **multi-row** record; a crash message is one
+ * label, one headline, one paragraph and one escape, and a border around that is
+ * the box-around-a-single-thing the owner has reported three times. What made
+ * the argument feel right was the fear underneath it — that unplated copy is
+ * "loose text floating on the sheet" — that unplated, this reads as a blank
+ * gate rather than as the app. That fear is answered by the paper grid this
+ * screen prints itself (below), by the section label, and by the type voices,
+ * not by an edge. **No accent:** the budget is a ceiling, not a quota, and there is
  * nothing directive to stamp here — "Try again" is an escape, not a next
  * action, so it is drawn in neutral ink on a hairline. It is still a button, so
  * it still takes the Label voice (§3): the outline and the neutral ink carry
@@ -28,8 +36,9 @@ type State = { error: Error | null };
  *
  * It replaces the whole tree when it fires, so it builds its own root and cannot
  * use `<Screen>` — which means it has to print the paper grid itself. A failure
- * screen on blank stock is the exact "blank gate" look described above, and this
- * is the one screen where the app most needs to still look like the app.
+ * screen on blank stock is the exact blank gate described above, and with the
+ * plate gone the grid is now the whole of what says "this is still ARC" — which
+ * is the one thing this screen most needs to say.
  */
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null };
@@ -51,28 +60,24 @@ export class ErrorBoundary extends Component<Props, State> {
       <View className="flex-1 bg-paper">
         <PaperGrid />
         <View className="flex-1 justify-center px-6">
-          <Block device="plate">
-            <SectionLabel label="Unexpected error" />
+          <SectionLabel label="Unexpected error" />
 
-            <Text className="mt-2.5 font-serif text-[21px] font-semibold leading-7 text-ink">
-              ARC stopped drawing this screen.
-            </Text>
+          <Text className="mt-2.5 font-serif text-[21px] font-semibold leading-7 text-ink">
+            ARC stopped drawing this screen.
+          </Text>
 
-            <Text className="mt-2.5 font-serif text-[15px] leading-6 text-ink-secondary">
-              Something threw while rendering. Your data is safe on this device — nothing is written
-              when a screen fails. Try again, or reopen the app.
-            </Text>
+          <Text className="mt-2.5 font-serif text-[15px] leading-6 text-ink-secondary">
+            Something threw while rendering. Your data is safe on this device — nothing is written
+            when a screen fails. Try again, or reopen the app.
+          </Text>
 
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Try again"
-              onPress={this.reset}
-              className="mt-4 min-h-[44px] items-center justify-center rounded-btn border border-hairline px-5 py-3 active:opacity-60">
-              <Text className="font-label text-[15px] font-medium text-ink-secondary">
-                Try again
-              </Text>
-            </Pressable>
-          </Block>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Try again"
+            onPress={this.reset}
+            className="mt-4 min-h-[44px] items-center justify-center rounded-btn border border-hairline px-5 py-3 active:opacity-60">
+            <Text className="font-label text-[15px] font-medium text-ink-secondary">Try again</Text>
+          </Pressable>
         </View>
       </View>
     );

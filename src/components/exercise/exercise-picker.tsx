@@ -246,21 +246,26 @@ function BrowseCatalog({
         </Text>
       </Pressable>
 
-      {/* Results — a catalog is a record, so: one ruled plate. */}
+      {/* Results — a catalog is a record, so: one ruled plate, and only when
+          the search actually returns one. A plate closes a record; a search
+          that matched nothing has no record to close, only a sentence — and a
+          border around one sentence is the box-around-a-single-thing the owner
+          keeps seeing. It appears mid-typing here, so it is seen often. Same
+          shape as app/protocols.tsx. */}
       <ScrollView
         className="-mx-5 mt-3 flex-1 px-5"
         keyboardShouldPersistTaps="handled"
         contentContainerClassName="pb-8">
-        <Block device="plate">
-          <SectionLabel
-            label="Catalog"
-            note={filtered.length > 0 ? String(filtered.length) : undefined}
-          />
-          {filtered.length === 0 ? (
+        {filtered.length === 0 ? (
+          <View>
+            <SectionLabel label="Catalog" />
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               No exercises match. Try a different search, or create a custom one above.
             </Text>
-          ) : (
+          </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="Catalog" note={String(filtered.length)} />
             <View className="mt-1">
               {filtered.map((ex, i) => (
                 // Two controls, one row. The row proper adds; the button past
@@ -282,12 +287,15 @@ function BrowseCatalog({
                         {equipmentLabel(ex.equipment)}
                       </Text>
                     </View>
+                    {/* A one-word marker, not an object: it used to sit in its
+                        own hairline box, which put a border inside a plate row
+                        that is already ruled top and bottom (owner, 2026-08-10 —
+                        boxes around a single item). The label voice is what
+                        marks it, the same as the muscle/equipment line above. */}
                     {ex.isCustom ? (
-                      <View className="border border-hairline px-1.5 py-0.5">
-                        <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                          Custom
-                        </Text>
-                      </View>
+                      <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                        Custom
+                      </Text>
                     ) : null}
                     <Ionicons name="add" size={18} color={palette.inkMuted} />
                   </Pressable>
@@ -303,8 +311,8 @@ function BrowseCatalog({
                 </View>
               ))}
             </View>
-          )}
-        </Block>
+          </Block>
+        )}
       </ScrollView>
     </>
   );

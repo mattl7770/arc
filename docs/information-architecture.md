@@ -4,16 +4,18 @@
 
 The shell is **six tabs** — Home · Coach · Log · Eat · Train · Data — plus **stack-pushed sub-screens** (Settings, the metric keypad, Protocols editor, Labs import, etc.) reached from within a tab. Not everything is a tab; deep domains are pushed screens.
 
+> ⚠️ **Three things in this document are OPEN, not settled** (owner calls from device use, 2026-08-10), and each is flagged where it appears: **what the Eat, Train and Data tabs should contain** (the six-tab bar itself is settled), **Modes** (built, still thin), and **the Protocol model** (no cadence). The work queue for all three is `docs/project-status.md` §1. Where this document reads as a locked spec, those three sections do not.
+
 ## Feature → destination
 
 | Tab | What lives here |
 | --- | --- |
 | **Home** | Today's Mission, hero, readiness, brief, live metrics · designed states (travel/sick/data-gappy/first-run) · **Mode control** (see below) · proactive/predictive nudges surfaced · upcoming preventive screenings surfaced |
-| **Coach** | Chat + daily brief · real model + RAG + tools · proactive corrections / evening accountability · n-of-1 experiments · predictive-alert generation · correlations & insights · Coach research · voice/vision input · conversation history |
+| **Coach** | Chat — **no brief here.** The daily brief lives on **Home only** (removed from this tab 2026-08-10, owner: *"it is already on the home screen"*; `docs/ai-coach.md` §3) · real model + RAG + tools · proactive corrections / evening accountability · n-of-1 experiments · predictive-alert generation · correlations & insights · Coach research · voice/vision input · conversation history |
 | **Log** | Command + voice field (**free notes** + parse) · 6 quick-add tiles · **metric keypad** drill-in · today's recent entries. Two tiles are gateways to Nutrition and Exercise — which are now also tabs; see "The tab bar". |
-| **Eat** | The nutrition hub (`app/nutrition.tsx`, re-exported by `app/(tabs)/eat.tsx`): today's intake vs targets, meal logging, the food catalog, templates, micros, history. |
-| **Train** | The exercise hub (`app/exercise.tsx`, re-exported by `app/(tabs)/train.tsx`): train-today recommendation, muscle freshness, weekly volume, programs, routines, recent sessions. |
-| **Data** *(view + manage hub)* | Biomarker trends & optimal ranges · **Labs** (Function PDF import + results) · wearable history · body composition + **progress-photo gallery** · **Protocols editor** · **preventive screenings + medical calendar** (browse) · environment & lifestyle · genetics/cognitive (later) · **browsable knowledge base** · **progress reports** · **the row into Settings** (last on the sheet) |
+| **Eat** ⚠️ *provisional* | The nutrition hub (`app/nutrition.tsx`, re-exported by `app/(tabs)/eat.tsx`): today's intake vs targets, meal logging, the food catalog, templates, micros, history. **The tab's contents are NOT settled** — see "Eat and Train are provisional" below. |
+| **Train** ⚠️ *provisional* | The exercise hub (`app/exercise.tsx`, re-exported by `app/(tabs)/train.tsx`): train-today recommendation, muscle freshness, weekly volume, programs, routines, recent sessions. **The tab's contents are NOT settled** — see "Eat and Train are provisional" below. |
+| **Data** *(view + manage hub)* ⚠️ | Biomarker trends & optimal ranges · **Labs** (Function PDF import + results) · wearable history · body composition + **progress-photo gallery** · **Protocols editor** · **preventive screenings + medical calendar** (browse) · environment & lifestyle · genetics/cognitive (later) · **browsable knowledge base** · **progress reports** · **the row into Settings** (last on the sheet). ⚠️ **Open (2026-08-10):** as built this reads as an index of indexes — nothing on it is a *reading*, the unfoldable lab-import stamp headlines a few-times-a-year action, and 3 of the 8 "full file" rows are unbuilt. What Data should lead with is an open question; the destinations listed here are not. |
 | **Settings** *(pushed from Data)* | **App lock** (Face ID) · **provider/model/API-key** · **integrations** (Apple Health read, smart-bottle hydration, Apple Health write-back) · **backup/restore + recovery phrase** · **data export** · profile (DOB/sex/timezone/units) · about |
 | **Sub-screens** (pushed) | **Settings** (from the bottom of Data) · **metric keypad** (from numeric tiles) · Protocols editor (from Data) · Labs import (from Data) · the Nutrition and Exercise sub-app families (food search, meal detail, workout live, routine edit, …) |
 
@@ -40,10 +42,23 @@ Six slots on a 375pt iPhone are 62.5pt each, ~54pt after the tab item's own padd
 
 **One hub, two ways in.** `app/(tabs)/eat.tsx` and `app/(tabs)/train.tsx` are one-line re-exports of `app/nutrition.tsx` and `app/exercise.tsx`, which stay the canonical screens and stay stack-pushable from the Log tiles and Data's trend rows. Nothing is duplicated. The Log tiles are deliberately left pointing at the same destinations: the tab is the ambient path ("I'm about to eat"), the tile is the in-flow path ("I'm capturing my day and food is part of it"). *(Open, low-priority: those two tiles could instead be re-spent on capture entry points — "Meal" and "Set" — now that the hubs have tabs. That is a change to `src/components/log/quick-add-grid.tsx`.)*
 
-**Known cosmetic seam:** `app/nutrition.tsx` and `app/exercise.tsx` still open with `<StackHeader>`, which draws a back chevron. As tab roots that chevron works — the tab navigator runs `backBehavior="history"`, so it returns you to the tab you came from — but a back control is the wrong grammar for a tab root, where every other tab owns a plain serif title. One line in each of those two files.
+**~~Known cosmetic seam~~ — FIXED.** This section used to record that `app/nutrition.tsx` and `app/exercise.tsx` still opened with `<StackHeader>`, drawing a back chevron at a tab root. Both files now test the route shape instead — `useSegments()[0] === '(tabs)'` gives a plain serif title at the tab and keeps `StackHeader` on the pushed route. The test is deliberately **not** `router.canGoBack()`: with `backBehavior="history"` a tab root very often *can* go back, so that check would keep the chevron exactly where it is wrong.
+
+### Eat and Train are PROVISIONAL (owner call, 2026-08-10)
+
+**The bar is settled; the bodies are not.** Six tabs, the ≤5-character label rule and the measurement behind it all hold — do not re-litigate them. What is open is whether **re-exporting the two hubs unchanged was the right content for those tabs.**
+
+The promotion changed the route and the header and nothing else. A screen designed as a pushed *detail* — reached deliberately, from a specific in-flow intent — is not automatically a good tab *root*, which is entered ambiently and must answer "what do I want first" in its top third. On the owner's device both read as the hubs they were:
+
+- **Eat** leads with energy *already eaten* rather than what is left or what the next meal should be; offers five parallel ways to log a meal in one section; puts its only invitation to set targets in a 10px muted corner label; and holds nothing that spans more than today (micros and history are the last two rows of the last section).
+- **Train** gets its top right — the "Train today" stamp is directive and should stay — then spends the next two sections on weekly analysis, parks two authoring surfaces (Programs, Routines, each with its own "New …" button) mid-screen, offers a *second* session logger under "Quick log" seven sections down, and leaves recent sessions dead last.
+
+Both are recorded in full, with the section-by-section reading, in `docs/project-status.md` §1 › *Screens still to build* › **"EAT / TRAIN / DATA need reworking as tab roots"**. Data is in that same item for the adjacent reason. Nothing there is a defect — all three tabs work; the complaint is what they lead with.
+
+Until that rework lands, treat the Eat and Train rows of the table above as *where those domains live*, not as *what those screens should contain*.
 
 **Deferred placement calls (revisit as they grow):**
-- **Protocols** sits in Data for now. It's central (it drives the mission), so it's the leading candidate to graduate to its own sub-app screen like Nutrition/Exercise did.
+- **Protocols** sits in Data for now — one row inside the foldable "The full file" section, which is three interactions deep for the thing that is the *only* source of Home's mission. It's central, so it's the leading candidate to graduate to its own sub-app screen like Nutrition/Exercise did. ⚠️ **A rework of the protocol MODEL is open** (owner call 2026-08-10, `docs/project-status.md` §1 › Data domains): chiefly that a `ProtocolItem` carries no cadence, so every item of every active protocol lands on every day. Settle the model before spending a tab-adjacent placement decision on it.
 - **Preventive screenings + calendar** — browsable in Data; Home surfaces what's *due* ("colonoscopy in 3 weeks").
 - **Knowledge base** — browsable in Data; the Coach also reads it as its RAG corpus.
 
@@ -75,12 +90,12 @@ Same owner review as the tab bar: *"sections should be foldable in the data tab,
 
 **Order, top to bottom:** folio line + title → the **Labs import stamp** (this screen's one accent, and the only directive thing on it) → **Trends** → **The full file** → **Biomarkers** → **Settings**.
 
-**Why Biomarkers moved below the index.** The catalogue is **66 markers** (`src/lib/labs/catalog.ts`), and every one of them is drawn. Before a lab import that is 66 rows of em-dash sitting between the two sections you actually navigate with — and it would have buried the new Settings row entirely.
+**Why Biomarkers moved below the index.** The catalogue is **65 markers** (`BIOMARKER_SEED`, `src/lib/labs/catalog.ts` — counted 2026-08-10; this passage read "66" in three places until then), and every one of them is drawn. Before a lab import that is 65 rows of em-dash sitting between the two sections you actually navigate with — and it would have buried the new Settings row entirely.
 
 **Folding.** Trends, The full file and Biomarkers each fold; the import stamp and the Settings row do not. Rules that govern it:
 
-- **Defaults are per-section, and chosen from row count.** Trends (4) and The full file (8) open — together about a screen and a half, which is the tab as it should first read. Biomarkers (66) starts **folded**: until a report is imported it has nothing to say that its own tally does not say better.
-- **A folded section still states what it holds.** Each header carries a mono tally that is true in both states — `2 of 4 tracked`, `5 of 8 built`, `0 of 66 measured`. Each tally is derived from the same array its section renders, so header and rows can never drift. (This is why the Biomarkers note is now always the full ratio and never the old "No readings yet" — that string hid the fact that 66 rows were waiting inside.)
+- **Defaults are per-section, and chosen from row count.** Trends (4) and The full file (8) open — together about a screen and a half, which is the tab as it should first read. Biomarkers (65) starts **folded**: until a report is imported it has nothing to say that its own tally does not say better.
+- **A folded section still states what it holds.** Each header carries a mono tally that is true in both states — `2 of 4 tracked`, `5 of 8 built`, `0 of 65 measured`. Each tally is derived from the same array its section renders, so header and rows can never drift — which is also why **no number in this section is written by hand in the app**: the tally counts the rows it is printed above. (This is why the Biomarkers note is now always the full ratio and never the old "No readings yet" — that string hid the fact that 65 rows were waiting inside.)
 - **Folds go both ways.** One toggle (`!open`) with `accessibilityState.expanded` on the header. A one-way fold on Home was a real bug; the shape that caused it — a separate "expand" affordance with no inverse — is what this avoids.
 - **Fold state is NOT persisted, deliberately.** `users.preferences` (the pattern behind unit choices, the app lock, Apple Health) holds things the user *sets* — durable statements about how the app should behave. A fold is a momentary "not now" about one screen. Persisting it means a tap from three weeks ago silently hides the tab's headline with nothing on screen to explain why, plus a DB write per chevron. The state that actually matters — fold, drill into a trend, come back — already survives, because tab screens stay mounted for the session. A cold start resets to the defaults above, which are the defaults *because* they are the right first read.
 - **The fold chevron is `ink-muted`, never the accent.** Data's one accent is the import stamp; a fold control is chrome.
@@ -107,3 +122,21 @@ A **mode** is how ARC handles a day that isn't normal — the concrete form of "
 - **The `set_mode` Coach tool** (registered, confirmation-gated) plus the active mode in `get_today_snapshot`, so the Coach both sees and can change the day's context.
 
 Headless coverage: `db/modes.test.mjs`, 39 assertions, including the mid-day re-derive's preserve-work cases.
+
+### ⚠️ Modes is OPEN for significant improvement (owner call, 2026-08-10)
+
+**The spec above describes the intent. The build below it describes the mechanism. The owner has now used it on hardware twice and still finds it thin — so read the two together, not the spec alone.** This is the second round of the same feedback: the 2026-08-09 pass answered the first ("the modes switcher right now doesn't do much") by wiring three dormant levers, and it was not enough.
+
+Where the shipped feature falls short of this section's own four-part promise:
+
+1. **"The plan"** is a subtraction, not an adaptation. `dropTypes` removes a whole `LogEntryType` for the day and is used by exactly one mode (Sick → `workout`); `addItems` injects a fixed literal list. There is no "half the volume", no substitution, no interaction with the user's actual protocols. **Deload is the clearest case:** it drops nothing, so the planned workout lands exactly as written and the entire deload is a habit item that *tells you* to cut volume ~40%.
+2. **"Priorities"** reaches one banner line above Home's hero (`modeDirective` → `ModeBanner`). Real, and the most visible thing a mode does — but it is a sentence, not a re-prioritisation.
+3. **"The Coach's tone"** has exactly one consumer: `get_today_snapshot` hands `coachTone` to the model as `toneGuidance`. No app surface changes voice, so this lever only exists for a user who opens the Coach tab.
+4. **"Adherence accounting"** is one Home line (`"3 skipped · excused under Sick"`) and nothing downstream. `log_entries` carry the mode in their extras and nothing ever reads it back — no "your adherence under Travel", no cost-of-Sick-days over a quarter.
+
+Two capabilities this section specifies that the UI does not reach:
+
+- **Duration.** The spec promises "just today, a date range, or on-until-turned-off", and `day_modes` (0026) supports all three. **The Home picker offers none of it** — it lists the six keys and calls `applyMode(key)` with no end date, so every mode set from Home is open-ended-until-changed. A trip or a deload week can only be ranged by asking the Coach's `set_mode`.
+- **Custom.** "Your own context" currently means: no dropped types, no injected items, no `heroFocus`. `day_modes` has `label` and `note` columns for precisely this, and **`label` has no writer anywhere in the repo**. So the mode you were meant to define yourself is the one that changes nothing and cannot be named.
+
+The full record, lever by lever, is in `docs/project-status.md` §1 › *Screens still to build* › **"Modes needs significant improvement"**. **The gap is conceptual, not mechanical** — every part above is built and tested. Switching mode reshapes a list and prints a banner; what the owner wants is for the day to genuinely *feel* different, which every other tab being mode-blind currently prevents. Worth deciding before building: whether a mode should be a **profile the user authors** — versioned, with its own items and rules, like a protocol — rather than a hard-coded registry entry. That is the shape the empty Custom mode is pointing at.

@@ -185,15 +185,23 @@ export default function ExerciseDetailScreen() {
         </Block>
       </View>
 
-      {/* History — a record of sessions, so: ruled plate. */}
+      {/* History — a record of sessions, so: ruled plate, but ONLY once there
+          are sessions to rule. A plate closes a record; an exercise never
+          logged has no record to close, only a sentence — and a border around
+          one sentence is the box-around-a-single-thing the owner keeps seeing.
+          Every catalog exercise opens this way until it is run. Same shape as
+          app/protocols.tsx. */}
       <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel label="History" />
-          {sessions.length === 0 ? (
+        {sessions.length === 0 ? (
+          <View>
+            <SectionLabel label="History" />
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               Nothing logged yet.
             </Text>
-          ) : (
+          </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="History" />
             <View className="mt-1">
               {sessions.map((s, i) => (
                 <View
@@ -211,8 +219,8 @@ export default function ExerciseDetailScreen() {
                 </View>
               ))}
             </View>
-          )}
-        </Block>
+          </Block>
+        )}
       </View>
     </Screen>
   );

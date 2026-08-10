@@ -666,16 +666,23 @@ export default function NutritionScreen() {
           note is the same kcal the Today grid shows, and these rows are the
           arithmetic behind it: a ledger sums to its own total. */}
       <View className="mt-8">
-        <Block device="plate">
-          <SectionLabel
-            label="Eaten today"
-            note={meals.length > 0 ? `${fmtInt(shown.kcal)} kcal` : undefined}
-          />
-          {meals.length === 0 ? (
+        {/* The plate goes round the rows, never round the empty sentence. A
+            plate closes a record; before the first meal of the day there is no
+            record to close, only a paragraph — and a border around one
+            paragraph is the box-around-a-single-thing the owner keeps seeing.
+            This is the Eat tab, and it re-enters this state every morning, so
+            it is the one that matters most. Same shape as app/protocols.tsx
+            and app/wearables.tsx. */}
+        {meals.length === 0 ? (
+          <View>
+            <SectionLabel label="Eaten today" />
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               Nothing logged yet today.
             </Text>
-          ) : (
+          </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="Eaten today" note={`${fmtInt(shown.kcal)} kcal`} />
             <View className="mt-1">
               {meals.map((meal, index) => (
                 <MealRowItem
@@ -687,8 +694,8 @@ export default function NutritionScreen() {
                 />
               ))}
             </View>
-          )}
-        </Block>
+          </Block>
+        )}
       </View>
 
       {/* Review — micronutrients and cross-day trends (read-only, no accent). */}

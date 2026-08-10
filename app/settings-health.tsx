@@ -30,9 +30,10 @@ import { syncHealthData } from '@/lib/health/sync';
  *     missing, and never render a granted/denied matrix (it's unknowable).
  *   - Permission is requested LAZILY — only on enable, never at boot.
  *
- * Conformed Set treatment: the connection state is a **ruled plate** carrying
- * its own action, the read scopes are a **ruled plate** (a list of things is a
- * record), and the two explanatory passages are **margin annotations**.
+ * Conformed Set treatment: the connection state is a **measured field** (a
+ * verdict, so unmarked) carrying its own action, the read scopes are a **ruled
+ * plate** (a list of things is a record), and the two explanatory passages are
+ * **margin annotations**.
  *
  * **Zero accent.** This is a Settings screen, and Settings carries no accent at
  * all (00-design-spec.md §2) — so Enable is a solid *ink* action, not pine, and
@@ -117,9 +118,13 @@ export default function SettingsHealthScreen() {
         <StackHeader title="Apple Health" />
       </View>
 
-      {/* Status / action plate */}
-      <View className="mt-3">
-        <Block device="plate">
+      {/* Status — a VERDICT about the connection ("rides the next build",
+          "connect", "connected"), not a record, so it takes the measured field,
+          which draws nothing. It was a plate: a box around a heading, a
+          paragraph and a button, which is prose in a rectangle. app/wearables.tsx
+          already draws the same first-run content this way. */}
+      <View className="mt-4">
+        <Block device="field">
           {!supported ? (
             <>
               <Text className="font-serif text-[16px] font-semibold text-ink">
@@ -250,19 +255,18 @@ export default function SettingsHealthScreen() {
         </View>
       </View>
 
-      {/* Jump to the history view */}
-      <View className="mt-8">
-        <Block device="plate">
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Open wearable history"
-            onPress={() => router.push('/wearables')}
-            className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
-            <Ionicons name="analytics-outline" size={18} color={palette.inkSecondary} />
-            <Text className="flex-1 font-serif text-[15px] text-ink">Wearable history</Text>
-            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-          </Pressable>
-        </Block>
+      {/* Jump to the history view. One row, so no plate — a plate closes a
+          record and a single line is not one. */}
+      <View className="mt-6">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open wearable history"
+          onPress={() => router.push('/wearables')}
+          className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+          <Ionicons name="analytics-outline" size={18} color={palette.inkSecondary} />
+          <Text className="flex-1 font-serif text-[15px] text-ink">Wearable history</Text>
+          <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+        </Pressable>
       </View>
     </Screen>
   );

@@ -67,8 +67,9 @@ export function signalTextClass(level: SignalLevel): string {
  * something other than colour has to. There the answer was FORM, because a
  * progress lane has no room for words. Here there is room, so the primary
  * carrier is a WORD — `signalConditionLabel`, set in the signal INK cut, which
- * clears 4.5:1 on the pillar cell's paper-dim (optimal 5.60, good 5.32,
- * caution 5.12, poor 5.29, unknown 5.17). A word is exact, it is what the
+ * clears 4.5:1 on every stock the cell has worn: 5.12–5.60:1 on the paper-dim
+ * it used to sit on, 5.91–6.46:1 on the bare sheet it sits on since the cell's
+ * box and fill came off (./readiness-strip.tsx). A word is exact, it is what the
  * mockup specifies for this cell, and it is the only encoding a screen reader
  * can also read.
  *
@@ -76,11 +77,10 @@ export function signalTextClass(level: SignalLevel): string {
  *
  * With the word carrying the state, the fill's hue drops to redundant
  * reinforcement rather than the sole cue — which matters, because against the
- * cell's paper-dim the fills measure optimal 2.89, good 3.88, caution 2.58,
+ * cell's stock the fills measure roughly optimal 2.89, good 3.88, caution 2.58,
  * poor 4.11, and two of those are under the 3:1 non-text floor. What makes the
- * mark perceivable as a graphic is its `ink` border at 11.95:1 on paper-dim,
- * not the fill; that was already true and is now no longer load-bearing for
- * meaning.
+ * mark perceivable as a graphic is its `ink` border at ~12:1, not the fill;
+ * that was already true and is now no longer load-bearing for meaning.
  *
  * The mark still takes one hue-free dimension so the flagged pillars can be
  * found in a scan without reading four words: **ink weight carries the single

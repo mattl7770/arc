@@ -38,8 +38,11 @@ import { apiKeyStore } from '@/lib/ai/api-key-store';
  * The collapsed state is the mockup's `cf-sessline`: a presence dot, one mono
  * line of state, and one control — drawn straight **on the sheet**, not on a
  * plate. It is not a record and not a verdict; it is a caption on the page, and
- * giving it a card would make a status line look like content. The only rule it
- * draws is the one closing the header band above the thread.
+ * giving it a card would make a status line look like content. It draws **no
+ * rule at all**: the screen header's own `border-b` sits directly above it, and
+ * a second hairline below turned the caption into a boxed band (2026-08-10).
+ * The expanded form keeps one, because a multi-control form genuinely needs
+ * closing off from the thread it is covering.
  *
  * The presence dot is neutral here and never the accent: 00-design-spec.md §2
  * sanctions "the Coach presence dot" in the accent budget, but the dot reports
@@ -74,7 +77,13 @@ export function SessionKeyPanel({ keySet }: { keySet: boolean }) {
 
   if (!expanded) {
     return (
-      <View className="flex-row items-center gap-2 border-b border-hairline px-5 py-1">
+      // **No rule of its own.** This band sits immediately under the header's
+      // `border-b`, so drawing a second hairline ~28px lower boxed the session
+      // line between two parallel rules — a box the owner never asked for around
+      // a one-line caption, and exactly the "more lines on things that shouldn't
+      // have them" they raised on 2026-08-10. The header's rule is the
+      // structural one; this line is a caption on the sheet beneath it.
+      <View className="flex-row items-center gap-2 px-5 py-1.5">
         {/* No model, no accent: the dot reports state, so it has to be honest. */}
         <View className="h-1.5 w-1.5 rounded-full bg-hairline" />
         <Text className="flex-1 font-mono text-[10px] text-ink-muted">

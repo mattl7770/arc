@@ -7,8 +7,10 @@ import { paperGrid } from '@/constants/theme';
 /**
  * The drafting grid tile: one 9pt cell with a 1pt rule on its top and left
  * edge, shipped at 1x/2x/3x so the rule lands crisp on every device instead of
- * being smeared by an upscale. Ink is baked at full alpha — the 6% comes from
- * `paperGrid.opacity` below, which keeps the dial in one place.
+ * being smeared by an upscale. Ink is baked at full alpha — the strength comes
+ * from `paperGrid.opacity`, which keeps the dial in one place. Do not name the
+ * percentage here; it has moved once already (0.06 → 0.20, 2026-08-10) and a
+ * second copy of it just goes stale.
  */
 const gridTile = require<number>('../../../assets/images/paper-grid.png');
 

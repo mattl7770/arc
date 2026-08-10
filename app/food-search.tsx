@@ -42,7 +42,10 @@ import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
  *                          never nest — only the grams input keeps a recessed
  *                          treatment, because an input is a well at control
  *                          scale.
- *   Catalog actions      → a closing **ruled plate**.
+ *   Catalog actions      → a closing **ruled plate** *only when it holds both
+ *                          of its rows*. Until the first add lands there is no
+ *                          scan row, and one row gets no enclosure and no rule
+ *                          (docs/decisions.md §1a).
  *
  * **Accent budget: one.** The expanded row's Add, and only one row is ever
  * expanded. "Done · N" is neutral: it leaves, it does not commit.
@@ -225,6 +228,24 @@ export default function FoodSearchScreen() {
       ? (expanded.food.kcal_100g * gramsPreview) / 100
       : null;
 
+  /** The one catalog action that is always offered. It renders in two places —
+   * ruled inside the plate when a scan row precedes it, bare on the sheet when
+   * it is the only row — so it is built once here rather than written twice. */
+  const createFoodRow = (ruled: boolean) => (
+    <CatalogRow
+      icon="add-circle-outline"
+      label={`Create a food${query.trim() !== '' ? ` — “${query.trim()}”` : ''}`}
+      ruled={ruled}
+      accessibilityLabel="Create a food"
+      onPress={() =>
+        router.push({
+          pathname: '/food-new',
+          params: query.trim() ? { name: query.trim() } : {},
+        })
+      }
+    />
+  );
+
   const editorFor = (section: ListSection, food: FoodRow) =>
     expanded?.section === section && expanded.food.id === food.id ? (
       <PortionEditor
@@ -386,33 +407,36 @@ export default function FoodSearchScreen() {
 
       {/* Catalog actions. Scanning only appears once a meal is in progress here,
           so the scan continues THIS meal (scanning fresh would fork a separate
-          day-part meal; the fresh-scan entry point is the Nutrition screen). */}
+          day-part meal; the fresh-scan entry point is the Nutrition screen).
+
+          Which means that until the first add lands, this section is exactly ONE
+          row — and that is the PRIMARY path, not an edge case: the Nutrition
+          tab's "Add food" pushes this screen with no params (app/nutrition.tsx),
+          so the plate used to be the first thing that arrival drew, closed
+          around a lone "Create a food". A plate encloses a multi-row record;
+          around one row it is the box-around-a-single-thing the owner keeps
+          reporting (docs/decisions.md §1a). So the plate is drawn only in the
+          genuinely two-row branch, and the lone row goes bare on the sheet with
+          no rule above it either — a hairline separates rows only inside an
+          enclosure (§1). Same treatment as the "Scan another" rows in
+          app/barcode-scan.tsx. */}
       <View className="mt-6">
-        <Block device="plate">
-          {targetMealId ? (
+        {targetMealId !== null ? (
+          <Block device="plate">
             <CatalogRow
               icon="barcode-outline"
               label="Scan a barcode"
-              first
+              ruled={false}
               accessibilityLabel="Scan a barcode into this meal"
               onPress={() =>
                 router.push({ pathname: '/barcode-scan', params: { mealId: targetMealId } })
               }
             />
-          ) : null}
-          <CatalogRow
-            icon="add-circle-outline"
-            label={`Create a food${query.trim() !== '' ? ` — “${query.trim()}”` : ''}`}
-            first={targetMealId === null}
-            accessibilityLabel="Create a food"
-            onPress={() =>
-              router.push({
-                pathname: '/food-new',
-                params: query.trim() ? { name: query.trim() } : {},
-              })
-            }
-          />
-        </Block>
+            {createFoodRow(true)}
+          </Block>
+        ) : (
+          createFoodRow(false)
+        )}
       </View>
     </Screen>
   );
@@ -428,17 +452,25 @@ function lastPortionLabel(recent: RecentFood): string | null {
   return null;
 }
 
-/** One ruled row of the closing catalog plate. */
+/**
+ * One row of the closing catalog section.
+ *
+ * `ruled` draws the hairline that separates it from the row above. It is stated
+ * by the caller rather than derived from an index because the rule is a property
+ * of the *enclosure*, not of the position: this row also renders bare on the
+ * sheet, and there a stroke would terminate in mid-air at both ends
+ * (docs/decisions.md §1). Unplated means unruled, always.
+ */
 function CatalogRow({
   icon,
   label,
-  first,
+  ruled,
   accessibilityLabel,
   onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
-  first: boolean;
+  ruled: boolean;
   accessibilityLabel: string;
   onPress: () => void;
 }) {
@@ -448,9 +480,9 @@ function CatalogRow({
       accessibilityLabel={accessibilityLabel}
       onPress={onPress}
       className={
-        first
-          ? 'min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60'
-          : 'min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60'
+        ruled
+          ? 'min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60'
+          : 'min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60'
       }>
       <Ionicons name={icon} size={17} color={palette.inkSecondary} />
       <Text className="flex-1 font-serif text-[15px] text-ink">{label}</Text>

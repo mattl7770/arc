@@ -13,7 +13,14 @@ import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { weekSummary } from '../src/lib/db/repositories/exercise.ts';
 import { setUnitPreference } from '../src/lib/db/repositories/user.ts';
-import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
+import { SOURCE_PRIORITY, upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
+// The real ingest mappers — fixtures below are built by the pipeline that runs
+// on device, not by hand-written rows that only resemble it.
+import {
+  STATISTIC_METRICS,
+  sleepDailyRows,
+  statisticDailyRows,
+} from '../src/lib/health/mapping.ts';
 import { deriveReadiness } from '../src/lib/home/readiness.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import {
@@ -963,7 +970,12 @@ console.log('17. wearables: every ingested metric_type is readable by the Coach'
     : bad('unreachable metrics', misses.map((m) => m[0]).join(', '));
 
   const steps = run('get_metric_series', db, { metric: 'steps', days: 10 });
-  steps.points.length === 10 && steps.stats.count === 10
+  // Ten days of points, but only the NINE complete ones are averaged: today is
+  // a running total and rides in `todaySoFar` instead (pinned in section 21).
+  steps.points.length === 10 &&
+  steps.stats.count === 9 &&
+  steps.statsExcludesToday === true &&
+  near(steps.todaySoFar.value, 8000)
     ? ok('steps returns a real 10-day history with stats — the exact question that failed')
     : bad('steps series', JSON.stringify(steps).slice(0, 200));
 
@@ -1145,6 +1157,343 @@ console.log('19. wearable values honour Settings › Units (°F/°C, oz/ml)');
   mlSnap.wearables.today.wrist_temp_c.unit === '°C'
     ? ok('the snapshot honours the same preferences (750 ml, °C)')
     : bad('snapshot units', JSON.stringify(mlSnap.wearables.today));
+}
+
+// The owner's SECOND report of the same symptom: "steps have been synced and
+// the home screen correctly displays my step count from apple health, coach is
+// not able to read them and reports that no step data has synced when asked."
+//
+// Round one chased the data layer and proved 18 assertions about it. The data
+// layer was never the fault — get_today_snapshot returned the steps then and
+// returns them now. What it ALSO returned, in the same object, was
+// `readiness.detail = "Connect Apple Health in Settings to power readiness."`,
+// deriveReadiness' first-run CALL TO ACTION, emitted whenever there is no
+// usable RECOVERY input (HRV/RHR with a baseline, or last night's sleep).
+//
+// On Home that string is small copy under a strip already showing the step
+// count, and a human reads it as "no recovery signal". In JSON it is a flat
+// assertion that Apple Health is not connected, sitting a few lines under
+// `steps: 8432`, in the payload the system prompt tells the model is the
+// authority on today. The model repeated the sentence, not the number.
+//
+// And for a PHONE-ONLY user it is not a first-run state at all: no watch means
+// no HRV, no resting HR and no sleep — forever — so the tool shipped that
+// contradiction on every single call, which is exactly why the symptom looked
+// permanent and unrelated to any particular day's sync.
+//
+// So the fixtures below are built by the REAL ingest mappers (statisticDailyRows
+// / quantityDailyRows / sleepDailyRows) rather than by hand-written rows, and
+// the load-bearing assertion is a NEGATIVE one: no interface instruction may
+// appear anywhere in a tool payload that is simultaneously carrying data.
+console.log('20. the snapshot never denies a sync it is reporting (owner report, round 2)');
+{
+  const localDay = (n) =>
+    todayISODate(new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() - n));
+  const CONNECT_CTA = 'Connect Apple Health';
+
+  /** A phone-only device: HealthKit merged statistics, no watch, so no recovery. */
+  const phoneOnlyDb = () => {
+    const { db } = freshDb();
+    const rows = [];
+    for (const key of ['steps', 'active_energy_kcal', 'resting_energy_kcal']) {
+      const spec = STATISTIC_METRICS.find((s) => s.metricType === key);
+      const stats = [];
+      for (let i = 0; i < 30; i++) {
+        stats.push({
+          date: localDay(i),
+          value: key === 'steps' ? 8432 - i * 37 : key === 'active_energy_kcal' ? 612 : 1720,
+        });
+      }
+      rows.push(...statisticDailyRows(spec, stats));
+    }
+    upsertWearableRows(db, rows);
+    return db;
+  };
+
+  const db = phoneOnlyDb();
+
+  // The rows the REAL mapper emits are the ones the arbitration list must know.
+  const stepRow = db.get(
+    'SELECT unit, source_device, source_raw_id FROM wearable_data WHERE metric_type = ? AND date = ?',
+    ['steps', TODAY]
+  );
+  stepRow.unit === 'count' &&
+  stepRow.source_device === 'apple_health' &&
+  stepRow.source_raw_id === `hk:steps:${TODAY}` &&
+  SOURCE_PRIORITY.includes(stepRow.source_device)
+    ? ok('the real ingest writes steps as apple_health/count/hk:steps:<date>, a known source')
+    : bad('real step row shape', JSON.stringify(stepRow));
+
+  // Home and the Coach must agree, because they are the same read.
+  const home = deriveReadiness(db, TODAY);
+  const snap = run('get_today_snapshot', db);
+  const homeSteps = home.metrics.find((m) => m.id === 'steps');
+  homeSteps.value === '8,432' && near(snap.wearables.today.steps.value, 8432)
+    ? ok('Home renders 8,432 steps and the snapshot carries the same 8432 — one read, one answer')
+    : bad('home/coach steps', JSON.stringify({ homeSteps, coach: snap.wearables.today.steps }));
+
+  // THE REGRESSION. A payload that is reporting data must never also instruct
+  // the user to connect the source of that data.
+  const serialised = JSON.stringify(snap);
+  Object.keys(snap.wearables.today).length > 0 && !serialised.includes(CONNECT_CTA)
+    ? ok('no "Connect Apple Health" instruction anywhere in a payload that carries today’s data')
+    : bad('CTA leaked into the tool payload', serialised.slice(0, 400));
+
+  // Readiness is still honestly `unknown` — the fix is about WHAT IT SAYS, not
+  // about inventing a verdict from signals that genuinely are not there.
+  snap.readiness.level === 'unknown' &&
+  snap.readiness.hasSignal === true &&
+  /RECOVERY ONLY/.test(snap.readiness.detail) &&
+  /NOT mean Apple Health is disconnected/.test(snap.readiness.detail)
+    ? ok('readiness stays `unknown` but scopes itself to recovery instead of denying the sync')
+    : bad('readiness detail', JSON.stringify(snap.readiness));
+
+  // Silence is what let the contradiction win: nothing in the old payload ever
+  // affirmed a working sync, so every ambiguity resolved toward "it is broken".
+  /HAS synced today/.test(snap.wearables.note) && /3 metric/.test(snap.wearables.note)
+    ? ok('the note states affirmatively that Apple Health synced, and how many metrics')
+    : bad('affirmative note', JSON.stringify(snap.wearables.note));
+
+  // A phone has no HRV sensor. Reporting that as "not synced today", every day,
+  // is what makes a working sync look broken.
+  snap.wearables.noDataToday.includes('hrv') &&
+  snap.wearables.neverRecorded.includes('hrv') &&
+  snap.wearables.neverRecorded.includes('sleep_duration_min') &&
+  !snap.wearables.neverRecorded.includes('steps')
+    ? ok('neverRecorded separates "no sensor on this device" from "missing today"')
+    : bad('neverRecorded', JSON.stringify(snap.wearables));
+
+  // "and likely other data" — the same question, asked the same way, for the
+  // other two metrics the owner named.
+  const seriesMisses = ['steps', 'active_energy_kcal'].filter((metric) => {
+    const out = run('get_metric_series', db, { metric, days: 30 });
+    return !(out.hasData === true && out.points.some((p) => p.date === TODAY));
+  });
+  seriesMisses.length === 0
+    ? ok('get_metric_series over real-mapper rows returns today for steps and active energy')
+    : bad('series misses', seriesMisses.join(', '));
+
+  // A metric that is missing TODAY but recorded before must not be relabelled
+  // "no sensor" — that is the same conflation in the other direction.
+  {
+    const db2 = phoneOnlyDb();
+    const watch = {
+      sourceName: "Matt's Apple Watch",
+      bundleId: 'com.apple.health.0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0',
+      productType: 'Watch7,1',
+    };
+    // A night of sleep that ended YESTERDAY morning, from the real sleep mapper.
+    const start = new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() - 2, 23, 0, 0, 0);
+    const end = new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() - 1, 6, 11, 0, 0);
+    upsertWearableRows(
+      db2,
+      sleepDailyRows([
+        { value: 3, startISO: start.toISOString(), endISO: end.toISOString(), provenance: watch },
+      ])
+    );
+    const s2 = run('get_today_snapshot', db2);
+    s2.wearables.noDataToday.includes('sleep_duration_min') &&
+    !s2.wearables.neverRecorded.includes('sleep_duration_min')
+      ? ok('slept the night before but not last night ⇒ noDataToday, NOT neverRecorded')
+      : bad('stale-but-recorded', JSON.stringify(s2.wearables));
+  }
+
+  // The genuinely empty device keeps its old, correct message — the fix must not
+  // have traded one false claim for the opposite one.
+  {
+    const { db: empty } = freshDb();
+    const s3 = run('get_today_snapshot', empty);
+    /never synced/.test(s3.wearables.note) &&
+    s3.readiness.hasSignal === false &&
+    Object.keys(s3.wearables.today).length === 0
+      ? ok(
+          'a device with no rows at all still says "never synced" — absence still reads as absence'
+        )
+      : bad('empty device', JSON.stringify(s3.wearables));
+  }
+}
+
+// The same bug insights.ts was fixed for, one file over — and the one the owner
+// actually asks: "how have my steps been?" sends the model to get_metric_series
+// FIRST (system-prompt.ts) and tells it to cite these numbers. Steps accumulate,
+// so a two-hour-old today is a fraction of a day; averaging it in beside seven
+// complete 8,000-step days reported avg 7,112.5 and min 900 — numbers that
+// describe the clock, not the user. Today is not dropped (it is real, and the
+// owner wants it) — it is held out of the statistics and reported on its own.
+console.log('21. get_metric_series never averages a still-accumulating today (owner: steps)');
+{
+  const { db } = freshDb();
+  const day = (n) => isoDaysAgo(NOW, n);
+  const wear = (rows) =>
+    upsertWearableRows(
+      db,
+      rows.map((r) => ({
+        date: r.date,
+        metricType: r.metric,
+        value: r.value,
+        unit: r.unit,
+        sourceDevice: r.device ?? 'apple_health',
+        sourceRawId: `hk:${r.metric}:${r.date}`,
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      }))
+    );
+
+  const rows = [];
+  // Seven identical COMPLETE days...
+  for (let i = 1; i <= 7; i++) {
+    rows.push({ date: day(i), metric: 'steps', value: 8000, unit: 'count' });
+    rows.push({ date: day(i), metric: 'active_energy_kcal', value: 600, unit: 'kcal' });
+    rows.push({ date: day(i), metric: 'sleep_duration_min', value: 431, unit: 'min' });
+  }
+  // ...and a today two hours old.
+  rows.push({ date: day(0), metric: 'steps', value: 900, unit: 'count' });
+  rows.push({ date: day(0), metric: 'active_energy_kcal', value: 70, unit: 'kcal' });
+  // Sleep is a whole fact the moment it is written: last night counts today.
+  rows.push({ date: day(0), metric: 'sleep_duration_min', value: 431, unit: 'min' });
+  wear(rows);
+
+  const steps = run('get_metric_series', db, { metric: 'steps', days: 8 });
+
+  // (1) The partial day moves NOTHING in the statistics.
+  steps.stats.count === 7 &&
+  near(steps.stats.avg, 8000) &&
+  near(steps.stats.min, 8000) &&
+  near(steps.stats.max, 8000) &&
+  steps.stats.last.date === day(1) &&
+  near(steps.stats.last.value, 8000)
+    ? ok('a two-hour-old today moves neither avg (8000, not 7112.5) nor min (8000, not 900)')
+    : bad('steps stats polluted by today', JSON.stringify(steps.stats));
+
+  // (2) It is still THERE — visible, real, and labelled as a running total.
+  const todayPoint = steps.points.find((p) => p.date === TODAY);
+  steps.points.length === 8 &&
+  todayPoint &&
+  near(todayPoint.value, 900) &&
+  todayPoint.partial === true &&
+  steps.todaySoFar &&
+  steps.todaySoFar.date === TODAY &&
+  near(steps.todaySoFar.value, 900) &&
+  steps.todaySoFar.partial === true &&
+  steps.todaySoFar.unit === 'count'
+    ? ok("today's 900 steps are NOT dropped — they are in points (partial) and in todaySoFar")
+    : bad('today missing from the payload', JSON.stringify(steps).slice(0, 300));
+
+  // (3) points and stats cover different sets, and the payload says which.
+  steps.statsExcludesToday === true &&
+  /complete days only/.test(steps.statsBasis) &&
+  /RUNNING TOTAL/.test(steps.note) &&
+  /Never average today in/.test(steps.note) &&
+  /so far today/.test(steps.note)
+    ? ok('statsBasis + statsExcludesToday + note spell out that points ≠ the stats window')
+    : bad('inconsistency unexplained', JSON.stringify(steps).slice(0, 400));
+
+  // (4) The same class, the other metric the owner named.
+  const energy = run('get_metric_series', db, { metric: 'active_energy_kcal', days: 8 });
+  energy.stats.count === 7 && near(energy.stats.avg, 600) && near(energy.todaySoFar.value, 70)
+    ? ok('active energy accumulates too: today held out of stats, kept as todaySoFar')
+    : bad('active energy', JSON.stringify(energy.stats));
+
+  // (5) A LEVEL metric is whole when written — today must keep counting.
+  const sleep = run('get_metric_series', db, { metric: 'sleep_duration_min', days: 8 });
+  sleep.stats.count === 8 &&
+  near(sleep.stats.avg, 431) &&
+  sleep.statsExcludesToday === false &&
+  sleep.todaySoFar === undefined &&
+  sleep.points.every((p) => p.partial === undefined) &&
+  sleep.stats.last.date === TODAY
+    ? ok("last night's sleep still counts today — a level metric is not held back")
+    : bad('sleep wrongly excluded', JSON.stringify(sleep).slice(0, 300));
+
+  // (6) HRV, RHR, VO2max — every sampled reading — stay on the level side.
+  {
+    const { db: db2 } = freshDb();
+    upsertWearableRows(db2, [
+      {
+        date: TODAY,
+        metricType: 'hrv',
+        value: 50,
+        unit: 'ms',
+        sourceDevice: 'apple_watch',
+        sourceRawId: 'hk:hrv:today',
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      },
+    ]);
+    const hrv = run('get_metric_series', db2, { metric: 'hrv', days: 7 });
+    hrv.stats && hrv.stats.count === 1 && hrv.statsExcludesToday === false
+      ? ok('a single HRV reading taken today is a complete fact and is averaged')
+      : bad('hrv held back', JSON.stringify(hrv).slice(0, 240));
+  }
+
+  // (7) Today alone: there IS data, but no complete day to average. Both facts
+  // must be stated — a null `stats` next to a real running total is exactly
+  // where a model would otherwise invent a daily figure.
+  {
+    const { db: db3 } = freshDb();
+    upsertWearableRows(db3, [
+      {
+        date: TODAY,
+        metricType: 'steps',
+        value: 900,
+        unit: 'count',
+        sourceDevice: 'apple_health',
+        sourceRawId: 'hk:steps:today',
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      },
+    ]);
+    const only = run('get_metric_series', db3, { metric: 'steps', days: 7 });
+    only.hasData === true &&
+    only.stats === null &&
+    near(only.todaySoFar.value, 900) &&
+    /no COMPLETE day/.test(only.note)
+      ? ok('today-only: stats is null with data present, and the note says why')
+      : bad('today-only steps', JSON.stringify(only).slice(0, 320));
+  }
+
+  // (8) A summed metric (water: one row per sip) is accumulating by construction
+  // and needs no declaration to be handled the same way.
+  {
+    const { db: db4 } = freshDb();
+    setUnitPreference(db4, 'volume', 'ml');
+    upsertWearableRows(
+      db4,
+      [
+        { date: day(1), value: 2000 },
+        { date: TODAY, value: 250 },
+      ].map((r) => ({
+        date: r.date,
+        metricType: 'water_ml',
+        value: r.value,
+        unit: 'ml',
+        sourceDevice: 'manual',
+        sourceRawId: `manual:water:${r.date}`,
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      }))
+    );
+    const water = run('get_metric_series', db4, { metric: 'water', days: 7 });
+    water.stats.count === 1 && near(water.stats.avg, 2000) && near(water.todaySoFar.value, 250)
+      ? ok('water (agg sum) excludes today from stats without needing its own flag')
+      : bad('water', JSON.stringify(water).slice(0, 260));
+  }
+
+  // (9) Body metrics are readings, not totals — weight logged today counts.
+  {
+    const { db: db5 } = freshDb();
+    run('log_metric', db5, { metric: 'weight', value: 180 });
+    const weight = run('get_metric_series', db5, { metric: 'weight', days: 7 });
+    weight.statsExcludesToday === false &&
+    weight.stats.count === 1 &&
+    weight.todaySoFar === undefined
+      ? ok("today's weigh-in is a complete measurement and stays in the stats")
+      : bad('weight', JSON.stringify(weight).slice(0, 240));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

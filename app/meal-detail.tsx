@@ -358,16 +358,37 @@ export default function MealDetailScreen() {
         </View>
       ) : null}
 
-      {/* Items — the record, with the way to extend it as its closing row. */}
-      <View className="mt-8">
-        <Block device="plate">
-          <SectionLabel label="Items" note={itemsNote} />
+      {/* Items — the record, with the way to extend it as its closing row.
 
-          {items.length === 0 ? (
+          The plate is drawn ONLY when there are items. A plate closes a record;
+          a free-form meal has no item record to close, only a sentence and the
+          one row that starts one — and a border around that is the
+          box-around-a-single-thing the owner keeps seeing. `first` on the
+          unplated Add-food row so it draws no top rule, which would be a rule
+          dividing nothing. Same shape as app/protocols.tsx. */}
+      <View className="mt-8">
+        {items.length === 0 ? (
+          <View>
+            <SectionLabel label="Items" />
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               Free-form entry — totals were recorded directly. Add a food to itemize it.
             </Text>
-          ) : (
+            <View className="mt-1">
+              <ActionRow
+                icon="add"
+                label="Add food"
+                first
+                accessibilityLabel="Add food to this meal"
+                onPress={() =>
+                  router.push({ pathname: '/food-search', params: { mealId: meal.id } })
+                }
+              />
+            </View>
+          </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="Items" note={itemsNote} />
+
             <View className="mt-1">
               {items.map((item, index) => {
                 const portion = portionLabel(item);
@@ -434,23 +455,33 @@ export default function MealDetailScreen() {
                 );
               })}
             </View>
-          )}
 
-          <View className="mt-1">
-            <ActionRow
-              icon="add"
-              label="Add food"
-              first={false}
-              accessibilityLabel="Add food to this meal"
-              onPress={() => router.push({ pathname: '/food-search', params: { mealId: meal.id } })}
-            />
-          </View>
-        </Block>
+            <View className="mt-1">
+              <ActionRow
+                icon="add"
+                label="Add food"
+                first={false}
+                accessibilityLabel="Add food to this meal"
+                onPress={() =>
+                  router.push({ pathname: '/food-search', params: { mealId: meal.id } })
+                }
+              />
+            </View>
+          </Block>
+        )}
       </View>
 
-      {/* Actions */}
+      {/* Actions.
+
+          "Save as template" is only meaningful for an itemized meal (a template
+          needs items to re-stamp), so on a free-form meal this block is exactly
+          ONE row — and a plate round one row is the same box-around-a-
+          single-thing as a plate round one paragraph. So the plate is drawn
+          only when both rows are, and the lone Log-again row stands bare on the
+          sheet otherwise, `first` so it draws no rule dividing nothing. Same
+          cut as Data's Settings row and the Log tab's symptom row. */}
       <View className="mt-8">
-        <Block device="plate">
+        {items.length === 0 ? (
           <ActionRow
             icon="repeat-outline"
             label="Log again"
@@ -459,10 +490,16 @@ export default function MealDetailScreen() {
             accessibilityLabel="Log this meal again now"
             onPress={logAgain}
           />
-
-          {/* Save as template — only meaningful for an itemized meal (a template
-              needs items to re-stamp). */}
-          {items.length > 0 ? (
+        ) : (
+          <Block device="plate">
+            <ActionRow
+              icon="repeat-outline"
+              label="Log again"
+              detail="Duplicates this meal onto today, timed now"
+              first
+              accessibilityLabel="Log this meal again now"
+              onPress={logAgain}
+            />
             <ActionRow
               icon="albums-outline"
               label="Save as template"
@@ -478,8 +515,8 @@ export default function MealDetailScreen() {
               accessibilityLabel="Save this meal as a template"
               onPress={saveAsTemplate}
             />
-          ) : null}
-        </Block>
+          </Block>
+        )}
 
         <Pressable
           accessibilityRole="button"

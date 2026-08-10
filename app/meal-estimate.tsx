@@ -428,18 +428,26 @@ export default function MealEstimateScreen() {
             </View>
           ) : null}
 
+          {/* The plate is drawn ONLY when rows survive. A plate closes a
+              record; with every row removed there is no record to close, only a
+              sentence — and a border around one sentence is the
+              box-around-a-single-thing the owner keeps seeing. Same shape as
+              app/protocols.tsx. */}
           <View className="mt-4">
-            <Block device="plate">
-              <SectionLabel
-                label="Items"
-                note={reviewKcal !== null ? `${fmtInt(reviewKcal)} kcal` : undefined}
-              />
-
-              {rows.length === 0 ? (
+            {rows.length === 0 ? (
+              <View>
+                <SectionLabel label="Items" />
                 <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
                   No items left. Discard, or go back and re-estimate.
                 </Text>
-              ) : (
+              </View>
+            ) : (
+              <Block device="plate">
+                <SectionLabel
+                  label="Items"
+                  note={reviewKcal !== null ? `${fmtInt(reviewKcal)} kcal` : undefined}
+                />
+
                 <View className="mt-1">
                   {rows.map((row, index) => {
                     const p = currentPortion(row);
@@ -488,8 +496,8 @@ export default function MealEstimateScreen() {
                     );
                   })}
                 </View>
-              )}
-            </Block>
+              </Block>
+            )}
           </View>
 
           {/* The decision, in future tense, immediately above the control that

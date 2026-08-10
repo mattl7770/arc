@@ -37,11 +37,6 @@ export default function ProtocolsScreen() {
         <StackHeader title="Protocols" />
       </View>
 
-      <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
-        Stacks and routines, versioned like code — every save is a new version, and history is never
-        lost.
-      </Text>
-
       {/* The one accent on this screen. */}
       <Pressable
         accessibilityRole="button"
@@ -59,21 +54,23 @@ export default function ProtocolsScreen() {
           note={protocols.length > 0 ? String(protocols.length) : undefined}
         />
 
-        <View className="mt-3">
-          <Block device="plate">
-            {protocols.length === 0 ? (
-              // Empty is authored, never blank.
-              <View className="py-1">
-                <Text className="font-serif text-[15px] font-semibold text-ink">
-                  No protocols yet
-                </Text>
-                <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-                  A protocol is a stack or routine you run — a supplement stack, a morning routine,
-                  a training block. Create the first; every edit after that becomes a new version.
-                </Text>
-              </View>
-            ) : (
-              protocols.map((p, index) => (
+        {/* Authored empty, UNPLATED. A plate closes a record; with no protocols
+            there is no record to close, only a paragraph — and a border around
+            one paragraph is the box-around-a-single-thing the owner keeps
+            seeing. This is the state a fresh install opens in, so it is the one
+            that matters most. */}
+        {protocols.length === 0 ? (
+          <View className="mt-2">
+            <Text className="font-serif text-[15px] font-semibold text-ink">No protocols yet</Text>
+            <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
+              A protocol is a stack or routine you run — a supplement stack, a morning routine, a
+              training block. Create the first; every edit after that becomes a new version.
+            </Text>
+          </View>
+        ) : (
+          <View className="mt-3">
+            <Block device="plate">
+              {protocols.map((p, index) => (
                 <Pressable
                   key={p.id}
                   accessibilityRole="button"
@@ -90,12 +87,17 @@ export default function ProtocolsScreen() {
                     <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">
                       {p.name}
                     </Text>
+                    {/* A state word, not a boxed badge. Drawn on exactly one
+                        kind of row and absent on every other, which is all the
+                        distinction it needs — a border around two syllables is
+                        a mark the reader has to interpret. Bare Text so it sits
+                        on the row's baseline; a bordered View aligns by its
+                        bottom edge and drops below the line
+                        (app/protocol-versions.tsx makes the same call). */}
                     {p.isActive ? null : (
-                      <View className="border border-paper-deep bg-paper-dim px-2 py-0.5">
-                        <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                          Paused
-                        </Text>
-                      </View>
+                      <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                        Paused
+                      </Text>
                     )}
                     <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
                   </View>
@@ -119,10 +121,10 @@ export default function ProtocolsScreen() {
                     </Text>
                   </View>
                 </Pressable>
-              ))
-            )}
-          </Block>
-        </View>
+              ))}
+            </Block>
+          </View>
+        )}
       </View>
 
       {/* How an edit here reaches Home — the generator commits a day once, so an

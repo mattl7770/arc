@@ -59,13 +59,21 @@ import { useTrainingHub } from '@/hooks/use-training';
  *   Weekly volume            margin  advisory prose — unmarked, same reason
  *   Muscle freshness         plate   a record, ruled
  *   This week                grid    aligned columns, no outer box, no rules
- *   Programs / Routines      plate   records, ruled
- *   Quick log                plate   a row that navigates, like its neighbours
- *   Recent sessions          plate   a record, ruled
+ *   Programs / Routines      plate   records, ruled — WHEN NON-EMPTY
+ *   Quick log                none    one navigating row, label + air only
+ *   Recent sessions          plate   a record, ruled — WHEN NON-EMPTY
  *
  * Each block carries exactly one device and none of them nest; every other
  * `View` here is layout and spacing only. Sections are separated by whitespace,
  * never by a rule — rules enclose objects, not the page.
+ *
+ * **A plate is conditional on having a record to close.** Programs, Routines
+ * and Recent sessions each render their plate only in the non-empty branch;
+ * empty is a SectionLabel and one authored sentence, bare on the sheet. A
+ * border around a single paragraph — or a single row, which is why Quick log
+ * carries no device at all — is the box-around-a-single-thing the owner keeps
+ * reporting. This is a tab root, so empty is the first thing a fresh install
+ * shows.
  *
  * **Accent budget: one.** The Train-today stamp and its Start button are this
  * screen's single primary action. Everything else is neutral ink. The mirror
@@ -248,19 +256,26 @@ export default function ExerciseScreen() {
         </Block>
       </View>
 
-      {/* Programs */}
+      {/* Programs.
+
+          The plate is drawn ONLY in the non-empty branch. A plate closes a
+          record; with no programs there is no record to close, only a paragraph
+          — and a border around one paragraph is the box-around-a-single-thing
+          the owner keeps seeing. This is the Train tab, and empty is the state a
+          fresh install opens it in, so it is the one that matters most. Same
+          shape as app/protocols.tsx and app/wearables.tsx. */}
       <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel
-            label="Programs"
-            note={programs.length > 0 ? String(programs.length) : undefined}
-          />
-          {programs.length === 0 ? (
+        {programs.length === 0 ? (
+          <View>
+            <SectionLabel label="Programs" />
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               No programs yet. A program schedules your routines across a multi-week block with
               planned deload weeks; start one and Train today follows the plan.
             </Text>
-          ) : (
+          </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="Programs" note={String(programs.length)} />
             <View className="mt-1">
               {programs.map((p, i) => (
                 <View key={p.id} className={i === 0 ? '' : 'border-t border-hairline'}>
@@ -271,8 +286,8 @@ export default function ExerciseScreen() {
                 </View>
               ))}
             </View>
-          )}
-        </Block>
+          </Block>
+        )}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="New program"
@@ -285,19 +300,19 @@ export default function ExerciseScreen() {
         </Pressable>
       </View>
 
-      {/* Routines */}
+      {/* Routines — plate only when there are routines to close. */}
       <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel
-            label="Routines"
-            note={routines.length > 0 ? String(routines.length) : undefined}
-          />
-          {routines.length === 0 ? (
+        {routines.length === 0 ? (
+          <View>
+            <SectionLabel label="Routines" />
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               No routines yet. Build one — an ordered exercise list with targets — and starting it
               pre-fills last session&rsquo;s numbers.
             </Text>
-          ) : (
+          </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="Routines" note={String(routines.length)} />
             <View className="mt-1">
               {routines.map((r, i) => (
                 <View key={r.id} className={i === 0 ? '' : 'border-t border-hairline'}>
@@ -315,8 +330,8 @@ export default function ExerciseScreen() {
                 </View>
               ))}
             </View>
-          )}
-        </Block>
+          </Block>
+        )}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="New routine"
@@ -332,27 +347,28 @@ export default function ExerciseScreen() {
       {/*
         Quick log — free-form / cardio / past session (the older logger).
 
-        A **ruled plate**, not a well. Recessed stock is reserved for surfaces
-        you actually write on (src/components/ui/block.tsx), and no keystroke is
-        ever taken here: the row's only job is to push /workout-log, exactly
-        like the Programs, Routines and Recent-sessions rows around it. Drawing
-        it as a capture surface promised an input that isn't there.
+        Unboxed. It is not a well: recessed stock is reserved for surfaces you
+        actually write on (src/components/ui/block.tsx), and no keystroke is
+        ever taken here — the row's only job is to push /workout-log. Nor is it
+        a plate: a plate closes a record and one row is not a record, so the
+        border drew a rectangle around a single line. Identical cut to Data's
+        Settings row (app/(tabs)/data.tsx) and the Log tab's symptom row
+        (app/(tabs)/log.tsx). The label above it and the air around it are what
+        set it apart now.
       */}
       <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel label="Quick log" />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Log a session free-form"
-            onPress={() => router.push({ pathname: '/workout-log', params: { mode: 'past' } })}
-            className="mt-1 min-h-[44px] flex-row items-center gap-2 active:opacity-60">
-            <Ionicons name="time-outline" size={17} color={palette.inkSecondary} />
-            <Text className="flex-1 font-serif text-[14px] text-ink">
-              Cardio, mobility, or a past session
-            </Text>
-            <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
-          </Pressable>
-        </Block>
+        <SectionLabel label="Quick log" />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Log a session free-form"
+          onPress={() => router.push({ pathname: '/workout-log', params: { mode: 'past' } })}
+          className="mt-1 min-h-[44px] flex-row items-center gap-2 active:opacity-60">
+          <Ionicons name="time-outline" size={17} color={palette.inkSecondary} />
+          <Text className="flex-1 font-serif text-[14px] text-ink">
+            Cardio, mobility, or a past session
+          </Text>
+          <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+        </Pressable>
       </View>
 
       {/*
@@ -361,13 +377,16 @@ export default function ExerciseScreen() {
         §5 — a number on screen has to be the number it looks like).
       */}
       <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel label="Recent sessions" />
-          {sessions.length === 0 ? (
+        {sessions.length === 0 ? (
+          <View>
+            <SectionLabel label="Recent sessions" />
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               Nothing logged yet — start a workout above.
             </Text>
-          ) : (
+          </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="Recent sessions" />
             <View className="mt-1">
               {sessions.map((s, index) => (
                 <View
@@ -387,8 +406,8 @@ export default function ExerciseScreen() {
                 </View>
               ))}
             </View>
-          )}
-        </Block>
+          </Block>
+        )}
       </View>
     </Screen>
   );
@@ -511,9 +530,13 @@ function WeeklyVolume({ volume }: { volume: MuscleVolume[] }) {
     return (
       <Block device="margin">
         <SectionLabel label="Weekly volume" />
+        {/* The absence, then the reference the numbers get read against. The
+            "Once you train, ARC tracks…" framing was the app narrating its own
+            features; the MEV–MRV range is the part still needed to read this
+            block once it fills (slop sweep, 2026-08-10). */}
         <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-          No sets logged this week yet. Once you train, ARC tracks each muscle&rsquo;s weekly sets
-          against its productive range (MEV–MRV).
+          No sets logged this week yet. Weekly sets per muscle are measured against its productive
+          range (MEV–MRV).
         </Text>
       </Block>
     );

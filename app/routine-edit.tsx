@@ -247,19 +247,24 @@ function RoutineEditor({ id }: { id: string | undefined }) {
         </View>
       </View>
 
-      {/* Exercises — the routine's record, so: one ruled plate, one line each. */}
+      {/* Exercises — the routine's record, so: one ruled plate, one line each,
+          and the plate ONLY once there is a line to rule. A plate closes a
+          record; a new routine has no record to close, only a paragraph — and a
+          border around one paragraph is the box-around-a-single-thing the owner
+          keeps seeing. A new routine always opens in this state. Same shape as
+          app/protocols.tsx. */}
       <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel
-            label="Exercises"
-            note={lines.length > 0 ? String(lines.length) : undefined}
-          />
-          {lines.length === 0 ? (
+        {lines.length === 0 ? (
+          <View>
+            <SectionLabel label="Exercises" />
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               No exercises yet — add the movements this routine runs, with their target sets and rep
               range.
             </Text>
-          ) : (
+          </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="Exercises" note={String(lines.length)} />
             <View className="mt-1">
               {lines.map((l, i) => (
                 <View key={l.key} className={`py-3 ${i === 0 ? '' : 'border-t border-hairline'}`}>
@@ -314,8 +319,8 @@ function RoutineEditor({ id }: { id: string | undefined }) {
                 </View>
               ))}
             </View>
-          )}
-        </Block>
+          </Block>
+        )}
 
         <Pressable
           accessibilityRole="button"

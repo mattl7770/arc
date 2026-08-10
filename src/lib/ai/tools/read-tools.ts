@@ -79,6 +79,20 @@ type WearableMetricSpec = {
   decimals: number;
   /** Minutes-valued: also rendered "7h 11m", never left as a raw minute count. */
   isDuration?: boolean;
+  /**
+   * True when today's value is a RUNNING TOTAL that keeps growing until
+   * midnight (steps, energy burned, water). The same distinction insights.ts
+   * calls `accumulating` — and it is NOT the same axis as {@link WearableAgg}.
+   * `agg` says how to fold MANY ROWS into one day; this says whether that day,
+   * once folded, is finished. Steps arbitrate to one source (agg 'arbitrated')
+   * and still accumulate all day, which is exactly how a two-hour-old today of
+   * 900 steps got averaged in beside seven complete 8,000-step days.
+   *
+   * False for whole-fact readings: an HRV sample, a night's sleep, a VO2max
+   * estimate are each complete the moment they are written and must keep
+   * counting today.
+   */
+  accumulating?: boolean;
   /** Dimensions the user has a Settings preference for. */
   display?: 'volume' | 'temperature';
   /** True when the spec was guessed from the rows, not declared by the pipeline. */
@@ -144,6 +158,10 @@ const DECLARED_WEARABLE_METRICS: readonly WearableMetricSpec[] = [
     canonicalUnit: spec.unit,
     agg: 'arbitrated',
     decimals: spec.decimals,
+    // A HealthKit *statistic* is a cumulative sum over the day (steps, active
+    // energy, resting energy). One row per day, rewritten as the day grows, so
+    // arbitration picks a single source — but today's number is still partial.
+    accumulating: true,
   })),
   ...SLEEP_METRICS.map(([metricType, label]): WearableMetricSpec => ({
     metricType,
@@ -283,6 +301,21 @@ function reportValue(
   };
 }
 
+/**
+ * Does today's value for this metric keep growing until midnight?
+ *
+ * Summing many rows into a day (agg 'sum': water sipped, workouts logged) is
+ * accumulation by construction, so it needs no declaration. The declared flag
+ * covers the day-bucketed totals that still arbitrate to one source — steps and
+ * the energy metrics. A DISCOVERED metric (layer 2) declares neither and is
+ * treated as a level reading: its cadence is unknown, and holding a real
+ * same-day reading out of the statistics is the more damaging guess of the two,
+ * given `inferred: true` already tells the model the semantics were assumed.
+ */
+function accumulatesThroughDay(spec: WearableMetricSpec): boolean {
+  return spec.agg === 'sum' || spec.accumulating === true;
+}
+
 /** Everything get_metric_series will accept right now, for error text + discovery. */
 function readableMetricNames(catalog: Map<string, WearableMetricSpec>): string[] {
   return [...BODY_METRIC_KEYS, ...catalog.keys()];
@@ -339,9 +372,16 @@ const getTodaySnapshot: CoachTool = {
     "about today ('how am I doing', 'what's left', 'what did I eat', 'how many steps', " +
     "'how did I sleep'). " +
     '`wearables.today` holds only metrics that HAVE a value today; `wearables.noDataToday` ' +
-    'names the ones that do not — report those as missing/not synced, NEVER as zero. ' +
+    'names the ones that do not — report those as missing/not synced, NEVER as zero, and ' +
+    'NEVER as evidence that the sync is broken. `wearables.neverRecorded` narrows that to ' +
+    'the ones this device has no sensor for at all (a phone with no watch has no HRV, ever) ' +
+    '— those are a hardware fact, not a sync failure. ' +
+    'ANYTHING PRESENT IN `wearables.today` HAS SYNCED. Never tell the user a metric has not ' +
+    'synced while it carries a value there, whatever any other field says. ' +
     '`wearables.availableMetrics` lists every metric_type on the device, and every one of ' +
     'them can be passed to get_metric_series for history. ' +
+    '`readiness.detail` describes the RECOVERY verdict only; when `readiness.level` is ' +
+    '`unknown` it means recovery inputs are missing, never that Apple Health is off. ' +
     'In `remindersDueToday`, items are ranked with today’s own first and each carries its ' +
     'pinned `date` and `daysOverdue`: an un-dismissed one-off keeps surfacing past its day, ' +
     'so anything with daysOverdue > 0 is a carried-over obligation — say so, never present ' +
@@ -389,12 +429,50 @@ const getTodaySnapshot: CoachTool = {
       };
     }
     const noDataToday = CORE_WEARABLES.filter((m) => !(m in todayWearables));
+    // "Nothing today" and "this device has never had one" are different facts,
+    // and conflating them is how a phone-only user — no watch, so no HRV sensor,
+    // ever — gets told their sync is broken by a metric that will never arrive.
+    const neverRecorded = noDataToday.filter((m) => !inventory.some((r) => r.metricType === m));
+    const syncedTodayCount = Object.keys(todayWearables).length;
 
     // The SAME derivation Home renders (src/lib/home/readiness.ts) — reused, not
     // recomputed, so the Coach and the Home screen can never disagree about
     // today's readiness. Its evidence gates hold here too: `unknown` means there
     // is not enough baseline yet, and must be reported as that, not as "poor".
     const view = deriveReadiness(db, date);
+
+    // --- readiness.detail is UI COPY, and its fallback is a CALL TO ACTION ---
+    //
+    // THIS IS THE BUG the owner reported twice. deriveReadiness ends with
+    // `detail = "Connect Apple Health in Settings to power readiness."` whenever
+    // it has no usable RECOVERY input — no HRV or resting HR with a 30-day
+    // baseline, and no sleep last night. On HOME that sentence sits under a
+    // strip that is simultaneously rendering today's step count, so a human
+    // reads it as "no recovery signal yet" and ignores it. Handed to a model as
+    // a JSON field it reads as a flat assertion that Apple Health is not
+    // connected — and the model dutifully tells the user nothing has synced,
+    // while `wearables.today.steps` sits a few lines above it holding 8,432.
+    // Home shows the steps; the Coach denies them. Same database, same day, one
+    // sentence of interface copy in between.
+    //
+    // For a phone-only user (no watch ⇒ no HRV, no RHR, no sleep) that fallback
+    // is not a first-run state at all: it is EVERY day, forever.
+    //
+    // A tool must never launder an interface instruction into a claim about the
+    // data. `unknown` is exactly the state in which the fallback fires — the
+    // verdict is the worse of recovery and sleep, and the three `detail`
+    // branches above the fallback are true on precisely the conditions that
+    // keep either of those from being `unknown` — so that is what to substitute
+    // on. Derived, never string-matched: a copy edit in readiness.ts must not be
+    // able to make this guard silently stop working.
+    const readinessDetail =
+      view.readiness.level === 'unknown'
+        ? 'Readiness needs a recovery input — HRV or resting HR with a 30-day baseline, ' +
+          "or last night's sleep — and today has none. This is about RECOVERY ONLY. It does " +
+          'NOT mean Apple Health is disconnected, and it does NOT mean nothing synced: read ' +
+          '`wearables.today` for what actually did' +
+          (syncedTodayCount > 0 ? ` (${syncedTodayCount} metric(s) have values today).` : '.')
+        : view.readiness.detail;
 
     return json({
       date,
@@ -450,22 +528,36 @@ const getTodaySnapshot: CoachTool = {
         today: todayWearables,
         // Named absences. "No steps row today" ≠ "0 steps today" — say the former.
         noDataToday,
+        // Of those, the ones this device has NEVER recorded: a missing sensor,
+        // not a missing sync. Saying "your HRV hasn't synced" every day to
+        // someone who owns no HRV sensor is how the Coach loses their trust.
+        neverRecorded,
         // Every metric_type on this device; all are valid get_metric_series input.
         availableMetrics: [...catalog.keys()].filter((m) =>
           inventory.some((row) => row.metricType === m)
         ),
+        // Stated in ALL THREE cases, including the good one. It used to be
+        // `undefined` when data existed — silence, next to a `noDataToday` list
+        // and (before the fix above) a "Connect Apple Health" sentence. Nothing
+        // in the payload ever affirmed that the sync was working, so every
+        // ambiguity resolved toward "it isn't". Say the true thing out loud.
         note:
           inventory.length === 0
             ? 'No wearable data on this device at all — Apple Health has never synced (Settings › Apple Health).'
-            : Object.keys(todayWearables).length === 0
+            : syncedTodayCount === 0
               ? 'Nothing synced for today yet — Apple Health may not have run since midnight. Say so; do not report zeros.'
-              : undefined,
+              : `Apple Health IS connected and HAS synced today: ${syncedTodayCount} metric(s) in \`today\` carry real values — report them as fact. Names in \`noDataToday\` are missing for TODAY only and say nothing about the rest; names in \`neverRecorded\` have no sensor on this device at all.`,
       },
-      // Identical to what Home shows for this day (src/lib/home/readiness.ts).
+      // The SAME derivation Home renders for this day (src/lib/home/readiness.ts):
+      // identical level, label and pillars, so the two surfaces can never
+      // disagree about the verdict. `detail` alone is re-worded — it is Home's
+      // on-screen copy, and its no-signal branch is an instruction to the user,
+      // not a fact about the data. See the note above `readinessDetail`.
       readiness: {
         level: view.readiness.level,
         label: view.readiness.label,
-        detail: view.readiness.detail,
+        // Never Home's raw copy when the verdict is `unknown` — see above.
+        detail: readinessDetail,
         pillars: view.pillars,
         // False ⇒ not one wearable signal exists; readiness is not a low score,
         // it is an absence. Never present `unknown` as a bad result.
@@ -491,8 +583,18 @@ const getMetricSeries: CoachTool = {
     '"active_energy"). get_today_snapshot’s `wearables.availableMetrics` lists exactly what ' +
     'this device holds; an unknown name comes back as an error naming the valid set. ' +
     'Duration metrics carry an `hm` field ("7h 11m") — quote that, not raw minutes. ' +
+    'ACCUMULATING metrics (steps, active/resting energy, water, workout minutes) build up ' +
+    'through the day, so TODAY is a running total, not a finished day. For those, `stats` ' +
+    'covers COMPLETE days only and today is reported separately as `todaySoFar` (also ' +
+    'flagged `partial: true` in `points`). `statsBasis` and `statsExcludesToday` say which ' +
+    'convention is in force — read them before quoting a number. Give both figures, e.g. ' +
+    '"about 8,000 a day over the last week, 900 so far today"; NEVER average today into the ' +
+    'daily figure, and never call `todaySoFar` a full day. Level metrics (HRV, sleep, ' +
+    'weight, VO2max) are whole facts when written, so today counts normally there. ' +
     'When there is no data the result says `hasData: false` with empty points and null ' +
-    'stats: report that as "no data", NEVER as zero.',
+    'stats: report that as "no data", NEVER as zero. `stats` can also be null while ' +
+    '`hasData` is true when the only day in the window is today and it is still ' +
+    'accumulating — then there is no complete day to average; say so.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -561,9 +663,14 @@ const getMetricSeries: CoachTool = {
       spec.agg === 'sum'
         ? wearableDailySeries(db, metricType, since, 'sum')
         : wearableArbitratedSeries(db, metricType, since, today);
+    // Today stays IN the points — the owner's steps so far today are real and
+    // useful — but an accumulating today is flagged as partial, and held out of
+    // the statistics below. See the note on `partialToday` in seriesPayload.
+    const accumulating = accumulatesThroughDay(spec);
     const points = raw.map((p) => ({
       date: p.date,
       ...reportValue(spec, display, p.value),
+      ...(accumulating && p.date === today ? { partial: true } : {}),
     }));
 
     const presence = inventory.find((row) => row.metricType === metricType);
@@ -581,12 +688,27 @@ const getMetricSeries: CoachTool = {
         points,
         isDuration: spec.isDuration === true,
         inferred: spec.inferred === true,
+        // Only an accumulating metric has a partial today to hold out.
+        partialDate: accumulating ? today : null,
         // A metric that exists but is silent in this window is a different
         // statement from one that has never been recorded — say which.
         lastRecorded: presence?.lastDate ?? null,
       })
     );
   },
+};
+
+/**
+ * One day as reported. `unit` rides along on the wearable branch (reportValue
+ * stamps it); `partial` marks the still-accumulating today that `stats`
+ * deliberately leaves out.
+ */
+type SeriesReportPoint = {
+  date: string;
+  value: number;
+  unit?: string;
+  hm?: string;
+  partial?: boolean;
 };
 
 type SeriesPayloadInput = {
@@ -596,10 +718,18 @@ type SeriesPayloadInput = {
   unit: string;
   aggregation: string;
   days: number;
-  points: { date: string; value: number; hm?: string }[];
+  points: SeriesReportPoint[];
   isDuration?: boolean;
   inferred?: boolean;
   lastRecorded?: string | null;
+  /**
+   * Today's date when this metric ACCUMULATES through the day, else null.
+   * That day is a running total, not a finished day, so it is excluded from
+   * `stats` and reported on its own as `todaySoFar`. Null (or an absent point
+   * for that date) leaves every day counting, which is correct for a level
+   * metric — an HRV sample or a night's sleep is whole the moment it lands.
+   */
+  partialDate?: string | null;
 };
 
 /** Layer 2 of the catalog guessed this metric's semantics; say so. */
@@ -621,9 +751,27 @@ const INFERRED_NOTE =
  * model an empty `points` array with nothing telling it that empty ≠ zero.
  * That is the confusion this whole payload exists to prevent, so absence is
  * stated FIRST and is never displaced.
+ *
+ * **`stats` covers COMPLETE days.** For an accumulating metric (`partialDate`
+ * set) today is a running total: at 09:00 it is a fraction of a day, and
+ * averaging it in drops `avg`, and usually owns `min` and `last` outright —
+ * seven complete 8,000-step days plus a two-hour-old today reported avg 7,492.9
+ * and min 900, which is not a fact about the user's week. Today is NOT dropped
+ * from the data — the steps walked so far are real — it is moved to its own
+ * labelled `todaySoFar` and flagged `partial: true` inside `points`, so the
+ * model can say "8,000 a day over the last week; 900 so far today" instead of
+ * blending the two. `statsBasis`/`statsExcludesToday` name which convention is
+ * in force, so `points` and `stats` can never be silently read as the same set.
  */
 function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
-  const stats = seriesStats(input.points);
+  const partialToday =
+    input.partialDate == null
+      ? null
+      : (input.points.find((p) => p.date === input.partialDate) ?? null);
+  const statPoints = partialToday
+    ? input.points.filter((p) => p.date !== input.partialDate)
+    : input.points;
+  const stats = seriesStats(statPoints);
   const noteForEmpty = () => {
     if (input.lastRecorded) {
       return `No ${input.label} recorded in the last ${input.days} days. The most recent value on record is from ${input.lastRecorded}. This is missing data, not a zero — do not report a value.`;
@@ -632,6 +780,22 @@ function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
   };
   const notes: string[] = [];
   if (input.points.length === 0) notes.push(noteForEmpty());
+  if (partialToday) {
+    notes.push(
+      `${input.label} accumulates through the day, so ${partialToday.date} is a RUNNING TOTAL, not a finished ` +
+        'day. Every number in `stats` therefore covers COMPLETE days only — today is excluded from it and ' +
+        'appears instead as `todaySoFar` (and as the `partial: true` entry in `points`). Never average today ' +
+        'in, and never present `todaySoFar` as a full day.'
+    );
+    notes.push(
+      stats === null
+        ? `There is no COMPLETE day of ${input.label} in this window — the only data is today, still ` +
+            'accumulating — so there is nothing to average yet. Say exactly that; do not report `todaySoFar` ' +
+            'as a daily figure.'
+        : `Cite the two separately, e.g. "${round1(stats.avg)} ${input.unit} a day over the last ` +
+            `${stats.count} complete day(s); ${partialToday.value} ${input.unit} so far today".`
+    );
+  }
   if (input.inferred) notes.push(INFERRED_NOTE);
   return {
     metric: input.metric,
@@ -641,7 +805,14 @@ function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
     aggregation: input.aggregation,
     days: input.days,
     hasData: input.points.length > 0,
+    // Every day with data, today included. `partial: true` marks the one day
+    // that `stats` deliberately leaves out.
     points: input.points,
+    // Spelled out so `points` and `stats` can never be read as the same set.
+    statsBasis: partialToday
+      ? 'complete days only — today is still accumulating and is excluded (see `todaySoFar`)'
+      : 'every day in `points`, today included',
+    statsExcludesToday: partialToday !== null,
     stats:
       stats === null
         ? null
@@ -654,6 +825,20 @@ function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
             last: stats.last,
             ...(input.isDuration ? { avgHm: formatDuration(stats.avg) } : {}),
           },
+    // Today's real running total, kept — never silently dropped — but in its own
+    // clearly-labelled place so it cannot be mistaken for a completed day.
+    ...(partialToday
+      ? {
+          todaySoFar: {
+            date: partialToday.date,
+            value: partialToday.value,
+            unit: input.unit,
+            ...(partialToday.hm !== undefined ? { hm: partialToday.hm } : {}),
+            partial: true,
+            note: 'Real, and still climbing — the total so far today, not a finished day.',
+          },
+        }
+      : {}),
     ...(input.lastRecorded !== undefined ? { lastRecorded: input.lastRecorded } : {}),
     ...(input.inferred ? { inferred: true } : {}),
     ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
