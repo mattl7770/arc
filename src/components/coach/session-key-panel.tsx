@@ -8,37 +8,54 @@ import { palette } from '@/constants/theme';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 
 /**
- * The Coach screen's session line — "is a model connected, and what do I do
- * about it" — plus the fast path to connect one.
+ * The Coach screen's **no-model** band — "this screen has no model yet, here is
+ * what that means and how to fix it" — plus the fast path to connect one.
+ *
+ * **It renders nothing once a key is set.** It used to keep a connected
+ * counterpart ("Model connected · manage in Settings" + Disconnect), and on
+ * hardware the owner's read was immediate: useful before connecting, noise
+ * forever after (2026-08-09). They are right, and the reason is the set's own
+ * rule about authored empty states (00-design-spec.md §5) — the authoring exists
+ * to get you OUT of the empty state, so it has to retire when it succeeds.
+ * Reporting "connected" on every visit is the app congratulating itself with a
+ * permanent strip of the thread's vertical space. Once a model is connected the
+ * screen opens straight into the conversation, and the header's own rule closes
+ * the band.
+ *
+ * Nothing is stranded by that: Settings › Coach is where the key and model are
+ * managed in full and carries the Clear action (app/settings-coach.tsx), the
+ * expanded form below links there directly, and the connected state is still
+ * legible elsewhere — the brief and the empty-thread block both read
+ * `useSessionKeySet()` and change what they say.
  *
  * The key is saved to the device Keychain via the persistent store
  * (src/lib/ai/api-key-store.ts), so connecting here is durable — the same key
- * the Settings › Coach screen manages. This strip is the fast path; Settings is
- * where the key and model are managed in full. The field is `secureTextEntry`
- * and the value is never rendered back.
+ * Settings › Coach manages. This strip is the fast path. The field is
+ * `secureTextEntry` and the value is never rendered back.
  *
  * ## Conformed Set treatment
  *
- * The collapsed states are the mockup's `cf-sessline`: a presence dot, one mono
+ * The collapsed state is the mockup's `cf-sessline`: a presence dot, one mono
  * line of state, and one control — drawn straight **on the sheet**, not on a
  * plate. It is not a record and not a verdict; it is a caption on the page, and
  * giving it a card would make a status line look like content. The only rule it
  * draws is the one closing the header band above the thread.
  *
- * The presence dot is the accent when a model is connected and neutral when it
- * is not — 00-design-spec.md §2 names "the Coach presence dot" explicitly in the
- * accent budget, and this is the screen's copy of it. **Nothing else in this
- * panel is allowed the accent.** Connect is a real primary action, but the
- * screen's one accent action is the composer's send, so Connect is drawn solid
- * in ink instead: unmissable, and still inside the budget.
+ * The presence dot is neutral here and never the accent: 00-design-spec.md §2
+ * sanctions "the Coach presence dot" in the accent budget, but the dot reports
+ * state, so it has to be honest — and the only state this component now renders
+ * is *no model*. (The screen's live accent dot is the one on the daily brief.)
+ * Connect is a real primary action, but the screen's one accent action is the
+ * composer's send, so Connect is drawn solid in ink instead: unmissable, and
+ * still inside the budget.
  *
  * The no-key state is authored rather than blank (§5): it says what mode the
  * screen is in, in words, before offering the control that changes it. It stays
  * to ONE line on purpose — this band sits above the scroll view, so anything
- * taller permanently shortens the thread. The longer half of the no-key
- * authoring (what connecting buys, and the route to Settings › Coach) belongs
- * where there is room for it and where it retires itself once the thread starts:
- * coach/suggested-prompts.tsx, the empty-thread block.
+ * taller shortens the thread for exactly as long as it is up. The longer half of
+ * the no-key authoring (what connecting buys, and the route to Settings › Coach)
+ * belongs where there is room for it and where it retires itself once the thread
+ * starts: coach/suggested-prompts.tsx, the empty-thread block.
  *
  * The expanded form ends with the destination rather than merely naming it.
  * "Manage it in Settings › Coach" as prose was a signpost with no road: the key
@@ -50,29 +67,10 @@ export function SessionKeyPanel({ keySet }: { keySet: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
 
-  if (keySet) {
-    return (
-      <View className="flex-row items-center gap-2 border-b border-hairline px-5 py-1">
-        {/* Spec-sanctioned accent (§2) — the Coach presence dot. */}
-        <View className="h-1.5 w-1.5 rounded-full bg-pine" />
-        <Text className="flex-1 font-mono text-[10px] text-ink-muted">
-          Model connected · manage in Settings
-        </Text>
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            void apiKeyStore.clearKey();
-            setDraft('');
-            setExpanded(false);
-          }}
-          className="-mr-2 min-h-[44px] justify-center px-2 active:opacity-60">
-          <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink">
-            Disconnect
-          </Text>
-        </Pressable>
-      </View>
-    );
-  }
+  // Connected: the band has done its job and gets out of the way. Note this
+  // also closes the expanded form the instant Connect lands, so the successful
+  // paste needs no separate dismissal.
+  if (keySet) return null;
 
   if (!expanded) {
     return (

@@ -12,21 +12,32 @@ import { signalConditionLabel, signalConditionSpoken, signalTextClass } from './
  * in the Data tab; this is only here so the readiness verdict above has visible
  * evidence behind it.
  *
- * Conformed Set treatment — the **ruled grid** device: no outer box, because
- * the grid *is* the object. React Native has neither CSS grid nor
- * `:nth-child()`, so the modulo is computed in JS and the rules live on the
- * cells: every cell takes a top rule, and a left-column cell takes a right rule
- * (01-rn-port-guide.md §1.3). Whole class strings, never a built prefix.
+ * Conformed Set treatment — the **grid** device: no outer box, because the grid
+ * *is* the object.
  *
- * **The vertical rule is conditioned on a cell following it, not on the column.**
- * "Hairline between cells only" means a rule needs a cell on both sides. With an
- * odd number of metrics the final cell sits in the left column with nothing
- * beside it, and the naive `index % 2 === 0` test draws its right rule into
- * empty space — which is exactly the outer edge this device exists to avoid.
- * The port guide's §1.3 snippet and the mockup's `nth-child` CSS both have that
- * flaw; this is the corrected form. (The current derivation always yields four
- * metrics, so the odd case is latent rather than visible — which is precisely
- * why it needs to be closed here before ~40 screens copy the pattern.)
+ * ## The rules are gone (2026-08-09, owner call on hardware)
+ *
+ * This block used to draw hairlines BETWEEN its cells: a top rule on every
+ * cell, plus a vertical rule down the middle of the first column. On paper that
+ * is a table. On a phone the owner read it as a defect — it was one of the two
+ * surfaces they named unprompted ("weird boxes and lines... notably the metrics
+ * and coach brief"). The reason is structural, not a matter of taste: a rule
+ * above the first row and a rule down the middle, with no outer edge to close
+ * them, is a *half-drawn box*. A viewer has to work out that the missing edges
+ * are deliberate before the lines help them, and 00-design-spec.md §5 says
+ * drafting chrome that has to be interpreted before it pays is decoration.
+ *
+ * So the cells are held by alignment and whitespace alone. Two equal columns,
+ * consistent row rhythm, and the three type voices doing the separating —
+ * muted tracked-caps label, mono value, mono detail. Nothing is lost: the
+ * columns were already aligned, and the rules were tracing an order the layout
+ * establishes by itself.
+ *
+ * A side benefit worth recording, because it was a real bug this file carried
+ * a long comment about: with no rules there is no "does a cell follow this
+ * one" question, so an odd number of metrics can no longer draw a vertical
+ * rule into empty space off the final cell. The whole class of defect is
+ * deleted rather than guarded.
  *
  * Values come from src/lib/home/readiness.ts, which renders every missing
  * signal as an em-dash — no data, no number, and never a plausible-looking
@@ -63,6 +74,10 @@ import { signalConditionLabel, signalConditionSpoken, signalTextClass } from './
  * The cell is grouped for assistive tech and speaks as one phrase — "Sleep,
  * 7h 12m, good. Deep 42m." — because a label, a number and a condition read as
  * three separate items are three facts the listener has to reassemble.
+ *
+ * This is also why dropping the rules costs the block nothing: the cell already
+ * states its own condition in words. The hairlines were never carrying meaning,
+ * only enclosure.
  */
 
 /** What readiness.ts prints for a missing reading. Spoken, not read aloud. */
@@ -90,16 +105,16 @@ function metricSpoken(metric: Metric): string {
   return `${metric.label}, ${metric.value}${condition}${detail}.`;
 }
 
-/** Left column with a cell beside it: closes with a vertical rule. */
-const CELL_LEFT = 'w-1/2 border-r border-t border-hairline py-2.5 pr-2.5';
-/** Left column, nothing beside it (odd count): same box, no dangling rule. */
-const CELL_LEFT_LAST = 'w-1/2 border-t border-hairline py-2.5 pr-2.5';
-/** Right column: top rule only; the grid never draws an outer edge. */
-const CELL_RIGHT = 'w-1/2 border-t border-hairline py-2.5 pl-2.5';
+/**
+ * The two columns. No rules — only the gutter that keeps the right column's
+ * text off the left column's, and the row rhythm that replaces the old top
+ * rule. Whole class strings, never a built prefix.
+ */
+const CELL_LEFT = 'w-1/2 pr-3 pt-4';
+const CELL_RIGHT = 'w-1/2 pl-3 pt-4';
 
-function cellClass(index: number, count: number): string {
-  if (index % 2 !== 0) return CELL_RIGHT;
-  return index + 1 < count ? CELL_LEFT : CELL_LEFT_LAST;
+function cellClass(index: number): string {
+  return index % 2 === 0 ? CELL_LEFT : CELL_RIGHT;
 }
 
 export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
@@ -120,7 +135,7 @@ export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
           No readings yet today. Connect Apple Health in Settings to populate this.
         </Text>
       ) : (
-        <View className="mt-2 flex-row flex-wrap">
+        <View className="flex-row flex-wrap">
           {metrics.map((metric, index) => {
             const level = gradedLevel(metric);
 
@@ -130,7 +145,7 @@ export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
                 accessible
                 accessibilityRole="text"
                 accessibilityLabel={metricSpoken(metric)}
-                className={cellClass(index, metrics.length)}>
+                className={cellClass(index)}>
                 <View className="flex-row items-center justify-between gap-1.5">
                   <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
                     {metric.label}

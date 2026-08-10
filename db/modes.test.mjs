@@ -24,11 +24,19 @@ import {
 import {
   getOrCreateDailyLog,
   insertMissionItem,
+  listMission,
   setMissionStatus,
 } from '../src/lib/db/repositories/mission.ts';
+import { deriveMissionView } from '../src/lib/home/derive-mission.ts';
 import { logNote } from '../src/lib/db/repositories/logs.ts';
 import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
-import { getModeDefinition, modeChangesPlan } from '../src/lib/modes/registry.ts';
+import {
+  MODE_KEYS,
+  accountForDay,
+  getModeDefinition,
+  modeChangesPlan,
+  modeDirective,
+} from '../src/lib/modes/registry.ts';
 import { toolByName } from '../src/lib/ai/tools/index.ts';
 
 let pass = 0;
@@ -135,6 +143,88 @@ console.log('1. registry: definitions + modeChangesPlan');
     : bad('modeChangesPlan');
 }
 
+console.log('1a. EVERY injected mode item is scheduled — an untimed one sinks the whole mode');
+{
+  // The regression this guards is the reason modes felt inert: the mission is
+  // one chronological list and derive-mission.ts sorts an untimed item to
+  // MAX_SAFE_INTEGER, so an item with no time lands BELOW every protocol item
+  // and the mode never reaches the hero. ModeItem.scheduledTime is required at
+  // the type level; this asserts it at the value level too, for every mode,
+  // including any mode added later.
+  const untimed = [];
+  for (const key of MODE_KEYS) {
+    for (const item of getModeDefinition(key).addItems) {
+      if (typeof item.scheduledTime !== 'string' || !/^[0-9]{2}:[0-9]{2}$/.test(item.scheduledTime))
+        untimed.push(`${key}/${item.title}`);
+    }
+  }
+  untimed.length === 0
+    ? ok('every mode item across every mode carries a valid HH:MM')
+    : bad('untimed mode items sink to the bottom of the day', JSON.stringify(untimed));
+
+  // The day-framing modes must LEAD. 07:00 beats any plausible protocol item,
+  // which is what puts the mode's own instruction in the hero slot.
+  const leadOf = (key) =>
+    getModeDefinition(key)
+      .addItems.map((i) => i.scheduledTime)
+      .sort()[0];
+  leadOf('sick') === '07:00' && leadOf('travel') === '07:00' && leadOf('deload') === '07:00'
+    ? ok('Sick / Travel / Deload each lead the day at 07:00 (they take the hero)')
+    : bad('lead times', `${leadOf('sick')}/${leadOf('travel')}/${leadOf('deload')}`);
+
+  // Social is the deliberate exception: a night out bends the evening only, so
+  // claiming the morning hero would be visibly false.
+  leadOf('social') >= '12:00'
+    ? ok(`Social deliberately does NOT take the morning hero (leads ${leadOf('social')})`)
+    : bad('social hijacked the morning', leadOf('social'));
+}
+
+console.log('1b. modeDirective: heroFocus reaches a surface, with a tagline fallback');
+{
+  modeDirective('sick') === getModeDefinition('sick').heroFocus && modeDirective('sick').length > 0
+    ? ok('modeDirective returns the mode heroFocus')
+    : bad('directive sick', modeDirective('sick'));
+  modeDirective('normal') === ''
+    ? ok('Normal has no directive — the default day renders no banner')
+    : bad('normal directive', modeDirective('normal'));
+  // Custom carries no heroFocus, but a mode that is ON must still say something.
+  modeDirective('custom') === getModeDefinition('custom').tagline &&
+  modeDirective('custom').length > 0
+    ? ok('Custom (no heroFocus) falls back to its tagline, never empty')
+    : bad('custom fallback', modeDirective('custom'));
+  MODE_KEYS.filter((k) => k !== 'normal').every((k) => modeDirective(k).length > 0)
+    ? ok('every non-Normal mode has a directive to lead the day with')
+    : bad('a mode that is ON has nothing to say');
+}
+
+console.log('1c. accountForDay: excusesSkips is an actual count, not just model guidance');
+{
+  const sick = accountForDay('sick', { skipped: 2 });
+  sick.excused === 2 && sick.missed === 0 && typeof sick.note === 'string'
+    ? ok(`Sick excuses 2 skips, 0 missed ("${sick.note}")`)
+    : bad('sick accounting', JSON.stringify(sick));
+
+  const deload = accountForDay('deload', { skipped: 2 });
+  deload.excused === 0 && deload.missed === 2 && deload.note === null
+    ? ok('Deload does NOT excuse — 2 missed, and it says nothing about judgement')
+    : bad('deload accounting', JSON.stringify(deload));
+
+  const normal = accountForDay('normal', { skipped: 3 });
+  normal.excused === 0 && normal.missed === 3 && normal.note === null
+    ? ok('Normal counts all 3 skips as misses, no note')
+    : bad('normal accounting', JSON.stringify(normal));
+
+  accountForDay('sick', { skipped: 0 }).note === null
+    ? ok('an excusing mode with nothing skipped stays silent (no "0 skipped")')
+    : bad('zero-skip note leaked');
+
+  // A bad caller must never render "-1 skipped" on the owner's home screen.
+  const clamped = accountForDay('social', { skipped: -4 });
+  clamped.excused === 0 && clamped.note === null
+    ? ok('a negative count is clamped, not rendered')
+    : bad('negative skipped', JSON.stringify(clamped));
+}
+
 console.log('2. Sick mission: drops the training protocol, injects rest/fluids/immune');
 {
   const { db, raw } = freshDb();
@@ -168,6 +258,63 @@ console.log('2. Sick mission: drops the training protocol, injects rest/fluids/i
   n === rows.length && n === 4
     ? ok('total = 1 kept supplement + 3 sick items = 4')
     : bad('count', `${n}/${rows.length}`);
+}
+
+console.log('2a. THE OWNER TEST: switching to Sick changes what Home LEADS with');
+{
+  // The whole point of the 2026-08-09 work. Previously the mode's items carried
+  // no scheduled_time, sorted to MAX_SAFE_INTEGER in deriveMissionView, and
+  // landed BELOW the 21:00 supplement — so the hero still said "Magnesium" and
+  // Sick mode looked like the normal day minus a workout. This runs the real
+  // Home derivation over the real generated rows and asserts the hero itself.
+  const { db } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Morning Stack', type: 'supplement_stack' },
+    { items: [{ title: 'Creatine', scheduled_time: '08:00', dose: '5 g', notes: null }] }
+  );
+  createProtocolWithVersion(
+    db,
+    { name: 'Strength Block', type: 'training_block' },
+    { items: [{ title: 'Squats 5x5', scheduled_time: '17:00', dose: null, notes: null }] }
+  );
+
+  const normalHero = deriveMissionView(
+    (generateMissionForDay(db, DATE), listMission(db, DATE)),
+    new Set()
+  ).next;
+  normalHero.title === 'Creatine'
+    ? ok('Normal day leads with the earliest protocol item (Creatine, 08:00)')
+    : bad('normal hero', normalHero && normalHero.title);
+
+  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  rederiveMissionForDay(db, DATE);
+  const sickView = deriveMissionView(listMission(db, DATE), new Set());
+  sickView.next.title === 'Rest — no training today'
+    ? ok('Sick day leads with "Rest — no training today" — the mode TAKES the hero')
+    : bad('sick hero did not change', sickView.next && sickView.next.title);
+
+  // ...and the mode's own items are threaded through the day, not appended
+  // after everything else. Rest 07:00 < Creatine 08:00 < fluids 11:00.
+  const order = sickView.items.map((i) => i.title);
+  order.indexOf('Rest — no training today') === 0 &&
+  order.indexOf('Extra fluids') > order.indexOf('Creatine') &&
+  order.indexOf('Immune support') > order.indexOf('Extra fluids')
+    ? ok('Sick items interleave chronologically, they are not an appendix')
+    : bad('mode items not interleaved', JSON.stringify(order));
+
+  // A mode item is attributed to the MODE, not dressed as a protocol.
+  const rest = sickView.items.find((i) => i.title === 'Rest — no training today');
+  rest.category === 'Sick' && rest.protocol === undefined
+    ? ok('a mode item reads "SICK" — mode in the category slot, no fake protocol')
+    : bad('mode item attribution', JSON.stringify({ c: rest.category, p: rest.protocol }));
+
+  // Back to Normal restores the original hero — the change is not one-way.
+  clearMode(db, DATE);
+  rederiveMissionForDay(db, DATE);
+  deriveMissionView(listMission(db, DATE), new Set()).next.title === 'Creatine'
+    ? ok('back to Normal, the hero returns to Creatine (round trip is clean)')
+    : bad('round trip hero');
 }
 
 console.log('3. no protocols + Sick still injects the mode items');

@@ -24,19 +24,46 @@ import { palette } from '@/constants/theme';
  * tile that opens a screen which cannot finish the job would make that answer a
  * lie (00-design-spec.md §5).
  *
- * Conformed Set treatment — the **ruled grid** device (00-design-spec.md §1):
- * no outer box, hairlines *between* cells only, because the grid is the object.
- * That is also the honest reading of these six: they are equal peers, none of
- * them is "the one next action", so none of them carries the accent. The
- * screen's single pine lives on the command field's send button.
+ * Conformed Set treatment — the **grid** device (00-design-spec.md §1): no outer
+ * box, because the grid is the object. That is also the honest reading of these
+ * six: they are equal peers, none of them is "the one next action", so none of
+ * them carries the accent. The screen's single pine lives on the command field's
+ * send button.
  *
- * React Native has neither CSS grid nor `:nth-child()`, so the modulo is done in
- * JS and the rules live on the cells (01-rn-port-guide.md §1.3). As in
- * home/metrics-strip.tsx, **the vertical rule is conditioned on a cell actually
- * following in the same row**, not on the column alone — otherwise a short final
- * row draws a rule into empty space, which is the outer edge this device exists
- * to avoid. Class strings are whole literals in a map, never built from a
- * prefix: Tailwind's scanner only sees names that appear literally in source.
+ * ## The rules are gone here too, and a tap target is the interesting case
+ *
+ * These cells used to carry a hairline on top and a vertical between columns.
+ * With six tiles filling two full rows that draws a full-width rule above each
+ * row and two verticals inside each — a 3×2 lattice with no left, right or
+ * bottom edge, which is precisely the *half-drawn box* the owner reported on
+ * hardware ("weird boxes and lines"). Same defect as the Home metrics strip,
+ * same fix: alignment and whitespace hold the columns (see
+ * src/components/home/metrics-strip.tsx, and block.tsx — **a grid draws no
+ * rules**).
+ *
+ * This block was worth arguing about separately, because unlike every other grid
+ * in the app **these cells are tap targets, not readouts**, and a border is one
+ * of the standard ways a control says it is pressable. Three things say it here
+ * without one:
+ *
+ *   - the 20px Ionicon, which no readout in this app carries;
+ *   - the **label voice** on the caption — this design reserves that face for
+ *     labels and buttons, so it reads as a control, not as a value (mono would
+ *     have been the readout voice, and these deliberately are not mono);
+ *   - `active:bg-paper-dim`, which fills the whole third on press and draws its
+ *     own edge at the moment the edge is actually wanted.
+ *
+ * Boxing each tile instead — six *closed* hairline boxes, which would not be
+ * half-drawn — was the real alternative and was rejected: it puts a drawn
+ * enclosure inside `device="grid"`, re-opening the exact convention split this
+ * sweep exists to close, and it trades one unexplained mark for eighteen more
+ * strokes on the Log tab's busiest block.
+ *
+ * With no rules there is no "does a cell follow this one in the same row"
+ * question, so the `COLUMNS` modulo and the two-class `cellClass` are gone —
+ * every tile takes the same class. Class strings are whole literals, never built
+ * from a prefix: Tailwind's scanner only sees names that appear literally in
+ * source.
  */
 type Tile = {
   key: string;
@@ -45,18 +72,16 @@ type Tile = {
   href: Href;
 };
 
-const COLUMNS = 3;
-
-/** A cell with another cell beside it: closes with a vertical rule. */
-const CELL_RULED =
-  'w-1/3 min-h-[68px] gap-2 border-r border-t border-hairline px-2.5 py-3 active:bg-paper-dim';
-/** Last cell in its row (or in the grid): same box, no dangling rule. */
-const CELL = 'w-1/3 min-h-[68px] gap-2 border-t border-hairline px-2.5 py-3 active:bg-paper-dim';
-
-function cellClass(index: number, count: number): string {
-  const lastInRow = index % COLUMNS === COLUMNS - 1;
-  return lastInRow || index + 1 >= count ? CELL : CELL_RULED;
-}
+/**
+ * One tile. Uniform on every cell — no rules, so no column special-casing.
+ *
+ * The padding is symmetric (`px-2.5`) rather than the left/right gutter split
+ * the readout grids use, because here the padded box IS the tap target and the
+ * press fill draws it: an asymmetric fill under the thumb would look like a
+ * misaligned control. 20pt of gutter still separates adjacent captions, and
+ * `py-3.5` gives the two rows the rhythm the top rules used to.
+ */
+const TILE = 'w-1/3 min-h-[68px] gap-2 px-2.5 py-3.5 active:bg-paper-dim';
 
 const TILES: Tile[] = [
   // Row 1: Supplement · Water · Nutrition
@@ -96,14 +121,15 @@ export function QuickAddGrid() {
     <Block device="grid">
       <SectionLabel label="Quick add" />
 
-      <View className="mt-2 flex-row flex-wrap">
-        {TILES.map((tile, index) => (
+      {/* No margin: the tiles' own `py-3.5` is the row rhythm. */}
+      <View className="flex-row flex-wrap">
+        {TILES.map((tile) => (
           <Pressable
             key={tile.key}
             accessibilityRole="button"
             accessibilityLabel={tile.label}
             onPress={() => router.push(tile.href)}
-            className={cellClass(index, TILES.length)}>
+            className={TILE}>
             <Ionicons name={tile.icon} size={20} color={palette.inkSecondary} />
             {/* A tile label is a button label — the label voice. */}
             <Text className="font-label text-[12px] font-semibold text-ink">{tile.label}</Text>

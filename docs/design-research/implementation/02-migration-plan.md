@@ -4,7 +4,9 @@
 >
 > The shipped description of the system is `docs/project-status.md` §3; the decision record is the 2026-08-08 ADR in `docs/decisions.md`; the spec is `00-design-spec.md`.
 >
-> ⚠️ **Nothing here has been seen on an iPhone.** Every "done" below means *typechecks, lints, and the headless suites pass* — never *looks right*. See "What is still open".
+> ⚠️ **PARTLY SUPERSEDED 2026-08-09 — this file is now a record of what was built, not a description of what renders.** It went on a phone, and three of the six devices did not survive the look: `field` (corner ticks), `margin` (2px left rule + indent) and `grid` (between-cell hairlines) now draw **nothing at all**, and the Coach thread came off the `well`. Everything below describing those marks as shipped is history — it is deliberately **not** edited in place, because the sequencing and the deviations from it are what this file is for. **`00-design-spec.md` §1 is the amended spec; `src/components/ui/block.tsx` is the truth.**
+>
+> ⚠️ **The "nothing here has been seen on an iPhone" warning that used to head this file is now out of date in the only way that matters: it has been.** Every "done" below still means only *typechecks, lints and the headless suites pass* at the time it was written — the device pass came afterwards, and it is what produced the supersession above. See "What is still open".
 
 ---
 
@@ -41,9 +43,13 @@
 3. ✅ Home converted (readiness → `field`, mission → `plate`, coach brief → `margin`, metrics → `grid`, hero → `stamp`).
 4. ❌ **"Judge on a device before continuing" — SKIPPED.** Phase 3 started immediately.
 
+> ⚠️ **Superseded 2026-08-09 — and item 4 is exactly why.** `CornerTicks` no longer exists; `field`, `margin` and `grid` are empty class strings that draw nothing. The device *assignments* in item 3 all still stand (the call site is still a claim about what kind of content it holds) — only three of the treatments went away. The skipped device check in item 4 is what let the marks reach the owner's phone before anyone had looked at them.
+
 **Two additions the plan did not call for, both worth keeping:**
 - **The one-device/never-nest rule is enforced at runtime in `__DEV__`.** A nested `Block` logs a `console.error` naming both devices. Prose was the only guard on a primitive that now has **137 call sites across 58 files**, so the cheapest place to catch the mistake is the moment it renders.
 - **Two implementation traps are recorded in the primitive's own doc comment**, because both are easy to get wrong and one is wrong *in this kit*: (a) the `grid` device's last cell takes **no** trailing rule — the port guide's §1.3 snippet and the mockup's `nth-child` CSS both draw a rule off the final cell when the count is odd; `src/components/home/metrics-strip.tsx` has the correct form. (b) A `well` is a surface, not a container: **an input is never `bg-paper-hi`**. A census found 9 inputs drawn on raised fill *inside* a well, which inverts the whole surface system.
+
+> ⚠️ **Trap (a) is now moot** (2026-08-09): the `grid` device draws no rules on any cell, so there is no trailing rule to get wrong. Trap (b) is **live and unchanged** — it governs `well`, which is one of the three devices still drawn.
 
 ## Phase 3 — the rest of the screens — **DONE, all five groups**
 
@@ -67,7 +73,8 @@ Adding `fontSize` / `letterSpacing` tokens and sweeping out the arbitrary values
 
 ## What is still open
 
-- ⚠️ **NOBODY HAS SEEN THIS ON AN IPHONE.** The de-risking step this plan opened with was skipped, and the diff is now the whole app rather than one screen. Three details fail **silently** when unsupported:
+- ✅ **"NOBODY HAS SEEN THIS ON AN IPHONE" — closed 2026-08-09.** The owner ran it on their phone. The de-risking step this plan opened with had been skipped, and the diff was the whole app rather than one screen, so the bill arrived all at once: the first note back was *"there are some weird boxes and lines in some places, notably the metrics and coach brief on the home screen, but there are more."* Three devices lost their marks and the Coach thread came off the `well` as a result (`00-design-spec.md` §1). **The lesson is the one this plan wrote down and the implementation ignored: judge the surface system on hardware before spending it across 83 files.**
+- ⚠️ Three details fail **silently** when unsupported. The device pass produced no report either way on any of them, so treat them as still open:
   - **`Avenir Next Condensed`** — inside `font-label` it heads a CSS stack, so native falls through to Helvetica Neue. **But `app/(tabs)/_layout.tsx` sets `fontFamily` imperatively as a single string, and React Native takes no fallback list there** — a missing family drops just the five tab labels to the system face, silently, while every other label in the app renders correctly. Fallback if it happens: `'Helvetica Neue'`, not unset.
   - **`border-dashed`** (`app/protocol-versions.tsx`).
   - **Rotated-square diamond markers** (`app/screenings.tsx`, `transform: [{ rotate: '45deg' }]`).
@@ -89,6 +96,6 @@ ARC's convention (`CLAUDE.md` §9) is that docs move in the same change as reali
 
 ## What was deliberately **not** in scope — held
 
-- ✅ **No new native dependency** (no `react-native-svg`, no `expo-linear-gradient`) → the restyle needs **no EAS rebuild of its own**. The corner ticks and diamond markers are bordered / rotated Views precisely to keep it that way. *(It still cannot be judged until the pending build ships, for the unrelated reason that no build has run at all.)*
+- ✅ **No new native dependency** (no `react-native-svg`, no `expo-linear-gradient`) → the restyle needs **no EAS rebuild of its own**. The corner ticks and diamond markers were bordered / rotated Views precisely to keep it that way. *(The constraint held through the device pass and beyond: the ticks are gone, and the paper grid that replaced the missing blueprint ground ships as a repeat-tiled PNG rather than a gradient, for the same reason — the owner runs a dev client and a new package costs a ~20-minute cloud rebuild.)*
 - ✅ **No change to data, hooks, or navigation structure** — presentation only. The one new route (`protocol-versions`) is a Phase-4 view, not a restructure.
 - ✅ The mockup's desk background, registration marks, sheet numbers and title blocks are presentation chrome and **did not ship**. Inside the phone, every mark must pay rent.

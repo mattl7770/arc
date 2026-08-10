@@ -17,7 +17,9 @@ import { palette } from '@/constants/theme';
  *
  * ## Conformed Set treatment
  *
- * The **margin annotation** device — a 2px left rule and an indent, no box.
+ * The **margin annotation** device, which as of 2026-08-09 is UNMARKED — no rule,
+ * no indent (the left rule read as a stray line on hardware; see "Devices that
+ * stopped paying rent" in src/components/ui/block.tsx).
  * Prose does not belong in a card; it belongs in the margin of the sheet, and
  * this is the longest stretch of prose on the screen. Set in the serif voice
  * (serif speaks), the same treatment Home's coach-brief.tsx gives it, so the

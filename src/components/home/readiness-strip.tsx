@@ -21,15 +21,24 @@ type Props = {
  * Readiness verdict + pillar swatches, below the hero (owner call,
  * 2026-07-24): the screen answers "what do I do" before "how am I doing".
  *
- * Conformed Set treatment — this is the **measured field** device: no box at
- * all, only 11px corner ticks bracketing the block. A verdict is a reading
- * taken off the sheet, not a card, and the ticks are what say "this region was
- * measured". See src/components/ui/block.tsx.
+ * Conformed Set treatment — the **field** device: no box at all. It used to
+ * carry 11px L-shaped corner ticks at opposite corners, which were meant to say
+ * "this region was measured". On hardware they said nothing of the kind — two
+ * disconnected brackets with no enclosure are the most abstract mark in the set
+ * and the least self-explanatory, and they were the prime suspect behind the
+ * owner's "weird boxes" on first sight. They are gone (2026-08-09); the full
+ * reasoning is in src/components/ui/block.tsx.
  *
- * The pillars are boxed cells rather than a segment bar: a swatch reads as a
- * *sample* of a state, which is what a pillar is. Every colour here is a signal
- * colour and every signal colour here is biology — the accent is not permitted
- * anywhere in this block.
+ * What still says "verdict" is the content, which is stronger than a bracket
+ * was: a section label, a signal tick beside a serif verdict line, four pillar
+ * swatches, and a detail line — separated from its neighbours by air, like
+ * every other section on this screen.
+ *
+ * The pillars stay boxed cells rather than a segment bar: a swatch reads as a
+ * *sample* of a state, which is what a pillar is, and that box encloses real
+ * content rather than gesturing at a drafting metaphor. Every colour here is a
+ * signal colour and every signal colour here is biology — the accent is not
+ * permitted anywhere in this block.
  *
  * ## A cell is a reading: name, mark, condition
  *

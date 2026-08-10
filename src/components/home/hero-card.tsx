@@ -97,8 +97,14 @@ export function HeroCard({ item, onDone, onSnooze, onSkip }: Props) {
 
 /**
  * Shown once nothing is left. The reward for a clean day is a quiet page, so
- * this is the **measured field** device — corner ticks, no box. It is a verdict
- * about the day, not a record of it.
+ * this is the **measured field** device. It is a verdict about the day, not a
+ * record of it — and since 2026-08-09 that device draws **nothing at all**: no
+ * box, and no corner ticks either. The ticks were cut on the owner's first look
+ * at hardware, where an 11px L floating with no outer edge read as a rendering
+ * artefact rather than as "this region was measured" (block.tsx, "Devices that
+ * stopped paying rent"). So the verdict is set apart here by air and by type —
+ * the accent check disc, the serif headline — which is what was doing the work
+ * anyway.
  *
  * The check is stamped in the accent rather than in a signal green: completion
  * is chrome, not biology, and the signal palette is reserved for biological

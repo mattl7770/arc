@@ -10,6 +10,8 @@ Read `00-design-spec.md` first for *what* the design is. This file is *how it sh
 
 The mockup's surface system leans on three CSS features with **no RN equivalent**. Each has a clean native answer — none requires a new dependency.
 
+> ⚠️ **§1.2 and §1.3 are SUPERSEDED (2026-08-09) and are kept as history, not as instructions.** They solve "how do I draw the corner ticks and the between-cell rules in RN?" — and the answer turned out to be **don't**. On the owner's first look at real hardware those marks read as artefacts rather than as a drawing vocabulary, so the `field`, `margin` and `grid` devices were cut back to drawing nothing at all. See **`00-design-spec.md` §1** for the amended spec and the reasoning, and `src/components/ui/block.tsx` for what ships. The techniques below are still correct RN — they are simply no longer wanted here. §1.1 (device as a prop) is **live** and unchanged.
+
 ### 1.1 `:has()` → explicit component variants
 
 The mockup picks a device by inspecting a block's content:
@@ -44,9 +46,13 @@ export function Block({ device = 'plate', children }: { device?: Device; childre
 }
 ```
 
+> ⚠️ **The snippet's `DEVICE` map is superseded.** The prop-not-selector shape is exactly what shipped; the three marked entries are not. As of 2026-08-09 `field`, `margin` and `grid` are all `''` — they draw nothing, padding included — there is no `<CornerTicks />` child, and the real map carries a sixth device, `stamp` (`border-[1.5px] border-pine bg-paper-hi px-4 py-4`). Read `src/components/ui/block.tsx`; it is short and it is the truth.
+
 > Use **whole-string class maps**, never `` `border-${x}` `` — Tailwind's scanner only sees literal class names. This is the documented ARC pattern already used in `src/components/home/signal.tsx`.
 
-### 1.2 `::before` / `::after` (the corner ticks) → two absolutely-positioned Views
+### 1.2 `::before` / `::after` (the corner ticks) → two absolutely-positioned Views — **SUPERSEDED, the ticks were cut**
+
+*History. The `field` device draws nothing at all since 2026-08-09 — no ticks, no padding — because on hardware an 11px L floating with no outer edge read as a rendering artefact rather than as "this region was measured" (`00-design-spec.md` §1). Nothing in the app renders `CornerTicks`; the component does not exist. Kept only because the technique below is the right answer for any bordered-View mark this design might want later.*
 
 RN has no pseudo-elements, but it *does* support absolute positioning and per-side borders, so the measured-field ticks are trivial — **no SVG needed**:
 
@@ -61,7 +67,9 @@ function CornerTicks() {
 }
 ```
 
-### 1.3 CSS grid (the metrics ruled grid) → flex-wrap with per-cell borders
+### 1.3 CSS grid (the metrics ruled grid) → flex-wrap with per-cell borders — **SUPERSEDED, the rules were cut**
+
+*History. The `grid` device draws no rules at all since 2026-08-09: on a phone an L of hairlines with no outer edge reads as a half-drawn box, which is precisely what the owner reported on first sight of Home (`00-design-spec.md` §1). The grid is now built from alignment and whitespace only — `src/components/home/metrics-strip.tsx` is the reference form. The snippet below also carries a bug worth knowing about even in history: with an odd number of cells the `i % 2 === 0` rule draws a `border-r` off the final cell into empty space, giving the device the outer edge it exists to avoid. The mockup's `nth-child` CSS has the same flaw.*
 
 `display: grid` and `nth-child(odd)` don't exist. Compute the modulo in JS and put the rules on the cells:
 
@@ -109,12 +117,12 @@ The mockup's diagonal hatch on `bio-poor` fills is a `repeating-linear-gradient`
 | `.cf-sec` / `.cf-sec-t` | `ui/section-label.tsx` **(new)** | uppercase label voice + optional right-aligned mono note |
 | `.cf-mission` / `.cf-mrow` | `home/mission.tsx`, `mission-item.tsx` *(exist — restyle)* | keep explicit hairlines, not `divide-y` (no RN sibling selector) |
 | `.cf-fold` | inside `mission.tsx` *(exists)* | tally row must reconcile: folded + visible = total |
-| `.cf-verdict` / `.cf-pillars` | `home/readiness-strip.tsx` *(exists — restyle)* | wrap in `<Block device="field">` |
-| `.cf-note` | `home/coach-brief.tsx` *(exists — restyle)* | `<Block device="margin">` |
-| `.cf-dims` / `.cf-dim` | `home/metrics-strip.tsx` *(exists — restyle)* | `<Block device="grid">`; see §1.3 |
+| `.cf-verdict` / `.cf-pillars` | `home/readiness-strip.tsx` *(exists — restyle)* | wrap in `<Block device="field">` — which draws nothing since 2026-08-09 |
+| `.cf-note` | `home/coach-brief.tsx` *(exists — restyle)* | `<Block device="margin">` — draws nothing since 2026-08-09 |
+| `.cf-dims` / `.cf-dim` | `home/metrics-strip.tsx` *(exists — restyle)* | `<Block device="grid">` — no rules on the cells either; §1.3 is superseded |
 | `.cf-rev` (REV bar-diff) | `coach/pending-write-card.tsx` *(exists — restyle)* | the dimensioned old→new diff; keep future-tense consequence |
 | `.cf-command` | `log/command-field.tsx` *(exists — restyle)* | `<Block device="well">` |
-| `.cf-thread` / bubbles | `coach/*` *(exist — restyle)* | user bubble = solid accent, one squared corner |
+| `.cf-thread` / bubbles | `coach/*` *(exist — restyle)* | user bubble = solid accent. **The thread takes no device** — it sits directly on the sheet (superseded 2026-08-09; it was a `well`). Every corner is square, including the bubbles: the mockup's one-squared-corner is a browser artefact of a set whose stated geometry is "corners: square" |
 | `.cf-axis` (Screenings horizon) | **new** | a flex row of positioned Views — no SVG (see §5) |
 | `.cf-vhist` (version timeline) | **new** | Protocols; v2 dashed "proposed", v1 solid "current" |
 | `.cf-spark` | `ui/sparkline.tsx` *(exists)* | already dependency-free Views — keep as-is |
@@ -136,8 +144,8 @@ Recommended: **option 2**, then option 1 as a follow-up. The migration plan sequ
 The current app has **no `react-native-svg`**, no `expo-linear-gradient`, and no shadows — deliberately (`ui/sparkline.tsx`: *"react-native-svg is not installed, and this intentionally stays that way"*). Adding one means an **EAS rebuild**.
 
 Everything in this design can ship without one:
-- corner ticks → bordered Views (§1.2)
-- ruled grids → per-cell borders (§1.3)
+- ~~corner ticks → bordered Views (§1.2)~~ — moot: the ticks were cut entirely (§1.2, `00-design-spec.md` §1)
+- ~~ruled grids → per-cell borders (§1.3)~~ — moot: the between-cell rules were cut entirely (§1.3)
 - dimension strings → a thin View + two 1px end-cap Views
 - the Screenings horizon axis → a positioned row of Views (diamond = a rotated square View)
 - sparklines → the existing View-based `Sparkline`

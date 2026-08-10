@@ -7,7 +7,7 @@
  *
  * The load-bearing idea is the SURFACE SYSTEM, not the palette: every content
  * block is a drafting device whose container encodes what it holds — ruled
- * plate (records), measured field (verdicts, corner ticks), margin annotation
+ * plate (records), measured field (verdicts), margin annotation
  * (prose), ruled grid (metrics), recessed stock (inputs), stamped plate (the
  * one next action). See src/components/ui/block.tsx. A block gets exactly one
  * device, and devices never nest.
@@ -26,6 +26,18 @@ module.exports = {
       colors: {
         // The sheet, its plates, and its recesses. Bone-neutral drafting stock.
         //   DEFAULT = the page · hi = plates/cards · dim = input wells · deep = recessed edges
+        //
+        // NOT A CLASS, but part of the ground and easy to lose: the PAPER GRID
+        // — a 9pt drafting rule at 6% ink printed on `paper` itself, drawn once
+        // by the exported `PaperGrid` in src/components/ui/screen.tsx from a
+        // repeat-tiled PNG — rendered by `Screen` and by the six roots that
+        // bypass it (Coach, the three pickers, app lock, error boundary). It has no
+        // token here because nothing styles it with `className`; it is tuned in
+        // `paperGrid` (src/constants/theme.ts) and specified in
+        // 00-design-spec.md §4a. Mentioned here so a future palette change to
+        // `paper` remembers the grid sits on top of it. (Distinct from the
+        // mockup's `--desk` grid, which is presentation chrome and does not
+        // ship — conflating the two is exactly how the grid got dropped once.)
         paper: { DEFAULT: '#E7E4DA', hi: '#F5F3EC', dim: '#D9D5C8', deep: '#C6C1B0' },
         // Alias of paper.hi. SHIM — ZERO CONSUMERS as of 2026-08-09 (swept over
         // all 191 source files in app/ + src/, class and palette.* mirror
@@ -51,7 +63,7 @@ module.exports = {
         //
         // `soft` and `strong` are SHIMS. As classes both have ZERO CONSUMERS as
         // of 2026-08-09 — but note palette.hairlineStrong (theme.ts) is LIVE in
-        // app/(tabs)/settings.tsx, so `strong` cannot be retired from the pair
+        // app/settings.tsx, so `strong` cannot be retired from the pair
         // without editing that screen. `strong` is byte-identical to DEFAULT
         // anyway: it could not render differently even if it were used.
         hairline: { DEFAULT: '#A9A28E', soft: '#C6C1B0', strong: '#A9A28E' },

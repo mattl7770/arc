@@ -9,10 +9,22 @@ import { palette } from '@/constants/theme';
 /**
  * The Coach's daily brief.
  *
- * Conformed Set treatment — the **margin annotation** device: no box, a 2px
- * left rule and an indent. Prose does not belong in a card; it belongs in the
- * margin of the sheet, which is exactly what this is. Set in the serif voice,
- * because serif speaks and mono measures.
+ * Conformed Set treatment — the **margin** device, which as of 2026-08-09 draws
+ * nothing. Prose does not belong in a card, so this block stays unboxed; but it
+ * no longer carries the 2px left rule and indent it used to, either.
+ *
+ * That rule was one of the two things the owner named on first seeing the
+ * design on hardware ("weird boxes and lines... notably the metrics and coach
+ * brief"). The diagnosis: a margin rule marks an *aside* — a note running
+ * alongside the thing it comments on. Here the prose is not an aside, it is the
+ * section, the only content in its slot, with a section label above it and
+ * seven units of air on either side. A single vertical stroke beside a
+ * paragraph that annotates nothing reads as a rendering glitch, not as an
+ * annotation mark. The full reasoning is in src/components/ui/block.tsx.
+ *
+ * Set in the serif voice, because serif speaks and mono measures. The label,
+ * the dot and the air around it are what say "this is the Coach" — none of
+ * which anyone has to learn a drafting metaphor to read.
  *
  * The whole block opens the full conversation, so the brief is an entry point
  * rather than a dead end.

@@ -3,8 +3,16 @@ import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Block } from '@/components/ui/block';
+import { PaperGrid } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
-import { MODE_KEYS, getModeDefinition, type ModeKey } from '@/lib/modes/registry';
+import {
+  MODE_KEYS,
+  accountForDay,
+  getModeDefinition,
+  modeDirective,
+  type ModeKey,
+} from '@/lib/modes/registry';
 
 /**
  * The Home mode control (docs/information-architecture.md §Modes): "a quiet
@@ -53,6 +61,75 @@ import { MODE_KEYS, getModeDefinition, type ModeKey } from '@/lib/modes/registry
 /** The picker rows, Normal first so "back to normal" is always the top choice. */
 const PICKER_ORDER: readonly ModeKey[] = MODE_KEYS;
 
+/**
+ * The mode banner — what makes a mode VISIBLE rather than merely set.
+ *
+ * Owner feedback, first hardware look: "the modes switcher right now doesn't do
+ * much", and they had to be told the control existed at all. Both are the same
+ * defect. The chip beside the date is a *control*; nothing on the page ever
+ * said what the mode had DONE. `heroFocus` — the day's directive, and the one
+ * thing a mode could most usefully change — was read by `get_today_snapshot`
+ * and by nothing else, so it only ever reached the user inside a Coach chat
+ * they might never open.
+ *
+ * This renders directly above the hero, so switching to Sick puts "Recover:
+ * sleep, fluids, rest. No training today." at the top of Home. Together with
+ * the mode taking the hero slot on the clock (registry `addItems`), the screen
+ * now reads as a sick day rather than as the normal day minus a workout.
+ *
+ * ## Why it draws nothing
+ *
+ * No box, no rule, no fill — type and air only. That is not timidity, it is the
+ * standing call from the same feedback session: three of the six devices
+ * stopped drawing marks on 2026-08-09 because "there are some weird boxes and
+ * lines in some places" (src/components/ui/block.tsx). Adding a fresh enclosure
+ * one section above the two boxes that survived — the hero stamp and the
+ * mission plate — would spend exactly the attention those two are left drawn to
+ * claim. `device="field"` is still declared because this IS a verdict about
+ * today; the device currently renders no marks, and the call site is the
+ * documentation.
+ *
+ * ## Why it spends no accent
+ *
+ * Home's accent budget is the hero, completion stamps and the active tab
+ * (00-design-spec.md §2). A mode is a state, not an action, and it sits
+ * immediately above the one block on the sheet drawn in pine — colouring it
+ * would put two accent claims in adjacent blocks and demote the hero. It also
+ * must not take a signal colour: `signal-*` marks biology, and "today is a
+ * travel day" is a fact about the calendar, not about the body. The FIREWALL
+ * holds even for Sick, which is the tempting case and the wrong one — Sick is a
+ * mode the user declared, not a measured biological state.
+ *
+ * Legibility comes from position and size instead: it is the first thing under
+ * the folio line, and the directive is set two steps above the eyebrow.
+ */
+export function ModeBanner({ mode, skipped }: { mode: ModeKey; skipped: number }) {
+  const def = getModeDefinition(mode);
+  const directive = modeDirective(mode);
+  // Normal has no opinion and renders nothing — the quiet default stays quiet.
+  if (!directive) return null;
+
+  const accounting = accountForDay(mode, { skipped });
+
+  return (
+    <Block device="field">
+      <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.4px] text-ink-secondary">
+        {def.label} mode · Today
+      </Text>
+      <Text className="mt-1.5 font-serif text-[16px] leading-6 text-ink">{directive}</Text>
+      {/*
+        The concrete face of `excusesSkips`. Mono because it leads with a count,
+        and a count is a measured value. Absent — not zeroed — when the mode
+        does not excuse or nothing was skipped: a mode that judges the day
+        normally should say nothing about judgement.
+      */}
+      {accounting.note ? (
+        <Text className="mt-2 font-mono text-[11px] text-ink-muted">{accounting.note}</Text>
+      ) : null}
+    </Block>
+  );
+}
+
 export function ModeControl({
   mode,
   onSelect,
@@ -75,6 +152,17 @@ export function ModeControl({
         // ~36pt. The negative right margin keeps the optical edge flush with the
         // gutter.
         className="-mr-2 min-h-[44px] flex-row items-center gap-1.5 rounded-btn px-2 py-2.5 active:bg-paper-deep">
+        {/*
+          Both faces are now DRAWN chips. The resting face used to be bare
+          `ink-muted` text, and the owner's first hardware session ended with
+          them having to be told the control was there — unsurprising, since
+          nothing distinguished it from the date eyebrow opposite it except the
+          chevron. A hairline outline is the smallest mark that says "this is
+          pressable" without spending accent (a mode is a state, not an action)
+          and without a fill, which would make the resting state as loud as the
+          active one. Filled = on, outlined = off, and the two are now
+          distinguishable at a glance from across the row.
+        */}
         {active ? (
           <View className="rounded-btn bg-paper-deep px-2 py-0.5">
             <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-secondary">
@@ -82,9 +170,11 @@ export function ModeControl({
             </Text>
           </View>
         ) : (
-          <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
-            Set mode
-          </Text>
+          <View className="rounded-btn border border-hairline px-2 py-0.5">
+            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+              Set mode
+            </Text>
+          </View>
         )}
         <Ionicons name="chevron-down" size={12} color={palette.inkMuted} />
       </Pressable>
@@ -94,61 +184,68 @@ export function ModeControl({
         animationType="slide"
         presentationStyle="fullScreen"
         onRequestClose={() => setOpen(false)}>
-        <SafeAreaView edges={['top', 'bottom']} className="flex-1 bg-paper">
-          <View className="flex-row items-center justify-between px-5 pt-2">
-            <Text className="font-serif text-lg font-semibold text-ink">Today&rsquo;s mode</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-              onPress={() => setOpen(false)}
-              // A 20px glyph in p-2 measures 36pt square; the floor is 44 on both axes.
-              className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn active:bg-paper-deep">
-              <Ionicons name="close" size={20} color={palette.inkSecondary} />
-            </Pressable>
-          </View>
-          <Text className="px-5 pt-1 font-serif text-[13px] leading-5 text-ink-secondary">
-            A mode adapts today&rsquo;s plan and how the Coach talks. A skipped item under Travel,
-            Sick, or Social is excused, not a miss.
-          </Text>
-
-          <ScrollView contentContainerClassName="px-5 pb-10 pt-5">
-            <View className="border border-hairline bg-paper-hi">
-              {PICKER_ORDER.map((key, index) => {
-                const option = getModeDefinition(key);
-                const selected = key === mode;
-                return (
-                  <Pressable
-                    key={key}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                    accessibilityLabel={`${option.label}. ${option.tagline}`}
-                    onPress={() => {
-                      setOpen(false);
-                      onSelect(key);
-                    }}
-                    className={`min-h-[44px] flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep ${
-                      index === 0 ? '' : 'border-t border-hairline'
-                    }`}>
-                    <View className="flex-1">
-                      {/* List ROW, not a control label — see the voice note above. */}
-                      <Text className="font-serif text-[15px] text-ink">{option.label}</Text>
-                      <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
-                        {option.tagline}
-                      </Text>
-                    </View>
-                    {selected ? (
-                      <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
-                    ) : null}
-                  </Pressable>
-                );
-              })}
+        {/* A native Modal builds its own root, so it never passes through
+            `<Screen>` and has to print the sheet itself — otherwise the picker
+            arrives on bare stock over a textured Home. Outside the SafeAreaView
+            and outside the ScrollView: the paper is fixed, the content moves. */}
+        <View className="flex-1 bg-paper">
+          <PaperGrid />
+          <SafeAreaView edges={['top', 'bottom']} className="flex-1">
+            <View className="flex-row items-center justify-between px-5 pt-2">
+              <Text className="font-serif text-lg font-semibold text-ink">Today&rsquo;s mode</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                onPress={() => setOpen(false)}
+                // A 20px glyph in p-2 measures 36pt square; the floor is 44 on both axes.
+                className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn active:bg-paper-deep">
+                <Ionicons name="close" size={20} color={palette.inkSecondary} />
+              </Pressable>
             </View>
-            <Text className="mt-3 font-serif text-[11px] leading-4 text-ink-muted">
-              Stays on until you set it back to Normal. Work you&rsquo;ve already logged is kept —
-              only untouched items change.
+            <Text className="px-5 pt-1 font-serif text-[13px] leading-5 text-ink-secondary">
+              A mode reshapes today&rsquo;s plan, changes what Home leads with, and changes how the
+              Coach talks. A skipped item under Travel, Sick, or Social is excused, not a miss.
             </Text>
-          </ScrollView>
-        </SafeAreaView>
+
+            <ScrollView contentContainerClassName="px-5 pb-10 pt-5">
+              <View className="border border-hairline bg-paper-hi">
+                {PICKER_ORDER.map((key, index) => {
+                  const option = getModeDefinition(key);
+                  const selected = key === mode;
+                  return (
+                    <Pressable
+                      key={key}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`${option.label}. ${option.tagline}`}
+                      onPress={() => {
+                        setOpen(false);
+                        onSelect(key);
+                      }}
+                      className={`min-h-[44px] flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep ${
+                        index === 0 ? '' : 'border-t border-hairline'
+                      }`}>
+                      <View className="flex-1">
+                        {/* List ROW, not a control label — see the voice note above. */}
+                        <Text className="font-serif text-[15px] text-ink">{option.label}</Text>
+                        <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                          {option.tagline}
+                        </Text>
+                      </View>
+                      {selected ? (
+                        <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text className="mt-3 font-serif text-[11px] leading-4 text-ink-muted">
+                Stays on until you set it back to Normal. Work you&rsquo;ve already logged is kept —
+                only untouched items change.
+              </Text>
+            </ScrollView>
+          </SafeAreaView>
+        </View>
       </Modal>
     </>
   );

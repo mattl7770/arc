@@ -31,11 +31,20 @@ import {
  * wearable_data / log_entries), then returns; the Log tab re-reads on focus.
  *
  * Conformed Set treatment (00-design-spec.md §1): the readout is the
- * **measured field** — a verdict about a number, so corner ticks and no
- * enclosure. Everything below it is instrument, not content: square chips,
- * square keys, every digit in mono ("serif speaks, mono measures"). The one
- * accent on this screen is the Log button; the active metric chip is stamped in
- * ink, not pine, because a selection is chrome and the budget is a ceiling.
+ * **measured field** — a verdict about a number, so no enclosure at all.
+ * Everything below it is instrument, not content: square chips, square keys,
+ * every digit in mono ("serif speaks, mono measures"). The one accent on this
+ * screen is the Log button; the active metric chip is stamped in ink, not pine,
+ * because a selection is chrome and the budget is a ceiling.
+ *
+ * The field device draws nothing now — its corner ticks and its padding were cut
+ * together (src/components/ui/block.tsx). Losing the ticks is fine here; losing
+ * the padding is not, because this call site is a 6xl numeral wedged between the
+ * metric chips and the keypad, and it needs the air to read as an instrument
+ * face rather than as a line of body copy. So the readout carries the vertical
+ * padding explicitly. Vertical only, and deliberately the same amount the device
+ * used to contribute — the screen does not scroll, so every point added here
+ * comes out of the Log button's clearance on a small phone.
  *
  * ## The blank keypad (mockup sheet K-02)
  *
@@ -208,46 +217,49 @@ export default function MetricEntryScreen() {
         })}
       </ScrollView>
 
-      {/* Readout — the measured field: corner ticks, no enclosure. */}
+      {/* Readout — the measured field: no enclosure, and its own padding
+          because the device stopped supplying any (see the note above). */}
       <View className="mt-7">
         <Block device="field">
-          <View className="flex-row items-baseline justify-center gap-2">
-            <Text
-              numberOfLines={1}
-              maxFontSizeMultiplier={1.3}
-              className={
-                value
-                  ? 'font-mono text-6xl font-semibold text-ink'
-                  : 'font-mono text-6xl font-semibold text-ink-muted'
-              }>
-              {value || '0'}
-            </Text>
-            <Text className="font-mono text-lg text-ink-muted">{spec.unit}</Text>
-          </View>
-          {/*
-            `recent` is authored by the repository when there is nothing to
-            report ("No readings yet", "No water logged yet today") — no data,
-            no number. The out-of-range warning is prose, so it takes the serif
-            voice; the recent line is a measurement and stays mono.
+          <View className="py-3">
+            <View className="flex-row items-baseline justify-center gap-2">
+              <Text
+                numberOfLines={1}
+                maxFontSizeMultiplier={1.3}
+                className={
+                  value
+                    ? 'font-mono text-6xl font-semibold text-ink'
+                    : 'font-mono text-6xl font-semibold text-ink-muted'
+                }>
+                {value || '0'}
+              </Text>
+              <Text className="font-mono text-lg text-ink-muted">{spec.unit}</Text>
+            </View>
+            {/*
+              `recent` is authored by the repository when there is nothing to
+              report ("No readings yet", "No water logged yet today") — no data,
+              no number. The out-of-range warning is prose, so it takes the serif
+              voice; the recent line is a measurement and stays mono.
 
-            The em-dash fallback is defensive, not a state this screen reaches:
-            `recentSummary` only returns '' for a metric key it cannot resolve,
-            and the key here always comes from the METRICS table. It is here so
-            the line can never collapse to zero height and shift the pad under a
-            thumb already on its way down — and an em-dash is what the spec says
-            an absent value looks like (§5), so the fallback is honest rather
-            than a filler string.
-          */}
-          <Text
-            className={
-              outOfRange
-                ? 'mt-2 text-center font-serif text-[13px] leading-5 text-ink-secondary'
-                : 'mt-2 text-center font-mono text-[11px] text-ink-muted'
-            }>
-            {outOfRange
-              ? `That looks out of range for ${active.label.toLowerCase()}`
-              : recent || '—'}
-          </Text>
+              The em-dash fallback is defensive, not a state this screen reaches:
+              `recentSummary` only returns '' for a metric key it cannot resolve,
+              and the key here always comes from the METRICS table. It is here so
+              the line can never collapse to zero height and shift the pad under a
+              thumb already on its way down — and an em-dash is what the spec says
+              an absent value looks like (§5), so the fallback is honest rather
+              than a filler string.
+            */}
+            <Text
+              className={
+                outOfRange
+                  ? 'mt-2 text-center font-serif text-[13px] leading-5 text-ink-secondary'
+                  : 'mt-2 text-center font-mono text-[11px] text-ink-muted'
+              }>
+              {outOfRange
+                ? `That looks out of range for ${active.label.toLowerCase()}`
+                : recent || '—'}
+            </Text>
+          </View>
         </Block>
       </View>
 

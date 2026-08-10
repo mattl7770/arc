@@ -20,9 +20,16 @@ import { COACH_MODELS } from '@/lib/ai/model-client';
  * build ships the native module, the store falls back to memory-only and this
  * screen says so plainly rather than implying a persistence it doesn't have.
  *
- * Conformed Set treatment: the connection state is a **measured field** (corner
- * ticks, no box — it is a verdict, not a record), the key entry is **recessed
- * stock**, and the model picker is a **ruled plate**.
+ * Conformed Set treatment: the connection state is a **measured field** (it is a
+ * verdict, not a record), the key entry is **recessed stock**, and the model
+ * picker is a **ruled plate**.
+ *
+ * The field device is now unmarked — its corner ticks and its padding were cut
+ * together (src/components/ui/block.tsx). That is right for a field used as a
+ * *section*, which is what most call sites do; this one uses it as a compact
+ * status badge sitting between the header and the key form, so it carries its
+ * own vertical padding. Vertical only: an inset would knock it out of the left
+ * margin every other section on this screen shares.
  *
  * **Zero accent.** Settings spends none (00-design-spec.md §2), so the presence
  * dot, the selected model marker and the Save action are all neutral ink. The
@@ -48,20 +55,23 @@ export default function SettingsCoachScreen() {
       {/* Status — connected + where the key actually lives right now. */}
       <View className="mt-3">
         <Block device="field">
-          <View className="flex-row items-center gap-2">
-            {/* Square, like every other mark in this drawing. Ink, not accent. */}
-            <View className={`h-1.5 w-1.5 ${keySet ? 'bg-ink' : 'bg-hairline'}`} />
-            <Text className="font-serif text-[15px] text-ink">
-              {keySet ? 'Connected' : 'Not connected'}
+          {/* The badge's own padding — see the note above. */}
+          <View className="py-2">
+            <View className="flex-row items-center gap-2">
+              {/* Square, like every other mark in this drawing. Ink, not accent. */}
+              <View className={`h-1.5 w-1.5 ${keySet ? 'bg-ink' : 'bg-hairline'}`} />
+              <Text className="font-serif text-[15px] text-ink">
+                {keySet ? 'Connected' : 'Not connected'}
+              </Text>
+            </View>
+            <Text className="mt-1.5 font-serif text-[12px] leading-5 text-ink-secondary">
+              {!keySet
+                ? 'The Coach runs an honest preview until a key is set — it won’t answer from your data.'
+                : hydrated && persistent
+                  ? 'Key stored in this device’s Keychain.'
+                  : 'Key held for this session — a dev build is needed for the Keychain to persist it across launches.'}
             </Text>
           </View>
-          <Text className="mt-1.5 font-serif text-[12px] leading-5 text-ink-secondary">
-            {!keySet
-              ? 'The Coach runs an honest preview until a key is set — it won’t answer from your data.'
-              : hydrated && persistent
-                ? 'Key stored in this device’s Keychain.'
-                : 'Key held for this session — a dev build is needed for the Keychain to persist it across launches.'}
-          </Text>
         </Block>
       </View>
 

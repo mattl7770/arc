@@ -47,8 +47,8 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 
 | Tool | Input | Reads | Returns |
 | --- | --- | --- | --- |
-| `get_today_snapshot` | — | mission (`log_entries`), `meals`, `workouts`, `symptoms`, ad-hoc captures, the day's mode, reminders due today | Today's full picture in one call. `remindersDueToday` is **ranked today-first** and each item carries its pinned `date` + `daysOverdue`; capped at 10 with a sibling `remindersDueTodayOmitted` count — see "Reminder due-ness and ordering" below |
-| `get_metric_series` | `metric: weight\|body_fat\|waist\|hrv\|rhr\|water`, `days?≤365` | `body_metrics` / `wearable_data` daily series | Daily points + min/avg/max in display units |
+| `get_today_snapshot` | — | mission (`log_entries`), `meals`, `workouts`, `symptoms`, ad-hoc captures, the day's mode, reminders due today, **the whole wearables plane**, readiness | Today's full picture in one call. `remindersDueToday` is **ranked today-first** and each item carries its pinned `date` + `daysOverdue`; capped at 10 with a sibling `remindersDueTodayOmitted` count — see "Reminder due-ness and ordering" below. `wearables` carries `today` (every metric with a value), `noDataToday` (core metrics **named**, never zeroed), `availableMetrics` (every `metric_type` on this device — all valid `get_metric_series` input) and an honest `note` when nothing has synced. `readiness` is the *same* derivation Home renders (`src/lib/home/readiness.ts`), reused rather than recomputed, so the Coach and Home can never disagree |
+| `get_metric_series` | `metric` — **any** body metric or wearable `metric_type`, plus friendly aliases; `days?≤365` | `body_metrics` / `wearable_data` daily series | Daily points + min/avg/max in display units. See "The wearables plane" below |
 | `get_training_summary` | `days?` (28) | `workouts` (+ recent sessions) | Totals, weekly rates, per-day load |
 | `get_nutrition_summary` | `days?` (14) | `meals` | Per-day kcal/macros + averages across logged days |
 | `get_symptom_history` | `days?` (30) | `symptoms` | Occurrences + counts by name w/ avg severity |
@@ -56,6 +56,23 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 | `get_protocols` | — | `protocols` ⋈ live `protocol_versions` | Each stack/routine/block with its live version number + current items (title, time, dose) |
 | `list_reminders` | — | `reminders` | Active reminders + due-today flags |
 | `get_insights` | — | insights engine | Precomputed trends/gaps/correlations + the brief line |
+
+#### The wearables plane — the Coach reads all of it (corrected 2026-08-09)
+
+`get_metric_series` was documented here as taking `weight | body_fat | waist | hrv | rhr | water`. **That has not been true since the HealthKit pipeline landed, and this doc understated the tool badly** — it named six inputs while the tool already accepted every metric the pipeline declares: steps, the six sleep rows (asleep, time in bed, deep, REM, core, awake), active and resting energy, VO₂max, respiratory rate, blood oxygen, body and wrist temperature, and workout minutes — plus anything a future vendor ingests. Corrected rather than left as an aspiration, because a tool spec that lists fewer inputs than the tool accepts teaches the model not to ask.
+
+**Why there is no enum to keep in sync.** `wearable_data.metric_type` is deliberately free text so a new vendor metric is never a migration (CLAUDE.md §9). A hardcoded readable list therefore rots on contact with the next ingest — which is exactly how it rotted here. So the readable set is built in two layers and never typed out by hand (`src/lib/ai/tools/read-tools.ts`):
+
+1. **DERIVED from the ingest specs themselves** — `SAMPLE_METRICS` + `STATISTIC_METRICS` in `src/lib/health/mapping.ts`, the sleep rows `sleepDailyRows()` emits, plus the two manual-capture targets (`water_ml`, `workout`). Add a metric to the pipeline and it is readable with **no edit to the tool layer**.
+2. **DISCOVERED from the data** — `SELECT DISTINCT metric_type`. Anything present that layer 1 does not describe is still readable, with its unit taken from the rows and **`inferred: true`** in the output so the model knows the semantics were guessed rather than declared. Ambiguous cadence defaults to arbitration, never summing: arbitration can only under-report, whereas a wrong sum silently doubles a day.
+
+**What that buys the model, concretely:**
+
+- **Discovery, not guessing.** `get_today_snapshot.wearables.availableMetrics` lists exactly what this device holds, and every entry is valid `get_metric_series` input. An unknown metric is an `is_error` naming the available set, not a silent empty series.
+- **Aliases.** `sleep`, `deep_sleep`, `in_bed`, `active_calories`, `spo2`, `vo2`, `step_count`, `resting_heart_rate`, `workout_minutes`, … resolve to the real `metric_type`, so a reasonable guess works.
+- **The user's units, always.** Volume and temperature resolve through Settings › Units — the Coach never cites °F to a °C user or oz to an ml user — and minute-valued metrics also report `hm` / `avgHm` ("7h 11m"), never a raw minute count.
+- **The right daily aggregation per metric.** Genuinely accumulating metrics (`workout`, `water_ml`) are summed; everything else is **arbitrated** — one winning source per day, richest device first, the same rule Home and the Data tab use, so the three surfaces cannot disagree.
+- **Absence is never a zero.** Every series carries an explicit `hasData`, and when it is false a `note` says so in words — distinguishing "never recorded on this device" from "nothing in this window, most recent value is from `<date>`". **These notes are additive, not alternative:** a discovered metric that is both `inferred` and empty gets both sentences, absence first. (It did not until 2026-08-09: they were two branches of one ternary, so precisely that case lost the absence warning — the confusion the design exists to prevent.)
 
 ### 2b. Shipped — write (confirmation-gated)
 

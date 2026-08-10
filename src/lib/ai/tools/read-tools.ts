@@ -17,10 +17,14 @@ import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocol
 import { isDueOn, listActiveReminders } from '@/lib/db/repositories/reminders';
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
+import { deviceLabel, pickDailyMetric } from '@/lib/db/repositories/wearables';
+import { SAMPLE_METRICS, STATISTIC_METRICS } from '@/lib/health/mapping';
+import { deriveReadiness } from '@/lib/home/readiness';
 import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
 import { getModeDefinition } from '@/lib/modes/registry';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import type { BiomarkerRow } from '@/lib/db/types';
+import type { UnitPreferences } from '@/lib/user/types';
 
 import { computeInsights, dueRemindersFor, generateDailyBrief } from '../insights';
 import {
@@ -30,13 +34,259 @@ import {
   round1,
   seriesStats,
   trainingDailyTotals,
+  wearableArbitratedSeries,
   wearableDailySeries,
+  wearableMetricInventory,
   type SeriesPoint,
+  type WearableMetricPresence,
 } from '../series';
 import { retrievePassages } from '@/lib/rag/retrieve';
 import { asRecord, daysWindow, optEnum, optString, reqString, type CoachTool } from './types';
 
 const json = (value: unknown): string => JSON.stringify(value);
+
+// --- The wearable metric catalog ---------------------------------------------
+//
+// `wearable_data.metric_type` is deliberately free text so a new vendor metric
+// is never a migration (CLAUDE.md §9). A hardcoded enum of readable metrics
+// therefore rots on contact with the next ingest — which is exactly how the
+// Coach ended up blind to steps, sleep, energy and VO2max while the HealthKit
+// pipeline was happily writing all of them.
+//
+// So the readable set is built in two layers and never typed out by hand:
+//
+//   1. DERIVED from the ingest specs themselves (src/lib/health/mapping.ts's
+//      SAMPLE_METRICS + STATISTIC_METRICS, plus the sleep rows sleepDailyRows
+//      emits and the manual-log wearable targets). Add a metric to the pipeline
+//      and it is readable here with no edit to this file.
+//   2. DISCOVERED from the data (SELECT DISTINCT metric_type). Anything present
+//      that layer 1 does not describe still becomes readable, with its unit
+//      taken from the rows and `inferred: true` flagged in the output so the
+//      model knows the semantics were guessed rather than declared.
+
+type WearableAgg =
+  /** One winning source per day — the rule Home and the Data tab use. */
+  | 'arbitrated'
+  /** Genuinely accumulating: many rows a day that must be added up. */
+  | 'sum';
+
+type WearableMetricSpec = {
+  metricType: string;
+  label: string;
+  /** The canonical unit stored in wearable_data.unit. */
+  canonicalUnit: string;
+  agg: WearableAgg;
+  decimals: number;
+  /** Minutes-valued: also rendered "7h 11m", never left as a raw minute count. */
+  isDuration?: boolean;
+  /** Dimensions the user has a Settings preference for. */
+  display?: 'volume' | 'temperature';
+  /** True when the spec was guessed from the rows, not declared by the pipeline. */
+  inferred?: boolean;
+};
+
+/** Readable names for the pipeline's metric_types (the specs carry no label). */
+const WEARABLE_LABELS: Record<string, string> = {
+  hrv: 'HRV',
+  rhr: 'Resting heart rate',
+  respiratory_rate: 'Respiratory rate',
+  spo2_pct: 'Blood oxygen',
+  body_temp_c: 'Body temperature',
+  wrist_temp_c: 'Sleeping wrist temperature',
+  vo2max: 'VO2max',
+  steps: 'Steps',
+  active_energy_kcal: 'Active energy',
+  resting_energy_kcal: 'Resting energy',
+};
+
+/** The sleep rows sleepDailyRows() emits, in the order a night reads. */
+const SLEEP_METRICS: readonly (readonly [string, string])[] = [
+  ['sleep_duration_min', 'Sleep (asleep)'],
+  ['sleep_in_bed_min', 'Time in bed'],
+  ['sleep_deep_min', 'Deep sleep'],
+  ['sleep_rem_min', 'REM sleep'],
+  ['sleep_core_min', 'Core sleep'],
+  ['sleep_awake_min', 'Awake during the night'],
+];
+
+function humanize(metricType: string): string {
+  const words = metricType.replace(/_/g, ' ').trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function tempSpec(metricType: string): WearableMetricSpec {
+  return {
+    metricType,
+    label: WEARABLE_LABELS[metricType] ?? humanize(metricType),
+    canonicalUnit: 'c',
+    agg: 'arbitrated',
+    decimals: 2,
+    display: 'temperature',
+  };
+}
+
+/** Layer 1: everything the ingest pipeline is known to write. */
+const DECLARED_WEARABLE_METRICS: readonly WearableMetricSpec[] = [
+  ...SAMPLE_METRICS.map((spec): WearableMetricSpec =>
+    spec.unit === 'c'
+      ? tempSpec(spec.metricType)
+      : {
+          metricType: spec.metricType,
+          label: WEARABLE_LABELS[spec.metricType] ?? humanize(spec.metricType),
+          canonicalUnit: spec.unit,
+          agg: 'arbitrated',
+          decimals: spec.decimals,
+        }
+  ),
+  ...STATISTIC_METRICS.map((spec): WearableMetricSpec => ({
+    metricType: spec.metricType,
+    label: WEARABLE_LABELS[spec.metricType] ?? humanize(spec.metricType),
+    canonicalUnit: spec.unit,
+    agg: 'arbitrated',
+    decimals: spec.decimals,
+  })),
+  ...SLEEP_METRICS.map(([metricType, label]): WearableMetricSpec => ({
+    metricType,
+    label,
+    canonicalUnit: 'min',
+    agg: 'arbitrated',
+    decimals: 0,
+    isDuration: true,
+  })),
+  {
+    // Many sessions a day, each its own row keyed by the HK sample UUID — this
+    // one really does accumulate, unlike every day-bucketed metric above.
+    metricType: 'workout',
+    label: 'Workout minutes (Apple Health)',
+    canonicalUnit: 'min',
+    agg: 'sum',
+    decimals: 1,
+    isDuration: true,
+  },
+  {
+    // Manual capture: one row per sip logged, so the day is a sum.
+    metricType: 'water_ml',
+    label: 'Water',
+    canonicalUnit: 'ml',
+    agg: 'sum',
+    decimals: 0,
+    display: 'volume',
+  },
+];
+
+/** Layer 2: declared ∪ whatever the table actually holds today. */
+function wearableCatalog(inventory: WearableMetricPresence[]): Map<string, WearableMetricSpec> {
+  const catalog = new Map<string, WearableMetricSpec>(
+    DECLARED_WEARABLE_METRICS.map((spec) => [spec.metricType, spec])
+  );
+  for (const row of inventory) {
+    if (catalog.has(row.metricType)) continue;
+    const unit = row.unit ?? '';
+    catalog.set(row.metricType, {
+      metricType: row.metricType,
+      label: humanize(row.metricType),
+      canonicalUnit: unit,
+      // Unknown cadence: arbitration can only ever under-report, summing could
+      // silently double a day. Prefer the claim that cannot be inflated.
+      agg: 'arbitrated',
+      decimals: 2,
+      isDuration: unit === 'min',
+      inferred: true,
+    });
+  }
+  return catalog;
+}
+
+/** Friendly names the model is likely to reach for → the real metric_type. */
+const METRIC_ALIASES: Record<string, string> = {
+  water: 'water_ml',
+  sleep: 'sleep_duration_min',
+  sleep_min: 'sleep_duration_min',
+  asleep: 'sleep_duration_min',
+  deep_sleep: 'sleep_deep_min',
+  rem_sleep: 'sleep_rem_min',
+  core_sleep: 'sleep_core_min',
+  time_in_bed: 'sleep_in_bed_min',
+  in_bed: 'sleep_in_bed_min',
+  active_energy: 'active_energy_kcal',
+  active_calories: 'active_energy_kcal',
+  resting_energy: 'resting_energy_kcal',
+  calories_burned: 'active_energy_kcal',
+  spo2: 'spo2_pct',
+  oxygen_saturation: 'spo2_pct',
+  body_temp: 'body_temp_c',
+  wrist_temp: 'wrist_temp_c',
+  vo2: 'vo2max',
+  vo2_max: 'vo2max',
+  workouts: 'workout',
+  workout_minutes: 'workout',
+  step_count: 'steps',
+  heart_rate_variability: 'hrv',
+  resting_heart_rate: 'rhr',
+  respiration: 'respiratory_rate',
+};
+
+/** Body metrics keep their own path — they live in body_metrics, not wearables. */
+const BODY_METRIC_KEYS = ['weight', 'body_fat', 'waist'] as const;
+
+type WearableDisplaySpec = {
+  unit: string;
+  decimals: number;
+  fromCanonical: (canonical: number) => number;
+};
+
+/**
+ * How a wearable value should be reported for THIS user's Settings › Units.
+ * Same contract the rest of the tool layer honours via resolveDisplay: the
+ * Coach must never cite °F to a °C user, or oz to an ml user.
+ */
+function wearableDisplay(spec: WearableMetricSpec, units: UnitPreferences): WearableDisplaySpec {
+  if (spec.display === 'volume') {
+    const water = resolveDisplay(metricByKey('water')!, units);
+    return { unit: water.unit, decimals: water.decimals, fromCanonical: water.fromCanonical };
+  }
+  if (spec.display === 'temperature') {
+    return units.temperature === 'C'
+      ? { unit: '°C', decimals: 1, fromCanonical: (c) => c }
+      : { unit: '°F', decimals: 1, fromCanonical: (c) => c * 1.8 + 32 };
+  }
+  return {
+    unit: spec.canonicalUnit,
+    decimals: spec.decimals,
+    fromCanonical: (v) => v,
+  };
+}
+
+/** 431 → "7h 11m", 45 → "45m". Hermes has no Intl; this is hand-formatted. */
+function formatDuration(minutes: number): string {
+  const total = Math.round(minutes);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function roundTo(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+/** The one place a canonical wearable value becomes a reportable object. */
+function reportValue(
+  spec: WearableMetricSpec,
+  display: WearableDisplaySpec,
+  canonical: number
+): { value: number; unit: string; hm?: string } {
+  return {
+    value: roundTo(display.fromCanonical(canonical), display.decimals),
+    unit: display.unit,
+    ...(spec.isDuration ? { hm: formatDuration(canonical) } : {}),
+  };
+}
+
+/** Everything get_metric_series will accept right now, for error text + discovery. */
+function readableMetricNames(catalog: Map<string, WearableMetricSpec>): string[] {
+  return [...BODY_METRIC_KEYS, ...catalog.keys()];
+}
 
 // --- get_today_snapshot ------------------------------------------------------
 
@@ -46,12 +296,52 @@ const json = (value: unknown): string => JSON.stringify(value);
 // model knows the list is partial instead of confidently under-counting.
 const SNAPSHOT_REMINDER_LIMIT = 10;
 
+/**
+ * The wearable signals whose ABSENCE is worth stating out loud. A missing step
+ * count and a step count of zero are completely different claims about the
+ * user's day, so these are reported by name in `wearables.noDataToday` rather
+ * than silently omitted — the model must be able to say "Health hasn't synced
+ * steps today" instead of quietly implying nothing happened.
+ */
+const CORE_WEARABLES: readonly string[] = [
+  'steps',
+  'sleep_duration_min',
+  'hrv',
+  'rhr',
+  'active_energy_kcal',
+];
+
+/** Today's value for one wearable metric under its own aggregation rule. */
+function wearableToday(
+  db: Database,
+  spec: WearableMetricSpec,
+  date: string
+): { value: number; source: string | null } | null {
+  if (spec.agg === 'sum') {
+    const point = wearableDailySeries(db, spec.metricType, date, 'sum').find(
+      (p) => p.date === date
+    );
+    // Summed across every source by definition — no single device owns it.
+    return point ? { value: point.value, source: null } : null;
+  }
+  const point = pickDailyMetric(db, spec.metricType, date);
+  return point ? { value: point.value, source: deviceLabel(point.sourceDevice) } : null;
+}
+
 const getTodaySnapshot: CoachTool = {
   name: 'get_today_snapshot',
   description:
     "Today's full picture: mission items with status, meals eaten with macro totals, " +
-    'workouts, symptoms, ad-hoc captures, and reminders due today. Call this before ' +
-    "answering anything about today ('how am I doing', 'what's left', 'what did I eat'). " +
+    'workouts, symptoms, ad-hoc captures, reminders due today, TODAY’S WEARABLE DATA ' +
+    '(steps, sleep with hours/minutes, HRV, resting HR, active/resting energy — whatever ' +
+    'Apple Health has synced) and the derived `readiness` verdict + pillars, which is the ' +
+    'exact same derivation the Home screen shows. Call this before answering anything ' +
+    "about today ('how am I doing', 'what's left', 'what did I eat', 'how many steps', " +
+    "'how did I sleep'). " +
+    '`wearables.today` holds only metrics that HAVE a value today; `wearables.noDataToday` ' +
+    'names the ones that do not — report those as missing/not synced, NEVER as zero. ' +
+    '`wearables.availableMetrics` lists every metric_type on the device, and every one of ' +
+    'them can be passed to get_metric_series for history. ' +
     'In `remindersDueToday`, items are ranked with today’s own first and each carries its ' +
     'pinned `date` and `daysOverdue`: an un-dismissed one-off keeps surfacing past its day, ' +
     'so anything with daysOverdue > 0 is a carried-over obligation — say so, never present ' +
@@ -76,6 +366,35 @@ const getTodaySnapshot: CoachTool = {
     // Either way remindersDueTodayOmitted always reports the count, so the
     // model is never silently handed a truncated list.
     const due = dueRemindersFor(db, date);
+
+    // --- The wearables plane -------------------------------------------------
+    // Discovered from the data, so a metric ingested tomorrow shows up here
+    // without an edit. Values respect Settings › Units, durations read as
+    // hours/minutes, and an absent metric is named rather than zeroed.
+    const units = getPreferences(db).units;
+    const inventory = wearableMetricInventory(db);
+    const catalog = wearableCatalog(inventory);
+    const todayWearables: Record<string, unknown> = {};
+    for (const presence of inventory) {
+      // max(date) < today ⇒ nothing today; skip the per-metric query entirely.
+      if (presence.lastDate < date) continue;
+      const spec = catalog.get(presence.metricType)!;
+      const observed = wearableToday(db, spec, date);
+      if (!observed) continue;
+      todayWearables[presence.metricType] = {
+        label: spec.label,
+        ...reportValue(spec, wearableDisplay(spec, units), observed.value),
+        ...(observed.source ? { source: observed.source } : {}),
+        ...(spec.inferred ? { inferred: true } : {}),
+      };
+    }
+    const noDataToday = CORE_WEARABLES.filter((m) => !(m in todayWearables));
+
+    // The SAME derivation Home renders (src/lib/home/readiness.ts) — reused, not
+    // recomputed, so the Coach and the Home screen can never disagree about
+    // today's readiness. Its evidence gates hold here too: `unknown` means there
+    // is not enough baseline yet, and must be reported as that, not as "poor".
+    const view = deriveReadiness(db, date);
 
     return json({
       date,
@@ -127,35 +446,63 @@ const getTodaySnapshot: CoachTool = {
         daysOverdue,
       })),
       remindersDueTodayOmitted: Math.max(0, due.length - SNAPSHOT_REMINDER_LIMIT),
+      wearables: {
+        today: todayWearables,
+        // Named absences. "No steps row today" ≠ "0 steps today" — say the former.
+        noDataToday,
+        // Every metric_type on this device; all are valid get_metric_series input.
+        availableMetrics: [...catalog.keys()].filter((m) =>
+          inventory.some((row) => row.metricType === m)
+        ),
+        note:
+          inventory.length === 0
+            ? 'No wearable data on this device at all — Apple Health has never synced (Settings › Apple Health).'
+            : Object.keys(todayWearables).length === 0
+              ? 'Nothing synced for today yet — Apple Health may not have run since midnight. Say so; do not report zeros.'
+              : undefined,
+      },
+      // Identical to what Home shows for this day (src/lib/home/readiness.ts).
+      readiness: {
+        level: view.readiness.level,
+        label: view.readiness.label,
+        detail: view.readiness.detail,
+        pillars: view.pillars,
+        // False ⇒ not one wearable signal exists; readiness is not a low score,
+        // it is an absence. Never present `unknown` as a bad result.
+        hasSignal: view.hasSignal,
+      },
     });
   },
 };
 
 // --- get_metric_series -------------------------------------------------------
 
-const SERIES_METRICS = ['weight', 'body_fat', 'waist', 'hrv', 'rhr', 'water'] as const;
-type SeriesMetric = (typeof SERIES_METRICS)[number];
-
-function loadSeries(db: Database, metric: SeriesMetric, since: string): SeriesPoint[] {
-  const descriptor = metricByKey(metric)!;
-  const target = descriptor.target;
-  if (target.kind === 'body') return bodyDailySeries(db, target.column, since);
-  if (target.kind === 'wearable') {
-    return wearableDailySeries(db, target.metricType, since, metric === 'water' ? 'sum' : 'avg');
-  }
-  return [];
-}
-
 const getMetricSeries: CoachTool = {
   name: 'get_metric_series',
   description:
-    'Daily history for one metric (weight, body_fat, waist, hrv, rhr, water) over the ' +
-    'last N days, in display units, with min/avg/max. Call this whenever the user asks ' +
-    'about a trend, a change, or "how has X been" — answer from these numbers only.',
+    'Daily history for ONE metric over the last N days, in the user’s display units, with ' +
+    'min/avg/max. Call this whenever the user asks about a trend, a change, or "how has X ' +
+    'been" — answer from these numbers only. ' +
+    'Accepts BODY metrics (weight, body_fat, waist) AND every wearable metric_type Apple ' +
+    'Health has synced: steps, sleep_duration_min, sleep_deep_min, sleep_rem_min, ' +
+    'sleep_in_bed_min, sleep_awake_min, active_energy_kcal, resting_energy_kcal, hrv, rhr, ' +
+    'respiratory_rate, spo2_pct, body_temp_c, wrist_temp_c, vo2max, workout, water_ml — ' +
+    'plus anything else on the device. Friendly aliases work ("sleep", "water", "vo2max", ' +
+    '"active_energy"). get_today_snapshot’s `wearables.availableMetrics` lists exactly what ' +
+    'this device holds; an unknown name comes back as an error naming the valid set. ' +
+    'Duration metrics carry an `hm` field ("7h 11m") — quote that, not raw minutes. ' +
+    'When there is no data the result says `hasData: false` with empty points and null ' +
+    'stats: report that as "no data", NEVER as zero.',
   inputSchema: {
     type: 'object',
     properties: {
-      metric: { type: 'string', enum: [...SERIES_METRICS] },
+      metric: {
+        type: 'string',
+        description:
+          'A body metric (weight, body_fat, waist) or a wearable metric_type ' +
+          '(steps, sleep_duration_min, hrv, vo2max, …). See ' +
+          'get_today_snapshot.wearables.availableMetrics for this device’s set.',
+      },
       days: { type: 'integer', minimum: 1, maximum: 365, description: 'Window, default 30.' },
     },
     required: ['metric'],
@@ -164,39 +511,154 @@ const getMetricSeries: CoachTool = {
   readOnly: true,
   execute: (db, input, context) => {
     const args = asRecord(input);
-    const metric = optEnum(args, 'metric', SERIES_METRICS);
-    if (!metric) throw new Error(`"metric" must be one of: ${SERIES_METRICS.join(', ')}.`);
+    const requested = reqString(args, 'metric').toLowerCase();
     const days = daysWindow(args, 30);
-    const descriptor = metricByKey(metric as MetricKey)!;
-    // Report in the user's chosen unit (Settings › Units), matching what the app
-    // shows and what the write path stores — the Coach must never cite lb to a
-    // kg user. resolveDisplay is identity for the unit-less metrics.
-    const spec = resolveDisplay(descriptor, getPreferences(db).units);
+    const today = todayISODate(context.now);
+    const since = isoDaysAgo(context.now, days - 1);
+    const units = getPreferences(db).units;
 
-    const points = loadSeries(db, metric, isoDaysAgo(context.now, days - 1)).map((p) => ({
+    // --- Body metrics: their own table, their own display preferences --------
+    if ((BODY_METRIC_KEYS as readonly string[]).includes(requested)) {
+      const descriptor = metricByKey(requested as MetricKey)!;
+      const target = descriptor.target as {
+        kind: 'body';
+        column: 'weight_kg' | 'body_fat_pct' | 'waist_cm';
+      };
+      // Report in the user's chosen unit (Settings › Units), matching what the
+      // app shows and what the write path stores — the Coach must never cite lb
+      // to a kg user. resolveDisplay is identity for the unit-less metrics.
+      const spec = resolveDisplay(descriptor, units);
+      const points = bodyDailySeries(db, target.column, since).map((p) => ({
+        date: p.date,
+        value: round1(spec.fromCanonical(p.value)),
+      }));
+      return json(
+        seriesPayload({
+          metric: requested,
+          label: descriptor.label,
+          source: 'body_metrics',
+          unit: spec.unit,
+          aggregation: 'daily average of that day’s measurements',
+          days,
+          points,
+        })
+      );
+    }
+
+    // --- Wearables: discovered, so a new metric_type needs no code change ----
+    const inventory = wearableMetricInventory(db);
+    const catalog = wearableCatalog(inventory);
+    const metricType = METRIC_ALIASES[requested] ?? requested;
+    const spec = catalog.get(metricType);
+    if (!spec) {
+      throw new Error(
+        `Unknown metric "${requested}". Available on this device: ${readableMetricNames(catalog).join(', ')}.`
+      );
+    }
+
+    const display = wearableDisplay(spec, units);
+    const raw: SeriesPoint[] =
+      spec.agg === 'sum'
+        ? wearableDailySeries(db, metricType, since, 'sum')
+        : wearableArbitratedSeries(db, metricType, since, today);
+    const points = raw.map((p) => ({
       date: p.date,
-      value: round1(spec.fromCanonical(p.value)),
+      ...reportValue(spec, display, p.value),
     }));
-    const stats = seriesStats(points);
-    return json({
-      metric,
-      unit: spec.unit,
-      days,
-      points,
-      stats:
-        stats === null
-          ? null
-          : {
-              count: stats.count,
-              min: round1(stats.min),
-              avg: round1(stats.avg),
-              max: round1(stats.max),
-              first: stats.first,
-              last: stats.last,
-            },
-    });
+
+    const presence = inventory.find((row) => row.metricType === metricType);
+    return json(
+      seriesPayload({
+        metric: metricType,
+        label: spec.label,
+        source: 'wearable_data',
+        unit: display.unit,
+        aggregation:
+          spec.agg === 'sum'
+            ? 'daily sum of every logged row'
+            : 'one source per day, richest device first (same rule the Home screen uses)',
+        days,
+        points,
+        isDuration: spec.isDuration === true,
+        inferred: spec.inferred === true,
+        // A metric that exists but is silent in this window is a different
+        // statement from one that has never been recorded — say which.
+        lastRecorded: presence?.lastDate ?? null,
+      })
+    );
   },
 };
+
+type SeriesPayloadInput = {
+  metric: string;
+  label: string;
+  source: 'body_metrics' | 'wearable_data';
+  unit: string;
+  aggregation: string;
+  days: number;
+  points: { date: string; value: number; hm?: string }[];
+  isDuration?: boolean;
+  inferred?: boolean;
+  lastRecorded?: string | null;
+};
+
+/** Layer 2 of the catalog guessed this metric's semantics; say so. */
+const INFERRED_NOTE =
+  'This metric is not one ARC declares; its unit and daily aggregation were ' +
+  'inferred from the stored rows. Say so if you quote it precisely.';
+
+/**
+ * The one shape both branches return. `hasData` is explicit and the note spells
+ * absence out in words, because "0 points" read fast is exactly how a model
+ * ends up telling someone they walked zero steps.
+ *
+ * **The notes are ADDITIVE, never alternative.** They describe two independent
+ * facts — "the semantics were guessed" and "there is nothing in this window" —
+ * and a DISCOVERED metric can easily be both: layer 2 of the catalog only sees
+ * it because rows exist, and the requested window can still be empty. An
+ * earlier cut made them two branches of one ternary, so exactly that case
+ * dropped the absence sentence and its `lastRecorded` wording, leaving the
+ * model an empty `points` array with nothing telling it that empty ≠ zero.
+ * That is the confusion this whole payload exists to prevent, so absence is
+ * stated FIRST and is never displaced.
+ */
+function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
+  const stats = seriesStats(input.points);
+  const noteForEmpty = () => {
+    if (input.lastRecorded) {
+      return `No ${input.label} recorded in the last ${input.days} days. The most recent value on record is from ${input.lastRecorded}. This is missing data, not a zero — do not report a value.`;
+    }
+    return `No ${input.label} has ever been recorded on this device. This is missing data, not a zero — do not report a value.`;
+  };
+  const notes: string[] = [];
+  if (input.points.length === 0) notes.push(noteForEmpty());
+  if (input.inferred) notes.push(INFERRED_NOTE);
+  return {
+    metric: input.metric,
+    label: input.label,
+    source: input.source,
+    unit: input.unit,
+    aggregation: input.aggregation,
+    days: input.days,
+    hasData: input.points.length > 0,
+    points: input.points,
+    stats:
+      stats === null
+        ? null
+        : {
+            count: stats.count,
+            min: round1(stats.min),
+            avg: round1(stats.avg),
+            max: round1(stats.max),
+            first: stats.first,
+            last: stats.last,
+            ...(input.isDuration ? { avgHm: formatDuration(stats.avg) } : {}),
+          },
+    ...(input.lastRecorded !== undefined ? { lastRecorded: input.lastRecorded } : {}),
+    ...(input.inferred ? { inferred: true } : {}),
+    ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
+  };
+}
 
 // --- get_training_summary ----------------------------------------------------
 

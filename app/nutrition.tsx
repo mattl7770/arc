@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRouter } from 'expo-router';
+import { useRouter, useSegments } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
@@ -16,7 +16,29 @@ import { fmtInt, macroLine } from '@/lib/nutrition/format';
 import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 
 /**
- * Nutrition sub-app home, pushed from the Log tab's Nutrition tile.
+ * Nutrition sub-app home. It renders at two routes: as the **Eat tab** root
+ * (app/(tabs)/eat.tsx re-exports this file) and as a stack-pushed screen from
+ * the Log tab's Nutrition tile and Data's Nutrition trend row.
+ *
+ * ## Two routes, two headers (owner call on hardware, 2026-08-09)
+ *
+ * This file used to open with `<StackHeader title="Nutrition" />` at both, so
+ * the Eat tab drew a back chevron. It *worked* — the tab navigator runs
+ * `backBehavior="history"` — but a tab root has nothing to go back to, and every
+ * other tab owns a plain serif title instead (app/(tabs)/log.tsx, data.tsx). A
+ * back control that returns you to a *different tab* is the wrong grammar for
+ * the bottom bar.
+ *
+ * The two cases are told apart by `useSegments()`, not by `router.canGoBack()`:
+ * with `backBehavior="history"` the tab root can very often go back, so that
+ * test would keep drawing the chevron exactly where it is wrong. Route shape is
+ * the honest signal — `(tabs)` is the first segment only when this screen IS the
+ * tab.
+ *
+ * The title stays "Nutrition" in both places. The tab bar says EAT because five
+ * characters is the width budget (app/(tabs)/_layout.tsx); the screen has no
+ * such constraint, and one name for one screen beats a label that changes with
+ * the door you came through.
  *
  * The hub of the food-logging family (docs/nutrition-subapp.md): the Today
  * card reads real intake against the real (versioned) daily targets — or shows
@@ -28,10 +50,10 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  *
  * ## Conformed Set surface system (00-design-spec.md §1)
  *
- *   Today          → **ruled grid**. Energy and the macro cells are a metric
- *                    grid, so the grid IS the object: no outer box, hairlines
- *                    between cells only, and the last cell draws no dangling
- *                    rule (src/components/ui/block.tsx, metrics-strip.tsx).
+ *   Today          → **grid**. Energy and the macro cells are a metric grid, so
+ *                    the grid IS the object: no outer box AND no rules, held by
+ *                    alignment and whitespace alone (src/components/ui/block.tsx,
+ *                    metrics-strip.tsx).
  *   Log a meal     → a **stamped plate** for the one next action, then a
  *                    **ruled plate** holding the remaining entry paths as a
  *                    record list. Manual entry opens a **deviceless field
@@ -58,19 +80,23 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  */
 
 /**
- * Ruled-grid cells (01-rn-port-guide.md §1.3). React Native has no CSS grid
- * and no `:nth-child`, so the modulo is computed in JS and the rules live on
- * the cells. The right-hand rule is conditioned on a cell actually FOLLOWING,
- * not on the column — with an odd cell count the naive test draws a rule into
- * empty space, which is the outer edge this device exists to avoid.
+ * The two columns of the Today grid. React Native has no CSS grid and no
+ * `:nth-child`, so the modulo is computed in JS (01-rn-port-guide.md §1.3) —
+ * but what it selects now is only PADDING. **No rules.** The gutter keeps the
+ * right column's text off the left column's and `pt-4` gives the row rhythm the
+ * old top rule used to; src/components/home/metrics-strip.tsx is the reference
+ * form and this matches it byte for byte.
+ *
+ * The `count` argument is gone with them. It existed so the right-hand rule
+ * could be conditioned on a cell actually FOLLOWING — with an odd cell count
+ * (three macros and no fiber target) the naive test drew a rule into empty
+ * space. Nothing is drawn now, so nothing can dangle.
  */
-const CELL_LEFT = 'w-1/2 border-r border-t border-hairline py-2.5 pr-2.5';
-const CELL_LEFT_LAST = 'w-1/2 border-t border-hairline py-2.5 pr-2.5';
-const CELL_RIGHT = 'w-1/2 border-t border-hairline py-2.5 pl-2.5';
+const CELL_LEFT = 'w-1/2 pr-3 pt-4';
+const CELL_RIGHT = 'w-1/2 pl-3 pt-4';
 
-function cellClass(index: number, count: number): string {
-  if (index % 2 !== 0) return CELL_RIGHT;
-  return index + 1 < count ? CELL_LEFT : CELL_LEFT_LAST;
+function cellClass(index: number): string {
+  return index % 2 === 0 ? CELL_LEFT : CELL_RIGHT;
 }
 
 /**
@@ -462,6 +488,9 @@ function MealRowItem({
 
 export default function NutritionScreen() {
   const router = useRouter();
+  // `(tabs)` leads the segments only when this file is rendering AS the Eat tab
+  // root; the pushed route is plain `/nutrition`. See the header note above.
+  const isTabRoot = useSegments()[0] === '(tabs)';
   // `totals` (SQL's sum over the raw reals) is deliberately not destructured:
   // what this card shows is `shown`, the sum of the rounded rows. See
   // sumRounded — displaying both would be displaying two different days.
@@ -504,11 +533,15 @@ export default function NutritionScreen() {
   return (
     <Screen scroll>
       <View className="pt-2">
-        <StackHeader title="Nutrition" />
+        {isTabRoot ? (
+          <Text className="font-serif text-[26px] font-semibold text-ink">Nutrition</Text>
+        ) : (
+          <StackHeader title="Nutrition" />
+        )}
       </View>
 
       {/* Today's intake — real sums against the real (versioned) targets. */}
-      <View className="mt-2">
+      <View className="mt-5">
         <Block device="grid">
           <View className="flex-row items-baseline gap-2">
             <View className="flex-1">
@@ -540,14 +573,16 @@ export default function NutritionScreen() {
             <TargetRule value={shown.kcal} target={kcalTarget} />
           ) : null}
 
-          <View className="mt-3 flex-row flex-wrap">
+          {/* No margin: the cells' own `pt-4` is the row rhythm that replaced
+              the top rule. */}
+          <View className="flex-row flex-wrap">
             {cells.map((cell, index) => (
               <MacroCell
                 key={cell.label}
                 label={cell.label}
                 grams={cell.grams}
                 target={cell.target}
-                className={cellClass(index, cells.length)}
+                className={cellClass(index)}
               />
             ))}
           </View>

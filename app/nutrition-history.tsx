@@ -17,10 +17,11 @@ import type { NutritionHistoryDay } from '@/lib/nutrition/types';
  * Cross-day nutrition trends (offline) — energy and macros over a window, with
  * per-day adherence judged against that day's own targets (nutritionHistory).
  *
- * Conformed Set treatment: the averages are a **ruled grid** (the grid is the
- * object — no outer box, hairlines between cells only), the per-day record is a
- * **ruled plate** (a record is a table), and the window chips are controls in
- * the label voice. Every number on the screen is mono, because mono measures.
+ * Conformed Set treatment: the averages are a **grid** (the grid is the object —
+ * no outer box and no rules, held by alignment and whitespace alone; see
+ * src/components/ui/block.tsx), the per-day record is a **ruled plate** (a record
+ * is a table), and the window chips are controls in the label voice. Every number
+ * on the screen is mono, because mono measures.
  *
  * Read-only, so **no accent at all** — nothing here is a next action.
  *
@@ -36,16 +37,22 @@ type Window = (typeof WINDOWS)[number];
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-/** Ruled-grid cells: the vertical rule is conditioned on a cell FOLLOWING, not
- * on the column, so an odd count never draws a dangling outer edge
- * (01-rn-port-guide.md §1.3, src/components/home/metrics-strip.tsx). */
-const CELL_LEFT = 'w-1/2 border-r border-t border-hairline py-2.5 pr-2.5';
-const CELL_LEFT_LAST = 'w-1/2 border-t border-hairline py-2.5 pr-2.5';
-const CELL_RIGHT = 'w-1/2 border-t border-hairline py-2.5 pl-2.5';
+/**
+ * The two columns. **No rules** — only the gutter that keeps the right column's
+ * text off the left column's, and the row rhythm (`pt-4`) that replaces the old
+ * top rule. src/components/home/metrics-strip.tsx is the reference form; this
+ * grid matches it exactly so the app reads as one convention rather than two.
+ *
+ * The rules used to be conditioned on a cell actually FOLLOWING, to stop an odd
+ * count drawing a vertical rule into empty space. With no rules there is no such
+ * question, so the whole `count` argument and the `*_LAST` class go with them —
+ * column position is now the only input.
+ */
+const CELL_LEFT = 'w-1/2 pr-3 pt-4';
+const CELL_RIGHT = 'w-1/2 pl-3 pt-4';
 
-function cellClass(index: number, count: number): string {
-  if (index % 2 !== 0) return CELL_RIGHT;
-  return index + 1 < count ? CELL_LEFT : CELL_LEFT_LAST;
+function cellClass(index: number): string {
+  return index % 2 === 0 ? CELL_LEFT : CELL_RIGHT;
 }
 
 /** "2026-07-24" → "Jul 24", parsed as local Y/M/D (no Intl, no UTC shift). */
@@ -66,7 +73,7 @@ function meanPositive(values: number[]): number {
   return present.length === 0 ? 0 : present.reduce((a, b) => a + b, 0) / present.length;
 }
 
-/** One average cell of the ruled grid. */
+/** One average cell of the grid. */
 function AvgCell({
   label,
   value,
@@ -176,14 +183,16 @@ export default function NutritionHistoryScreen() {
                 <Sparkline data={kcalSeries} width={96} height={32} baseline="zero" />
               </View>
 
-              <View className="mt-3 flex-row flex-wrap">
+              {/* No margin: the cells' own `pt-4` is the row rhythm that
+                  replaced the top rule. */}
+              <View className="flex-row flex-wrap">
                 {avgCells.map((cell, index) => (
                   <AvgCell
                     key={cell.label}
                     label={cell.label}
                     value={cell.value}
                     unit="g"
-                    className={cellClass(index, avgCells.length)}
+                    className={cellClass(index)}
                   />
                 ))}
               </View>

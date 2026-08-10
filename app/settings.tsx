@@ -7,6 +7,7 @@ import { Alert, Pressable, Switch, Text, View } from 'react-native';
 import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
+import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { useAppLockPreference } from '@/hooks/use-app-lock-preference';
 import { useSessionKeySet } from '@/hooks/use-session-key';
@@ -18,6 +19,20 @@ import { isHealthKitSupported } from '@/lib/health/healthkit';
 /**
  * Settings — a calm index into the profile, unit preferences, security & data,
  * and the surfaces still to be built.
+ *
+ * ## No longer a tab (owner call on hardware, 2026-08-09)
+ *
+ * This screen used to be `app/(tabs)/settings.tsx`, the fifth tab. It now lives
+ * on the root stack and is **pushed from the last row of the Data tab**
+ * (app/(tabs)/data.tsx), which freed the bar slot that the Eat tab now holds.
+ * The reasoning is in app/(tabs)/_layout.tsx: this is a surface you visit a
+ * handful of times a year, and it was paying rent on the most expensive real
+ * estate in the app.
+ *
+ * Being stack-pushed rather than a hidden tab route is the point — it arrives
+ * over the tab bar with a `StackHeader` back chevron that returns you to Data,
+ * exactly like Labs, Protocols and Wearables. A hidden tab would have left the
+ * bar visible with nothing lit and no way back except tapping another tab.
  *
  * Conformed Set treatment — every group is a **ruled plate**: a settings list is
  * a record of what is set, and a record is a table (00-design-spec.md §1). The
@@ -183,16 +198,14 @@ export default function SettingsScreen() {
 
   return (
     <Screen scroll>
-      {/* Header — this tab owns its own header (not StackHeader). */}
+      {/* Pushed, not a tab: the stack header carries the title and the way back
+          to Data. */}
       <View className="pt-2">
-        <Text className="font-serif text-[26px] font-semibold text-ink">Settings</Text>
-        <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
-          Your profile, how numbers read, and what&rsquo;s still to come.
-        </Text>
+        <StackHeader title="Settings" />
       </View>
 
       {/* You — the live, editable destinations. */}
-      <View className="mt-7">
+      <View className="mt-6">
         <SectionLabel label="You" />
         <View className="mt-3">
           <Block device="plate">
