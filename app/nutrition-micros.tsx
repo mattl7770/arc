@@ -16,7 +16,8 @@ import { MICROS, type Micros } from '@/lib/nutrition/micros';
  * Today's micronutrient totals (0014 snapshots), summed from meal items.
  *
  * Conformed Set treatment: the two prose passages are **margin annotations**
- * (a 2px left rule and an indent — prose does not belong in a card), and the
+ * (unmarked as of 2026-08-09 — prose sits on the sheet, set apart by air and the
+ * serif voice, not by a rule), and the
  * totals are a **ruled plate**, because a list of measured records is a table.
  *
  * The Cal-AI "goal ring" translated to ARC (docs/nutrition-subapp.md §2): mono

@@ -4,6 +4,7 @@ import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Block } from '@/components/ui/block';
+import { PaperGrid } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -43,61 +44,66 @@ export function RoutinePicker({ visible, onClose, onSelect }: Props) {
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} transparent={false}>
-      <SafeAreaView edges={['top', 'bottom']} className="flex-1 bg-paper">
-        <View className="flex-1 px-5">
-          <View className="flex-row items-center gap-1 pb-1 pt-2">
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-              onPress={onClose}
-              className="-ml-2 h-11 w-11 items-center justify-center active:opacity-60">
-              <Ionicons name="close" size={22} color={palette.ink} />
-            </Pressable>
-            <Text className="font-serif text-lg font-semibold text-ink">Assign routine</Text>
+      {/* A native Modal never passes through `<Screen>`, so it prints the sheet
+          itself — outside the SafeAreaView and outside the ScrollView. */}
+      <View className="flex-1 bg-paper">
+        <PaperGrid />
+        <SafeAreaView edges={['top', 'bottom']} className="flex-1">
+          <View className="flex-1 px-5">
+            <View className="flex-row items-center gap-1 pb-1 pt-2">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                onPress={onClose}
+                className="-ml-2 h-11 w-11 items-center justify-center active:opacity-60">
+                <Ionicons name="close" size={22} color={palette.ink} />
+              </Pressable>
+              <Text className="font-serif text-lg font-semibold text-ink">Assign routine</Text>
+            </View>
+
+            <ScrollView
+              className="mt-2 flex-1"
+              keyboardShouldPersistTaps="handled"
+              contentContainerClassName="pb-8">
+              <Block device="plate">
+                <SectionLabel label="This day runs" />
+
+                <View className="mt-1">
+                  {/* Rest is an option on the same list, not a separate card. */}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Set as a rest day"
+                    onPress={() => choose(null)}
+                    className="min-h-[44px] flex-row items-center gap-3 py-2 active:opacity-60">
+                    <Ionicons name="bed-outline" size={17} color={palette.inkSecondary} />
+                    <Text className="flex-1 font-serif text-[15px] text-ink">Rest day</Text>
+                  </Pressable>
+
+                  {routines.length === 0 ? (
+                    <Text className="border-t border-hairline pt-2.5 font-serif text-[13px] leading-5 text-ink-secondary">
+                      No routines yet. Build a routine first, then a program can schedule it.
+                    </Text>
+                  ) : (
+                    routines.map((r) => (
+                      <Pressable
+                        key={r.id}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Assign ${r.name}`}
+                        onPress={() => choose({ id: r.id, name: r.name })}
+                        className="min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-2 active:opacity-60">
+                        <Text className="flex-1 font-serif text-[15px] text-ink">{r.name}</Text>
+                        <Text className="font-mono text-[10px] text-ink-muted">
+                          {r.exerciseCount} ex · {r.totalSets} sets
+                        </Text>
+                      </Pressable>
+                    ))
+                  )}
+                </View>
+              </Block>
+            </ScrollView>
           </View>
-
-          <ScrollView
-            className="mt-2 flex-1"
-            keyboardShouldPersistTaps="handled"
-            contentContainerClassName="pb-8">
-            <Block device="plate">
-              <SectionLabel label="This day runs" />
-
-              <View className="mt-1">
-                {/* Rest is an option on the same list, not a separate card. */}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Set as a rest day"
-                  onPress={() => choose(null)}
-                  className="min-h-[44px] flex-row items-center gap-3 py-2 active:opacity-60">
-                  <Ionicons name="bed-outline" size={17} color={palette.inkSecondary} />
-                  <Text className="flex-1 font-serif text-[15px] text-ink">Rest day</Text>
-                </Pressable>
-
-                {routines.length === 0 ? (
-                  <Text className="border-t border-hairline pt-2.5 font-serif text-[13px] leading-5 text-ink-secondary">
-                    No routines yet. Build a routine first, then a program can schedule it.
-                  </Text>
-                ) : (
-                  routines.map((r) => (
-                    <Pressable
-                      key={r.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Assign ${r.name}`}
-                      onPress={() => choose({ id: r.id, name: r.name })}
-                      className="min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-2 active:opacity-60">
-                      <Text className="flex-1 font-serif text-[15px] text-ink">{r.name}</Text>
-                      <Text className="font-mono text-[10px] text-ink-muted">
-                        {r.exerciseCount} ex · {r.totalSets} sets
-                      </Text>
-                    </Pressable>
-                  ))
-                )}
-              </View>
-            </Block>
-          </ScrollView>
-        </View>
-      </SafeAreaView>
+        </SafeAreaView>
+      </View>
     </Modal>
   );
 }

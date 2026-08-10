@@ -13,25 +13,35 @@ import { View } from 'react-native';
  *
  *   plate  — records, schedules, ledgers (a record is a table): paper-hi fill,
  *            1px hairline border, ruled rows inside.
- *   field  — a verdict: no enclosure at all, just 11px L-shaped corner ticks
- *            at top-left and bottom-right. A measured field, not a box.
- *   margin — prose (the Coach brief, a rationale): a 2px left rule and an
- *            indent. An annotation in the margin of the sheet.
- *   grid   — metric grids: no outer box, hairlines BETWEEN cells only. The
- *            grid *is* the object. Cells carry their own rules — see
- *            01-rn-port-guide.md §1.3 and metrics-strip.tsx.
+ *   field  — a verdict. **Unmarked** (see "Devices that stopped paying rent"
+ *            below): set apart by air and type, not by a drawn bracket.
+ *   margin — prose (the Coach brief, a rationale). **Unmarked**, same reason.
+ *   grid   — metric grids: no outer box. The grid *is* the object, and it is
+ *            built from alignment and whitespace, not from rules.
  *
- *            ⚠️ **The last cell takes no trailing rule.** "Between cells" means
- *            a rule needs a cell on *both* sides of it. The obvious two-column
- *            implementation gives every even-indexed cell a `border-r`, which
- *            with an ODD number of cells draws a rule into empty space off the
- *            final cell — the outer edge this device exists to avoid. So the
- *            right rule is conditioned on a cell actually following, not on the
- *            column alone. Both the port guide's §1.3 snippet and the mockup's
- *            `nth-child` CSS carry this flaw; metrics-strip.tsx has the correct
- *            form, so copy from there.
- *   well   — capture surfaces (command field, chat thread): paper-dim fill on
- *            a paper-deep edge. Stock that recesses, the way an input does.
+ *            ⚠️ **A grid draws no rules.** An earlier cut ruled BETWEEN cells
+ *            (hairline on top of every cell, plus a vertical between the two
+ *            columns) on the theory that the rules were the object. On a phone
+ *            that reads as a half-drawn box — an L of lines floating with no
+ *            outer edge looks like a rendering artifact, which is exactly what
+ *            the owner reported on first sight of Home. Columns line up on
+ *            their own; a two-column block of label / value / detail is legible
+ *            as a table without a single stroke. metrics-strip.tsx is the
+ *            reference form. (The port guide's §1.3 snippet and the mockup's
+ *            `nth-child` CSS still show the ruled version — they are stale.)
+ *   well   — capture surfaces (the command field, the Coach composer):
+ *            paper-dim fill on a paper-deep edge. Stock that recesses, the way
+ *            an input does.
+ *
+ *            ⚠️ **The chat THREAD is not a well.** The spec used to name it as
+ *            one ("command field, chat thread") and the Coach tab drew it that
+ *            way. On hardware that read as a conversation put in a box for no
+ *            reason (owner, 2026-08-09), and the reading was wrong to begin
+ *            with: a well is for a surface you capture INTO, and the thing you
+ *            capture into on that screen is the composer, which wears it
+ *            already. The thread is not a record filed on the page — it IS the
+ *            page, so it sits directly on the sheet and only the turns are
+ *            drawn (app/(tabs)/coach.tsx, coach/message-bubble.tsx).
  *
  *            ⚠️ **The well is a surface, not a container. Either the block IS
  *            the field, or the field IS the well — never both.** A capture
@@ -41,9 +51,8 @@ import { View } from 'react-native';
  *                BARE input — a `TextInput` carrying no border and no fill of
  *                its own, only its type styling. The well's own paper-dim on
  *                paper-deep is the input's surface. This is the form the spec
- *                names (00-design-spec.md §1: "command field, chat thread"),
- *                and it is what log/command-field.tsx and app/food-search.tsx
- *                already do.
+ *                names (00-design-spec.md §1, "capture surfaces"), and it is
+ *                what log/command-field.tsx and app/food-search.tsx already do.
  *
  *            (b) *The field is the well.* A GROUP of labelled fields carries
  *                no block at all. Each `TextInput` wears the well's tokens
@@ -73,17 +82,49 @@ import { View } from 'react-native';
  *            inversion for the same reason, so a control in a well carries its
  *            border alone (`border-hairline`), or the accent fill — which is a
  *            stamp, not a raise, and is how log/command-field.tsx draws its
- *            send action. What is NOT covered is *content*: a chat turn inside
- *            the thread well is a card lying ON the recess, and it stays raised
- *            (coach/message-bubble.tsx). The distinction is that a control's
- *            surface states how it behaves, so inverting it misstates the
- *            surface system; a card's surface only says where it sits.
+ *            send action. What is NOT covered is *content*: a Coach turn is a
+ *            raised `paper-hi` slip wherever it lies, and it stayed raised when
+ *            the thread came off the well (coach/message-bubble.tsx). The
+ *            distinction is that a control's surface states how it behaves, so
+ *            inverting it misstates the surface system; a card's surface only
+ *            says where it sits.
  *   stamp  — the ONE next action: paper-hi fill inside a 1.5px accent border.
+ *
+ * ## Devices that stopped paying rent (2026-08-09, owner call on hardware)
+ *
+ * Seeing the Conformed Set on a real phone for the first time, the owner's
+ * first note was: "there are some weird boxes and lines in some places, notably
+ * the metrics and coach brief on the home screen, but there are more." That is
+ * the surface system reading as NOISE rather than as structure, which is the
+ * one failure mode it cannot survive — so three of the six devices lost their
+ * marks. §5's own rule decides it: **drafting chrome pays rent or goes**, and a
+ * mark a viewer has to interpret before it helps them is decoration.
+ *
+ *   field  — was two 11px L-shaped corner ticks at opposite corners, no
+ *            enclosure. The most abstract device in the set and the least
+ *            self-explanatory: nothing on screen teaches you that a bracket
+ *            means "this region was measured", so it reads as a stray glyph or
+ *            a clipped border. Cut.
+ *   margin — was a 2px left rule and a 12px indent. Beside a paragraph that is
+ *            the SECTION rather than an aside to one, the rule annotates
+ *            nothing and reads as a rendering glitch. Cut.
+ *   grid   — was hairlines between cells. Cut, for the reason above.
+ *
+ * All three now render nothing. They are kept as named devices rather than
+ * deleted because the call site still declares what kind of content it holds —
+ * that is the documentation the surface system exists for — and because the
+ * decision is one line to revisit if the owner wants a mark back.
+ *
+ * What is left drawn is the set where enclosure does real work: `plate` closes
+ * a record, `well` recesses a capture surface, `stamp` marks the one next
+ * action. Everything else is separated by air and distinguished by type, which
+ * is what the design already says sections do (app/(tabs)/index.tsx).
  *
  * **Rule: a block gets exactly one device, and devices NEVER nest.** No plate
  * inside a plate, no field inside a stamp. If a section seems to need two, it
  * is two sections. (A plain `<View>` used for layout or spacing is not a
- * device and may sit anywhere.)
+ * device and may sit anywhere.) The rule still holds for the unmarked devices:
+ * they draw nothing today, but the call site is still a claim about content.
  *
  * That rule is enforced at runtime in development by {@link BlockDeviceContext}
  * — a nested block logs a `console.error` naming both devices. Prose alone was
@@ -103,11 +144,12 @@ export type BlockDevice = 'plate' | 'field' | 'margin' | 'grid' | 'well' | 'stam
 
 const DEVICE: Record<BlockDevice, string> = {
   plate: 'border border-hairline bg-paper-hi px-3.5 py-3',
-  // Ticks are drawn as absolutely-positioned children, so the box must be
-  // `relative`; the padding is what the ticks bracket.
-  field: 'relative px-3 py-3',
-  margin: 'border-l-2 border-hairline py-px pl-3',
-  // Deliberately empty: the rules live on the cells, not on a container.
+  // Unmarked — see "Devices that stopped paying rent". The padding went with
+  // the ticks and the rule: with nothing enclosing the content, an inset only
+  // knocks these sections out of alignment with every unboxed section above
+  // and below them.
+  field: '',
+  margin: '',
   grid: '',
   well: 'border border-paper-deep bg-paper-dim px-3.5 py-3',
   stamp: 'border-[1.5px] border-pine bg-paper-hi px-4 py-4',
@@ -133,32 +175,7 @@ export function Block({ device, children }: { device: BlockDevice; children: Rea
 
   return (
     <BlockDeviceContext.Provider value={device}>
-      <View className={DEVICE[device]}>
-        {device === 'field' ? <CornerTicks /> : null}
-        {children}
-      </View>
+      <View className={DEVICE[device]}>{children}</View>
     </BlockDeviceContext.Provider>
-  );
-}
-
-/**
- * The measured field's corner marks: two L-shaped brackets, top-left and
- * bottom-right. React Native has no `::before`/`::after`, but it does have
- * absolute positioning and per-side borders, so these are two bordered Views
- * and cost no dependency — there is no react-native-svg in this app, and that
- * is deliberate (01-rn-port-guide.md §1.2, §5).
- */
-function CornerTicks() {
-  return (
-    <>
-      <View
-        pointerEvents="none"
-        className="absolute left-0 top-0 h-[11px] w-[11px] border-l border-t border-ink-muted"
-      />
-      <View
-        pointerEvents="none"
-        className="absolute bottom-0 right-0 h-[11px] w-[11px] border-b border-r border-ink-muted"
-      />
-    </>
   );
 }

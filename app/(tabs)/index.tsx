@@ -6,7 +6,7 @@ import { HeroCard } from '@/components/home/hero-card';
 import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
 import { MissionEmpty } from '@/components/home/mission-empty';
-import { ModeControl } from '@/components/home/mode-control';
+import { ModeBanner, ModeControl } from '@/components/home/mode-control';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
@@ -31,17 +31,47 @@ import { useTodayMission } from '@/hooks/use-today-mission';
  * ## The surface system
  *
  * Home is where the Conformed Set's devices earn their keep: five of the six
- * appear here, and the container is what tells you what kind of thing you are
- * looking at before you read a word (src/components/ui/block.tsx).
+ * appear here (src/components/ui/block.tsx).
  *
- *   hero-card       stamp   the one next action, in the accent
- *   readiness-strip field   a verdict — corner ticks, no box
- *   mission         plate   a record, ruled
- *   coach-brief     margin  prose, annotated in the margin
- *   metrics-strip   grid    rules between cells, no outer box
+ *   hero-card       stamp   the one next action, in the accent — drawn
+ *   mission         plate   a record, ruled — drawn
+ *   mode-banner     field   what today's mode is — unmarked, only when set
+ *   readiness-strip field   a verdict — unmarked
+ *   coach-brief     margin  prose — unmarked
+ *   metrics-strip   grid    metrics — unmarked
  *
- * Each component owns its own device, so nothing here nests one inside
- * another; the Views below are layout and spacing only.
+ * **Three of those five stopped drawing anything on 2026-08-09** (owner call,
+ * first look at the design on real hardware: "there are some weird boxes and
+ * lines in some places, notably the metrics and coach brief"). The field's
+ * corner ticks, the margin's left rule and the grid's between-cell hairlines
+ * were all marks a viewer had to interpret before they helped — decoration
+ * under 00-design-spec.md §5, however good the drafting metaphor behind them.
+ *
+ * What survives is enclosure that does work: the stamp around the one action
+ * and the plate around the record. Everything else is what the top of this
+ * comment already said the page does — sections separated by whitespace alone,
+ * distinguished by the three type voices. The two boxes on Home now mean
+ * something precisely because they are the only two.
+ *
+ * Each component still declares its own device, so nothing here nests one
+ * inside another; the Views below are layout and spacing only.
+ *
+ * ## The day's mode (2026-08-09)
+ *
+ * When a mode is set, a banner sits between the folio line and the hero stating
+ * what today IS ("Recover: sleep, fluids, rest. No training today.") and, under
+ * a mode that excuses skips, how the day is being judged. Under Normal it
+ * renders nothing at all, so the default Home is byte-for-byte the screen
+ * above.
+ *
+ * It exists because the mode was previously invisible: `heroFocus` reached only
+ * the Coach's tool snapshot, and the injected mission items carried no
+ * scheduled time, so they sorted to the BOTTOM of the day and the hero kept
+ * leading with a protocol item. Setting Sick removed a workout and changed
+ * nothing else you could see — which is exactly what the owner reported. The
+ * fix is in two halves: the banner here says what the mode means, and
+ * src/lib/modes/registry.ts times each mode's lead item at 07:00 so the mode
+ * wins the hero slot on the clock, with no special-casing in HeroCard.
  *
  * Two things hold the design to its principles:
  *   - The hero is *derived* from the mission, not authored separately, so
@@ -85,6 +115,20 @@ export default function HomeScreen() {
         <DateEyebrow />
         <ModeControl mode={modeView.mode} onSelect={modeView.setMode} />
       </View>
+
+      {/*
+          What the mode DID, stated above the hero — see ModeBanner. It renders
+          nothing under Normal, so the default day is unchanged and the section
+          costs no vertical space. `skipped` is derived here rather than in the
+          banner because `settled` (completed + skipped) and `completed` are
+          both already computed by deriveMissionView; recomputing it downstream
+          would be a second definition of the same number.
+      */}
+      {modeView.isActive ? (
+        <View className="mt-4">
+          <ModeBanner mode={modeView.mode} skipped={mission.settled - mission.completed} />
+        </View>
+      ) : null}
 
       <View className="mt-5">
         {planned ? (

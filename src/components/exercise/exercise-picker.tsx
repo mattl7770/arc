@@ -5,6 +5,7 @@ import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-nativ
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Block } from '@/components/ui/block';
+import { PaperGrid } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -132,45 +133,51 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
       onRequestClose={close}
       onDismiss={afterDismiss}
       transparent={false}>
-      <SafeAreaView edges={['top', 'bottom']} className="flex-1 bg-paper">
-        <View className="flex-1 px-5">
-          {/* Header */}
-          <View className="flex-row items-center gap-1 pb-1 pt-2">
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-              onPress={close}
-              className="-ml-2 h-11 w-11 items-center justify-center active:opacity-60">
-              <Ionicons name="close" size={22} color={palette.ink} />
-            </Pressable>
-            <Text className="font-serif text-lg font-semibold text-ink">
-              {creating ? 'New exercise' : 'Add exercise'}
-            </Text>
-          </View>
+      {/* A native Modal never passes through `<Screen>`, so it prints the sheet
+          itself. Outside the SafeAreaView (edge to edge, no seam at the inset)
+          and outside every ScrollView below (the paper does not scroll). */}
+      <View className="flex-1 bg-paper">
+        <PaperGrid />
+        <SafeAreaView edges={['top', 'bottom']} className="flex-1">
+          <View className="flex-1 px-5">
+            {/* Header */}
+            <View className="flex-row items-center gap-1 pb-1 pt-2">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                onPress={close}
+                className="-ml-2 h-11 w-11 items-center justify-center active:opacity-60">
+                <Ionicons name="close" size={22} color={palette.ink} />
+              </Pressable>
+              <Text className="font-serif text-lg font-semibold text-ink">
+                {creating ? 'New exercise' : 'Add exercise'}
+              </Text>
+            </View>
 
-          {creating ? (
-            <CreateExerciseForm
-              onCancel={() => setCreating(false)}
-              onCreated={(id) => {
-                reloadCatalog();
-                const ex = getExercise(getDb(), id);
-                if (ex) select(ex);
-              }}
-            />
-          ) : (
-            <BrowseCatalog
-              search={search}
-              setSearch={setSearch}
-              muscle={muscle}
-              setMuscle={setMuscle}
-              filtered={filtered}
-              onSelect={select}
-              onOpenDetail={openDetail}
-              onNew={() => setCreating(true)}
-            />
-          )}
-        </View>
-      </SafeAreaView>
+            {creating ? (
+              <CreateExerciseForm
+                onCancel={() => setCreating(false)}
+                onCreated={(id) => {
+                  reloadCatalog();
+                  const ex = getExercise(getDb(), id);
+                  if (ex) select(ex);
+                }}
+              />
+            ) : (
+              <BrowseCatalog
+                search={search}
+                setSearch={setSearch}
+                muscle={muscle}
+                setMuscle={setMuscle}
+                filtered={filtered}
+                onSelect={select}
+                onOpenDetail={openDetail}
+                onNew={() => setCreating(true)}
+              />
+            )}
+          </View>
+        </SafeAreaView>
+      </View>
     </Modal>
   );
 }

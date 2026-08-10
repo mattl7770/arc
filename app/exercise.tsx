@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRouter } from 'expo-router';
+import { useRouter, useSegments } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
 import { Block } from '@/components/ui/block';
@@ -21,8 +21,28 @@ import type {
 import { useTrainingHub } from '@/hooks/use-training';
 
 /**
- * Exercise sub-app hub, pushed from the Log tab's Workout tile
- * (docs/exercise-subapp.md).
+ * Exercise sub-app hub (docs/exercise-subapp.md). It renders at two routes: as
+ * the **Train tab** root (app/(tabs)/train.tsx re-exports this file) and as a
+ * stack-pushed screen from the Log tab's Workout tile and Data's Training row.
+ *
+ * ## Two routes, two headers (owner call on hardware, 2026-08-09)
+ *
+ * This file used to open with `<StackHeader title="Exercise" />` at both, so the
+ * Train tab drew a back chevron. It *worked* — the tab navigator runs
+ * `backBehavior="history"` — but a tab root has nothing to go back to, and every
+ * other tab owns a plain serif title instead (app/(tabs)/log.tsx, data.tsx). A
+ * back control that returns you to a *different tab* is the wrong grammar for
+ * the bottom bar.
+ *
+ * The two cases are told apart by `useSegments()`, not by `router.canGoBack()`:
+ * with `backBehavior="history"` the tab root can very often go back, so that
+ * test would keep the chevron exactly where it is wrong. Route shape is the
+ * honest signal — `(tabs)` leads the segments only when this screen IS the tab.
+ *
+ * The title stays "Exercise" in both places. The tab bar says TRAIN because five
+ * characters is the width budget (app/(tabs)/_layout.tsx); the screen has no
+ * such constraint, and one name for one screen beats a label that changes with
+ * the door you came through.
  *
  * "Train today" is the rule-based recommendation — an active program's
  * scheduled session when one is running, else the freshness pick (all offline).
@@ -35,10 +55,10 @@ import { useTrainingHub } from '@/hooks/use-training';
  * drawing devices rather than a stack of identical cards:
  *
  *   Train today (a session)  stamp   the one next action, in the accent
- *   Train today (rest/empty) field   a verdict — corner ticks, no box
- *   Weekly volume            margin  advisory prose, annotated in the margin
+ *   Train today (rest/empty) field   a verdict — unmarked, set apart by air
+ *   Weekly volume            margin  advisory prose — unmarked, same reason
  *   Muscle freshness         plate   a record, ruled
- *   This week                grid    rules between cells, no outer box
+ *   This week                grid    aligned columns, no outer box, no rules
  *   Programs / Routines      plate   records, ruled
  *   Quick log                plate   a row that navigates, like its neighbours
  *   Recent sessions          plate   a record, ruled
@@ -89,33 +109,33 @@ function freshnessColor(state: MuscleFreshness['state']): string {
 }
 
 /**
- * The "This week" ruled grid: three cells, rules BETWEEN them only. A vertical
- * rule needs a cell on both sides of it, so the last cell never draws one — the
- * outer edge is exactly what this device exists to avoid (see
- * src/components/home/metrics-strip.tsx, which carries the same correction).
- * Whole class strings, never a built prefix: Tailwind's scanner only sees class
- * names that appear literally in source.
+ * The "This week" grid: three columns, **no rules**. Only the gutters that keep
+ * one column's text off the next, and the `pt-4` row rhythm that replaced the
+ * top rule — the treatment src/components/home/metrics-strip.tsx carries, and
+ * the one this device is defined as (src/components/ui/block.tsx: a grid draws
+ * no rules). Whole class strings, never a built prefix: Tailwind's scanner only
+ * sees class names that appear literally in source.
  *
- * **Every cell answers the same question — "is there a cell after me?" — index
- * 0 included.** Handing the first cell a class that carries `border-r`
- * unconditionally is the dangling-rule flaw again: a one-cell row would draw a
- * rule down its right-hand side into empty space. Column position decides the
- * padding; only a following cell decides the rule.
+ * The old machinery made every cell ask "is there a cell after me?" so a
+ * trailing cell could not draw a vertical rule into empty space. That question
+ * was created entirely by the rules, so it died with them: `count` is gone, the
+ * `*_LAST` classes are gone, and column position is the only input left.
  */
-const WEEK_CELL_FIRST = 'w-1/3 border-r border-t border-hairline py-2.5 pr-2.5';
-/** First column, nothing beside it: same box, no dangling rule. */
-const WEEK_CELL_FIRST_LAST = 'w-1/3 border-t border-hairline py-2.5 pr-2.5';
-const WEEK_CELL_MID = 'w-1/3 border-r border-t border-hairline px-2.5 py-2.5';
-const WEEK_CELL_LAST = 'w-1/3 border-t border-hairline py-2.5 pl-2.5';
+const WEEK_CELL_LEFT = 'w-1/3 pr-3 pt-4';
+const WEEK_CELL_MID = 'w-1/3 px-3 pt-4';
+const WEEK_CELL_RIGHT = 'w-1/3 pl-3 pt-4';
 
-function weekCellClass(index: number, count: number): string {
-  const closes = index + 1 < count;
-  if (index === 0) return closes ? WEEK_CELL_FIRST : WEEK_CELL_FIRST_LAST;
-  return closes ? WEEK_CELL_MID : WEEK_CELL_LAST;
+function weekCellClass(index: number): string {
+  const column = index % 3;
+  if (column === 0) return WEEK_CELL_LEFT;
+  return column === 1 ? WEEK_CELL_MID : WEEK_CELL_RIGHT;
 }
 
 export default function ExerciseScreen() {
   const router = useRouter();
+  // `(tabs)` leads the segments only when this file is rendering AS the Train
+  // tab root; the pushed route is plain `/exercise`. See the header note above.
+  const isTabRoot = useSegments()[0] === '(tabs)';
   const { week, sessions, routines, programs, ledger, volume, recommendation } = useTrainingHub();
   const today = todayISODate();
 
@@ -152,7 +172,11 @@ export default function ExerciseScreen() {
   return (
     <Screen scroll>
       <View className="pt-2">
-        <StackHeader title="Exercise" />
+        {isTabRoot ? (
+          <Text className="font-serif text-[26px] font-semibold text-ink">Exercise</Text>
+        ) : (
+          <StackHeader title="Exercise" />
+        )}
       </View>
 
       {/* Train today — the one accent on this screen. */}
@@ -200,13 +224,14 @@ export default function ExerciseScreen() {
         </Block>
       </View>
 
-      {/* This week — a metric grid, so: rules between cells, no outer box. */}
+      {/* This week — a metric grid: aligned columns, no outer box, no rules. */}
       <View className="mt-7">
         <Block device="grid">
           <SectionLabel label="This week" />
-          <View className="mt-2 flex-row">
+          {/* No margin: the cells' own `pt-4` is the row rhythm. */}
+          <View className="flex-row">
             {stats.map((s, index) => (
-              <View key={s.label} className={weekCellClass(index, stats.length)}>
+              <View key={s.label} className={weekCellClass(index)}>
                 <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
                   {s.label}
                 </Text>
@@ -377,10 +402,15 @@ export default function ExerciseScreen() {
  *                 directive thing on the page, so it is the only thing drawn in
  *                 the accent.
  *   a rest day  → **measured field**. A rest day is a verdict about today, not
- *                 an action, so it gets corner ticks and no enclosure — and no
- *                 accent, because there is nothing to start.
+ *                 an action, so it draws no enclosure at all — and no accent,
+ *                 because there is nothing to start.
  *   nothing yet → **measured field** as well, saying plainly why. Empty is
  *                 authored, never blank.
+ *
+ * The field device is unmarked: it once carried corner ticks, and those were cut
+ * with the rest of the drafting chrome that had to be interpreted before it paid
+ * (src/components/ui/block.tsx). What still separates the three is the stamp's
+ * accent border, the air around the block, and the type.
  */
 function TrainTodayCard({
   recommendation,

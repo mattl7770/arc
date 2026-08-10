@@ -33,8 +33,8 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  *
  * ## The surface system (00-design-spec.md §1)
  *
- *   Records          grid   three measured cells, rules between them only
- *   Estimated 1RM    field  a readout about the lift, corner ticks, no box
+ *   Records          grid   three measured cells, aligned — no box, no rules
+ *   Estimated 1RM    field  a readout about the lift; unmarked, set apart by air
  *   History          plate  a record of sessions, ruled
  *
  * **No accent anywhere on this screen.** Nothing here is an action, and the
@@ -65,29 +65,24 @@ function read(id: string | undefined): Detail {
 }
 
 /**
- * The Records grid: three cells, rules BETWEEN them only. A vertical rule needs
- * a cell on both sides of it, so the last cell never draws one — that dangling
- * rule would be the outer edge this device exists to avoid (the same correction
- * carried in src/components/home/metrics-strip.tsx). Whole class strings, never
- * a built prefix.
+ * The Records grid: three columns, **no rules**. Only the gutters that keep one
+ * column's text off the next, and the `pt-4` row rhythm that replaced the top
+ * rule — the same treatment as src/components/home/metrics-strip.tsx, which is
+ * the reference form for this device. Whole class strings, never a built prefix.
  *
- * **Every cell answers the same question — "is there a cell after me?" — index
- * 0 included.** Special-casing the first cell into a class that carries
- * `border-r` unconditionally is the dangling-rule flaw wearing a different
- * hat: a one-cell row would then draw a rule down its right-hand side into
- * empty space. Column position decides the padding; only a following cell
- * decides the rule.
+ * The old machinery asked "is there a cell after me?" so a trailing cell would
+ * not draw a vertical rule into empty space. That question only existed because
+ * rules existed; with the rules gone the `count` argument and the `*_LAST`
+ * classes are dead, and column position is the only input.
  */
-const CELL_FIRST = 'w-1/3 border-r border-t border-hairline py-2.5 pr-2.5';
-/** First column, nothing beside it: same box, no dangling rule. */
-const CELL_FIRST_LAST = 'w-1/3 border-t border-hairline py-2.5 pr-2.5';
-const CELL_MID = 'w-1/3 border-r border-t border-hairline px-2.5 py-2.5';
-const CELL_LAST = 'w-1/3 border-t border-hairline py-2.5 pl-2.5';
+const CELL_LEFT = 'w-1/3 pr-3 pt-4';
+const CELL_MID = 'w-1/3 px-3 pt-4';
+const CELL_RIGHT = 'w-1/3 pl-3 pt-4';
 
-function cellClass(index: number, count: number): string {
-  const closes = index + 1 < count;
-  if (index === 0) return closes ? CELL_FIRST : CELL_FIRST_LAST;
-  return closes ? CELL_MID : CELL_LAST;
+function cellClass(index: number): string {
+  const column = index % 3;
+  if (column === 0) return CELL_LEFT;
+  return column === 1 ? CELL_MID : CELL_RIGHT;
 }
 
 export default function ExerciseDetailScreen() {
@@ -147,13 +142,14 @@ export default function ExerciseDetailScreen() {
         {meta}
       </Text>
 
-      {/* Personal records — a metric grid, so: rules between cells, no outer box. */}
+      {/* Personal records — a metric grid: aligned columns, no box, no rules. */}
       <View className="mt-6">
         <Block device="grid">
           <SectionLabel label="Records" />
-          <View className="mt-2 flex-row">
+          {/* No margin: the cells' own `pt-4` is the row rhythm. */}
+          <View className="flex-row">
             {records.map((r, index) => (
-              <View key={r.label} className={cellClass(index, records.length)}>
+              <View key={r.label} className={cellClass(index)}>
                 <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
                   {r.label}
                 </Text>

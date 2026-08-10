@@ -42,7 +42,7 @@ import { useSessionKeySet } from '@/hooks/use-session-key';
  * only once a model is connected), then gives the destination that fixes it.
  *
  * That note takes the **margin annotation** device: it is prose about the sheet
- * rather than a record, so it gets the 2px left rule and no box. It is a sibling
+ * rather than a record, and the margin device is UNMARKED as of 2026-08-09 — prose sits on the sheet, separated by air and distinguished by the serif voice. It is a sibling
  * of the plate, never a child — devices do not nest.
  *
  * `keySet` comes from the store hook rather than a prop because the screen does

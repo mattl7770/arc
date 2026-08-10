@@ -13,6 +13,8 @@ import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { weekSummary } from '../src/lib/db/repositories/exercise.ts';
 import { setUnitPreference } from '../src/lib/db/repositories/user.ts';
+import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
+import { deriveReadiness } from '../src/lib/home/readiness.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import {
   COACH_TOOLS,
@@ -876,6 +878,273 @@ export async function resolve(specifier, context, next) {
     : bad('rolled turn', JSON.stringify({ card: rolled.card, row: rolled.row }));
 
   await apiKeyStore.clearKey();
+}
+
+// The owner's report: "asked the Coach for my step count and it did not know."
+// The cause was structural — the readable metric set was the MANUAL-LOG registry
+// (weight/body_fat/waist/hrv/rhr/water), so the entire HealthKit plane (steps,
+// sleep, energy, SpO2, temperatures, VO2max, workouts) was unreachable by any
+// tool. These cases pin the fix: discovery from the data, not a hardcoded enum.
+console.log('17. wearables: every ingested metric_type is readable by the Coach');
+{
+  const { db } = freshDb();
+  const day = (n) => isoDaysAgo(NOW, n);
+  const wear = (rows) =>
+    upsertWearableRows(
+      db,
+      rows.map((r) => ({
+        date: r.date,
+        metricType: r.metric,
+        value: r.value,
+        unit: r.unit ?? null,
+        sourceDevice: r.device ?? 'apple_watch',
+        sourceRawId: `hk:${r.metric}:${r.date}`,
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      }))
+    );
+
+  const rows = [];
+  for (let i = 0; i < 10; i++) {
+    rows.push({ date: day(i), metric: 'hrv', value: 50 + i, unit: 'ms' });
+    rows.push({ date: day(i), metric: 'rhr', value: 55, unit: 'bpm' });
+    rows.push({
+      date: day(i),
+      metric: 'steps',
+      value: 8000 + i * 100,
+      unit: 'count',
+      device: 'apple_health',
+    });
+    rows.push({ date: day(i), metric: 'sleep_duration_min', value: 431, unit: 'min' });
+    rows.push({
+      date: day(i),
+      metric: 'active_energy_kcal',
+      value: 620,
+      unit: 'kcal',
+      device: 'apple_health',
+    });
+  }
+  rows.push({ date: day(0), metric: 'sleep_deep_min', value: 74, unit: 'min' });
+  rows.push({ date: day(0), metric: 'vo2max', value: 48.2, unit: 'ml_kg_min' });
+  rows.push({ date: day(0), metric: 'spo2_pct', value: 97.5, unit: 'pct' });
+  rows.push({ date: day(0), metric: 'wrist_temp_c', value: 35.2, unit: 'c' });
+  rows.push({ date: day(0), metric: 'respiratory_rate', value: 14.5, unit: 'brpm' });
+  rows.push({ date: day(0), metric: 'resting_energy_kcal', value: 1720, unit: 'kcal' });
+  // A metric NOTHING in the codebase declares — the "new vendor metric tomorrow"
+  // case that a hardcoded enum would silently swallow.
+  rows.push({ date: day(0), metric: 'glucose_mgdl', value: 92, unit: 'mgdl' });
+  // Recorded, but long outside a short window: absence-in-window ≠ never.
+  rows.push({ date: day(40), metric: 'water_ml', value: 500, unit: 'ml', device: 'manual' });
+  wear(rows);
+
+  // --- (a) each metric round-trips through get_metric_series ----------------
+  const expectations = [
+    ['steps', 'count', 8000],
+    ['sleep_duration_min', 'min', 431],
+    ['active_energy_kcal', 'kcal', 620],
+    ['resting_energy_kcal', 'kcal', 1720],
+    ['hrv', 'ms', 50],
+    ['rhr', 'bpm', 55],
+    ['vo2max', 'ml_kg_min', 48.2],
+    ['spo2_pct', 'pct', 97.5],
+    ['respiratory_rate', 'brpm', 14.5],
+    ['sleep_deep_min', 'min', 74],
+  ];
+  const misses = expectations.filter(([metric, unit, todayValue]) => {
+    const out = run('get_metric_series', db, { metric, days: 10 });
+    const point = out.points.find((p) => p.date === TODAY);
+    return !(out.hasData === true && out.unit === unit && point && near(point.value, todayValue));
+  });
+  misses.length === 0
+    ? ok(
+        `all ${expectations.length} HealthKit metric_types round-trip (steps, sleep, energy, SpO2, VO2max…)`
+      )
+    : bad('unreachable metrics', misses.map((m) => m[0]).join(', '));
+
+  const steps = run('get_metric_series', db, { metric: 'steps', days: 10 });
+  steps.points.length === 10 && steps.stats.count === 10
+    ? ok('steps returns a real 10-day history with stats — the exact question that failed')
+    : bad('steps series', JSON.stringify(steps).slice(0, 200));
+
+  // --- (c) sleep reads as hours/minutes, never a raw minute count ------------
+  const sleep = run('get_metric_series', db, { metric: 'sleep' });
+  sleep.metric === 'sleep_duration_min' &&
+  sleep.points.every((p) => p.hm === '7h 11m') &&
+  sleep.stats.avgHm === '7h 11m'
+    ? ok('alias "sleep" resolves, and every point carries hm ("7h 11m"), not bare minutes')
+    : bad('sleep hm', JSON.stringify(sleep).slice(0, 240));
+
+  // --- (a) a metric NOBODY declared is still readable ------------------------
+  const glucose = run('get_metric_series', db, { metric: 'glucose_mgdl' });
+  glucose.hasData === true &&
+  near(glucose.points[0].value, 92) &&
+  glucose.unit === 'mgdl' &&
+  glucose.inferred === true
+    ? ok('an undeclared metric_type is discovered from the data and read, flagged inferred')
+    : bad('discovery', JSON.stringify(glucose).slice(0, 240));
+
+  // --- (c) absence is "no data", never 0 ------------------------------------
+  const absent = run('get_metric_series', db, { metric: 'body_temp_c' });
+  absent.hasData === false &&
+  absent.stats === null &&
+  absent.points.length === 0 &&
+  absent.lastRecorded === null &&
+  /not a zero/.test(absent.note)
+    ? ok('a never-recorded metric reports hasData:false + "not a zero", never 0')
+    : bad('absent metric', JSON.stringify(absent));
+
+  const stale = run('get_metric_series', db, { metric: 'water', days: 7 });
+  stale.hasData === false && stale.lastRecorded === day(40) && /most recent value/.test(stale.note)
+    ? ok('recorded-but-outside-the-window says so, and names the last day on record')
+    : bad('stale metric', JSON.stringify(stale));
+
+  const unknown = (() => {
+    try {
+      run('get_metric_series', db, { metric: 'nonsense_metric' });
+      return null;
+    } catch (e) {
+      return e.message;
+    }
+  })();
+  unknown && /steps/.test(unknown) && /glucose_mgdl/.test(unknown)
+    ? ok('an unknown name errors with the DEVICE-SPECIFIC valid set (discovered ones included)')
+    : bad('unknown metric error', unknown);
+
+  // --- (b) today's wearable picture is IN the snapshot -----------------------
+  const snap = run('get_today_snapshot', db);
+  snap.wearables &&
+  near(snap.wearables.today.steps.value, 8000) &&
+  snap.wearables.today.steps.unit === 'count' &&
+  snap.wearables.today.sleep_duration_min.hm === '7h 11m' &&
+  near(snap.wearables.today.hrv.value, 50) &&
+  near(snap.wearables.today.active_energy_kcal.value, 620)
+    ? ok('get_today_snapshot carries steps, sleep (h/m), HRV and energy for today')
+    : bad('snapshot wearables', JSON.stringify(snap.wearables).slice(0, 300));
+
+  snap.wearables.noDataToday.length === 0 &&
+  snap.wearables.availableMetrics.includes('glucose_mgdl') &&
+  snap.wearables.availableMetrics.includes('steps')
+    ? ok('availableMetrics advertises the whole device set, discovered metrics included')
+    : bad('availableMetrics', JSON.stringify(snap.wearables.availableMetrics));
+
+  snap.wearables.today.steps.source === 'Apple Health' &&
+  snap.wearables.today.hrv.source === 'Apple Watch'
+    ? ok('each value names the source device that won the day')
+    : bad('sources', JSON.stringify(snap.wearables.today.steps));
+
+  // --- (b) readiness is Home's, not a second opinion -------------------------
+  const home = deriveReadiness(db, TODAY);
+  snap.readiness.level === home.readiness.level &&
+  snap.readiness.label === home.readiness.label &&
+  snap.readiness.detail === home.readiness.detail &&
+  JSON.stringify(snap.readiness.pillars) === JSON.stringify(home.pillars) &&
+  snap.readiness.hasSignal === home.hasSignal
+    ? ok(
+        `snapshot readiness IS Home's derivation ("${home.readiness.label}" · ${home.readiness.detail})`
+      )
+    : bad('readiness mismatch', JSON.stringify({ coach: snap.readiness, home: home.readiness }));
+}
+
+console.log('18. wearables: an empty device states absence rather than implying zeros');
+{
+  const { db } = freshDb();
+  const snap = run('get_today_snapshot', db);
+  snap.wearables.noDataToday.includes('steps') &&
+  snap.wearables.noDataToday.includes('sleep_duration_min') &&
+  Object.keys(snap.wearables.today).length === 0 &&
+  /never synced/.test(snap.wearables.note)
+    ? ok('no wearable data at all ⇒ core metrics named in noDataToday + an explicit note')
+    : bad('empty wearables', JSON.stringify(snap.wearables));
+  snap.readiness.hasSignal === false && snap.readiness.level === 'unknown'
+    ? ok('readiness is `unknown` with hasSignal:false — an absence, not a bad score')
+    : bad('empty readiness', JSON.stringify(snap.readiness));
+
+  // Steps synced but nothing else: the still-missing ones must stay named.
+  upsertWearableRows(db, [
+    {
+      date: TODAY,
+      metricType: 'steps',
+      value: 4210,
+      unit: 'count',
+      sourceDevice: 'apple_health',
+      sourceRawId: `hk:steps:${TODAY}`,
+      startTime: null,
+      endTime: null,
+      metadata: {},
+    },
+  ]);
+  const partial = run('get_today_snapshot', db);
+  near(partial.wearables.today.steps.value, 4210) &&
+  !partial.wearables.noDataToday.includes('steps') &&
+  partial.wearables.noDataToday.includes('sleep_duration_min') &&
+  partial.wearables.noDataToday.includes('hrv')
+    ? ok('a partial sync reports what exists and still names what does not')
+    : bad('partial wearables', JSON.stringify(partial.wearables));
+}
+
+console.log('19. wearable values honour Settings › Units (°F/°C, oz/ml)');
+{
+  const { db } = freshDb();
+  upsertWearableRows(db, [
+    {
+      date: TODAY,
+      metricType: 'wrist_temp_c',
+      value: 35.2,
+      unit: 'c',
+      sourceDevice: 'apple_watch',
+      sourceRawId: `hk:wrist_temp_c:${TODAY}`,
+      startTime: null,
+      endTime: null,
+      metadata: {},
+    },
+    {
+      date: TODAY,
+      metricType: 'water_ml',
+      value: 500,
+      unit: 'ml',
+      sourceDevice: 'manual',
+      sourceRawId: `manual:water:${TODAY}:1`,
+      startTime: null,
+      endTime: null,
+      metadata: {},
+    },
+    {
+      date: TODAY,
+      metricType: 'water_ml',
+      value: 250,
+      unit: 'ml',
+      sourceDevice: 'manual',
+      sourceRawId: `manual:water:${TODAY}:2`,
+      startTime: null,
+      endTime: null,
+      metadata: {},
+    },
+  ]);
+
+  // Imperial defaults: 35.2 °C → 95.4 °F, 750 ml → 25 oz (water renders whole
+  // ounces everywhere in the app — the Coach must not invent extra precision).
+  const f = run('get_metric_series', db, { metric: 'wrist_temp' });
+  f.unit === '°F' && near(f.points[0].value, 95.4, 0.06)
+    ? ok('an °F user reads wrist temperature in °F (35.2 °C → 95.4 °F)')
+    : bad('temp F', JSON.stringify(f.points));
+  const ozWater = run('get_metric_series', db, { metric: 'water' });
+  ozWater.unit === 'oz' && ozWater.points[0].value === 25
+    ? ok('water sums the day’s rows (500 + 250 ml) and reports 25 oz for an oz user')
+    : bad('water oz', JSON.stringify(ozWater.points));
+
+  setUnitPreference(db, 'temperature', 'C');
+  setUnitPreference(db, 'volume', 'ml');
+  const c = run('get_metric_series', db, { metric: 'wrist_temp_c' });
+  c.unit === '°C' && near(c.points[0].value, 35.2, 0.06)
+    ? ok('flipping the preference reports the same row in °C — display only, no rewrite')
+    : bad('temp C', JSON.stringify(c.points));
+  const mlSnap = run('get_today_snapshot', db);
+  mlSnap.wearables.today.water_ml.unit === 'ml' &&
+  near(mlSnap.wearables.today.water_ml.value, 750) &&
+  mlSnap.wearables.today.wrist_temp_c.unit === '°C'
+    ? ok('the snapshot honours the same preferences (750 ml, °C)')
+    : bad('snapshot units', JSON.stringify(mlSnap.wearables.today));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

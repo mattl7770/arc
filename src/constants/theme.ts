@@ -54,8 +54,11 @@ export const palette = {
   /**
    * Byte-identical to `hairline` — it cannot render differently. The Tailwind
    * class `*-hairline-strong` has zero consumers, but THIS export is LIVE:
-   * app/(tabs)/settings.tsx reads it twice (a Switch `trackColor` +
+   * app/settings.tsx reads it twice (a Switch `trackColor` +
    * `ios_backgroundColor`). Retiring it means editing that screen first.
+   * (Path corrected 2026-08-09: Settings came off the tab bar and moved
+   * verbatim to `app/settings.tsx` when the shell went to six tabs —
+   * `app/(tabs)/settings.tsx` no longer exists.)
    */
   hairlineStrong: '#A9A28E',
   ink: '#1C1911',
@@ -125,6 +128,55 @@ export const palette = {
     poor: '#8F3524',
     unknown: '#5C5340',
   },
+} as const;
+
+/**
+ * THE PAPER GRID — the faint drafting rule printed ON the sheet.
+ *
+ * The mockup has two grids and only one of them is the design:
+ *   `--desk` / `--desk-grid`  the dark surround the mockup phone SITS ON.
+ *                             Presentation chrome. Correctly dropped.
+ *   `--paper-grid`            a 9px rule on the sheet itself, inside the
+ *                             screen. THIS IS THE DESIGN, and the first port
+ *                             dropped it along with the desk (owner caught it
+ *                             on device, 2026-08-09).
+ *
+ * Drawn once by `src/components/ui/screen.tsx`, behind every screen, as a
+ * repeat-tiled PNG (`assets/images/paper-grid*.png`) — RN has no
+ * `repeating-linear-gradient`, and hundreds of hairline `View`s on a scrolling
+ * page is not a trade worth making. The tile is a static, non-scrolling,
+ * `pointerEvents="none"` layer: zero per-frame cost, no touch interference.
+ *
+ * TUNING. `opacity` is the dial — change it here and nowhere else. Ink is baked
+ * into the tile at full alpha precisely so this one number is the whole control.
+ *
+ * The arithmetic, decoded from the shipped PNGs rather than assumed (this
+ * comment and 00-design-spec.md §4a both claimed "an 11% ruled area … ~0.7%
+ * average darkening" until 2026-08-09, which counted only ONE edge): the tile
+ * rules its top edge AND its left edge, so a 9×9 cell is **17 of 81 opaque
+ * pixels = 21.0% ruled** — identical at @2x (68/324) and @3x (153/729). At 6%
+ * that is **~1.26% average darkening** of the sheet. The doubled figure is the
+ * correct one and the render was never wrong: the mockup stacks a 0deg AND a
+ * 90deg `repeating-linear-gradient`, so two edges is what it always drew.
+ *
+ * The number that actually justifies the calibration is the contrast, not the
+ * coverage: composited over `paper` #E7E4DA, a grid line measures **1.12:1**
+ * against the sheet, while `hairline` #A9A28E — the surface system's real rule —
+ * measures **2.00:1** on the same ground. The grid sits at a bit over half the
+ * weight of the faintest thing that means "this encloses an object", so it reads
+ * as texture you find when you look for it rather than as a rule competing with
+ * every plate edge. **If the grid starts reading as a rule it is too strong.**
+ * Sane range 0.04–0.10 (1.08:1 – 1.22:1); past ~0.12 it fights every plate edge.
+ *
+ * `pitch` is BAKED INTO THE PNG and is here to be read, not assigned — nothing
+ * consumes it. Changing the pitch means regenerating the three tiles; the
+ * recipe is in docs/design-research/implementation/00-design-spec.md §4.
+ */
+export const paperGrid = {
+  /** Points between rules. Matches the mockup's `--paper-grid` at 9px. */
+  pitch: 9,
+  /** The dial. `rgba(28, 24, 14, 0.06)` in the mockup = ink at 6%. */
+  opacity: 0.06,
 } as const;
 
 /**

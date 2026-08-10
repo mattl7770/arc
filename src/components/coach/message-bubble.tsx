@@ -51,11 +51,16 @@ function turnClock(createdAt: number): string | null {
  *
  * ## Conformed Set treatment
  *
- * The thread sits on the **well** device (the recessed stock, applied by the
- * screen); the turns are the marks made on it. The user speaks in solid accent
- * on the right — one of the six things §2 allows the accent to mark — and the
- * Coach answers on bordered `paper-hi` slips on the left, which is the plate
- * treatment at bubble scale.
+ * The turns are drawn **directly on the sheet**. The thread used to sit on the
+ * `well` device with the turns as marks on the recess; the owner read that box
+ * as gratuitous on hardware and it came off (2026-08-09, see the surface note in
+ * app/(tabs)/coach.tsx). Nothing here changed with it: the enclosure was the
+ * screen's, the treatment is the turn's. The user speaks in solid accent on the
+ * right — one of the six things §2 allows the accent to mark — and the Coach
+ * answers on bordered `paper-hi` slips on the left, which is the plate treatment
+ * at bubble scale. `paper-hi` on `paper` is a lighter step than `paper-hi` on
+ * `paper-dim` was, so the Coach's slips now read as raised rather than as
+ * inlaid; the hairline is what holds their edge, and it is unchanged.
  *
  * **Every corner is square**, including the bubbles. The mockup keeps a 12px
  * radius with one corner squared toward the speaker, but that is a browser

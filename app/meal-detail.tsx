@@ -32,8 +32,9 @@ import type { FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/type
  *
  * ## Conformed Set surface system
  *
- *   Totals   → **ruled grid**: energy and macros are a metric grid, so the grid
- *              is the object — no outer box, rules between cells only.
+ *   Totals   → **grid**: energy and macros are a metric grid, so the grid is the
+ *              object — no outer box and no rules, held by alignment and
+ *              whitespace (src/components/ui/block.tsx).
  *   Notes    → **margin annotation**: prose belongs in the margin, not a card.
  *   Items    → **ruled plate**: a record is a table. "Add food" is its closing
  *              row, so the way to extend the record sits with the record.
@@ -75,15 +76,18 @@ function parseGrams(text: string): number | null {
   return Number.isFinite(g) && g > 0 && g <= 5000 ? g : null;
 }
 
-/** Ruled-grid cells: the right-hand rule needs a cell to actually follow it,
- * so an odd count never draws a dangling outer edge (01-rn-port-guide.md §1.3). */
-const CELL_LEFT = 'w-1/2 border-r border-t border-hairline py-2.5 pr-2.5';
-const CELL_LEFT_LAST = 'w-1/2 border-t border-hairline py-2.5 pr-2.5';
-const CELL_RIGHT = 'w-1/2 border-t border-hairline py-2.5 pl-2.5';
+/**
+ * The two columns. **No rules** — only the gutter between them and the `pt-4`
+ * row rhythm that replaced the old top rule, matching
+ * src/components/home/metrics-strip.tsx. The dangling-rule guard (a `count`
+ * argument and a `*_LAST` class, so an odd cell never drew a rule into empty
+ * space) went with the rules: with nothing drawn there is nothing to dangle.
+ */
+const CELL_LEFT = 'w-1/2 pr-3 pt-4';
+const CELL_RIGHT = 'w-1/2 pl-3 pt-4';
 
-function cellClass(index: number, count: number): string {
-  if (index % 2 !== 0) return CELL_RIGHT;
-  return index + 1 < count ? CELL_LEFT : CELL_LEFT_LAST;
+function cellClass(index: number): string {
+  return index % 2 === 0 ? CELL_LEFT : CELL_RIGHT;
 }
 
 /** One macro cell. An unrecorded macro is an em-dash — no data, no number. */
@@ -329,13 +333,15 @@ export default function MealDetailScreen() {
             <Text className="font-mono text-sm text-ink-muted">kcal</Text>
           </View>
 
-          <View className="mt-3 flex-row flex-wrap">
+          {/* No margin: the cells' own `pt-4` is the row rhythm that replaced
+              the top rule. */}
+          <View className="flex-row flex-wrap">
             {macroCells.map((cell, index) => (
               <MacroCell
                 key={cell.label}
                 label={cell.label}
                 grams={cell.grams}
-                className={cellClass(index, macroCells.length)}
+                className={cellClass(index)}
               />
             ))}
           </View>

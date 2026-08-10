@@ -84,7 +84,11 @@ export default function RootLayout() {
       <ThemeProvider value={arcNavTheme}>
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
-          {/* Pushed over the tabs from the Log tab (docs/information-architecture.md). */}
+          {/* Pushed over the tabs from the Log tab's Nutrition tile and from
+              Data's Nutrition trend row (docs/information-architecture.md). The
+              SAME screen is also the Eat tab, re-exported by
+              app/(tabs)/eat.tsx — one hub, two ways in. Same for exercise/Train
+              below. */}
           <Stack.Screen name="nutrition" />
           {/* Nutrition sub-app family (docs/nutrition-subapp.md). INTEGRATOR-MERGE:
               these routes were added on the nutrition-sub-app branch. */}
@@ -110,6 +114,13 @@ export default function RootLayout() {
           <Stack.Screen name="labs" />
           {/* INTEGRATOR-MERGE: labs pipeline route (docs/labs-subapp.md). */}
           <Stack.Screen name="lab-import" />
+          {/* Settings — pushed from the last row of the Data tab. It was the
+              fifth TAB until 2026-08-09, when the owner's first hardware review
+              moved Nutrition and Exercise onto the bar and Settings off it
+              (app/(tabs)/_layout.tsx). Being a stack screen rather than a hidden
+              tab route is the point: it opens over the tab bar with a back
+              chevron to Data, like Labs or Protocols. */}
+          <Stack.Screen name="settings" />
           {/* Pushed from Settings. */}
           <Stack.Screen name="settings-profile" />
           <Stack.Screen name="settings-units" />
