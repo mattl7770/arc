@@ -2,23 +2,23 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter, useSegments } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
+import {
+  FRESHNESS_SPOKEN,
+  freshnessState,
+  freshnessTone,
+} from '@/components/exercise/freshness-display';
+import { MuscleFigure, MuscleFigureLegend } from '@/components/exercise/muscle-figure';
 import { Block, DashedDivider, Divider, GridCell } from '@/components/ui/block';
-import { Gauge, GaugeTrack, gaugeTextClass, type GaugeTone } from '@/components/ui/gauge';
+import { Gauge } from '@/components/ui/gauge';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { todayISODate } from '@/lib/db/date';
-import { FRESH_THRESHOLDS, MUSCLE_LABEL } from '@/lib/exercise/constants';
+import { MUSCLE_LABEL } from '@/lib/exercise/constants';
 import { dayLabel, sessionDetail } from '@/lib/exercise/format';
 import { volumeAttention } from '@/lib/exercise/volume';
-import type {
-  MuscleFreshness,
-  MuscleVolume,
-  ProgramListItem,
-  Recommendation,
-  RoutineListItem,
-} from '@/lib/exercise/types';
+import type { MuscleVolume, Recommendation, RoutineListItem } from '@/lib/exercise/types';
 import { useTrainingHub } from '@/hooks/use-training';
 
 /**
@@ -28,27 +28,21 @@ import { useTrainingHub } from '@/hooks/use-training';
  *
  * ## Two routes, two headers (owner call on hardware, 2026-08-09)
  *
- * This file used to open with `<StackHeader title="Exercise" />` at both, so the
- * Train tab drew a back chevron. It *worked* — the tab navigator runs
- * `backBehavior="history"` — but a tab root has nothing to go back to, and every
- * other tab owns a plain serif title instead (app/(tabs)/log.tsx, data.tsx). A
- * back control that returns you to a *different tab* is the wrong grammar for
- * the bottom bar.
- *
  * The two cases are told apart by `useSegments()`, not by `router.canGoBack()`:
  * with `backBehavior="history"` the tab root can very often go back, so that
  * test would keep the chevron exactly where it is wrong. Route shape is the
  * honest signal — `(tabs)` leads the segments only when this screen IS the tab.
+ * The title stays "Exercise" in both places; the tab bar says TRAIN because
+ * five characters is the width budget (app/(tabs)/_layout.tsx).
  *
- * The title stays "Exercise" in both places. The tab bar says TRAIN because five
- * characters is the width budget (app/(tabs)/_layout.tsx); the screen has no
- * such constraint, and one name for one screen beats a label that changes with
- * the door you came through.
- *
- * "Train today" is the rule-based recommendation — an active program's
- * scheduled session when one is running, else the freshness pick (all offline).
- * Below it: the muscle-freshness ledger, weekly volume vs landmarks, this
- * week's totals, programs, routines, and recent sessions.
+ * "Train today" is the rule-based recommendation — the freshness pick over the
+ * saved workouts (all offline) — with two doors in: start the recommended
+ * session, or start empty. Below it: weekly volume vs landmarks, the muscle
+ * body-figure (tap → the full per-muscle ledger), this week's totals, saved
+ * workouts, manual log (free-form + photo import), and recent sessions.
+ * (Programs were retired 2026-08-11 — owner call: one flat list of saved
+ * workouts beats the routines/programs pair. The 0020 tables stay in the
+ * schema, dormant.)
  *
  * ## The surface system (00-design-spec.md §1)
  *
@@ -58,114 +52,38 @@ import { useTrainingHub } from '@/hooks/use-training';
  *   Train today (a session)  stamp   the one next action, in the accent, capped
  *   Train today (rest/empty) field   a verdict — corner ticks, no enclosure
  *   Weekly volume            margin  advisory prose — a 2px rule and an indent
- *   Muscle freshness         plate   a record, ruled
+ *   Muscle freshness         plate   the body schematic; navigates to the ledger
  *   This week                grid    aligned columns, ruled between, no outer box
- *   Programs / Routines      plate   records, ruled
- *   Quick log                plate   a row that navigates, like its neighbours
+ *   Saved workouts           plate   a record, ruled
+ *   Manual log               plate   rows that navigate, like their neighbours
  *   Recent sessions          plate   a record, ruled
  *
  * Each block carries exactly one device and none of them nest; every other
  * `View` here is layout and spacing only. Sections are separated by whitespace,
  * never by a rule — rules enclose objects, not the page.
  *
- * **A plate holds through the empty branch.** Programs, Routines and Recent
+ * **A plate holds through the empty branch.** Saved workouts and Recent
  * sessions each draw their plate whether or not they have rows: a record with
- * nothing in it still stands where the record stands, and drawing its place
- * before it has contents is what makes an empty tab root read as a form waiting
- * to be filled rather than as a page that failed to load. The sweep of
- * 2026-08-10 made all three conditional and stripped Quick log's plate outright;
- * the owner rejected that and they are restored.
+ * nothing in it still stands where the record stands. (The sweep of 2026-08-10
+ * made these conditional; the owner rejected that and they are restored.)
  *
  * **Accent budget: one.** The Train-today stamp, its hatched cap and its Start
  * button are this screen's single primary action. Everything else is neutral
  * ink. The mirror rule holds too: FRESHNESS is a *biological* state, so it is
  * the one thing here allowed to carry a signal colour, and the accent never
- * touches it — not in the ledger's bars and not in the gauge on the Train-today
- * card, which is the hard case, because that gauge sits a few points above a
- * pine Start button inside a pine border. The mockup writes the ruling into its
- * own CSS (arc-conformed-set.html:690) and `Gauge` enforces it structurally: it
- * takes a biological `tone`, not a colour, so the accent has no way in.
+ * touches it — not in the body figure's cells and not in the gauge on the
+ * Train-today card, which is the hard case, because that gauge sits a few
+ * points above a pine Start button inside a pine border. `Gauge` enforces it
+ * structurally: it takes a biological `tone`, not a colour, so the accent has
+ * no way in (src/components/ui/gauge.tsx; the shared state→tone maps live in
+ * src/components/exercise/freshness-display.ts).
  */
-
-/**
- * state → signal cut for the freshness BAR FILL and for the figure beside it.
- * Freshness is a biological state, so a signal colour is the sanctioned mark
- * here — the firewall is about *which cut*, not whether.
- *
- * **Resolves to the INK cut even though one of its two outputs is a fill**,
- * which is the one place that inverts the usual reading of the two cuts. The
- * swatch cut is sized for the 3:1 graphical-object floor on the pale surfaces
- * (paper, paper-hi); this fill sits on recessed stock, and against that mid-tone
- * ground the swatches measure optimal 2.89 · recovering 2.58 · fatigued 4.11 —
- * two of three under the floor, with `recovering` all but dissolving into its
- * own track. The ink cuts clear it comfortably: **5.60 / 5.12 / 5.29**, so the
- * fix is the cut, not the track. The resolution itself lives in
- * src/components/ui/gauge.tsx, which owns both cuts so the bar and the number
- * cannot drift onto different states.
- *
- * **RE-MEASURED 2026-08-11, because the track moved.** The track was
- * `paper-deep` with no border and is now `paper-dim` inside a 1px `paper-line`
- * border — the sheet's `.cf-mrow2-bar`, restored. The old comment here warned
- * that the two must move together, and they did: on the old track the same ink
- * cuts measured 4.56 / 4.17 / 4.31 (swatches 2.36 / 2.10 / 3.35). Both grounds
- * clear the floor on the ink cut; the new one clears it by more, and the border
- * is what makes the track read as a drawn instrument rather than an underline.
- *
- * Nothing about that softens the text rule in the other direction: any
- * imperative TEXT colour for a biological state takes the signal INK cut, never
- * the swatch (00-design-spec.md §2). The ink cut is the floor for words and the
- * safe choice for fills; the swatch is neither.
- *
- * Colour is not the sole carrier here regardless — the fill's WIDTH, the mono
- * percentage beside it and the row's spoken label all state the same thing — so
- * this was a legibility debt rather than a correctness failure. It is still paid.
- */
-function freshnessTone(state: MuscleFreshness['state']): GaugeTone {
-  switch (state) {
-    case 'fresh':
-      return 'optimal';
-    case 'recovering':
-      return 'caution';
-    default:
-      return 'poor';
-  }
-}
-
-/**
- * The same three buckets, for a freshness score that arrives without one.
- * `Recommendation` carries a set-weighted `freshness` number but no state — the
- * bucketing lives in src/lib/exercise/freshness.ts and is not exported — so the
- * card re-derives it from the same published thresholds the ledger uses. That
- * shared constant is the point: the 82 on the Train-today gauge and the 82 in
- * the ledger below it must not be able to read as two different conditions.
- */
-function freshnessState(score: number): MuscleFreshness['state'] {
-  if (score >= FRESH_THRESHOLDS.fresh) return 'fresh';
-  if (score >= FRESH_THRESHOLDS.recovering) return 'recovering';
-  return 'fatigued';
-}
-
-/**
- * The condition in words, for assistive tech — a bar and a colour say nothing
- * to a screen reader. Same shape and same purpose as the SPOKEN map in
- * src/components/home/signal.tsx, and it diverges from the printed form for the
- * same kind of reason: nothing on screen prints these words at all. The gauge's
- * pin reads `82% FRESH` in every state, because "fresh" there is the NAME of the
- * measurement, not the verdict on it — 45% fresh is still a percentage of
- * freshness. Spoken, that leaves the verdict unsaid, so it is said here.
- */
-const FRESHNESS_SPOKEN: Record<MuscleFreshness['state'], string> = {
-  fresh: 'fresh',
-  recovering: 'still recovering',
-  fatigued: 'fatigued',
-};
-
 export default function ExerciseScreen() {
   const router = useRouter();
   // `(tabs)` leads the segments only when this file is rendering AS the Train
   // tab root; the pushed route is plain `/exercise`. See the header note above.
   const isTabRoot = useSegments()[0] === '(tabs)';
-  const { week, sessions, routines, programs, ledger, volume, recommendation } = useTrainingHub();
+  const { week, sessions, routines, ledger, volume, recommendation } = useTrainingHub();
   const today = todayISODate();
 
   const stats: { label: string; value: string; unit: string; sub?: string }[] = [
@@ -176,13 +94,9 @@ export default function ExerciseScreen() {
       unit: week.strengthSessions === 1 ? 'session' : 'sessions',
     },
     // No wearable / test source yet — an honest em dash beats a fake number.
-    //
-    // The dash says the value is absent; `sub` says WHY, which is the half the
-    // port dropped. The sheet gives this cell a `.cf-col3-sub` reading "no
-    // wearable yet", and 00-design-spec.md §5 asks for exactly that: empty is
-    // AUTHORED, never blank. A naked em-dash under a label the user chose to
-    // look at reads as a number that failed to load; "no wearable yet" reads as
-    // a fact about the setup, and points at what would fix it.
+    // The dash says the value is absent; `sub` says WHY (00-design-spec.md §5:
+    // empty is AUTHORED, never blank — a naked em-dash reads as a number that
+    // failed to load; "no wearable yet" reads as a fact about the setup).
     { label: 'VO₂max', value: '—', unit: 'est', sub: 'no wearable yet' },
   ];
 
@@ -190,12 +104,7 @@ export default function ExerciseScreen() {
     if (recommendation.kind === 'routine') {
       router.push({
         pathname: '/workout-live',
-        params: {
-          routineId: recommendation.routineId,
-          name: recommendation.routineName,
-          // A program deload week pre-fills fewer sets in the logger.
-          ...(recommendation.program?.weekKind === 'deload' ? { deload: '1' } : {}),
-        },
+        params: { routineId: recommendation.routineId, name: recommendation.routineName },
       });
     } else if (recommendation.kind === 'muscles') {
       router.push({
@@ -204,6 +113,9 @@ export default function ExerciseScreen() {
       });
     }
   };
+
+  /** A blank session — name it and add exercises as you go. */
+  const startEmpty = () => router.push('/workout-live');
 
   return (
     <Screen scroll>
@@ -217,16 +129,16 @@ export default function ExerciseScreen() {
 
       {/* Train today — the one accent on this screen.
 
-          `hasHistory` is what lets the freshness gauge state its own basis. See
-          the note on {@link TrainTodayCard}; `sessions` is the honest test
-          because `listRecentSessions` takes a LIMIT and no date window, so an
-          empty array means the `workouts` table is empty — zero sessions ever,
-          not merely none lately. */}
+          `hasHistory` is what lets the freshness gauge state its own basis:
+          `listRecentSessions` takes a LIMIT and no date window, so an empty
+          array means the `workouts` table is empty — zero sessions ever, not
+          merely none lately. See the note on {@link TrainTodayCard}. */}
       <View className="mt-5">
         <TrainTodayCard
           recommendation={recommendation}
           hasHistory={sessions.length > 0}
           onStart={startRecommended}
+          onStartEmpty={startEmpty}
         />
       </View>
 
@@ -235,69 +147,48 @@ export default function ExerciseScreen() {
         <WeeklyVolume volume={volume} />
       </View>
 
-      {/* Muscle freshness ledger — a record, so: ruled plate. */}
+      {/* Muscle freshness — the body schematic. A record of the body's state,
+          so: ruled plate; the whole plate navigates to the full per-muscle
+          ledger (app/muscle-freshness.tsx), where the numbers and their gauge
+          tracks live. Cells mark only DEPLETION — a rested body is an
+          unremarkable one (muscle-figure.tsx). */}
       <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel label="Muscle freshness" />
-          <View className="mt-2">
-            {ledger.map((m, i) => (
-              <View key={m.muscle}>
-                <Divider first={i === 0} />
-                {/*
-                  Announced as one row. The bar is geometry and the figure's
-                  colour is colour, and a screen reader sees neither — so the
-                  condition is spoken in words, the way signal.tsx does it. The
-                  row is `accessible`, which collapses the three children into a
-                  single element rather than reading "Quads", nothing, "82%".
-                */}
-                <View
-                  accessible
-                  accessibilityLabel={`${MUSCLE_LABEL[m.muscle]} ${m.freshness} percent, ${FRESHNESS_SPOKEN[m.state]}`}
-                  className="flex-row items-center gap-3 py-2">
-                  <Text className="w-24 font-serif text-[13px] text-ink">
-                    {MUSCLE_LABEL[m.muscle]}
-                  </Text>
-                  {/*
-                    Biology, so a signal colour is the sanctioned use here. The
-                    track is the sheet's `.cf-mrow2-bar` — 7px of paper-dim
-                    inside a 1px rule — which is what forces the ink cut on the
-                    fill (see freshnessTone; the measurement moved with the
-                    track and is recorded there). It was a 6px unbordered
-                    paper-deep bar, which reads as an underline; a bordered
-                    track reads as a drawn instrument.
-                  */}
-                  <View className="flex-1">
-                    <GaugeTrack value={m.freshness} tone={freshnessTone(m.state)} />
-                  </View>
-                  {/*
-                    The row states its condition twice — once in the fill, once
-                    in the figure — which is what the sheet's `.cf-mrow2-v` does
-                    with its matching `bio-*-ink` cut. It had lost both the cut
-                    and the `%` glyph, leaving a bare neutral number that no
-                    longer said what it was a number OF. 7.40 / 6.77 / 7.00 on
-                    this plate.
-                  */}
-                  <Text
-                    className={`w-9 text-right font-mono text-[12px] font-semibold ${gaugeTextClass(freshnessTone(m.state))}`}>
-                    {m.freshness}%
-                  </Text>
-                </View>
-              </View>
-            ))}
-          </View>
-        </Block>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Muscle freshness. Open the full per-muscle ledger."
+          onPress={() => router.push('/muscle-freshness')}
+          className="active:opacity-60">
+          <Block device="plate">
+            <SectionLabel
+              label="Muscle freshness"
+              accessory={
+                <Ionicons
+                  name="chevron-forward"
+                  size={13}
+                  color={palette.inkMuted}
+                  style={{ alignSelf: 'center' }}
+                />
+              }
+            />
+            <View className="mt-3">
+              <MuscleFigure mode="freshness" ledger={ledger} />
+            </View>
+            <View className="mt-3">
+              <MuscleFigureLegend mode="freshness" />
+            </View>
+          </Block>
+        </Pressable>
       </View>
 
       {/* This week — a metric grid: no outer box, drawn by the rules that run
           BETWEEN its cells. `GridCell` owns the width, the padding and both
-          rules, and conditions the vertical on a cell actually following, so
-          three stats in a three-column row cannot rule off into empty space
+          rules, and conditions the vertical on a cell actually following
           (src/components/ui/block.tsx). */}
       <View className="mt-7">
         <Block device="grid">
           <SectionLabel label="This week" />
-          {/* `mt-2` is what keeps the first cell's top rule off the label above
-              it — the same gap src/components/home/metrics-strip.tsx leaves. */}
+          {/* `mt-2` keeps the first cell's top rule off the label above it —
+              the same gap src/components/home/metrics-strip.tsx leaves. */}
           <View className="mt-2 flex-row">
             {stats.map((s, index) => (
               <GridCell key={s.label} index={index} count={stats.length} columns={3}>
@@ -311,10 +202,7 @@ export default function ExerciseScreen() {
                     <Text className="font-mono text-[10px] text-ink-muted">{s.unit}</Text>
                   )}
                 </View>
-                {/* …and where the unit is dropped, the REASON takes its place —
-                    the sheet's `.cf-col3-sub`. Mono at 10px rather than the
-                    sheet's 9px: the metadata layer sits at 9.5-10px so the 9px
-                    render floor is never load-bearing (00-design-spec.md §4). */}
+                {/* …and where the unit is dropped, the REASON takes its place. */}
                 {s.sub ? (
                   <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{s.sub}</Text>
                 ) : null}
@@ -324,65 +212,27 @@ export default function ExerciseScreen() {
         </Block>
       </View>
 
-      {/* Programs — a plate in both states. The record's place is drawn before
-          it has contents; an empty record still stands where a record stands.
-          (Made conditional by the de-plating sweep of 2026-08-10, restored the
-          same day at the owner's instruction.) */}
+      {/* Saved workouts — a plate in both states. The record's place is drawn
+          before it has contents; an empty record still stands where a record
+          stands. (Replaces the Routines + Programs pair, owner call 2026-08-11:
+          one flat list of reusable sessions you load pre-filled.) */}
       <View className="mt-7">
         <Block device="plate">
           <SectionLabel
-            label="Programs"
-            note={programs.length > 0 ? String(programs.length) : undefined}
-          />
-          {programs.length === 0 ? (
-            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-              No programs yet. A program schedules your routines across a multi-week block with
-              planned deload weeks; start one and Train today follows the plan.
-            </Text>
-          ) : (
-            <View className="mt-1">
-              {programs.map((p, i) => (
-                <View key={p.id}>
-                  <Divider first={i === 0} />
-                  <ProgramRow
-                    program={p}
-                    onPress={() => router.push({ pathname: '/program-edit', params: { id: p.id } })}
-                  />
-                </View>
-              ))}
-            </View>
-          )}
-        </Block>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="New program"
-          onPress={() => router.push('/program-edit')}
-          className="mt-2 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
-          <Ionicons name="add" size={17} color={palette.inkSecondary} />
-          <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
-            New program
-          </Text>
-        </Pressable>
-      </View>
-
-      {/* Routines — a plate in both states, same call as Programs above. */}
-      <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel
-            label="Routines"
+            label="Saved workouts"
             note={routines.length > 0 ? String(routines.length) : undefined}
           />
           {routines.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-              No routines yet. Build one — an ordered exercise list with targets — and starting it
-              pre-fills last session&rsquo;s numbers.
+              Nothing saved yet. A saved workout is a session you reuse — its exercises and targets
+              load pre-filled, with last time&rsquo;s numbers as the placeholders.
             </Text>
           ) : (
             <View className="mt-1">
               {routines.map((r, i) => (
                 <View key={r.id}>
                   <Divider first={i === 0} />
-                  <RoutineRow
+                  <SavedWorkoutRow
                     routine={r}
                     today={today}
                     onStart={() =>
@@ -400,28 +250,29 @@ export default function ExerciseScreen() {
         </Block>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="New routine"
+          accessibilityLabel="New saved workout"
           onPress={() => router.push('/routine-edit')}
           className="mt-2 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
           <Ionicons name="add" size={17} color={palette.inkSecondary} />
           <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
-            New routine
+            New saved workout
           </Text>
         </Pressable>
       </View>
 
       {/*
-        Quick log — free-form / cardio / past session (the older logger).
+        Manual log — the ways a session gets in WITHOUT the live logger: typed
+        free-form (cardio / mobility / a past day) or imported from a photo of
+        another app's log (AI-parsed, reviewed before anything saves).
 
         A **ruled plate**, not a well. Recessed stock is reserved for surfaces
         you actually write on (src/components/ui/block.tsx), and no keystroke is
-        ever taken here: the row's only job is to push /workout-log, exactly
-        like the Programs, Routines and Recent-sessions rows around it. Drawing
-        it as a capture surface promised an input that isn't there.
+        ever taken here: these rows only navigate, exactly like the rows in the
+        plates around them. (Renamed from "Quick log", owner call 2026-08-11.)
       */}
       <View className="mt-7">
         <Block device="plate">
-          <SectionLabel label="Quick log" />
+          <SectionLabel label="Manual log" />
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Log a session free-form"
@@ -430,6 +281,18 @@ export default function ExerciseScreen() {
             <Ionicons name="time-outline" size={17} color={palette.inkSecondary} />
             <Text className="flex-1 font-serif text-[14px] text-ink">
               Cardio, mobility, or a past session
+            </Text>
+            <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+          </Pressable>
+          <Divider />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Import a workout from a photo"
+            onPress={() => router.push('/workout-import')}
+            className="min-h-[44px] flex-row items-center gap-2 active:opacity-60">
+            <Ionicons name="image-outline" size={17} color={palette.inkSecondary} />
+            <Text className="flex-1 font-serif text-[14px] text-ink">
+              Import from a photo of another app
             </Text>
             <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
           </Pressable>
@@ -481,55 +344,43 @@ export default function ExerciseScreen() {
  *   a session   → **stamped plate**, the screen's one accent, and the one that
  *                 wears the hatched cap. It is the single directive thing on the
  *                 page, so it is the only thing drawn in the accent.
- *   a rest day  → **measured field**, its corner ticks and nothing else. A rest
- *                 day is a verdict about today, not an action, so it takes no
- *                 enclosure — and no accent, because there is nothing to start.
+ *   a rest day  → **measured field**, its corner ticks and nothing else — a
+ *                 verdict, not an action. (Dormant since programs were retired
+ *                 2026-08-11; the arm stays for the Coach's read tool.)
  *   nothing yet → **measured field** as well, saying plainly why. Empty is
  *                 authored, never blank.
  *
- * What separates the three is the stamp's accent border and hatch, the field's
- * corner ticks, the air around the block, and the type. (This note used to say
- * the field "draws nothing"; that was true for two days in August 2026, when
- * three devices were stripped on a misreading of the owner's "weird boxes" —
- * they were not noise, they were rendering as boxes. All three are back, drawn
- * as filled views. The full history is in src/components/ui/block.tsx.)
+ * Every shape also carries the second door — **Start empty** — because "log
+ * something the engine didn't plan" must never be gated on the engine having a
+ * plan (owner ask, 2026-08-11).
  *
  * ## The gauge has to say what its number rests on
  *
- * `muscleFreshness` scores a never-trained muscle 100 / fresh by construction
- * (src/lib/exercise/freshness.ts), so on a fresh install with one routine and no
- * sessions the meter draws a full-width optimal bar pinned **100% FRESH**. The
- * number is right under the model; what is wrong is that "100 because nothing
- * has ever been logged" and "100 because you are fully recovered" render
- * identically, and the gauge is a far louder claim than the 12px caption it
- * replaced (00-design-spec.md §5).
+ * `muscleFreshness` scores a never-trained muscle 100 / fresh by construction,
+ * so on a fresh install the meter would draw a full optimal bar pinned
+ * **100% FRESH**. The number is right under the model; what is wrong is that
+ * "100 because nothing has ever been logged" and "100 because you are fully
+ * recovered" render identically. The instrument states its basis instead —
+ * `hasHistory` false prints `no sessions logged` in the pin row and appends it
+ * to the spoken label. Only the never-logged case is qualified: a 100 after two
+ * untrained weeks is a real reading.
  *
- * The instrument stays and states its basis instead — `hasHistory` false prints
- * `no sessions logged` in the pin row and appends it to the spoken label. It is
- * a coarse test on purpose: sessions older than `FRESHNESS_LOOKBACK_DAYS` (14)
- * also leave the ledger with no load to decay, but a 100 there is a real reading
- * — two weeks untrained IS fully recovered — so only the never-logged case is
- * qualified. `sessions` is the signal available at the call site and it is the
- * exact one: `listRecentSessions` is a LIMIT with no date window, so empty means
- * the table is empty.
- *
- * **An empty routine is a different case and gets no gauge at all.**
- * `routineFreshness([])` returns 100 for a routine with no exercises
- * (src/lib/exercise/recommend.ts), and `topMuscles([])` returns `''`, which left
- * a 100% meter standing over a blank line. That is not a thin reading, it is not
- * a reading — §5's "no data, no number" — so the meter and the exercise names
- * both drop out and an authored line takes the blank's place. The week count is
- * unaffected either way: it rides in the section label's note, not the "why".
+ * **An empty saved workout gets no gauge at all.** `routineFreshness([])`
+ * returns 100 for a session with no exercises, which would leave a 100% meter
+ * standing over a blank line — not a thin reading, not a reading (§5). The
+ * meter and the names drop out and an authored line takes the blank's place.
  */
 function TrainTodayCard({
   recommendation,
   hasHistory,
   onStart,
+  onStartEmpty,
 }: {
   recommendation: Recommendation;
   /** Has the owner ever logged a session? Drives the gauge's qualifier. */
   hasHistory: boolean;
   onStart: () => void;
+  onStartEmpty: () => void;
 }) {
   if (recommendation.kind === 'empty') {
     return (
@@ -538,22 +389,20 @@ function TrainTodayCard({
         <Text className="mt-2 font-serif text-[15px] leading-6 text-ink-secondary">
           {recommendation.why}
         </Text>
+        <StartEmptyButton onPress={onStartEmpty} />
       </Block>
     );
   }
 
   if (recommendation.kind === 'rest') {
-    const program = recommendation.program;
     return (
       <Block device="field">
-        <SectionLabel
-          label={program ? `Train today · ${program.programName}` : 'Train today'}
-          note={program ? `Week ${program.week} of ${program.weeks}` : undefined}
-        />
+        <SectionLabel label="Train today" />
         <Text className="mt-2 font-serif text-[19px] font-semibold text-ink">Rest day</Text>
         <Text className="mt-1.5 font-serif text-[14px] leading-6 text-ink-secondary">
           {recommendation.why}
         </Text>
+        <StartEmptyButton onPress={onStartEmpty} />
       </Block>
     );
   }
@@ -562,43 +411,26 @@ function TrainTodayCard({
     recommendation.kind === 'routine'
       ? recommendation.routineName
       : recommendation.muscles.map((m) => MUSCLE_LABEL[m]).join(' · ') || 'Fresh muscles';
-  // A routine that has never had an exercise added to it. One flag drives all
-  // three of the things the engine cannot fill in for it — the names, the gauge
-  // and the "why" — so they cannot get out of step with each other.
+  // A saved workout that has never had an exercise added to it. One flag drives
+  // all three of the things the engine cannot fill in for it — the names, the
+  // gauge and the "why" — so they cannot get out of step with each other.
   const emptyRoutine = recommendation.kind === 'routine' && recommendation.exercises.length === 0;
   const freshness =
     recommendation.kind === 'routine' && !emptyRoutine ? recommendation.freshness : null;
-  const program = recommendation.kind === 'routine' ? recommendation.program : undefined;
-  // The programme name and the deload marker are words, so they ride in the
-  // label voice; the week count is a measurement, so it rides in mono.
-  const label = program
-    ? `Train today · ${program.programName}${program.weekKind === 'deload' ? ' · deload' : ''}`
-    : 'Train today';
-
   const freshState = freshness == null ? null : freshnessState(freshness);
 
   return (
-    // `cap` draws the sheet's `.cf-card--accent::before` — a 3pt accent/ink
-    // barber hatch laid over the stamp's top edge. It is the loudest drafting
-    // mark in the set and the thing that separates "a card with a coloured
-    // border" from "a drawing that has been stamped"; `Block` gained the prop
-    // and this card is one of the four the sheet gives it to.
+    // `cap` draws the sheet's accent/ink barber hatch over the stamp's top edge
+    // — the mark that separates "a card with a coloured border" from "a drawing
+    // that has been stamped" (src/components/ui/block.tsx).
     <Block device="stamp" cap>
-      <SectionLabel
-        label={label}
-        note={program ? `Week ${program.week} of ${program.weeks}` : undefined}
-      />
+      <SectionLabel label="Train today" note="Recommended" />
 
       <Text className="mt-2 font-serif text-[20px] font-semibold leading-7 text-ink">{title}</Text>
 
-      {/*
-        Title → names → gauge → why → Start, which is the sheet's order and was
-        not the app's. The names are the card's EVIDENCE: they are what makes
-        "Lower A — Squat focus" a concrete session rather than a label, so they
-        belong directly under the title where the eye lands next. The app had
-        them last, below the rationale, where they read as a footnote to an
-        argument that had already been made without them.
-      */}
+      {/* Title → names → gauge → why → Start. The names are the card's
+          EVIDENCE — what makes the title a concrete session rather than a
+          label — so they sit directly under it, not as a footnote. */}
       {recommendation.exercises.length > 0 ? (
         <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-muted" numberOfLines={2}>
           {recommendation.exercises.map((e) => e.name).join(' · ')}
@@ -606,23 +438,16 @@ function TrainTodayCard({
       ) : null}
 
       {/*
-        The freshness gauge — the sheet's `.cf-freshmeter`, in full: pin, drop
-        line, bordered track, fill, quarter ticks, numbered scale. This was one
-        right-aligned string of 12px mono up on the title's baseline, which
-        stated the number and drew none of the instrument.
+        The freshness gauge — pin, drop line, bordered track, fill, quarter
+        ticks, numbered scale (src/components/ui/gauge.tsx).
 
         ⚠️ The fill is BIOLOGY and takes a signal cut, never the accent — this
-        card is bordered in pine and its Start button is filled pine, which makes
-        this the most likely spot in the app to paint chrome onto a biological
-        state. The mockup writes the rule into its own CSS at
-        arc-conformed-set.html:690. `Gauge` enforces it structurally: it takes a
-        `tone` from a closed union of biological states and looks the colour up
-        itself, so there is no colour prop for the accent to arrive through.
-
-        `qualifier` is the other half of that honesty: with nothing ever logged
-        the engine's 100 is a default rather than an observation, so the meter
-        names its own basis instead of pretending to one. Product nouns, and only
-        when it applies — see the note on this component.
+        card is bordered in pine and its Start button is filled pine, which
+        makes this the most likely spot in the app to paint chrome onto a
+        biological state. `Gauge` takes a `tone` from a closed union of
+        biological states, so there is no colour prop for the accent to arrive
+        through. `qualifier` is the other half of the honesty — see the
+        component note above.
       */}
       {freshness != null && freshState != null ? (
         <View className="mt-1">
@@ -637,23 +462,43 @@ function TrainTodayCard({
       ) : null}
 
       {/* The engine builds the "why" out of the session's muscles, which an
-          empty routine has none of — it arrived blank. Empty is AUTHORED, never
-          blank (§5), and the authored version also says what would fix it. */}
+          empty saved workout has none of. Empty is AUTHORED, never blank (§5),
+          and the authored version says what would fix it. */}
       <Text className="mt-3.5 font-serif text-[14px] leading-6 text-ink-secondary">
         {emptyRoutine
-          ? 'No exercises in this routine yet — add some from Routines below.'
+          ? 'No exercises in this saved workout yet — add some from Saved workouts below.'
           : recommendation.why}
       </Text>
 
+      {/* Two doors into a session: the engine's pick, or a blank sheet. The
+          recommended start is the screen's one accent; the empty start is a
+          ghost — a real alternative, not a second claim on the budget. */}
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Start this workout"
+        accessibilityLabel="Start the recommended workout"
         onPress={onStart}
         className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3 active:opacity-70">
         <Ionicons name="play" size={17} color={palette.pineOn} />
-        <Text className="font-label text-[15px] font-semibold text-pine-on">Start</Text>
+        <Text className="font-label text-[15px] font-semibold text-pine-on">Start recommended</Text>
       </Pressable>
+      <StartEmptyButton onPress={onStartEmpty} />
     </Block>
+  );
+}
+
+/** The blank-sheet door — a ghost action under the recommended start. */
+function StartEmptyButton({ onPress }: { onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Start an empty workout"
+      onPress={onPress}
+      className="mt-2 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+      <Ionicons name="add" size={16} color={palette.inkSecondary} />
+      <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+        Start empty
+      </Text>
+    </Pressable>
   );
 }
 
@@ -671,10 +516,7 @@ function WeeklyVolume({ volume }: { volume: MuscleVolume[] }) {
     return (
       <Block device="margin">
         <SectionLabel label="Weekly volume" />
-        {/* The absence, then the reference the numbers get read against. The
-            "Once you train, ARC tracks…" framing was the app narrating its own
-            features; the MEV–MRV range is the part still needed to read this
-            block once it fills (slop sweep, 2026-08-10). */}
+        {/* The absence, then the reference the numbers get read against. */}
         <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
           No sets logged this week yet. Weekly sets per muscle are measured against its productive
           range (MEV–MRV).
@@ -715,94 +557,17 @@ function WeeklyVolume({ volume }: { volume: MuscleVolume[] }) {
   );
 }
 
-/*
- * The dashed rule dividing a program/routine entry's head from its foot — the
- * sheet's `.cf-progcard-foot` — is `DashedDivider` in
- * src/components/ui/block.tsx. It lived here as a local copy for one commit,
- * alongside two more in app/protocols.tsx and app/protocol-versions.tsx, and the
- * three had already drifted apart on dash pitch. The primitive kept this file's
- * finer 3pt/6pt pattern; the reasoning is in its docblock.
- */
-
 /**
- * The week marker on a running program — the sheet's `.cf-progchip`, which is a
- * bordered BOX. The app printed the bare string, and an unenclosed count next to
- * a title reads as part of the title rather than as a marker on it.
+ * One ruled line of the Saved-workouts plate. Tapping the row STARTS it — which
+ * the row says out loud ("Tap to start · …"), because a pencil sits in the same
+ * row with its own tap target, and a row that states nothing about itself but a
+ * date leaves the reader guessing which of the two taps runs it.
  *
- * Two deliberate departures from the sheet, both to the spec:
- *
- *   **Radius.** `.cf-progchip` carries `border-radius: 8px`; 00-design-spec.md
- *   §4 caps every corner in this design at 2px ("corners: square… buttons take a
- *   2px radius at most"). The spec wins over the sheet — `rounded-btn` is 2px.
- *
- *   **Voice.** §3 puts chips in the label voice, with a carve-out for "a
- *   measured value inside a label — `v3`, `280 g`, `12 sets` — which stays
- *   mono". This chip is nothing BUT that: "Week 3" is an index into an
- *   eight-week block, the same kind of measurement as `v3`. Setting four
- *   characters in two type stacks to satisfy the letter of the rule would cost
- *   more than it buys at 10px, so the whole chip stays mono.
+ * Head, dashed rule, foot — the sheet's `.cf-progcard` rhythm, kept as a ruled
+ * row in one shared plate rather than a card per entry (a plate per entry would
+ * nest a device inside a device, which this design forbids).
  */
-function WeekChip({ week }: { week: number }) {
-  return (
-    <View className="rounded-btn border border-hairline px-[7px] py-0.5">
-      <Text className="font-mono text-[10px] text-ink-muted">Week {week}</Text>
-    </View>
-  );
-}
-
-/**
- * One ruled line of the Programs plate. Carries no device of its own — it lives
- * inside the plate, and devices never nest (src/components/ui/block.tsx).
- *
- * **The sheet draws each entry as its own bordered `paper-hi` card
- * (`.cf-progcard`); this is a ruled row in one shared plate.** That divergence
- * is kept on purpose. A plate per entry would nest a device inside a device,
- * which this design forbids outright, and the shared plate is what makes
- * Programs, Routines and Recent sessions read as three records of the same kind.
- * The owner has separately asked for Exercise to be reworked, so the question is
- * open — but the two MARKS the sheet's card carries and this row had lost, the
- * dashed foot rule and the boxed week chip, are restored here regardless: they
- * are the drawing, and the container is the argument.
- */
-function ProgramRow({ program, onPress }: { program: ProgramListItem; onPress: () => void }) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${program.name}. ${program.weeks} weeks, ${program.trainingDays} training days${
-        program.active ? `, active, week ${program.currentWeek ?? ''}` : ''
-      }. Edit.`}
-      onPress={onPress}
-      className="min-h-[44px] justify-center py-2.5 active:opacity-60">
-      <View className="flex-row items-center gap-2">
-        <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">{program.name}</Text>
-        {program.active && program.currentWeek != null ? (
-          <WeekChip week={program.currentWeek} />
-        ) : null}
-        <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
-      </View>
-      {/* Head, dashed rule, foot — the sheet's 10pt / 8pt rhythm around it. */}
-      <View className="mt-2.5">
-        <DashedDivider />
-      </View>
-      <View className="mt-2 flex-row items-center justify-between gap-3">
-        <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-          {program.active ? 'Running' : 'Not started'}
-        </Text>
-        <Text className="font-mono text-[10px] text-ink-muted">
-          {program.weeks} wk · {program.trainingDays} days
-        </Text>
-      </View>
-    </Pressable>
-  );
-}
-
-/**
- * One ruled line of the Routines plate. Tapping the row starts the routine —
- * which is exactly what the row had stopped saying. See `last` below, and the
- * note on {@link ProgramRow} for the card-versus-row question and the two marks
- * restored from the sheet's `.cf-progcard`.
- */
-function RoutineRow({
+function SavedWorkoutRow({
   routine,
   today,
   onStart,
@@ -813,17 +578,6 @@ function RoutineRow({
   onStart: () => void;
   onEdit: () => void;
 }) {
-  /*
-    The sheet's `.cf-progcard-sub` reads "Tap to start · last Tuesday"; the app
-    printed only "Last tuesday". The hint is not decoration here: a pencil sits
-    in this same row and owns its own tap target, so a row that states nothing
-    about itself but a date leaves the reader guessing whether tapping it edits
-    the routine or runs it. Naming the action is what disambiguates the two.
-
-    It stays in the foot's left slot, in the label voice, rather than becoming a
-    separate sub line — the sheet can afford both because its foot-left carries
-    the parent program's name, which `RoutineListItem` does not track.
-  */
   const last =
     routine.lastStartedAt == null
       ? 'Tap to start · never run'
@@ -845,7 +599,7 @@ function RoutineRow({
           <Ionicons name="create-outline" size={17} color={palette.inkMuted} />
         </Pressable>
       </View>
-      {/* Head, dashed rule, foot — the same rhythm as ProgramRow above. */}
+      {/* Head, dashed rule, foot — the sheet's 10pt / 8pt rhythm around it. */}
       <View className="mt-2.5">
         <DashedDivider />
       </View>

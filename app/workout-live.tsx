@@ -2,11 +2,11 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import Animated, { FadeIn, FadeOut, LinearTransition, ZoomIn } from 'react-native-reanimated';
 
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
 import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
-import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -19,7 +19,7 @@ import {
   personalRecords,
   type PrevSet,
 } from '@/lib/db/repositories/training-stats';
-import { DELOAD_VOLUME_FRACTION, restSecFor } from '@/lib/exercise/constants';
+import { restSecFor } from '@/lib/exercise/constants';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
 import {
   displayWeight,
@@ -69,6 +69,40 @@ const SET_TYPES: SetType[] = ['normal', 'warmup', 'failure', 'drop'];
 
 /** Recessed stock for an inline entry field: an input well, without the device. */
 const INPUT_WELL = 'justify-center border border-paper-deep bg-paper-dim px-1';
+
+/**
+ * The bind's spring — one settle, no wobble past the joint. Shared by every
+ * block wrapper so linking, unlinking, and remove/reorder all move on the same
+ * physics.
+ */
+const BIND_SPRING = LinearTransition.springify().damping(19).stiffness(210).mass(0.6);
+
+/**
+ * The seam chip — the stamp that lands where two plates fuse into one. It sits
+ * astride the shared rule (absolutely positioned, centred), interrupting it the
+ * way a section mark interrupts a ledger seam; the ZoomIn spring gives it the
+ * one small overshoot of a press stamp. Tapping it splits the superset.
+ */
+function SupersetSeam({ onPress }: { onPress: () => void }) {
+  return (
+    <Animated.View
+      entering={ZoomIn.springify().damping(14).stiffness(260).mass(0.5)}
+      exiting={FadeOut.duration(110)}
+      style={{ position: 'absolute', top: -11, alignSelf: 'center', zIndex: 10 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Supersetted with the exercise above. Tap to split."
+        onPress={onPress}
+        hitSlop={10}
+        className="flex-row items-center gap-1 border border-hairline bg-paper-hi px-2.5 py-0.5 active:opacity-60">
+        <Ionicons name="link" size={11} color={palette.inkSecondary} />
+        <Text className="font-label text-[9px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+          Superset
+        </Text>
+      </Pressable>
+    </Animated.View>
+  );
+}
 
 type LiveSet = {
   key: number;
@@ -143,18 +177,14 @@ function blankSet(from?: LiveSet): LiveSet {
 function buildBlock(
   exerciseId: string,
   targetSets: number,
-  restSec: number | null,
-  deload: boolean
+  restSec: number | null
 ): LiveBlock | null {
   const db = getDb();
   const ex = getExercise(db, exerciseId);
   if (!ex) return null;
   const prev = lastSessionSets(db, exerciseId);
   const bestE1rm = personalRecords(db, exerciseId).bestE1rmKg;
-  // On a deload week the split runs with the volume cut (RP model), so pre-fill
-  // fewer set rows — the user can still add more.
-  const scaled = deload ? Math.ceil(targetSets * DELOAD_VOLUME_FRACTION) : targetSets;
-  const count = Math.max(1, scaled);
+  const count = Math.max(1, targetSets);
   return {
     key: nextKey(),
     exerciseId,
@@ -170,26 +200,20 @@ function buildBlock(
 }
 
 /**
- * Initial blocks: from a routine (targets + rest per line), else from an
+ * Initial blocks: from a saved workout (targets + rest per line), else from an
  * explicit exercise-id list (the hub's freshest-muscle recommendation), else
- * empty (free-form — add exercises as you go).
+ * empty (a blank sheet — add exercises as you go).
  */
-function initialBlocks(
-  routineId: string | undefined,
-  exerciseIds: string[],
-  deload: boolean
-): LiveBlock[] {
+function initialBlocks(routineId: string | undefined, exerciseIds: string[]): LiveBlock[] {
   if (routineId) {
     const routine = getRoutine(getDb(), routineId);
     if (routine) {
       return routine.exercises
-        .map((line) => buildBlock(line.exerciseId, line.targetSets, line.restSec, deload))
+        .map((line) => buildBlock(line.exerciseId, line.targetSets, line.restSec))
         .filter((b): b is LiveBlock => b !== null);
     }
   }
-  return exerciseIds
-    .map((id) => buildBlock(id, 3, null, deload))
-    .filter((b): b is LiveBlock => b !== null);
+  return exerciseIds.map((id) => buildBlock(id, 3, null)).filter((b): b is LiveBlock => b !== null);
 }
 
 export default function WorkoutLiveScreen() {
@@ -197,34 +221,22 @@ export default function WorkoutLiveScreen() {
     routineId?: string | string[];
     name?: string;
     exerciseIds?: string | string[];
-    deload?: string | string[];
   }>();
   const routineId = Array.isArray(params.routineId) ? params.routineId[0] : params.routineId;
   const seedName = Array.isArray(params.name) ? params.name[0] : params.name;
   const idsParam = Array.isArray(params.exerciseIds) ? params.exerciseIds[0] : params.exerciseIds;
   const exerciseIds = idsParam ? idsParam.split(',').filter(Boolean) : [];
-  const deloadParam = Array.isArray(params.deload) ? params.deload[0] : params.deload;
-  const deload = deloadParam === '1';
-  return (
-    <WorkoutLive
-      routineId={routineId}
-      seedName={seedName}
-      exerciseIds={exerciseIds}
-      deload={deload}
-    />
-  );
+  return <WorkoutLive routineId={routineId} seedName={seedName} exerciseIds={exerciseIds} />;
 }
 
 function WorkoutLive({
   routineId,
   seedName,
   exerciseIds,
-  deload,
 }: {
   routineId?: string;
   seedName?: string;
   exerciseIds: string[];
-  deload: boolean;
 }) {
   const router = useRouter();
   const navigation = useNavigation();
@@ -234,9 +246,7 @@ function WorkoutLive({
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(startedAt);
   const [name, setName] = useState(seedName ?? '');
-  const [blocks, setBlocks] = useState<LiveBlock[]>(() =>
-    initialBlocks(routineId, exerciseIds, deload)
-  );
+  const [blocks, setBlocks] = useState<LiveBlock[]>(() => initialBlocks(routineId, exerciseIds));
   const [pickerOpen, setPickerOpen] = useState(false);
   const [restEndsAt, setRestEndsAt] = useState<number | null>(null);
   // The id of the pending OS rest-alert (to cancel/replace it). null when none.
@@ -321,7 +331,7 @@ function WorkoutLive({
   };
 
   const addExercise = (exerciseId: string) => {
-    const block = buildBlock(exerciseId, 1, null, false);
+    const block = buildBlock(exerciseId, 1, null);
     if (block) setBlocks((prev) => [...prev, block]);
   };
 
@@ -453,66 +463,74 @@ function WorkoutLive({
           />
         </View>
 
-        {/* Deload week — the split runs with the volume cut. Prose: margin. */}
-        {deload ? (
-          <View className="mt-4">
-            <Block device="margin">
-              <SectionLabel label="Deload week" />
-              <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
-                Fewer sets pre-filled. Keep RPE ≤ 7 and the loads submaximal; the point is to
-                recover.
-              </Text>
-            </Block>
-          </View>
-        ) : null}
+        {/*
+          Exercise blocks — one ruled plate per exercise, and THE BIND for
+          supersets (owner ask, 2026-08-11: "really join the two together").
 
-        {/* Exercise blocks — one ruled plate per exercise. */}
+          Linking two exercises doesn't decorate them — it makes them ONE
+          object. The lower plate springs upward until the two plates' facing
+          borders overlap into a single shared rule (marginTop 20 → −1, a
+          Reanimated layout spring — the plates visibly snap together), and a
+          small SUPERSET seam chip stamps into the fused joint with a spring
+          overshoot, the way a press stamp lands on a ledger seam. Tapping the
+          seam splits the plates apart again (the same spring, reversed; the
+          chip fades). This is the joining drawn with the system's own
+          vocabulary — plates, one rule, the label voice — no new chrome, no
+          lone strokes (the left rule the 2026-08-10 sweep cut stays cut).
+
+          When a block is NOT linked to the one below, the quiet link affordance
+          sits in the gap, as before.
+        */}
         {blocks.length === 0 ? (
           <Text className="mt-8 font-serif text-[14px] leading-6 text-ink-secondary">
             Nothing logged yet. Add the first exercise to start recording sets.
           </Text>
         ) : (
           <View className="mt-6">
-            {blocks.map((block, bi) => (
-              <View key={block.key} className={bi === 0 ? '' : 'mt-5'}>
-                <ExerciseBlock
-                  block={block}
-                  groupStart={groups[bi] != null && groups[bi] !== groups[bi - 1]}
-                  units={units}
-                  spec={spec}
-                  onPatch={patchSet}
-                  onAddSet={addSet}
-                  onRemoveSet={removeSet}
-                  onCycleType={cycleSetType}
-                  onToggleDone={toggleDone}
-                  onRemove={removeBlock}
-                />
-                {bi < blocks.length - 1 ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: block.linkedToNext }}
-                    accessibilityLabel={
-                      block.linkedToNext
-                        ? `Ungroup ${block.name} from the next exercise`
-                        : `Superset ${block.name} with the next exercise`
+            {blocks.map((block, bi) => {
+              const linkedAbove = bi > 0 && groups[bi] != null && groups[bi] === groups[bi - 1];
+              return (
+                <Animated.View
+                  key={block.key}
+                  layout={BIND_SPRING}
+                  style={bi === 0 ? undefined : { marginTop: linkedAbove ? -1 : 20 }}>
+                  {linkedAbove ? (
+                    <SupersetSeam onPress={() => toggleLink(blocks[bi - 1]!.key)} />
+                  ) : null}
+                  <ExerciseBlock
+                    block={block}
+                    units={units}
+                    spec={spec}
+                    onPatch={patchSet}
+                    onAddSet={addSet}
+                    onRemoveSet={removeSet}
+                    onCycleType={cycleSetType}
+                    onToggleDone={toggleDone}
+                    onRemove={removeBlock}
+                    onOpenDetail={() =>
+                      router.push({
+                        pathname: '/exercise-detail',
+                        params: { id: block.exerciseId },
+                      })
                     }
-                    onPress={() => toggleLink(block.key)}
-                    className="mt-1 min-h-[44px] flex-row items-center justify-center gap-1.5 active:opacity-60">
-                    <Ionicons
-                      name={block.linkedToNext ? 'link' : 'link-outline'}
-                      size={14}
-                      color={block.linkedToNext ? palette.ink : palette.inkMuted}
-                    />
-                    <Text
-                      className={`font-label text-[10px] uppercase tracking-[1px] ${
-                        block.linkedToNext ? 'font-semibold text-ink-secondary' : 'text-ink-muted'
-                      }`}>
-                      {block.linkedToNext ? 'Supersetted' : 'Superset with next'}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            ))}
+                  />
+                  {bi < blocks.length - 1 && !block.linkedToNext ? (
+                    <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Superset ${block.name} with the next exercise`}
+                        onPress={() => toggleLink(block.key)}
+                        className="mt-1 min-h-[40px] flex-row items-center justify-center gap-1.5 active:opacity-60">
+                        <Ionicons name="link-outline" size={14} color={palette.inkMuted} />
+                        <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                          Superset with next
+                        </Text>
+                      </Pressable>
+                    </Animated.View>
+                  ) : null}
+                </Animated.View>
+              );
+            })}
           </View>
         )}
 
@@ -610,7 +628,6 @@ function WorkoutLive({
  */
 function ExerciseBlock({
   block,
-  groupStart,
   units,
   spec,
   onPatch,
@@ -619,9 +636,9 @@ function ExerciseBlock({
   onCycleType,
   onToggleDone,
   onRemove,
+  onOpenDetail,
 }: {
   block: LiveBlock;
-  groupStart: boolean;
   units: UnitPreferences;
   spec: ReturnType<typeof weightSpec>;
   onPatch: (bk: number, sk: number, patch: Partial<Omit<LiveSet, 'key'>>) => void;
@@ -630,26 +647,32 @@ function ExerciseBlock({
   onCycleType: (bk: number, sk: number, cur: SetType) => void;
   onToggleDone: (block: LiveBlock, set: LiveSet) => void;
   onRemove: (bk: number) => void;
+  onOpenDetail: () => void;
 }) {
   const showWeight = WEIGHT_LOGGING.has(block.loggingType);
   return (
-    // Supersetted blocks used to carry a left rule tying the group together.
-    // Cut 2026-08-10: it is the same lone vertical stroke the `margin` device
-    // lost, and it ran down the outside of plates that are already drawn — a
-    // half-drawn box around boxes. The "Superset" label above the first block
-    // is what names the group, and it survives a screenshot better than a rule
-    // whose meaning has to be guessed. With the rule gone the block no longer
-    // needs the group id at all — only `groupStart`, which the caller derives.
+    // Superset grouping is drawn by THE BIND at the call site (fused plates +
+    // the seam chip), not by anything on the block itself. The old left rule
+    // was cut 2026-08-10 (a lone vertical stroke — the same mark the `margin`
+    // device lost); the old "Superset" eyebrow above the first block moved into
+    // the seam chip, which names the group at the joint it actually joins.
     <View>
-      {groupStart ? (
-        <Text className="mb-1 font-label text-[10px] uppercase tracking-[2px] text-ink-muted">
-          Superset
-        </Text>
-      ) : null}
-
       <Block device="plate">
         <View className="flex-row items-center gap-2">
-          <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">{block.name}</Text>
+          {/* The title is the door to the movement's detail — history, trend,
+              records, and how it looks — for the mid-session "how does this
+              one go again?" (2026-08-11). */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${block.name}. Open history, records and form.`}
+            onPress={onOpenDetail}
+            hitSlop={6}
+            className="flex-1 flex-row items-center gap-1.5 active:opacity-60">
+            <Text className="shrink font-serif text-[16px] font-semibold text-ink">
+              {block.name}
+            </Text>
+            <Ionicons name="chevron-forward" size={13} color={palette.inkMuted} />
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Remove ${block.name}`}

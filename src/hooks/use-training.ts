@@ -3,14 +3,11 @@ import { useFocusEffect } from 'expo-router';
 
 import { getDb } from '@/lib/db/client';
 import { listRecentSessions, weekSummary } from '@/lib/db/repositories/exercise';
-import { getProgram, listPrograms } from '@/lib/db/repositories/programs';
 import { getRoutine, listRoutines } from '@/lib/db/repositories/routines';
 import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
 import type {
   MuscleFreshness,
   MuscleVolume,
-  ProgramDetail,
-  ProgramListItem,
   Recommendation,
   RecentSession,
   RoutineDetail,
@@ -21,8 +18,8 @@ import type {
 export type TrainingHub = {
   week: WeekSummary;
   sessions: RecentSession[];
+  /** The saved workouts (the `routines` tables carry them — UI renamed 2026-08-11). */
   routines: RoutineListItem[];
-  programs: ProgramListItem[];
   ledger: MuscleFreshness[];
   volume: MuscleVolume[];
   recommendation: Recommendation;
@@ -37,7 +34,6 @@ const read = () => {
     week: weekSummary(db),
     sessions: listRecentSessions(db, 6),
     routines: listRoutines(db),
-    programs: listPrograms(db),
     ledger,
     volume,
     recommendation,
@@ -60,22 +56,11 @@ export function useTrainingHub(): TrainingHub {
   return { ...state, reload };
 }
 
-/** One program for the builder. `id` undefined (create) or unknown → null. */
-export function useProgram(id: string | undefined): ProgramDetail | null {
-  const [detail, setDetail] = useState<ProgramDetail | null>(() =>
-    id ? (getProgram(getDb(), id) ?? null) : null
-  );
-  const reload = useCallback(() => {
-    setDetail(id ? (getProgram(getDb(), id) ?? null) : null);
-  }, [id]);
-  useFocusEffect(reload);
-  return detail;
-}
-
 /**
- * One routine for the builder. `id` undefined (create) or unknown → null. Mirror
- * of useProtocol: seeds the form from the first read; the focus refresh never
- * clobbers in-progress edits because the editor copies into local state once.
+ * One saved workout for the builder. `id` undefined (create) or unknown → null.
+ * Mirror of useProtocol: seeds the form from the first read; the focus refresh
+ * never clobbers in-progress edits because the editor copies into local state
+ * once.
  */
 export function useRoutine(id: string | undefined): RoutineDetail | null {
   const [detail, setDetail] = useState<RoutineDetail | null>(() =>

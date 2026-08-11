@@ -149,38 +149,80 @@ export function lastSessionSets(db: Database, exerciseId: string): PrevSet[] {
  * Every non-warmup set in the last `days`, expanded to (muscle, role-weight)
  * loads — the fuel for the freshness ledger. One input row becomes one output
  * row per muscle it works. `now` injected for deterministic tests.
+ *
+ * ## When did a set actually happen? (backdating, 2026-08-11)
+ *
+ * A live session's sets happened when its row was WRITTEN, so `created_at` is
+ * the honest instant. A BACKDATED session — "log a past session", or a workout
+ * imported from a photo of another app — is written today about an earlier
+ * `date`, and attributing its fatigue to `created_at` would tell the freshness
+ * model the muscle was just trained when it actually recovered days ago. So:
+ * when the workout's calendar `date` is a different local day than its
+ * `created_at`, the set is attributed to that date at local noon — the honest
+ * middle of a day whose clock time nobody recorded. The SQL window filters on
+ * BOTH columns so a backdated-but-in-window session isn't excluded by its
+ * write time, and the JS re-cut drops anything whose attributed instant falls
+ * outside the window.
  */
 export function recentMuscleLoads(
   db: Database,
   days: number,
   now: Date = new Date()
 ): MuscleLoad[] {
-  const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
+  const cutoffMs = now.getTime() - days * 86_400_000;
+  const cutoff = new Date(cutoffMs).toISOString();
+  // Local calendar day of the cutoff, for the date-column side of the window.
+  const c = new Date(cutoffMs);
+  const cutoffDate = `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, '0')}-${String(
+    c.getDate()
+  ).padStart(2, '0')}`;
   const rows = db.all<{
     reps: number | null;
     weight_kg: number | null;
     rpe: number | null;
     set_type: SetType;
     when_iso: string;
+    date: string;
     muscle: Muscle;
     role: MuscleRole;
   }>(
-    `SELECT s.reps, s.weight_kg, s.rpe, s.set_type, w.created_at AS when_iso, m.muscle, m.role
+    `SELECT s.reps, s.weight_kg, s.rpe, s.set_type, w.created_at AS when_iso, w.date, m.muscle, m.role
      FROM workout_sets s
      JOIN workouts w ON w.id = s.workout_id
      JOIN exercise_muscles m ON m.exercise_id = s.exercise_id
-     WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup' AND w.created_at >= ?`,
-    [cutoff]
+     WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup'
+       AND (w.created_at >= ? OR w.date >= ?)`,
+    [cutoff, cutoffDate]
   );
-  return rows.map((r) => ({
-    muscle: r.muscle,
-    roleWeight: ROLE_WEIGHT[r.role],
-    reps: r.reps,
-    rpe: r.rpe,
-    weightKg: r.weight_kg,
-    setType: r.set_type,
-    whenIso: r.when_iso,
-  }));
+  return rows
+    .map((r) => ({
+      muscle: r.muscle,
+      roleWeight: ROLE_WEIGHT[r.role],
+      reps: r.reps,
+      rpe: r.rpe,
+      weightKg: r.weight_kg,
+      setType: r.set_type,
+      whenIso: attributedInstant(r.date, r.when_iso),
+    }))
+    .filter((load) => Date.parse(load.whenIso) >= cutoffMs);
+}
+
+/**
+ * The instant a workout's fatigue is attributed to: `created_at` when the row
+ * was written on its own calendar day (a live or same-day log), else the
+ * workout's `date` at local noon (a backdated log or photo import). Exported
+ * for the headless tests.
+ */
+export function attributedInstant(date: string, createdAtIso: string): string {
+  const created = new Date(createdAtIso);
+  if (Number.isNaN(created.getTime())) return `${date}T12:00:00.000Z`;
+  const createdLocalDate = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(
+    2,
+    '0'
+  )}-${String(created.getDate()).padStart(2, '0')}`;
+  if (createdLocalDate === date) return createdAtIso;
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  return new Date(y, m - 1, d, 12, 0, 0, 0).toISOString();
 }
 
 /**

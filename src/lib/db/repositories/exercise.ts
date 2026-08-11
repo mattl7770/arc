@@ -11,7 +11,7 @@
  * exact same code runs on device and in the headless tests (db/exercise.test.mjs).
  */
 import type { Database } from '../database';
-import { localWeekRange, todayISODate } from '../date';
+import { localWeekRange } from '../date';
 import { newId } from '../id';
 import type {
   LogWorkoutInput,

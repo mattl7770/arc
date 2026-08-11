@@ -128,8 +128,8 @@ export function createCustomExercise(db: Database, input: NewExercise): string {
   db.transaction(() => {
     db.run(
       `INSERT INTO exercises
-         (id, name, equipment, movement_pattern, mechanic, logging_type, unilateral, is_custom)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+         (id, name, equipment, movement_pattern, mechanic, logging_type, unilateral, instructions, is_custom)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         id,
         input.name.trim(),
@@ -138,6 +138,9 @@ export function createCustomExercise(db: Database, input: NewExercise): string {
         input.mechanic ?? null,
         input.loggingType,
         input.unilateral ? 1 : 0,
+        input.instructions && input.instructions.length > 0
+          ? JSON.stringify(input.instructions)
+          : null,
       ]
     );
     const insertMuscle = (muscle: Muscle, role: MuscleRole) =>

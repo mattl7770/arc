@@ -1,6 +1,6 @@
 /**
  * Headless test of the phase-2 training engine: the weekly-volume-vs-landmarks
- * verdict (volume.ts), the program-aware + volume-aware recommendation
+ * verdict (volume.ts), the volume-aware recommendation over saved workouts
  * (training-recommend.ts over 0020), and the pure rest-alert builder
  * (notifications/rest-timer.ts). Real SQLite via node:sqlite; op-sqlite / Expo
  * never loaded. Mirrors db/nutrition.test.mjs. Run: npm run db:test.
@@ -11,7 +11,6 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import { createRoutine } from '../src/lib/db/repositories/routines.ts';
-import { activateProgram, createProgram } from '../src/lib/db/repositories/programs.ts';
 import { buildRecommendation } from '../src/lib/db/repositories/training-recommend.ts';
 import {
   muscleVolume,
@@ -124,114 +123,27 @@ console.log('3. buildRecommendation surfaces the weekly volume ledger');
     : bad('volume in recommendation', JSON.stringify(chest));
 }
 
-console.log('4. an active program schedules today → recommendation follows the program');
+console.log('4. volumeScale dials the recommended working sets (the Coach turn passes it)');
 {
   const { db } = freshDb();
-  const push = createRoutine(db, {
-    name: 'Push',
-    notes: null,
-    exercises: [
-      { exerciseId: 'barbell-bench-press', targetSets: 4, repLow: 5, repHigh: 8, restSec: 180 },
-    ],
-  });
-  const legs = createRoutine(db, {
-    name: 'Legs',
-    notes: null,
-    exercises: [
-      { exerciseId: 'barbell-back-squat', targetSets: 5, repLow: 3, repHigh: 5, restSec: 240 },
-    ],
-  });
-  const prog = createProgram(db, {
-    name: 'PL',
-    notes: null,
-    weeks: 5,
-    // NOW is a Wednesday (dow 3) → map Wed to Legs, Mon to Push.
-    days: [
-      { dow: 1, routineId: push },
-      { dow: 3, routineId: legs },
-    ],
-    weekKinds: ['accumulation', 'accumulation', 'accumulation', 'accumulation', 'deload'],
-  });
-  activateProgram(db, prog, MONDAY);
-  const { recommendation } = buildRecommendation(db, NOW); // Wed of week 1
-  recommendation.kind === 'routine' &&
-  recommendation.routineName === 'Legs' &&
-  recommendation.program &&
-  recommendation.program.week === 1 &&
-  recommendation.program.weeks === 5 &&
-  recommendation.why.startsWith('Week 1 of 5')
-    ? ok("program's Wed session (Legs) is recommended with week context")
-    : bad('program recommend', JSON.stringify(recommendation));
-}
-
-console.log('5. a program rest day → rest recommendation (freshness pick suppressed)');
-{
-  const { db } = freshDb();
-  const push = createRoutine(db, {
-    name: 'Push',
-    notes: null,
-    exercises: [
-      { exerciseId: 'barbell-bench-press', targetSets: 4, repLow: 5, repHigh: 8, restSec: 180 },
-    ],
-  });
-  // Also make a second routine so the freshness pick WOULD return something if
-  // the program didn't take precedence.
   createRoutine(db, {
-    name: 'Legs',
-    notes: null,
-    exercises: [
-      { exerciseId: 'barbell-back-squat', targetSets: 5, repLow: 3, repHigh: 5, restSec: 240 },
-    ],
-  });
-  const prog = createProgram(db, {
-    name: 'MonOnly',
-    notes: null,
-    weeks: 4,
-    days: [{ dow: 1, routineId: push }], // only Monday; Wed (NOW) is rest
-    weekKinds: ['accumulation', 'accumulation', 'accumulation', 'accumulation'],
-  });
-  activateProgram(db, prog, MONDAY);
-  const { recommendation } = buildRecommendation(db, NOW); // Wed → rest
-  recommendation.kind === 'rest' && recommendation.program && recommendation.program.week === 1
-    ? ok('program rest day → rest recommendation, not a freshness pick')
-    : bad('rest recommend', JSON.stringify(recommendation));
-}
-
-console.log('6. deload week → recommendation flags the cut, suppresses the caution');
-{
-  const { db, raw } = freshDb();
-  const push = createRoutine(db, {
     name: 'Push',
     notes: null,
     exercises: [
       { exerciseId: 'barbell-bench-press', targetSets: 4, repLow: 5, repHigh: 8, restSec: 180 },
     ],
   });
-  const prog = createProgram(db, {
-    name: 'Meso',
-    notes: null,
-    weeks: 5,
-    days: [{ dow: 3, routineId: push }], // Wed
-    weekKinds: ['accumulation', 'accumulation', 'accumulation', 'accumulation', 'deload'],
-  });
-  // Fatigue chest hard so freshness would normally caution — deload must mute it.
-  for (let i = 0; i < 6; i++) {
-    logAt(db, raw, '2026-08-19T09:00:00.000Z', '2026-08-19', 'Bench', [
-      { exercise: 'Bench', exerciseId: 'barbell-bench-press', reps: 8, weightKg: 80, rpe: 10 },
-    ]);
-  }
-  activateProgram(db, prog, MONDAY);
-  const deloadNow = new Date(2026, 7, 19, 12, 0, 0); // Wed 2026-08-19 → week 5
-  const { recommendation } = buildRecommendation(db, deloadNow);
-  recommendation.kind === 'routine' &&
-  recommendation.program.weekKind === 'deload' &&
-  /deload/i.test(recommendation.why) &&
-  recommendation.caution === false
-    ? ok('deload week: why mentions the cut, caution suppressed')
-    : bad('deload recommend', JSON.stringify(recommendation));
+  const dialled = buildRecommendation(db, NOW, { volumeScale: 0.5 }).recommendation;
+  dialled.kind === 'routine' && dialled.exercises[0].targetSets === 2
+    ? ok('volumeScale 0.5 halves the planned working sets (4 → 2)')
+    : bad('volumeScale', JSON.stringify(dialled.kind === 'routine' ? dialled.exercises : dialled));
+  const neutral = buildRecommendation(db, NOW, { volumeScale: 1 }).recommendation;
+  neutral.kind === 'routine' && neutral.exercises[0].targetSets === 4
+    ? ok('volumeScale 1 is a no-op (4 sets untouched)')
+    : bad('neutral scale', JSON.stringify(neutral));
 }
 
-console.log('7. no active program → falls back to the freshness pick (unchanged behaviour)');
+console.log('5. the freshness pick over saved workouts (the default path)');
 {
   const { db } = freshDb();
   createRoutine(db, {
@@ -249,7 +161,7 @@ console.log('7. no active program → falls back to the freshness pick (unchange
     : bad('fallback', JSON.stringify(recommendation));
 }
 
-console.log('8. buildRestAlert (pure) clamps + shapes the request');
+console.log('6. buildRestAlert (pure) clamps + shapes the request');
 {
   const a = buildRestAlert(150);
   a.trigger.type === 'timeInterval' && a.trigger.seconds === 150 && a.trigger.repeats === false

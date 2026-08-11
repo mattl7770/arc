@@ -221,6 +221,8 @@ export type NewExercise = {
   unilateral?: boolean;
   primaryMuscles: Muscle[];
   secondaryMuscles?: Muscle[];
+  /** Short how-to steps (AI search writes these; the manual form leaves them off). */
+  instructions?: string[];
 };
 
 /** Filters the catalog picker can apply (all optional / AND-combined). */
@@ -430,103 +432,19 @@ export type Recommendation =
     };
 
 // ---------------------------------------------------------------------------
-// programs / periodization (0020)
+// periodization vestige (0020)
+//
+// Programs were retired 2026-08-11 (owner call: one flat list of saved
+// workouts beats the routines/programs pair). The 0020 tables stay in the
+// schema, dormant; the repo/screens/tests are deleted. What survives here is
+// exactly what the Recommendation union still names — ProgramContext and its
+// WeekKind — because the Coach's get_training_recommendation tool renders
+// `'program' in recommendation` and the type arms stay for it, even though
+// nothing produces them today.
 // ---------------------------------------------------------------------------
 
-/** program_weeks.kind — a week that differs from plain accumulation. */
+/** A week that differs from plain accumulation (kept for ProgramContext). */
 export type WeekKind = 'accumulation' | 'deload' | 'test';
-
-/** ISO weekday, 1=Mon … 7=Sun (the program schedule's convention). */
-export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
-
-/** One `programs` row. */
-export type ProgramRow = {
-  id: string;
-  name: string;
-  notes: string | null;
-  weeks: number;
-  active_start: DateString | null;
-  archived: 0 | 1;
-  created_at: Timestamp;
-  updated_at: Timestamp;
-};
-
-/** One `program_days` row (a weekday → routine in the repeating split). */
-export type ProgramDayRow = {
-  id: string;
-  program_id: string;
-  dow: number;
-  routine_id: string;
-  created_at: Timestamp;
-  updated_at: Timestamp;
-};
-
-/** One `program_weeks` row (a non-accumulation week marker). */
-export type ProgramWeekRow = {
-  id: string;
-  program_id: string;
-  week: number;
-  kind: WeekKind;
-  created_at: Timestamp;
-  updated_at: Timestamp;
-};
-
-/** One weekday of a program's split, joined to its routine name. */
-export type ProgramDay = {
-  dow: Weekday;
-  routineId: string;
-  routineName: string;
-};
-
-/** A program in the hub list. */
-export type ProgramListItem = {
-  id: string;
-  name: string;
-  weeks: number;
-  trainingDays: number;
-  /** True when this program is the one currently running. */
-  active: boolean;
-  /** 1-based current week of the running instance, or null when inactive/finished. */
-  currentWeek: number | null;
-};
-
-/** A program plus its split + week kinds, for the builder. */
-export type ProgramDetail = {
-  id: string;
-  name: string;
-  notes: string | null;
-  weeks: number;
-  activeStart: DateString | null;
-  days: ProgramDay[];
-  /** kind per week 1..weeks (accumulation unless overridden). */
-  weekKinds: WeekKind[];
-};
-
-/** One weekday assignment the builder saves. */
-export type ProgramDayInput = { dow: Weekday; routineId: string };
-
-/** Everything one program Save writes. */
-export type ProgramInput = {
-  name: string;
-  notes: string | null;
-  weeks: number;
-  days: ProgramDayInput[];
-  /** kind per week, length === weeks (index 0 = week 1). */
-  weekKinds: WeekKind[];
-};
-
-/** What an active program has scheduled for a given day. */
-export type ScheduledSession =
-  | {
-      kind: 'train';
-      program: ProgramContext;
-      routineId: string;
-      routineName: string;
-    }
-  | {
-      kind: 'rest';
-      program: ProgramContext;
-    };
 
 // ---------------------------------------------------------------------------
 // weekly volume vs landmarks (engine: volume.ts)

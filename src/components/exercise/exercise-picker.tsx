@@ -1,7 +1,15 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Block, Divider, VerticalDivider } from '@/components/ui/block';
@@ -14,8 +22,13 @@ import {
   getExercise,
   listExercises,
 } from '@/lib/db/repositories/exercise-catalog';
+import {
+  isExerciseSearchAvailable,
+  searchExercisesWithAI,
+  type ExerciseSearchResult,
+} from '@/lib/exercise/ai-search';
 import { MUSCLE_LABEL, MUSCLE_ORDER } from '@/lib/exercise/constants';
-import type { CatalogExercise, Equipment, Muscle } from '@/lib/exercise/types';
+import type { CatalogExercise, Equipment, Muscle, NewExercise } from '@/lib/exercise/types';
 
 /**
  * The exercise picker — a modal reused by the routine builder and the live
@@ -85,7 +98,7 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
   const [all, setAll] = useState<CatalogExercise[]>(() => listExercises(getDb()));
   const [search, setSearch] = useState('');
   const [muscle, setMuscle] = useState<Muscle | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [mode, setMode] = useState<'browse' | 'create' | 'ai'>('browse');
   // Set when the user asks for a detail screen; consumed by onDismiss below.
   const [pendingDetailId, setPendingDetailId] = useState<string | null>(null);
 
@@ -97,7 +110,7 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
   );
 
   const close = () => {
-    setCreating(false);
+    setMode('browse');
     setSearch('');
     setMuscle(null);
     onClose();
@@ -150,13 +163,27 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
                 <Ionicons name="close" size={22} color={palette.ink} />
               </Pressable>
               <Text className="font-serif text-lg font-semibold text-ink">
-                {creating ? 'New exercise' : 'Add exercise'}
+                {mode === 'create'
+                  ? 'New exercise'
+                  : mode === 'ai'
+                    ? 'Find with AI'
+                    : 'Add exercise'}
               </Text>
             </View>
 
-            {creating ? (
+            {mode === 'create' ? (
               <CreateExerciseForm
-                onCancel={() => setCreating(false)}
+                onCancel={() => setMode('browse')}
+                onCreated={(id) => {
+                  reloadCatalog();
+                  const ex = getExercise(getDb(), id);
+                  if (ex) select(ex);
+                }}
+              />
+            ) : mode === 'ai' ? (
+              <AiSearchView
+                onCancel={() => setMode('browse')}
+                onSelect={select}
                 onCreated={(id) => {
                   reloadCatalog();
                   const ex = getExercise(getDb(), id);
@@ -172,7 +199,8 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
                 filtered={filtered}
                 onSelect={select}
                 onOpenDetail={openDetail}
-                onNew={() => setCreating(true)}
+                onNew={() => setMode('create')}
+                onAi={isExerciseSearchAvailable() ? () => setMode('ai') : null}
               />
             )}
           </View>
@@ -191,6 +219,7 @@ function BrowseCatalog({
   onSelect,
   onOpenDetail,
   onNew,
+  onAi,
 }: {
   search: string;
   setSearch: (v: string) => void;
@@ -200,6 +229,8 @@ function BrowseCatalog({
   onSelect: (ex: CatalogExercise) => void;
   onOpenDetail: (ex: CatalogExercise) => void;
   onNew: () => void;
+  /** null when no model key is configured — the door simply isn't drawn. */
+  onAi: (() => void) | null;
 }) {
   return (
     <>
@@ -234,17 +265,32 @@ function BrowseCatalog({
         ))}
       </ScrollView>
 
-      {/* New custom exercise */}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Create a custom exercise"
-        onPress={onNew}
-        className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
-        <Ionicons name="add" size={17} color={palette.inkSecondary} />
-        <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
-          New exercise
-        </Text>
-      </Pressable>
+      {/* The other two doors: the manual form, and — when a model key is set —
+          AI search ("name it, describe it, or say what you want to do"). */}
+      <View className="mt-3 flex-row gap-2">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Create a custom exercise"
+          onPress={onNew}
+          className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+          <Ionicons name="add" size={17} color={palette.inkSecondary} />
+          <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+            New exercise
+          </Text>
+        </Pressable>
+        {onAi ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Find an exercise with AI"
+            onPress={onAi}
+            className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+            <Ionicons name="sparkles-outline" size={15} color={palette.inkSecondary} />
+            <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+              Find with AI
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
 
       {/* Results — a catalog is a record, so: one ruled plate, drawn whether or
           not the search matched. A no-match state appears mid-typing here, and
@@ -347,6 +393,215 @@ function FilterChip({ label, on, onPress }: { label: string; on: boolean; onPres
         {label}
       </Text>
     </Pressable>
+  );
+}
+
+/**
+ * AI search — "name it, describe it, or say what you want to do". One model
+ * turn (src/lib/exercise/ai-search.ts) resolves the words against the catalog:
+ * matched movements come back as plain rows (tap adds, exactly like browsing),
+ * and genuinely-new movements come back as REVIEW CARDS with the full vetted
+ * definition and a ghost "Create & add" — the model proposes, the user
+ * disposes, nothing writes silently.
+ *
+ * **Accent budget: one — the Search action.** Result rows add by plain tap and
+ * creation cards use an outlined button, so the accent never multiplies as
+ * results appear.
+ */
+function AiSearchView({
+  onCancel,
+  onSelect,
+  onCreated,
+}: {
+  onCancel: () => void;
+  onSelect: (ex: CatalogExercise) => void;
+  onCreated: (id: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [phase, setPhase] = useState<
+    | { kind: 'idle' }
+    | { kind: 'searching' }
+    | { kind: 'results'; result: ExerciseSearchResult }
+    | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+
+  const canSearch = query.trim().length > 1 && phase.kind !== 'searching';
+
+  const runSearch = async () => {
+    if (!canSearch) return;
+    setPhase({ kind: 'searching' });
+    try {
+      const result = await searchExercisesWithAI(getDb(), query);
+      setPhase({ kind: 'results', result });
+    } catch (error) {
+      setPhase({
+        kind: 'error',
+        message:
+          error instanceof Error && error.name === 'ExerciseSearchUnavailableError'
+            ? error.message
+            : 'Couldn’t search. Check your connection and try again, or browse the catalog.',
+      });
+    }
+  };
+
+  const createFromCard = (definition: NewExercise) => {
+    try {
+      onCreated(createCustomExercise(getDb(), definition));
+    } catch (error) {
+      console.warn('[exercise] AI-search create failed', error);
+      setPhase({ kind: 'error', message: 'Couldn’t save that exercise. Please try again.' });
+    }
+  };
+
+  return (
+    <ScrollView
+      className="-mx-5 mt-2 flex-1 px-5"
+      keyboardShouldPersistTaps="handled"
+      contentContainerClassName="pb-8">
+      <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
+        Name it, describe it, or say what you want to train — &ldquo;landmine press&rdquo;,
+        &ldquo;that one where you row lying face-down&rdquo;, &ldquo;rear delts with only
+        bands&rdquo;.
+      </Text>
+
+      {/* The ask — recessed stock: you write into it. */}
+      <View className="mt-3 min-h-[64px] border border-paper-deep bg-paper-dim px-3.5">
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="What are you looking for?"
+          placeholderTextColor={palette.inkMuted}
+          multiline
+          className="py-2.5 font-serif text-[15px] leading-5 text-ink"
+          accessibilityLabel="Describe the exercise you want"
+          autoFocus
+        />
+      </View>
+
+      {/* The one primary action in this view. */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Search with AI"
+        accessibilityState={{ disabled: !canSearch }}
+        disabled={!canSearch}
+        onPress={runSearch}
+        className={`mt-3 h-12 flex-row items-center justify-center gap-2 rounded-btn ${
+          canSearch ? 'bg-pine active:opacity-70' : 'border border-hairline'
+        }`}>
+        <Ionicons
+          name="sparkles-outline"
+          size={15}
+          color={canSearch ? palette.pineOn : palette.inkMuted}
+        />
+        <Text
+          className={`font-label text-[15px] font-semibold ${
+            canSearch ? 'text-pine-on' : 'text-ink-muted'
+          }`}>
+          Search
+        </Text>
+      </Pressable>
+
+      {phase.kind === 'searching' ? (
+        <View className="mt-8 items-center">
+          <ActivityIndicator color={palette.ink} />
+          <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
+            Looking through the catalog…
+          </Text>
+        </View>
+      ) : null}
+
+      {phase.kind === 'error' ? (
+        <Text className="mt-4 font-serif text-[13px] leading-5 text-ink-secondary">
+          {phase.message}
+        </Text>
+      ) : null}
+
+      {phase.kind === 'results' ? (
+        <>
+          {phase.result.note ? (
+            <Text className="mt-4 font-serif text-[12px] leading-5 text-ink-muted">
+              {phase.result.note}
+            </Text>
+          ) : null}
+
+          {phase.result.matches.length > 0 ? (
+            <View className="mt-4">
+              <Block device="plate">
+                <SectionLabel label="In the catalog" note={String(phase.result.matches.length)} />
+                <View className="mt-1">
+                  {phase.result.matches.map((ex, i) => (
+                    <View key={ex.id}>
+                      <Divider first={i === 0} />
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Add ${ex.name}`}
+                        onPress={() => onSelect(ex)}
+                        className="min-h-[44px] flex-row items-center gap-3 py-2 active:opacity-60">
+                        <View className="flex-1">
+                          <Text className="font-serif text-[15px] text-ink">{ex.name}</Text>
+                          <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                            {ex.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ') || '—'} ·{' '}
+                            {equipmentLabel(ex.equipment)}
+                          </Text>
+                        </View>
+                        <Ionicons name="add" size={18} color={palette.inkMuted} />
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              </Block>
+            </View>
+          ) : null}
+
+          {phase.result.creations.map((c, i) => (
+            <View key={`${c.name}-${i}`} className="mt-4">
+              <Block device="plate">
+                <SectionLabel label="Not in the catalog — proposed" />
+                <Text className="mt-2 font-serif text-[16px] font-semibold text-ink">{c.name}</Text>
+                <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                  {c.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ')} ·{' '}
+                  {equipmentLabel(c.equipment)}
+                  {c.secondaryMuscles && c.secondaryMuscles.length > 0
+                    ? ` · assists ${c.secondaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ')}`
+                    : ''}
+                </Text>
+                {c.instructions && c.instructions.length > 0 ? (
+                  <View className="mt-2">
+                    {c.instructions.map((step, si) => (
+                      <Text
+                        key={si}
+                        className="mt-0.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
+                        {si + 1}. {step}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Create ${c.name} and add it`}
+                  onPress={() => createFromCard(c)}
+                  className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+                  <Ionicons name="add" size={16} color={palette.inkSecondary} />
+                  <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+                    Create &amp; add
+                  </Text>
+                </Pressable>
+              </Block>
+            </View>
+          ))}
+        </>
+      ) : null}
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Back to search"
+        onPress={onCancel}
+        className="mt-4 min-h-[44px] items-center justify-center active:opacity-60">
+        <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
+          Back to browse
+        </Text>
+      </Pressable>
+    </ScrollView>
   );
 }
 
