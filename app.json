@@ -50,7 +50,7 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "ARC opens your photo library so you can log a meal from a photo you already took, or import a recipe from a screenshot.",
+          "photosPermission": "ARC opens your photo library so you can log a meal from a photo you already took, or import a recipe or a workout from a screenshot.",
           "cameraPermission": false,
           "microphonePermission": false
         }

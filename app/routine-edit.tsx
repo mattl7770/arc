@@ -16,7 +16,8 @@ import type { RoutineDetail, RoutineExerciseInput } from '@/lib/exercise/types';
 import { useRoutine } from '@/hooks/use-training';
 
 /**
- * Routine builder — create/edit, pushed from the Exercise hub. A routine is a
+ * Saved-workout builder — create/edit, pushed from the Exercise hub. A saved
+ * workout (the routines tables, UI renamed 2026-08-11) is a
  * name + notes + an ordered exercise list, each line carrying its target sets,
  * rep range, and rest. Exercises are added through the shared picker. Mirrors
  * the Protocol editor's discipline: in-flight guard, deep-link id coercion,
@@ -214,7 +215,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
   const confirmDelete = () => {
     if (!detail) return;
     Alert.alert(
-      'Delete this routine?',
+      'Delete this saved workout?',
       'Workouts you logged from it keep their history — they just lose the link.',
       [
         { text: 'Cancel', style: 'cancel' },
@@ -242,10 +243,10 @@ function RoutineEditor({ id }: { id: string | undefined }) {
     return (
       <Screen>
         <View className="pt-2">
-          <StackHeader title="Edit routine" />
+          <StackHeader title="Edit saved workout" />
         </View>
         <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
-          This routine no longer exists.
+          This saved workout no longer exists.
         </Text>
       </Screen>
     );
@@ -254,11 +255,11 @@ function RoutineEditor({ id }: { id: string | undefined }) {
   return (
     <Screen scroll>
       <View className="pt-2">
-        <StackHeader title={editing ? 'Edit routine' : 'New routine'} />
+        <StackHeader title={editing ? 'Edit saved workout' : 'New saved workout'} />
       </View>
 
       <View className="mt-3">
-        <SectionLabel label="Routine" />
+        <SectionLabel label="Saved workout" />
         <View className="mt-2 min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
           <TextInput
             value={name}
@@ -266,7 +267,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
             placeholder="e.g. Upper A"
             placeholderTextColor={palette.inkMuted}
             className="py-2.5 font-serif text-[15px] text-ink"
-            accessibilityLabel="Routine name"
+            accessibilityLabel="Saved workout name"
           />
         </View>
         <View className="mt-2 min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
@@ -276,7 +277,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
             placeholder="Notes (optional)"
             placeholderTextColor={palette.inkMuted}
             className="py-2.5 font-serif text-[15px] text-ink"
-            accessibilityLabel="Routine notes"
+            accessibilityLabel="Saved workout notes"
           />
         </View>
       </View>
@@ -392,7 +393,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
       */}
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={editing ? 'Save routine' : 'Create routine'}
+        accessibilityLabel="Save workout"
         accessibilityState={{ disabled: !canSave }}
         disabled={!canSave}
         onPress={save}
@@ -403,18 +404,18 @@ function RoutineEditor({ id }: { id: string | undefined }) {
           className={`font-label text-[15px] font-semibold ${
             canSave ? 'text-pine-on' : 'text-ink-muted'
           }`}>
-          {editing ? 'Save routine' : 'Create routine'}
+          Save workout
         </Text>
       </Pressable>
 
       {editing ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Delete routine"
+          accessibilityLabel="Delete saved workout"
           onPress={confirmDelete}
           className="mt-5 min-h-[44px] items-center justify-center active:opacity-60">
           <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
-            Delete routine
+            Delete saved workout
           </Text>
         </Pressable>
       ) : null}

@@ -1,7 +1,8 @@
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Text, View } from 'react-native';
+import { Image, Text, View } from 'react-native';
 
+import { MuscleFigure, MuscleFigureLegend } from '@/components/exercise/muscle-figure';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -17,22 +18,24 @@ import {
 } from '@/lib/db/repositories/training-stats';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
 import { dayLabel, formatWeight, setLineKg } from '@/lib/exercise/format';
+import { resolveExerciseImage } from '@/lib/exercise/images.generated';
 import type { CatalogExercise, E1rmPoint, PersonalRecords } from '@/lib/exercise/types';
 import type { SessionTopSet } from '@/lib/exercise/progression';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
 /**
- * Exercise detail — history, estimated-1RM trend, and personal records for one
- * movement (docs/exercise-subapp.md §2). Read-only.
+ * Exercise detail — how the movement looks, what it works, the estimated-1RM
+ * trend, personal records, and history for one movement
+ * (docs/exercise-subapp.md). Read-only.
  *
- * **Entry point:** the records button on each catalog row in
- * src/components/exercise/exercise-picker.tsx — reachable from the routine
- * builder and the live logger, which are the two places that open the picker.
- * That button is this screen's only door, so it is load-bearing: removing it
- * strands this file and the `e1rmSeries` / `personalRecords` queries behind it.
+ * **Entry points:** the records button on each catalog row in
+ * src/components/exercise/exercise-picker.tsx, and — since 2026-08-11 — the
+ * exercise title on each block of the live logger (app/workout-live.tsx), so a
+ * mid-session "how does this one go again?" is one tap.
  *
  * ## The surface system (00-design-spec.md §1)
  *
+ *   Photo + muscles  field  a reference about the movement; unmarked
  *   Records          grid   three measured cells, ruled between — no outer box
  *   Estimated 1RM    field  a readout about the lift; unmarked, set apart by air
  *   History          plate  a record of sessions, ruled — in both states
@@ -41,6 +44,11 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  * budget is a ceiling, not a quota. Every measured value is mono — "serif
  * speaks, mono measures" — and every absent record is an em-dash rather than a
  * plausible-looking estimate.
+ *
+ * The demonstration photo is bundled (assets/exercises, public-domain
+ * free-exercise-db frames — src/lib/exercise/images.generated.ts), so it works
+ * offline like everything else. Custom exercises have no photo and show the
+ * muscles schematic alone.
  */
 
 type Detail = {
@@ -111,6 +119,8 @@ export default function ExerciseDetailScreen() {
     },
   ];
 
+  const photo = resolveExerciseImage(exercise.id);
+
   return (
     <Screen scroll>
       <View className="pt-2">
@@ -120,6 +130,33 @@ export default function ExerciseDetailScreen() {
       <Text className="mt-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
         {meta}
       </Text>
+
+      {/* How it looks + what it works — reference, so: measured field. The
+          photo and the schematic answer different questions (form vs target),
+          so they sit side by side rather than competing for one slot. */}
+      <View className="mt-5">
+        <Block device="field">
+          <View className="flex-row items-center justify-evenly gap-3">
+            {photo != null ? (
+              <Image
+                source={photo}
+                resizeMode="contain"
+                accessibilityLabel={`How ${exercise.name} is performed`}
+                style={{ width: 148, height: 148 }}
+              />
+            ) : null}
+            <MuscleFigure
+              mode="muscles"
+              primary={exercise.primaryMuscles}
+              secondary={exercise.secondaryMuscles}
+              figureWidth={photo != null ? 62 : 96}
+            />
+          </View>
+          <View className="mt-2">
+            <MuscleFigureLegend mode="muscles" />
+          </View>
+        </Block>
+      </View>
 
       {/* Personal records — a metric grid: no outer box, drawn by the rules
           between its cells. `GridCell` carries the width, the padding and both
