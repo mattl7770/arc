@@ -424,5 +424,126 @@ console.log('3. health_sync_state KV + the preferences toggle');
   isHealthSyncEnabled(db) === false ? ok('toggle off persists') : bad('toggle off');
 }
 
+// The owner reported, twice, that Home shows their Apple Health step count while
+// the Coach says nothing has synced. Same database, same day, two readers.
+//
+// Home reads pickDailyMetric(db, 'steps', today) directly. The Coach reaches the
+// same call only after a gate: it discovers its readable set from
+// `SELECT metric_type, max(date) … GROUP BY metric_type` and skips any metric
+// whose max(date) is older than today. Two read shapes, one of them gated, is a
+// place they CAN disagree — so pin that they cannot, over rows shaped the way
+// the real ingest writes them rather than hand-picked ones that merely look
+// similar.
+//
+// (The round-2 fault was in fact ABOVE this layer: the snapshot returned the
+// steps and contradicted itself in prose. This invariant is the cheap guard for
+// the failure everyone assumed it was, and it belongs here because it is a
+// statement about the repository's two read shapes.)
+console.log('5. inventory discovery can never hide a day pickDailyMetric can see');
+{
+  const { db } = freshDb();
+  const now = new Date();
+  const day = (n) => {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - n);
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${mm}-${dd}`;
+  };
+  const today = day(0);
+
+  const rows = [];
+  // Merged HealthKit statistics, exactly as statisticDailyRows writes them:
+  // source_device 'apple_health', unit 'count', id hk:<metric>:<date>.
+  for (let i = 0; i < 30; i++) {
+    for (const [metricType, unit, value] of [
+      ['steps', 'count', 8432 - i * 37],
+      ['active_energy_kcal', 'kcal', 612],
+    ]) {
+      rows.push({
+        date: day(i),
+        metricType,
+        value,
+        unit,
+        sourceDevice: 'apple_health',
+        sourceRawId: `hk:${metricType}:${day(i)}`,
+        startTime: null,
+        endTime: null,
+        metadata: { hk: { merged: true } },
+      });
+    }
+  }
+  // Watch nights, through the REAL sleep mapper — sessionised, stage-summed,
+  // attributed to the wake day, so the dates are the pipeline's, not mine.
+  const watch = {
+    sourceName: "Matt's Apple Watch",
+    bundleId: 'com.apple.health.9A8B7C6D-5E4F-3021-1122-334455667788',
+    productType: 'Watch7,1',
+  };
+  for (let i = 0; i < 30; i++) {
+    rows.push(
+      ...sleepDailyRows([
+        {
+          value: 3,
+          startISO: new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            now.getDate() - i - 1,
+            23,
+            0
+          ).toISOString(),
+          endISO: new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            now.getDate() - i,
+            6,
+            11
+          ).toISOString(),
+          provenance: watch,
+        },
+      ])
+    );
+  }
+  upsertWearableRows(db, rows);
+
+  // The discovery query the Coach's readable set is built from.
+  const inventory = db.all(
+    `SELECT metric_type AS metricType, max(date) AS lastDate
+     FROM wearable_data GROUP BY metric_type ORDER BY metric_type`
+  );
+
+  const hidden = inventory
+    .map((r) => ({
+      metricType: r.metricType,
+      // What Home would show for today…
+      home: pickDailyMetric(db, r.metricType, today),
+      // …and whether the gate would even let the Coach try.
+      admitted: !(r.lastDate < today),
+    }))
+    .filter((r) => r.home !== null && !r.admitted);
+
+  hidden.length === 0
+    ? ok(`all ${inventory.length} discovered metrics readable for today pass the max(date) gate`)
+    : bad('gate hides a readable day', hidden.map((h) => h.metricType).join(', '));
+
+  const steps = pickDailyMetric(db, 'steps', today);
+  const stepsRow = inventory.find((r) => r.metricType === 'steps');
+  steps &&
+  steps.value === 8432 &&
+  steps.sourceDevice === 'apple_health' &&
+  stepsRow.lastDate === today
+    ? ok('steps: apple_health wins the day and max(date) is today — both readers agree')
+    : bad('steps agreement', JSON.stringify({ steps, stepsRow }));
+
+  // One-directional: gating a genuinely stale metric is the point, so removing
+  // today's row must make BOTH readers report absence, not just the gated one.
+  db.run('DELETE FROM wearable_data WHERE metric_type = ? AND date = ?', ['steps', today]);
+  const stale = db.get('SELECT max(date) AS lastDate FROM wearable_data WHERE metric_type = ?', [
+    'steps',
+  ]);
+  stale.lastDate < today && pickDailyMetric(db, 'steps', today) === null
+    ? ok('drop today’s row and both readers report absence — the gate is not over-eager')
+    : bad('stale gating', JSON.stringify(stale));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

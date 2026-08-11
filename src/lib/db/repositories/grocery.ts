@@ -1,5 +1,5 @@
 /**
- * The grocery list's data layer (0031_grocery.sql): one standing list, its
+ * The grocery list's data layer (0032_grocery.sql): one standing list, its
  * check-off history, and the per-item-name memory (grocery_name_prefs) that
  * powers autocomplete, staples, and learned categories. Spec:
  * docs/recipes-grocery.md §2b.
@@ -287,10 +287,32 @@ export function consolidatedOpenList(db: Database): ConsolidatedGroceryLine[] {
   }));
 }
 
-/** Open-item count — the Nutrition hub's "Grocery list · N" line. */
+/** Open-item count — raw ROWS, not the lines the list screen draws. */
 export function openGroceryCount(db: Database): number {
   const row = db.get<{ n: number }>(
     'SELECT count(*) AS n FROM grocery_items WHERE checked_at IS NULL'
   );
   return row?.n ?? 0;
+}
+
+/** Items already in the cart — a soft state, cleared by hand, never at midnight. */
+export function checkedGroceryCount(db: Database): number {
+  const row = db.get<{ n: number }>(
+    'SELECT count(*) AS n FROM grocery_items WHERE checked_at IS NOT NULL'
+  );
+  return row?.n ?? 0;
+}
+
+/**
+ * What the Eat tab's Grocery row counts: **lines you will actually see**, i.e.
+ * `consolidatedOpenList().length`, not `openGroceryCount()`'s raw rows.
+ *
+ * The two disagree the moment a name repeats — `addRecipeToGroceryList` inserts
+ * one row per ingredient line with no dedupe, so "milk" from two recipes is two
+ * rows and one line. A hub that promises 12 and opens onto 8 is the ledger rule
+ * broken across two screens (00-design-spec.md §5), and it is exactly what the
+ * first cut of this row did.
+ */
+export function openGroceryLineCount(db: Database): number {
+  return consolidatedOpenList(db).length;
 }

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -24,15 +25,41 @@ import {
  * the source of truth); steps are edited as one block, one step per line.
  * Editing never touches a line's food resolution (that lives on the detail
  * screen) and never rewrites meals already cooked from the recipe.
+ *
+ * ## Conformed Set treatment (00-design-spec.md §1)
+ *
+ * This screen is a **form**, so it carries no device at all: the shared
+ * `SectionLabel` names each group and whitespace separates them. That absence is
+ * a decision, not an oversight — it is form (b) of the capture-surface rule
+ * written down in src/components/ui/block.tsx, the same shape app/capture.tsx
+ * and app/symptom.tsx ship. Every field wears the well's own surface
+ * (`border-paper-deep bg-paper-dim`) directly; wrapping the group in a
+ * `<Block device="well">` would stack a recess on a recess and force these
+ * inputs up onto plate stock to stay legible. **An input is never
+ * `bg-paper-hi`.**
+ *
+ * Voices: the title, the ingredient lines, the steps and the notes are prose, so
+ * serif; servings, weight and the two durations are measured, so mono; every
+ * label and every button is the label voice.
+ *
+ * **Accent budget: one.** Save is it. Removing an ingredient line is drawn in
+ * neutral ink — this app has no red chrome, and signal colours mark biology
+ * only (§2).
  */
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
+/**
+ * A field drawn as recessed stock — the well device's surface applied to the
+ * control itself. Square, like everything else in this design: the 2px `btn`
+ * radius belongs to buttons.
+ */
+const INPUT = 'border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] text-ink';
+/** The same well, as a tall multi-line field (steps) and as a shorter one
+ *  (notes). Written out in full rather than composed: Tailwind's scanner only
+ *  sees class names that appear literally in source. */
+const INPUT_STEPS =
+  'min-h-[112px] leading-6 border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] text-ink';
+const INPUT_NOTES =
+  'min-h-[64px] leading-5 border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] text-ink';
 
 type LineDraft = { id: string | null; raw: string };
 
@@ -129,16 +156,18 @@ export default function RecipeEditScreen() {
         <StackHeader title={editing ? 'Edit recipe' : 'New recipe'} />
       </View>
 
-      <View className="mt-2">
-        <SectionLabel>Recipe</SectionLabel>
-        <TextInput
-          accessibilityLabel="Title"
-          value={title}
-          onChangeText={setTitle}
-          placeholder="Title"
-          placeholderTextColor={palette.inkMuted}
-          className="mt-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink"
-        />
+      <View className="mt-5">
+        <SectionLabel label="Recipe" />
+        <View className="mt-2">
+          <TextInput
+            accessibilityLabel="Title"
+            value={title}
+            onChangeText={setTitle}
+            placeholder="Title"
+            placeholderTextColor={palette.inkMuted}
+            className={INPUT}
+          />
+        </View>
         <View className="mt-2 flex-row gap-2">
           <LabeledNumber label="Servings" value={servings} onChange={setServings} />
           <LabeledNumber label="Cooked g" value={weight} onChange={setWeight} />
@@ -147,9 +176,16 @@ export default function RecipeEditScreen() {
         </View>
       </View>
 
-      <View className="mt-6">
-        <SectionLabel>Ingredients</SectionLabel>
+      <View className="mt-7">
+        <SectionLabel label="Ingredients" />
         <View className="mt-2">
+          {/* Every line removed is a real state, and it is authored rather than
+              left blank: a recipe with no lines still saves. */}
+          {lines.length === 0 ? (
+            <Text className="mb-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              No ingredient lines yet — a recipe saves without them.
+            </Text>
+          ) : null}
           {lines.map((line, index) => (
             <View key={line.id ?? `new-${index}`} className="mb-2 flex-row items-center gap-2">
               <TextInput
@@ -159,14 +195,17 @@ export default function RecipeEditScreen() {
                 placeholder="2 cups rolled oats"
                 placeholderTextColor={palette.inkMuted}
                 autoCapitalize="none"
-                className="flex-1 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-2.5 text-[14px] text-ink"
+                className={INPUT}
+                style={{ flex: 1 }}
               />
+              {/* Neutral ink, never red — the accent belongs to Save and signal
+                  colours mark biology only (§2). 44pt square target. */}
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Remove ingredient ${index + 1}`}
                 onPress={() => dropLine(index)}
                 hitSlop={8}
-                className="active:opacity-60">
+                className="h-11 w-11 items-center justify-center active:opacity-60">
                 <Ionicons name="close-circle-outline" size={20} color={palette.inkMuted} />
               </Pressable>
             </View>
@@ -175,15 +214,17 @@ export default function RecipeEditScreen() {
             accessibilityRole="button"
             accessibilityLabel="Add an ingredient line"
             onPress={() => setLines((prev) => [...prev, { id: null, raw: '' }])}
-            className="flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-2.5 active:bg-paper-deep">
-            <Ionicons name="add" size={16} color={palette.inkSecondary} />
-            <Text className="text-[13px] text-ink">Add ingredient</Text>
+            className="min-h-[46px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+            <Ionicons name="add" size={17} color={palette.inkSecondary} />
+            <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink">
+              Add ingredient
+            </Text>
           </Pressable>
         </View>
       </View>
 
-      <View className="mt-6">
-        <SectionLabel>Steps — one per line</SectionLabel>
+      <View className="mt-7">
+        <SectionLabel label="Steps — one per line" />
         <TextInput
           accessibilityLabel="Steps"
           value={stepsText}
@@ -191,12 +232,13 @@ export default function RecipeEditScreen() {
           placeholder={'Brown the chicken.\nSimmer 45 minutes.'}
           placeholderTextColor={palette.inkMuted}
           multiline
-          className="mt-2 min-h-28 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[14px] leading-6 text-ink"
+          className={INPUT_STEPS}
+          style={{ marginTop: 8 }}
         />
       </View>
 
-      <View className="mt-6">
-        <SectionLabel>Notes</SectionLabel>
+      <View className="mt-7">
+        <SectionLabel label="Notes" />
         <TextInput
           accessibilityLabel="Notes"
           value={notes}
@@ -204,21 +246,30 @@ export default function RecipeEditScreen() {
           placeholder="Optional"
           placeholderTextColor={palette.inkMuted}
           multiline
-          className="mt-2 min-h-16 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[14px] text-ink"
+          className={INPUT_NOTES}
+          style={{ marginTop: 8 }}
         />
       </View>
 
+      {/* The one pine element on this screen. Disabled is a bordered recess:
+          ink-muted clears 4.5:1 on paper-dim, which it does not on hairline. */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Save recipe"
         accessibilityState={{ disabled: !canSave }}
         disabled={!canSave}
         onPress={save}
-        className={`mt-8 items-center justify-center rounded-btn py-3 ${
-          canSave ? 'bg-pine active:opacity-70' : 'bg-hairline'
-        }`}>
+        className={
+          canSave
+            ? 'mt-7 min-h-[48px] items-center justify-center rounded-btn bg-pine active:opacity-70'
+            : 'mt-7 min-h-[48px] items-center justify-center rounded-btn border border-hairline bg-paper-dim'
+        }>
         <Text
-          className={`text-[14px] font-semibold ${canSave ? 'text-pine-on' : 'text-ink-muted'}`}>
+          className={
+            canSave
+              ? 'font-label text-[15px] font-semibold text-pine-on'
+              : 'font-label text-[15px] font-semibold text-ink-muted'
+          }>
           {editing ? 'Save changes' : 'Save recipe'}
         </Text>
       </Pressable>
@@ -226,6 +277,11 @@ export default function RecipeEditScreen() {
   );
 }
 
+/**
+ * One measured meta field. The label is the label voice; the value is a
+ * measurement, so mono — and its placeholder is an em-dash, because no data
+ * gets no number (§5).
+ */
 function LabeledNumber({
   label,
   value,
@@ -237,7 +293,9 @@ function LabeledNumber({
 }) {
   return (
     <View className="flex-1">
-      <Text className="text-[10px] uppercase tracking-[1px] text-ink-muted">{label}</Text>
+      <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+        {label}
+      </Text>
       <TextInput
         accessibilityLabel={label}
         value={value}
@@ -245,7 +303,7 @@ function LabeledNumber({
         keyboardType="decimal-pad"
         placeholder="—"
         placeholderTextColor={palette.inkMuted}
-        className="mt-1 rounded-btn border border-hairline-soft bg-paper-deep px-2.5 py-2 text-center font-mono text-[14px] text-ink"
+        className="mt-1 min-h-[44px] border border-paper-deep bg-paper-dim px-2 py-2 text-center font-mono text-[15px] text-ink"
       />
     </View>
   );

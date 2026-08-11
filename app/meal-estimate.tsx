@@ -5,7 +5,9 @@ import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -21,6 +23,7 @@ import {
   MealEstimationUnavailableError,
 } from '@/lib/nutrition/estimate';
 import { fmtInt } from '@/lib/nutrition/format';
+import { pickPhotoBase64 } from '@/lib/media/photo-library';
 import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
 
@@ -34,6 +37,31 @@ import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
  * ONLINE-EXCEPT-AI: the model call is the exception; grounding, editing and
  * logging are offline. Photo capture is NATIVE (expo-camera + image-manipulator)
  * → needs the EAS rebuild; describe-in-words works as soon as a key is set.
+ *
+ * ## Conformed Set surface system
+ *
+ *   Description   → **recessed well**: a capture surface is stock you write on,
+ *                   so the well IS the field and the `TextInput` inside it is
+ *                   bare — form (a) of the capture-surface rule in
+ *                   src/components/ui/block.tsx. Giving the input its own fill
+ *                   would stack a recess on a recess and force it up onto plate
+ *                   stock: an input is never `bg-paper-hi`.
+ *   Prose         → **margin annotation** (the model's note, the error reason,
+ *                   the standing caveat about estimates).
+ *   Review items  → **ruled plate**: the proposed record is a table.
+ *
+ * **This screen's review IS a pending write, so it is drawn as a live decision**
+ * (00-design-spec.md §5): the consequence is stated in future tense, it sits
+ * directly above the control that performs it, and nothing but the two branches
+ * of the decision follows. The outcome is never drawn alongside the proposal.
+ *
+ * **The ledger rule.** The Items label carries the total of the rows visible
+ * beneath it, recomputed from each row's live grams — edit or remove a row and
+ * the total moves with it, because it is derived from exactly the items that
+ * will be written.
+ *
+ * **Accent budget: one per phase.** Estimate (input), Capture (camera), Allow
+ * camera (permission), Save meal (review). The phases are exclusive.
  */
 
 type Phase =
@@ -86,14 +114,6 @@ function currentPortion(row: ReviewItem) {
     fiber_g: row.base.fiber_g,
     micros: row.base.micros,
   };
-}
-
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
 }
 
 export default function MealEstimateScreen() {
@@ -154,6 +174,36 @@ export default function MealEstimateScreen() {
           : 'Couldn’t estimate that meal. Check your connection and try again, or log it manually.';
       setPhase({ kind: 'error', message });
     }
+  };
+
+  /**
+   * The photo-library path (owner request, 2026-08-11). It is a third INPUT to
+   * the pipeline that already exists — pick, downscale, then the same
+   * estimate → ground → editable review as the camera and the description. A
+   * typed description, if there is one, rides along as context.
+   *
+   * Like the camera, it is native and therefore dormant until the next EAS
+   * build; unlike a crash, `unavailable` is a sentence.
+   */
+  const choosePhoto = async () => {
+    const picked = await pickPhotoBase64();
+    if (picked.kind === 'canceled') return;
+    if (picked.kind === 'unavailable') {
+      return setPhase({
+        kind: 'error',
+        message:
+          'Choosing a photo needs the next app build (the photo-library module isn’t in this one yet). Photograph it, or describe the meal instead.',
+      });
+    }
+    if (picked.kind === 'failed') {
+      return setPhase({ kind: 'error', message: 'Couldn’t read that photo. Try another one.' });
+    }
+    await run({
+      kind: 'photo',
+      base64Jpeg: picked.base64Jpeg,
+      mediaType: 'image/jpeg',
+      description: description.trim() || undefined,
+    });
   };
 
   const capturePhoto = async () => {
@@ -232,16 +282,27 @@ export default function MealEstimateScreen() {
         <View className="pt-2">
           <StackHeader title="Describe or snap" />
         </View>
-        <Text className="mt-2 text-[13px] leading-5 text-ink-secondary">
-          AI meal estimation needs a model key — the same one the Coach uses.
-        </Text>
-        <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
-          Add a key in the Coach tab, then come back. Meanwhile, Add food and Manual entry work
-          offline.
-        </Text>
+        <View className="mt-4">
+          <Block device="margin">
+            <Text className="font-serif text-[15px] leading-6 text-ink-secondary">
+              AI meal estimation needs a model key — the same one the Coach uses.
+            </Text>
+            <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-muted">
+              Add a key in the Coach tab, then come back. Meanwhile, Add food and Manual entry work
+              offline.
+            </Text>
+          </Block>
+        </View>
       </Screen>
     );
   }
+
+  // The total of the rows actually on screen, at their live grams — a ledger
+  // sums to its own total, so this moves with every edit and removal.
+  const reviewKcal = rows.reduce<number | null>((sum, row) => {
+    const kcal = currentPortion(row).kcal;
+    return kcal == null ? sum : (sum ?? 0) + kcal;
+  }, null);
 
   return (
     <Screen scroll>
@@ -251,81 +312,116 @@ export default function MealEstimateScreen() {
 
       {phase.kind === 'input' ? (
         <View className="mt-2">
-          <SectionLabel>Describe the meal</SectionLabel>
-          <TextInput
-            value={description}
-            onChangeText={setDescription}
-            placeholder="e.g. grilled salmon, ½ cup rice, steamed broccoli"
-            placeholderTextColor={palette.inkMuted}
-            multiline
-            accessibilityLabel="Describe the meal"
-            className="mt-2 min-h-[88px] rounded-card border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] leading-6 text-ink"
-          />
+          <Block device="well">
+            <SectionLabel label="Describe the meal" />
+            <TextInput
+              value={description}
+              onChangeText={setDescription}
+              placeholder="e.g. grilled salmon, ½ cup rice, steamed broccoli"
+              placeholderTextColor={palette.inkMuted}
+              multiline
+              accessibilityLabel="Describe the meal"
+              className="mt-2 min-h-[88px] font-serif text-[15px] leading-6 text-ink"
+            />
+          </Block>
+
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Estimate from description"
             accessibilityState={{ disabled: description.trim() === '' }}
             disabled={description.trim() === ''}
             onPress={() => void run({ kind: 'text', description: description.trim() })}
-            className={`mt-3 h-12 flex-row items-center justify-center gap-2 rounded-btn ${
-              description.trim() === '' ? 'bg-hairline' : 'bg-pine active:opacity-70'
-            }`}>
+            className={
+              description.trim() === ''
+                ? 'mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-paper-deep py-3'
+                : 'mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3 active:opacity-70'
+            }>
             <Ionicons
               name="sparkles-outline"
               size={18}
               color={description.trim() === '' ? palette.inkMuted : palette.pineOn}
             />
             <Text
-              className={`text-[15px] font-semibold ${
-                description.trim() === '' ? 'text-ink-muted' : 'text-pine-on'
-              }`}>
+              className={
+                description.trim() === ''
+                  ? 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+                  : 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-pine-on'
+              }>
               Estimate
             </Text>
           </Pressable>
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Photograph the meal"
-            onPress={() => setPhase({ kind: 'camera' })}
-            className="mt-2 h-12 flex-row items-center justify-center gap-2 rounded-btn border border-hairline bg-porcelain active:bg-paper-deep">
-            <Ionicons name="camera-outline" size={18} color={palette.inkSecondary} />
-            <Text className="text-[14px] text-ink">Photograph it instead</Text>
-          </Pressable>
+          {/* Two photo paths, equal weight: the camera for the plate in front
+              of you, the library for the one you already took. Both outlined —
+              the accent on this screen belongs to Estimate. */}
+          <View className="mt-2 flex-row gap-2">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Take a photo of the meal"
+              onPress={() => setPhase({ kind: 'camera' })}
+              className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:opacity-60">
+              <Ionicons name="camera-outline" size={18} color={palette.inkSecondary} />
+              <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+                Take a photo
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Choose a photo from the library"
+              onPress={() => void choosePhoto()}
+              className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:opacity-60">
+              <Ionicons name="images-outline" size={18} color={palette.inkSecondary} />
+              <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+                Choose a photo
+              </Text>
+            </Pressable>
+          </View>
 
-          <Text className="mt-3 text-xs leading-5 text-ink-muted">
-            Estimates are just that — you’ll review and adjust every item before anything is logged.
-          </Text>
+          <View className="mt-4">
+            <Block device="margin">
+              <Text className="font-serif text-[13px] leading-5 text-ink-muted">
+                Estimates are just that — you’ll review and adjust every item before anything is
+                logged.
+              </Text>
+            </Block>
+          </View>
         </View>
       ) : null}
 
       {phase.kind === 'camera' ? (
         !permission ? (
-          <Text className="mt-6 text-[13px] text-ink-muted">Preparing the camera…</Text>
+          <Text className="mt-6 font-serif text-[14px] text-ink-secondary">
+            Preparing the camera…
+          </Text>
         ) : !permission.granted ? (
           <View className="mt-6">
-            <Text className="text-[13px] leading-5 text-ink-secondary">
+            <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
               Photographing a meal needs camera access.
             </Text>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Allow camera"
               onPress={requestPermission}
-              className="mt-3 h-12 items-center justify-center rounded-btn bg-pine active:opacity-70">
-              <Text className="text-[14px] font-semibold text-pine-on">Allow camera</Text>
+              className="mt-3 min-h-[44px] items-center justify-center rounded-btn bg-pine py-3 active:opacity-70">
+              <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-pine-on">
+                Allow camera
+              </Text>
             </Pressable>
           </View>
         ) : (
           <View className="mt-4">
-            <View className="aspect-square w-full overflow-hidden rounded-card border border-hairline bg-ink">
+            <View className="aspect-square w-full overflow-hidden border border-hairline bg-ink">
               <CameraView ref={cameraRef} style={{ flex: 1 }} facing="back" />
             </View>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Capture photo"
               onPress={() => void capturePhoto()}
-              className="mt-3 h-12 flex-row items-center justify-center gap-2 rounded-btn bg-pine active:opacity-70">
+              className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3 active:opacity-70">
               <Ionicons name="camera" size={18} color={palette.pineOn} />
-              <Text className="text-[15px] font-semibold text-pine-on">Capture</Text>
+              <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-pine-on">
+                Capture
+              </Text>
             </Pressable>
           </View>
         )
@@ -333,20 +429,28 @@ export default function MealEstimateScreen() {
 
       {phase.kind === 'estimating' ? (
         <View className="mt-10 items-center">
-          <ActivityIndicator color={palette.pine} />
-          <Text className="mt-3 text-[13px] text-ink-muted">Estimating the meal…</Text>
+          <ActivityIndicator color={palette.ink} />
+          <Text className="mt-3 font-serif text-[14px] text-ink-secondary">
+            Estimating the meal…
+          </Text>
         </View>
       ) : null}
 
       {phase.kind === 'error' ? (
         <View className="mt-6">
-          <Text className="text-[13px] leading-5 text-ink-secondary">{phase.message}</Text>
+          <Block device="margin">
+            <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
+              {phase.message}
+            </Text>
+          </Block>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Try again"
             onPress={() => setPhase({ kind: 'input' })}
-            className="mt-3 h-12 items-center justify-center rounded-btn border border-hairline-strong active:bg-paper-deep">
-            <Text className="text-[14px] font-semibold text-ink">Try again</Text>
+            className="mt-4 min-h-[44px] items-center justify-center rounded-btn border border-ink py-3 active:opacity-60">
+            <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink">
+              Try again
+            </Text>
           </Pressable>
         </View>
       ) : null}
@@ -359,64 +463,92 @@ export default function MealEstimateScreen() {
               est · AI
             </Text>
           </View>
+
           {phase.notes ? (
-            <Text className="mt-1 text-xs leading-5 text-ink-secondary">{phase.notes}</Text>
+            <View className="mt-2">
+              <Block device="margin">
+                <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
+                  {phase.notes}
+                </Text>
+              </Block>
+            </View>
           ) : null}
 
+          {/* The plate holds in both states: with every row removed the block
+              still stands where the draft record stands. (The sweep of
+              2026-08-10 made it conditional; reverted at the owner's
+              instruction.) */}
           <View className="mt-4">
-            {rows.length === 0 ? (
-              <Text className="text-[13px] leading-5 text-ink-muted">
-                No items left. Discard, or go back and re-estimate.
-              </Text>
-            ) : (
-              rows.map((row, index) => {
-                const p = currentPortion(row);
-                return (
-                  <View
-                    key={row.key}
-                    className={`py-3 ${index === 0 ? '' : 'border-t border-hairline-soft'}`}>
-                    <View className="flex-row items-center gap-3">
-                      <View className="flex-1">
-                        <Text className="text-[15px] leading-5 text-ink">
-                          {row.name}
-                          <Text className="font-mono text-[10px] text-ink-muted">
-                            {'  '}≈ {row.confidence}
-                            {row.foodId ? ' · matched' : ''}
+            <Block device="plate">
+              <SectionLabel
+                label="Items"
+                note={reviewKcal !== null ? `${fmtInt(reviewKcal)} kcal` : undefined}
+              />
+
+              {rows.length === 0 ? (
+                <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+                  No items left. Discard, or go back and re-estimate.
+                </Text>
+              ) : (
+                <View className="mt-1">
+                  {rows.map((row, index) => {
+                    const p = currentPortion(row);
+                    return (
+                      <View key={row.key}>
+                        <Divider first={index === 0} />
+                        <View className="py-3">
+                          <View className="min-h-[44px] flex-row items-center gap-3">
+                            <View className="flex-1">
+                              <Text className="font-serif text-[15px] leading-5 text-ink">
+                                {row.name}
+                                <Text className="font-mono text-[10px] text-ink-muted">
+                                  {'  '}≈ {row.confidence}
+                                  {row.foodId ? ' · matched' : ''}
+                                </Text>
+                              </Text>
+                            </View>
+                            <View className="flex-row items-center gap-1">
+                              <TextInput
+                                value={row.gramsText}
+                                onChangeText={(t) => setGrams(row.key, t)}
+                                keyboardType="decimal-pad"
+                                accessibilityLabel={`${row.name} grams`}
+                                className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+                              />
+                              <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
+                            </View>
+                            <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
+                              {p.kcal != null ? fmtInt(p.kcal) : '—'}
+                            </Text>
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`Remove ${row.name}`}
+                              hitSlop={12}
+                              onPress={() => removeRow(row.key)}
+                              className="h-8 w-8 items-center justify-center rounded-btn active:opacity-60">
+                              <Ionicons name="close" size={16} color={palette.inkMuted} />
+                            </Pressable>
+                          </View>
+                          <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                            {p.protein_g != null ? `P ${Math.round(p.protein_g)}g` : ''}
+                            {p.carbs_g != null ? ` · C ${Math.round(p.carbs_g)}g` : ''}
+                            {p.fat_g != null ? ` · F ${Math.round(p.fat_g)}g` : ''}
                           </Text>
-                        </Text>
+                        </View>
                       </View>
-                      <View className="flex-row items-center gap-1">
-                        <TextInput
-                          value={row.gramsText}
-                          onChangeText={(t) => setGrams(row.key, t)}
-                          keyboardType="decimal-pad"
-                          accessibilityLabel={`${row.name} grams`}
-                          className="w-14 rounded-btn border border-hairline-soft bg-paper-deep px-2 py-1.5 text-right font-mono text-[13px] text-ink"
-                        />
-                        <Text className="text-xs text-ink-secondary">g</Text>
-                      </View>
-                      <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
-                        {p.kcal != null ? fmtInt(p.kcal) : '—'}
-                      </Text>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Remove ${row.name}`}
-                        hitSlop={8}
-                        onPress={() => removeRow(row.key)}
-                        className="h-8 w-8 items-center justify-center rounded-btn active:bg-paper-deep">
-                        <Ionicons name="close" size={16} color={palette.inkMuted} />
-                      </Pressable>
-                    </View>
-                    <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                      {p.protein_g != null ? `P ${Math.round(p.protein_g)}g` : ''}
-                      {p.carbs_g != null ? ` · C ${Math.round(p.carbs_g)}g` : ''}
-                      {p.fat_g != null ? ` · F ${Math.round(p.fat_g)}g` : ''}
-                    </Text>
-                  </View>
-                );
-              })
-            )}
+                    );
+                  })}
+                </View>
+              )}
+            </Block>
           </View>
+
+          {/* The decision, in future tense, immediately above the control that
+              makes it — and nothing after it but its other branch. */}
+          <Text className="mt-5 font-serif text-[13px] leading-5 text-ink-muted">
+            On save: logged onto today at the current time, labelled as an AI estimate. Discarding
+            writes nothing.
+          </Text>
 
           <Pressable
             accessibilityRole="button"
@@ -424,13 +556,17 @@ export default function MealEstimateScreen() {
             accessibilityState={{ disabled: rows.length === 0 }}
             disabled={rows.length === 0}
             onPress={save}
-            className={`mt-5 h-12 items-center justify-center rounded-btn ${
-              rows.length === 0 ? 'bg-hairline' : 'bg-pine active:opacity-70'
-            }`}>
+            className={
+              rows.length === 0
+                ? 'mt-3 min-h-[44px] items-center justify-center rounded-btn border border-paper-deep py-3'
+                : 'mt-3 min-h-[44px] items-center justify-center rounded-btn bg-pine py-3 active:opacity-70'
+            }>
             <Text
-              className={`text-[15px] font-semibold ${
-                rows.length === 0 ? 'text-ink-muted' : 'text-pine-on'
-              }`}>
+              className={
+                rows.length === 0
+                  ? 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+                  : 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-pine-on'
+              }>
               Save meal
             </Text>
           </Pressable>
@@ -438,8 +574,10 @@ export default function MealEstimateScreen() {
             accessibilityRole="button"
             accessibilityLabel="Discard"
             onPress={() => router.back()}
-            className="mt-2 items-center py-2 active:opacity-60">
-            <Text className="text-[13px] text-ink-muted">Discard</Text>
+            className="mt-2 min-h-[44px] items-center justify-center active:opacity-60">
+            <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted">
+              Discard
+            </Text>
           </Pressable>
         </View>
       ) : null}

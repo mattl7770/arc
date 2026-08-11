@@ -3,7 +3,9 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -30,20 +32,36 @@ import type {
 /**
  * The grocery list (docs/recipes-grocery.md §2b): one standing list, category
  * sections in store-walking order, autocomplete + staples from the user's own
- * history, soft check-off into a collapsed "in cart" section. Adherence-calm:
- * NO pine action on this screen — check-off circles use the standard
- * completion-stamp semantics (pine fill = done), which is what pine means.
- * Consolidation is a view: duplicate names render as one line with member
- * entries preserved underneath.
+ * history, soft check-off into a collapsed "in cart" section. Consolidation is a
+ * view: duplicate names render as one line with member entries preserved
+ * underneath.
+ *
+ * ## Conformed Set surface system (00-design-spec.md §1)
+ *
+ *   Add an item  → **well**. A capture surface is exactly what the well device
+ *                  is for: the block IS the field, so the `TextInput` is bare
+ *                  and the well's own paper-dim stock is its surface.
+ *   Matches      → **plate**: the history hits are a record list.
+ *   Staples      → no device. Chips are controls, not content; they are named
+ *                  by a SectionLabel and set apart by air.
+ *   Each category→ **plate**: a category is a record and a record is a table.
+ *                  A category holding no lines renders nothing at all — a plate
+ *                  closes a record, and an empty category has none to close.
+ *   In cart      → **plate**, folded behind its own tally.
+ *
+ * **Accent budget: one — the add action docked in the well.** It follows the
+ * `log/command-field.tsx` precedent exactly: a control inside a well carries the
+ * accent fill (a stamp, never a raise onto plate stock), and it stays pine in
+ * both states so the one action never moves under your thumb.
+ *
+ * **Check-off is neutral ink, never pine and never a signal.** An item in the
+ * cart is a shopping state, not a completion stamp and certainly not a
+ * biological one — the firewall in §2 runs both ways. The mark is the square
+ * ink box the rest of the set uses for a selection (app/lab-import.tsx).
+ * *(This reverses the earlier note here that check-off used "completion-stamp
+ * semantics, pine fill = done": the accent moved to the capture field, which is
+ * the only thing on the screen that writes a new item.)*
  */
-
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
 
 type Loaded = {
   lines: ConsolidatedGroceryLine[];
@@ -66,8 +84,8 @@ function load(): Loaded {
   return {
     lines,
     staples: listStaples(db),
-    // Effectively unbounded for one household — the "In cart · N" count and
-    // Clear's scope must match what the section actually shows.
+    // Effectively unbounded for one household — the "In cart" tally and Clear's
+    // scope must match what the section actually shows.
     checked: listCheckedGroceryItems(db, 500),
     recipeTitles,
   };
@@ -118,7 +136,10 @@ export default function GroceryScreen() {
     reload();
   };
 
-  // Category walking order for the section render.
+  const canAdd = entry.trim() !== '';
+
+  // Category walking order for the section render. A category with no lines is
+  // dropped here, so it draws nothing at all downstream.
   const sections = GROCERY_CATEGORIES.map((c) => ({
     ...c,
     lines: data.lines.filter((l) => l.category === c.key),
@@ -131,63 +152,79 @@ export default function GroceryScreen() {
         <StackHeader title="Grocery list" />
       </View>
 
-      {/* Add field + autocomplete from the user's own history. */}
-      <View className="mt-2">
-        <View className="flex-row gap-2">
-          <TextInput
-            accessibilityLabel="Add a grocery item"
-            value={entry}
-            onChangeText={type}
-            onSubmitEditing={() => add(entry)}
-            placeholder="Add an item"
-            placeholderTextColor={palette.inkMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="done"
-            className="flex-1 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink"
-          />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Add to list"
-            disabled={entry.trim() === ''}
-            onPress={() => add(entry)}
-            className={`items-center justify-center rounded-btn border px-4 ${
-              entry.trim() === ''
-                ? 'border-hairline'
-                : 'border-hairline-strong active:bg-paper-deep'
-            }`}>
-            <Text
-              className={`text-[13px] font-semibold ${entry.trim() === '' ? 'text-ink-muted' : 'text-ink'}`}>
-              Add
-            </Text>
-          </Pressable>
-        </View>
-
-        {suggestions.length > 0 ? (
-          <View className="mt-1 rounded-card border border-hairline bg-porcelain">
-            {suggestions.map((s, index) => (
-              <Pressable
-                key={s.id}
-                accessibilityRole="button"
-                accessibilityLabel={`Add ${s.display_name}`}
-                onPress={() => add(s.display_name, s.last_qty_text)}
-                className={`flex-row items-center justify-between px-3.5 py-2.5 active:bg-paper-deep ${
-                  index === 0 ? '' : 'border-t border-hairline-soft'
-                }`}>
-                <Text className="text-[14px] text-ink">{s.display_name}</Text>
-                {s.last_qty_text ? (
-                  <Text className="font-mono text-[11px] text-ink-muted">{s.last_qty_text}</Text>
-                ) : null}
-              </Pressable>
-            ))}
+      {/* ADD AN ITEM — the capture surface, and the screen's one accent. The
+          input is bare: the well is its stock, and stacking a second recessed
+          box inside a recess is the inversion block.tsx rules out. */}
+      <View className="mt-5">
+        <Block device="well">
+          {/* items-end keeps the accent a fixed stamp at the foot of the field
+              rather than a control that stretches with it. */}
+          <View className="flex-row items-end gap-2.5">
+            <View className="min-h-[44px] flex-1 justify-center">
+              <TextInput
+                accessibilityLabel="Add a grocery item"
+                value={entry}
+                onChangeText={type}
+                onSubmitEditing={() => add(entry)}
+                placeholder="Add an item"
+                placeholderTextColor={palette.inkMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="done"
+                className="py-2 font-serif text-[15px] leading-5 text-ink"
+              />
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Add to list"
+              disabled={!canAdd}
+              onPress={() => add(entry)}
+              className={
+                canAdd
+                  ? 'h-11 w-11 items-center justify-center rounded-btn bg-pine active:opacity-70'
+                  : 'h-11 w-11 items-center justify-center rounded-btn border border-paper-deep'
+              }>
+              <Ionicons name="add" size={22} color={palette.pineOn} />
+            </Pressable>
           </View>
-        ) : null}
+        </Block>
       </View>
 
-      {/* Staples — the master list of always-buys, one tap to re-add. */}
+      {/* MATCHES — autocomplete over the user's own history. A record list, so
+          a plate; its label sits on the sheet like every other label here. */}
+      {suggestions.length > 0 ? (
+        <View className="mt-4">
+          <SectionLabel label="Matches" />
+          <View className="mt-2">
+            <Block device="plate">
+              {suggestions.map((s, index) => (
+                <View key={s.id}>
+                  <Divider first={index === 0} />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Add ${s.display_name}`}
+                    onPress={() => add(s.display_name, s.last_qty_text)}
+                    className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
+                    <Text className="flex-1 font-serif text-[16px] text-ink">{s.display_name}</Text>
+                    {/* A quantity is a measurement — mono, always. */}
+                    {s.last_qty_text ? (
+                      <Text className="font-mono text-[12px] text-ink-secondary">
+                        {s.last_qty_text}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                </View>
+              ))}
+            </Block>
+          </View>
+        </View>
+      ) : null}
+
+      {/* STAPLES — the master list of always-buys, one tap to re-add. Controls,
+          not content: chips on the bare sheet, no device. */}
       {data.staples.length > 0 ? (
-        <View className="mt-5">
-          <SectionLabel>Staples</SectionLabel>
+        <View className="mt-7">
+          <SectionLabel label="Staples" />
           <View className="mt-2 flex-row flex-wrap gap-2">
             {data.staples.map((s) => (
               <Pressable
@@ -195,19 +232,26 @@ export default function GroceryScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={`Add staple ${s.display_name}`}
                 onPress={() => add(s.display_name, s.last_qty_text)}
-                className="rounded-btn border border-hairline-strong px-3 py-1.5 active:bg-paper-deep">
-                <Text className="text-[12px] text-ink">{s.display_name}</Text>
+                className="min-h-[44px] flex-row items-center gap-2 rounded-btn border border-hairline bg-paper-hi px-3 py-2 active:bg-paper-dim">
+                <Ionicons name="add" size={15} color={palette.inkSecondary} />
+                <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
+                  {s.display_name}
+                </Text>
               </Pressable>
             ))}
           </View>
         </View>
       ) : null}
 
-      {/* The list, in store-walking order. */}
+      {/* THE LIST, in store-walking order. Empty is authored and unplated: with
+          nothing on the list there is no record to close, only a sentence. */}
       {data.lines.length === 0 ? (
-        <View className="mt-8">
-          <Text className="text-[13px] leading-5 text-ink-secondary">The list is clear.</Text>
-          <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
+        <View className="mt-7">
+          <SectionLabel label="To buy" />
+          <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
+            The list is clear.
+          </Text>
+          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
             Add items above, ask the Coach (“we’re out of milk”), or open a recipe and add its
             ingredients in one go.
           </Text>
@@ -217,38 +261,43 @@ export default function GroceryScreen() {
           ...sections,
           ...(unknown.length > 0 ? [{ key: 'zz', label: 'Other', lines: unknown }] : []),
         ].map((section) => (
-          <View key={section.key} className="mt-6">
-            <SectionLabel>{section.label}</SectionLabel>
-            <View className="mt-2 rounded-card border border-hairline bg-porcelain">
-              {section.lines.map((line, index) => (
-                <GroceryLine
-                  key={line.name_norm}
-                  line={line}
-                  first={index === 0}
-                  expanded={expandedLine === line.name_norm}
-                  recipeTitles={data.recipeTitles}
-                  onCheck={() => checkLine(line)}
-                  onToggle={() =>
-                    setExpandedLine(expandedLine === line.name_norm ? null : line.name_norm)
-                  }
-                  onChanged={reload}
-                />
-              ))}
+          <View key={section.key} className="mt-7">
+            <SectionLabel label={section.label} />
+            <View className="mt-2">
+              <Block device="plate">
+                {section.lines.map((line, index) => (
+                  <GroceryLine
+                    key={line.name_norm}
+                    line={line}
+                    first={index === 0}
+                    expanded={expandedLine === line.name_norm}
+                    recipeTitles={data.recipeTitles}
+                    onCheck={() => checkLine(line)}
+                    onToggle={() =>
+                      setExpandedLine(expandedLine === line.name_norm ? null : line.name_norm)
+                    }
+                    onChanged={reload}
+                  />
+                ))}
+              </Block>
             </View>
           </View>
         ))
       )}
 
-      {/* In cart — checked items, collapsed; soft state until cleared. */}
+      {/* IN CART — checked items, folded; soft state until cleared. The tally
+          rides the label, so it is true folded or open (§5). */}
       {data.checked.length > 0 ? (
-        <View className="mt-8">
+        <View className="mt-7">
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`${data.checked.length} in cart`}
             accessibilityState={{ expanded: cartOpen }}
             onPress={() => setCartOpen(!cartOpen)}
-            className="flex-row items-center gap-2 active:opacity-60">
-            <SectionLabel>{`In cart · ${data.checked.length}`}</SectionLabel>
+            className="min-h-[44px] flex-row items-center gap-2 active:opacity-60">
+            <View className="flex-1">
+              <SectionLabel label="In cart" note={String(data.checked.length)} />
+            </View>
             <Ionicons
               name={cartOpen ? 'chevron-up' : 'chevron-down'}
               size={14}
@@ -256,37 +305,48 @@ export default function GroceryScreen() {
             />
           </Pressable>
           {cartOpen ? (
-            <View className="mt-2 rounded-card border border-hairline bg-porcelain">
-              {data.checked.map((item, index) => (
-                <Pressable
-                  key={item.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Return ${item.name} to the list`}
-                  onPress={() => {
-                    uncheckGroceryItem(getDb(), item.id);
-                    reload();
-                  }}
-                  className={`flex-row items-center gap-3 px-4 py-2.5 active:bg-paper-deep ${
-                    index === 0 ? '' : 'border-t border-hairline-soft'
-                  }`}>
-                  <View className="h-5 w-5 items-center justify-center rounded-full bg-pine">
-                    <Ionicons name="checkmark" size={12} color={palette.pineOn} />
+            <View className="mt-2">
+              <Block device="plate">
+                {data.checked.map((item, index) => (
+                  <View key={item.id}>
+                    <Divider first={index === 0} />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Return ${item.name} to the list`}
+                      onPress={() => {
+                        uncheckGroceryItem(getDb(), item.id);
+                        reload();
+                      }}
+                      className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
+                      {/* In the cart, not "done" — neutral ink, square like
+                          every other mark in this set. */}
+                      <View className="h-[22px] w-[22px] items-center justify-center bg-ink">
+                        <Ionicons name="checkmark" size={14} color={palette.paperHi} />
+                      </View>
+                      <Text className="flex-1 font-serif text-[16px] text-ink-muted line-through">
+                        {item.name}
+                      </Text>
+                    </Pressable>
                   </View>
-                  <Text className="flex-1 text-[14px] text-ink-muted line-through">
-                    {item.name}
+                ))}
+                {/* A trailing action beneath the rows: the rule above it is
+                    unconditional, because the row above genuinely exists. */}
+                <Divider />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={clearArmed ? 'Tap again to clear the cart' : 'Clear the cart'}
+                  onPress={clearCart}
+                  className="min-h-[46px] items-center justify-center py-3 active:opacity-60">
+                  <Text
+                    className={
+                      clearArmed
+                        ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink'
+                        : 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+                    }>
+                    {clearArmed ? 'Confirm clear' : 'Clear'}
                   </Text>
                 </Pressable>
-              ))}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={clearArmed ? 'Tap again to clear the cart' : 'Clear the cart'}
-                onPress={clearCart}
-                className="border-t border-hairline-soft px-4 py-3 active:bg-paper-deep">
-                <Text
-                  className={`text-center text-[13px] ${clearArmed ? 'font-semibold text-ink' : 'text-ink-muted'}`}>
-                  {clearArmed ? 'Confirm clear' : 'Clear'}
-                </Text>
-              </Pressable>
+              </Block>
             </View>
           ) : null}
         </View>
@@ -295,7 +355,7 @@ export default function GroceryScreen() {
   );
 }
 
-/** One consolidated line: check circle · name · merged qty; expands to its
+/** One consolidated line: check box · name · merged qty; expands to its
  * member entries (qty edit, category re-file, remove). */
 function GroceryLine({
   line,
@@ -322,45 +382,56 @@ function GroceryLine({
     ),
   ];
   return (
-    <View className={first ? '' : 'border-t border-hairline-soft'}>
-      <View className="flex-row items-center gap-3 px-4 py-2.5">
+    <View>
+      <Divider first={first} />
+      <View className="min-h-[46px] flex-row items-center gap-3 py-2.5">
+        {/* Shopping state, not completion: ink, and square. */}
         <Pressable
           accessibilityRole="checkbox"
           accessibilityLabel={`Check off ${line.name}`}
           accessibilityState={{ checked: false }}
           onPress={onCheck}
-          hitSlop={8}
-          className="h-5 w-5 rounded-full border border-hairline-strong active:bg-paper-deep"
+          hitSlop={12}
+          className="h-[22px] w-[22px] items-center justify-center border-[1.5px] border-hairline active:bg-paper-dim"
         />
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Edit ${line.name}`}
           accessibilityState={{ expanded }}
           onPress={onToggle}
-          className="flex-1 flex-row items-baseline gap-2 active:opacity-60">
-          <Text className="flex-1 text-[14px] text-ink">{line.name}</Text>
-          {line.qtyDisplay ? (
-            <Text className="font-mono text-[12px] text-ink-secondary">{line.qtyDisplay}</Text>
+          className="flex-1 active:opacity-60">
+          <View className="flex-row items-baseline gap-2">
+            <Text className="flex-1 font-serif text-[16px] text-ink">{line.name}</Text>
+            {line.qtyDisplay ? (
+              <Text className="font-mono text-[12px] text-ink-secondary">{line.qtyDisplay}</Text>
+            ) : null}
+          </View>
+          {/* The descriptor rides under the title, the way every other row in
+              the set carries its detail — no indent hack, no negative margin. */}
+          {forRecipes.length > 0 && !expanded ? (
+            <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+              for {forRecipes.join(', ')}
+            </Text>
           ) : null}
         </Pressable>
       </View>
-      {forRecipes.length > 0 && !expanded ? (
-        <Text className="-mt-1 px-4 pb-2 pl-12 text-[11px] text-ink-muted">
-          for {forRecipes.join(', ')}
-        </Text>
-      ) : null}
       {expanded ? (
-        <View className="border-t border-hairline-soft bg-paper-deep/40 px-4 pb-3 pt-2">
-          {line.items.map((item) => (
-            <GroceryItemEditor key={item.id} item={item} onChanged={onChanged} />
-          ))}
+        <View>
+          <Divider />
+          <View className="py-1">
+            {line.items.map((item) => (
+              <GroceryItemEditor key={item.id} item={item} onChanged={onChanged} />
+            ))}
+          </View>
         </View>
       ) : null}
     </View>
   );
 }
 
-/** One member entry's inline editor: qty text, category re-file (learns), remove. */
+/** One member entry's inline editor: qty text, category re-file (learns), remove.
+ *  A form is controls, not content, so it takes no device of its own — the
+ *  fields wear the well's tokens directly (block.tsx, form (b)). */
 function GroceryItemEditor({ item, onChanged }: { item: GroceryItemRow; onChanged: () => void }) {
   const [qty, setQty] = useState(item.qty_text ?? '');
 
@@ -371,6 +442,9 @@ function GroceryItemEditor({ item, onChanged }: { item: GroceryItemRow; onChange
       onChanged();
     }
   };
+
+  const source =
+    item.source === 'coach' ? 'added by Coach' : item.source === 'recipe' ? 'from a recipe' : '';
 
   return (
     <View className="py-2">
@@ -383,15 +457,9 @@ function GroceryItemEditor({ item, onChanged }: { item: GroceryItemRow; onChange
           onSubmitEditing={saveQty}
           placeholder="qty"
           placeholderTextColor={palette.inkMuted}
-          className="w-24 rounded-btn border border-hairline-soft bg-paper-deep px-2.5 py-1.5 text-right font-mono text-[13px] text-ink"
+          className="min-h-[44px] w-24 border border-paper-deep bg-paper-dim px-2.5 py-2 text-right font-mono text-[13px] text-ink"
         />
-        <Text className="flex-1 text-[12px] text-ink-muted">
-          {item.source === 'coach'
-            ? 'added by Coach'
-            : item.source === 'recipe'
-              ? 'from a recipe'
-              : ''}
-        </Text>
+        <Text className="flex-1 font-serif text-[13px] text-ink-secondary">{source}</Text>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Remove ${item.name}`}
@@ -400,30 +468,36 @@ function GroceryItemEditor({ item, onChanged }: { item: GroceryItemRow; onChange
             onChanged();
           }}
           hitSlop={8}
-          className="active:opacity-60">
-          <Ionicons name="close-circle-outline" size={18} color={palette.inkMuted} />
+          className="h-11 w-11 items-center justify-center active:opacity-60">
+          <Ionicons name="close-circle-outline" size={20} color={palette.inkSecondary} />
         </Pressable>
       </View>
-      {/* Re-filing teaches the list — the learned category wins forever after. */}
-      <View className="mt-2 flex-row flex-wrap gap-1.5">
+      {/* Re-filing teaches the list — the learned category wins forever after.
+          The chosen chip is marked in ink, never in the accent. */}
+      <View className="mt-1 flex-row flex-wrap gap-1.5">
         {GROCERY_CATEGORIES.map((c) => (
           <Pressable
             key={c.key}
             accessibilityRole="button"
             accessibilityLabel={`File ${item.name} under ${c.label}`}
+            accessibilityState={{ selected: item.category === c.key }}
             onPress={() => {
               if (c.key !== item.category) {
                 updateGroceryItem(getDb(), item.id, { category: c.key });
                 onChanged();
               }
             }}
-            className={`rounded-btn border px-2 py-1 ${
+            className={
               item.category === c.key
-                ? 'border-hairline-strong bg-paper-deep'
-                : 'border-hairline active:bg-paper-deep'
-            }`}>
+                ? 'min-h-[44px] justify-center rounded-btn border border-ink bg-paper-dim px-2.5 py-1.5'
+                : 'min-h-[44px] justify-center rounded-btn border border-hairline px-2.5 py-1.5 active:bg-paper-dim'
+            }>
             <Text
-              className={`text-[10px] ${item.category === c.key ? 'font-semibold text-ink' : 'text-ink-muted'}`}>
+              className={
+                item.category === c.key
+                  ? 'font-label text-[11px] font-semibold uppercase tracking-[1.2px] text-ink'
+                  : 'font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary'
+              }>
               {c.label}
             </Text>
           </Pressable>

@@ -121,6 +121,10 @@ export function reminderTrigger(reminder: ReminderRow, now: Date): ReminderTrigg
 // --- Native side (guarded; no-ops without the module) ------------------------
 
 type PermissionResult = { granted: boolean; canAskAgain: boolean };
+type NotificationResponse = {
+  notification: { request: { content: { data?: Record<string, unknown> } } };
+};
+type Subscription = { remove(): void };
 type NotificationsModule = {
   getPermissionsAsync(): Promise<PermissionResult>;
   requestPermissionsAsync(): Promise<PermissionResult>;
@@ -129,6 +133,18 @@ type NotificationsModule = {
     content: { title: string; body?: string; sound?: string; data?: Record<string, unknown> };
     trigger: ReminderTrigger;
   }): Promise<string>;
+  setNotificationHandler(handler: {
+    handleNotification: () => Promise<{
+      shouldShowBanner: boolean;
+      shouldShowList: boolean;
+      shouldPlaySound: boolean;
+      shouldSetBadge: boolean;
+    }>;
+  }): void;
+  addNotificationResponseReceivedListener(
+    listener: (response: NotificationResponse) => void
+  ): Subscription;
+  getLastNotificationResponseAsync(): Promise<NotificationResponse | null>;
 };
 
 let notifications: NotificationsModule | null = null;
@@ -139,6 +155,16 @@ try {
   notifications = null;
 }
 
+/**
+ * Whether OS notification delivery is live in this binary. Resolves once at
+ * module load (the native module either shipped in the build or didn't), so
+ * callers may treat it as constant for the app session — the system prompt
+ * reads it so the Coach never lies about the app's own reach.
+ */
+export function notificationsAvailable(): boolean {
+  return notifications !== null && typeof notifications.scheduleNotificationAsync === 'function';
+}
+
 /** Ask for notification permission once; returns whether it's granted. */
 async function ensurePermission(mod: NotificationsModule): Promise<boolean> {
   const current = await mod.getPermissionsAsync();
@@ -146,6 +172,73 @@ async function ensurePermission(mod: NotificationsModule): Promise<boolean> {
   if (!current.canAskAgain) return false;
   const requested = await mod.requestPermissionsAsync();
   return requested.granted;
+}
+
+/**
+ * Show a notification even when ARC is FOREGROUNDED.
+ *
+ * Without a handler iOS silently drops a notification that fires while the app
+ * is open — so a 21:00 magnesium reminder simply never appeared if the user
+ * happened to be looking at ARC. Called once at boot; a no-op off-build.
+ */
+export function configureNotificationPresentation(): void {
+  const mod = notifications;
+  if (!mod || typeof mod.setNotificationHandler !== 'function') return;
+  try {
+    mod.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowBanner: true,
+        shouldShowList: true,
+        shouldPlaySound: true,
+        // No badge: an unread count on a personal log is invented urgency.
+        shouldSetBadge: false,
+      }),
+    });
+  } catch {
+    // Presentation is a nicety; never let it break boot.
+  }
+}
+
+/** What a tapped notification wants ARC to open. */
+export type NotificationRoute = { kind: 'reminder'; id: string } | { kind: 'coach' };
+
+/** Map a notification's data payload to where the tap should land. */
+export function routeForNotification(
+  data: Record<string, unknown> | undefined
+): NotificationRoute | null {
+  if (!data) return null;
+  if (data.kind === 'checkin') return { kind: 'coach' };
+  if (typeof data.reminderId === 'string') return { kind: 'reminder', id: data.reminderId };
+  return null;
+}
+
+/**
+ * Route notification taps. Handles both a tap that opened the app cold (the
+ * response is waiting) and taps while it runs. Returns an unsubscribe.
+ *
+ * Before this, `data.reminderId` was attached to every scheduled notification
+ * and read by nothing: tapping a reminder dumped the user on Home with no idea
+ * why the phone had buzzed.
+ */
+export function registerNotificationRouting(
+  onRoute: (route: NotificationRoute) => void
+): () => void {
+  const mod = notifications;
+  if (!mod || typeof mod.addNotificationResponseReceivedListener !== 'function') return () => {};
+  try {
+    // A cold start FROM a tap: the response is already waiting.
+    void mod.getLastNotificationResponseAsync?.().then((response) => {
+      const route = routeForNotification(response?.notification.request.content.data);
+      if (route) onRoute(route);
+    });
+    const subscription = mod.addNotificationResponseReceivedListener((response) => {
+      const route = routeForNotification(response.notification.request.content.data);
+      if (route) onRoute(route);
+    });
+    return () => subscription.remove();
+  } catch {
+    return () => {};
+  }
 }
 
 /**

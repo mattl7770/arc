@@ -72,6 +72,27 @@ export function setMode(db: Database, input: SetModeInput): string {
 }
 
 /**
+ * The non-normal modes an open-ended reset starting `date` would supersede.
+ *
+ * A `normal` row is stored open-ended, and "most recently SET wins" means it
+ * out-ranks every mode row created before it — including ones scheduled for
+ * days that have not arrived yet. So "back to normal today" also silently
+ * cancels the Travel mode booked for next week. That may well be what the user
+ * means, but they have to be told: this is what lets the confirmation card
+ * name the casualties instead of hiding them.
+ *
+ * Rows whose window closed before `date` are untouched and not returned.
+ */
+export function modesSupersededFrom(db: Database, date: string): DayModeRow[] {
+  return db.all<DayModeRow>(
+    `SELECT * FROM day_modes
+     WHERE mode != 'normal' AND (end_date IS NULL OR end_date >= ?)
+     ORDER BY start_date, rowid`,
+    [date]
+  );
+}
+
+/**
  * Reset a day back to Normal from `date` onward — stored as a `normal` row
  * (the most-recent covering row wins), so an earlier open-ended mode stops
  * applying without mutating its history. Returns the new row id.

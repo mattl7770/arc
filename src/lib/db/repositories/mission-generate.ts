@@ -27,6 +27,7 @@ import { parseProtocolContent } from '@/lib/protocols/content';
 import { getModeDefinition, type ModeItem, type ModeKey } from '@/lib/modes/registry';
 
 import { getActiveMode } from './day-modes';
+import { experimentsRunningOn } from './experiments';
 import { countMissionEntries, getOrCreateDailyLog, PLANNED_ROW_SQL } from './mission';
 import { getCurrentVersion, listProtocols } from './protocols';
 
@@ -44,14 +45,29 @@ const LOG_TYPE_BY_PROTOCOL: Record<ProtocolType, LogEntryType> = {
 /**
  * The value-json a generated entry carries. `generated: true` distinguishes it
  * from a mock `seed: true` row and from an ad-hoc Log-tab capture (`adhoc`);
- * `protocol` + `why` are read back by `toMissionItem` for the mission UI.
+ * `protocol`, `category` + `why` are read back by `toMissionItem` for the
+ * mission UI.
+ *
+ * `protocol` and `category` are the two ways a row says where it came from, and
+ * they are deliberately exclusive:
+ *
+ *   - a PROTOCOL item sets `protocol` and lets `category` fall back to
+ *     CATEGORY_BY_TYPE, so the row reads "TRAINING · STRENGTH BLOCK";
+ *   - a MODE item sets `category` to the mode's label and no `protocol`, so the
+ *     row reads "SICK" — one attribution, not "ROUTINE · SICK", which is what
+ *     the earlier `protocol: def.label` produced. A mode is not a protocol and
+ *     should not be dressed as one; naming the mode in the category slot also
+ *     puts it in the hero's tag line ("Sick · Do this next").
  */
 type GeneratedExtras = {
-  protocol: string;
+  protocol?: string;
+  category?: string;
   why?: string;
   generated: true;
   /** Present on mode-injected items, absent on protocol items. */
   mode?: ModeKey;
+  /** Present on a running experiment's intervention row (its experiment id). */
+  experiment?: string;
 };
 
 /** Insert one generated mission entry; returns nothing, bumps the caller's count. */
@@ -121,21 +137,71 @@ function planForDay(db: Database, date: string): PlannedEntry[] {
   }
   // Mode-injected standard items, tagged with the mode so they're
   // distinguishable from protocol items and the mock seed.
+  //
+  // Their `scheduledTime` is REQUIRED by ModeItem and is load-bearing, not
+  // decoration: the mission is one chronological list, and
+  // src/lib/home/derive-mission.ts sorts an untimed item to MAX_SAFE_INTEGER.
+  // When these carried no time they sank beneath every protocol item, so Sick's
+  // "Rest — no training today" rendered at the BOTTOM of the day and the hero
+  // still led with a protocol item — the mode changed the list without changing
+  // the day. Timed, the 07:00 leads beat anything a protocol schedules and the
+  // mode takes the hero slot, with no surface needing to special-case it.
   for (const item of def.addItems as ModeItem[]) {
     plan.push({
       type: item.type,
       protocolId: null,
       title: item.title,
-      scheduledTime: item.scheduledTime ?? null,
+      scheduledTime: item.scheduledTime,
       extras: {
-        protocol: def.label,
+        category: def.label,
         ...(item.why ? { why: item.why } : {}),
         generated: true,
         mode: def.key,
       },
     });
   }
+
+  // A RUNNING experiment's intervention belongs on the day it is being tested.
+  //
+  // Without this the loop had a dead middle: the Coach could design an
+  // experiment and read it out, but nothing between — the intervention never
+  // appeared on the mission, so there was no adherence signal at all and the
+  // readout could not tell "it didn't work" from "he didn't do it". As a
+  // mission row it is visible, checkable, and skippable like anything else,
+  // and the re-derive diff handles it for free.
+  //
+  // `experimentsRunningOn`, NOT `activeExperiments`: an experiment stays
+  // `active` until it is concluded, so the latter includes ones that haven't
+  // started and ones whose window closed days ago. Both would put a task on the
+  // mission the user has no reason to do — and post-window adherence data
+  // silently corrupts the very readout the row exists to feed.
+  //
+  // `category`, not `protocol`, by the exclusivity rule above: an experiment is
+  // no more a protocol than a mode is, and one attribution reads better than
+  // "ROUTINE · EXPERIMENT". It stays UNTIMED — unlike a mode's 07:00 lead, an
+  // intervention has no natural hour, and inventing one to win the hero slot
+  // would be a lie about the plan. The cost is that it sorts late in the day.
+  for (const experiment of experimentsRunningOn(db, date)) {
+    plan.push({
+      type: 'habit',
+      protocolId: null,
+      title: experiment.intervention,
+      scheduledTime: null,
+      extras: {
+        category: `Experiment · ${experiment.title}`,
+        why: `Day ${dayNumberOf(experiment.start_date, date)} of this experiment`,
+        generated: true,
+        experiment: experiment.id,
+      },
+    });
+  }
   return plan;
+}
+
+/** 1-based day number of `date` within an experiment that began `startDate`. */
+function dayNumberOf(startDate: string, date: string): number {
+  const ms = Date.parse(`${date}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`);
+  return Math.max(1, Math.round(ms / 86_400_000) + 1);
 }
 
 /**

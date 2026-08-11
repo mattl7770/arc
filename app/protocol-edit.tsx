@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -24,8 +25,43 @@ import { type ProtocolDetail, useProtocol } from '@/hooks/use-protocols';
  * Versioning discipline: the identity fields (name, type, description, paused
  * state) update the `protocols` row in place; the ITEMS are the versioned
  * content — saving writes a NEW immutable `protocol_versions` row and moves
- * the live pointer, unless the items are unchanged (no no-op versions). The
- * one pine on this screen is Save.
+ * the live pointer, unless the items are unchanged (no no-op versions).
+ *
+ * Conformed Set treatment: every field is **recessed stock** (a capture surface
+ * is a well — paper-dim on a paper-deep edge, square) and NOTHING on this screen
+ * is boxed. This whole screen is a form, and a form is controls, not content —
+ * form (b) of the capture-surface rule in src/components/ui/block.tsx: a group
+ * of fields carries no block at all, is named by a `SectionLabel`, and is
+ * separated from its neighbours by whitespace.
+ *
+ * The items used to sit inside a `<Block device="plate">` on the argument that
+ * the item list is "the record being drafted". On hardware that read as boxes
+ * stacked on boxes (owner, 2026-08-10, on the CREATE path specifically), and the
+ * reading was right: a plate is `border-hairline` on RAISED paper-hi, every
+ * field inside it is `border-paper-deep` on RECESSED paper-dim, so the block
+ * drew a raised box whose entire contents were recessed boxes — the surface
+ * inversion block.tsx exists to stop, pointing the other way. The rules BETWEEN
+ * the item rows went with it: a rule separates rows inside an enclosure, and
+ * with the enclosure gone they are strokes floating on the sheet, which is the
+ * artefact reading that cost the grid and margin devices their marks.
+ *
+ * The `<Block>` nesting guard could not catch this: the inner surfaces are plain
+ * `TextInput`s, not blocks, so nothing was nested as far as the runtime could
+ * see. capture.tsx, symptom.tsx, screening-form.tsx and appointment-form.tsx are
+ * the reference form and always were.
+ *
+ * **This screen is the ONE de-plating of 2026-08-10 that survives.** The plate
+ * rule that sweep invented — "no plate around one row or an empty state" — was
+ * withdrawn and every other plate it removed has been restored (docs/decisions.md
+ * §1a). This one stays off, and not because of that rule: it stays off because
+ * of the standing one, **devices never nest**, and because the owner reported
+ * this exact screen as "boxes on top of other boxes". Do not restore it, and do
+ * not cite it as precedent for de-plating anything that is not a form.
+ *
+ * Accent budget: exactly one — Save. It is the single primary action on the
+ * screen and the one sanctioned accent here; the type chips, the status chips,
+ * "Add item" and "Delete protocol" are all neutral ink. The version number is a
+ * measured value, so it is set in mono wherever it appears.
  */
 
 /** One item row under edit. `key` is a mount-local id for React lists only. */
@@ -64,16 +100,36 @@ function normalizeTime(text: string): string | null {
   return `${String(hours).padStart(2, '0')}:${m[2]}`;
 }
 
-function SectionLabel({ children }: { children: string }) {
+/** A neutral selection chip — the label voice, square-ish, no hue. */
+function Chip({
+  label,
+  on,
+  onPress,
+  accessibilityLabel,
+}: {
+  label: string;
+  on: boolean;
+  onPress: () => void;
+  accessibilityLabel?: string;
+}) {
   return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected: on }}
+      accessibilityLabel={accessibilityLabel ?? label}
+      onPress={onPress}
+      className={`min-h-[44px] justify-center rounded-btn border px-3 py-2 active:bg-paper-dim ${
+        on ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'
+      }`}>
+      <Text
+        className={`font-label text-[13px] ${on ? 'font-semibold text-ink' : 'text-ink-secondary'}`}>
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
 type FieldProps = {
-  label?: string;
   value: string;
   onChange: (next: string) => void;
   placeholder?: string;
@@ -85,7 +141,6 @@ type FieldProps = {
 };
 
 function FormField({
-  label,
   value,
   onChange,
   placeholder,
@@ -97,7 +152,6 @@ function FormField({
 }: FieldProps) {
   return (
     <View className="flex-1">
-      {label ? <Text className="mb-1 text-xs text-ink-secondary">{label}</Text> : null}
       <TextInput
         value={value}
         onChangeText={onChange}
@@ -107,7 +161,7 @@ function FormField({
         maxLength={maxLength}
         multiline={multiline}
         accessibilityLabel={accessibilityLabel}
-        className={`rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink ${
+        className={`border border-paper-deep bg-paper-dim px-3.5 py-3 text-[15px] text-ink ${
           mono ? 'font-mono' : ''
         } ${multiline ? 'max-h-28 min-h-[64px] leading-5' : ''}`}
       />
@@ -253,7 +307,7 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
         <View className="pt-2">
           <StackHeader title="Edit Protocol" />
         </View>
-        <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
+        <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-muted">
           This protocol no longer exists.
         </Text>
       </Screen>
@@ -267,8 +321,8 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
       </View>
 
       {/* Identity — lives on the protocol row, not in the version. */}
-      <View className="mt-2">
-        <SectionLabel>Protocol</SectionLabel>
+      <View className="mt-3">
+        <SectionLabel label="Protocol" />
         <View className="mt-2">
           <FormField
             value={name}
@@ -289,121 +343,131 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
       </View>
 
       <View className="mt-8">
-        <SectionLabel>Type</SectionLabel>
+        <SectionLabel label="Type" />
         <View className="mt-2 flex-row flex-wrap gap-2">
-          {PROTOCOL_TYPES.map((t) => {
-            const on = type === t.type;
-            return (
-              <Pressable
-                key={t.type}
-                accessibilityRole="button"
-                accessibilityState={{ selected: on }}
-                onPress={() => setType(t.type)}
-                className={`rounded-btn border px-3 py-2 active:bg-paper-deep ${
-                  on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline bg-porcelain'
-                }`}>
-                <Text
-                  className={`text-[13px] ${on ? 'font-medium text-ink' : 'text-ink-secondary'}`}>
-                  {t.label}
-                </Text>
-              </Pressable>
-            );
-          })}
+          {PROTOCOL_TYPES.map((t) => (
+            <Chip
+              key={t.type}
+              label={t.label}
+              on={type === t.type}
+              onPress={() => setType(t.type)}
+            />
+          ))}
         </View>
       </View>
 
-      {/* The versioned content — every save of these becomes a new version. */}
+      {/* The versioned content — every save of these becomes a new version.
+          No plate and no rules: a form is controls, and one item is separated
+          from the next by air (the gap between items is deliberately wider than
+          the gap between the two rows WITHIN an item, which is what groups
+          them). */}
       <View className="mt-8">
-        <SectionLabel>Items</SectionLabel>
-        <View className="mt-2 gap-2">
-          {items.map((it) => (
-            <View key={it.key} className="rounded-card border border-hairline bg-porcelain p-3">
-              <View className="flex-row items-center gap-2">
-                <FormField
-                  value={it.title}
-                  onChange={(title) => updateItem(it.key, { title })}
-                  placeholder="e.g. Creatine"
-                  accessibilityLabel="Item title"
-                />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Remove item"
-                  onPress={() => removeItem(it.key)}
-                  className="h-9 w-9 items-center justify-center rounded-btn active:bg-paper-deep">
-                  <Ionicons name="close" size={18} color={palette.inkMuted} />
-                </Pressable>
-              </View>
-              <View className="mt-2 flex-row gap-2">
-                <View className="w-24">
-                  <FormField
-                    value={it.time}
-                    onChange={(time) => updateItem(it.key, { time })}
-                    placeholder="07:30"
-                    keyboardType="numbers-and-punctuation"
-                    maxLength={5}
-                    mono
-                    accessibilityLabel="Item time"
-                  />
-                </View>
-                <FormField
-                  value={it.dose}
-                  onChange={(dose) => updateItem(it.key, { dose })}
-                  placeholder="Dose or note — 5 g, with food…"
-                  accessibilityLabel="Item dose or note"
-                />
-              </View>
+        {/* No tally here on purpose: blank rows are dropped at save, so a count
+            of the rows on screen would not be the count that gets written. */}
+        <SectionLabel label="Items" />
+        {items.map((it, index) => (
+          <View key={it.key} className={index === 0 ? 'mt-2' : 'mt-5'}>
+            <View className="flex-row items-center gap-2">
+              <FormField
+                value={it.title}
+                onChange={(title) => updateItem(it.key, { title })}
+                placeholder="e.g. Creatine"
+                accessibilityLabel="Item title"
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Remove item"
+                onPress={() => removeItem(it.key)}
+                className="h-11 w-11 items-center justify-center rounded-btn active:bg-paper-dim">
+                <Ionicons name="close" size={18} color={palette.inkMuted} />
+              </Pressable>
             </View>
-          ))}
-        </View>
+            <View className="mt-2 flex-row gap-2">
+              <View className="w-24">
+                <FormField
+                  value={it.time}
+                  onChange={(time) => updateItem(it.key, { time })}
+                  placeholder="07:30"
+                  keyboardType="numbers-and-punctuation"
+                  maxLength={5}
+                  mono
+                  accessibilityLabel="Item time"
+                />
+              </View>
+              <FormField
+                value={it.dose}
+                onChange={(dose) => updateItem(it.key, { dose })}
+                placeholder="Dose or note — 5 g, with food…"
+                accessibilityLabel="Item dose or note"
+              />
+            </View>
+          </View>
+        ))}
 
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Add item"
           onPress={addItem}
-          className="mt-2 h-11 flex-row items-center justify-center gap-2 rounded-btn border border-hairline-strong active:bg-paper-deep">
+          className="mt-5 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
           <Ionicons name="add" size={17} color={palette.inkSecondary} />
-          <Text className="text-[13px] font-medium text-ink">Add item</Text>
+          <Text className="font-label text-[13px] font-medium text-ink">Add item</Text>
         </Pressable>
       </View>
 
       {editing ? (
         <>
-          {/* Paused protocols keep their versions; the (future) generator skips them. */}
+          {/* Paused protocols keep their versions; the generator skips them. */}
           <View className="mt-8">
-            <SectionLabel>Status</SectionLabel>
+            <SectionLabel label="Status" />
             <View className="mt-2 flex-row gap-2">
               {(
                 [
                   { label: 'Active', value: true },
                   { label: 'Paused', value: false },
                 ] as const
-              ).map((s) => {
-                const on = active === s.value;
-                return (
-                  <Pressable
-                    key={s.label}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: on }}
-                    onPress={() => setActiveState(s.value)}
-                    className={`rounded-btn border px-3 py-2 active:bg-paper-deep ${
-                      on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline bg-porcelain'
-                    }`}>
-                    <Text
-                      className={`text-[13px] ${on ? 'font-medium text-ink' : 'text-ink-secondary'}`}>
-                      {s.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+              ).map((s) => (
+                <Chip
+                  key={s.label}
+                  label={s.label}
+                  on={active === s.value}
+                  onPress={() => setActiveState(s.value)}
+                />
+              ))}
             </View>
           </View>
 
+          {/* The way into the history the versioning has been writing all
+              along (app/protocol-versions.tsx). Neutral ink, not accent: Save
+              is the one accent on this screen, and a link to a read-only
+              record is not a primary action. Drawn only once a version exists
+              — a protocol with nothing saved has no history to open, and a row
+              that leads to an authored "no versions yet" is a wasted tap. */}
+          {detail?.version ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Version history, currently at version ${detail.version.version_number}`}
+              onPress={() =>
+                router.push({
+                  pathname: '/protocol-versions',
+                  params: { id: detail.protocol.id },
+                })
+              }
+              className="mt-8 min-h-[44px] flex-row items-center gap-2.5 rounded-btn border border-hairline px-3.5 py-3 active:bg-paper-dim">
+              <Ionicons name="time-outline" size={17} color={palette.inkSecondary} />
+              <Text className="flex-1 font-label text-[13px] font-medium text-ink">
+                Version history
+              </Text>
+              {/* The live version number is a measurement — mono. */}
+              <Text className="font-mono text-[11px] text-ink-muted">
+                {`now v${detail.version.version_number}`}
+              </Text>
+              <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+            </Pressable>
+          ) : null}
+
           <View className="mt-8">
-            {/* The version number is a measured value — mono, beside the sans label. */}
-            <View className="flex-row items-baseline justify-between">
-              <SectionLabel>What changed (optional)</SectionLabel>
-              <Text className="font-mono text-[11px] text-ink-muted">{`→ v${nextVersion}`}</Text>
-            </View>
+            {/* The version number is a measured value — mono, in the note slot. */}
+            <SectionLabel label="What changed (optional)" note={`→ v${nextVersion}`} />
             <View className="mt-2">
               <FormField
                 value={changeNotes}
@@ -417,17 +481,19 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
         </>
       ) : null}
 
-      {problem ? <Text className="mt-4 text-xs leading-5 text-ink-muted">{problem}</Text> : null}
+      {problem ? (
+        <Text className="mt-4 font-serif text-[12px] leading-5 text-ink-muted">{problem}</Text>
+      ) : null}
 
-      {/* The one pine action on this screen. */}
+      {/* The one accent on this screen. */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={editing ? 'Save protocol' : 'Create protocol'}
         accessibilityState={{ disabled: !canSave }}
         disabled={!canSave}
         onPress={save}
-        className={`mt-6 flex-row items-center justify-center gap-2 rounded-btn py-3.5 ${
-          canSave ? 'bg-pine active:opacity-70' : 'bg-hairline'
+        className={`mt-6 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn py-3.5 ${
+          canSave ? 'bg-pine active:opacity-70' : 'border border-hairline bg-paper-dim'
         }`}>
         <Ionicons
           name="git-branch-outline"
@@ -435,7 +501,9 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
           color={canSave ? palette.pineOn : palette.inkMuted}
         />
         <Text
-          className={`text-[15px] font-semibold ${canSave ? 'text-pine-on' : 'text-ink-muted'}`}>
+          className={`font-label text-[15px] font-semibold ${
+            canSave ? 'text-pine-on' : 'text-ink-muted'
+          }`}>
           {editing ? (
             <>
               {'Save as '}
@@ -452,8 +520,8 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
           accessibilityRole="button"
           accessibilityLabel="Delete protocol"
           onPress={confirmDelete}
-          className="mt-6 h-11 items-center justify-center rounded-btn active:bg-paper-deep">
-          <Text className="text-[13px] text-ink-secondary">Delete protocol</Text>
+          className="mt-6 min-h-[44px] items-center justify-center rounded-btn active:bg-paper-dim">
+          <Text className="font-label text-[13px] text-ink-secondary">Delete protocol</Text>
         </Pressable>
       ) : null}
     </Screen>

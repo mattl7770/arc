@@ -2,7 +2,9 @@ import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Text, View } from 'react-native';
 
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
 import { StackHeader } from '@/components/ui/stack-header';
 import { getDb } from '@/lib/db/client';
@@ -21,9 +23,24 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
 /**
  * Exercise detail — history, estimated-1RM trend, and personal records for one
- * movement (docs/exercise-subapp.md §2). Read-only; pushed from the picker or a
- * workout block. Every measured value is mono; the e1RM trend uses the shared
- * dependency-free Sparkline. No pine — nothing here is an action.
+ * movement (docs/exercise-subapp.md §2). Read-only.
+ *
+ * **Entry point:** the records button on each catalog row in
+ * src/components/exercise/exercise-picker.tsx — reachable from the routine
+ * builder and the live logger, which are the two places that open the picker.
+ * That button is this screen's only door, so it is load-bearing: removing it
+ * strands this file and the `e1rmSeries` / `personalRecords` queries behind it.
+ *
+ * ## The surface system (00-design-spec.md §1)
+ *
+ *   Records          grid   three measured cells, aligned — no box, no rules
+ *   Estimated 1RM    field  a readout about the lift; unmarked, set apart by air
+ *   History          plate  a record of sessions, ruled — in both states
+ *
+ * **No accent anywhere on this screen.** Nothing here is an action, and the
+ * budget is a ceiling, not a quota. Every measured value is mono — "serif
+ * speaks, mono measures" — and every absent record is an em-dash rather than a
+ * plausible-looking estimate.
  */
 
 type Detail = {
@@ -47,12 +64,25 @@ function read(id: string | undefined): Detail {
   };
 }
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
+/**
+ * The Records grid: three columns, **no rules**. Only the gutters that keep one
+ * column's text off the next, and the `pt-4` row rhythm that replaced the top
+ * rule — the same treatment as src/components/home/metrics-strip.tsx, which is
+ * the reference form for this device. Whole class strings, never a built prefix.
+ *
+ * The old machinery asked "is there a cell after me?" so a trailing cell would
+ * not draw a vertical rule into empty space. That question only existed because
+ * rules existed; with the rules gone the `count` argument and the `*_LAST`
+ * classes are dead, and column position is the only input.
+ */
+const CELL_LEFT = 'w-1/3 pr-3 pt-4';
+const CELL_MID = 'w-1/3 px-3 pt-4';
+const CELL_RIGHT = 'w-1/3 pl-3 pt-4';
+
+function cellClass(index: number): string {
+  const column = index % 3;
+  if (column === 0) return CELL_LEFT;
+  return column === 1 ? CELL_MID : CELL_RIGHT;
 }
 
 export default function ExerciseDetailScreen() {
@@ -73,7 +103,7 @@ export default function ExerciseDetailScreen() {
         <View className="pt-2">
           <StackHeader title="Exercise" />
         </View>
-        <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
+        <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
           This exercise no longer exists.
         </Text>
       </Screen>
@@ -87,100 +117,105 @@ export default function ExerciseDetailScreen() {
     .filter(Boolean)
     .join(' · ');
 
+  const records = [
+    {
+      label: 'Best e1RM',
+      value: prs.bestE1rmKg == null ? null : formatWeight(prs.bestE1rmKg, units),
+    },
+    {
+      label: 'Top set',
+      value: prs.maxWeightKg == null ? null : formatWeight(prs.maxWeightKg, units),
+    },
+    {
+      label: 'Best volume',
+      value: prs.bestSetVolumeKg == null ? null : formatWeight(prs.bestSetVolumeKg, units),
+    },
+  ];
+
   return (
     <Screen scroll>
       <View className="pt-2">
         <StackHeader title={exercise.name} />
       </View>
-      <Text className="mt-1 font-mono text-[11px] uppercase tracking-[1px] text-ink-muted">
+      {/* Muscles and equipment are names, not measurements — label voice, not mono. */}
+      <Text className="mt-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
         {meta}
       </Text>
 
-      {/* Personal records */}
+      {/* Personal records — a metric grid: aligned columns, no box, no rules. */}
       <View className="mt-6">
-        <SectionLabel>Records</SectionLabel>
-        <View className="mt-2 flex-row gap-4 rounded-card border border-hairline bg-porcelain p-4">
-          <Stat
-            label="Best e1RM"
-            value={prs.bestE1rmKg == null ? null : formatWeight(prs.bestE1rmKg, units)}
-          />
-          <Stat
-            label="Top set"
-            value={prs.maxWeightKg == null ? null : formatWeight(prs.maxWeightKg, units)}
-            bordered
-          />
-          <Stat
-            label="Best volume"
-            value={prs.bestSetVolumeKg == null ? null : formatWeight(prs.bestSetVolumeKg, units)}
-            bordered
-          />
-        </View>
-      </View>
-
-      {/* e1RM trend */}
-      <View className="mt-8">
-        <SectionLabel>Estimated 1RM</SectionLabel>
-        {series.length >= 2 ? (
-          <View className="mt-2 flex-row items-center justify-between rounded-card border border-hairline bg-porcelain p-4">
-            <View>
-              <Text className="font-mono text-2xl text-ink">
-                {formatWeight(series[series.length - 1]!.e1rm, units)}
-              </Text>
-              <Text className="mt-0.5 text-[11px] uppercase tracking-[1px] text-ink-muted">
-                latest
-              </Text>
-            </View>
-            <Sparkline data={series.map((p) => p.e1rm)} baseline="auto" width={120} height={36} />
-          </View>
-        ) : (
-          <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
-            Log a couple of weighted sessions and the estimated-1RM trend appears here.
-          </Text>
-        )}
-      </View>
-
-      {/* History */}
-      <View className="mt-8">
-        <SectionLabel>History</SectionLabel>
-        {sessions.length === 0 ? (
-          <Text className="mt-2 text-[13px] leading-5 text-ink-muted">Nothing logged yet.</Text>
-        ) : (
-          <View className="mt-1">
-            {sessions.map((s, i) => (
-              <View
-                key={`${s.date}-${i}`}
-                className={`flex-row items-center gap-3 py-3 ${
-                  i === 0 ? '' : 'border-t border-hairline-soft'
-                }`}>
-                <Text className="w-16 text-[11px] uppercase tracking-[1px] text-ink-muted">
-                  {dayLabel(s.date, today)}
+        <Block device="grid">
+          <SectionLabel label="Records" />
+          {/* No margin: the cells' own `pt-4` is the row rhythm. */}
+          <View className="flex-row">
+            {records.map((r, index) => (
+              <View key={r.label} className={cellClass(index)}>
+                <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                  {r.label}
                 </Text>
-                <Text className="flex-1 font-mono text-[14px] text-ink">
-                  {setLineKg(s.reps, s.weightKg, units)}
-                  {s.rpe != null ? `  @${s.rpe}` : ''}
-                </Text>
+                {/* No data, no number: an absent record is an em-dash. */}
+                <Text className="mt-1 font-mono text-[15px] text-ink">{r.value ?? '—'}</Text>
               </View>
             ))}
           </View>
-        )}
+        </Block>
+      </View>
+
+      {/* Estimated 1RM — a readout about the lift, so: measured field. */}
+      <View className="mt-7">
+        <Block device="field">
+          <SectionLabel label="Estimated 1RM" />
+          {series.length >= 2 ? (
+            <View className="mt-2 flex-row items-center justify-between">
+              <View>
+                <Text className="font-mono text-2xl text-ink">
+                  {formatWeight(series[series.length - 1]!.e1rm, units)}
+                </Text>
+                <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                  Latest
+                </Text>
+              </View>
+              <Sparkline data={series.map((p) => p.e1rm)} baseline="auto" width={120} height={36} />
+            </View>
+          ) : (
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              Log a couple of weighted sessions and the estimated-1RM trend appears here.
+            </Text>
+          )}
+        </Block>
+      </View>
+
+      {/* History — a record of sessions, so: ruled plate, in both states. The
+          empty branch keeps the plate: a record with nothing in it still stands
+          where the record stands. (The sweep of 2026-08-10 made the plate
+          conditional; reverted the same day at the owner's instruction.) */}
+      <View className="mt-7">
+        <Block device="plate">
+          <SectionLabel label="History" />
+          {sessions.length === 0 ? (
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              Nothing logged yet.
+            </Text>
+          ) : (
+            <View className="mt-1">
+              {sessions.map((s, i) => (
+                <View key={`${s.date}-${i}`}>
+                  <Divider first={i === 0} />
+                  <View className="flex-row items-center gap-3 py-2.5">
+                    <Text className="w-16 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                      {dayLabel(s.date, today)}
+                    </Text>
+                    <Text className="flex-1 font-mono text-[14px] text-ink">
+                      {setLineKg(s.reps, s.weightKg, units)}
+                      {s.rpe != null ? `  @${s.rpe}` : ''}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+        </Block>
       </View>
     </Screen>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  bordered,
-}: {
-  label: string;
-  value: string | null;
-  bordered?: boolean;
-}) {
-  return (
-    <View className={`flex-1 ${bordered ? 'border-l border-hairline-soft pl-4' : ''}`}>
-      <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">{label}</Text>
-      <Text className="mt-1 font-mono text-[15px] text-ink">{value ?? '—'}</Text>
-    </View>
   );
 }

@@ -1,5 +1,5 @@
 /**
- * Types for the grocery list, mirroring db/migrations/0031_grocery.sql — see
+ * Types for the grocery list, mirroring db/migrations/0032_grocery.sql — see
  * docs/recipes-grocery.md §2b. Kept beside the feature (the nutrition-types
  * pattern): hand-authored, lockstep with the schema.
  */

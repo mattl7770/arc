@@ -28,7 +28,9 @@ import {
   parseSteps,
   portionFactor,
   recipeCookStats,
+  recipeCount,
   recipeNutrition,
+  recipesCookedSince,
   removeIngredient,
   reorderIngredients,
   resolveIngredient,
@@ -560,6 +562,49 @@ function fixtureFood(db, overrides = {}) {
   const after = raw.prepare('SELECT updated_at FROM recipes WHERE id = ?').get(recipeId).updated_at;
   if (after >= before) ok('recipes updated_at trigger stamps');
   else bad('trigger');
+}
+
+console.log("20. the Eat tab's Kitchen counts");
+{
+  const { db } = freshDb();
+  recipeCount(db) === 0 ? ok('an empty book counts 0') : bad('empty book');
+
+  const first = createRecipe(db, {
+    title: 'Salmon bowl',
+    servings: 2,
+    ingredients: [{ raw_text: '200 g salmon' }],
+  });
+  createRecipe(db, {
+    title: 'Chili',
+    servings: 4,
+    ingredients: [{ raw_text: '500 g beef' }],
+  });
+  recipeCount(db) === 2
+    ? ok('two recipes in the book')
+    : bad('book count', String(recipeCount(db)));
+
+  // A fixed window, so the assertion never depends on today's date.
+  const WINDOW_START = '2026-07-15';
+  recipesCookedSince(db, WINDOW_START) === 0 ? ok('nothing cooked yet') : bad('cooked baseline');
+
+  logRecipe(db, first, { servings: 1 }, { date: '2026-08-08', time: '18:30' });
+  recipesCookedSince(db, WINDOW_START) === 1
+    ? ok('cooking one logs a meal the window count sees')
+    : bad('cooked count', String(recipesCookedSince(db, WINDOW_START)));
+
+  recipesCookedSince(db, '2026-08-09') === 0
+    ? ok('and a window that starts after the meal excludes it')
+    : bad('window boundary');
+
+  // Derived from meals.recipe_id, never a counter column: deleting the recipe
+  // SET-NULLs the link, so the meal survives and drops out of the count.
+  deleteRecipe(db, first);
+  recipesCookedSince(db, WINDOW_START) === 0
+    ? ok('deleting the recipe drops it from the count without touching eating history')
+    : bad('after delete');
+  db.get('SELECT count(*) AS n FROM meals').n === 1
+    ? ok('and the meal itself is still on the record')
+    : bad('meal destroyed by recipe delete');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

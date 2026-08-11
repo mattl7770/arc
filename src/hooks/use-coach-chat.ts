@@ -4,12 +4,16 @@ import { humanizeToolName, streamCoachReply } from '@/lib/ai/coach-service';
 import { CoachTurnError } from '@/lib/ai/model-client';
 import { toolByName } from '@/lib/ai/tools';
 import type { CoachToolCall } from '@/lib/ai/types';
+import { usageCaption } from '@/lib/ai/cost';
+import { apiKeyStore } from '@/lib/ai/api-key-store';
+import { updateRollingSummary } from '@/lib/ai/thread-summary';
 import { getDb } from '@/lib/db/client';
 import {
   appendMessage,
+  getConversationSummary,
   getOrCreateActiveConversation,
   landedWriteCalls,
-  listMessages,
+  listRecentMessages,
   markSupersededTurns,
   outcomeForStopReason,
   parseToolCalls,
@@ -91,9 +95,17 @@ function landedWriteLabels(toolCalls: CoachToolCall[]): string[] {
   return landedWriteCalls(toolCalls, isWriteTool).map((call) => humanizeToolName(call.name));
 }
 
+/**
+ * How many turns of a thread the screen holds. The thread is append-only and
+ * lives forever, so loading all of it into React state degrades the Coach tab
+ * a little more every month. The model's own window is smaller than this, and
+ * anything older is carried by the rolling summary (0030).
+ */
+const THREAD_PAGE_SIZE = 100;
+
 /** Load the persisted thread as view-models (conversational roles only). */
 function loadThread(conversationId: string): CoachChatMessage[] {
-  return listMessages(getDb(), conversationId)
+  return listRecentMessages(getDb(), conversationId, THREAD_PAGE_SIZE)
     .filter((row) => row.role === 'user' || row.role === 'assistant')
     .map((row) => {
       const calls = parseToolCalls(row.tool_calls);
@@ -108,6 +120,10 @@ function loadThread(conversationId: string): CoachChatMessage[] {
         persisted: true,
         ...(tools.length > 0 ? { tools } : {}),
         ...(writes.length > 0 ? { writes } : {}),
+        // The raw record, kept so the NEXT turn can replay this turn's tool
+        // digest (src/lib/ai/history-window.ts) without re-reading the thread.
+        // Never rendered — `tools` above is what the chips show.
+        ...(calls.length > 0 ? { toolCalls: calls } : {}),
       };
     });
 }
@@ -229,6 +245,10 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
 
       streamCoachReply(history, {
         signal: controller.signal,
+        // Everything older than the model's window, as a précis. Without it a
+        // long thread silently loses its first half — including whatever set it
+        // up ("my knee has been sore since March").
+        priorSummary: getConversationSummary(getDb(), conversationId),
         onToken: (chunk) => patch((m) => ({ ...m, content: m.content + chunk })),
         onToolCall: ({ label }) => setActivity(label),
         confirmWrite: (request) =>
@@ -246,6 +266,15 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           const tools = result.toolCalls.map((call: CoachToolCall) => humanizeToolName(call.name));
           const writes = landedWriteLabels(result.toolCalls);
           const persisted = result.text.trim().length > 0 || result.toolCalls.length > 0;
+          // What the turn cost, broken into cache writes / cache reads / output
+          // (src/lib/ai/cost.ts). A single lump token total cannot distinguish a
+          // warm prefix re-read from paying full price for it, and those differ
+          // by 20×.
+          const caption = usageCaption(
+            result.usage,
+            apiKeyStore.getModel(),
+            result.toolCalls.length
+          );
           patch((m) => ({
             ...m,
             streaming: false,
@@ -254,6 +283,8 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
             persisted,
             ...(tools.length > 0 ? { tools } : {}),
             ...(writes.length > 0 ? { writes } : {}),
+            ...(result.toolCalls.length > 0 ? { toolCalls: result.toolCalls } : {}),
+            ...(caption ? { usageCaption: caption } : {}),
           }));
           if (persisted) {
             appendMessage(
@@ -264,6 +295,10 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
               result.toolCalls.length > 0 ? result.toolCalls : null,
               outcome
             );
+            // Fold anything that has aged out of the model's window into the
+            // thread's rolling summary, so a long conversation degrades into a
+            // précis instead of silently losing its first half.
+            updateRollingSummary(getDb(), conversationId);
           }
         })
         .catch((err: unknown) => {

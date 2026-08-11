@@ -17,11 +17,16 @@
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 
-import { __setParams } from './render-stubs/expo-router.mjs';
+import { __setParams, __setSegments } from './render-stubs/expo-router.mjs';
 import { getDb } from './render-stubs/db-client.mjs';
 
+import { todayISODate } from '../src/lib/db/date.ts';
 import { createFood } from '../src/lib/db/repositories/foods.ts';
-import { logMealWithItems } from '../src/lib/db/repositories/nutrition.ts';
+import {
+  logMeal,
+  logMealWithItems,
+  setNutritionTargets,
+} from '../src/lib/db/repositories/nutrition.ts';
 import {
   createRecipe,
   listIngredients,
@@ -62,6 +67,17 @@ function render(name, Component, params = {}) {
   } catch (e) {
     bad(`${name} rendered`, e instanceof Error ? e.message : String(e));
     return null;
+  }
+}
+
+/** The negative of expect: these strings must NOT be on the screen. Used where
+ *  the absence IS the behaviour — a remainder the day cannot support, a setup
+ *  affordance that has retired. */
+function refute(name, html, substrings) {
+  if (html === null) return;
+  for (const sub of substrings) {
+    if (html.includes(sub)) bad(`${name} must NOT show "${sub}"`);
+    else ok(`${name} does not show "${sub}"`);
   }
 }
 
@@ -199,24 +215,116 @@ const db = getDb();
     'Coffee beans',
   ]);
 
-  console.log('3. Edited shipped screens still render');
-  expect('nutrition hub', render('nutrition hub', NutritionScreen), [
-    'Kitchen',
-    'Recipes',
-    'Grocery list',
-    '2 recipes',
-    '3 to buy',
-  ]);
+  console.log('3. The Eat tab, redrawn — first run (no targets, nothing logged today)');
+  {
+    // The fixture meal is dated 2026-08-08; the hub reads TODAY, so this render
+    // is the genuine first-run state even with the book and list populated.
+    const html = render('nutrition hub (first run)', NutritionScreen);
+    expect('nutrition hub (first run)', html, [
+      'Nothing logged yet today, and no targets set',
+      'Set daily targets', // promoted to a full-width control while it is needed
+      'Log', // the one accent, in every state
+      'Kitchen',
+      'Recipe book',
+      'Grocery list',
+      '2 recipes',
+      '3 to buy',
+      'Over time',
+      'Energy',
+      'Protein',
+      'Micronutrients',
+    ]);
+    // No target exists, so no figure may carry a denominator and nothing may
+    // claim a remainder.
+    refute('nutrition hub (first run)', html, ['kcal left', 'left of']);
+  }
+
+  console.log('4. The Eat tab — the guarded remainder, when the day has earned it');
+  const today = todayISODate();
+  {
+    setNutritionTargets(db, {
+      effective_date: today,
+      kcal: 2400,
+      protein_g: 180,
+      carbs_g: 240,
+      fat_g: 70,
+    });
+    logMeal(db, {
+      date: today,
+      time: '08:30',
+      name: 'Protein oats',
+      kcal: 620,
+      protein_g: 42,
+      carbs_g: 68,
+      fat_g: 20,
+    });
+    logMeal(db, {
+      date: today,
+      time: '12:40',
+      name: 'Salmon + lentils',
+      kcal: 740,
+      protein_g: 46,
+      carbs_g: 62,
+      fat_g: 33,
+    });
+
+    const html = render('nutrition hub (guarded)', NutritionScreen);
+    expect('nutrition hub (guarded)', html, [
+      'kcal left', // 2,400 − 1,360 = 1,040
+      '1,040',
+      'Protein left', // the cell label carries the mode
+      '1,360 of 2,400 kcal', // the corner note the hero was subtracted from
+      'Eaten today',
+      '1,360 kcal', // and the ledger sums to the same figure
+      'Protein oats',
+      'Salmon + lentils',
+    ]);
+    // The setup affordance retires the moment it is satisfied.
+    refute('nutrition hub (guarded)', html, ['Set daily targets', 'no targets set']);
+  }
+
+  console.log('5. The Eat tab — the fallback, when a meal has no numbers');
+  {
+    logMeal(db, {
+      date: today,
+      time: '19:05',
+      name: 'Dinner out',
+      kcal: null,
+      protein_g: null,
+      carbs_g: null,
+      fat_g: null,
+    });
+
+    const html = render('nutrition hub (fallback)', NutritionScreen);
+    expect('nutrition hub (fallback)', html, [
+      'One meal has no energy, protein, carbs and fat recorded',
+      'what is left of today is not known',
+      'Nothing recorded — tap to fill it in', // the same fact, stated on the row
+      '1,360 of 2,400 kcal', // the eaten reading, denominator intact
+    ]);
+    // THE POINT OF THE GUARD: no remainder is drawn on a day it cannot compute.
+    refute('nutrition hub (fallback)', html, ['kcal left', 'Protein left']);
+  }
+
+  console.log('6. Both routes of the same file still render');
+  {
+    __setSegments(['(tabs)', 'eat']);
+    const tabRoot = render('nutrition hub (tab root)', NutritionScreen);
+    expect('nutrition hub (tab root)', tabRoot, ['Nutrition']);
+    __setSegments(['nutrition']);
+  }
+
+  console.log('7. Edited shipped screens still render');
   expect(
     'meal-detail (+ Save as recipe)',
     render('meal-detail', MealDetailScreen, { id: mealId }),
     ['Render lunch', 'Save as template', 'Save as recipe']
   );
 
-  console.log('4. Check-off state renders');
+  console.log('8. Check-off state renders');
   const milk = db.get(`SELECT id FROM grocery_items WHERE name = 'Milk'`);
   checkGroceryItem(db, milk.id);
-  expect('grocery (with cart)', render('grocery (with cart)', GroceryScreen), ['In cart · 1']);
+  expect('grocery (with cart)', render('grocery (with cart)', GroceryScreen), ['In cart']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

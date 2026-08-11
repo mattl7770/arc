@@ -1,251 +1,167 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
+import { useRouter, useSegments } from 'expo-router';
+import { useState } from 'react';
+import { Pressable, Text, View } from 'react-native';
 
+import { LogSheet } from '@/components/nutrition/log-sheet';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
+import { Sparkline } from '@/components/ui/sparkline';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
-import { getDb } from '@/lib/db/client';
-import { clockFromISO, todayISODate } from '@/lib/db/date';
-import { openGroceryCount } from '@/lib/db/repositories/grocery';
-import { logMeal } from '@/lib/db/repositories/nutrition';
-import { recipeCount } from '@/lib/db/repositories/recipes';
-import { useNutrition } from '@/hooks/use-nutrition';
+import {
+  OVER_TIME_DAYS,
+  useNutrition,
+  type KitchenCounts,
+  type OverTime,
+} from '@/hooks/use-nutrition';
 import { fmtInt, macroLine } from '@/lib/nutrition/format';
+import {
+  dayFigure,
+  unguardedNote,
+  type DayFigure,
+  type DayMetric,
+} from '@/lib/nutrition/remaining';
 import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 
 /**
- * Nutrition sub-app home, pushed from the Log tab's Nutrition tile.
+ * The **Eat tab** — the nutrition sub-app's root. It renders at two routes: as
+ * the tab (app/(tabs)/eat.tsx re-exports this file) and as a stack-pushed
+ * screen from the Log tab's Nutrition tile and Data's Nutrition trend row.
  *
- * The hub of the food-logging family (docs/nutrition-subapp.md): the Today
- * card reads real intake against the real (versioned) daily targets — or shows
- * no denominators at all until targets are set, never a placeholder; "Add
- * food" pushes the catalog search; manual entry stays as the free-form path;
- * "Eaten today" rows push meal detail. The pine "describe or snap" action
- * remains a labelled stub until the Coach's model client lands (Phase 3) —
- * the estimation seam is src/lib/nutrition/estimate.ts.
+ * ## Two routes, two headers (owner call on hardware, 2026-08-09)
+ *
+ * The two cases are told apart by `useSegments()`, not by `router.canGoBack()`:
+ * with `backBehavior="history"` a tab root can very often go back, so that test
+ * would draw a chevron that walks you to a different tab. Route shape is the
+ * honest signal — `(tabs)` leads the segments only when this file IS the tab.
+ * The title stays "Nutrition" at both; the bar says EAT only because five
+ * characters is its width budget (app/(tabs)/_layout.tsx).
+ *
+ * ## Redrawn as a tab root (2026-08-11)
+ *
+ * Promotion to a tab changed the route and nothing else, and the owner's read
+ * from the device named four faults (docs/project-status.md §1). Each has an
+ * answer here, and the approval mockup is
+ * `docs/design-research/eat-tab-redesign.html`:
+ *
+ * 1. *"It leads with a retrospective total."* → the hero is **what is left**,
+ *    with the eaten ledger as the corner note it was subtracted from. The two
+ *    plus the target reconcile on one line, and the note still opens the targets
+ *    editor. **Guarded** — see the honesty note below; this is the change that
+ *    could most easily have shipped a lie.
+ * 2. *"Five ways to log, presented as a menu."* → one accent button reading
+ *    **Log**, opening src/components/nutrition/log-sheet.tsx. Nothing was
+ *    deleted; the paths moved one tap in, and gained "Cook a recipe", which
+ *    previously required opening the recipe first.
+ * 3. *"The most consequential setup action is the quietest thing on the
+ *    screen."* → while `targets` is null, **Set daily targets** is a full-width
+ *    control under the grid. It is outlined rather than pine (the accent stays
+ *    on Log in every state, so the one action never moves under your thumb) and
+ *    it **retires completely** once targets exist: a setup affordance that
+ *    survives its own success is noise.
+ * 4. *"Nothing on the tab spans more than today."* → **Over time**: 14-day
+ *    energy and protein, sparklined, both opening the History screen. Not a
+ *    second dashboard — the same drill-downs, moved where they can be seen.
+ *
+ * Plus the two standing objects this sub-app grew: **Kitchen** carries the
+ * recipe book and the grocery list with their live state. Import is NOT here —
+ * it is the recipe book's own primary action (owner, 2026-08-11), and the iOS
+ * share sheet reaches it without passing through this screen at all.
+ *
+ * ## The honesty rule under the hero
+ *
+ * A day's totals skip NULL by design, so `target − eaten` overstates the
+ * remainder by exactly the meals nobody measured. The remainder is therefore
+ * computed per metric and only when every meal carries that value; otherwise
+ * the metric falls back to the shipped eaten-with-denominator reading and
+ * `unguardedNote` says why in words. All of it is pure and tested:
+ * src/lib/nutrition/remaining.ts, db/nutrition-remaining.test.mjs.
+ *
+ * ## Conformed Set surface system (00-design-spec.md §1)
+ *
+ *   Today        → **grid**. The macro cells are BOXED — an owner call on
+ *                  2026-08-11 ("put boxes for the nutrition info at the top"),
+ *                  and a departure from the device, which draws nothing. Small
+ *                  figures are what struggle against the sheet's texture; the
+ *                  hero stays unboxed because at 36px it holds its own ground.
+ *   Eaten today  → **ruled plate**: the day's record is a table. Dropped
+ *                  through empty — a plate closes a record, and before the first
+ *                  meal there is only a sentence.
+ *   Kitchen      → **ruled plate**: two destinations with live state.
+ *   Over time    → **ruled plate**: two readings and a drill-down.
+ *
+ * **Accent budget: one.** The Log button is it, in every state.
  */
 
-/** 42 → "42", null target → value alone. Tracks fill ink-secondary and stamp
- * pine only when the target is met — completion is what pine means. */
-function MacroColumn({
-  label,
-  grams,
-  target,
-}: {
-  label: string;
-  grams: number;
-  target: number | null;
-}) {
-  const met = target !== null && target > 0 && grams >= target;
+/** The Today grid's three counted-down macros. Fiber is deliberately absent —
+ *  it is summed from meal items, so a manually-entered meal contributes none by
+ *  construction and it can never be honestly counted down. It lives on the
+ *  micronutrients screen, read against a reference. */
+const MACROS: { metric: DayMetric; label: string }[] = [
+  { metric: 'protein_g', label: 'Protein' },
+  { metric: 'carbs_g', label: 'Carbs' },
+  { metric: 'fat_g', label: 'Fat' },
+];
+
+/**
+ * One boxed macro cell. The LABEL carries the mode — "PROTEIN LEFT" over a
+ * remainder, plain "PROTEIN" over what has been eaten — so the number below it
+ * never needs a word to explain itself and the two readings can sit side by
+ * side without ambiguity.
+ */
+function MacroCell({ label, figure }: { label: string; figure: DayFigure }) {
+  const remaining = figure.mode === 'remaining';
+  const value = remaining ? figure.remaining : figure.eaten;
+  const denominator =
+    figure.mode === 'remaining'
+      ? `of ${Math.round(figure.target)} g`
+      : figure.target !== null
+        ? `of ${Math.round(figure.target)} g`
+        : 'g';
   return (
-    <View className="flex-1">
-      <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">{label}</Text>
-      <View className="mt-1 flex-row items-baseline gap-1">
-        <Text className="font-mono text-lg text-ink">{Math.round(grams)}</Text>
-        <Text className="font-mono text-[11px] text-ink-muted">
-          {target !== null ? `/ ${Math.round(target)}g` : 'g'}
-        </Text>
-      </View>
-      {target !== null && target > 0 ? (
-        <View className="mt-1.5 h-1 overflow-hidden rounded-full bg-hairline">
-          <View
-            className={`h-1 rounded-full ${met ? 'bg-pine' : 'bg-ink-secondary'}`}
-            style={{ width: `${Math.min(100, (grams / target) * 100)}%` }}
-          />
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-/** The Today-card corner: the kcal denominator when one exists (a measured
- * value → mono voice), otherwise the invitation to set targets (prose → sans).
- * Either way it opens the targets editor. */
-function targetsCorner(targets: NutritionTargetsRow | null): { label: string; mono: boolean } {
-  if (targets === null) return { label: 'Set daily targets', mono: false };
-  if (targets.kcal !== null) return { label: `of ${fmtInt(targets.kcal)} target`, mono: true };
-  return { label: 'Edit targets', mono: false };
-}
-
-/** "" is fine (stored as NULL); anything typed must be a non-negative number. */
-function validNumber(text: string): boolean {
-  const t = text.trim();
-  if (t === '') return true;
-  const n = Number(t);
-  return Number.isFinite(n) && n >= 0;
-}
-
-function toNumber(text: string): number | null {
-  const t = text.trim();
-  return t === '' ? null : Number(t);
-}
-
-/** "8:05" / "08:05" → "08:05"; null if it isn't a real clock time. */
-function normalizeTime(text: string): string | null {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
-  if (!m) return null;
-  const hours = Number(m[1]);
-  const minutes = Number(m[2]);
-  if (hours > 23 || minutes > 59) return null;
-  return `${String(hours).padStart(2, '0')}:${m[2]}`;
-}
-
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
-
-type FieldProps = {
-  label: string;
-  value: string;
-  onChange: (next: string) => void;
-  placeholder?: string;
-  keyboardType?: TextInputProps['keyboardType'];
-  mono?: boolean;
-  maxLength?: number;
-};
-
-function FormField({
-  label,
-  value,
-  onChange,
-  placeholder,
-  keyboardType,
-  mono,
-  maxLength,
-}: FieldProps) {
-  return (
-    <View className="flex-1">
-      <Text className="mb-1 text-xs text-ink-secondary">{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={palette.inkMuted}
-        keyboardType={keyboardType}
-        maxLength={maxLength}
-        accessibilityLabel={label}
-        className={`rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink ${
-          mono ? 'font-mono' : ''
-        }`}
-      />
+    <View className="flex-1 border border-hairline bg-paper-hi px-3 py-2.5">
+      <Text
+        numberOfLines={1}
+        className="font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary">
+        {remaining ? `${label} left` : label}
+      </Text>
+      <Text className="mt-1 font-mono text-[20px] font-semibold text-ink">
+        {value < 0 ? `${Math.abs(value)}` : `${value}`}
+      </Text>
+      <Text className="mt-0.5 font-mono text-[11px] text-ink-secondary">
+        {value < 0 ? 'over' : denominator}
+      </Text>
     </View>
   );
 }
 
 /**
- * The manual "Add a meal" form. Mounted fresh each time it opens, so the time
- * defaults to now and a saved form comes back empty. Numbers are optional —
- * blank stores NULL ("not recorded"), never 0.
+ * The Today-grid corner. With targets it is the ledger the hero was subtracted
+ * from — "1,620 of 2,400 kcal", a measured value, so mono — and it opens the
+ * editor. With no targets it renders nothing at all: the full-width control
+ * below the grid is the invitation then, and two invitations to the same screen
+ * is one too many.
  */
-function AddMealForm({ onSaved }: { onSaved: () => void }) {
-  const [name, setName] = useState('');
-  const [time, setTime] = useState(() => clockFromISO(new Date().toISOString()));
-  const [kcal, setKcal] = useState('');
-  const [protein, setProtein] = useState('');
-  const [carbs, setCarbs] = useState('');
-  const [fat, setFat] = useState('');
+function targetsCorner(targets: NutritionTargetsRow | null, eatenKcal: number): string | null {
+  if (targets === null) return null;
+  if (targets.kcal !== null) return `${fmtInt(eatenKcal)} of ${fmtInt(targets.kcal)} kcal`;
+  return 'Edit targets';
+}
 
-  const numbersValid = [kcal, protein, carbs, fat].every(validNumber);
-  const timeValid = normalizeTime(time) !== null;
-  const canSave = name.trim() !== '' && timeValid && numbersValid;
-
-  const problem = !timeValid
-    ? 'Time reads as HH:MM, e.g. 12:30.'
-    : !numbersValid
-      ? 'Numbers only — leave a field blank if you didn’t track it.'
-      : null;
-
-  const save = () => {
-    const normalized = normalizeTime(time);
-    if (!canSave || normalized === null) return;
-    try {
-      logMeal(getDb(), {
-        date: todayISODate(),
-        time: normalized,
-        name: name.trim(),
-        kcal: toNumber(kcal),
-        protein_g: toNumber(protein),
-        carbs_g: toNumber(carbs),
-        fat_g: toNumber(fat),
-      });
-      onSaved();
-    } catch (error) {
-      // canSave gates the known cases; this is a backstop so a write failure
-      // never crashes the tap handler or loses the typed meal.
-      console.warn('[nutrition] meal save failed', error);
-    }
-  };
-
+/** A square progress rule — drawn only under an EATEN reading, where a bar that
+ *  fills as you eat agrees with the number above it. A remainder counts down, so
+ *  it carries no rule: two opposite encodings of one quantity, adjacent, is the
+ *  kind of mark §5 rules out. Neutral ink, never the accent, never a signal. */
+function TargetRule({ value, target }: { value: number; target: number }) {
+  const met = value >= target;
   return (
-    <View className="mt-3 rounded-card border border-hairline bg-porcelain p-4">
-      <FormField label="Meal" value={name} onChange={setName} placeholder="e.g. Salmon + lentils" />
-      <View className="mt-3 flex-row gap-3">
-        <FormField
-          label="Time"
-          value={time}
-          onChange={setTime}
-          placeholder="12:30"
-          keyboardType="numbers-and-punctuation"
-          maxLength={5}
-          mono
-        />
-        <FormField
-          label="kcal"
-          value={kcal}
-          onChange={setKcal}
-          placeholder="—"
-          keyboardType="decimal-pad"
-          mono
-        />
-      </View>
-      <View className="mt-3 flex-row gap-3">
-        <FormField
-          label="Protein g"
-          value={protein}
-          onChange={setProtein}
-          placeholder="—"
-          keyboardType="decimal-pad"
-          mono
-        />
-        <FormField
-          label="Carbs g"
-          value={carbs}
-          onChange={setCarbs}
-          placeholder="—"
-          keyboardType="decimal-pad"
-          mono
-        />
-        <FormField
-          label="Fat g"
-          value={fat}
-          onChange={setFat}
-          placeholder="—"
-          keyboardType="decimal-pad"
-          mono
-        />
-      </View>
-
-      {problem ? <Text className="mt-2 text-xs leading-5 text-ink-muted">{problem}</Text> : null}
-
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Save meal"
-        accessibilityState={{ disabled: !canSave }}
-        disabled={!canSave}
-        onPress={save}
-        className={`mt-4 h-12 items-center justify-center rounded-btn border ${
-          canSave ? 'border-hairline-strong active:bg-paper-deep' : 'border-hairline'
-        }`}>
-        <Text className={`text-[15px] font-semibold ${canSave ? 'text-ink' : 'text-ink-muted'}`}>
-          Save meal
-        </Text>
-      </Pressable>
+    <View className="mt-1.5 h-[3px] bg-paper-deep">
+      <View
+        className={met ? 'h-[3px] bg-ink' : 'h-[3px] bg-ink-secondary'}
+        style={{ width: `${Math.min(100, (value / target) * 100)}%` }}
+      />
     </View>
   );
 }
@@ -268,287 +184,396 @@ function MealRowItem({
     [macros, itemCount > 0 ? `${itemCount} item${itemCount === 1 ? '' : 's'}` : null]
       .filter(Boolean)
       .join(' · ');
+  const unrecorded = meal.kcal == null;
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${meal.name}, details`}
-      onPress={onPress}
-      className={`flex-row gap-3 py-3 active:opacity-60 ${first ? '' : 'border-t border-hairline-soft'}`}>
-      <Text className="w-11 pt-0.5 font-mono text-[11px] text-ink-muted">{meal.time ?? '—'}</Text>
-      <View className="flex-1">
-        <Text className="text-[15px] leading-5 text-ink">{meal.name}</Text>
-        {detail !== '' ? (
+    <View>
+      <Divider first={first} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${meal.name}, details`}
+        onPress={onPress}
+        className="min-h-[46px] flex-row gap-3 py-3 active:opacity-60">
+        <Text className="w-12 pt-0.5 font-mono text-[12px] text-ink-secondary">
+          {meal.time ?? '—'}
+        </Text>
+        <View className="flex-1">
+          <Text className="font-serif text-[16px] leading-5 text-ink">{meal.name}</Text>
+          {/* A meal with no numbers says so, and says what to do about it — it
+              is the reason the grid above may be showing eaten rather than
+              left, and the two must not be discoverable only by inference. */}
+          {unrecorded ? (
+            <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+              Nothing recorded — tap to fill it in
+            </Text>
+          ) : detail !== '' ? (
+            <Text
+              className={
+                meal.notes
+                  ? 'mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary'
+                  : 'mt-0.5 font-mono text-[12px] leading-4 text-ink-secondary'
+              }>
+              {detail}
+            </Text>
+          ) : null}
+        </View>
+        {/* The rounding site of record: `fmtInt` rounds here, and the Today
+            corner totals these rounded rows rather than rounding again from the
+            raw sum. No kcal recorded reads as an em-dash and contributes
+            nothing — never a fabricated 0. */}
+        <Text className="pt-0.5 font-mono text-[15px] text-ink">
+          {meal.kcal != null ? fmtInt(meal.kcal) : '—'}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+/** A Kitchen row: a destination that carries its own live state in the row
+ *  body, the way a meal row carries its macros. Never in the trailing slot —
+ *  nothing on a tab root in this app puts a live count beside the chevron. */
+function KitchenRow({
+  icon,
+  label,
+  detail,
+  mono,
+  first,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  detail: string;
+  /** Measured detail (counts) is mono; an authored empty is prose. */
+  mono: boolean;
+  first: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <View>
+      <Divider first={first} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${label}. ${detail}.`}
+        onPress={onPress}
+        className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
+        <Ionicons name={icon} size={19} color={palette.inkSecondary} />
+        <View className="flex-1">
+          <Text className="font-serif text-[16px] text-ink">{label}</Text>
           <Text
-            className={`mt-0.5 text-xs leading-5 text-ink-muted ${meal.notes ? '' : 'font-mono text-[11px]'}`}>
+            className={
+              mono
+                ? 'mt-0.5 font-mono text-[12px] text-ink-secondary'
+                : 'mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary'
+            }>
             {detail}
           </Text>
-        ) : null}
-      </View>
-      <Text className="pt-0.5 font-mono text-[13px] text-ink-secondary">
-        {meal.kcal != null ? fmtInt(meal.kcal) : '—'}
-      </Text>
-    </Pressable>
+        </View>
+        <Ionicons name="chevron-forward" size={16} color={palette.inkSecondary} />
+      </Pressable>
+    </View>
   );
+}
+
+/** An "Over time" reading — Data's Trends row anatomy: name, descriptor,
+ *  sparkline, right-aligned mono value + unit, chevron. */
+function TrendRow({
+  label,
+  series,
+  average,
+  unit,
+  first,
+  onPress,
+}: {
+  label: string;
+  series: number[];
+  average: number | null;
+  unit: string;
+  first: boolean;
+  onPress: () => void;
+}) {
+  const empty = average === null;
+  return (
+    <View>
+      <Divider first={first} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={
+          empty
+            ? `${label}. Nothing recorded yet. Open history.`
+            : `${label}. ${fmtInt(average)} ${unit} a day. Open history.`
+        }
+        onPress={onPress}
+        className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
+        <View className="flex-1">
+          <Text className="font-serif text-[16px] text-ink">{label}</Text>
+          <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+            {empty ? 'Nothing recorded yet' : 'Daily average'}
+          </Text>
+        </View>
+        {empty ? null : <Sparkline data={series} />}
+        <View className="items-end">
+          <View className="flex-row items-baseline gap-1">
+            {/* No data, no number: an em-dash, never a stand-in zero. */}
+            <Text
+              className={
+                empty ? 'font-mono text-[17px] text-ink-muted' : 'font-mono text-[17px] text-ink'
+              }>
+              {empty ? '—' : fmtInt(average)}
+            </Text>
+            {empty ? null : (
+              <Text className="font-mono text-[12px] text-ink-secondary">{unit}</Text>
+            )}
+          </View>
+        </View>
+        <Ionicons name="chevron-forward" size={16} color={palette.inkSecondary} />
+      </Pressable>
+    </View>
+  );
+}
+
+/** "24 recipes · 3 cooked this month", or the authored empty. */
+function recipeDetail(kitchen: KitchenCounts): { text: string; mono: boolean } {
+  if (kitchen.recipes === 0) return { text: 'Empty — import your first recipe', mono: false };
+  const book = `${kitchen.recipes} recipe${kitchen.recipes === 1 ? '' : 's'}`;
+  if (kitchen.cookedRecently === 0) return { text: book, mono: true };
+  return { text: `${book} · ${kitchen.cookedRecently} cooked this month`, mono: true };
+}
+
+/**
+ * "12 to buy · 3 in the cart" — and the state nobody designs: a list whose every
+ * item is checked off reads "Nothing left to buy · 40 in the cart", never a bare
+ * "Nothing on the list" over a screen holding forty rows. Check-off is soft and
+ * cleared by hand, so the cart survives until it is emptied.
+ */
+function groceryDetail(kitchen: KitchenCounts): { text: string; mono: boolean } {
+  const cart = kitchen.groceryInCart > 0 ? ` · ${kitchen.groceryInCart} in the cart` : '';
+  if (kitchen.groceryOpen === 0) {
+    if (kitchen.groceryInCart === 0) return { text: 'Nothing on the list', mono: false };
+    return { text: `Nothing left to buy${cart}`, mono: true };
+  }
+  return { text: `${kitchen.groceryOpen} to buy${cart}`, mono: true };
+}
+
+/** The Over-time section note: the cohort, stated out loud, in the house's
+ *  tally form. True whether the readings are drawn or empty. */
+function overTimeNote(overTime: OverTime): string {
+  return `${overTime.daysRecorded} of ${OVER_TIME_DAYS} days recorded`;
 }
 
 export default function NutritionScreen() {
   const router = useRouter();
-  const { meals, totals, fiberTotal, itemCounts, targets, reload } = useNutrition();
-  const [formOpen, setFormOpen] = useState(false);
-  // The Kitchen rows' live counts (docs/recipes-grocery.md §5).
-  const [recipeTotal, setRecipeTotal] = useState(() => recipeCount(getDb()));
-  const [groceryOpen, setGroceryOpen] = useState(() => openGroceryCount(getDb()));
-  useFocusEffect(
-    useCallback(() => {
-      setRecipeTotal(recipeCount(getDb()));
-      setGroceryOpen(openGroceryCount(getDb()));
-    }, [])
-  );
+  // `(tabs)` leads the segments only when this file is rendering AS the Eat tab
+  // root; the pushed route is plain `/nutrition`. See the header note above.
+  const isTabRoot = useSegments()[0] === '(tabs)';
+  const { meals, itemCounts, targets, kitchen, overTime, reload } = useNutrition();
+  const [logOpen, setLogOpen] = useState(false);
 
-  const openForm = () => {
-    setFormOpen((open) => !open);
+  const targetFor = (metric: DayMetric): number | null => {
+    if (targets === null) return null;
+    return targets[metric];
   };
 
-  const saved = () => {
-    setFormOpen(false);
-    reload();
-  };
-
-  const corner = targetsCorner(targets);
-  const kcalTarget = targets?.kcal ?? null;
-  const fiberTarget = targets?.fiber_g ?? null;
-  const fiberMet = fiberTarget !== null && fiberTarget > 0 && fiberTotal >= fiberTarget;
+  const kcal = dayFigure(meals, 'kcal', targetFor('kcal'));
+  const macroFigures = MACROS.map((m) => ({
+    ...m,
+    figure: dayFigure(meals, m.metric, targetFor(m.metric)),
+  }));
+  const note = unguardedNote(meals, {
+    kcal: targetFor('kcal'),
+    protein_g: targetFor('protein_g'),
+    carbs_g: targetFor('carbs_g'),
+    fat_g: targetFor('fat_g'),
+  });
+  const corner = targetsCorner(targets, kcal.eaten);
+  const recipes = recipeDetail(kitchen);
+  const grocery = groceryDetail(kitchen);
+  const openHistory = () => router.push('/nutrition-history');
 
   return (
     <Screen scroll>
       <View className="pt-2">
-        <StackHeader title="Nutrition" />
-      </View>
-
-      {/* Today's intake — real sums against the real (versioned) targets. */}
-      <View className="mt-2">
-        <SectionLabel>Today</SectionLabel>
-        <View className="mt-2 rounded-card border border-hairline bg-porcelain p-4">
-          <View className="flex-row items-baseline justify-between">
-            <View className="flex-row items-baseline gap-1.5">
-              <Text className="font-mono text-4xl text-ink">{fmtInt(totals.kcal)}</Text>
-              <Text className="font-mono text-sm text-ink-muted">kcal</Text>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Daily targets"
-              hitSlop={8}
-              onPress={() => router.push('/nutrition-targets')}
-              className="active:opacity-60">
-              <Text
-                className={
-                  corner.mono ? 'font-mono text-[11px] text-ink-muted' : 'text-xs text-ink-muted'
-                }>
-                {corner.label}
-              </Text>
-            </Pressable>
-          </View>
-
-          {kcalTarget !== null && kcalTarget > 0 ? (
-            <View className="mt-3 h-1 overflow-hidden rounded-full bg-hairline">
-              <View
-                className={`h-1 rounded-full ${totals.kcal >= kcalTarget ? 'bg-pine' : 'bg-ink-secondary'}`}
-                style={{ width: `${Math.min(100, (totals.kcal / kcalTarget) * 100)}%` }}
-              />
-            </View>
-          ) : null}
-
-          <View className="mt-4 border-t border-hairline-soft pt-4">
-            <View className="flex-row gap-4">
-              <MacroColumn
-                label="Protein"
-                grams={totals.protein_g}
-                target={targets?.protein_g ?? null}
-              />
-              <MacroColumn label="Carbs" grams={totals.carbs_g} target={targets?.carbs_g ?? null} />
-              <MacroColumn label="Fat" grams={totals.fat_g} target={targets?.fat_g ?? null} />
-            </View>
-            {fiberTarget !== null ? (
-              <View className="mt-3">
-                <View className="flex-row items-baseline justify-between">
-                  <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">Fiber</Text>
-                  <View className="flex-row items-baseline gap-1">
-                    <Text className="font-mono text-[13px] text-ink">{Math.round(fiberTotal)}</Text>
-                    <Text className="font-mono text-[11px] text-ink-muted">
-                      / {Math.round(fiberTarget)}g
-                    </Text>
-                  </View>
-                </View>
-                {fiberTarget > 0 ? (
-                  <View className="mt-1.5 h-1 overflow-hidden rounded-full bg-hairline">
-                    <View
-                      className={`h-1 rounded-full ${fiberMet ? 'bg-pine' : 'bg-ink-secondary'}`}
-                      style={{ width: `${Math.min(100, (fiberTotal / fiberTarget) * 100)}%` }}
-                    />
-                  </View>
-                ) : null}
-              </View>
-            ) : null}
-          </View>
-        </View>
-      </View>
-
-      {/* Log a meal */}
-      <View className="mt-8">
-        <SectionLabel>Log a meal</SectionLabel>
-        {/* The one pine action on this screen — AI estimation (photo / describe)
-            landing in an editable review (app/meal-estimate.tsx). */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Describe or snap a meal"
-          onPress={() => router.push('/meal-estimate')}
-          className="mt-2 flex-row items-center gap-3 rounded-card bg-pine px-4 py-3.5 active:opacity-70">
-          <Ionicons name="camera-outline" size={20} color={palette.pineOn} />
-          <View className="flex-1">
-            <Text className="text-[15px] font-semibold text-pine-on">Describe or snap a meal</Text>
-            <Text className="mt-0.5 text-xs text-pine-tint">
-              Type it or photograph the plate — you review before it logs
-            </Text>
-          </View>
-        </Pressable>
-
-        <View className="mt-2 flex-row gap-2">
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Add food from the catalog"
-            onPress={() => router.push('/food-search')}
-            className="flex-1 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
-            <Ionicons name="search-outline" size={17} color={palette.inkSecondary} />
-            <Text className="text-[13px] text-ink">Add food</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Scan a barcode"
-            onPress={() => router.push('/barcode-scan')}
-            className="flex-1 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
-            <Ionicons name="barcode-outline" size={17} color={palette.inkSecondary} />
-            <Text className="text-[13px] text-ink">Scan</Text>
-          </Pressable>
-        </View>
-
-        <View className="mt-2 flex-row gap-2">
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Manual entry"
-            accessibilityState={{ expanded: formOpen }}
-            onPress={openForm}
-            className={`flex-1 flex-row items-center gap-2 rounded-card border px-3.5 py-3 ${
-              formOpen ? 'border-hairline-strong bg-paper-deep' : 'border-hairline bg-porcelain'
-            }`}>
-            <Ionicons name="create-outline" size={17} color={palette.inkSecondary} />
-            <Text className="text-[13px] text-ink">Manual entry</Text>
-          </Pressable>
-        </View>
-
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Log from a template"
-          onPress={() => router.push('/meal-templates')}
-          className="mt-2 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
-          <Ionicons name="albums-outline" size={17} color={palette.inkSecondary} />
-          <Text className="text-[13px] text-ink">From a template</Text>
-        </Pressable>
-
-        {formOpen ? <AddMealForm onSaved={saved} /> : null}
-      </View>
-
-      {/* Eaten today — the day's real record, in eating order. */}
-      <View className="mt-8">
-        <SectionLabel>Eaten today</SectionLabel>
-        {meals.length === 0 ? (
-          <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
-            No meals logged yet today.
-          </Text>
+        {isTabRoot ? (
+          <Text className="font-serif text-[26px] font-semibold text-ink">Nutrition</Text>
         ) : (
-          <View className="mt-1">
-            {meals.map((meal, index) => (
-              <MealRowItem
-                key={meal.id}
-                meal={meal}
-                itemCount={itemCounts[meal.id] ?? 0}
-                first={index === 0}
-                onPress={() => router.push({ pathname: '/meal-detail', params: { id: meal.id } })}
-              />
-            ))}
-          </View>
+          <StackHeader title="Nutrition" />
         )}
       </View>
 
-      {/* Kitchen — the recipe book and the standing grocery list
-          (docs/recipes-grocery.md). */}
-      <View className="mt-8">
-        <SectionLabel>Kitchen</SectionLabel>
-        <View className="mt-2 gap-2">
-          <ReviewRow
-            icon="book-outline"
-            title="Recipes"
-            detail={
-              recipeTotal === 0
-                ? 'Import from a reel, a link, or a meal'
-                : `${recipeTotal} recipe${recipeTotal === 1 ? '' : 's'}`
-            }
-            onPress={() => router.push('/recipes')}
-          />
-          <ReviewRow
-            icon="cart-outline"
-            title="Grocery list"
-            detail={groceryOpen === 0 ? 'The list is clear' : `${groceryOpen} to buy`}
-            onPress={() => router.push('/grocery')}
-          />
-        </View>
+      {/* TODAY — what is left, when the day's data can support that claim. */}
+      <View className="mt-5">
+        <Block device="grid">
+          <View className="flex-row items-baseline gap-2">
+            <View className="flex-1">
+              <SectionLabel label="Today" />
+            </View>
+            {corner ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Daily targets"
+                hitSlop={16}
+                onPress={() => router.push('/nutrition-targets')}
+                className="active:opacity-60">
+                <Text className="font-mono text-[11px] text-ink-secondary">{corner}</Text>
+              </Pressable>
+            ) : null}
+          </View>
+
+          {targets === null && meals.length === 0 ? (
+            <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
+              Nothing logged yet today, and no targets set — so there is nothing here to measure the
+              day against.
+            </Text>
+          ) : (
+            <>
+              <View className="mt-2 flex-row items-baseline gap-1.5">
+                <Text className="font-mono text-4xl text-ink">
+                  {kcal.mode === 'remaining'
+                    ? fmtInt(Math.abs(kcal.remaining))
+                    : fmtInt(kcal.eaten)}
+                </Text>
+                <Text className="font-mono text-[15px] text-ink-secondary">
+                  {kcal.mode === 'remaining'
+                    ? kcal.remaining < 0
+                      ? 'kcal over'
+                      : 'kcal left'
+                    : 'kcal'}
+                </Text>
+              </View>
+
+              {kcal.mode === 'eaten' && kcal.target !== null ? (
+                <TargetRule value={kcal.eaten} target={kcal.target} />
+              ) : null}
+
+              <View className="mt-4 flex-row gap-2">
+                {macroFigures.map((m) => (
+                  <MacroCell key={m.metric} label={m.label} figure={m.figure} />
+                ))}
+              </View>
+            </>
+          )}
+
+          {note ? (
+            <Text className="mt-4 font-serif text-[13px] leading-5 text-ink-secondary">{note}</Text>
+          ) : null}
+
+          {/* The setup affordance, promoted while it is needed and retired the
+              moment it is satisfied. Outlined, not pine — the accent belongs to
+              Log in every state. */}
+          {targets === null ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Set daily targets"
+              onPress={() => router.push('/nutrition-targets')}
+              className="mt-4 min-h-[46px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+              <Ionicons name="options-outline" size={17} color={palette.inkSecondary} />
+              <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink">
+                Set daily targets
+              </Text>
+            </Pressable>
+          ) : null}
+        </Block>
       </View>
 
-      {/* Review — micronutrients and cross-day trends (read-only, no pine). */}
-      <View className="mt-8">
-        <SectionLabel>Review</SectionLabel>
+      {/* The one action, the whole word. */}
+      <View className="mt-7">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Log a meal"
+          onPress={() => setLogOpen(true)}
+          className="min-h-[52px] items-center justify-center rounded-btn bg-pine active:opacity-80">
+          <Text className="font-label text-[16px] font-semibold text-pine-on">Log</Text>
+        </Pressable>
+      </View>
+
+      {/* EATEN TODAY — the day's real record, in eating order. The plate goes
+          round the rows, never round the empty sentence: a plate closes a
+          record, and before the first meal of the day there is no record to
+          close. This is the state the tab re-enters every morning. */}
+      <View className="mt-7">
+        {meals.length === 0 ? (
+          <View>
+            <SectionLabel label="Eaten today" />
+            <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
+              Nothing logged yet today.
+            </Text>
+          </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="Eaten today" note={`${fmtInt(kcal.eaten)} kcal`} />
+            <View className="mt-1">
+              {meals.map((meal, index) => (
+                <MealRowItem
+                  key={meal.id}
+                  meal={meal}
+                  itemCount={itemCounts[meal.id] ?? 0}
+                  first={index === 0}
+                  onPress={() => router.push({ pathname: '/meal-detail', params: { id: meal.id } })}
+                />
+              ))}
+            </View>
+          </Block>
+        )}
+      </View>
+
+      {/* KITCHEN — the standing objects. They do not reset at midnight. */}
+      <View className="mt-7">
+        <SectionLabel label="Kitchen" />
         <View className="mt-2">
-          <ReviewRow
-            icon="nutrition-outline"
-            title="Micronutrients"
-            detail="Today's totals vs reference"
-            onPress={() => router.push('/nutrition-micros')}
-          />
-          <ReviewRow
-            icon="trending-up-outline"
-            title="History"
-            detail="Energy & macros over time"
-            onPress={() => router.push('/nutrition-history')}
-          />
+          <Block device="plate">
+            <KitchenRow
+              icon="book-outline"
+              label="Recipe book"
+              detail={recipes.text}
+              mono={recipes.mono}
+              first
+              onPress={() => router.push('/recipes')}
+            />
+            <KitchenRow
+              icon="cart-outline"
+              label="Grocery list"
+              detail={grocery.text}
+              mono={grocery.mono}
+              first={false}
+              onPress={() => router.push('/grocery')}
+            />
+          </Block>
         </View>
       </View>
-    </Screen>
-  );
-}
 
-/** One review row (Micronutrients / History) — card + chevron, no pine. */
-function ReviewRow({
-  icon,
-  title,
-  detail,
-  onPress,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  title: string;
-  detail: string;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={title}
-      onPress={onPress}
-      className="mb-2 flex-row items-center gap-3 rounded-card border border-hairline bg-porcelain px-4 py-3 active:bg-paper-deep">
-      <Ionicons name={icon} size={18} color={palette.inkSecondary} />
-      <View className="flex-1">
-        <Text className="text-[15px] text-ink">{title}</Text>
-        <Text className="mt-0.5 text-xs text-ink-muted">{detail}</Text>
+      {/* OVER TIME — the tab's answer to "how has my protein been this month".
+          Two readings and one drill-down, not a second dashboard. */}
+      <View className="mt-7">
+        <SectionLabel label="Over time" note={overTimeNote(overTime)} />
+        <View className="mt-2">
+          <Block device="plate">
+            <TrendRow
+              label="Energy"
+              series={overTime.kcal}
+              average={overTime.avgKcal}
+              unit="kcal"
+              first
+              onPress={openHistory}
+            />
+            <TrendRow
+              label="Protein"
+              series={overTime.protein}
+              average={overTime.avgProtein}
+              unit="g"
+              first={false}
+              onPress={openHistory}
+            />
+            <KitchenRow
+              icon="nutrition-outline"
+              label="Micronutrients"
+              detail="Today’s totals vs reference"
+              mono={false}
+              first={false}
+              onPress={() => router.push('/nutrition-micros')}
+            />
+          </Block>
+        </View>
       </View>
-      <Ionicons name="chevron-forward" size={18} color={palette.inkMuted} />
-    </Pressable>
+
+      <LogSheet visible={logOpen} onClose={() => setLogOpen(false)} onSaved={reload} />
+    </Screen>
   );
 }

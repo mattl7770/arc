@@ -197,6 +197,14 @@ console.log('0. buildMessagesRequest: exact wire shape, no sampling params');
   payload.tools[payload.tools.length - 1].cache_control?.type === 'ephemeral'
     ? ok('prompt-cache breakpoints on the system block and the last tool')
     : bad('cache_control missing', body);
+  // The TTL is load-bearing, not a default worth drifting back to. Coach use is
+  // bursty (a question, a pause to read, a follow-up), so under the 5-minute
+  // default nearly every question arrives cold and re-pays a WRITE on the whole
+  // ~10k-token prefix. That is what made three trivial queries cost ~48k tokens.
+  payload.system[0].cache_control?.ttl === '1h' &&
+  payload.tools[payload.tools.length - 1].cache_control?.ttl === '1h'
+    ? ok('…both at the 1-hour TTL, so a bursty session reads instead of rewriting')
+    : bad('cache TTL is not 1h', JSON.stringify(payload.system[0].cache_control));
   !('temperature' in payload) && !('thinking' in payload) && !('top_p' in payload)
     ? ok('no temperature/top_p/thinking (current models reject or default them)')
     : bad('forbidden params present');
@@ -523,6 +531,33 @@ console.log('10. abort: a pre-aborted signal never reaches the network');
   threw && threw.name === 'AbortError' && fetchImpl.calls.length === 0
     ? ok('AbortError before any fetch')
     : bad('abort', `${String(threw)} calls=${fetchImpl.calls.length}`);
+}
+
+console.log('11. systemContext rides as a second, UNCACHED system block');
+{
+  const built = buildMessagesRequest(CONFIG(null), {
+    ...REQUEST,
+    systemContext: 'Current state: readiness caution, 3 of 9 done.',
+  });
+  const payload = JSON.parse(built.body);
+  payload.system.length === 2 &&
+  payload.system[0].cache_control?.type === 'ephemeral' &&
+  payload.system[1].text === 'Current state: readiness caution, 3 of 9 done.' &&
+  payload.system[1].cache_control === undefined
+    ? ok('two blocks: static cached, per-turn context uncached after the breakpoint')
+    : bad('two-block system', built.body);
+
+  const without = JSON.parse(buildMessagesRequest(CONFIG(null), REQUEST).body);
+  without.system.length === 1
+    ? ok('omitted systemContext → single block (labs parser path unchanged)')
+    : bad('single block', JSON.stringify(without.system));
+
+  const blank = JSON.parse(
+    buildMessagesRequest(CONFIG(null), { ...REQUEST, systemContext: '   ' }).body
+  );
+  blank.system.length === 1
+    ? ok('blank systemContext never ships an empty block')
+    : bad('blank block', JSON.stringify(blank.system));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

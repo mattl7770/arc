@@ -409,11 +409,14 @@ console.log('5. 0029 purges ONLY the fabricated seed mission rows');
     : bad('fixture insert', `${before.length} of ${fixture.length}`);
 
   const result = migrate(executor(db), MIGRATIONS);
-  // Floor convention: 0029 applies FIRST from a v28 stage; later migrations
-  // (0030+) legitimately follow it, so only the head of the list is pinned.
+  // Staged one below 0029, so 0029 runs — and so does everything above it.
+  // Asserting "exactly one applied" pinned this to 0029 being the newest
+  // migration in the repo forever, which it stopped being the moment the next
+  // one landed. What matters is that the PURGE ran; the row-level assertions
+  // below are what prove it deleted the right things.
   result.applied[0] === '0029_purge_seed_mission'
-    ? ok(`0029_purge_seed_mission applied first (${result.applied.length} total from v28)`)
-    : bad('applied 0029 first', JSON.stringify(result.applied));
+    ? ok(`0029_purge_seed_mission applied first (with ${result.applied.length - 1} above it)`)
+    : bad('0029 did not run', JSON.stringify(result.applied));
 
   const after = snapshotEntries(db);
   const aliveIds = after.map((r) => r.id);
@@ -527,9 +530,11 @@ console.log('6. 0029 is a no-op on a database with no seed rows');
   JSON.stringify(dailyBefore) === JSON.stringify(snapshotDailyLogs(db))
     ? ok('no-op: daily_logs unchanged')
     : bad('no-op run changed daily_logs');
-  db.prepare('PRAGMA user_version').get().user_version >= PURGE_VERSION
-    ? ok(`user_version advanced to >= ${PURGE_VERSION} anyway (forward-only; floor)`)
-    : bad('user_version after no-op');
+  // LATEST, not PURGE_VERSION: a no-op purge must still leave the database at
+  // the head of the migration list, or every later migration re-runs forever.
+  db.prepare('PRAGMA user_version').get().user_version === LATEST
+    ? ok(`user_version advanced to ${LATEST} anyway (forward-only)`)
+    : bad('user_version after no-op', String(db.prepare('PRAGMA user_version').get().user_version));
   db.close();
 }
 

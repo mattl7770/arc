@@ -29,6 +29,7 @@ import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 import { logCapture, logMetric, logNote } from '@/lib/db/repositories/logs';
 import { logWorkout } from '@/lib/db/repositories/exercise';
+import { listExercises } from '@/lib/db/repositories/exercise-catalog';
 import { logMeal } from '@/lib/db/repositories/nutrition';
 import { addVersion, getCurrentVersion, getProtocolBySlug } from '@/lib/db/repositories/protocols';
 import {
@@ -38,7 +39,7 @@ import {
   listActiveReminders,
   resolveOneOffDay,
 } from '@/lib/db/repositories/reminders';
-import { setMode } from '@/lib/db/repositories/day-modes';
+import { modesSupersededFrom, setMode } from '@/lib/db/repositories/day-modes';
 import {
   addGroceryItems,
   addRecipeToGroceryList,
@@ -55,14 +56,32 @@ import {
 } from '@/lib/db/repositories/recipes';
 import type { RecipePortion } from '@/lib/recipes/types';
 import {
+  abandonExperiment,
   completeExperiment,
   createExperiment,
   getExperiment,
 } from '@/lib/db/repositories/experiments';
-import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
+import {
+  findMemories,
+  forgetMemory,
+  getMemory,
+  rememberFact,
+} from '@/lib/db/repositories/coach-memory';
+import {
+  generateMissionForDay,
+  rederiveMissionForDay,
+} from '@/lib/db/repositories/mission-generate';
+import {
+  getOrCreateDailyLog,
+  insertMissionItem,
+  listMission,
+  moveMissionItem,
+  removeMissionItem,
+  setMissionStatus,
+} from '@/lib/db/repositories/mission';
 import { logSymptom } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
-import { getModeDefinition, MODE_KEYS } from '@/lib/modes/registry';
+import { getModeDefinition, MODE_KEYS, type ModeKey } from '@/lib/modes/registry';
 import { syncAndReportForReminder } from '@/lib/notifications/reminders';
 import { lbToKg, setLineKg } from '@/lib/exercise/format';
 import {
@@ -72,6 +91,7 @@ import {
   roundToSpec,
   type MetricKey,
 } from '@/lib/log/metrics';
+import type { LogEntryType } from '@/lib/db/types';
 import type { SetInput, WorkoutKind } from '@/lib/exercise/types';
 import { normalizeItem, parseProtocolContent } from '@/lib/protocols/content';
 import type { ProtocolItem } from '@/lib/protocols/types';
@@ -81,6 +101,7 @@ import {
   optDate,
   optEnum,
   optNumber,
+  optPastDate,
   optString,
   optTime,
   reqEnum,
@@ -91,14 +112,20 @@ import {
 
 const json = (value: unknown): string => JSON.stringify(value);
 
-/** The local day a log lands on: an explicit backdate, else today. */
+/** The local day a log lands on: an explicit backdate (never future), else today. */
 function logDate(args: Record<string, unknown>, now: Date): string {
-  return optDate(args, 'date') ?? todayISODate(now);
+  return optPastDate(args, 'date', now) ?? todayISODate(now);
 }
 
-/** " · 2026-07-25" when the write is backdated; empty for today. */
-function dateSuffix(args: Record<string, unknown>): string {
-  const date = optDate(args, 'date');
+/**
+ * The log tools' date suffix: validates the future bound at CARD time, not
+ * just at execute — a knowable failure must never cost the user an Approve
+ * tap (the model mis-parses "next Tuesday", the card shows it, the user
+ * approves, execute throws, and the model re-asks: two cards for one fact).
+ * A confirmSummary throw becomes a pre-gate is_error the model corrects from.
+ */
+function pastDateSuffix(args: Record<string, unknown>, now?: Date): string {
+  const date = optPastDate(args, 'date', now ?? new Date());
   return date ? ` · ${date}` : '';
 }
 
@@ -161,12 +188,9 @@ function parseMetricInput(
 const logMetricTool: CoachTool = {
   name: 'log_metric',
   description:
-    'Log one body/vital measurement: weight, body_fat, waist, hrv, rhr, or water. ' +
-    "The value is in the user's chosen display unit for that metric (their Settings " +
-    'preference — e.g. weight lb OR kg, waist in OR cm, water oz OR ml; hrv ms, rhr ' +
-    'bpm, body_fat %) unless "unit" names another. Pass the number exactly as the user ' +
-    'said it — the app reads their unit preference and converts. Use when the user ' +
-    'states a measurement ("weight was 178 this morning").',
+    'Log one body/vital measurement: weight, body_fat, waist, hrv, rhr, or water. Values are ' +
+    'in the user\'s display units unless "unit" names another. Use when the user states a ' +
+    'measurement ("weight was 178 this morning").',
   inputSchema: {
     type: 'object',
     properties: {
@@ -182,9 +206,9 @@ const logMetricTool: CoachTool = {
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input, db) => {
+  confirmSummary: (input, db, context) => {
     const { key, display } = parseMetricInput(input, db);
-    return `Log ${metricByKey(key)!.label.toLowerCase()} ${display}${dateSuffix(asRecord(input))}`;
+    return `Log ${metricByKey(key)!.label.toLowerCase()} ${display}${pastDateSuffix(asRecord(input), context?.now)}`;
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
@@ -218,7 +242,7 @@ const logMealTool: CoachTool = {
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input) => {
+  confirmSummary: (input, _db, context) => {
     const args = asRecord(input);
     const name = reqString(args, 'name');
     // Everything consequential goes on the card — approving writes ALL of it.
@@ -231,7 +255,7 @@ const logMealTool: CoachTool = {
       .filter(([, value]) => value != null)
       .map(([, value, unit]) => `${Math.round(value as number)} ${unit}`)
       .join(', ');
-    return `Log meal "${name}"${macros ? ` · ${macros}` : ''}${dateSuffix(args)}`;
+    return `Log meal "${name}"${macros ? ` · ${macros}` : ''}${pastDateSuffix(args, context?.now)}`;
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
@@ -257,10 +281,34 @@ const SET_UNITS = ['lb', 'kg'] as const;
 type ParsedSet = SetInput & { displayLine: string };
 
 /**
+ * Resolve a spoken exercise name to a catalog id — the identity every piece of
+ * engine intelligence (e1RM, freshness, volume, progression) keys on. A set
+ * stored with a NULL exercise_id is invisible to all of it, so the more the
+ * user logged through the Coach, the blinder "Train today" got (the 2026-08-08
+ * review's self-defeating loop).
+ *
+ * Matching is the labs pipeline's discipline: a UNIQUE exact match (case-
+ * insensitive) on the catalog name or an alias resolves; anything else —
+ * no match, or two exercises answering to the same name — stays null rather
+ * than guessing. "Bench" must never silently become "Bench Press" when a
+ * "Bench Dip" also exists.
+ */
+function resolveExerciseId(db: Database, name: string): string | null {
+  const needle = name.trim().toLowerCase();
+  if (needle.length === 0) return null;
+  // LIKE narrows (name or alias substring, non-archived); exact-match in JS.
+  const matches = listExercises(db, { search: name.trim() }).filter(
+    (ex) => ex.name.toLowerCase() === needle || ex.aliases.some((a) => a.toLowerCase() === needle)
+  );
+  return matches.length === 1 ? matches[0]!.id : null;
+}
+
+/**
  * Sets arrive in the user's weight unit by default (their Settings preference —
  * lb or kg), which an explicit per-set `unit` overrides; conversion to canonical
  * kg happens here, never in the model, and the display line renders back in the
  * same preferred unit (setLineKg) so the confirmation card matches the app.
+ * Each set also resolves its catalog exercise_id (see resolveExerciseId).
  */
 function parseSets(input: Record<string, unknown>, db: Database): ParsedSet[] {
   const raw = input['sets'];
@@ -276,6 +324,7 @@ function parseSets(input: Record<string, unknown>, db: Database): ParsedSet[] {
     const weightKg = weight == null ? null : unit === 'kg' ? weight : lbToKg(weight);
     return {
       exercise,
+      exerciseId: resolveExerciseId(db, exercise),
       reps,
       weightKg,
       displayLine: `${exercise} ${setLineKg(reps, weightKg, units)}`,
@@ -286,10 +335,8 @@ function parseSets(input: Record<string, unknown>, db: Database): ParsedSet[] {
 const logWorkoutTool: CoachTool = {
   name: 'log_workout',
   description:
-    'Log a training session: name, kind (strength/cardio/mobility/other), duration in ' +
-    'minutes, and optional strength sets [{exercise, reps, weight, unit}] — set weight ' +
-    "is in the user's default weight unit unless `unit` names one (lb/kg); pass it " +
-    'exactly as the user said it. Use when the user reports a workout.',
+    'Log a training session: name, kind (strength/cardio/mobility/other), duration in minutes, ' +
+    'and optional strength sets. Use when the user reports a workout.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -321,7 +368,7 @@ const logWorkoutTool: CoachTool = {
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input, db) => {
+  confirmSummary: (input, db, context) => {
     const args = asRecord(input);
     const name = reqString(args, 'name');
     const duration = optNumber(args, 'duration_min');
@@ -331,10 +378,11 @@ const logWorkoutTool: CoachTool = {
       ...(duration != null ? [`${Math.round(duration)} min`] : []),
       ...sets.map((s) => s.displayLine),
     ];
-    return parts.join(' · ') + dateSuffix(args);
+    return parts.join(' · ') + pastDateSuffix(args, context?.now);
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
+    const sets = parseSets(args, db);
     const id = logWorkout(
       db,
       {
@@ -344,9 +392,29 @@ const logWorkoutTool: CoachTool = {
         durationMin: optNumber(args, 'duration_min') ?? null,
         notes: optString(args, 'notes') ?? null,
       },
-      parseSets(args, db).map(({ exercise, reps, weightKg }) => ({ exercise, reps, weightKg }))
+      sets.map(({ exercise, exerciseId, reps, weightKg }) => ({
+        exercise,
+        exerciseId,
+        reps,
+        weightKg,
+      }))
     );
-    return json({ logged: true, id });
+    // Unmatched names still log (free-text sets are valid) but stay invisible
+    // to e1RM/freshness/progression — tell the model so it can tell the user.
+    const unmatched = [...new Set(sets.filter((s) => !s.exerciseId).map((s) => s.exercise))];
+    return json({
+      logged: true,
+      id,
+      ...(unmatched.length > 0
+        ? {
+            unmatchedExercises: unmatched,
+            note:
+              'These set names did not uniquely match the exercise catalog, so they will not ' +
+              'count toward strength progression/freshness. Suggest the exact catalog name ' +
+              'next time.',
+          }
+        : {}),
+    });
   },
 };
 
@@ -371,11 +439,11 @@ const logSymptomTool: CoachTool = {
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input) => {
+  confirmSummary: (input, _db, context) => {
     const args = asRecord(input);
     const name = reqString(args, 'name');
     const severity = optNumber(args, 'severity');
-    return `Log symptom "${name}"${severity != null ? ` · ${severity}/10` : ''}${dateSuffix(args)}`;
+    return `Log symptom "${name}"${severity != null ? ` · ${severity}/10` : ''}${pastDateSuffix(args, context?.now)}`;
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
@@ -415,9 +483,9 @@ const logCaptureTool: CoachTool = {
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input) => {
+  confirmSummary: (input, _db, context) => {
     const args = asRecord(input);
-    return `Log ${reqEnum(args, 'type', CAPTURE_TYPES)}: ${reqString(args, 'title')}${dateSuffix(args)}`;
+    return `Log ${reqEnum(args, 'type', CAPTURE_TYPES)}: ${reqString(args, 'title')}${pastDateSuffix(args, context?.now)}`;
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
@@ -445,9 +513,9 @@ const logNoteTool: CoachTool = {
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input) => {
+  confirmSummary: (input, _db, context) => {
     const args = asRecord(input);
-    return `Save note: "${reqString(args, 'text')}"${dateSuffix(args)}`;
+    return `Save note: "${reqString(args, 'text')}"${pastDateSuffix(args, context?.now)}`;
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
@@ -511,20 +579,17 @@ function reminderDaySuffix(date: string | null, repeat: string, now: Date): stri
 const setReminderTool: CoachTool = {
   name: 'set_reminder',
   description:
-    'Create a reminder that surfaces in the app: title, optional 24h "HH:MM" time, ' +
-    'optional "YYYY-MM-DD" date (one-offs: the day it applies; weekly: the anchor ' +
-    'weekday), repeat once/daily/weekly. Use when the user asks to be reminded, or ' +
-    'propose one yourself when a logging gap warrants a nudge. Check list_reminders ' +
-    'first to avoid duplicates. A ONE-OFF given a time but no date is pinned to a ' +
-    'concrete day as it is saved — today if that clock time is still ahead, otherwise ' +
-    'tomorrow — so it fires once and then lapses; the result\'s "date" field reports ' +
-    'the day it actually landed on, so say that day back to the user. Pass an explicit ' +
-    'date only when the user names one. Delivery: every reminder is saved and surfaces ' +
-    'in the app; one WITH a time is additionally scheduled as an OS notification when ' +
-    'that is possible (the build supports notifications, permission is granted, and the ' +
-    'moment is still ahead). Do not promise a phone alert — the result\'s "notification" ' +
-    'field reports whether one was ACTUALLY scheduled for this reminder and, if not, why. ' +
-    'Relay that, and pass its "note" along verbatim when it says no alert will fire.',
+    // Compressed from main's longer text (2026-08-10, token budget) without
+    // dropping a fact: both the one-off pinning rule and the notification
+    // reporting rule are load-bearing runtime semantics the model gets wrong
+    // without them. Everything cut was restatement.
+    'Create a reminder: title, optional "HH:MM" time, optional "YYYY-MM-DD" date, repeat ' +
+    'once/daily/weekly. Use when asked, or propose one when a logging gap warrants a nudge. ' +
+    'Check list_reminders first to avoid duplicates. A one-off with a time but no date is ' +
+    "pinned as it saves — today if that hour is still ahead, else tomorrow — and the result's " +
+    '"date" reports which; say that day back. Never promise a phone alert: the result\'s ' +
+    '"notification" field says whether one was ACTUALLY scheduled, and its "note" says why ' +
+    'not. Relay both.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -689,26 +754,23 @@ function requireProtocol(db: Database, slug: string) {
 const updateProtocolTool: CoachTool = {
   name: 'update_protocol',
   description:
-    'Save a NEW version of a protocol (supplement stack, routine, training block), addressed by ' +
-    'its slug from get_protocols. Protocols are versioned like code: this NEVER edits the live ' +
-    'version — it writes a new one and makes it live, preserving the old. "items" MUST be the ' +
-    'COMPLETE new list: call get_protocols first, then include every item you are keeping plus ' +
-    'your change — anything omitted is dropped from the stack. Each item: title, optional ' +
-    'scheduled_time "HH:MM", optional dose ("400 mg"), optional notes. Use when the user agrees ' +
-    'to a stack/routine change ("add magnesium to my evening stack").',
+    'Save a new version of a protocol (stack, routine, training block) by its slug from ' +
+    'get_protocols. "items" must be the COMPLETE new list — call get_protocols first and include ' +
+    'every item you are keeping; anything omitted is dropped. Takes effect TOMORROW unless ' +
+    'apply_today is true; say which you did.',
   inputSchema: {
     type: 'object',
     properties: {
-      protocol_slug: { type: 'string', description: 'The slug from get_protocols.' },
+      protocol_slug: { type: 'string', description: 'From get_protocols.' },
       items: {
         type: 'array',
-        description: 'The COMPLETE new item list (kept items + the change), not just the delta.',
+        description: 'Complete new list, not a delta.',
         items: {
           type: 'object',
           properties: {
             title: { type: 'string' },
-            scheduled_time: { type: 'string', description: '24h "HH:MM", omit for any time.' },
-            dose: { type: 'string', description: 'e.g. "400 mg", "2 caps".' },
+            scheduled_time: { type: 'string', description: '"HH:MM" 24h; omit for any time.' },
+            dose: { type: 'string', description: 'e.g. "400 mg".' },
             notes: { type: 'string' },
           },
           required: ['title'],
@@ -716,6 +778,10 @@ const updateProtocolTool: CoachTool = {
         },
       },
       change_notes: { type: 'string', description: 'One line: what changed and why.' },
+      apply_today: {
+        type: 'boolean',
+        description: 'Also re-derive TODAY (default false). Logged work is preserved.',
+      },
     },
     required: ['protocol_slug', 'items', 'change_notes'],
     additionalProperties: false,
@@ -729,16 +795,21 @@ const updateProtocolTool: CoachTool = {
       .length;
     const notes = optString(args, 'change_notes');
     // "(was N)" makes a destructive replace visible — the user must never approve
-    // a stack-wipe thinking it's an add.
+    // a stack-wipe thinking it's an add. WHEN it lands is consequential too:
+    // approving "add magnesium" and seeing nothing on today's mission reads as
+    // a broken promise, so the card always says which day it changes.
+    const applyToday = args['apply_today'] === true;
     return (
       `Update "${protocol.name}": ${items.length} item${items.length === 1 ? '' : 's'} ` +
-      `(was ${wasCount})${notes ? ` — ${notes}` : ''}`
+      `(was ${wasCount})${notes ? ` — ${notes}` : ''} · ` +
+      `${applyToday ? "applies to today's plan now" : 'takes effect tomorrow'}`
     );
   },
-  execute: (db, input) => {
+  execute: (db, input, context) => {
     const args = asRecord(input);
     const protocol = requireProtocol(db, reqString(args, 'protocol_slug'));
     const items = parseProtocolItems(args);
+    const applyToday = args['apply_today'] === true;
     const versionId = addVersion(
       db,
       protocol.id,
@@ -747,79 +818,436 @@ const updateProtocolTool: CoachTool = {
       'ai'
     );
     const version = getCurrentVersion(db, protocol.id);
+    // Mission generation is idempotent per day, so a new version normally
+    // reaches TOMORROW only. Re-deriving is the deliberate, user-approved way
+    // to make it count today; the diff preserves everything already acted on.
+    const rederived = applyToday ? rederiveMissionForDay(db, todayISODate(context.now)) : undefined;
     return json({
       updated: true,
       protocol: protocol.slug,
       versionId,
       versionNumber: version?.version_number ?? null,
       itemCount: items.length,
+      effective: applyToday ? 'today' : 'tomorrow',
+      ...(rederived
+        ? { missionAdded: rederived.added, missionRemoved: rederived.removed }
+        : {
+            note: "Today's mission was already generated and is unchanged; this shapes tomorrow onward.",
+          }),
     });
   },
 };
 
-// --- set_mode (Normal / Travel / Sick / Deload / Social / Custom) ------------
+// --- remember / forget (durable coach memory, 0028) --------------------------
 
-const setModeTool: CoachTool = {
-  name: 'set_mode',
+const MEMORY_CATEGORIES = ['preference', 'constraint', 'context', 'goal'] as const;
+
+const rememberTool: CoachTool = {
+  name: 'remember',
   description:
-    "Set the day's mode — normal, travel, sick, deload, social, or custom — so the plan, " +
-    "priorities, tone, and adherence adapt (docs/information-architecture.md). 'until' gives an " +
-    "end date (a whole trip); omit for just today; 'normal' resets. The mode reshapes the mission " +
-    'the next time a day is generated (today if not yet generated, plus every future day in ' +
-    'range) and excuses skips where appropriate — a skipped workout in Sick mode is NOT a miss. ' +
-    'Use when the user says their day is off-normal ("traveling this week", "coming down with ' +
-    'something", "deload week", "night out").',
+    'Store ONE durable fact so you still know it next conversation: a preference, a constraint ' +
+    'or adverse reaction ("magnesium citrate upsets his stomach"), stable context, or a goal. ' +
+    'Use it the moment the user says something still true next month — do not wait to be asked. ' +
+    'NOT for data you can already read (weights, meals, workouts, labs), passing state, or your ' +
+    'own inferences. One sentence per call; the user sees and can delete every memory.',
   inputSchema: {
     type: 'object',
     properties: {
-      mode: { type: 'string', enum: [...MODE_KEYS] },
-      until: {
-        type: 'string',
-        description: '"YYYY-MM-DD" end date (inclusive); omit for just today.',
-      },
-      note: { type: 'string', description: 'Optional context, e.g. "red-eye to Tokyo".' },
+      content: { type: 'string', description: 'The fact, one sentence.' },
+      category: { type: 'string', enum: [...MEMORY_CATEGORIES] },
     },
-    required: ['mode'],
+    required: ['content', 'category'],
     additionalProperties: false,
   },
   readOnly: false,
   confirmSummary: (input) => {
     const args = asRecord(input);
-    const mode = reqEnum(args, 'mode', MODE_KEYS);
-    const until = optDate(args, 'until');
-    if (mode === 'normal') return 'Reset to Normal mode';
-    return `Set ${getModeDefinition(mode).label} mode${until ? ` through ${until}` : ' for today'}`;
+    return `Remember: "${reqString(args, 'content')}"`;
+  },
+  execute: (db, input) => {
+    const args = asRecord(input);
+    const content = reqString(args, 'content');
+    const before = findMemories(db, content, 1);
+    const id = rememberFact(db, {
+      content,
+      category: reqEnum(args, 'category', MEMORY_CATEGORIES),
+      source: 'coach',
+    });
+    // Re-remembering the same line returns the existing row; say so rather
+    // than implying a new fact was added.
+    const alreadyKnown = before.some((m) => m.id === id);
+    return json({ remembered: true, id, alreadyKnown });
+  },
+};
+
+const forgetTool: CoachTool = {
+  name: 'forget',
+  description:
+    'Forget one durable memory by its id (ids come with the memories in your context block, ' +
+    'and from get_memories). Use when the user says something is no longer true or asks you ' +
+    'to drop it. The memory is archived, not destroyed — the user can still see it in ' +
+    'Settings. Prefer forgetting a stale fact over silently accumulating contradictions.',
+  inputSchema: {
+    type: 'object',
+    properties: { id: { type: 'string' } },
+    required: ['id'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db) => {
+    const id = reqString(asRecord(input), 'id');
+    const memory = getMemory(db, id);
+    if (!memory) throw new Error(`No memory with id ${id}. Call get_memories first.`);
+    return `Forget: "${memory.content}"`;
+  },
+  execute: (db, input) => {
+    const id = reqString(asRecord(input), 'id');
+    const memory = getMemory(db, id);
+    if (!memory) throw new Error(`No memory with id ${id}. Call get_memories first.`);
+    const forgotten = forgetMemory(db, id);
+    return json({
+      forgotten,
+      id,
+      ...(forgotten ? {} : { note: 'That memory was already forgotten.' }),
+    });
+  },
+};
+
+// --- adjust_today (mission surgery, one card) --------------------------------
+
+const ADJUST_ACTIONS = ['complete', 'skip', 'add', 'move', 'remove'] as const;
+type AdjustAction = (typeof ADJUST_ACTIONS)[number];
+
+const ADJUST_TYPES: readonly LogEntryType[] = [
+  'habit',
+  'meal',
+  'workout',
+  'supplement',
+  'medication',
+  'therapy',
+  'metric',
+  'note',
+];
+
+type AdjustOp = {
+  action: AdjustAction;
+  id?: string;
+  title?: string;
+  type?: LogEntryType;
+  scheduledTime?: string | null;
+  why?: string;
+};
+
+/** Validate the ops array; every op is checked before ANY of them runs. */
+function parseAdjustOps(input: Record<string, unknown>): AdjustOp[] {
+  const raw = input['ops'];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error('"ops" must be a non-empty array of adjustments.');
+  }
+  return raw.map((entry, i) => {
+    const op = asRecord(entry);
+    const action = reqEnum(op, 'action', ADJUST_ACTIONS);
+    const id = optString(op, 'id');
+    const title = optString(op, 'title');
+    if (action === 'add') {
+      if (!title) throw new Error(`ops[${i}]: "add" needs a "title".`);
+    } else if (!id) {
+      throw new Error(
+        `ops[${i}]: "${action}" needs the item's "id" from get_today_snapshot's mission list.`
+      );
+    }
+    // "move" with no time is a real intent (untimed = any time today), so the
+    // key's PRESENCE is what distinguishes it from "not supplied".
+    const hasTime = Object.prototype.hasOwnProperty.call(op, 'scheduled_time');
+    return {
+      action,
+      ...(id ? { id } : {}),
+      ...(title ? { title } : {}),
+      ...(optEnum(op, 'type', ADJUST_TYPES) ? { type: optEnum(op, 'type', ADJUST_TYPES) } : {}),
+      ...(hasTime ? { scheduledTime: optTime(op, 'scheduled_time') ?? null } : {}),
+      ...(optString(op, 'why') ? { why: optString(op, 'why') } : {}),
+    };
+  });
+}
+
+/** Resolve an op's id to its current row for the confirmation card. */
+function missionItemById(db: Database, date: string, id: string) {
+  return listMission(db, date).find((m) => m.id === id);
+}
+
+const adjustTodayTool: CoachTool = {
+  name: 'adjust_today',
+  description:
+    "Restructure TODAY's mission in one batch: complete / skip / move / remove items by their id " +
+    'from get_today_snapshot, and add new ones. The whole batch is ONE confirmation, so send the ' +
+    'complete adjustment rather than several calls. Today only — edit the protocol to change ' +
+    'what future days generate.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ops: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: [...ADJUST_ACTIONS] },
+            id: { type: 'string', description: "Item id; every action but 'add'." },
+            title: { type: 'string', description: "'add' only." },
+            type: {
+              type: 'string',
+              enum: [...ADJUST_TYPES],
+              description: "'add' only, default habit.",
+            },
+            scheduled_time: { type: 'string', description: '"HH:MM" 24h; for move or add.' },
+            why: { type: 'string', description: "One line; 'add' only." },
+          },
+          required: ['action'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['ops'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db, context) => {
+    const date = todayISODate(context?.now ?? new Date());
+    const ops = parseAdjustOps(asRecord(input));
+    // Every op is named on the ONE card, resolved to real titles — a batch the
+    // user approves must be as legible as a single write.
+    const parts = ops.map((op) => {
+      const current = op.id ? missionItemById(db, date, op.id) : undefined;
+      const name = current?.title ?? op.title ?? op.id ?? 'item';
+      switch (op.action) {
+        case 'complete':
+          return `complete "${name}"`;
+        case 'skip':
+          return `skip "${name}"`;
+        case 'remove':
+          return `remove "${name}"`;
+        case 'move':
+          return `move "${name}" → ${op.scheduledTime ?? 'any time'}`;
+        case 'add':
+          return `add "${op.title}"${op.scheduledTime ? ` at ${op.scheduledTime}` : ''}`;
+      }
+    });
+    return `Today: ${parts.join(' · ')}`;
+  },
+  execute: (db, input, context) => {
+    const date = todayISODate(context.now);
+    const ops = parseAdjustOps(asRecord(input));
+
+    // Make sure the day EXISTS before adjusting it. `ensureTodaySeeded` normally
+    // does this when Home first renders, but the Coach tab can be the first
+    // thing opened — and then an `add` created the daily_log and a planned row,
+    // which made the seed guard (`countMissionEntries > 0`) skip generation
+    // permanently. The user's whole protocol-driven day vanished, replaced by
+    // the one item the Coach added. Idempotent, so this is a no-op the other
+    // 99% of the time.
+    generateMissionForDay(db, date);
+
+    const log = getOrCreateDailyLog(db, date);
+    const applied: string[] = [];
+    const rejected: { op: string; reason: string }[] = [];
+
+    // One transaction: a partially-applied batch would leave the day in a
+    // state the user never approved.
+    db.transaction(() => {
+      for (const op of ops) {
+        if (op.action === 'add') {
+          insertMissionItem(db, log.id, op.type ?? 'habit', {
+            id: 'generated-on-insert',
+            title: op.title!,
+            status: 'pending',
+            category: CATEGORY_FOR_TYPE[op.type ?? 'habit'],
+            ...(op.scheduledTime ? { scheduledTime: op.scheduledTime } : {}),
+            ...(op.why ? { why: op.why } : {}),
+          });
+          applied.push(`added "${op.title}"`);
+          continue;
+        }
+
+        const current = missionItemById(db, date, op.id!);
+        if (!current) {
+          rejected.push({ op: `${op.action} ${op.id}`, reason: 'no such mission item today' });
+          continue;
+        }
+        if (op.action === 'complete' || op.action === 'skip') {
+          const target = op.action === 'complete' ? 'completed' : 'skipped';
+          if (current.status === target) {
+            // Idempotent, and deliberately NOT re-run: re-completing would
+            // restamp completed_at to now, moving a 06:40 workout to 21:00 in
+            // the record because the Coach batched it twice.
+            applied.push(`"${current.title}" was already ${target}`);
+          } else if (current.status === 'completed' || current.status === 'skipped') {
+            // Flipping a settled row throws away when it happened (setMissionStatus
+            // nulls completed_at for any non-completed status). Execution history
+            // is not the Coach's to rewrite — the user can correct it in the UI.
+            rejected.push({
+              op: `${op.action} ${current.title}`,
+              reason: `already ${current.status} today — its record stands; change it on the mission if that's wrong`,
+            });
+          } else {
+            setMissionStatus(db, op.id!, target);
+            applied.push(`${op.action}d "${current.title}"`);
+          }
+        } else if (op.action === 'move') {
+          if (moveMissionItem(db, log.id, op.id!, op.scheduledTime ?? null)) {
+            applied.push(`moved "${current.title}"`);
+          } else {
+            rejected.push({
+              op: `move ${current.title}`,
+              reason: 'only a pending planned item can be moved',
+            });
+          }
+        } else if (removeMissionItem(db, log.id, op.id!)) {
+          applied.push(`removed "${current.title}"`);
+        } else {
+          rejected.push({
+            op: `remove ${current.title}`,
+            reason:
+              'already completed or skipped — its history is preserved; skip it instead of removing',
+          });
+        }
+      }
+    });
+
+    return json({
+      adjusted: true,
+      applied,
+      ...(rejected.length > 0 ? { rejected } : {}),
+      mission: listMission(db, date).map((m) => ({
+        id: m.id,
+        title: m.title,
+        status: m.status,
+        scheduledTime: m.scheduledTime ?? null,
+      })),
+    });
+  },
+};
+
+/** Display category for an added item, matching the mission's own mapping. */
+const CATEGORY_FOR_TYPE: Record<LogEntryType, string> = {
+  habit: 'Routine',
+  meal: 'Nutrition',
+  workout: 'Training',
+  supplement: 'Supplements',
+  medication: 'Medications',
+  therapy: 'Therapies',
+  metric: 'Metrics',
+  note: 'Notes',
+};
+
+// --- set_mode (Normal / Travel / Sick / Deload / Social / Custom) ------------
+
+/**
+ * Validate and resolve a set_mode call into the window it will actually write.
+ *
+ * Shared by `confirmSummary` and `execute` deliberately: when only execute
+ * validated, an out-of-range window produced a perfectly reasonable-looking
+ * confirmation card that threw the moment the user approved it. Whatever the
+ * card says must be what happens — including the case where it can't.
+ */
+function resolveModeWindow(
+  args: Record<string, unknown>,
+  today: string
+): { mode: ModeKey; startDate: string; endDate: string | null } {
+  const mode = reqEnum(args, 'mode', MODE_KEYS);
+  const from = optDate(args, 'from');
+  if (from !== undefined && from < today) {
+    throw new Error(
+      `"from" (${from}) is in the past — a mode can only be set for today or a future day.`
+    );
+  }
+  const startDate = from ?? today;
+  const until = optDate(args, 'until');
+  if (until !== undefined && until < startDate) {
+    throw new Error(
+      `"until" (${until}) is before the start (${startDate}) — a mode can't end before it begins.`
+    );
+  }
+  // 'normal' is a RESET: open-ended (endDate null) so it ends an earlier
+  // range/open-ended mode for today AND every following day, not just today.
+  // Any other mode: omitted `until` = just today; an explicit `until` bounds a
+  // range. Open-ended non-normal ("until turned off") stays a Home-control
+  // affordance — the model always bounds a mode it sets.
+  return { mode, startDate, endDate: mode === 'normal' ? null : (until ?? startDate) };
+}
+
+const setModeTool: CoachTool = {
+  name: 'set_mode',
+  description:
+    "Set a day's mode so the plan, priorities, tone and adherence adapt — it reshapes the " +
+    'mission and excuses skips the mode expects. Use when the user says a day is off-normal ' +
+    '("traveling next week", "coming down with something", "deload week", "night out"). ' +
+    "'normal' resets, and also cancels any mode already scheduled from that day on.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      mode: { type: 'string', enum: [...MODE_KEYS] },
+      from: { type: 'string', description: '"YYYY-MM-DD"; omit for today. Never past.' },
+      until: { type: 'string', description: '"YYYY-MM-DD" inclusive; omit for one day.' },
+      note: { type: 'string', description: 'e.g. "red-eye to Tokyo".' },
+    },
+    required: ['mode'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db, context) => {
+    // Resolve through the SAME function execute uses, so a window the tool will
+    // refuse can never reach a card the user is invited to approve. (A card is
+    // a promise: "press yes and this happens".)
+    const args = asRecord(input);
+    const { mode, startDate, endDate } = resolveModeWindow(
+      args,
+      todayISODate(context?.now ?? new Date())
+    );
+    const today = todayISODate(context?.now ?? new Date());
+    const ahead = startDate > today;
+
+    if (mode === 'normal') {
+      // Name what the reset CANCELS. Stored open-ended and newest-wins, it also
+      // clears modes scheduled for days that haven't arrived — the user has to
+      // see that before approving, not discover it next Monday at the airport.
+      const superseded = modesSupersededFrom(db, startDate).filter((r) => r.mode !== 'normal');
+      const cancelled =
+        superseded.length > 0
+          ? ` — also cancels ${superseded
+              .map((r) => `${getModeDefinition(r.mode).label} (${r.start_date})`)
+              .join(', ')}`
+          : '';
+      return `Reset to Normal mode${ahead ? ` from ${startDate}` : ''}${cancelled}`;
+    }
+
+    const label = getModeDefinition(mode).label;
+    // Name the actual span — approving "Travel mode" must never silently mean
+    // "starting right now" when the user meant Monday.
+    if (ahead) return `Set ${label} mode ${startDate}${endDate ? ` through ${endDate}` : ''}`;
+    return `Set ${label} mode${endDate && endDate !== startDate ? ` through ${endDate}` : ' for today'}`;
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
-    const mode = reqEnum(args, 'mode', MODE_KEYS);
-    const startDate = todayISODate(context.now);
-    const until = optDate(args, 'until');
-    if (until !== undefined && until < startDate) {
-      throw new Error(
-        `"until" (${until}) is before today (${startDate}) — a mode can't end in the past.`
-      );
-    }
-    // 'normal' is a RESET: open-ended (endDate null) so it ends an earlier
-    // range/open-ended mode for today AND every following day, not just today.
-    // Any other mode: omitted `until` = just today; an explicit `until` bounds a
-    // range. Open-ended non-normal ("until turned off") stays a Home-control
-    // affordance — the model always bounds a mode it sets.
-    const endDate = mode === 'normal' ? null : (until ?? startDate);
+    const today = todayISODate(context.now);
+    const { mode, startDate, endDate } = resolveModeWindow(args, today);
     const id = setMode(db, { mode, startDate, endDate, note: optString(args, 'note') ?? null });
     // Re-shape today to match, exactly as the Home control does — otherwise the
     // same intent through two surfaces gives two outcomes: the user says "I'm
     // coming down with something", the Coach sets Sick, and today's workout
     // stays on the mission with no rest/fluids items. Preserves logged work.
-    const rederived = rederiveMissionForDay(db, startDate);
+    //
+    // A FUTURE-dated mode has nothing to reshape yet: that day generates under
+    // the mode when it seeds (planForDay reads getActiveMode for its own date).
+    const rederived = startDate === today ? rederiveMissionForDay(db, startDate) : undefined;
     return json({
       set: true,
       mode,
       from: startDate,
       until: endDate,
       id,
-      missionAdded: rederived.added,
-      missionRemoved: rederived.removed,
+      ...(rederived
+        ? { missionAdded: rederived.added, missionRemoved: rederived.removed }
+        : { note: `Scheduled — ${startDate}'s mission will generate under this mode.` }),
     });
   },
 };
@@ -843,11 +1271,10 @@ function parseMetricsArray(input: Record<string, unknown>): string[] {
 const createExperimentTool: CoachTool = {
   name: 'create_experiment',
   description:
-    'Design an n-of-1 experiment: a title, the hypothesis, the ONE intervention being changed, ' +
-    'the metrics to watch, a duration in days, and optionally the success criteria. It starts ' +
-    'TODAY and runs for the duration; later you read those metrics (get_metric_series) and close ' +
-    'it with complete_experiment. Use when the user wants to test something ("does magnesium ' +
-    'improve my sleep?"). Keep it to ONE change so the readout is attributable.',
+    'Design an n-of-1 experiment: title, hypothesis, the ONE intervention being changed, metrics ' +
+    'to watch, duration in days, optional success criteria. Starts TODAY; later read those ' +
+    'metrics and close it with complete_experiment. Keep it to ONE change so the readout is ' +
+    'attributable.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -860,7 +1287,10 @@ const createExperimentTool: CoachTool = {
       metrics: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Metrics to watch, e.g. ["HRV", "sleep score"].',
+        description:
+          'Metrics to watch. Prefer names get_metric_series can actually read back — ' +
+          'weight, body_fat, waist, hrv, rhr, water, sleep, sleep_deep, steps, active_energy — ' +
+          'so the readout has numbers. Anything else is watched qualitatively.',
       },
       duration_days: { type: 'integer', minimum: 3 },
       success_criteria: { type: 'string', description: 'What would confirm the hypothesis.' },
@@ -891,7 +1321,90 @@ const createExperimentTool: CoachTool = {
       durationDays,
       successCriteria: optString(args, 'success_criteria') ?? null,
     });
-    return json({ created: true, id, durationDays });
+    // Warn at CREATE time about metrics no tool can read, rather than letting
+    // readout day arrive with nothing to measure (the schema's own old example
+    // — "sleep score" — was exactly this trap).
+    const unreadable = metrics.filter((m) => !isReadableSeries(m));
+    return json({
+      created: true,
+      id,
+      durationDays,
+      ...(unreadable.length > 0
+        ? {
+            unreadableMetrics: unreadable,
+            note:
+              'These are not series get_metric_series can return, so their readout will be ' +
+              'qualitative. Tell the user, and consider watching a readable metric alongside.',
+          }
+        : {}),
+    });
+  },
+};
+
+/**
+ * Metrics get_metric_series can actually return, normalised loosely (the model
+ * writes "HRV", "hrv", "resting HR"). This only WARNS — experiment metrics are
+ * free text on purpose, since some things are worth watching qualitatively.
+ */
+const READABLE_SERIES: Record<string, true> = {
+  weight: true,
+  body_fat: true,
+  bodyfat: true,
+  waist: true,
+  hrv: true,
+  rhr: true,
+  resting_hr: true,
+  restinghr: true,
+  water: true,
+  sleep: true,
+  sleep_duration: true,
+  sleep_deep: true,
+  deep_sleep: true,
+  steps: true,
+  active_energy: true,
+};
+
+function isReadableSeries(metric: string): boolean {
+  return (
+    READABLE_SERIES[
+      metric
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/g, '_')
+    ] === true
+  );
+}
+
+const abandonExperimentTool: CoachTool = {
+  name: 'abandon_experiment',
+  description:
+    'Abandon a running experiment that can no longer produce an honest answer — the user ' +
+    'stopped following the intervention, life intervened, or the design turned out wrong. Get ' +
+    'the id from get_experiments. Use this INSTEAD of concluding it: a verdict with no adherence ' +
+    'behind it is worse than no verdict, and an abandoned experiment can simply be re-run later.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+      reason: { type: 'string', description: 'One line: why it cannot be read out.' },
+    },
+    required: ['id', 'reason'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db) => {
+    const args = asRecord(input);
+    const experiment = requireExperiment(db, reqString(args, 'id'));
+    return `Abandon experiment "${experiment.title}" — ${reqString(args, 'reason')}`;
+  },
+  execute: (db, input) => {
+    const args = asRecord(input);
+    const experiment = requireExperiment(db, reqString(args, 'id'));
+    if (experiment.status !== 'active') {
+      throw new Error(`Experiment "${experiment.title}" is already ${experiment.status}.`);
+    }
+    abandonExperiment(db, experiment.id, reqString(args, 'reason'));
+    return json({ abandoned: true, id: experiment.id, title: experiment.title });
   },
 };
 
@@ -964,21 +1477,18 @@ function parseGroceryItems(input: Record<string, unknown>): GroceryToolItem[] {
 
 const addGroceryItemsTool: CoachTool = {
   name: 'add_grocery_items',
-  description:
-    'Add items to the grocery list — BATCH every add into one call (one approval card), ' +
-    'never one call per item. Use when the user says they need something, including ' +
-    'implicitly ("we\'re out of milk"). When unsure whether an item is already open on ' +
-    'the list, read get_grocery_list first — never re-add an open duplicate.',
+  description: 'Add items to the standing grocery list. BATCH every item into ONE call.',
   inputSchema: {
     type: 'object',
     properties: {
       items: {
         type: 'array',
+        description: 'Up to 30.',
         items: {
           type: 'object',
           properties: {
             name: { type: 'string' },
-            qty: { type: 'string', description: 'Free text — "2", "1 bag", "500 g".' },
+            qty: { type: 'string', description: 'Free text, e.g. "2 L".' },
           },
           required: ['name'],
           additionalProperties: false,
@@ -1026,13 +1536,11 @@ function parseIdArray(input: Record<string, unknown>, key: string): string[] {
 
 const completeGroceryItemsTool: CoachTool = {
   name: 'complete_grocery_items',
-  description:
-    'Check off grocery items ("got the milk") — a soft state, never a delete. BATCH the ' +
-    'ids into one call. Ids come from get_grocery_list.',
+  description: 'Check items off the list, by id, batched. A soft state, never a delete.',
   inputSchema: {
     type: 'object',
-    properties: { ids: { type: 'array', items: { type: 'string' } } },
-    required: ['ids'],
+    properties: { item_ids: { type: 'array', items: { type: 'string' } } },
+    required: ['item_ids'],
     additionalProperties: false,
   },
   readOnly: false,
@@ -1060,19 +1568,12 @@ function requireRecipe(db: Database, id: string) {
 
 const addRecipeToGroceryListTool: CoachTool = {
   name: 'add_recipe_to_grocery_list',
-  description:
-    'Put a recipe\'s ingredients on the grocery list. "exclude" takes ingredient ids ' +
-    '(from get_recipe) the user already has — ask before assuming. Composing a shop ' +
-    'across several recipes is one call per recipe.',
+  description: "A recipe's ingredients onto the list, minus any excluded ingredient ids.",
   inputSchema: {
     type: 'object',
     properties: {
       recipe_id: { type: 'string' },
-      exclude: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Ingredient ids (get_recipe) the user already has.',
-      },
+      exclude_ingredient_ids: { type: 'array', items: { type: 'string' } },
     },
     required: ['recipe_id'],
     additionalProperties: false,
@@ -1122,25 +1623,22 @@ function parseRecipePortion(args: Record<string, unknown>): RecipePortion {
 const logRecipeTool: CoachTool = {
   name: 'log_recipe',
   description:
-    'Log a cooked recipe as a real meal — each ingredient lands as a meal item scaled ' +
-    'to the portion. Portion is "servings" (default 1) OR "grams" of the cooked dish ' +
-    '(only when the recipe records a cooked weight). Use when the user says they made/' +
-    'ate one of their recipes. The result reports uncountedIngredients — when > 0 the ' +
-    'meal is a KNOWN UNDERCOUNT (unresolved ingredients carry no macros); say so.',
+    'Log a cooked recipe as a meal: servings XOR grams (default 1 serving). A result with ' +
+    'uncountedIngredients > 0 is a KNOWN UNDERCOUNT.',
   inputSchema: {
     type: 'object',
     properties: {
       recipe_id: { type: 'string' },
-      servings: { type: 'number', description: 'Servings eaten (default 1).' },
-      grams: { type: 'number', description: 'Grams of the cooked dish — needs total_weight_g.' },
-      time: { type: 'string', description: '24h "HH:MM", omit if unknown.' },
-      ...DATE_PROPERTY,
+      servings: { type: 'number' },
+      grams: { type: 'number', description: 'Cooked grams eaten; needs total_weight_g.' },
+      date: { type: 'string', description: 'YYYY-MM-DD; omit for today.' },
+      time: { type: 'string', description: 'HH:MM.' },
     },
     required: ['recipe_id'],
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input, db) => {
+  confirmSummary: (input, db, context) => {
     const args = asRecord(input);
     const recipe = requireRecipe(db, reqString(args, 'recipe_id'));
     const portion = parseRecipePortion(args);
@@ -1158,7 +1656,7 @@ const logRecipeTool: CoachTool = {
       nutrition.complete && nutrition.perServing.kcal !== null
         ? ` (~${Math.round(nutrition.perServing.kcal * recipe.servings * factor)} kcal)`
         : ` (nutrition incomplete — ${plural(nutrition.unresolvedCount, 'ingredient')} uncounted)`;
-    return `Log ${portionLabel} of "${recipe.title}"${kcalNote}${dateSuffix(args)}`;
+    return `Log ${portionLabel} of "${recipe.title}"${kcalNote}${pastDateSuffix(args, context?.now)}`;
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
@@ -1215,21 +1713,20 @@ function parseStepsArray(input: Record<string, unknown>): string[] {
 const saveRecipeTool: CoachTool = {
   name: 'save_recipe',
   description:
-    "Save a recipe YOU designed in conversation into the user's recipe book (source " +
-    '"ai"). Ingredient lines land UNRESOLVED — linking lines to catalog foods is the ' +
-    'user\'s explicit act in the app, never yours — so its nutrition reads "not computed" ' +
-    'until they resolve it; say so. Never present a recipe as saved before approval.',
+    'Save a new recipe to the book. Its lines land UNRESOLVED, so its nutrition reads ' +
+    '"not computed" until the user links foods in the app.',
   inputSchema: {
     type: 'object',
     properties: {
       title: { type: 'string' },
-      servings: { type: 'number', description: 'The batch yield, > 0.' },
+      servings: { type: 'number', description: 'Default 1.' },
       ingredients: {
         type: 'array',
+        description: 'Up to 40 lines as written, e.g. "200 g chicken thighs".',
         items: {
           type: 'object',
           properties: {
-            raw: { type: 'string', description: 'The ingredient line, e.g. "2 cups oats".' },
+            raw: { type: 'string' },
             qty: { type: 'number' },
             unit: { type: 'string' },
             name: { type: 'string' },
@@ -1241,7 +1738,7 @@ const saveRecipeTool: CoachTool = {
       steps: { type: 'array', items: { type: 'string' } },
       notes: { type: 'string' },
     },
-    required: ['title', 'servings', 'ingredients'],
+    required: ['title', 'ingredients'],
     additionalProperties: false,
   },
   readOnly: false,
@@ -1282,10 +1779,14 @@ export const WRITE_TOOLS: CoachTool[] = [
   logSymptomTool,
   logCaptureTool,
   logNoteTool,
+  rememberTool,
+  forgetTool,
+  adjustTodayTool,
   updateProtocolTool,
   setModeTool,
   createExperimentTool,
   completeExperimentTool,
+  abandonExperimentTool,
   setReminderTool,
   completeReminderTool,
   dismissReminderTool,

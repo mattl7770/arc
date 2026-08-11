@@ -42,6 +42,7 @@ It is **not** a consumer wellness app. It is closer to a personal command center
 - Expo SDK 57 (React Native 0.86) + TypeScript (strict) + Expo Router
 - **On-device SQLite via `op-sqlite`** (+ `sqlite-vec` for on-device RAG) — the whole data layer. No backend.
 - NativeWind 4 (Tailwind v3) — chosen over Tamagui, see `/docs/decisions.md`
+- **Design system: the Conformed Set** (adopted 2026-08-08, superseding Porcelain Ledger). Light-only. Its load-bearing idea is the **surface system** — every content block is a drafting *device* (`plate` · `field` · `margin` · `grid` · `well` · `stamp`) whose container encodes what it holds; one device per block, never nested. Three type voices (label / serif / mono), square corners, one petrol accent on a strict budget, and a firewall between biological signal colours and interface chrome. **Spec of record:** `/docs/project-status.md` §3 (shipped) and `/docs/design-research/implementation/00-design-spec.md` (full). ⚠️ *Not yet seen on a device — see §3's "What is unverified".*
 - **Frontier LLM called directly from the app**, key in the iOS Keychain (`expo-secure-store`), provider/model swappable in Settings. RAG + tools run client-side.
 - **Apple Health** as the wearable hub (on-device; the vendor app does the cloud sync). Direct vendor API only where HealthKit lacks fidelity. *(Terra dropped — a cloud aggregator needs a server.)*
 - Function Health as primary lab backend (PDF → on-device parse)
@@ -181,7 +182,9 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 
 - `README.md` — Public/high-level overview
 - `CLAUDE.md` — This file (AI brain)
-- `/docs/project-status.md` — **Living tracker:** to-do queue, status board, design system. Start here for "where are we?"
+- `/docs/project-status.md` — **Living tracker:** to-do queue, status board, and **§3 the design system of record (the Conformed Set)**. Start here for "where are we?"
+- `/docs/design-research/implementation/00-design-spec.md` — **The visual spec in full**: the surface devices, the palette's two cuts per biological state, the three type voices, the accent budget, the honesty rules. Its sibling `02-migration-plan.md` records what actually shipped and what was skipped.
+- `/docs/design-directions.md` — Every visual direction ARC has explored and which is current. **Read before proposing a new one.**
 - `/docs/data-model.md` — Detailed schema + what is actually shipped
 - `/docs/information-architecture.md` — **Where every feature lives** (5 tabs + pushed sub-screens), the Log-tab spec, and the Modes model (locked 2026-07-25)
 - `/docs/labs-subapp.md` — **the Function Health PDF → biomarkers pipeline**: what the report actually is, the mapping rules that refuse to guess, and why migration 0024 rebuilds a table

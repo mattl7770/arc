@@ -11,6 +11,7 @@
  * Both are safe to call repeatedly.
  */
 import type { Database } from './database';
+import { ingestCorpus } from '@/lib/rag/corpus';
 import { newId } from './id';
 import {
   countMissionEntries,
@@ -63,6 +64,10 @@ export function seedReferenceData(db: Database): void {
       );
     }
   });
+  // ARC's curated longevity reference (src/lib/rag/corpus.ts) — the corpus the
+  // Coach cites. Idempotent by pack version, and cheap: a few thousand words
+  // of text, no vectors (those backfill when the embedder ships).
+  ingestCorpus(db);
 }
 
 /**
@@ -99,7 +104,12 @@ export function ensureTodaySeeded(
   date: string,
   fallbackMission: MissionItem[] = []
 ): void {
-  // Protocols (and the day's mode) drive the day; if they produced entries, done.
+  // Protocols, the day's mode, and any RUNNING experiment drive the day; if
+  // they produced entries, done. The experiment's intervention is a real
+  // mission row (mission-generate.ts) so adherence is visible and the readout
+  // can tell "it didn't work" from "he didn't do it" — which also means a user
+  // with an experiment and no protocols has a genuine one-item day, not an
+  // empty one.
   if (generateMissionForDay(db, date) > 0) return;
   if (fallbackMission.length === 0) return;
 

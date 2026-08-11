@@ -378,6 +378,12 @@ export type RecommendedExercise = {
   /** Mean freshness of this exercise's primary muscles (0-100). */
   freshness: number;
   suggestion: ProgressionSuggestion;
+  /**
+   * Working sets planned for this exercise — the routine line's target, or
+   * null for a fallback pick with no routine behind it. Carries the volume
+   * dial's effect when one is applied (see {@link RecommendInput.volumeScale}).
+   */
+  targetSets?: number | null;
 };
 
 /** When the recommendation comes from an active program, the week context. */

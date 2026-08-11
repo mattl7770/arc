@@ -1,5 +1,5 @@
 /**
- * Types for the recipe book, mirroring db/migrations/0030_recipes.sql — see
+ * Types for the recipe book, mirroring db/migrations/0031_recipes.sql — see
  * docs/recipes-grocery.md. Kept beside the feature (the nutrition-types
  * pattern): hand-authored, lockstep with the schema.
  */

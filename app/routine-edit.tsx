@@ -4,7 +4,9 @@ import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, View } from 'react-native';
 
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -16,9 +18,22 @@ import { useRoutine } from '@/hooks/use-training';
 /**
  * Routine builder — create/edit, pushed from the Exercise hub. A routine is a
  * name + notes + an ordered exercise list, each line carrying its target sets,
- * rep range, and rest. Exercises are added through the shared picker. The one
- * pine on this screen is Save. Mirrors the Protocol editor's discipline:
- * in-flight guard, deep-link id coercion, atomic save with a keep-the-form retry.
+ * rep range, and rest. Exercises are added through the shared picker. Mirrors
+ * the Protocol editor's discipline: in-flight guard, deep-link id coercion,
+ * atomic save with a keep-the-form retry.
+ *
+ * ## The surface system (00-design-spec.md §1)
+ *
+ *   Exercises      plate   a routine IS a record — an ordered, ruled list
+ *   Save problems  margin  the "why Save is off" annotation
+ *
+ * The name/notes/target fields are recessed stock drawn inline: an input is not
+ * a content block and takes no device of its own. Targets are measurements, so
+ * every one of them is mono; their captions are the label voice.
+ *
+ * **Accent budget: one.** Save, and nothing else — Delete is a quiet text
+ * button, because a destructive action should never be the brightest thing on
+ * the page.
  */
 
 /** One line under edit. `key` is a mount-local id for React lists only. */
@@ -47,14 +62,6 @@ function initialLines(detail: RoutineDetail | null): EditLine[] {
   }));
 }
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
-
 /** A compact mono numeric field for the per-line targets. */
 function NumField({
   value,
@@ -71,8 +78,10 @@ function NumField({
 }) {
   return (
     <View className="flex-1">
-      <Text className="mb-1 text-[10px] uppercase tracking-[1px] text-ink-muted">{label}</Text>
-      <View className="min-h-[40px] justify-center rounded-btn border border-hairline-soft bg-paper-deep px-2.5">
+      <Text className="mb-1 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+        {label}
+      </Text>
+      <View className="min-h-[40px] justify-center border border-paper-deep bg-paper-dim px-2">
         <TextInput
           value={value}
           onChangeText={onChange}
@@ -201,7 +210,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
         <View className="pt-2">
           <StackHeader title="Edit routine" />
         </View>
-        <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
+        <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
           This routine no longer exists.
         </Text>
       </Screen>
@@ -214,106 +223,132 @@ function RoutineEditor({ id }: { id: string | undefined }) {
         <StackHeader title={editing ? 'Edit routine' : 'New routine'} />
       </View>
 
-      <View className="mt-2">
-        <SectionLabel>Routine</SectionLabel>
-        <View className="mt-2 min-h-[44px] justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+      <View className="mt-3">
+        <SectionLabel label="Routine" />
+        <View className="mt-2 min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
           <TextInput
             value={name}
             onChangeText={setName}
             placeholder="e.g. Upper A"
             placeholderTextColor={palette.inkMuted}
-            className="py-2.5 text-[15px] text-ink"
+            className="py-2.5 font-serif text-[15px] text-ink"
             accessibilityLabel="Routine name"
           />
         </View>
-        <View className="mt-2 min-h-[44px] justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+        <View className="mt-2 min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
           <TextInput
             value={notes}
             onChangeText={setNotes}
             placeholder="Notes (optional)"
             placeholderTextColor={palette.inkMuted}
-            className="py-2.5 text-[15px] text-ink"
+            className="py-2.5 font-serif text-[15px] text-ink"
             accessibilityLabel="Routine notes"
           />
         </View>
       </View>
 
-      <View className="mt-8">
-        <SectionLabel>Exercises</SectionLabel>
-        {lines.length === 0 ? (
-          <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
-            No exercises yet — add the movements this routine runs, with their target sets and rep
-            range.
-          </Text>
-        ) : (
-          <View className="mt-2 gap-2">
-            {lines.map((l) => (
-              <View key={l.key} className="rounded-card border border-hairline bg-porcelain p-3">
-                <View className="flex-row items-start gap-2">
-                  <View className="flex-1">
-                    <Text className="text-[15px] text-ink">{l.exerciseName}</Text>
-                    {l.primaryMuscles ? (
-                      <Text className="mt-0.5 font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
-                        {l.primaryMuscles}
-                      </Text>
-                    ) : null}
+      {/* Exercises — the routine's record, so: one ruled plate, one line each,
+          drawn whether or not there are lines yet. A new routine always opens
+          empty, and the plate is what says a record goes here. (The sweep of
+          2026-08-10 made it conditional; reverted at the owner's instruction.) */}
+      <View className="mt-7">
+        <Block device="plate">
+          <SectionLabel
+            label="Exercises"
+            note={lines.length > 0 ? String(lines.length) : undefined}
+          />
+          {lines.length === 0 ? (
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              No exercises yet — add the movements this routine runs, with their target sets and rep
+              range.
+            </Text>
+          ) : (
+            <View className="mt-1">
+              {lines.map((l, i) => (
+                <View key={l.key}>
+                  <Divider first={i === 0} />
+                  <View className="py-3">
+                    <View className="flex-row items-start gap-2">
+                      <View className="flex-1">
+                        <Text className="font-serif text-[15px] text-ink">{l.exerciseName}</Text>
+                        {l.primaryMuscles ? (
+                          <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                            {l.primaryMuscles}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove ${l.exerciseName}`}
+                        onPress={() => removeLine(l.key)}
+                        hitSlop={10}
+                        className="-mr-1 h-8 w-8 items-center justify-center active:opacity-60">
+                        <Ionicons name="close" size={16} color={palette.inkMuted} />
+                      </Pressable>
+                    </View>
+                    <View className="mt-2.5 flex-row items-end gap-2">
+                      <NumField
+                        label="Sets"
+                        value={l.sets}
+                        onChange={(sets) => updateLine(l.key, { sets })}
+                        placeholder="3"
+                        accessibilityLabel={`Target sets for ${l.exerciseName}`}
+                      />
+                      <NumField
+                        label="Rep low"
+                        value={l.repLow}
+                        onChange={(repLow) => updateLine(l.key, { repLow })}
+                        placeholder="6"
+                        accessibilityLabel={`Rep range low for ${l.exerciseName}`}
+                      />
+                      <NumField
+                        label="Rep high"
+                        value={l.repHigh}
+                        onChange={(repHigh) => updateLine(l.key, { repHigh })}
+                        placeholder="10"
+                        accessibilityLabel={`Rep range high for ${l.exerciseName}`}
+                      />
+                      <NumField
+                        label="Rest s"
+                        value={l.rest}
+                        onChange={(rest) => updateLine(l.key, { rest })}
+                        placeholder="150"
+                        accessibilityLabel={`Rest seconds for ${l.exerciseName}`}
+                      />
+                    </View>
                   </View>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Remove ${l.exerciseName}`}
-                    onPress={() => removeLine(l.key)}
-                    className="-mr-1 h-8 w-8 items-center justify-center rounded-btn active:bg-paper-deep">
-                    <Ionicons name="close" size={16} color={palette.inkMuted} />
-                  </Pressable>
                 </View>
-                <View className="mt-3 flex-row items-end gap-2">
-                  <NumField
-                    label="Sets"
-                    value={l.sets}
-                    onChange={(sets) => updateLine(l.key, { sets })}
-                    placeholder="3"
-                    accessibilityLabel={`Target sets for ${l.exerciseName}`}
-                  />
-                  <NumField
-                    label="Rep low"
-                    value={l.repLow}
-                    onChange={(repLow) => updateLine(l.key, { repLow })}
-                    placeholder="6"
-                    accessibilityLabel={`Rep range low for ${l.exerciseName}`}
-                  />
-                  <NumField
-                    label="Rep high"
-                    value={l.repHigh}
-                    onChange={(repHigh) => updateLine(l.key, { repHigh })}
-                    placeholder="10"
-                    accessibilityLabel={`Rep range high for ${l.exerciseName}`}
-                  />
-                  <NumField
-                    label="Rest s"
-                    value={l.rest}
-                    onChange={(rest) => updateLine(l.key, { rest })}
-                    placeholder="150"
-                    accessibilityLabel={`Rest seconds for ${l.exerciseName}`}
-                  />
-                </View>
-              </View>
-            ))}
-          </View>
-        )}
+              ))}
+            </View>
+          )}
+        </Block>
 
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Add exercise"
           onPress={() => setPickerOpen(true)}
-          className="mt-2 h-11 flex-row items-center justify-center gap-2 rounded-btn border border-hairline-strong active:bg-paper-deep">
+          className="mt-2 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
           <Ionicons name="add" size={17} color={palette.inkSecondary} />
-          <Text className="text-[13px] font-medium text-ink">Add exercise</Text>
+          <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+            Add exercise
+          </Text>
         </Pressable>
       </View>
 
-      {problem ? <Text className="mt-4 text-xs leading-5 text-ink-muted">{problem}</Text> : null}
+      {/* Why Save is off — an annotation, so: margin. */}
+      {problem ? (
+        <View className="mt-5">
+          <Block device="margin">
+            <Text className="font-serif text-[13px] leading-5 text-ink-secondary">{problem}</Text>
+          </Block>
+        </View>
+      ) : null}
 
-      {/* The one pine action on this screen. */}
+      {/*
+        The one primary action. Disabled reads as an unfilled outline rather than
+        a filled grey: muted ink on the sheet clears 4.5:1, on a hairline fill it
+        does not.
+      */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={editing ? 'Save routine' : 'Create routine'}
@@ -321,10 +356,12 @@ function RoutineEditor({ id }: { id: string | undefined }) {
         disabled={!canSave}
         onPress={save}
         className={`mt-6 h-12 items-center justify-center rounded-btn ${
-          canSave ? 'bg-pine active:opacity-70' : 'bg-hairline'
+          canSave ? 'bg-pine active:opacity-70' : 'border border-hairline'
         }`}>
         <Text
-          className={`text-[15px] font-semibold ${canSave ? 'text-pine-on' : 'text-ink-muted'}`}>
+          className={`font-label text-[15px] font-semibold ${
+            canSave ? 'text-pine-on' : 'text-ink-muted'
+          }`}>
           {editing ? 'Save routine' : 'Create routine'}
         </Text>
       </Pressable>
@@ -334,8 +371,10 @@ function RoutineEditor({ id }: { id: string | undefined }) {
           accessibilityRole="button"
           accessibilityLabel="Delete routine"
           onPress={confirmDelete}
-          className="mt-6 h-11 items-center justify-center rounded-btn active:bg-paper-deep">
-          <Text className="text-[13px] text-ink-secondary">Delete routine</Text>
+          className="mt-5 min-h-[44px] items-center justify-center active:opacity-60">
+          <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
+            Delete routine
+          </Text>
         </Pressable>
       ) : null}
 

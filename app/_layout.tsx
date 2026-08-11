@@ -1,7 +1,7 @@
 // Must be first: this is the stylesheet NativeWind compiles Tailwind into.
 import '../global.css';
 
-import { DefaultTheme, Stack, type Theme, ThemeProvider } from 'expo-router';
+import { DefaultTheme, Stack, useRouter, type Theme, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { Modal } from 'react-native';
@@ -13,14 +13,25 @@ import { useAppLock } from '@/hooks/use-app-lock';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { getDb } from '@/lib/db/client';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
-import { syncReminderNotifications } from '@/lib/notifications/reminders';
+import {
+  configureNotificationPresentation,
+  registerNotificationRouting,
+  syncReminderNotifications,
+} from '@/lib/notifications/reminders';
+import { useCoachPassRunner } from '@/hooks/use-coach-pass';
 
 /**
  * Root layout.
  *
- * ARC is light-mode only: Porcelain Ledger (docs/project-status.md §3) treats
- * bone-white paper as the identity, so there is no dark theme to switch to —
- * app.json pins userInterfaceStyle to "light" and this theme is unconditional.
+ * ARC is light-mode only: the Conformed Set (docs/project-status.md §3) treats
+ * the bone drafting sheet as the identity, so there is no dark theme to switch
+ * to — app.json pins userInterfaceStyle to "light" and this theme is
+ * unconditional. `navColors` is read imperatively from src/constants/theme.ts,
+ * which means this file does NOT follow a Tailwind change; it and
+ * app/(tabs)/_layout.tsx must both be re-checked whenever the palette moves
+ * (docs/design-research/implementation/01-rn-port-guide.md §2). Verified against
+ * the Conformed Set: background and card are the sheet (#E7E4DA), border is the
+ * hairline, primary is the one accent.
  *
  * No auth gate: ARC is single-user and local-first (no accounts). Access is
  * guarded by the Face ID / passcode app lock below (useAppLock, CLAUDE.md §2):
@@ -30,7 +41,7 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * The whole tree sits under an ErrorBoundary because the data layer opens SQLite
  * synchronously and throws on failure.
  */
-const porcelainTheme: Theme = {
+const arcNavTheme: Theme = {
   ...DefaultTheme,
   colors: { ...DefaultTheme.colors, ...navColors },
 };
@@ -40,6 +51,7 @@ export default function RootLayout() {
   // boundary). Must be the first hook so its synchronous enabled-check settles
   // before anything below decides what to render.
   const lock = useAppLock();
+  const router = useRouter();
 
   // Boot side effects, all fire-and-forget:
   //  - hydrate the Coach's API key + model from the Keychain into the in-memory
@@ -55,10 +67,31 @@ export default function RootLayout() {
   //    waiting in HealthKit. No-ops until enabled + the native module ships.
   useEffect(() => {
     void apiKeyStore.hydrate();
+    // Show notifications that fire while ARC is open (iOS drops them silently
+    // otherwise) and route a tapped one where it belongs, instead of dumping
+    // the user on Home with no idea why the phone buzzed.
+    configureNotificationPresentation();
     void syncReminderNotifications(getDb());
     void syncHealthIfEnabled(getDb());
-    return registerForegroundHealthSync(getDb());
-  }, []);
+    const stopHealthSync = registerForegroundHealthSync(getDb());
+    const stopRouting = registerNotificationRouting((route) => {
+      router.push(route.kind === 'coach' ? '/coach' : '/(tabs)/coach');
+    });
+    return () => {
+      stopHealthSync();
+      stopRouting();
+    };
+  }, [router]);
+
+  // The Coach's own daily pass — driven HERE and only here, so it runs on app
+  // open whichever tab the user lands on and runs exactly once. Home reads what
+  // it said via useCoachPassMessage(); read-only by construction, so there is
+  // no confirmation UI to host.
+  //
+  // Gated on the lock: while `locked`, the user has not authenticated, and a
+  // pass would ship their health data to the model API on the say-so of whoever
+  // is holding the phone. It fires the moment the gate opens.
+  useCoachPassRunner(!lock.locked);
 
   // Cold start while locked: the lock screen is the ONLY thing that mounts —
   // no Stack, no screens, nothing rendered to reveal. After the first unlock
@@ -75,10 +108,14 @@ export default function RootLayout() {
 
   return (
     <ErrorBoundary>
-      <ThemeProvider value={porcelainTheme}>
+      <ThemeProvider value={arcNavTheme}>
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
-          {/* Pushed over the tabs from the Log tab (docs/information-architecture.md). */}
+          {/* Pushed over the tabs from the Log tab's Nutrition tile and from
+              Data's Nutrition trend row (docs/information-architecture.md). The
+              SAME screen is also the Eat tab, re-exported by
+              app/(tabs)/eat.tsx — one hub, two ways in. Same for exercise/Train
+              below. */}
           <Stack.Screen name="nutrition" />
           {/* Nutrition sub-app family (docs/nutrition-subapp.md). INTEGRATOR-MERGE:
               these routes were added on the nutrition-sub-app branch. */}
@@ -110,16 +147,29 @@ export default function RootLayout() {
           <Stack.Screen name="labs" />
           {/* INTEGRATOR-MERGE: labs pipeline route (docs/labs-subapp.md). */}
           <Stack.Screen name="lab-import" />
+          {/* Settings — pushed from the last row of the Data tab. It was the
+              fifth TAB until 2026-08-09, when the owner's first hardware review
+              moved Nutrition and Exercise onto the bar and Settings off it
+              (app/(tabs)/_layout.tsx). Being a stack screen rather than a hidden
+              tab route is the point: it opens over the tab bar with a back
+              chevron to Data, like Labs or Protocols. */}
+          <Stack.Screen name="settings" />
           {/* Pushed from Settings. */}
           <Stack.Screen name="settings-profile" />
           <Stack.Screen name="settings-units" />
           <Stack.Screen name="settings-coach" />
+          {/* What the Coach durably knows about you — inspectable and deletable
+              (0030 coach_memories). Memory the user cannot read is memory the
+              user cannot trust. */}
+          <Stack.Screen name="coach-memory" />
           {/* INTEGRATOR-MERGE: wearables routes (docs/wearables-subapp.md). */}
           <Stack.Screen name="settings-health" />
           <Stack.Screen name="wearables" />
           {/* Pushed from the Data tab. */}
           <Stack.Screen name="protocols" />
           <Stack.Screen name="protocol-edit" />
+          {/* Pushed from the protocol editor: the version timeline. */}
+          <Stack.Screen name="protocol-versions" />
           <Stack.Screen name="screenings" />
           <Stack.Screen name="screening-form" />
           <Stack.Screen name="appointment-form" />

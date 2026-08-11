@@ -26,7 +26,7 @@
 -- (both tables mutable); enum-as-text + CHECK for ARC-owned vocabularies;
 -- FK actions rely on PRAGMA foreign_keys = ON (set per connection).
 --
--- Numbered 0031: next free above 0030_recipes (same branch). The runner stamps
+-- Numbered 0031: next free above 0031_recipes (same branch). The runner stamps
 -- PRAGMA user_version = 31 after applying this file.
 -- ============================================================================
 CREATE TABLE grocery_items (

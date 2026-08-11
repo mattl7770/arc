@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -33,13 +35,29 @@ import type { UnitPreferences } from '@/lib/user/types';
 
 /**
  * The structured live workout logger (docs/exercise-subapp.md §2), pushed from
- * the Exercise hub — the FitBod/Hevy-style set grid restated in Porcelain
- * Ledger. Exercise blocks; each set row shows the previous session's numbers as
- * placeholders, a mono weight/reps/RPE entry, and a pine completion check that
- * starts the rest timer and stamps a PR when the set beats the best e1RM to
- * date. Weight is entered in the user's unit and stored canonical kg. The one
- * pine action is Finish. The free-form quick logger (app/workout-log.tsx) stays
- * for cardio / mobility / past sessions.
+ * the Exercise hub — the FitBod/Hevy-style set grid. Exercise blocks; each set
+ * row shows the previous session's numbers as placeholders, a mono
+ * weight/reps/RPE entry, and a completion stamp that starts the rest timer and
+ * marks a PR when the set beats the best e1RM to date. Weight is entered in the
+ * user's unit and stored canonical kg. The free-form quick logger
+ * (app/workout-log.tsx) stays for cardio / mobility / past sessions.
+ *
+ * ## The surface system (00-design-spec.md §1)
+ *
+ *   Session name    —      recessed stock, styled inline (an input is not a block)
+ *   Deload notice   margin advisory prose, annotated in the margin
+ *   Each exercise   plate  **the set table** — the most literal "a record is a
+ *                          table" surface in the app, so it is ruled: a title
+ *                          line, a header rule, then one ruled line per set.
+ *
+ * Every set/rep/weight/RPE value is mono without exception — "serif speaks,
+ * mono measures". Column headers and tags are the label voice; the exercise
+ * name is the serif voice.
+ *
+ * **Accent budget: one primary action (Finish workout) plus the completion
+ * stamps.** A completed set is chrome, not biology, so the stamp is the accent
+ * and never a signal green — signal colours mark biological state only, and
+ * that firewall was a finding in all six hostile reviews.
  *
  * FLAG (native, deferred): the rest timer is foreground-only. Background
  * delivery (a notification at zero) needs expo-notifications and a dev rebuild.
@@ -48,6 +66,9 @@ import type { UnitPreferences } from '@/lib/user/types';
  */
 
 const SET_TYPES: SetType[] = ['normal', 'warmup', 'failure', 'drop'];
+
+/** Recessed stock for an inline entry field: an input well, without the device. */
+const INPUT_WELL = 'justify-center border border-paper-deep bg-paper-dim px-1';
 
 type LiveSet = {
   key: number;
@@ -410,46 +431,52 @@ function WorkoutLive({
           <StackHeader title="Workout" />
         </View>
 
-        {/* Session name + elapsed */}
+        {/* Elapsed — a measurement, so mono; its caption is the label voice. */}
         <View className="mt-2 flex-row items-baseline gap-2">
           <Text className="font-mono text-2xl text-ink">
             {formatClock((now - startedAt) / 1000)}
           </Text>
-          <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">elapsed</Text>
+          <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+            elapsed
+          </Text>
         </View>
-        <View className="mt-2 min-h-[44px] justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+
+        {/* Session name — recessed stock: you write into it. */}
+        <View className="mt-2 min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
           <TextInput
             value={name}
             onChangeText={setName}
             placeholder="Session name — Upper A…"
             placeholderTextColor={palette.inkMuted}
-            className="py-2.5 text-[15px] text-ink"
+            className="py-2.5 font-serif text-[15px] text-ink"
             accessibilityLabel="Session name"
           />
         </View>
 
-        {/* Deload week — the split runs with the volume cut. */}
+        {/* Deload week — the split runs with the volume cut. Prose: margin. */}
         {deload ? (
-          <View className="mt-3 rounded-card border border-hairline-soft bg-paper-deep px-3.5 py-2.5">
-            <Text className="text-[12px] leading-5 text-ink-secondary">
-              Deload week — fewer sets pre-filled. Keep RPE ≤ 7 and the loads submaximal; the point
-              is to recover.
-            </Text>
+          <View className="mt-4">
+            <Block device="margin">
+              <SectionLabel label="Deload week" />
+              <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
+                Fewer sets pre-filled. Keep RPE ≤ 7 and the loads submaximal; the point is to
+                recover.
+              </Text>
+            </Block>
           </View>
         ) : null}
 
-        {/* Exercise blocks */}
+        {/* Exercise blocks — one ruled plate per exercise. */}
         {blocks.length === 0 ? (
-          <Text className="mt-8 text-[13px] leading-5 text-ink-muted">
-            Add the first exercise to start logging sets.
+          <Text className="mt-8 font-serif text-[14px] leading-6 text-ink-secondary">
+            Nothing logged yet. Add the first exercise to start recording sets.
           </Text>
         ) : (
           <View className="mt-6">
             {blocks.map((block, bi) => (
-              <View key={block.key} className={bi === 0 ? '' : 'mt-6'}>
+              <View key={block.key} className={bi === 0 ? '' : 'mt-5'}>
                 <ExerciseBlock
                   block={block}
-                  group={groups[bi] ?? null}
                   groupStart={groups[bi] != null && groups[bi] !== groups[bi - 1]}
                   units={units}
                   spec={spec}
@@ -470,15 +497,15 @@ function WorkoutLive({
                         : `Superset ${block.name} with the next exercise`
                     }
                     onPress={() => toggleLink(block.key)}
-                    className="mt-2 flex-row items-center justify-center gap-1.5 rounded-btn py-1.5 active:bg-paper-deep">
+                    className="mt-1 min-h-[44px] flex-row items-center justify-center gap-1.5 active:opacity-60">
                     <Ionicons
                       name={block.linkedToNext ? 'link' : 'link-outline'}
                       size={14}
                       color={block.linkedToNext ? palette.ink : palette.inkMuted}
                     />
                     <Text
-                      className={`text-[11px] uppercase tracking-[1px] ${
-                        block.linkedToNext ? 'font-medium text-ink-secondary' : 'text-ink-muted'
+                      className={`font-label text-[10px] uppercase tracking-[1px] ${
+                        block.linkedToNext ? 'font-semibold text-ink-secondary' : 'text-ink-muted'
                       }`}>
                       {block.linkedToNext ? 'Supersetted' : 'Superset with next'}
                     </Text>
@@ -493,12 +520,18 @@ function WorkoutLive({
           accessibilityRole="button"
           accessibilityLabel="Add exercise"
           onPress={() => setPickerOpen(true)}
-          className="mt-4 h-11 flex-row items-center justify-center gap-2 rounded-btn border border-hairline-strong active:bg-paper-deep">
+          className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
           <Ionicons name="add" size={17} color={palette.inkSecondary} />
-          <Text className="text-[13px] font-medium text-ink">Add exercise</Text>
+          <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+            Add exercise
+          </Text>
         </Pressable>
 
-        {/* The one pine action on this screen. */}
+        {/*
+          The one primary action on this screen. Disabled reads as an unfilled
+          outline rather than a filled grey: muted ink on the sheet clears 4.5:1,
+          where muted ink on a hairline fill does not.
+        */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Finish workout"
@@ -506,10 +539,12 @@ function WorkoutLive({
           disabled={!canFinish}
           onPress={finish}
           className={`mt-8 h-12 items-center justify-center rounded-btn ${
-            canFinish ? 'bg-pine active:opacity-70' : 'bg-hairline'
+            canFinish ? 'bg-pine active:opacity-70' : 'border border-hairline'
           }`}>
           <Text
-            className={`text-[15px] font-semibold ${canFinish ? 'text-pine-on' : 'text-ink-muted'}`}>
+            className={`font-label text-[15px] font-semibold ${
+              canFinish ? 'text-pine-on' : 'text-ink-muted'
+            }`}>
             Finish workout
           </Text>
         </Pressable>
@@ -517,31 +552,42 @@ function WorkoutLive({
 
       {/* Rest timer — a quiet docked line, no modal, no glow. Foreground only. */}
       {restRemaining != null ? (
-        <View className="absolute inset-x-0 bottom-0 flex-row items-center gap-3 border-t border-hairline bg-porcelain px-5 py-3">
-          <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">Rest</Text>
-          <Text className="font-mono text-lg text-ink">{formatClock(restRemaining)}</Text>
-          <View className="flex-1" />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Subtract 15 seconds"
-            onPress={() => bumpRest(-15)}
-            className="rounded-btn border border-hairline-strong px-2.5 py-1 active:bg-paper-deep">
-            <Text className="font-mono text-[12px] text-ink-secondary">−15</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Add 15 seconds"
-            onPress={() => bumpRest(15)}
-            className="rounded-btn border border-hairline-strong px-2.5 py-1 active:bg-paper-deep">
-            <Text className="font-mono text-[12px] text-ink-secondary">+15</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Dismiss rest timer"
-            onPress={dismissRest}
-            className="h-8 w-8 items-center justify-center rounded-btn active:bg-paper-deep">
-            <Ionicons name="close" size={16} color={palette.inkMuted} />
-          </Pressable>
+        <View className="absolute inset-x-0 bottom-0 bg-paper-hi">
+          {/* The bar's top edge. A `border-t` here would draw all four sides —
+              see Divider's docblock — so the edge is a filled 1px view, and it
+              sits outside the bar's padding so it spans the full width. */}
+          <Divider />
+          <View className="flex-row items-center gap-3 px-5 py-3">
+            <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+              Rest
+            </Text>
+            <Text className="font-mono text-lg text-ink">{formatClock(restRemaining)}</Text>
+            <View className="flex-1" />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Subtract 15 seconds"
+              onPress={() => bumpRest(-15)}
+              hitSlop={8}
+              className="min-h-[32px] justify-center rounded-btn border border-hairline px-2.5 active:bg-paper-dim">
+              <Text className="font-mono text-[12px] text-ink-secondary">−15</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Add 15 seconds"
+              onPress={() => bumpRest(15)}
+              hitSlop={8}
+              className="min-h-[32px] justify-center rounded-btn border border-hairline px-2.5 active:bg-paper-dim">
+              <Text className="font-mono text-[12px] text-ink-secondary">+15</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss rest timer"
+              onPress={dismissRest}
+              hitSlop={8}
+              className="h-8 w-8 items-center justify-center active:opacity-60">
+              <Ionicons name="close" size={16} color={palette.inkMuted} />
+            </Pressable>
+          </View>
         </View>
       ) : null}
 
@@ -554,9 +600,16 @@ function WorkoutLive({
   );
 }
 
+/**
+ * One exercise = one **ruled plate**. The title line, the column header rule and
+ * the set rows all live on the same plate, because they are one record: a set
+ * table is the most literal "a record is a table" surface in ARC.
+ *
+ * The block carries no device of its own beyond that plate, and nothing is drawn
+ * around it: the superset left rule was cut on 2026-08-10 (see the call site).
+ */
 function ExerciseBlock({
   block,
-  group,
   groupStart,
   units,
   spec,
@@ -568,7 +621,6 @@ function ExerciseBlock({
   onRemove,
 }: {
   block: LiveBlock;
-  group: number | null;
   groupStart: boolean;
   units: UnitPreferences;
   spec: ReturnType<typeof weightSpec>;
@@ -581,41 +633,58 @@ function ExerciseBlock({
 }) {
   const showWeight = WEIGHT_LOGGING.has(block.loggingType);
   return (
-    // Supersetted blocks carry a hairline-strong left rule tying the group.
-    <View className={group != null ? 'border-l border-hairline-strong pl-3' : ''}>
+    // Supersetted blocks used to carry a left rule tying the group together.
+    // Cut 2026-08-10: it is the same lone vertical stroke the `margin` device
+    // lost, and it ran down the outside of plates that are already drawn — a
+    // half-drawn box around boxes. The "Superset" label above the first block
+    // is what names the group, and it survives a screenshot better than a rule
+    // whose meaning has to be guessed. With the rule gone the block no longer
+    // needs the group id at all — only `groupStart`, which the caller derives.
+    <View>
       {groupStart ? (
-        <Text className="mb-1 text-[9.5px] uppercase tracking-[2px] text-ink-muted">Superset</Text>
+        <Text className="mb-1 font-label text-[10px] uppercase tracking-[2px] text-ink-muted">
+          Superset
+        </Text>
       ) : null}
-      <View className="flex-row items-center gap-2">
-        <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">{block.name}</Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Remove ${block.name}`}
-          onPress={() => onRemove(block.key)}
-          className="h-8 w-8 items-center justify-center rounded-btn active:bg-paper-deep">
-          <Ionicons name="close" size={16} color={palette.inkMuted} />
-        </Pressable>
-      </View>
 
-      {/* Column header */}
-      <View className="mt-2 flex-row items-center gap-2 px-1">
-        <Text className="w-7 text-[9.5px] uppercase tracking-[1px] text-ink-muted">Set</Text>
-        <Text className="w-16 text-[9.5px] uppercase tracking-[1px] text-ink-muted">Prev</Text>
-        {showWeight ? (
-          <Text className="flex-1 text-center text-[9.5px] uppercase tracking-[1px] text-ink-muted">
-            {spec.unit}
+      <Block device="plate">
+        <View className="flex-row items-center gap-2">
+          <Text className="flex-1 font-serif text-[16px] font-semibold text-ink">{block.name}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${block.name}`}
+            onPress={() => onRemove(block.key)}
+            hitSlop={10}
+            className="h-8 w-8 items-center justify-center active:opacity-60">
+            <Ionicons name="close" size={16} color={palette.inkMuted} />
+          </Pressable>
+        </View>
+
+        {/* Column header — the label voice, closed by the rule beneath it. */}
+        <View className="mt-1.5 flex-row items-center gap-1.5 pb-1.5">
+          <Text className="w-7 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+            Set
           </Text>
-        ) : null}
-        <Text className="flex-1 text-center text-[9.5px] uppercase tracking-[1px] text-ink-muted">
-          Reps
-        </Text>
-        <Text className="w-12 text-center text-[9.5px] uppercase tracking-[1px] text-ink-muted">
-          RPE
-        </Text>
-        <View className="w-8" />
-      </View>
+          <Text className="w-16 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+            Prev
+          </Text>
+          {showWeight ? (
+            <Text className="flex-1 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+              {spec.unit}
+            </Text>
+          ) : null}
+          <Text className="flex-1 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+            Reps
+          </Text>
+          <Text className="w-12 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+            RPE
+          </Text>
+          <View className="w-8" />
+        </View>
+        {/* The rule that closes the column header. Drawn, not bordered — a
+            `border-b` here is the same four-sided trap as `border-t`. */}
+        <Divider />
 
-      <View className="mt-1 rounded-card border border-hairline bg-porcelain">
         {block.sets.map((set, i) => {
           const prev = block.prev[i];
           const prevText = prev
@@ -623,88 +692,93 @@ function ExerciseBlock({
             : '—';
           const tag = setTypeTag(set.setType);
           return (
-            <View
-              key={set.key}
-              className={`flex-row items-center gap-2 px-2.5 py-2 ${
-                i === 0 ? '' : 'border-t border-hairline-soft'
-              }`}>
-              {/* Set number / type tag */}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Set ${i + 1} type: ${set.setType}. Tap to change.`}
-                onPress={() => onCycleType(block.key, set.key, set.setType)}
-                className="h-7 w-7 items-center justify-center rounded-btn active:bg-paper-deep">
-                <Text className="font-mono text-[12px] text-ink-secondary">{tag || i + 1}</Text>
-              </Pressable>
+            <View key={set.key}>
+              <Divider first={i === 0} />
+              <View className="flex-row items-center gap-1.5 py-1.5">
+                {/* Set number / type tag */}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Set ${i + 1} type: ${set.setType}. Tap to change.`}
+                  onPress={() => onCycleType(block.key, set.key, set.setType)}
+                  hitSlop={10}
+                  className="h-8 w-7 items-center justify-center active:opacity-60">
+                  <Text className="font-mono text-[12px] text-ink-secondary">{tag || i + 1}</Text>
+                </Pressable>
 
-              <Text className="w-16 font-mono text-[11px] text-ink-muted" numberOfLines={1}>
-                {prevText}
-              </Text>
+                <Text className="w-16 font-mono text-[11px] text-ink-muted" numberOfLines={1}>
+                  {prevText}
+                </Text>
 
-              {showWeight ? (
-                <View className="min-h-[36px] flex-1 justify-center rounded-btn border border-hairline-soft bg-paper-deep px-1">
+                {showWeight ? (
+                  <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                    <TextInput
+                      value={set.weight}
+                      onChangeText={(weight) => onPatch(block.key, set.key, { weight })}
+                      placeholder={
+                        prev?.weightKg != null ? String(displayWeight(prev.weightKg, units)) : '—'
+                      }
+                      placeholderTextColor={palette.inkMuted}
+                      keyboardType="decimal-pad"
+                      className="py-1.5 text-center font-mono text-[15px] text-ink"
+                      accessibilityLabel={`Weight for set ${i + 1}`}
+                    />
+                  </View>
+                ) : null}
+
+                <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
                   <TextInput
-                    value={set.weight}
-                    onChangeText={(weight) => onPatch(block.key, set.key, { weight })}
-                    placeholder={
-                      prev?.weightKg != null ? String(displayWeight(prev.weightKg, units)) : '—'
-                    }
+                    value={set.reps}
+                    onChangeText={(reps) => onPatch(block.key, set.key, { reps })}
+                    placeholder={prev?.reps != null ? String(prev.reps) : '—'}
                     placeholderTextColor={palette.inkMuted}
-                    keyboardType="decimal-pad"
+                    keyboardType="number-pad"
                     className="py-1.5 text-center font-mono text-[15px] text-ink"
-                    accessibilityLabel={`Weight for set ${i + 1}`}
+                    accessibilityLabel={`Reps for set ${i + 1}`}
                   />
                 </View>
-              ) : null}
 
-              <View className="min-h-[36px] flex-1 justify-center rounded-btn border border-hairline-soft bg-paper-deep px-1">
-                <TextInput
-                  value={set.reps}
-                  onChangeText={(reps) => onPatch(block.key, set.key, { reps })}
-                  placeholder={prev?.reps != null ? String(prev.reps) : '—'}
-                  placeholderTextColor={palette.inkMuted}
-                  keyboardType="number-pad"
-                  className="py-1.5 text-center font-mono text-[15px] text-ink"
-                  accessibilityLabel={`Reps for set ${i + 1}`}
-                />
+                <View className={`min-h-[36px] w-12 ${INPUT_WELL}`}>
+                  <TextInput
+                    value={set.rpe}
+                    onChangeText={(rpe) => onPatch(block.key, set.key, { rpe })}
+                    placeholder="—"
+                    placeholderTextColor={palette.inkMuted}
+                    keyboardType="decimal-pad"
+                    className="py-1.5 text-center font-mono text-[13px] text-ink"
+                    accessibilityLabel={`RPE for set ${i + 1}`}
+                  />
+                </View>
+
+                {/*
+                The completion stamp. Chrome, not biology — so it is the accent
+                and never a signal green (the firewall, 00-design-spec.md §2).
+              */}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ checked: set.done }}
+                  accessibilityLabel={`Mark set ${i + 1} ${set.done ? 'incomplete' : 'complete'}`}
+                  onPress={() => onToggleDone(block, set)}
+                  onLongPress={() => onRemoveSet(block.key, set.key)}
+                  hitSlop={8}
+                  className={`h-8 w-8 items-center justify-center border ${
+                    set.done ? 'border-pine bg-pine' : 'border-hairline'
+                  } active:opacity-70`}>
+                  <Ionicons
+                    name="checkmark"
+                    size={16}
+                    color={set.done ? palette.pineOn : palette.hairline}
+                  />
+                </Pressable>
               </View>
-
-              <View className="min-h-[36px] w-12 justify-center rounded-btn border border-hairline-soft bg-paper-deep px-1">
-                <TextInput
-                  value={set.rpe}
-                  onChangeText={(rpe) => onPatch(block.key, set.key, { rpe })}
-                  placeholder="—"
-                  placeholderTextColor={palette.inkMuted}
-                  keyboardType="decimal-pad"
-                  className="py-1.5 text-center font-mono text-[13px] text-ink"
-                  accessibilityLabel={`RPE for set ${i + 1}`}
-                />
-              </View>
-
-              {/* Complete (pine when done) */}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ checked: set.done }}
-                accessibilityLabel={`Mark set ${i + 1} ${set.done ? 'incomplete' : 'complete'}`}
-                onPress={() => onToggleDone(block, set)}
-                onLongPress={() => onRemoveSet(block.key, set.key)}
-                className={`h-8 w-8 items-center justify-center rounded-btn border ${
-                  set.done ? 'border-pine bg-pine' : 'border-hairline-strong'
-                } active:opacity-70`}>
-                <Ionicons
-                  name="checkmark"
-                  size={16}
-                  color={set.done ? palette.pineOn : palette.hairlineStrong}
-                />
-              </Pressable>
             </View>
           );
         })}
 
-        {/* PR line + add set */}
-        <View className="flex-row items-center gap-2 border-t border-hairline-soft px-2.5 py-2">
+        {/* PR marker + add set */}
+        <Divider />
+        <View className="flex-row items-center gap-2 pt-1.5">
           {block.sets.some((s) => s.pr) ? (
-            <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-secondary">
+            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
               PR
             </Text>
           ) : null}
@@ -713,12 +787,15 @@ function ExerciseBlock({
             accessibilityRole="button"
             accessibilityLabel={`Add a set to ${block.name}`}
             onPress={() => onAddSet(block.key)}
-            className="flex-row items-center gap-1 rounded-btn px-2 py-1 active:bg-paper-deep">
+            hitSlop={8}
+            className="min-h-[32px] flex-row items-center gap-1 active:opacity-60">
             <Ionicons name="add" size={15} color={palette.inkSecondary} />
-            <Text className="text-[12px] font-medium text-ink-secondary">Add set</Text>
+            <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
+              Add set
+            </Text>
           </Pressable>
         </View>
-      </View>
+      </Block>
     </View>
   );
 }

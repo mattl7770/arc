@@ -34,18 +34,34 @@ import type { CoachStopReason, CoachToolCall, CoachTurnResult } from './types';
 export const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 export const ANTHROPIC_VERSION = '2023-06-01';
 
-/** The default model — the latest Claude, used until the user picks in Settings. */
-export const DEFAULT_MODEL = 'claude-opus-5';
+/**
+ * The default model until the user picks in Settings.
+ *
+ * SONNET 5, not Opus (changed 2026-08-10 during first live testing). Sonnet is
+ * described by Anthropic as near-Opus on agentic work and currently bills at
+ * $2/$10 per MTok on introductory pricing — 2.5× cheaper than Opus 5's $5/$25,
+ * and still 1.7× cheaper when it reverts to $3/$15 after 2026-08-31.
+ *
+ * This is a "measure, then decide" default, not a verdict on quality: the usage
+ * captions now record input/cache/output per turn, so the Opus-vs-Sonnet call
+ * can be made against real coach transcripts instead of a guess. Opus stays one
+ * tap away in Settings.
+ */
+export const DEFAULT_MODEL = 'claude-sonnet-5';
 
 /**
  * The models the Coach may run, chosen in Settings (src/lib/ai/api-key-store.ts
- * persists the pick). The default stays the most capable; Sonnet is flagged
- * because it is near-Opus on this workload at a fraction of the cost (the
- * per-interaction cost analysis in docs/ai-coach.md).
+ * persists the pick).
+ *
+ * A caution on Haiku: its prompt-cache minimum is 4096 tokens, against 1024 for
+ * Sonnet 5 and 512 for Opus 5. A prefix that caches fine on the other two can
+ * silently fail to cache on Haiku — no error, just `cache_creation_input_tokens:
+ * 0` and full price on every request. Keep an eye on it if the tool list ever
+ * shrinks much further.
  */
 export const COACH_MODELS = [
-  { id: 'claude-opus-5', label: 'Opus 5', note: 'Deepest reasoning · highest cost' },
-  { id: 'claude-sonnet-5', label: 'Sonnet 5', note: 'Near-Opus quality · ~⅓ the cost' },
+  { id: 'claude-sonnet-5', label: 'Sonnet 5', note: 'Near-Opus quality · default' },
+  { id: 'claude-opus-5', label: 'Opus 5', note: 'Deepest reasoning · ~2.5× the cost' },
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', note: 'Fastest · cheapest' },
 ] as const;
 
@@ -98,8 +114,25 @@ export type ModelClientConfig = {
 
 // --- Wire types (the slice of the Messages API this client speaks) -----------
 
+/**
+ * Cache lifetime for the big stable prefix (tools + system ≈ 10k tokens).
+ *
+ * ONE HOUR, not the five-minute default, because of how ARC is actually used.
+ * A coach conversation is bursty: a question, a minute reading the answer, a
+ * follow-up, then nothing until the afternoon. Under the 5-minute TTL almost
+ * every *user-initiated* turn arrives cold and pays a 1.25× cache WRITE on the
+ * whole prefix — measured at ~12,700 effective tokens per question, which is
+ * what made three trivial test queries cost ~48k tokens.
+ *
+ * The 1-hour TTL writes at 2× instead of 1.25×, so it needs three requests to
+ * pay off (2× + 0.2× vs 3× uncached). A single turn already makes 2–3
+ * round-trips, so it breaks even inside the first question and every question
+ * for the next hour reads at 0.1×.
+ */
+const CACHE_TTL = '1h' as const;
+
 /** An ephemeral prompt-cache breakpoint — everything before it is cached. */
-export type CacheControl = { type: 'ephemeral' };
+export type CacheControl = { type: 'ephemeral'; ttl?: '5m' | '1h' };
 
 export type WireTool = {
   name: string;
@@ -135,7 +168,14 @@ export type WireMessage = {
 };
 
 export type AgenticRequest = {
+  /** The STABLE system text — personality, doctrine, rails. Carries the cache breakpoint. */
   system: string;
+  /**
+   * Per-turn facts (date, readiness, mode, mission, experiments — built by
+   * src/lib/ai/turn-context.ts). Sent as a second, UNCACHED system block after
+   * the breakpoint, so fresh context never busts the cached prefix.
+   */
+  systemContext?: string;
   /** The conversation so far, oldest first, ending in the user turn. */
   messages: WireMessage[];
   tools: WireTool[];
@@ -207,11 +247,18 @@ export function buildMessagesRequest(
   // Prompt caching (docs/ai-coach.md): the system prompt and the whole tool
   // list are the largest stable prefix, re-sent on every round-trip of every
   // turn. Render order is tools → system → messages, so a breakpoint on the
-  // system block caches tools+system together; a second on the last tool keeps
-  // the tool list cached across the daily system-prompt date change. Cache
-  // reads bill at ~0.1×, and the prefix clears Opus 5's 512-token minimum.
-  const cache: CacheControl = { type: 'ephemeral' };
+  // STATIC system block caches tools+system together; a second on the last
+  // tool keeps the tool list cached even if the system text changes. The
+  // per-turn context rides a separate block AFTER the breakpoint, so fresh
+  // facts (date, readiness, mission state) never invalidate the cached
+  // prefix. Cache reads bill at ~0.1×; the prefix (~10k tokens, of which ~8k
+  // is the tool list) clears Opus 5's 512-token minimum many times over.
+  // See CACHE_TTL for why this is the one-hour cache, not the default.
+  const cache: CacheControl = { type: 'ephemeral', ttl: CACHE_TTL };
   const system: WireSystemBlock[] = [{ type: 'text', text: request.system, cache_control: cache }];
+  if (request.systemContext && request.systemContext.trim().length > 0) {
+    system.push({ type: 'text', text: request.systemContext });
+  }
   const tools =
     request.tools.length > 0
       ? request.tools.map((tool, i) =>
@@ -311,16 +358,44 @@ type StreamDelta =
 type StreamEventData = {
   type: string;
   index?: number;
+  message?: { usage?: unknown };
+  usage?: unknown;
   content_block?: WireOpaqueBlock;
   delta?: (StreamDelta | { stop_reason?: string }) & Record<string, unknown>;
   error?: { type?: string; message?: string };
 };
+
+/** Token counts for one round-trip, as the wire reports them. */
+export type Usage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
+export const ZERO_USAGE: Usage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+};
+
+export function addUsage(a: Usage, b: Usage): Usage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
+  };
+}
 
 export type AccumulatedMessage = {
   /** The reply's content blocks, in order, ready to echo back verbatim. */
   blocks: WireContentBlock[];
   /** The wire stop reason ('end_turn' | 'tool_use' | …), '' if never sent. */
   stopReason: string;
+  /** What this round-trip cost, summed from message_start + message_delta. */
+  usage: Usage;
 };
 
 /**
@@ -332,6 +407,9 @@ export class MessageAccumulator {
   private blocks: WireContentBlock[] = [];
   private partialJson = new Map<number, string>();
   private stopReason = '';
+  // Usage arrives in two places: message_start carries the input side (and the
+  // cache read/write split), message_delta the final output count.
+  private usage: Usage = { ...ZERO_USAGE };
   // Explicit field, not a constructor parameter property — Node's strip-only
   // TS mode (the headless tests) can't erase parameter properties.
   private readonly onToken: (chunk: string) => void;
@@ -395,20 +473,43 @@ export class MessageAccumulator {
         }
         break;
       }
+      case 'message_start': {
+        this.mergeUsage(data.message?.usage);
+        break;
+      }
       case 'message_delta': {
         const stop = (data.delta as { stop_reason?: string } | undefined)?.stop_reason;
         if (stop) this.stopReason = stop;
+        this.mergeUsage(data.usage);
         break;
       }
-      // message_start / message_stop / ping carry nothing the loop needs.
+      // message_stop / ping carry nothing the loop needs.
       default:
         break;
     }
   }
 
+  /** Fold a wire usage object in; later non-zero counts win (delta over start). */
+  private mergeUsage(raw: unknown): void {
+    if (!raw || typeof raw !== 'object') return;
+    const u = raw as Record<string, unknown>;
+    const num = (key: string, current: number) =>
+      typeof u[key] === 'number' && (u[key] as number) > 0 ? (u[key] as number) : current;
+    this.usage = {
+      inputTokens: num('input_tokens', this.usage.inputTokens),
+      outputTokens: num('output_tokens', this.usage.outputTokens),
+      cacheReadTokens: num('cache_read_input_tokens', this.usage.cacheReadTokens),
+      cacheWriteTokens: num('cache_creation_input_tokens', this.usage.cacheWriteTokens),
+    };
+  }
+
   finish(): AccumulatedMessage {
     // Sparse indices can't happen on a well-formed stream; compact defensively.
-    return { blocks: this.blocks.filter(Boolean), stopReason: this.stopReason };
+    return {
+      blocks: this.blocks.filter(Boolean),
+      stopReason: this.stopReason,
+      usage: this.usage,
+    };
   }
 }
 
@@ -496,6 +597,9 @@ export async function runCoachTurn(
   const messages: WireMessage[] = [...request.messages];
   const toolCalls: CoachToolCall[] = [];
   let text = '';
+  // Summed across every round-trip of the turn — one "how am I doing" can be
+  // three calls, and only the total is meaningful to the user.
+  let usage: Usage = { ...ZERO_USAGE };
 
   for (let call = 0; call < MAX_MODEL_CALLS_PER_TURN; call++) {
     if (handlers.signal?.aborted) {
@@ -514,6 +618,7 @@ export async function runCoachTurn(
       if (toolCalls.length > 0) throw new CoachTurnError(error, text, toolCalls);
       throw error;
     }
+    usage = addUsage(usage, reply.usage);
     text += textOf(reply.blocks);
 
     // A tool_use stop with no tool_use blocks would send an empty tool_result
@@ -529,7 +634,7 @@ export async function runCoachTurn(
               reply.stopReason === 'model_context_window_exceeded'
             ? 'max_tokens'
             : 'end_turn';
-      return { text, toolCalls, stopReason };
+      return { text, toolCalls, stopReason, usage };
     }
 
     // Tool round: echo the assistant turn verbatim (thinking blocks included),
@@ -583,5 +688,5 @@ export async function runCoachTurn(
     }
   }
 
-  return { text, toolCalls, stopReason: 'tool_use_limit' };
+  return { text, toolCalls, stopReason: 'tool_use_limit', usage };
 }

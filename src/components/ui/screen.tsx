@@ -1,6 +1,106 @@
-import type { ReactNode } from 'react';
-import { ScrollView, View } from 'react-native';
+import { memo, type ReactNode, useMemo } from 'react';
+import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { type Edge, SafeAreaView } from 'react-native-safe-area-context';
+
+import { paperGrid, palette } from '@/constants/theme';
+
+/**
+ * One rule of the drafting grid. Ink at FULL alpha — the strength is
+ * `paperGrid.opacity` on the group above, which keeps the dial in one place. Do
+ * not name the percentage here; it has moved once already (0.06 → 0.20,
+ * 2026-08-10) and a second copy of it just goes stale.
+ *
+ * 1pt wide, not `StyleSheet.hairlineWidth`. The mockup's rule is 1 CSS px and
+ * the retired PNG baked 1pt at every density; a hairline would be a third of
+ * that on an @3x phone and would land the texture back under threshold, which
+ * is the exact failure this layer has already had twice.
+ */
+const rule = {
+  position: 'absolute',
+  backgroundColor: palette.ink,
+} as const;
+
+const styles = StyleSheet.create({
+  vertical: { ...rule, top: 0, bottom: 0, width: 1 },
+  horizontal: { ...rule, left: 0, right: 0, height: 1 },
+});
+
+/**
+ * The printed sheet, on its own — the grid layer lifted out of {@link Screen} so
+ * that a root which *cannot* use `Screen` can still print it.
+ *
+ * Six full-screen surfaces build their own root and so bypass `Screen`
+ * entirely: the Coach tab (it needs a `KeyboardAvoidingView` wrapping a docked
+ * composer, which `Screen`'s scroll/gutter contract cannot express), the three
+ * native `Modal`s (mode picker, exercise picker, routine picker), the app-lock
+ * screen and the error boundary. Before this existed the grid lived inline in
+ * `Screen`, so five of six tabs had the texture and Coach did not — a whole tab
+ * on visibly different stock.
+ *
+ * **One implementation, one dial.** Both `Screen` and every bypassing root
+ * render this, so `paperGrid.opacity` in `src/constants/theme.ts` stays the only
+ * place the texture is tuned.
+ *
+ * **How to place it:** first child of a root `View` that carries `bg-paper` and
+ * NO padding, sitting *outside* the SafeAreaView so the grid runs edge to edge
+ * with no seam at the status-bar inset, and outside any ScrollView so the paper
+ * stays fixed while content moves over it. (Padding matters because React
+ * Native's Yoga insets absolutely-positioned children by the parent's padding,
+ * unlike CSS — a padded parent would leave the sheet's margins bare.)
+ *
+ * **Why plain Views and not an image.** This shipped twice as
+ * `<Image resizeMode="repeat">` over a 9pt tile and **never once rendered on the
+ * owner's device** — through an opacity recalibration and a Metro cache clear
+ * alike. `repeat` is the least-exercised resize mode on iOS and the diagnosis
+ * never converged, so the layer was rewritten as something that cannot fail:
+ * absolutely-positioned 1pt `View`s, one per rule. Certainty beats elegance for
+ * a texture that has already cost three rounds.
+ *
+ * **The node count is the price.** At `paperGrid.pitch` = 9 that is 42v + 75h =
+ * 117 Views on a 375 × 667 SE, 44 + 95 = **139** on a 393 × 852 iPhone 16, and
+ * 49 + 107 = 156 on a 440 × 956 Pro Max. Affordable *because this layer is
+ * inert*: it derives from nothing but the window size, so it mounts once per
+ * root and never re-renders, never measures, never animates, and never
+ * scrolls — Core Animation caches the group and each frame costs a composite of
+ * flat sublayers. If it ever needs to be cheaper the pitch is now a live
+ * constant rather than PNG geometry, so doubling it to 18 halves the count with
+ * a one-number edit.
+ *
+ * Group `opacity` on the wrapper (rather than a translucent ink per rule) is
+ * also what keeps the crossings honest: verticals and horizontals overlap at
+ * every intersection, and two translucent rules stacked would darken to ~0.36
+ * and print a dot lattice. iOS composites the group once, so every rule and
+ * every crossing lands at the same weight the tile used to have.
+ *
+ * `pointerEvents="none"` + `accessibilityElementsHidden` keep it inert to touch
+ * and invisible to VoiceOver — it is stock, not content.
+ */
+export const PaperGrid = memo(function PaperGrid() {
+  const { width, height } = useWindowDimensions();
+
+  // Offsets, not counts — the map below needs the coordinate anyway, and a
+  // stable `x`/`y` key beats an index when a rotation changes the array length.
+  const { columns, rows } = useMemo(() => {
+    const next = { columns: [] as number[], rows: [] as number[] };
+    for (let x = 0; x < width; x += paperGrid.pitch) next.columns.push(x);
+    for (let y = 0; y < height; y += paperGrid.pitch) next.rows.push(y);
+    return next;
+  }, [width, height]);
+
+  return (
+    <View
+      pointerEvents="none"
+      accessibilityElementsHidden
+      style={[StyleSheet.absoluteFill, { opacity: paperGrid.opacity }]}>
+      {columns.map((x) => (
+        <View key={`v${x}`} style={[styles.vertical, { left: x }]} />
+      ))}
+      {rows.map((y) => (
+        <View key={`h${y}`} style={[styles.horizontal, { top: y }]} />
+      ))}
+    </View>
+  );
+});
 
 type ScreenProps = {
   children: ReactNode;
@@ -19,22 +119,46 @@ type ScreenProps = {
 };
 
 /**
- * The one container every screen sits in: safe-area aware, bone-paper
- * background, consistent horizontal gutter.
+ * The one container every screen sits in: safe-area aware, the Conformed Set
+ * sheet as its background, and one consistent horizontal gutter.
+ *
+ * **The contract:** Screen supplies `bg-paper` (#E7E4DA — the sheet), the paper
+ * grid printed on it, and the `px-5` gutter. Screens must never re-declare any
+ * of the three; a second `px-5` inside doubles the gutter, a `bg-paper`
+ * re-declaration is the kind of thing that survives the next palette change and
+ * quietly goes stale, and a `bg-paper` laid over this container hides the grid.
+ * Blocks that want to sit ON the sheet just render — the sheet is already there
+ * (docs/design-research/implementation/00-design-spec.md §2, §4).
+ *
+ * **The grid is the sheet, not a section.** It is drawn under everything, and it
+ * does NOT scroll: the paper is the fixed thing and the content moves over it,
+ * exactly as in the mockup where `--paper-grid` lives on the screen and not on
+ * the content. It sits outside the SafeAreaView so it runs edge to edge with no
+ * seam at the status-bar inset, and it is inert to touch. The layer itself is
+ * {@link PaperGrid} above — exported because six full-screen surfaces build
+ * their own root and would otherwise be the only bare stock in the app.
+ * Calibration and how to change it: `paperGrid` in `src/constants/theme.ts`.
+ *
+ * Sections are separated by whitespace, not by rules: in this design rules
+ * enclose objects (a plate edge, the rows of one list), never the page. That is
+ * why this container draws nothing else at all.
  */
 export function Screen({ children, scroll = false, edges = ['top'] }: ScreenProps) {
   return (
-    <SafeAreaView edges={edges} className="flex-1 bg-paper">
-      {scroll ? (
-        <ScrollView
-          className="flex-1"
-          contentContainerClassName="grow px-5 pb-10"
-          keyboardShouldPersistTaps="handled">
-          {children}
-        </ScrollView>
-      ) : (
-        <View className="flex-1 px-5">{children}</View>
-      )}
-    </SafeAreaView>
+    <View className="flex-1 bg-paper">
+      <PaperGrid />
+      <SafeAreaView edges={edges} className="flex-1">
+        {scroll ? (
+          <ScrollView
+            className="flex-1"
+            contentContainerClassName="grow px-5 pb-10"
+            keyboardShouldPersistTaps="handled">
+            {children}
+          </ScrollView>
+        ) : (
+          <View className="flex-1 px-5">{children}</View>
+        )}
+      </SafeAreaView>
+    </View>
   );
 }

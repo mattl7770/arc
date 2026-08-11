@@ -4,7 +4,9 @@ import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, View } from 'react-native';
 
 import { RoutinePicker } from '@/components/exercise/routine-picker';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -23,9 +25,21 @@ import { useProgram } from '@/hooks/use-training';
  * Program builder — a multi-week mesocycle over routines, pushed from the
  * Exercise hub. Set a length, assign a routine to each weekday (the repeating
  * split), and mark deload/test weeks; then Start it to schedule it on the
- * calendar. The one pine action is Save; Start/Stop is a secondary action.
- * Mirrors the routine/protocol editors' discipline (in-flight guard, deep-link
- * id coercion, atomic save).
+ * calendar. Mirrors the routine/protocol editors' discipline (in-flight guard,
+ * deep-link id coercion, atomic save).
+ *
+ * ## The surface system (00-design-spec.md §1)
+ *
+ *   Weekly split   plate   a schedule is a record — seven ruled lines
+ *   Save problems  margin  the "why Save is off" annotation
+ *
+ * The week-kind row stays a strip of tappable chips: it is a control, not a
+ * record, so it takes no device. Name/notes/length are recessed stock drawn
+ * inline — an input is not a content block.
+ *
+ * **Accent budget: one.** Save. Start/Stop is a secondary outlined action and
+ * Delete is a quiet text button, because neither should outshine the thing the
+ * screen is actually for.
  */
 
 const DOWS: { dow: Weekday; label: string }[] = [
@@ -62,14 +76,6 @@ function initialDays(detail: ProgramDetail | null): DayMap {
 function initialKinds(detail: ProgramDetail | null): WeekKind[] {
   if (detail) return [...detail.weekKinds];
   return Array.from({ length: 4 }, () => 'accumulation');
-}
-
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
 }
 
 export default function ProgramEditScreen() {
@@ -189,7 +195,7 @@ function ProgramEditor({ id }: { id: string | undefined }) {
         <View className="pt-2">
           <StackHeader title="Edit program" />
         </View>
-        <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
+        <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
           This program no longer exists.
         </Text>
       </Screen>
@@ -204,31 +210,31 @@ function ProgramEditor({ id }: { id: string | undefined }) {
         <StackHeader title={editing ? 'Edit program' : 'New program'} />
       </View>
 
-      <View className="mt-2">
-        <SectionLabel>Program</SectionLabel>
-        <View className="mt-2 min-h-[44px] justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+      <View className="mt-3">
+        <SectionLabel label="Program" />
+        <View className="mt-2 min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
           <TextInput
             value={name}
             onChangeText={setName}
             placeholder="e.g. Upper/Lower Meso"
             placeholderTextColor={palette.inkMuted}
-            className="py-2.5 text-[15px] text-ink"
+            className="py-2.5 font-serif text-[15px] text-ink"
             accessibilityLabel="Program name"
           />
         </View>
-        <View className="mt-2 min-h-[44px] justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+        <View className="mt-2 min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
           <TextInput
             value={notes}
             onChangeText={setNotes}
             placeholder="Notes (optional)"
             placeholderTextColor={palette.inkMuted}
-            className="py-2.5 text-[15px] text-ink"
+            className="py-2.5 font-serif text-[15px] text-ink"
             accessibilityLabel="Program notes"
           />
         </View>
         <View className="mt-2 flex-row items-center gap-3">
           <View className="w-24">
-            <View className="min-h-[44px] justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+            <View className="min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
               <TextInput
                 value={weeksText}
                 onChangeText={setWeeksText}
@@ -240,45 +246,53 @@ function ProgramEditor({ id }: { id: string | undefined }) {
               />
             </View>
           </View>
-          <Text className="text-[13px] text-ink-secondary">
+          <Text className="font-label text-[11px] uppercase tracking-[1px] text-ink-muted">
             {weeksValid ? 'weeks long' : 'weeks (1–52)'}
           </Text>
         </View>
       </View>
 
-      {/* Weekly split */}
-      <View className="mt-8">
-        <SectionLabel>Weekly split</SectionLabel>
-        <Text className="mt-1 text-[12px] leading-5 text-ink-muted">
-          Assign a routine to each training day. This split repeats every week.
-        </Text>
-        <View className="mt-2 rounded-card border border-hairline bg-porcelain">
-          {DOWS.map((d, i) => {
-            const assigned = days[d.dow];
-            return (
-              <Pressable
-                key={d.dow}
-                accessibilityRole="button"
-                accessibilityLabel={`${d.label}: ${assigned ? assigned.routineName : 'rest'}. Change.`}
-                onPress={() => setPickerDow(d.dow)}
-                className={`flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep ${
-                  i === 0 ? '' : 'border-t border-hairline-soft'
-                }`}>
-                <Text className="w-24 text-[14px] text-ink">{d.label}</Text>
-                <Text className={`flex-1 text-[14px] ${assigned ? 'text-ink' : 'text-ink-muted'}`}>
-                  {assigned ? assigned.routineName : 'Rest'}
-                </Text>
-                <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
-              </Pressable>
-            );
-          })}
-        </View>
+      {/* Weekly split — a schedule is a record, so: one ruled plate. */}
+      <View className="mt-7">
+        <Block device="plate">
+          {/* The tally reconciles: seven lines are drawn, `trainingDays` of them assigned. */}
+          <SectionLabel label="Weekly split" note={`${trainingDays} of 7`} />
+          <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
+            Assign a routine to each training day. This split repeats every week.
+          </Text>
+          <View className="mt-2">
+            {DOWS.map((d, i) => {
+              const assigned = days[d.dow];
+              return (
+                <View key={d.dow}>
+                  <Divider first={i === 0} />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${d.label}: ${assigned ? assigned.routineName : 'rest'}. Change.`}
+                    onPress={() => setPickerDow(d.dow)}
+                    className="min-h-[44px] flex-row items-center gap-3 py-2 active:opacity-60">
+                    <Text className="w-24 font-label text-[11px] uppercase tracking-[1px] text-ink-muted">
+                      {d.label}
+                    </Text>
+                    <Text
+                      className={`flex-1 font-serif text-[15px] ${
+                        assigned ? 'text-ink' : 'text-ink-muted'
+                      }`}>
+                      {assigned ? assigned.routineName : 'Rest'}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+                  </Pressable>
+                </View>
+              );
+            })}
+          </View>
+        </Block>
       </View>
 
-      {/* Week kinds */}
-      <View className="mt-8">
-        <SectionLabel>Weeks</SectionLabel>
-        <Text className="mt-1 text-[12px] leading-5 text-ink-muted">
+      {/* Week kinds — a control strip, not a record: chips, no device. */}
+      <View className="mt-7">
+        <SectionLabel label="Weeks" />
+        <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
           Tap a week to cycle accumulation → deload → test. Deload weeks run the same split with the
           volume cut.
         </Text>
@@ -291,27 +305,47 @@ function ProgramEditor({ id }: { id: string | undefined }) {
                 accessibilityRole="button"
                 accessibilityLabel={`Week ${i + 1}: ${kind}. Tap to change.`}
                 onPress={() => cycleWeek(i)}
-                className={`rounded-btn border px-3 py-1.5 active:bg-paper-deep ${
-                  marked ? 'border-hairline-strong bg-paper-deep' : 'border-hairline bg-porcelain'
+                // 44pt floor (§4), matching FilterChip in
+                // src/components/exercise/exercise-picker.tsx. The strip wraps,
+                // so the extra height only makes each wrapped row taller.
+                className={`min-h-[44px] justify-center rounded-btn border border-hairline px-3 active:opacity-60 ${
+                  marked ? 'bg-paper-dim' : ''
                 }`}>
-                <Text
-                  className={`font-mono text-[12px] ${marked ? 'font-medium text-ink' : 'text-ink-secondary'}`}>
-                  W{i + 1}
-                  {WEEK_KIND_LABEL[kind] ? ` · ${WEEK_KIND_LABEL[kind]}` : ''}
-                </Text>
+                <View className="flex-row items-baseline gap-1">
+                  <Text
+                    className={`font-mono text-[12px] ${
+                      marked ? 'font-semibold text-ink' : 'text-ink-secondary'
+                    }`}>
+                    W{i + 1}
+                  </Text>
+                  {WEEK_KIND_LABEL[kind] ? (
+                    <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-secondary">
+                      {WEEK_KIND_LABEL[kind]}
+                    </Text>
+                  ) : null}
+                </View>
               </Pressable>
             );
           })}
         </View>
       </View>
 
+      {/* Why Save is off — an annotation, so: margin. */}
       {!canSave && name.trim() !== '' && trainingDays === 0 ? (
-        <Text className="mt-4 text-xs leading-5 text-ink-muted">
-          Assign at least one training day before saving.
-        </Text>
+        <View className="mt-5">
+          <Block device="margin">
+            <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
+              Assign at least one training day before saving.
+            </Text>
+          </Block>
+        </View>
       ) : null}
 
-      {/* The one pine action on this screen. */}
+      {/*
+        The one primary action. Disabled reads as an unfilled outline rather than
+        a filled grey: muted ink on the sheet clears 4.5:1, on a hairline fill it
+        does not.
+      */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={editing ? 'Save program' : 'Create program'}
@@ -319,10 +353,12 @@ function ProgramEditor({ id }: { id: string | undefined }) {
         disabled={!canSave}
         onPress={save}
         className={`mt-6 h-12 items-center justify-center rounded-btn ${
-          canSave ? 'bg-pine active:opacity-70' : 'bg-hairline'
+          canSave ? 'bg-pine active:opacity-70' : 'border border-hairline'
         }`}>
         <Text
-          className={`text-[15px] font-semibold ${canSave ? 'text-pine-on' : 'text-ink-muted'}`}>
+          className={`font-label text-[15px] font-semibold ${
+            canSave ? 'text-pine-on' : 'text-ink-muted'
+          }`}>
           {editing ? 'Save program' : 'Create program'}
         </Text>
       </Pressable>
@@ -332,13 +368,13 @@ function ProgramEditor({ id }: { id: string | undefined }) {
           accessibilityRole="button"
           accessibilityLabel={isActive ? 'Stop program' : 'Start program'}
           onPress={toggleActive}
-          className="mt-3 h-11 flex-row items-center justify-center gap-2 rounded-btn border border-hairline-strong active:bg-paper-deep">
+          className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
           <Ionicons
             name={isActive ? 'stop-outline' : 'play-outline'}
             size={16}
             color={palette.inkSecondary}
           />
-          <Text className="text-[13px] font-medium text-ink">
+          <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
             {isActive ? 'Stop program' : 'Start program this week'}
           </Text>
         </Pressable>
@@ -349,8 +385,10 @@ function ProgramEditor({ id }: { id: string | undefined }) {
           accessibilityRole="button"
           accessibilityLabel="Delete program"
           onPress={confirmDelete}
-          className="mt-6 h-11 items-center justify-center rounded-btn active:bg-paper-deep">
-          <Text className="text-[13px] text-ink-secondary">Delete program</Text>
+          className="mt-5 min-h-[44px] items-center justify-center active:opacity-60">
+          <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
+            Delete program
+          </Text>
         </Pressable>
       ) : null}
 

@@ -1,5 +1,5 @@
 /**
- * The recipe book's data layer (0030_recipes.sql): recipes + ingredient lines,
+ * The recipe book's data layer (0031_recipes.sql): recipes + ingredient lines,
  * explicit food resolution, the honesty-gated nutrition rollup, and cooking a
  * recipe into a real logged meal. Spec: docs/recipes-grocery.md.
  *
@@ -538,6 +538,21 @@ export function saveMealAsRecipe(
 /** Book size — the Nutrition hub's "N recipes" line. */
 export function recipeCount(db: Database): number {
   const row = db.get<{ n: number }>('SELECT count(*) AS n FROM recipes');
+  return row?.n ?? 0;
+}
+
+/**
+ * How many meals since `sinceDate` were cooked from the book — the Eat tab's
+ * "N cooked this month". Derived from `meals.recipe_id` (indexed by 0031), so
+ * it stays true when a recipe is renamed and survives a recipe being deleted
+ * (the FK is ON DELETE SET NULL, which correctly drops the meal out of this
+ * count without touching the meal itself).
+ */
+export function recipesCookedSince(db: Database, sinceDate: string): number {
+  const row = db.get<{ n: number }>(
+    'SELECT count(*) AS n FROM meals WHERE recipe_id IS NOT NULL AND date >= ?',
+    [sinceDate]
+  );
   return row?.n ?? 0;
 }
 

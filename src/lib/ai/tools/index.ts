@@ -12,7 +12,7 @@ import { WRITE_TOOLS } from './write-tools';
 import type { CoachTool } from './types';
 
 export type { CoachTool, CoachToolContext } from './types';
-export { READ_TOOLS } from './read-tools';
+export { READ_TOOLS, UNREGISTERED_READ_TOOLS } from './read-tools';
 export { WRITE_TOOLS } from './write-tools';
 export { STUB_TOOLS } from './stubs';
 

@@ -14,6 +14,7 @@ import {
   addGroceryItems,
   addRecipeToGroceryList,
   checkGroceryItem,
+  checkedGroceryCount,
   clearCheckedItems,
   consolidatedOpenList,
   getGroceryItem,
@@ -22,6 +23,7 @@ import {
   listOpenGroceryItems,
   listStaples,
   openGroceryCount,
+  openGroceryLineCount,
   removeGroceryItem,
   searchGroceryHistory,
   setStaple,
@@ -345,6 +347,40 @@ function freshDb() {
     .get(item.id).updated_at;
   if (after >= before) ok('grocery_items updated_at trigger stamps');
   else bad('trigger');
+}
+
+console.log('12. the Eat tab counts: LINES to buy, and the cart that survives');
+{
+  const { db } = freshDb();
+  addGroceryItems(db, [
+    { name: 'Milk', qtyText: '1 L' },
+    { name: 'Milk', qtyText: '2 L' },
+    { name: 'Eggs', qtyText: '12' },
+  ]);
+
+  // Three rows, two names. The hub row promises what the list screen draws.
+  openGroceryCount(db) === 3
+    ? ok('openGroceryCount counts raw ROWS (3)')
+    : bad('row count', String(openGroceryCount(db)));
+  openGroceryLineCount(db) === 2
+    ? ok('openGroceryLineCount counts the LINES /grocery renders (2) — the hub promises this one')
+    : bad('line count', String(openGroceryLineCount(db)));
+  openGroceryLineCount(db) === consolidatedOpenList(db).length
+    ? ok('and it is literally the consolidated view length, so the two can never drift')
+    : bad('line count vs view');
+
+  checkedGroceryCount(db) === 0 ? ok('nothing in the cart yet') : bad('cart empty');
+  for (const item of listOpenGroceryItems(db)) checkGroceryItem(db, item.id);
+  openGroceryLineCount(db) === 0 && checkedGroceryCount(db) === 3
+    ? ok('all checked off → 0 to buy, 3 in the cart (check-off is soft, never a delete)')
+    : bad('all-checked state', `${openGroceryLineCount(db)}/${checkedGroceryCount(db)}`);
+
+  // The state nobody designs: an empty open list over a full cart. The hub says
+  // "Nothing left to buy · 3 in the cart" rather than "Nothing on the list".
+  clearCheckedItems(db);
+  checkedGroceryCount(db) === 0 && openGroceryLineCount(db) === 0
+    ? ok('clearing the cart empties both counts')
+    : bad('after clear');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
