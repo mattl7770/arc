@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, View } from 'react-native';
 
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -248,79 +248,80 @@ function RoutineEditor({ id }: { id: string | undefined }) {
       </View>
 
       {/* Exercises — the routine's record, so: one ruled plate, one line each,
-          and the plate ONLY once there is a line to rule. A plate closes a
-          record; a new routine has no record to close, only a paragraph — and a
-          border around one paragraph is the box-around-a-single-thing the owner
-          keeps seeing. A new routine always opens in this state. Same shape as
-          app/protocols.tsx. */}
+          drawn whether or not there are lines yet. A new routine always opens
+          empty, and the plate is what says a record goes here. (The sweep of
+          2026-08-10 made it conditional; reverted at the owner's instruction.) */}
       <View className="mt-7">
-        {lines.length === 0 ? (
-          <View>
-            <SectionLabel label="Exercises" />
+        <Block device="plate">
+          <SectionLabel
+            label="Exercises"
+            note={lines.length > 0 ? String(lines.length) : undefined}
+          />
+          {lines.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               No exercises yet — add the movements this routine runs, with their target sets and rep
               range.
             </Text>
-          </View>
-        ) : (
-          <Block device="plate">
-            <SectionLabel label="Exercises" note={String(lines.length)} />
+          ) : (
             <View className="mt-1">
               {lines.map((l, i) => (
-                <View key={l.key} className={`py-3 ${i === 0 ? '' : 'border-t border-hairline'}`}>
-                  <View className="flex-row items-start gap-2">
-                    <View className="flex-1">
-                      <Text className="font-serif text-[15px] text-ink">{l.exerciseName}</Text>
-                      {l.primaryMuscles ? (
-                        <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                          {l.primaryMuscles}
-                        </Text>
-                      ) : null}
+                <View key={l.key}>
+                  <Divider first={i === 0} />
+                  <View className="py-3">
+                    <View className="flex-row items-start gap-2">
+                      <View className="flex-1">
+                        <Text className="font-serif text-[15px] text-ink">{l.exerciseName}</Text>
+                        {l.primaryMuscles ? (
+                          <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                            {l.primaryMuscles}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove ${l.exerciseName}`}
+                        onPress={() => removeLine(l.key)}
+                        hitSlop={10}
+                        className="-mr-1 h-8 w-8 items-center justify-center active:opacity-60">
+                        <Ionicons name="close" size={16} color={palette.inkMuted} />
+                      </Pressable>
                     </View>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Remove ${l.exerciseName}`}
-                      onPress={() => removeLine(l.key)}
-                      hitSlop={10}
-                      className="-mr-1 h-8 w-8 items-center justify-center active:opacity-60">
-                      <Ionicons name="close" size={16} color={palette.inkMuted} />
-                    </Pressable>
-                  </View>
-                  <View className="mt-2.5 flex-row items-end gap-2">
-                    <NumField
-                      label="Sets"
-                      value={l.sets}
-                      onChange={(sets) => updateLine(l.key, { sets })}
-                      placeholder="3"
-                      accessibilityLabel={`Target sets for ${l.exerciseName}`}
-                    />
-                    <NumField
-                      label="Rep low"
-                      value={l.repLow}
-                      onChange={(repLow) => updateLine(l.key, { repLow })}
-                      placeholder="6"
-                      accessibilityLabel={`Rep range low for ${l.exerciseName}`}
-                    />
-                    <NumField
-                      label="Rep high"
-                      value={l.repHigh}
-                      onChange={(repHigh) => updateLine(l.key, { repHigh })}
-                      placeholder="10"
-                      accessibilityLabel={`Rep range high for ${l.exerciseName}`}
-                    />
-                    <NumField
-                      label="Rest s"
-                      value={l.rest}
-                      onChange={(rest) => updateLine(l.key, { rest })}
-                      placeholder="150"
-                      accessibilityLabel={`Rest seconds for ${l.exerciseName}`}
-                    />
+                    <View className="mt-2.5 flex-row items-end gap-2">
+                      <NumField
+                        label="Sets"
+                        value={l.sets}
+                        onChange={(sets) => updateLine(l.key, { sets })}
+                        placeholder="3"
+                        accessibilityLabel={`Target sets for ${l.exerciseName}`}
+                      />
+                      <NumField
+                        label="Rep low"
+                        value={l.repLow}
+                        onChange={(repLow) => updateLine(l.key, { repLow })}
+                        placeholder="6"
+                        accessibilityLabel={`Rep range low for ${l.exerciseName}`}
+                      />
+                      <NumField
+                        label="Rep high"
+                        value={l.repHigh}
+                        onChange={(repHigh) => updateLine(l.key, { repHigh })}
+                        placeholder="10"
+                        accessibilityLabel={`Rep range high for ${l.exerciseName}`}
+                      />
+                      <NumField
+                        label="Rest s"
+                        value={l.rest}
+                        onChange={(rest) => updateLine(l.key, { rest })}
+                        placeholder="150"
+                        accessibilityLabel={`Rest seconds for ${l.exerciseName}`}
+                      />
+                    </View>
                   </View>
                 </View>
               ))}
             </View>
-          </Block>
-        )}
+          )}
+        </Block>
 
         <Pressable
           accessibilityRole="button"

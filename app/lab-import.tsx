@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -421,81 +421,82 @@ export default function LabImportScreen() {
                   const importable = isImportable(m);
                   const value = parseValue(row);
                   return (
-                    <View
-                      key={m.key}
-                      className={`py-3 ${index === 0 ? '' : 'border-t border-hairline'}`}>
-                      <View className="flex-row items-center gap-3">
-                        {/* Selection, not completion — so it is drawn in ink.
+                    <View key={m.key}>
+                      <Divider first={index === 0} />
+                      <View className="py-3">
+                        <View className="flex-row items-center gap-3">
+                          {/* Selection, not completion — so it is drawn in ink.
                             Square, like every other mark in this set. */}
-                        <Pressable
-                          accessibilityRole="checkbox"
-                          accessibilityState={{ checked: row.include, disabled: !importable }}
-                          accessibilityLabel={`Include ${m.displayName}`}
-                          disabled={!importable}
-                          hitSlop={12}
-                          onPress={() => toggle(m.key)}
-                          className={
-                            row.include
-                              ? 'h-[22px] w-[22px] items-center justify-center bg-ink'
-                              : 'h-[22px] w-[22px] items-center justify-center border-[1.5px] border-hairline'
-                          }>
-                          {row.include ? (
-                            <Ionicons name="checkmark" size={14} color={palette.paperHi} />
-                          ) : null}
-                        </Pressable>
+                          <Pressable
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: row.include, disabled: !importable }}
+                            accessibilityLabel={`Include ${m.displayName}`}
+                            disabled={!importable}
+                            hitSlop={12}
+                            onPress={() => toggle(m.key)}
+                            className={
+                              row.include
+                                ? 'h-[22px] w-[22px] items-center justify-center bg-ink'
+                                : 'h-[22px] w-[22px] items-center justify-center border-[1.5px] border-hairline'
+                            }>
+                            {row.include ? (
+                              <Ionicons name="checkmark" size={14} color={palette.paperHi} />
+                            ) : null}
+                          </Pressable>
 
-                        <View className="flex-1">
-                          <Text className="font-serif text-[15px] leading-5 text-ink">
-                            {m.displayName}
-                          </Text>
-                          <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                            {STATUS_LABEL[m.status]}
-                            {m.printedName !== m.displayName ? ` · “${m.printedName}”` : ''}
+                          <View className="flex-1">
+                            <Text className="font-serif text-[15px] leading-5 text-ink">
+                              {m.displayName}
+                            </Text>
+                            <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                              {STATUS_LABEL[m.status]}
+                              {m.printedName !== m.displayName ? ` · “${m.printedName}”` : ''}
+                            </Text>
+                          </View>
+
+                          <TextInput
+                            value={row.valueText}
+                            onChangeText={(t) => setValue(m.key, t)}
+                            keyboardType="decimal-pad"
+                            editable={importable}
+                            accessibilityLabel={`${m.displayName} value`}
+                            className="h-11 w-20 border border-paper-deep bg-paper-dim px-2 text-right font-mono text-[13px] text-ink"
+                          />
+                          <Text className="w-16 font-mono text-[11px] text-ink-muted">
+                            {m.unit ?? ''}
                           </Text>
                         </View>
 
-                        <TextInput
-                          value={row.valueText}
-                          onChangeText={(t) => setValue(m.key, t)}
-                          keyboardType="decimal-pad"
-                          editable={importable}
-                          accessibilityLabel={`${m.displayName} value`}
-                          className="h-11 w-20 border border-paper-deep bg-paper-dim px-2 text-right font-mono text-[13px] text-ink"
-                        />
-                        <Text className="w-16 font-mono text-[11px] text-ink-muted">
-                          {m.unit ?? ''}
-                        </Text>
+                        {m.status === 'converted' ? (
+                          <Text className="mt-1.5 font-mono text-[10px] text-ink-muted">
+                            printed {m.qualifier ?? ''}
+                            {round(m.reportedValue)} {m.reportedUnit}
+                          </Text>
+                        ) : null}
+                        {m.status === 'unit_conflict' ? (
+                          <Text className="mt-1.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
+                            Reported in {m.reportedUnit}, but ARC tracks this in {m.unit}, and these
+                            two don’t convert. Left out — add it by hand if you know the conversion.
+                          </Text>
+                        ) : null}
+                        {m.status === 'duplicate' ? (
+                          <Text className="mt-1.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
+                            This marker already appears above. Reports repeat markers across
+                            sections — only one value can be stored per report.
+                          </Text>
+                        ) : null}
+                        {m.qualifier && m.status !== 'converted' ? (
+                          <Text className="mt-1.5 font-mono text-[10px] text-ink-muted">
+                            printed as {m.qualifier}
+                            {round(m.reportedValue)} {m.reportedUnit}
+                          </Text>
+                        ) : null}
+                        {value === null ? (
+                          <Text className="mt-1.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
+                            Not a number — fix it or leave it out.
+                          </Text>
+                        ) : null}
                       </View>
-
-                      {m.status === 'converted' ? (
-                        <Text className="mt-1.5 font-mono text-[10px] text-ink-muted">
-                          printed {m.qualifier ?? ''}
-                          {round(m.reportedValue)} {m.reportedUnit}
-                        </Text>
-                      ) : null}
-                      {m.status === 'unit_conflict' ? (
-                        <Text className="mt-1.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
-                          Reported in {m.reportedUnit}, but ARC tracks this in {m.unit}, and these
-                          two don’t convert. Left out — add it by hand if you know the conversion.
-                        </Text>
-                      ) : null}
-                      {m.status === 'duplicate' ? (
-                        <Text className="mt-1.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
-                          This marker already appears above. Reports repeat markers across sections
-                          — only one value can be stored per report.
-                        </Text>
-                      ) : null}
-                      {m.qualifier && m.status !== 'converted' ? (
-                        <Text className="mt-1.5 font-mono text-[10px] text-ink-muted">
-                          printed as {m.qualifier}
-                          {round(m.reportedValue)} {m.reportedUnit}
-                        </Text>
-                      ) : null}
-                      {value === null ? (
-                        <Text className="mt-1.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
-                          Not a number — fix it or leave it out.
-                        </Text>
-                      ) : null}
                     </View>
                   );
                 })}

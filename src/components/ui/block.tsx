@@ -179,3 +179,88 @@ export function Block({ device, children }: { device: BlockDevice; children: Rea
     </BlockDeviceContext.Provider>
   );
 }
+
+/**
+ * The rule that runs BETWEEN the rows of a plate — drawn as a filled 1px view,
+ * **never as a border**.
+ *
+ * ## Why this exists (do not "simplify" it back to `border-t`)
+ *
+ * `border-t border-hairline` is the obvious way to write a row separator and it
+ * is the trap. The owner reported "weird boxes" from hardware four separate
+ * times; three rounds of agents read it as a design problem and deleted plates,
+ * which made it worse. It was never the design. It is this:
+ *
+ *   - `.border-t` compiles to `border-top-width: 1px` and nothing else.
+ *   - `.border-hairline` compiles to `border-color: …` and nothing else — the
+ *     CSS **shorthand**, which is a whole-element property. It colours all four
+ *     edges, because that is what `border-color` means.
+ *
+ * NativeWind's translation of that pair is honest and minimal — verified by
+ * compiling the project's real `tailwind.config.js` and running the output
+ * through `react-native-css-interop`'s `cssToReactNativeRuntime`, which yields
+ * exactly `{ borderTopWidth: 1, borderColor: '#a9a28e' }`. No stray
+ * `borderWidth`. So NativeWind is not the culprit, and patching it is not the
+ * fix.
+ *
+ * The damage happens one layer down, and it is a direct consequence of that
+ * style pair. React Native resolves borders into `borderWidths` and
+ * `borderColors` rectangle-edge structs, then (RCTViewComponentView.mm) takes
+ * the cheap CoreAnimation path **only** when
+ * `borderColors.isUniform() && borderWidths.isUniform()`. A row divider is
+ * uniform in colour and NOT uniform in width, so every one of these rows falls
+ * off that path into `RCTGetSolidBorderImage` — a generated 9-patch bitmap,
+ * stretched with `kCAFilterNearest` onto a separate `CALayer` sublayer, sized
+ * from the rounded border insets. A plate (`border border-hairline`, uniform on
+ * all four sides) never goes near it. That asymmetry is exactly what the
+ * screenshot shows: plates fine, first row of each list clean, and every row
+ * carrying `border-t` drawn as a complete rectangle.
+ *
+ * A background colour cannot draw on four sides. There is no border, no edge
+ * struct, no bitmap layer, no fast/slow path to fall off. That is the whole
+ * point of this component, and it is why the weight is expressed as `h-px`
+ * (1pt, identical to the hairline it replaces) rather than as a border width.
+ *
+ * ## The boundary rule, and why it cannot be got wrong
+ *
+ * A rule runs BETWEEN rows: never above the first, never below the last.
+ * `Divider` is always rendered as the row's **leading** sibling, so "below the
+ * last row" is structurally impossible — there is no trailing slot to fill.
+ * The remaining boundary is the first row, and `first` handles it by rendering
+ * nothing:
+ *
+ * ```tsx
+ * {rows.map((row, index) => (
+ *   <View key={row.id}>
+ *     <Divider first={index === 0} />
+ *     <RowBody row={row} />
+ *   </View>
+ * ))}
+ * ```
+ *
+ * Omit `first` when the rule is unconditional — a trailing action row beneath a
+ * list, or the first row of a list that already has a header above it inside
+ * the same plate. In those cases the row above genuinely exists.
+ *
+ * `self-stretch` is deliberate: it keeps the rule full-width even if a parent
+ * ever sets `items-center` / `items-start`, where a `h-px` view would otherwise
+ * collapse to zero width and vanish silently.
+ */
+export function Divider({ first = false }: { first?: boolean }) {
+  if (first) return null;
+  return <View className="h-px self-stretch bg-hairline" />;
+}
+
+/**
+ * The vertical companion to {@link Divider} — a 1px column rule separating two
+ * controls that share a row (a list row and its trailing affordance).
+ *
+ * Same reasoning, same trap: `border-l border-hairline` is a one-sided width
+ * plus a whole-element colour, which is the exact shape that pushes React
+ * Native onto the border-bitmap path and draws a box. A filled 1px-wide view
+ * cannot. `self-stretch` makes it span the row's height without needing to know
+ * that height.
+ */
+export function VerticalDivider() {
+  return <View className="w-px self-stretch bg-hairline" />;
+}

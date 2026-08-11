@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -30,10 +30,9 @@ import { syncHealthData } from '@/lib/health/sync';
  *     missing, and never render a granted/denied matrix (it's unknowable).
  *   - Permission is requested LAZILY — only on enable, never at boot.
  *
- * Conformed Set treatment: the connection state is a **measured field** (a
- * verdict, so unmarked) carrying its own action, the read scopes are a **ruled
- * plate** (a list of things is a record), and the two explanatory passages are
- * **margin annotations**.
+ * Conformed Set treatment: the connection state is a **ruled plate** carrying
+ * its own action, the read scopes are a **ruled plate** (a list of things is a
+ * record), and the two explanatory passages are **margin annotations**.
  *
  * **Zero accent.** This is a Settings screen, and Settings carries no accent at
  * all (00-design-spec.md §2) — so Enable is a solid *ink* action, not pine, and
@@ -118,13 +117,12 @@ export default function SettingsHealthScreen() {
         <StackHeader title="Apple Health" />
       </View>
 
-      {/* Status — a VERDICT about the connection ("rides the next build",
-          "connect", "connected"), not a record, so it takes the measured field,
-          which draws nothing. It was a plate: a box around a heading, a
-          paragraph and a button, which is prose in a rectangle. app/wearables.tsx
-          already draws the same first-run content this way. */}
-      <View className="mt-4">
-        <Block device="field">
+      {/* Status / action plate. Demoted to a `field` (which draws nothing) by
+          the sweep of 2026-08-10; restored the same day at the owner's
+          instruction — the connection state carries its own action, and a block
+          that holds a heading, a paragraph and a button is a record. */}
+      <View className="mt-3">
+        <Block device="plate">
           {!supported ? (
             <>
               <Text className="font-serif text-[16px] font-semibold text-ink">
@@ -233,13 +231,14 @@ export default function SettingsHealthScreen() {
         <View className="mt-3">
           <Block device="plate">
             {READ_SCOPES.map((scope, index) => (
-              <View
-                key={scope}
-                className={`min-h-[44px] flex-row items-center gap-3 py-3 ${
-                  index === 0 ? '' : 'border-t border-hairline'
-                }`}>
-                <Ionicons name="pulse-outline" size={16} color={palette.inkMuted} />
-                <Text className="flex-1 font-serif text-[13.5px] text-ink-secondary">{scope}</Text>
+              <View key={scope}>
+                <Divider first={index === 0} />
+                <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+                  <Ionicons name="pulse-outline" size={16} color={palette.inkMuted} />
+                  <Text className="flex-1 font-serif text-[13.5px] text-ink-secondary">
+                    {scope}
+                  </Text>
+                </View>
               </View>
             ))}
           </Block>
@@ -255,18 +254,19 @@ export default function SettingsHealthScreen() {
         </View>
       </View>
 
-      {/* Jump to the history view. One row, so no plate — a plate closes a
-          record and a single line is not one. */}
-      <View className="mt-6">
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Open wearable history"
-          onPress={() => router.push('/wearables')}
-          className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
-          <Ionicons name="analytics-outline" size={18} color={palette.inkSecondary} />
-          <Text className="flex-1 font-serif text-[15px] text-ink">Wearable history</Text>
-          <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-        </Pressable>
+      {/* Jump to the history view */}
+      <View className="mt-8">
+        <Block device="plate">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open wearable history"
+            onPress={() => router.push('/wearables')}
+            className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+            <Ionicons name="analytics-outline" size={18} color={palette.inkSecondary} />
+            <Text className="flex-1 font-serif text-[15px] text-ink">Wearable history</Text>
+            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+          </Pressable>
+        </Block>
       </View>
     </Screen>
   );

@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
+import { Divider } from '@/components/ui/block';
 import { palette } from '@/constants/theme';
 
 /**
@@ -28,15 +29,22 @@ import { palette } from '@/constants/theme';
 export function StackHeader({ title }: { title: string }) {
   const router = useRouter();
   return (
-    <View className="flex-row items-center gap-1 border-b border-hairline pb-2">
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Back"
-        onPress={() => router.back()}
-        className="-ml-3 h-11 w-11 items-center justify-center active:opacity-60">
-        <Ionicons name="chevron-back" size={22} color={palette.ink} />
-      </Pressable>
-      <Text className="flex-1 font-serif text-lg font-semibold text-ink">{title}</Text>
+    <View>
+      <View className="flex-row items-center gap-1 pb-2">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          onPress={() => router.back()}
+          className="-ml-3 h-11 w-11 items-center justify-center active:opacity-60">
+          <Ionicons name="chevron-back" size={22} color={palette.ink} />
+        </Pressable>
+        <Text className="flex-1 font-serif text-lg font-semibold text-ink">{title}</Text>
+      </View>
+      {/* The rule that closes the header band. Drawn, not a `border-b`: that is
+          the same four-sided trap as `border-t` (see Divider), and on the
+          shared header it would have put a box around the title of every
+          pushed screen in the app. */}
+      <Divider />
     </View>
   );
 }

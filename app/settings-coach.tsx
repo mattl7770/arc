@@ -1,7 +1,7 @@
 import { useState, useSyncExternalStore } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -144,33 +144,33 @@ export default function SettingsCoachScreen() {
             {COACH_MODELS.map((option, index) => {
               const on = option.id === model;
               return (
-                <Pressable
-                  key={option.id}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: on }}
-                  accessibilityLabel={`${option.label}. ${option.note}.`}
-                  onPress={() => void apiKeyStore.setModel(option.id)}
-                  className={`min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60 ${
-                    index === 0 ? '' : 'border-t border-hairline'
-                  }`}>
-                  {/* The selected mark is a filled square in ink — square corners
-                      throughout, and no accent anywhere in Settings. */}
-                  <View
-                    className={`h-4 w-4 items-center justify-center border ${
-                      on ? 'border-ink' : 'border-hairline'
-                    }`}>
-                    {on ? <View className="h-2 w-2 bg-ink" /> : null}
-                  </View>
-                  <View className="flex-1">
-                    <Text
-                      className={`font-serif text-[15px] ${on ? 'text-ink' : 'text-ink-secondary'}`}>
-                      {option.label}
-                    </Text>
-                    <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
-                      {option.note}
-                    </Text>
-                  </View>
-                </Pressable>
+                <View key={option.id}>
+                  <Divider first={index === 0} />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: on }}
+                    accessibilityLabel={`${option.label}. ${option.note}.`}
+                    onPress={() => void apiKeyStore.setModel(option.id)}
+                    className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+                    {/* The selected mark is a filled square in ink — square corners
+                        throughout, and no accent anywhere in Settings. */}
+                    <View
+                      className={`h-4 w-4 items-center justify-center border ${
+                        on ? 'border-ink' : 'border-hairline'
+                      }`}>
+                      {on ? <View className="h-2 w-2 bg-ink" /> : null}
+                    </View>
+                    <View className="flex-1">
+                      <Text
+                        className={`font-serif text-[15px] ${on ? 'text-ink' : 'text-ink-secondary'}`}>
+                        {option.label}
+                      </Text>
+                      <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                        {option.note}
+                      </Text>
+                    </View>
+                  </Pressable>
+                </View>
               );
             })}
           </Block>

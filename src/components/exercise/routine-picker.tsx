@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { PaperGrid } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
@@ -80,22 +80,31 @@ export function RoutinePicker({ visible, onClose, onSelect }: Props) {
                   </Pressable>
 
                   {routines.length === 0 ? (
-                    <Text className="border-t border-hairline pt-2.5 font-serif text-[13px] leading-5 text-ink-secondary">
-                      No routines yet. Build a routine first, then a program can schedule it.
-                    </Text>
+                    <>
+                      {/* Ruled off the Rest-day row above it. A `border-t` on a
+                          Text draws a box around the sentence — see Divider. */}
+                      <Divider />
+                      <Text className="pt-2.5 font-serif text-[13px] leading-5 text-ink-secondary">
+                        No routines yet. Build a routine first, then a program can schedule it.
+                      </Text>
+                    </>
                   ) : (
                     routines.map((r) => (
-                      <Pressable
-                        key={r.id}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Assign ${r.name}`}
-                        onPress={() => choose({ id: r.id, name: r.name })}
-                        className="min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-2 active:opacity-60">
-                        <Text className="flex-1 font-serif text-[15px] text-ink">{r.name}</Text>
-                        <Text className="font-mono text-[10px] text-ink-muted">
-                          {r.exerciseCount} ex · {r.totalSets} sets
-                        </Text>
-                      </Pressable>
+                      <View key={r.id}>
+                        {/* Unconditional: the Rest-day row above is what the
+                            first rule separates this list from. */}
+                        <Divider />
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Assign ${r.name}`}
+                          onPress={() => choose({ id: r.id, name: r.name })}
+                          className="min-h-[44px] flex-row items-center gap-3 py-2 active:opacity-60">
+                          <Text className="flex-1 font-serif text-[15px] text-ink">{r.name}</Text>
+                          <Text className="font-mono text-[10px] text-ink-muted">
+                            {r.exerciseCount} ex · {r.totalSets} sets
+                          </Text>
+                        </Pressable>
+                      </View>
                     ))
                   )}
                 </View>

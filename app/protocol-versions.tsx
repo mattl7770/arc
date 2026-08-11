@@ -154,20 +154,22 @@ export default function ProtocolVersionsScreen() {
           note={versions.length > 0 ? String(versions.length) : undefined}
         />
 
-        {/* Authored empty, UNPLATED — with no versions there is no record to
-            close, and a border drawn round one paragraph encloses nothing. */}
-        {versions.length === 0 ? (
-          <View className="mt-2">
-            <Text className="font-serif text-[15px] font-semibold text-ink">No versions yet</Text>
-            <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-              This protocol has no saved content. The first save writes v1, and every save after it
-              keeps the one before.
-            </Text>
-          </View>
-        ) : (
-          <View className="mt-3">
-            <Block device="plate">
-              {versions.map((v, index) => {
+        <View className="mt-3">
+          <Block device="plate">
+            {versions.length === 0 ? (
+              // Empty is authored, never blank — and it keeps the plate: the
+              // timeline's place is drawn before it has entries.
+              <View className="py-1">
+                <Text className="font-serif text-[15px] font-semibold text-ink">
+                  No versions yet
+                </Text>
+                <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
+                  This protocol has no saved content. The first save writes v1, and every save after
+                  it keeps the one before.
+                </Text>
+              </View>
+            ) : (
+              versions.map((v, index) => {
                 const current = v.id === currentVersionId;
                 const last = index === versions.length - 1;
                 return (
@@ -240,10 +242,10 @@ export default function ProtocolVersionsScreen() {
                     </View>
                   </View>
                 );
-              })}
-            </Block>
-          </View>
-        )}
+              })
+            )}
+          </Block>
+        </View>
       </View>
 
       {/* What the timeline guarantees, and its one real limit. */}

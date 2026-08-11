@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
@@ -211,47 +211,44 @@ export default function NutritionHistoryScreen() {
                       ? Math.min(100, (d.kcal / kcalTarget) * 100)
                       : null;
                   return (
-                    <View
-                      key={d.date}
-                      className={
-                        index === 0
-                          ? 'min-h-[44px] flex-row items-center gap-3 py-3'
-                          : 'min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3'
-                      }>
-                      <Text className="w-14 font-mono text-[11px] text-ink-muted">
-                        {shortDate(d.date)}
-                      </Text>
-                      <View className="flex-1">
-                        {d.mealCount === 0 ? (
-                          <Text className="font-serif text-[13px] text-ink-muted">
-                            Nothing logged
-                          </Text>
-                        ) : (
-                          <>
-                            <View className="flex-row items-baseline gap-1">
-                              <Text className="font-mono text-[14px] text-ink">
-                                {fmtInt(d.kcal)}
-                              </Text>
-                              <Text className="font-mono text-[10px] text-ink-muted">
-                                {kcalTarget ? `/ ${fmtInt(kcalTarget)}` : 'kcal'}
-                              </Text>
-                            </View>
-                            {pct !== null ? (
-                              <View className="mt-1.5 h-[3px] bg-paper-deep">
-                                <View
-                                  className="h-[3px] bg-ink-secondary"
-                                  style={{ width: `${pct}%` }}
-                                />
+                    <View key={d.date}>
+                      <Divider first={index === 0} />
+                      <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+                        <Text className="w-14 font-mono text-[11px] text-ink-muted">
+                          {shortDate(d.date)}
+                        </Text>
+                        <View className="flex-1">
+                          {d.mealCount === 0 ? (
+                            <Text className="font-serif text-[13px] text-ink-muted">
+                              Nothing logged
+                            </Text>
+                          ) : (
+                            <>
+                              <View className="flex-row items-baseline gap-1">
+                                <Text className="font-mono text-[14px] text-ink">
+                                  {fmtInt(d.kcal)}
+                                </Text>
+                                <Text className="font-mono text-[10px] text-ink-muted">
+                                  {kcalTarget ? `/ ${fmtInt(kcalTarget)}` : 'kcal'}
+                                </Text>
                               </View>
-                            ) : null}
-                          </>
-                        )}
+                              {pct !== null ? (
+                                <View className="mt-1.5 h-[3px] bg-paper-deep">
+                                  <View
+                                    className="h-[3px] bg-ink-secondary"
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </View>
+                              ) : null}
+                            </>
+                          )}
+                        </View>
+                        <Text className="font-mono text-[10px] text-ink-muted">
+                          {d.mealCount > 0
+                            ? `P${Math.round(d.protein_g)} C${Math.round(d.carbs_g)} F${Math.round(d.fat_g)}`
+                            : ''}
+                        </Text>
                       </View>
-                      <Text className="font-mono text-[10px] text-ink-muted">
-                        {d.mealCount > 0
-                          ? `P${Math.round(d.protein_g)} C${Math.round(d.carbs_g)} F${Math.round(d.fat_g)}`
-                          : ''}
-                      </Text>
                     </View>
                   );
                 })}

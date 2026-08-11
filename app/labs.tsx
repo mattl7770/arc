@@ -3,7 +3,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -134,24 +134,23 @@ export default function LabsScreen() {
             <SectionLabel label="Imported" note={`${totalResults} results`} />
             <View className="mt-1">
               {reports.map((report, index) => (
-                <View
-                  key={report.id}
-                  className={`flex-row items-center gap-3 py-3 ${
-                    index === 0 ? '' : 'border-t border-hairline'
-                  }`}>
-                  <View className="flex-1">
-                    <Text className="font-mono text-[13px] text-ink">
-                      {fmtDate(report.collectedAt)}
-                    </Text>
-                    {report.labName ? (
-                      <Text className="mt-0.5 font-serif text-[11px] text-ink-muted">
-                        {report.labName}
+                <View key={report.id}>
+                  <Divider first={index === 0} />
+                  <View className="flex-row items-center gap-3 py-3">
+                    <View className="flex-1">
+                      <Text className="font-mono text-[13px] text-ink">
+                        {fmtDate(report.collectedAt)}
                       </Text>
-                    ) : null}
+                      {report.labName ? (
+                        <Text className="mt-0.5 font-serif text-[11px] text-ink-muted">
+                          {report.labName}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text className="font-mono text-[11px] text-ink-muted">
+                      {report.resultCount} results
+                    </Text>
                   </View>
-                  <Text className="font-mono text-[11px] text-ink-muted">
-                    {report.resultCount} results
-                  </Text>
                 </View>
               ))}
             </View>
@@ -168,36 +167,36 @@ export default function LabsScreen() {
             />
             <View className="mt-1">
               {group.items.map((b, index) => (
-                <View
-                  key={b.slug}
-                  accessible
-                  accessibilityLabel={`${b.name}. Optimal ${rangeText(b)}. ${
-                    b.latestValue != null
-                      ? `${fmtNum(b.latestValue)} ${b.unit ?? ''}`
-                      : 'No reading yet'
-                  }.`}
-                  className={`flex-row items-center gap-3 py-3 ${
-                    index === 0 ? '' : 'border-t border-hairline'
-                  }`}>
-                  <View className="flex-1">
-                    <Text className="font-serif text-[15px] text-ink">{b.name}</Text>
-                    <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                      {rangeText(b)}
-                    </Text>
-                  </View>
-                  {b.latestValue != null ? (
-                    <View className="flex-row items-baseline gap-1">
-                      <Text className="font-mono text-[15px] text-ink">
-                        {fmtNum(b.latestValue)}
+                <View key={b.slug}>
+                  <Divider first={index === 0} />
+                  <View
+                    accessible
+                    accessibilityLabel={`${b.name}. Optimal ${rangeText(b)}. ${
+                      b.latestValue != null
+                        ? `${fmtNum(b.latestValue)} ${b.unit ?? ''}`
+                        : 'No reading yet'
+                    }.`}
+                    className="flex-row items-center gap-3 py-3">
+                    <View className="flex-1">
+                      <Text className="font-serif text-[15px] text-ink">{b.name}</Text>
+                      <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
+                        {rangeText(b)}
                       </Text>
-                      {b.unit ? (
-                        <Text className="font-mono text-[11px] text-ink-muted">{b.unit}</Text>
-                      ) : null}
                     </View>
-                  ) : (
-                    // No data, no number.
-                    <Text className="font-mono text-[15px] text-ink-muted">—</Text>
-                  )}
+                    {b.latestValue != null ? (
+                      <View className="flex-row items-baseline gap-1">
+                        <Text className="font-mono text-[15px] text-ink">
+                          {fmtNum(b.latestValue)}
+                        </Text>
+                        {b.unit ? (
+                          <Text className="font-mono text-[11px] text-ink-muted">{b.unit}</Text>
+                        ) : null}
+                      </View>
+                    ) : (
+                      // No data, no number.
+                      <Text className="font-mono text-[15px] text-ink-muted">—</Text>
+                    )}
+                  </View>
                 </View>
               ))}
             </View>

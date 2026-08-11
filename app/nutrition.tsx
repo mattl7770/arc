@@ -3,7 +3,7 @@ import { useRouter, useSegments } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -411,25 +411,24 @@ function ActionRow({
   onPress: () => void;
 }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      accessibilityState={expanded === undefined ? undefined : { expanded }}
-      onPress={onPress}
-      className={
-        first
-          ? 'min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60'
-          : 'min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60'
-      }>
-      <Ionicons name={icon} size={17} color={palette.inkSecondary} />
-      <View className="flex-1">
-        <Text className="font-serif text-[15px] text-ink">{label}</Text>
-        {detail ? (
-          <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-muted">{detail}</Text>
-        ) : null}
-      </View>
-      <Ionicons name={chevron} size={16} color={palette.inkMuted} />
-    </Pressable>
+    <View>
+      <Divider first={first} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+        accessibilityState={expanded === undefined ? undefined : { expanded }}
+        onPress={onPress}
+        className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+        <Ionicons name={icon} size={17} color={palette.inkSecondary} />
+        <View className="flex-1">
+          <Text className="font-serif text-[15px] text-ink">{label}</Text>
+          {detail ? (
+            <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-muted">{detail}</Text>
+          ) : null}
+        </View>
+        <Ionicons name={chevron} size={16} color={palette.inkMuted} />
+      </Pressable>
+    </View>
   );
 }
 
@@ -452,37 +451,36 @@ function MealRowItem({
       .filter(Boolean)
       .join(' · ');
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${meal.name}, details`}
-      onPress={onPress}
-      className={
-        first
-          ? 'min-h-[44px] flex-row gap-3 py-3 active:opacity-60'
-          : 'min-h-[44px] flex-row gap-3 border-t border-hairline py-3 active:opacity-60'
-      }>
-      <Text className="w-11 pt-0.5 font-mono text-[11px] text-ink-muted">{meal.time ?? '—'}</Text>
-      <View className="flex-1">
-        <Text className="font-serif text-[15px] leading-5 text-ink">{meal.name}</Text>
-        {detail !== '' ? (
-          <Text
-            className={
-              meal.notes
-                ? 'mt-0.5 font-serif text-[13px] leading-5 text-ink-muted'
-                : 'mt-0.5 font-mono text-[11px] leading-4 text-ink-muted'
-            }>
-            {detail}
-          </Text>
-        ) : null}
-      </View>
-      {/* The rounding site of record: `fmtInt` rounds here, and the Today
-          header totals these rounded rows rather than rounding again from the
-          raw sum (see sumRounded). No kcal recorded reads as an em-dash and
-          contributes nothing — never a fabricated 0. */}
-      <Text className="pt-0.5 font-mono text-[13px] text-ink-secondary">
-        {meal.kcal != null ? fmtInt(meal.kcal) : '—'}
-      </Text>
-    </Pressable>
+    <View>
+      <Divider first={first} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${meal.name}, details`}
+        onPress={onPress}
+        className="min-h-[44px] flex-row gap-3 py-3 active:opacity-60">
+        <Text className="w-11 pt-0.5 font-mono text-[11px] text-ink-muted">{meal.time ?? '—'}</Text>
+        <View className="flex-1">
+          <Text className="font-serif text-[15px] leading-5 text-ink">{meal.name}</Text>
+          {detail !== '' ? (
+            <Text
+              className={
+                meal.notes
+                  ? 'mt-0.5 font-serif text-[13px] leading-5 text-ink-muted'
+                  : 'mt-0.5 font-mono text-[11px] leading-4 text-ink-muted'
+              }>
+              {detail}
+            </Text>
+          ) : null}
+        </View>
+        {/* The rounding site of record: `fmtInt` rounds here, and the Today
+            header totals these rounded rows rather than rounding again from the
+            raw sum (see sumRounded). No kcal recorded reads as an em-dash and
+            contributes nothing — never a fabricated 0. */}
+        <Text className="pt-0.5 font-mono text-[13px] text-ink-secondary">
+          {meal.kcal != null ? fmtInt(meal.kcal) : '—'}
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -666,23 +664,19 @@ export default function NutritionScreen() {
           note is the same kcal the Today grid shows, and these rows are the
           arithmetic behind it: a ledger sums to its own total. */}
       <View className="mt-8">
-        {/* The plate goes round the rows, never round the empty sentence. A
-            plate closes a record; before the first meal of the day there is no
-            record to close, only a paragraph — and a border around one
-            paragraph is the box-around-a-single-thing the owner keeps seeing.
-            This is the Eat tab, and it re-enters this state every morning, so
-            it is the one that matters most. Same shape as app/protocols.tsx
-            and app/wearables.tsx. */}
-        {meals.length === 0 ? (
-          <View>
-            <SectionLabel label="Eaten today" />
+        {/* The plate is drawn in both states — the day's ledger stands where
+            the ledger stands, empty or not. (The sweep of 2026-08-10 made it
+            conditional; reverted at the owner's instruction.) */}
+        <Block device="plate">
+          <SectionLabel
+            label="Eaten today"
+            note={meals.length > 0 ? `${fmtInt(shown.kcal)} kcal` : undefined}
+          />
+          {meals.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               Nothing logged yet today.
             </Text>
-          </View>
-        ) : (
-          <Block device="plate">
-            <SectionLabel label="Eaten today" note={`${fmtInt(shown.kcal)} kcal`} />
+          ) : (
             <View className="mt-1">
               {meals.map((meal, index) => (
                 <MealRowItem
@@ -694,8 +688,8 @@ export default function NutritionScreen() {
                 />
               ))}
             </View>
-          </Block>
-        )}
+          )}
+        </Block>
       </View>
 
       {/* Review — micronutrients and cross-day trends (read-only, no accent). */}

@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import type { MissionItem, MissionStatus } from '@/types/home';
@@ -92,12 +92,46 @@ type Props = {
  * (00-design-spec.md §2). Partial is the same hue at less ink, not a second
  * colour.
  */
-const TICK: Record<MissionStatus, string> = {
-  completed: 'bg-pine',
-  partial: 'border-b-[3px] border-pine',
-  skipped: 'border-y-2 border-ink-muted',
-  pending: 'border-b border-ink-muted',
-};
+/**
+ * One lane of the progress strip: an 8px-tall cell whose MARK states the item's
+ * status, drawn as filled bars rather than as borders.
+ *
+ * The four marks are exactly the ones the note above specifies — solid block,
+ * 3px baseline bar, hollow 2px top+bottom, 1px baseline rule — and the geometry
+ * is identical to the borders they replace, because a border draws inside the
+ * box: `border-b-[3px]` on an `h-2` cell IS a 3px bar along its bottom edge.
+ *
+ * They are drawn rather than bordered for the same reason every rule in the app
+ * now is (see `Divider` in src/components/ui/block.tsx): a one-sided width plus
+ * a whole-element `border-color` is the shape that makes React Native abandon
+ * its CoreAnimation border path and render the mark as a full rectangle. Here
+ * that failure would have been worse than cosmetic — `partial` boxed is a
+ * nearly-solid pine cell, which is `completed`, and the whole point of these
+ * four forms is that **skipped and partial can never read as done**.
+ */
+function Tick({ status }: { status: MissionStatus }) {
+  if (status === 'completed') return <View className="h-2 flex-1 bg-pine" />;
+  if (status === 'partial') {
+    return (
+      <View className="h-2 flex-1 justify-end">
+        <View className="h-[3px] bg-pine" />
+      </View>
+    );
+  }
+  if (status === 'skipped') {
+    return (
+      <View className="h-2 flex-1 justify-between">
+        <View className="h-0.5 bg-ink-muted" />
+        <View className="h-0.5 bg-ink-muted" />
+      </View>
+    );
+  }
+  return (
+    <View className="h-2 flex-1 justify-end">
+      <View className="h-px bg-ink-muted" />
+    </View>
+  );
+}
 
 /**
  * The strip's accessible form. It is **summarised, not hidden** — the strip is
@@ -163,7 +197,7 @@ export function Mission({ leadingSettled, rest, completed, total, onToggle }: Pr
           accessibilityLabel={progressLabel(ordered)}
           className="mt-2.5 flex-row gap-0.5">
           {ordered.map((item) => (
-            <View key={item.id} className={`h-2 flex-1 ${TICK[item.status]}`} />
+            <Tick key={item.id} status={item.status} />
           ))}
         </View>
       ) : null}
@@ -209,9 +243,8 @@ export function Mission({ leadingSettled, rest, completed, total, onToggle }: Pr
           not "currently folded".
         */}
         {visible.map((item, index) => (
-          <View
-            key={item.id}
-            className={index === 0 && !foldable ? '' : 'border-t border-hairline'}>
+          <View key={item.id}>
+            <Divider first={index === 0 && !foldable} />
             <MissionItemRow item={item} onToggle={onToggle} />
           </View>
         ))}

@@ -16,6 +16,7 @@ import { PendingWriteCard } from '@/components/coach/pending-write-card';
 import { RemindersCard } from '@/components/coach/reminders-card';
 import { SessionKeyPanel } from '@/components/coach/session-key-panel';
 import { SuggestedPrompts } from '@/components/coach/suggested-prompts';
+import { Divider } from '@/components/ui/block';
 import { PaperGrid } from '@/components/ui/screen';
 import { useCoachChat } from '@/hooks/use-coach-chat';
 import { useReminders } from '@/hooks/use-reminders';
@@ -164,9 +165,14 @@ export default function CoachScreen() {
         {/* Title only. The line under it — "Calm, precise, and grounded in your
             data" — described the app's manner back at the owner and told them
             nothing they could act on; it is gone by their call (2026-08-10). */}
-        <View className="border-b border-hairline px-5 pb-2.5 pt-1">
+        <View className="px-5 pb-2.5 pt-1">
           <Text className="font-serif text-[22px] font-semibold text-ink">ARC Coach</Text>
         </View>
+        {/* The rule closing the header band. Drawn, not bordered: a `border-b`
+            is the same four-sided trap as `border-t` (see Divider), and this
+            one would have boxed the whole title band. Outside the padding so it
+            spans the full width, exactly as the border did. */}
+        <Divider />
 
         {/* Renders nothing once a key is set — see session-key-panel.tsx. Its
           collapsed form draws no rule of its own, so the header's hairline above

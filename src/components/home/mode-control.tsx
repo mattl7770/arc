@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { PaperGrid } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import {
@@ -218,29 +218,29 @@ export function ModeControl({
                   const option = getModeDefinition(key);
                   const selected = key === mode;
                   return (
-                    <Pressable
-                      key={key}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      accessibilityLabel={`${option.label}. ${option.tagline}`}
-                      onPress={() => {
-                        setOpen(false);
-                        onSelect(key);
-                      }}
-                      className={`min-h-[44px] flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep ${
-                        index === 0 ? '' : 'border-t border-hairline'
-                      }`}>
-                      <View className="flex-1">
-                        {/* List ROW, not a control label — see the voice note above. */}
-                        <Text className="font-serif text-[15px] text-ink">{option.label}</Text>
-                        <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
-                          {option.tagline}
-                        </Text>
-                      </View>
-                      {selected ? (
-                        <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
-                      ) : null}
-                    </Pressable>
+                    <View key={key}>
+                      <Divider first={index === 0} />
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                        accessibilityLabel={`${option.label}. ${option.tagline}`}
+                        onPress={() => {
+                          setOpen(false);
+                          onSelect(key);
+                        }}
+                        className="min-h-[44px] flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep">
+                        <View className="flex-1">
+                          {/* List ROW, not a control label — see the voice note above. */}
+                          <Text className="font-serif text-[15px] text-ink">{option.label}</Text>
+                          <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                            {option.tagline}
+                          </Text>
+                        </View>
+                        {selected ? (
+                          <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
+                        ) : null}
+                      </Pressable>
+                    </View>
                   );
                 })}
               </View>
