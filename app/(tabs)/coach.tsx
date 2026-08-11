@@ -64,9 +64,14 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * and the thread is the screen's subject, not one of its sections.
  *
  * Each component owns its own device, so nothing nests; the Views here are
- * layout and spacing only, and sections are separated by whitespace rather than
- * by rules — in this design rules enclose objects, never the page. The two rules
- * that *are* drawn belong to bands: the header, and the composer.
+ * layout and spacing only, and SECTIONS are separated by whitespace rather than
+ * by rules — in this design rules enclose objects, never the page.
+ *
+ * Three rules are drawn, and none of them separates a section. Two close bands:
+ * the header, and the composer. The third runs BETWEEN THE TURNS of the thread
+ * (`.cf-turn`'s hairline), which is a rule between rows of one list — the case
+ * §4 explicitly sanctions, and the same rule any plate in the app draws inside
+ * itself. The thread has no plate around it, but it is still one list.
  *
  * ## The sheet, and why the composer is bare stock
  *
@@ -212,11 +217,25 @@ export default function CoachScreen() {
               // them apart from the card above.
               <View className={hasReminders ? 'mt-7' : ''}>
                 {chat.messages.map((message, index) => (
-                  // Spacing lives on the thread, not on the turn, so the last
-                  // bubble cannot push a gap against the composer. Turns need a
-                  // little more air now that no recess groups them: 16px, not 14.
-                  <View key={message.id} className={index === 0 ? '' : 'mt-4'}>
-                    <MessageBubble message={message} onRetry={chat.retry} />
+                  // Spacing and rules live on the thread, not on the turn, so
+                  // the last bubble cannot push a gap against the composer.
+                  //
+                  // The sheet's `.cf-turn` is a ruled row — `padding: 9px 0`
+                  // with a hairline between turns — where the app had only air.
+                  // The rule is what makes a long thread scan as a record of
+                  // exchanges rather than a drift of boxes, and it is the one
+                  // place on this screen a rule belongs: it separates rows of
+                  // ONE list, which is exactly what §4 sanctions ("rules enclose
+                  // objects, never pages"). `Divider` draws it as a filled view;
+                  // `border-b` here would box every turn on the screen, which is
+                  // the bug documented at length in ui/block.tsx. `first` keeps
+                  // it strictly BETWEEN turns — the sheet spells the same
+                  // boundary from the other end with `:last-child`.
+                  <View key={message.id}>
+                    <Divider first={index === 0} />
+                    <View className="py-2.5">
+                      <MessageBubble message={message} onRetry={chat.retry} />
+                    </View>
                   </View>
                 ))}
               </View>

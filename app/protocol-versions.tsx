@@ -24,8 +24,10 @@ import { protocolTypeLabel } from '@/lib/protocols/format';
  * Conformed Set treatment — one **plate**: a version list is a record, and a
  * record is a table. The rail down the left is drawn with bordered and filled
  * Views (there is no react-native-svg in this app and that stays true —
- * 01-rn-port-guide.md §5). The closing rationale is a **margin annotation**,
- * outside the plate, because devices never nest.
+ * 01-rn-port-guide.md §5). The closing caption is a **margin annotation**,
+ * outside the plate, because devices never nest. (The sheet draws it inside,
+ * under a dashed rule — `.cf-vhist-cap`. This app has never had that rule here,
+ * and reinstating it is not what restoring the caption needed.)
  *
  * The rows are deliberately NOT ruled, unlike every other plate in the app. The
  * rail already runs the full height of the list and separates one node from the
@@ -69,6 +71,17 @@ import { protocolTypeLabel } from '@/lib/protocols/format';
 
 /** Hermes ships no Intl, so the stamp is hand-rolled (see home/date-eyebrow.tsx). */
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * The screen the back control returns to. This one is unambiguous: exactly one
+ * caller pushes `/protocol-versions` (app/protocol-edit.tsx, the "version
+ * history" row), and that screen's own `StackHeader` title is "Edit Protocol" —
+ * so the word here is the title of the sheet underneath, not a guess. The mockup
+ * writes `‹ Data` because its version history is drawn hanging off the Protocols
+ * sheet; in the app it hangs off the editor, and the control names where it
+ * actually goes.
+ */
+const PARENT = 'Edit Protocol';
 
 /**
  * ISO instant -> "3 Jul 26 · 14:20" in local time. The clock time is not
@@ -122,7 +135,7 @@ export default function ProtocolVersionsScreen() {
     return (
       <Screen>
         <View className="pt-2">
-          <StackHeader title="Version History" />
+          <StackHeader title="Version History" parent={PARENT} />
         </View>
         <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-muted">
           This protocol no longer exists.
@@ -136,7 +149,7 @@ export default function ProtocolVersionsScreen() {
   return (
     <Screen scroll>
       <View className="pt-2">
-        <StackHeader title="Version History" />
+        <StackHeader title="Version History" parent={PARENT} />
       </View>
 
       {/* Which protocol this is the history of. The name is speech, the type is
@@ -248,13 +261,17 @@ export default function ProtocolVersionsScreen() {
         </View>
       </View>
 
-      {/* What the timeline guarantees, and its one real limit. */}
+      {/* The whole closing caption went on 2026-08-11 as explanatory copy. Most
+          of it deserved to: "every save keeps the version before it" is what
+          the timeline draws, and "history is never lost" is reassurance. One
+          clause was neither. Deleting a protocol takes its versions with it,
+          and that is a consequence the user cannot discover before triggering
+          it — nothing on this screen, or on the editor holding the delete,
+          says so. Just that clause is back. */}
       <View className="mt-8">
         <Block device="margin">
           <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-            Every save keeps the version before it — history is never lost. Versions are immutable:
-            nothing here can be edited or removed, and they are deleted only with the protocol
-            itself.
+            Deleting a protocol deletes its version history.
           </Text>
         </Block>
       </View>

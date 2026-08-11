@@ -74,27 +74,56 @@ type Props = {
 /**
  * One tick per item, in list order. Whole class strings — see ./signal.
  *
- * **The ladder is ink, not hue.** The first cut of this strip drew four 3px
- * bars in four fills, and three of them were invisible: on the plate
- * (`paper-hi` #F5F3EC) `pine-tint` measured 1.78:1, `hairline` 2.29:1 and
- * `paper-deep` 1.62:1, all under the 3:1 non-text floor. A strip that cannot
- * show three of its four states is not showing progress.
+ * **It is a scale, and every graduation on a scale is the same size.** The
+ * sheet draws `.cf-progress` as a row of uniform 3×8 lanes — `paper-line` when
+ * the item is outstanding, `accent` when it is done — so an eleven-item day is
+ * eleven equal lanes with three of them inked, and the silhouette is a measure
+ * filling up. That silhouette is the information: you read the day's shape
+ * before you read any single mark.
  *
- * A light plate compresses everything that clears 3:1 into "dark" — `pine` and
- * `ink-muted` are 9.52:1 and 6.84:1 against the plate but only 1.39:1 against
- * *each other* — so colour alone cannot separate four states here. FORM carries
- * the distinction and colour carries only the done/not-done split:
+ * It was lost between 2026-08-09 and 2026-08-11. `pending` had been collapsed
+ * to a 3×1 rule on the lane's baseline, so an eleven-item day drew three bars
+ * and eight specks — a strip with nothing to fill.
  *
- *   completed  solid 8px accent block          pine       9.52:1
- *   partial    3px accent bar on the baseline  pine       9.52:1
- *   skipped    hollow: 2px neutral rules t+b   ink-muted  6.84:1
- *   pending    1px neutral baseline rule       ink-muted  6.84:1
+ * ## Why it was collapsed, and why that reason survives the restoration
  *
- * Every mark now clears 3:1, and the four differ by amount of ink AND by hue
- * family, so **skipped can never read as done**: settled-but-not-done is a
- * hollow neutral outline, done is a solid accent block. They share neither
- * fill nor colour. The lane grew from 3px to 8px because that is the room the
- * distinction needs — a border cannot read inside a 3px box.
+ * The sheet's unfilled lane is `paper-line`, which is `hairline` #A9A28E here,
+ * and on the plate it sits on (`paper-hi` #F5F3EC) that measures **2.29:1** —
+ * under the 3:1 WCAG 1.4.11 asks of a non-text visual. The sheet's own
+ * arithmetic works optically (accent-to-paper-line is 4.15:1, a wide lightness
+ * step that survives losing hue) and fails against the plate: eight lanes you
+ * cannot reliably see are not a scale either. Shrinking the outstanding mark
+ * was the wrong fix for a real problem.
+ *
+ * ## The obvious repair does not exist in this palette
+ *
+ * A full solid lane in a darker unfilled cut has to clear two thresholds at
+ * once: 3:1 against the plate, and 3:1 against the inked lane, or done and
+ * outstanding are separated by nothing but hue. Solving both pins the unfilled
+ * cut's relative luminance to **L ∈ [0.248, 0.265]** — about a 7% window. The
+ * palette has no value in it. `hairline` sits at L 0.362 (2.29:1 on the plate,
+ * fails the first) and `ink-muted` at L 0.088 (6.84:1 on the plate, but
+ * **1.39:1 against `pine`** — fails the second, and 1.39:1 is the same "one
+ * grey" defect the signal swatches have, see ./signal.tsx). Nothing lies
+ * between them. So the lane is uniform in SIZE and the split is carried by
+ * INK, which is a channel the palette does have:
+ *
+ *   completed  lane fully inked        solid 3×8 accent            pine       9.52:1
+ *   partial    lane half inked         4pt accent on the baseline  pine       9.52:1
+ *                                      + 1pt neutral cap above     ink-muted  6.84:1
+ *   skipped    lane struck out         1pt caps + 2pt centre bar   ink-muted  6.84:1
+ *   pending    lane open               1pt caps, top and bottom    ink-muted  6.84:1
+ *
+ * Every mark occupies the full 3×8 lane, so the row is eleven equal graduations
+ * and the sheet's silhouette is back. Every mark clears 3:1 on the plate. And
+ * done-vs-outstanding is a **4:1 difference in ink** (24pt² against 6pt²)
+ * before hue is considered at all, which is the test the collapsed version was
+ * passing and a plain `ink-muted` lane would not.
+ *
+ * The two invariants the previous cut existed to protect both hold:
+ * **skipped can never read as done** — half-inked, neutral, and visibly holed
+ * against solid accent — and **partial can never read as done**, at half the
+ * accent and still showing its open cap.
  *
  * The accent appears here twice (completed, partial) and both are completion
  * stamps, which is exactly what Home's accent budget covers
@@ -109,44 +138,53 @@ type Props = {
  * baseline, immediately before the `3 of 11` it belongs to. That is what makes
  * it read as a *tally mark* beside its own number rather than as a progress bar,
  * and it is the largest silhouette difference between the shipped block and the
- * drawing. The four forms are unchanged: all of them still work at 3 × 8.
+ * drawing. Restoring the full-height lane changes none of it: the cluster is
+ * still 11 × 3pt at a 1.6pt gutter and still 8pt tall.
  */
 /**
  * One lane of the progress strip: an 8px-tall cell whose MARK states the item's
  * status, drawn as filled bars rather than as borders.
  *
- * The four marks are exactly the ones the note above specifies — solid block,
- * 3px baseline bar, hollow 2px top+bottom, 1px baseline rule — and the geometry
- * is identical to the borders they replace, because a border draws inside the
- * box: `border-b-[3px]` on an `h-2` cell IS a 3px bar along its bottom edge.
+ * Each mark is a stack of filled bars inside the lane, spaced by
+ * `justify-between`, so the outermost bars land on the lane's own edges and the
+ * mark's footprint is the lane whatever is inside it. The bars stretch to the
+ * lane's 3pt width by RN's default `align-items: stretch`, which is why none of
+ * them names a width.
  *
  * They are drawn rather than bordered for the same reason every rule in the app
  * now is (see `Divider` in src/components/ui/block.tsx): a one-sided width plus
  * a whole-element `border-color` is the shape that makes React Native abandon
  * its CoreAnimation border path and render the mark as a full rectangle. Here
- * that failure would have been worse than cosmetic — `partial` boxed is a
- * nearly-solid pine cell, which is `completed`, and the whole point of these
- * four forms is that **skipped and partial can never read as done**.
+ * that failure would have been worse than cosmetic — every one of these four
+ * marks boxed is a nearly-solid cell, i.e. `completed`, and the whole point of
+ * the set is that **skipped and partial can never read as done**.
  */
 function Tick({ status }: { status: MissionStatus }) {
+  // Fully inked: the lane is the mark.
   if (status === 'completed') return <View className="h-2 w-[3px] bg-pine" />;
+  // Half inked, from the baseline up, with the open cap still showing above it.
   if (status === 'partial') {
     return (
-      <View className="h-2 w-[3px] justify-end">
-        <View className="h-[3px] bg-pine" />
+      <View className="h-2 w-[3px] justify-between">
+        <View className="h-px bg-ink-muted" />
+        <View className="h-1 bg-pine" />
       </View>
     );
   }
+  // Struck out: the open lane with a bar drawn through it.
   if (status === 'skipped') {
     return (
       <View className="h-2 w-[3px] justify-between">
+        <View className="h-px bg-ink-muted" />
         <View className="h-0.5 bg-ink-muted" />
-        <View className="h-0.5 bg-ink-muted" />
+        <View className="h-px bg-ink-muted" />
       </View>
     );
   }
+  // Open: the graduation, waiting to be inked.
   return (
-    <View className="h-2 w-[3px] justify-end">
+    <View className="h-2 w-[3px] justify-between">
+      <View className="h-px bg-ink-muted" />
       <View className="h-px bg-ink-muted" />
     </View>
   );

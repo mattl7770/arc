@@ -3,7 +3,7 @@ import { useRouter, useSegments } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
-import { Block, Divider } from '@/components/ui/block';
+import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -51,15 +51,16 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  * ## Conformed Set surface system (00-design-spec.md §1)
  *
  *   Today          → **grid**. Energy and the macro cells are a metric grid, so
- *                    the grid IS the object: no outer box AND no rules, held by
- *                    alignment and whitespace alone (src/components/ui/block.tsx,
+ *                    the grid IS the object: no outer box, drawn by the rules
+ *                    that run between its cells (src/components/ui/block.tsx,
  *                    metrics-strip.tsx).
- *   Log a meal     → a **stamped plate** for the one next action, then a
- *                    **ruled plate** holding the remaining entry paths as a
- *                    record list. Manual entry opens a **deviceless field
- *                    group** below the plate: each input is already recessed
- *                    stock, so a well around them would stack two recesses
- *                    (src/components/ui/block.tsx).
+ *   Log a meal     → a **stamped plate** for the one next action, wearing the
+ *                    hatched cap (`.cf-card--accent::before`), then a **ruled
+ *                    plate** holding the remaining entry paths as a record
+ *                    list. Manual entry opens a **deviceless ruled register**
+ *                    below the plate: six underlined rows carrying no surface
+ *                    of their own, so nothing is boxed and nothing is raised
+ *                    (src/components/ui/block.tsx, `FormField` below).
  *   Eaten today    → **ruled plate**: the day's record is a table.
  *   Review         → **ruled plate**: two more record rows.
  *
@@ -80,59 +81,87 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  */
 
 /**
- * The two columns of the Today grid. React Native has no CSS grid and no
- * `:nth-child`, so the modulo is computed in JS (01-rn-port-guide.md §1.3) —
- * but what it selects now is only PADDING. **No rules.** The gutter keeps the
- * right column's text off the left column's and `pt-4` gives the row rhythm the
- * old top rule used to; src/components/home/metrics-strip.tsx is the reference
- * form and this matches it byte for byte.
+ * A square progress rule against a target — the sheet's `.cf-bartrack` and
+ * `.cf-barfill`, used for the day's kcal and for every macro that has a target.
  *
- * The `count` argument is gone with them. It existed so the right-hand rule
- * could be conditioned on a cell actually FOLLOWING — with an odd cell count
- * (three macros and no fiber target) the naive test drew a rule into empty
- * space. Nothing is drawn now, so nothing can dangle.
- */
-const CELL_LEFT = 'w-1/2 pr-3 pt-4';
-const CELL_RIGHT = 'w-1/2 pl-3 pt-4';
-
-function cellClass(index: number): string {
-  return index % 2 === 0 ? CELL_LEFT : CELL_RIGHT;
-}
-
-/**
- * A square progress rule against a target. Neutral ink, never the accent and
- * never a signal colour: progress toward a macro target is chrome, and a met
- * target is a fact about the log rather than about the body. Met reads as full
- * ink, short reads as the softer secondary — the numbers above carry the rest.
+ * **A bordered track, not an underline.** The sheet draws 6px of `paper-dim`
+ * inside a 1px `paper-line` border, and the border is most of the message: a
+ * bordered track reads as a drawn instrument with a known full length, where a
+ * bare 3px bar reads as an underline under the figure above it and tells you
+ * nothing about where "done" is. The port had it at 3px of `paper-deep` with no
+ * border — half the height and none of the frame. Restored 2026-08-11.
+ *
+ * **The border is uniform, and that is the only reason it is allowed.** React
+ * Native keeps its cheap CoreAnimation border path only while border width AND
+ * colour are uniform; a one-sided width against a whole-element colour drops off
+ * it and paints a complete rectangle, which is the bug behind four rounds of
+ * "weird boxes" (src/components/ui/block.tsx, `Divider`). `border
+ * border-hairline` on all four sides never goes near that path, which is exactly
+ * why a bordered TRACK is drawable and a `border-t` rule is not.
+ *
+ * The fill claims no height of its own: 6pt of track minus two 1pt borders is
+ * 4pt of content box, RN's box model already subtracts the border, and a child
+ * with no height stretches to fill it. One fewer number to keep in sync with the
+ * track's.
+ *
+ * Neutral ink, never the accent and never a signal colour: progress toward a
+ * macro target is chrome, and a met target is a fact about the log rather than
+ * about the body. `ink-secondary` is the sheet's `--ink-soft` fill; met darkens
+ * to full ink, which is this app's own addition on top of the sheet's single
+ * fill class and the one reading the numbers above don't already give.
  */
 function TargetRule({ value, target }: { value: number; target: number }) {
   const met = value >= target;
+  // A target of ZERO is a real, storable target — 0015_nutrition_targets.sql
+  // bounds protein/carbs/fat/fiber at `>= 0` and gates only kcal at `> 0`, and
+  // the editor accepts it (a carnivore fibre target is the obvious case). It is
+  // also a divide-by-zero: `value / 0` is Infinity, and `0 / 0` is NaN, which
+  // reaches `width` as the string "NaN%" and silently lays out as nothing. So
+  // the ratio is computed only where there is a denominator. At a target of 0
+  // the track is empty until something is logged and full the moment anything
+  // is — which is what "at, or past, a target of none" looks like.
+  const filled = target > 0 ? Math.min(100, (value / target) * 100) : value > 0 ? 100 : 0;
   return (
-    <View className="mt-1.5 h-[3px] bg-paper-deep">
-      <View
-        className={met ? 'h-[3px] bg-ink' : 'h-[3px] bg-ink-secondary'}
-        style={{ width: `${Math.min(100, (value / target) * 100)}%` }}
-      />
+    <View className="mt-1.5 h-1.5 flex-row border border-hairline bg-paper-dim">
+      <View className={met ? 'bg-ink' : 'bg-ink-secondary'} style={{ width: `${filled}%` }} />
     </View>
   );
 }
 
 /** One macro cell of the Today grid. Every number is a measurement, so every
  * number is mono; the label is the label voice. No target, no denominator —
- * the value stands alone rather than inventing an "x / —". */
+ * the value stands alone rather than inventing an "x / —".
+ *
+ * **The untargeted case is authored, not blank.** Where a targeted macro gets a
+ * `TargetRule`, an untargeted one gets the sheet's `.cf-macro-note` — the words
+ * "not targeted" IN THE BAR'S SLOT. The port rendered nothing there, which made
+ * an untargeted macro a silently short cell: the reader has to work out whether
+ * the bar is missing because no target governs this macro or because something
+ * failed to draw. §5 of the spec settles it — *empty is authored, never blank* —
+ * and this is the same obligation "Nothing logged yet today." meets further down
+ * the screen.
+ *
+ * The note sits at 10px where the sheet says 9. That is the standing conversion
+ * for this sheet's metadata layer, not a drift: §4 puts the render floor at 9px
+ * and asks the metadata layer to sit at 9.5–10 so the floor is never
+ * load-bearing, which is why `SectionLabel` renders the sheet's 9px `.cf-sec-t`
+ * at 10 and why the `.cf-macro-k` label two lines up is already at 10 here. In
+ * the sheet the label and the note are the SAME size; keeping them equal is what
+ * preserves the relationship the sheet actually draws.
+ *
+ * The cell's contents only: the `GridCell` around it owns the column width, the
+ * padding and the rules between cells (src/components/ui/block.tsx). */
 function MacroCell({
   label,
   grams,
   target,
-  className,
 }: {
   label: string;
   grams: number;
   target: number | null;
-  className: string;
 }) {
   return (
-    <View className={className}>
+    <>
       <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
         {label}
       </Text>
@@ -142,18 +171,40 @@ function MacroCell({
           {target !== null ? `/ ${Math.round(target)}g` : 'g'}
         </Text>
       </View>
-      {target !== null && target > 0 ? <TargetRule value={grams} target={target} /> : null}
-    </View>
+      {target !== null && target > 0 ? (
+        <TargetRule value={grams} target={target} />
+      ) : (
+        <Text className="mt-1.5 font-mono text-[10px] text-ink-muted">not targeted</Text>
+      )}
+    </>
   );
 }
 
-/** The Today-grid corner: the kcal denominator when one exists (a measured
- * value → mono voice), otherwise the invitation to set targets (a control →
- * label voice). Either way it opens the targets editor. */
-function targetsCorner(targets: NutritionTargetsRow | null): { label: string; mono: boolean } {
-  if (targets === null) return { label: 'Set daily targets', mono: false };
-  if (targets.kcal !== null) return { label: `of ${fmtInt(targets.kcal)} target`, mono: true };
-  return { label: 'Edit targets', mono: false };
+/**
+ * The Today-grid corner — the invitation to set or edit targets, and nothing
+ * else. A control, so it speaks in the label voice.
+ *
+ * **It used to carry the kcal denominator, and that is what broke the readout.**
+ * The sheet sets ONE baseline-aligned sentence (`.cf-kcal`): `2,180` at 32px
+ * mono bold, then "of 2,400 kcal target" at 11px in the metadata ink, read left
+ * to right in the order the words go. The port split that sentence in two —
+ * "2,180 kcal" on the readout, "of 2,400 target" banished to the far corner of
+ * the section label above it — so the denominator sat on a different line, in a
+ * different place in the reading order, from the figure it is the denominator
+ * OF. The measurement has to be one line to be one sentence; the denominator
+ * moved back onto it (see `NutritionScreen`), and this corner kept the job it
+ * always had.
+ *
+ * Which leaves it nothing to say once a kcal target exists: the denominator
+ * beside the figure is itself the tap target for the editor, so a second control
+ * saying the same thing is noise. It returns `null` there. Targets that exist
+ * but set no kcal still need the corner, because there is no denominator on the
+ * readout for the affordance to ride.
+ */
+function targetsCorner(targets: NutritionTargetsRow | null): string | null {
+  if (targets === null) return 'Set daily targets';
+  if (targets.kcal !== null) return null;
+  return 'Edit targets';
 }
 
 /**
@@ -221,13 +272,50 @@ type FieldProps = {
 };
 
 /**
- * One labelled field of the manual meal form. The input wears the well's own
- * tokens — `border-paper-deep bg-paper-dim` — because it *is* the well: this is
- * form (b) of the capture-surface rule in src/components/ui/block.tsx. It used
- * to sit on `bg-paper-hi` inside a `<Block device="well">`, which is the
- * inversion that rule now forbids: a recessed container holding raised inputs,
- * with the raise there only to keep the field visible against the recess it was
- * stacked on. An input is never `bg-paper-hi`.
+ * One row of the manual meal register — the sheet's `.cf-frow`: a 60pt uppercase
+ * label, the value beside it, and a hairline under the pair. Six of them stacked
+ * make an underline-ruled register, which is what a form looks like on a
+ * drawing.
+ *
+ * ## Where the well went, and why this is still legal
+ *
+ * These fields used to be boxed: `border-paper-deep bg-paper-dim` on every
+ * input, laid 1 / 2 / 3 across. That is form (b) of the capture-surface rule in
+ * src/components/ui/block.tsx — *the field IS the well* — and it was correct.
+ * The sheet draws the same form with the box and the fill dropped, leaving only
+ * the rule: still no enclosure of its own, still no `<Block device="well">`
+ * around it, still nothing raised onto plate stock. The rule that governs the
+ * whole family — **an input is never `bg-paper-hi`** — is satisfied by an input
+ * that carries no surface at all, and the forbidden third form (a well
+ * *containing* inputs that have surfaces of their own) is not in reach from
+ * here, because there is no well.
+ *
+ * What the boxes were actually buying was separability under the 1 / 2 / 3
+ * layout: three fields sharing a line need an edge each to stay distinct. Rows
+ * separate themselves, so stacking them is what makes dropping the box possible
+ * rather than the two changes being independent.
+ *
+ * ## The rule is a filled view, never `border-b`
+ *
+ * `border-b border-hairline` is a one-sided width against a whole-element
+ * colour, the pair React Native paints as a COMPLETE RECTANGLE — six of them
+ * here would be six boxes, i.e. the precise bug this codebase has fought four
+ * times (src/components/ui/block.tsx, `Divider`). It is written out inline
+ * rather than reusing `Divider` because `Divider` means "between the rows of a
+ * record" and refuses to draw above the first one; this is a field's underline,
+ * it belongs to the row above it, and every row has one including the last —
+ * where a record separator would be wrong.
+ *
+ * ## Two departures from the sheet, both deliberate
+ *
+ * The row keeps a 44pt floor (00-design-spec.md §4). The sheet's ~30px row is a
+ * mouse target, and a text field is the one control on this screen that has to
+ * be hit precisely.
+ *
+ * The value stays at 15px where `.cf-frow-v` says 12. The sheet's value is
+ * static mockup type; this one is a field you type into, and 15px is the app's
+ * body size everywhere a caret goes. The label, the 60pt column and the rule are
+ * what carry the register's form — the input's point size is not part of it.
  */
 function FormField({
   label,
@@ -239,36 +327,56 @@ function FormField({
   maxLength,
 }: FieldProps) {
   return (
-    <View className="flex-1">
-      <Text className="mb-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-        {label}
-      </Text>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={palette.inkMuted}
-        keyboardType={keyboardType}
-        maxLength={maxLength}
-        accessibilityLabel={label}
-        className={
-          mono
-            ? 'border border-paper-deep bg-paper-dim px-3 py-3 font-mono text-[15px] text-ink'
-            : 'border border-paper-deep bg-paper-dim px-3 py-3 font-serif text-[15px] text-ink'
-        }
-      />
+    <View>
+      <View className="flex-row items-center gap-2.5">
+        <Text className="w-[60px] font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+          {label}
+        </Text>
+        <TextInput
+          value={value}
+          onChangeText={onChange}
+          placeholder={placeholder}
+          placeholderTextColor={palette.inkMuted}
+          keyboardType={keyboardType}
+          maxLength={maxLength}
+          accessibilityLabel={label}
+          className={
+            mono
+              ? 'min-h-[44px] flex-1 py-2 font-mono text-[15px] text-ink'
+              : 'min-h-[44px] flex-1 py-2 font-serif text-[15px] text-ink'
+          }
+        />
+      </View>
+      <View className="h-px self-stretch bg-hairline" />
     </View>
   );
 }
 
 /**
- * The manual "Add a meal" form. A group of labelled fields, so it carries **no
- * device**: each field is already recessed stock, and boxing them in a
- * `<Block device="well">` would put a recess inside a recess (form (b) of the
- * capture-surface rule, src/components/ui/block.tsx). The disclosure row above
- * — "Manual entry", chevron up — is what ties this group to the plate it opened
- * from; whitespace does the rest, the way it does on app/capture.tsx and
- * app/symptom.tsx.
+ * The manual "Add a meal" form — the sheet's `.cf-form`: six ruled rows in one
+ * column, 12px apart. It carries **no device**, the way it always did: a group
+ * of labelled fields is controls rather than content, and a `<Block
+ * device="well">` around rows that are themselves the capture surface would put
+ * a recess inside a recess (the capture-surface rule,
+ * src/components/ui/block.tsx). The disclosure row above — "Manual entry",
+ * chevron up — is what ties this group to the plate it opened from; whitespace
+ * does the rest, the way it does on app/capture.tsx and app/symptom.tsx.
+ *
+ * ## The disclosure stays; only the rows changed
+ *
+ * The sheet has these six rows always visible, and the port could have followed
+ * it — but the sheet's "Log a meal" block holds ONE other entry path ("From a
+ * template") where the app holds four, because catalog search, the barcode
+ * scanner and templates all shipped. That plate is a menu of routes into the
+ * log, and "Manual entry" is one item on it. Making the form permanent would
+ * leave three rows that push a screen sitting beside a fourth that pushes
+ * nothing and expands something already on screen — a menu whose items no longer
+ * mean the same kind of thing — and it would add ~330pt of always-open form to a
+ * screen the sheet keeps short precisely because it has three fewer paths to
+ * offer. The disclosure is load-bearing for both reasons, so it stays, and what
+ * was ported is the row treatment inside it: `FormField` is now the sheet's
+ * ruled register instead of a boxed input, stacked one per line instead of laid
+ * 1 / 2 / 3 across.
  *
  * Mounted fresh each time it opens, so the time defaults to now and a saved
  * form comes back empty. Numbers are optional — blank stores NULL ("not
@@ -315,8 +423,17 @@ function AddMealForm({ onSaved }: { onSaved: () => void }) {
 
   return (
     <View>
-      <FormField label="Meal" value={name} onChange={setName} placeholder="e.g. Salmon + lentils" />
-      <View className="mt-3 flex-row gap-3">
+      {/* One field per line, in the sheet's order: what, when, then the
+          numbers. `gap-3` is `.cf-form`'s 12px between rows — measured from
+          each row's own rule to the next row's label, so the rhythm is the
+          register's, not the inputs'. */}
+      <View className="gap-3">
+        <FormField
+          label="Meal"
+          value={name}
+          onChange={setName}
+          placeholder="e.g. Salmon + lentils"
+        />
         <FormField
           label="Time"
           value={time}
@@ -334,8 +451,6 @@ function AddMealForm({ onSaved }: { onSaved: () => void }) {
           keyboardType="decimal-pad"
           mono
         />
-      </View>
-      <View className="mt-3 flex-row gap-3">
         <FormField
           label="Protein g"
           value={protein}
@@ -472,13 +587,29 @@ function MealRowItem({
             </Text>
           ) : null}
         </View>
-        {/* The rounding site of record: `fmtInt` rounds here, and the Today
+        {/* The sheet's `.cf-lrow-meta`: a bold mono figure with its unit stacked
+            under it in the metadata ink. The port printed a bare `740`, which
+            leaves the reader to infer from context what the column counts —
+            fine on a nutrition screen right up until the same row shape carries
+            minutes or sets, which it does one sub-app over. The unit rides the
+            figure. It prints on the em-dash too: it names what is missing, and a
+            column that loses its heading when a value is absent is the "empty is
+            authored" failure in miniature (00-design-spec.md §5).
+
+            10px rather than the sheet's 9 — the standing conversion for this
+            sheet's metadata layer, §4's floor kept off load-bearing duty. Same
+            reasoning as the `not targeted` note above.
+
+            The rounding site of record: `fmtInt` rounds here, and the Today
             header totals these rounded rows rather than rounding again from the
             raw sum (see sumRounded). No kcal recorded reads as an em-dash and
             contributes nothing — never a fabricated 0. */}
-        <Text className="pt-0.5 font-mono text-[13px] text-ink-secondary">
-          {meal.kcal != null ? fmtInt(meal.kcal) : '—'}
-        </Text>
+        <View className="items-end pt-0.5">
+          <Text className="font-mono text-[11px] font-bold text-ink">
+            {meal.kcal != null ? fmtInt(meal.kcal) : '—'}
+          </Text>
+          <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">kcal</Text>
+        </View>
       </Pressable>
     </View>
   );
@@ -508,6 +639,11 @@ export default function NutritionScreen() {
   const kcalTarget = targets?.kcal ?? null;
   const fiberTarget = targets?.fiber_g ?? null;
 
+  // The second half of the sheet's `.cf-kcal` sentence. Built once so the
+  // spoken label and the visible text cannot drift apart — they are the same
+  // string, not two renderings of the same idea.
+  const kcalDenominator = kcalTarget !== null ? `of ${fmtInt(kcalTarget)} kcal target` : null;
+
   // Every figure on the Today card, totalled from the rows "Eaten today" shows.
   const shown = {
     kcal: sumRounded(meals.map((m) => m.kcal)),
@@ -528,6 +664,29 @@ export default function NutritionScreen() {
     ...(fiberTarget !== null ? [{ label: 'Fiber', grams: fiberTotal, target: fiberTarget }] : []),
   ];
 
+  // `.cf-macros` is `grid-template-columns: 1fr 1fr 1fr` — Protein, Carbs and
+  // Fat on ONE line. Wrapping half-width cells put Carbs on a second row and
+  // Fat alone on a third, which is three lines of grid for a set the sheet
+  // reads as one.
+  //
+  // The fourth cell is ARC's, not the sheet's: fiber joins only when a target
+  // governs it, and the mockup has no fiber row to copy. Neither obvious answer
+  // is 3-up. Keeping three columns leaves Fiber alone in the left third of a
+  // second row under a rule that stops a third of the way across — the
+  // half-drawn-box reading the `grid` device is most vulnerable to, and the
+  // exact failure that got the device deleted once (00-design-spec.md §1).
+  // Going to four columns keeps one line but not a legible one: at the `px-5`
+  // gutter a quarter cell is ~88pt on an iPhone 16 and ~84 on a 375pt SE, less
+  // ~20 of cell inset, against a value line ("132" at 18px mono beside
+  // "/ 180g") that wants a little over 70 — so the denominator wraps or clips
+  // on the smaller sheet, and a target you cannot read is worse than a target
+  // on a second row.
+  //
+  // So: three across when there are three, 2 × 2 when there are four. Every
+  // cell equal, every rule full width, and the sheet's form kept for the case
+  // the sheet actually specifies.
+  const macroColumns = cells.length === 4 ? 2 : 3;
+
   return (
     <Screen scroll>
       <View className="pt-2">
@@ -545,57 +704,95 @@ export default function NutritionScreen() {
             <View className="flex-1">
               <SectionLabel label="Today" />
             </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Daily targets"
-              hitSlop={16}
-              onPress={() => router.push('/nutrition-targets')}
-              className="active:opacity-60">
-              <Text
-                className={
-                  corner.mono
-                    ? 'font-mono text-[10px] text-ink-muted'
-                    : 'font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted'
-                }>
-                {corner.label}
-              </Text>
-            </Pressable>
+            {/* Only when the readout below carries no denominator to hang the
+                affordance on — see `targetsCorner`. The spoken label is the
+                visible string itself. */}
+            {corner !== null ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={corner}
+                hitSlop={16}
+                onPress={() => router.push('/nutrition-targets')}
+                className="active:opacity-60">
+                <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                  {corner}
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
 
-          <View className="mt-2 flex-row items-baseline gap-1.5">
-            <Text className="font-mono text-4xl text-ink">{fmtInt(shown.kcal)}</Text>
-            <Text className="font-mono text-sm text-ink-muted">kcal</Text>
+          {/* `.cf-kcal` — ONE baseline-aligned sentence: the figure at 32px mono
+              bold, then its denominator at 11px in the metadata ink, read left
+              to right in the order the words go. The denominator carries the
+              unit ("of 2,400 kcal target"), so the figure stands bare; with no
+              target there is no denominator and the unit falls back to naming
+              itself.
+
+              The denominator is ALSO the tap target for the targets editor.
+              That is what lets the sentence come back whole without losing the
+              affordance the section corner used to hold: the phrase the reader
+              already reads as "the target" is the thing they touch to change
+              it, which is a shorter path than a control in the corner of a
+              different line. `accessibilityHint` — the app's first — carries the
+              destination the old `accessibilityLabel="Daily targets"` was
+              spending itself on, so the label can be the visible text verbatim.
+              A hint is the RN slot for "what happens if you activate this"; a
+              label that describes the destination instead of the content makes
+              the spoken screen and the drawn screen two different screens. */}
+          <View className="mt-2 flex-row items-baseline gap-2">
+            <Text className="font-mono text-[32px] font-bold tracking-[-0.32px] text-ink">
+              {fmtInt(shown.kcal)}
+            </Text>
+            {kcalDenominator !== null ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={kcalDenominator}
+                accessibilityHint="Opens daily targets"
+                hitSlop={16}
+                onPress={() => router.push('/nutrition-targets')}
+                className="active:opacity-60">
+                <Text className="font-mono text-[11px] text-ink-muted">{kcalDenominator}</Text>
+              </Pressable>
+            ) : (
+              <Text className="font-mono text-[11px] text-ink-muted">kcal</Text>
+            )}
           </View>
 
           {kcalTarget !== null && kcalTarget > 0 ? (
             <TargetRule value={shown.kcal} target={kcalTarget} />
           ) : null}
 
-          {/* No margin: the cells' own `pt-4` is the row rhythm that replaced
-              the top rule. */}
-          <View className="flex-row flex-wrap">
+          {/* `mt-2` keeps the first cells' top rule off the kcal figure and its
+              target rule above. `columns` is the sheet's three, or two when a
+              fiber target makes a fourth cell — see `macroColumns` for why the
+              fourth case is not 3-up. `count` is what stops the last cell of an
+              odd row ruling off into the empty space beside it. */}
+          <View className="mt-2 flex-row flex-wrap">
             {cells.map((cell, index) => (
-              <MacroCell
-                key={cell.label}
-                label={cell.label}
-                grams={cell.grams}
-                target={cell.target}
-                className={cellClass(index)}
-              />
+              <GridCell key={cell.label} index={index} count={cells.length} columns={macroColumns}>
+                <MacroCell label={cell.label} grams={cell.grams} target={cell.target} />
+              </GridCell>
             ))}
           </View>
         </Block>
       </View>
 
-      {/* Log a meal — the stamped next action, then the other entry paths as a
-          record list, then the manual field group (no device of its own). */}
+      {/* Log a meal — the capped stamp for the next action, then the other
+          entry paths as a record list, then the manual register (ruled rows, no
+          device of its own). */}
       <View className="mt-8">
         <SectionLabel label="Log a meal" />
 
         {/* The one accent on this screen: AI estimation (photo / describe)
-            landing in an editable review (app/meal-estimate.tsx). */}
+            landing in an editable review (app/meal-estimate.tsx).
+
+            `cap` draws `.cf-card--accent::before` — the 3pt accent/ink barber
+            hatch laid over the top edge, the loudest drafting mark in the set
+            and the thing that separates a stamped card from a card that merely
+            has a coloured border (src/components/ui/block.tsx, `HatchCap`). The
+            sheet gives it to exactly the accent CARDS, which this is. */}
         <View className="mt-2">
-          <Block device="stamp">
+          <Block device="stamp" cap>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Describe or snap a meal"
@@ -603,11 +800,25 @@ export default function NutritionScreen() {
               className="min-h-[44px] flex-row items-center gap-3 active:opacity-60">
               <Ionicons name="camera-outline" size={20} color={palette.pine} />
               <View className="flex-1">
-                <Text className="font-serif text-[16px] font-semibold text-ink">
+                {/* `.cf-card-eyebrow`: 9px label voice, uppercase, tracked,
+                    `accent-deep`. The port had it as serif 16px semibold
+                    `text-ink` — a title, not an eyebrow: casing, voice, colour
+                    and rank all moved, and the accent left the type entirely on
+                    the one card whose job is to be the accent. Restored to the
+                    literal `src/components/home/hero-card.tsx` already uses for
+                    its tag, which is the same mark in the same slot. On the
+                    accent card `text-pine-deep` is on-budget (00-design-spec.md
+                    §2) — the budget is spent on this card either way, and the
+                    eyebrow is part of the stamp rather than a second use of it.
+                    10px is the standing lift off the sheet's 9 (§4). */}
+                <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
                   Describe or snap a meal
                 </Text>
-                <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
-                  Type it or photograph the plate — you review before it logs
+                {/* The opening half — "Type it or photograph the plate —" —
+                    restated the eyebrow above it and was cut by the owner as
+                    explanatory copy on 2026-08-11. */}
+                <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
+                  You review before it logs
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={16} color={palette.pine} />

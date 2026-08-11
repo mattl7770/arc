@@ -24,64 +24,77 @@ import { palette } from '@/constants/theme';
  * tile that opens a screen which cannot finish the job would make that answer a
  * lie (00-design-spec.md §5).
  *
- * Conformed Set treatment — the **grid** device (00-design-spec.md §1): no outer
- * box, because the grid is the object. That is also the honest reading of these
- * six: they are equal peers, none of them is "the one next action", so none of
- * them carries the accent. The screen's single pine lives on the command field's
- * send button.
+ * Conformed Set treatment — a **plate** holding six boxed tiles, which is what
+ * the sheet draws and, as of 2026-08-11, what the app draws again.
  *
- * ## The rules are gone here too, and a tap target is the interesting case
+ * ## This block was never the grid device (and that is why it lost its boxes)
  *
- * These cells used to carry a hairline on top and a vertical between columns.
- * With six tiles filling two full rows that draws a full-width rule above each
- * row and two verticals inside each — a 3×2 lattice with no left, right or
- * bottom edge, which is precisely the *half-drawn box* the owner reported on
- * hardware ("weird boxes and lines"). Same defect as the Home metrics strip,
- * same fix: alignment and whitespace hold the columns (see
- * src/components/home/metrics-strip.tsx, and block.tsx — **a grid draws no
- * rules**).
+ * The sheet is explicit about it. The Quick Add block is a plain `.cf-block`,
+ * i.e. a plate; inside it sits `.cf-tilegrid`, a `gap: 7px` grid of `.cf-tile`
+ * elements, each one a CLOSED `1px solid var(--paper-line)` box on `paper-hi`.
+ * `.cf-tilegrid` is not `.cf-dims`, so the `:has()` selector that strips the
+ * plate off a metric grid never matched here — the sheet's own CSS keeps this
+ * one plated and boxed.
  *
- * This block was worth arguing about separately, because unlike every other grid
- * in the app **these cells are tap targets, not readouts**, and a border is one
- * of the standard ways a control says it is pressable. Three things say it here
- * without one:
+ * The RN port marked it `device="grid"` anyway, on the reasonable-sounding
+ * ground that six equal cells in three columns is a grid. That reading cost it
+ * twice over. First it inherited the metric grid's cell rules — a hairline on
+ * top of each tile and a vertical between columns, drawn `border-t` /
+ * `border-r`, which React Native paints as a complete rectangle
+ * (src/components/ui/block.tsx). Then, when those boxes were reported off
+ * hardware, the rules were deleted AND the alternative — restoring the sheet's
+ * closed boxes — was rejected on the ground that "it puts a drawn enclosure
+ * inside `device='grid'`". The premise was false: the enclosure is not inside a
+ * grid, because this was never a grid.
  *
- *   - the 20px Ionicon, which no readout in this app carries;
- *   - the **label voice** on the caption — this design reserves that face for
- *     labels and buttons, so it reads as a control, not as a value (mono would
- *     have been the readout voice, and these deliberately are not mono);
- *   - `active:bg-paper-dim`, which fills the whole third on press and draws its
- *     own edge at the moment the edge is actually wanted.
+ * So the tiles are boxed again, and boxing them is also the right answer on the
+ * merits, which is why the sheet does it. **These cells are tap targets, not
+ * readouts**, and a border is one of the standard ways a control says it is
+ * pressable. Nothing else on the Log tab is a 3×2 field of unbordered words.
  *
- * Boxing each tile instead — six *closed* hairline boxes, which would not be
- * half-drawn — was the real alternative and was rejected: it puts a drawn
- * enclosure inside `device="grid"`, re-opening the exact convention split this
- * sweep exists to close, and it trades one unexplained mark for eighteen more
- * strokes on the Log tab's busiest block.
+ * A `gap` and a border, not a rule between cells: six closed boxes separated by
+ * air cannot produce a half-drawn anything, and each box is uniform on all four
+ * sides so it takes React Native's fast border path the way a plate does.
  *
- * With no rules there is no "does a cell follow this one in the same row"
- * question, so the `COLUMNS` modulo and the two-class `cellClass` are gone —
- * every tile takes the same class. Class strings are whole literals, never built
- * from a prefix: Tailwind's scanner only sees names that appear literally in
- * source.
+ * Gateway tiles carry a chevron, quick captures do not — the sheet marks
+ * exactly Nutrition and Workout, and it is the one thing distinguishing "this
+ * opens a whole sub-app" from "this opens a sheet you will be back from in ten
+ * seconds".
+ *
+ * Class strings are whole literals, never built from a prefix: Tailwind's
+ * scanner only sees names that appear literally in source.
  */
 type Tile = {
   key: string;
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   href: Href;
+  /** True for the two tiles that push a whole sub-app; they take the chevron. */
+  gateway?: boolean;
 };
 
 /**
- * One tile. Uniform on every cell — no rules, so no column special-casing.
+ * One tile: a closed hairline box on plate stock, uniform on all four sides.
  *
- * The padding is symmetric (`px-2.5`) rather than the left/right gutter split
- * the readout grids use, because here the padded box IS the tap target and the
- * press fill draws it: an asymmetric fill under the thumb would look like a
- * misaligned control. 20pt of gutter still separates adjacent captions, and
- * `py-3.5` gives the two rows the rhythm the top rules used to.
+ * The width is `w-[31.5%]` rather than `w-1/3` because the gap is real geometry
+ * now — three thirds plus two gutters overflows the row and wraps the third
+ * tile. 31.5% × 3 = 94.5%, and the row's `justify-between` distributes the
+ * remaining 5.5% as the two gutters, so the outer tiles stay flush with the
+ * plate's padding at any width.
+ *
+ * **The tile itself must NOT be `justify-between`, and was for one commit.**
+ * Only the two gateway tiles carry a chevron, so four of the six have just two
+ * children — and `justify-between` hands all the slack to the single gap
+ * between the icon and the label, pinning the caption against the right border.
+ * With six tiles in a 3×2 field that put the captions at four different offsets
+ * (Water has ~39pt of slack, Supplement ~13, Nutrition ~3) and four of them
+ * touching the box edge. The layout wanted is "icon left, chevron right, label
+ * beside the icon", which is `grow` on the label — it eats the slack itself and
+ * pushes only the chevron away, so every caption starts at the same x whether
+ * its tile has a chevron or not.
  */
-const TILE = 'w-1/3 min-h-[68px] gap-2 px-2.5 py-3.5 active:bg-paper-dim';
+const TILE =
+  'w-[31.5%] min-h-[52px] flex-row items-center gap-1.5 border border-hairline bg-paper-hi px-2.5 py-3 active:bg-paper-dim';
 
 const TILES: Tile[] = [
   // Row 1: Supplement · Water · Nutrition
@@ -97,7 +110,13 @@ const TILES: Tile[] = [
     icon: 'water-outline',
     href: { pathname: '/metric-entry', params: { metric: 'water' } },
   },
-  { key: 'nutrition', label: 'Nutrition', icon: 'restaurant-outline', href: '/nutrition' },
+  {
+    key: 'nutrition',
+    label: 'Nutrition',
+    icon: 'restaurant-outline',
+    href: '/nutrition',
+    gateway: true,
+  },
   // Row 2: Weight · Therapy · Workout
   {
     key: 'weight',
@@ -111,18 +130,19 @@ const TILES: Tile[] = [
     icon: 'thermometer-outline',
     href: { pathname: '/capture', params: { type: 'therapy' } },
   },
-  { key: 'workout', label: 'Workout', icon: 'barbell-outline', href: '/exercise' },
+  { key: 'workout', label: 'Workout', icon: 'barbell-outline', href: '/exercise', gateway: true },
 ];
 
 export function QuickAddGrid() {
   const router = useRouter();
 
   return (
-    <Block device="grid">
+    <Block device="plate">
       <SectionLabel label="Quick add" />
 
-      {/* No margin: the tiles' own `py-3.5` is the row rhythm. */}
-      <View className="flex-row flex-wrap">
+      {/* `gap-y-2` is the 7pt gutter between the two rows; `justify-between`
+          supplies the horizontal one and keeps the outer tiles flush. */}
+      <View className="mt-2 flex-row flex-wrap justify-between gap-y-2">
         {TILES.map((tile) => (
           <Pressable
             key={tile.key}
@@ -130,9 +150,20 @@ export function QuickAddGrid() {
             accessibilityLabel={tile.label}
             onPress={() => router.push(tile.href)}
             className={TILE}>
-            <Ionicons name={tile.icon} size={20} color={palette.inkSecondary} />
-            {/* A tile label is a button label — the label voice. */}
-            <Text className="font-label text-[12px] font-semibold text-ink">{tile.label}</Text>
+            <Ionicons name={tile.icon} size={15} color={palette.inkSecondary} />
+            {/* A tile label is a button label — the label voice. `grow` takes
+                the tile's slack so every caption starts hard against the icon
+                rather than floating (see TILE above); `shrink` lets the longest
+                one — "Supplement" — ellipsise instead of shoving the chevron
+                out of the box. */}
+            <Text
+              numberOfLines={1}
+              className="shrink grow font-label text-[10px] font-bold text-ink">
+              {tile.label}
+            </Text>
+            {tile.gateway ? (
+              <Ionicons name="chevron-forward" size={11} color={palette.inkMuted} />
+            ) : null}
           </Pressable>
         ))}
       </View>

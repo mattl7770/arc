@@ -7,8 +7,8 @@ import { PaperGrid } from '@/components/ui/screen';
  *
  * This is the first thing seen on a cold start, so it has to read as an
  * authored drafting surface rather than a blank gate. Conformed Set treatment:
- * the wordmark in serif, the lock state as a **drawn badge**, a short authored
- * line saying *why* the sheet is empty, and one action — all printed on the
+ * the wordmark in serif, the lock state as a **drawn badge**, one action and
+ * the caption naming what unlocks it — all printed on the
  * paper grid, which this screen renders itself because it builds its own root
  * rather than using `<Screen>` (it is handed a full tree by app/_layout.tsx and
  * fills whatever it is given). Being the very first surface of a cold start, it
@@ -17,25 +17,28 @@ import { PaperGrid } from '@/components/ui/screen';
  * ## Why "Locked" is a badge and not a `field`
  *
  * It used to be `<Block device="field">`, on the reading that a lock state is a
- * verdict about the app. That reading is still right; the *device* is not. When
- * `field` lost its corner ticks (block.tsx, "Devices that stopped paying rent")
- * it lost its padding with them — correctly, because `field` is a
- * **section-scale** device and an inset would knock a whole unboxed section out
- * of alignment with its neighbours. But this call site is one word, chip scale,
- * and a device that draws nothing and pads nothing rendered it as literally
- * nothing: the wordmark simply sat above the prose with a gap where the status
- * was meant to be.
+ * verdict about the app. That reading is still right; the *device* is not, and
+ * it is worth being precise about why, because the original reason has since
+ * been withdrawn.
  *
- * So the treatment is explicit and local rather than borrowed: a hairline badge
- * with its own padding, `self-center` so it shrink-wraps the word instead of
- * spanning the sheet. That is the same badge the app already draws for the
- * "Custom" tag in exercise-picker.tsx and for the mode chip in
+ * The reason recorded here was that `field` had been stripped of its corner
+ * ticks and its padding, so at chip scale it rendered as literally nothing —
+ * the wordmark sat above the prose with a gap where the status should be. That
+ * stripping is undone: `field` draws its ticks again, and its padding with them
+ * (block.tsx — the marks were never a design failure, they were rendering as
+ * boxes). So the empty-device argument no longer applies to anything.
+ *
+ * The treatment stays a badge on the argument that always did the real work:
+ * **`field` is a section-scale device and this call site is one word.** Two 11pt
+ * corner ticks bracketing a single word would read as a clipped box round it,
+ * not as a measured region, and the device's inset would sit a chip out of line
+ * with the sheet. So the badge is explicit and local: a hairline box with its
+ * own padding, `self-center` to shrink-wrap the word. It is the same badge the
+ * app draws for the "Custom" tag in exercise-picker.tsx and the mode chip in
  * mode-control.tsx — chip-scale status is chrome, and chrome carries no device.
- * The fix belongs here and not on `field`, whose unmarked, unpadded form is
- * correct everywhere it is actually used at section scale.
  *
- * All three voices, used correctly: serif speaks (the wordmark, the line of
- * prose), label marks (LOCKED, the caption). Nothing here is a measurement, so
+ * Both voices in use are used correctly: serif speaks (the wordmark), label
+ * marks (LOCKED, the button, the caption). Nothing here is a measurement, so
  * nothing here is mono — the old `font-mono` on the word "Locked" was the same
  * category error as a metric set in serif ("Locked" is a state, not a value).
  *
@@ -44,8 +47,8 @@ import { PaperGrid } from '@/components/ui/screen';
  * caption is ink, the paper is paper.
  *
  * Deliberately no data, no previews, no last-screen blur — content simply does
- * not render behind this (see useAppLock), and the copy says so rather than
- * leaving the emptiness looking like a failure to load.
+ * not render behind this (see useAppLock). The line that said so in words was
+ * cut by the owner as explanatory copy on 2026-08-11.
  *
  * Rendered two ways by app/_layout.tsx: as the whole tree at cold start, and as
  * an opaque full-screen Modal on re-lock. It fills whatever it's given
@@ -59,9 +62,12 @@ export function AppLockScreen({
   onUnlock: () => void;
 }) {
   return (
-    // The root carries the sheet and NO padding: Yoga insets absolutely
-    // positioned children by the parent's padding, so a padded root would leave
-    // an 8-unit bare margin all the way round the grid.
+    // The root carries the sheet and NO padding — but NOT for the reason this
+    // comment used to give ("Yoga insets absolutely-positioned children by the
+    // parent's padding"), which is false when an inset is defined; the padding
+    // lives on the inner view below instead simply because that is where the
+    // content wants it. See ./screen.tsx for the citation and for why the true
+    // behaviour is load-bearing elsewhere.
     <View className="flex-1 bg-paper">
       <PaperGrid />
 
@@ -78,11 +84,9 @@ export function AppLockScreen({
           </Text>
         </View>
 
-        <Text className="mt-5 text-center font-serif text-[14px] leading-6 text-ink-secondary">
-          Nothing is drawn behind this screen. ARC opens once this device confirms it is you.
-        </Text>
-
-        {/* The one accent on this surface, and the only thing to do on it. */}
+        {/* The one accent on this surface, and the only thing to do on it. The
+            line of prose that stood between it and the badge above was cut by
+            the owner as explanatory copy on 2026-08-11. */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Unlock"

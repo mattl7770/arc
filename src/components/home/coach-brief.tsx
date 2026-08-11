@@ -9,18 +9,22 @@ import { palette } from '@/constants/theme';
 /**
  * The Coach's daily brief.
  *
- * Conformed Set treatment — the **margin** device, which as of 2026-08-09 draws
- * nothing. Prose does not belong in a card, so this block stays unboxed; but it
- * no longer carries the 2px left rule and indent it used to, either.
+ * Conformed Set treatment — the **margin** device: a 2px left rule and an
+ * indent, an annotation written in the margin of the sheet. Prose does not
+ * belong in a card, and the rule is what gives it an edge to hang off without
+ * one.
  *
- * That rule was one of the two things the owner named on first seeing the
- * design on hardware ("weird boxes and lines... notably the metrics and coach
- * brief"). The diagnosis: a margin rule marks an *aside* — a note running
- * alongside the thing it comments on. Here the prose is not an aside, it is the
- * section, the only content in its slot, with a section label above it and
- * seven units of air on either side. A single vertical stroke beside a
- * paragraph that annotates nothing reads as a rendering glitch, not as an
- * annotation mark. The full reasoning is in src/components/ui/block.tsx.
+ * This block is the reason the device was deleted for two days, and the reason
+ * it is back. It was one of the two surfaces the owner named on first seeing
+ * the design on hardware — "weird boxes and lines... notably the metrics and
+ * coach brief". The diagnosis at the time was that a margin rule marks an
+ * *aside*, and this prose is a section rather than an aside, so the stroke
+ * annotated nothing. Reasonable, and beside the point: the rule was written
+ * `border-l-2 border-hairline`, a one-sided width against a whole-element
+ * colour, which React Native paints as a complete rectangle. There was no
+ * stroke on that screen to judge. There was a box around the Coach brief, which
+ * is what the owner said and what the owner meant. Restored 2026-08-11 as a
+ * filled 2px column; the full trace is in src/components/ui/block.tsx.
  *
  * Set in the serif voice, because serif speaks and mono measures. The label,
  * the dot and the air around it are what say "this is the Coach" — none of

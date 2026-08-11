@@ -2,7 +2,7 @@ import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Text, View } from 'react-native';
 
-import { Block, Divider } from '@/components/ui/block';
+import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
@@ -33,7 +33,7 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  *
  * ## The surface system (00-design-spec.md §1)
  *
- *   Records          grid   three measured cells, aligned — no box, no rules
+ *   Records          grid   three measured cells, ruled between — no outer box
  *   Estimated 1RM    field  a readout about the lift; unmarked, set apart by air
  *   History          plate  a record of sessions, ruled — in both states
  *
@@ -62,27 +62,6 @@ function read(id: string | undefined): Detail {
     // newest-first for the history list
     sessions: exerciseSessionTops(db, id, 12).slice().reverse(),
   };
-}
-
-/**
- * The Records grid: three columns, **no rules**. Only the gutters that keep one
- * column's text off the next, and the `pt-4` row rhythm that replaced the top
- * rule — the same treatment as src/components/home/metrics-strip.tsx, which is
- * the reference form for this device. Whole class strings, never a built prefix.
- *
- * The old machinery asked "is there a cell after me?" so a trailing cell would
- * not draw a vertical rule into empty space. That question only existed because
- * rules existed; with the rules gone the `count` argument and the `*_LAST`
- * classes are dead, and column position is the only input.
- */
-const CELL_LEFT = 'w-1/3 pr-3 pt-4';
-const CELL_MID = 'w-1/3 px-3 pt-4';
-const CELL_RIGHT = 'w-1/3 pl-3 pt-4';
-
-function cellClass(index: number): string {
-  const column = index % 3;
-  if (column === 0) return CELL_LEFT;
-  return column === 1 ? CELL_MID : CELL_RIGHT;
 }
 
 export default function ExerciseDetailScreen() {
@@ -142,20 +121,23 @@ export default function ExerciseDetailScreen() {
         {meta}
       </Text>
 
-      {/* Personal records — a metric grid: aligned columns, no box, no rules. */}
+      {/* Personal records — a metric grid: no outer box, drawn by the rules
+          between its cells. `GridCell` carries the width, the padding and both
+          rules (src/components/ui/block.tsx); the reference form is
+          src/components/home/metrics-strip.tsx. */}
       <View className="mt-6">
         <Block device="grid">
           <SectionLabel label="Records" />
-          {/* No margin: the cells' own `pt-4` is the row rhythm. */}
-          <View className="flex-row">
+          {/* `mt-2` keeps the first cell's top rule off the label above it. */}
+          <View className="mt-2 flex-row">
             {records.map((r, index) => (
-              <View key={r.label} className={cellClass(index)}>
+              <GridCell key={r.label} index={index} count={records.length} columns={3}>
                 <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
                   {r.label}
                 </Text>
                 {/* No data, no number: an absent record is an em-dash. */}
                 <Text className="mt-1 font-mono text-[15px] text-ink">{r.value ?? '—'}</Text>
-              </View>
+              </GridCell>
             ))}
           </View>
         </Block>

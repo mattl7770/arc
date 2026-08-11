@@ -78,17 +78,23 @@ const PICKER_ORDER: readonly ModeKey[] = MODE_KEYS;
  * the mode taking the hero slot on the clock (registry `addItems`), the screen
  * now reads as a sick day rather than as the normal day minus a workout.
  *
- * ## Why it draws nothing
+ * ## Why it is a field and not a box
  *
- * No box, no rule, no fill — type and air only. That is not timidity, it is the
- * standing call from the same feedback session: three of the six devices
- * stopped drawing marks on 2026-08-09 because "there are some weird boxes and
- * lines in some places" (src/components/ui/block.tsx). Adding a fresh enclosure
- * one section above the two boxes that survived — the hero stamp and the
- * mission plate — would spend exactly the attention those two are left drawn to
- * claim. `device="field"` is still declared because this IS a verdict about
- * today; the device currently renders no marks, and the call site is the
- * documentation.
+ * `device="field"` — corner ticks, no enclosure — because this IS a verdict
+ * about today, which is exactly what the field device is for.
+ *
+ * This paragraph used to be headed "why it draws nothing", and argued that the
+ * banner should stay unmarked because three of the six devices had stopped
+ * drawing on 2026-08-09. That premise is gone: the marks were never cut for
+ * reading badly, they were cut because they were **rendering** as boxes — every
+ * one of them was a one-sided border width against a whole-element colour
+ * (src/components/ui/block.tsx). All three draw again.
+ *
+ * What survives from that reasoning, and is the real argument, is the one about
+ * weight: a full enclosure here would sit one section above the hero stamp and
+ * the mission plate and spend exactly the attention those two are drawn to
+ * claim. Two corner ticks are not an enclosure — that is the whole point of the
+ * device — so the field marks this as measured without competing with either.
  *
  * ## Why it spends no accent
  *

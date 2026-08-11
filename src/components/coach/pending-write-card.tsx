@@ -45,6 +45,18 @@ import type { PendingWrite } from '@/types/coach';
  * the one next action on the screen, which is precisely what the stamp is for —
  * and while it is open the composer's send button is disabled and drops out of
  * the accent, so the screen never shows two accent actions at once.
+ *
+ * **It takes the hatched cap**, and the sheet is specific about which cards do.
+ * `.cf-rev` — this card — carries the same `::before` barber hatch as
+ * `.cf-card--accent`, a 3pt accent/ink band laid across the top edge; `.cf-hero`
+ * has the identical 1.5px accent border and no cap at all. The distinction being
+ * drawn is between a card that is merely the most important thing on its screen
+ * and one that is *asking for a decision*, and that band is most of what makes
+ * this read as **stamped** rather than as bordered — it was the loudest mark in
+ * the whole set and the app had no equivalent until `Block` grew `cap`. Home's
+ * hero is the former and stays uncapped; a gate is the latter. The mark itself
+ * is drawn by `HatchCap` (ui/block.tsx) as filled bars inside a clipped band —
+ * no gradient library, and no one-sided border anywhere near it.
  */
 export function PendingWriteCard({
   pending,
@@ -61,7 +73,7 @@ export function PendingWriteCard({
           it spans the full width. */}
       <Divider />
       <View className="px-5 py-3">
-        <Block device="stamp">
+        <Block device="stamp" cap>
           <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
             Proposed change · needs your OK
           </Text>
@@ -104,6 +116,26 @@ export function PendingWriteCard({
             </View>
           </View>
 
+          {/* The sheet draws `.cf-btnrow--3`: Approve / Edit / Reject in
+            `grid-template-columns: 1fr 1fr 1fr`. **Two of those three can ship
+            honestly, and the third cannot.** A `PendingWrite` is
+            `{ id, tool, summary }` (src/types/coach.ts) and the gate it answers
+            is `confirmWrite: (request) => Promise<boolean>`
+            (src/lib/ai/coach-service.ts) — this card is never handed the tool's
+            ARGUMENTS, and the resolver has no third outcome to return. So there
+            is nothing here to edit and nowhere to send an edit to: an "Edit"
+            button would key no user action, which is precisely the drafting
+            chrome §5 throws out ("must pay rent or go"), and dressing a Decline
+            up as an Edit would be worse than omitting it. Making it real is a
+            change to the service seam and the pending-write payload, not to this
+            file; until then two buttons is the true count.
+
+            What the row DOES take from the sheet is the equal columns. Approve
+            was `flex-1` beside an intrinsically-sized Decline, so the decision
+            was sized by the length of its own labels and the affirmative answer
+            got four times the target. Both are `flex-1` now: declining is a real
+            answer to a gate — the model is told and must respect it — and a row
+            that makes it the small option argues for approval by geometry. */}
           <View className="mt-3.5 flex-row gap-2">
             <Pressable
               accessibilityRole="button"
@@ -118,7 +150,7 @@ export function PendingWriteCard({
               accessibilityRole="button"
               accessibilityLabel={`Decline: ${pending.summary}`}
               onPress={() => onResolve(pending.id, false)}
-              className="min-h-[44px] items-center justify-center border border-hairline px-6 active:opacity-60">
+              className="min-h-[44px] flex-1 items-center justify-center border border-hairline px-4 active:opacity-60">
               <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
                 Decline
               </Text>

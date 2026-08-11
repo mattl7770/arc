@@ -62,22 +62,56 @@ function initialLines(detail: RoutineDetail | null): EditLine[] {
   }));
 }
 
-/** A compact mono numeric field for the per-line targets. */
+/**
+ * A compact mono numeric field for the per-line targets.
+ *
+ * ## `fill` is opt-in, and this field is the one that would hurt most
+ *
+ * The wrapper used to be `<View className="flex-1">` unconditionally. Every one
+ * of the four call sites below sits in `flex-row items-end gap-2`, so today that
+ * is correct and nothing on this screen renders wrong. It is correct by accident
+ * of where the fields happen to sit, though, and this helper is the worst one to
+ * leave that way: its input lives inside a bordered `min-h-[40px]` well, so a
+ * column call site would not merely misplace some text — it would stamp a 40pt
+ * box across the routine line underneath it.
+ *
+ * The mechanism, same as app/protocol-edit.tsx (the reference fix) and
+ * app/food-new.tsx (where it was live): in a column the main axis is vertical,
+ * so `flex-1` resolves to `flexBasis: 0%` **on the height**. A `mt-*` parent has
+ * no height of its own — it sizes to its content inside a `<Screen scroll>` — so
+ * `flexGrow` has no free space to claim and the wrapper lays out at **zero
+ * height**. Yoga implements no `min-height: auto` floor to catch it, and views
+ * do not clip, so the caption and the well paint at full size on top of whatever
+ * follows. The `min-h-[40px]` is on the well INSIDE the wrapper; it does nothing
+ * to stop the wrapper itself measuring zero.
+ *
+ * So the flex is opt-in: `fill` belongs to a field sharing a **row**, and
+ * nowhere else. The wrapper stays — a caption stacked over a well needs
+ * something to stack in — but it is plain by default, and since the row
+ * distributes the wrapper rather than the well, `fill` lands on the wrapper.
+ */
 function NumField({
   value,
   onChange,
   placeholder,
   label,
   accessibilityLabel,
+  fill,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder: string;
   label: string;
   accessibilityLabel: string;
+  /**
+   * Set ONLY when this field is a child of a `flex-row` and should take an equal
+   * share of its width. See the note above — in a column it collapses the
+   * wrapper to zero height and the well paints over the line below.
+   */
+  fill?: boolean;
 }) {
   return (
-    <View className="flex-1">
+    <View className={fill ? 'flex-1' : undefined}>
       <Text className="mb-1 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
         {label}
       </Text>
@@ -286,6 +320,9 @@ function RoutineEditor({ id }: { id: string | undefined }) {
                         <Ionicons name="close" size={16} color={palette.inkMuted} />
                       </Pressable>
                     </View>
+                    {/* `fill` on all four: this row splits its width evenly
+                        between them. A target field that ever gets a row to
+                        itself must NOT carry it — see {@link NumField}. */}
                     <View className="mt-2.5 flex-row items-end gap-2">
                       <NumField
                         label="Sets"
@@ -293,6 +330,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
                         onChange={(sets) => updateLine(l.key, { sets })}
                         placeholder="3"
                         accessibilityLabel={`Target sets for ${l.exerciseName}`}
+                        fill
                       />
                       <NumField
                         label="Rep low"
@@ -300,6 +338,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
                         onChange={(repLow) => updateLine(l.key, { repLow })}
                         placeholder="6"
                         accessibilityLabel={`Rep range low for ${l.exerciseName}`}
+                        fill
                       />
                       <NumField
                         label="Rep high"
@@ -307,6 +346,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
                         onChange={(repHigh) => updateLine(l.key, { repHigh })}
                         placeholder="10"
                         accessibilityLabel={`Rep range high for ${l.exerciseName}`}
+                        fill
                       />
                       <NumField
                         label="Rest s"
@@ -314,6 +354,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
                         onChange={(rest) => updateLine(l.key, { rest })}
                         placeholder="150"
                         accessibilityLabel={`Rest seconds for ${l.exerciseName}`}
+                        fill
                       />
                     </View>
                   </View>

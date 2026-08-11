@@ -117,10 +117,13 @@ export default function SettingsHealthScreen() {
         <StackHeader title="Apple Health" />
       </View>
 
-      {/* Status / action plate. Demoted to a `field` (which draws nothing) by
-          the sweep of 2026-08-10; restored the same day at the owner's
-          instruction — the connection state carries its own action, and a block
-          that holds a heading, a paragraph and a button is a record. */}
+      {/* Status / action plate. Demoted to a `field` by the sweep of 2026-08-10
+          and restored the same day at the owner's instruction — the connection
+          state carries its own action, and a block holding a heading, a
+          paragraph and a button is a record, not a verdict. (The demotion was
+          argued partly on `field` drawing no marks at the time. It draws its
+          corner ticks again as of 2026-08-11, so that half of the argument is
+          void in both directions; this stays a plate on the content test.) */}
       <View className="mt-3">
         <Block device="plate">
           {!supported ? (
@@ -138,9 +141,20 @@ export default function SettingsHealthScreen() {
               <Text className="font-serif text-[16px] font-semibold text-ink">
                 Connect Apple Health
               </Text>
+              {/* The 2026-08-11 sweep cut this line back to "First sync pulls 90
+                  days." on the grounds that the closing annotation under "What
+                  ARC reads" said the same thing. It does not: that annotation
+                  says ARC never WRITES to Apple Health. The clause cut with it
+                  was the setup PRECONDITION — a wearable reaches ARC only via
+                  its vendor app's own Health sync — and it was stated nowhere
+                  else, so a user with no vendor app installed enabled, got an
+                  empty sync, and was aimed by the connected state's
+                  troubleshooting line at Privacy → Health — a different failure
+                  entirely. The precondition is back; the privacy restatement is
+                  not. */}
               <Text className="mt-1 font-serif text-[12.5px] leading-5 text-ink-secondary">
-                ARC reads your wearable data on-device — your ring or watch syncs to Apple Health
-                through its own app, and nothing leaves this phone. First sync pulls 90 days.
+                Your ring or watch must sync to Apple Health through its own app. First sync pulls
+                90 days.
               </Text>
               <Pressable
                 accessibilityRole="button"

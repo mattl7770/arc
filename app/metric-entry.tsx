@@ -1,4 +1,3 @@
-import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
@@ -6,7 +5,6 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
-import { palette } from '@/constants/theme';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
@@ -37,14 +35,20 @@ import {
  * screen is the Log button; the active metric chip is stamped in ink, not pine,
  * because a selection is chrome and the budget is a ceiling.
  *
- * The field device draws nothing now — its corner ticks and its padding were cut
- * together (src/components/ui/block.tsx). Losing the ticks is fine here; losing
- * the padding is not, because this call site is a 6xl numeral wedged between the
- * metric chips and the keypad, and it needs the air to read as an instrument
- * face rather than as a line of body copy. So the readout carries the vertical
- * padding explicitly. Vertical only, and deliberately the same amount the device
- * used to contribute — the screen does not scroll, so every point added here
- * comes out of the Log button's clearance on a small phone.
+ * This paragraph used to say the field "draws nothing now — its corner ticks and
+ * its padding were cut together", and that the readout therefore had to supply
+ * its own inset. Both halves have expired. The ticks were never a design
+ * failure: each was an 11×11 view carrying `border-l border-t`, which React
+ * Native paints as a small box (the full account is in the header of
+ * src/components/ui/block.tsx). The ticks and the device's `px-3 py-3` are both
+ * back, so the compensating wrapper came out with them.
+ *
+ * **That subtraction matters more here than on any other screen**, because this
+ * one renders inside a `Screen` with **no `scroll`**. Surplus vertical padding
+ * does not push content down the page; it comes straight out of the Log button's
+ * clearance at the bottom, and on a 375×667 phone the stack is already close to
+ * the full height. 24pt where the design asks 12 is the difference between a
+ * reachable primary action and a clipped one.
  *
  * ## The blank keypad (mockup sheet K-02)
  *
@@ -113,9 +117,25 @@ function withinCap(next: string): boolean {
 const CHIP = 'min-h-[44px] justify-center rounded-btn border border-hairline px-3.5';
 const CHIP_ON = 'min-h-[44px] justify-center rounded-btn border border-ink bg-ink px-3.5';
 
+/**
+ * Where the back control says it goes.
+ *
+ * The sheet's `.cf-back` on K-01 reads `‹ Log`, and for two of this screen's
+ * three entry points that is simply true — both numeric tiles in the Log tab's
+ * quick-add grid open it. The third is the Weight trend row on the Data tab, and
+ * `router.back()` returns there, so a hardcoded "Log" would put a confident lie
+ * on the control. Hence a param with the sheet's answer as the default: the two
+ * Log-tab callers say nothing and get "Log", and Data passes its own name.
+ *
+ * A param rather than reading navigation state because expo-router exposes no
+ * supported "title of the screen below me" — and inventing one from the history
+ * stack would be a lot of machinery to render one word.
+ */
+const DEFAULT_PARENT = 'Log';
+
 export default function MetricEntryScreen() {
   const router = useRouter();
-  const { metric } = useLocalSearchParams<{ metric?: string }>();
+  const { metric, from } = useLocalSearchParams<{ metric?: string; from?: string }>();
   const { units } = useUnitPreferences();
   const today = todayISODate();
   const initialKey = metricByKey(metric ?? '')?.key ?? 'weight';
@@ -186,7 +206,13 @@ export default function MetricEntryScreen() {
   return (
     <Screen edges={['top', 'bottom']}>
       <View className="pt-2">
-        <StackHeader title={active.label} />
+        {/* A deep link can repeat a param, which expo-router delivers as
+            string[] despite the generic — coerce so a malformed link falls back
+            to the default rather than rendering "[object Object]". */}
+        <StackHeader
+          title={active.label}
+          parent={(Array.isArray(from) ? from[0] : from) || DEFAULT_PARENT}
+        />
       </View>
 
       {/* Metric switch chips */}
@@ -217,11 +243,17 @@ export default function MetricEntryScreen() {
         })}
       </ScrollView>
 
-      {/* Readout — the measured field: no enclosure, and its own padding
-          because the device stopped supplying any (see the note above). */}
+      {/* Readout — the measured field: corner ticks, no enclosure.
+
+          NO extra padding of its own. It carried an inner `py-3` for one day,
+          added while `field` was drawing nothing and supplying no inset. The
+          device draws and pads again, so that wrapper was 24pt of vertical
+          padding where the design asks 12 — and this screen renders inside a
+          `Screen` with no `scroll`, so the surplus does not push content down,
+          it eats the Log button's clearance at the bottom of a small phone. */}
       <View className="mt-7">
         <Block device="field">
-          <View className="py-3">
+          <View>
             <View className="flex-row items-baseline justify-center gap-2">
               <Text
                 numberOfLines={1}
@@ -284,7 +316,23 @@ export default function MetricEntryScreen() {
         ) : null}
 
         {/* Square keys, tight gaps: an instrument, not a set of cards. Every
-            digit is mono; the two function keys sit back in ink-muted. */}
+            key is mono; the two function keys sit back in ink-muted.
+
+            "Every key" now includes backspace. The port substituted an Ionicon
+            for the sheet's `⌫`, which put a drawn icon among eleven typeset
+            glyphs and quietly falsified the claim this very comment makes — one
+            key in a different medium is exactly the kind of stray mark the owner
+            has been reporting off hardware. `.` and `⌫` are now one pair — same
+            face, same size, same muted ink — set apart from the digits by colour
+            weight alone, which is exactly what `.cf-key--fn` does on the sheet.
+
+            **U+232B renders.** The mono stack is `Menlo` first
+            (tailwind.config.js), whose Bitstream Vera / DejaVu ancestry carries
+            the Miscellaneous Technical block; and iOS falls back through
+            CoreText to Apple Symbols for anything a face is missing, so this
+            codepoint cannot draw as tofu on the one platform ARC ships to. The
+            spoken label stays "Delete" — a glyph has no reading, and VoiceOver
+            must not be handed a symbol name. */}
         <View className="-mx-0.5 flex-row flex-wrap">
           {KEYS.map((key) => (
             <View key={key} className="w-1/3 p-0.5">
@@ -293,19 +341,15 @@ export default function MetricEntryScreen() {
                 accessibilityLabel={key === 'del' ? 'Delete' : key}
                 onPress={() => press(key)}
                 className="h-16 items-center justify-center active:bg-paper-dim">
-                {key === 'del' ? (
-                  <Ionicons name="backspace-outline" size={22} color={palette.inkMuted} />
-                ) : (
-                  <Text
-                    maxFontSizeMultiplier={1.3}
-                    className={
-                      key === '.'
-                        ? 'font-mono text-2xl font-semibold text-ink-muted'
-                        : 'font-mono text-2xl font-semibold text-ink'
-                    }>
-                    {key}
-                  </Text>
-                )}
+                <Text
+                  maxFontSizeMultiplier={1.3}
+                  className={
+                    key === '.' || key === 'del'
+                      ? 'font-mono text-2xl font-semibold text-ink-muted'
+                      : 'font-mono text-2xl font-semibold text-ink'
+                  }>
+                  {key === 'del' ? '⌫' : key}
+                </Text>
               </Pressable>
             </View>
           ))}
@@ -313,7 +357,18 @@ export default function MetricEntryScreen() {
 
         {/* The one pine action on this screen. Disabled is a bordered recess
             rather than a filled hairline — ink-muted clears 4.5:1 on paper-dim
-            (5.17:1), which it does not on the hairline it used to sit on. */}
+            (5.17:1), which it does not on the hairline it used to sit on.
+
+            The enabled state carries an EDGE as well as a fill. The sheet's
+            `.cf-btn--solid` is the accent fill on a `1.4px solid
+            var(--accent-deep)` border, and it is not decoration: a flat pine
+            rectangle has no drawn boundary, so on this sheet it reads as a
+            coloured area rather than as a stamped control, and it is the only
+            control in the app's primary form that was missing one. The
+            established pattern is the Done button in home/hero-card.tsx, which
+            already ships exactly these two classes; the disabled branch keeps
+            its own hairline edge, so both states are now enclosed and the
+            difference between them is fill and ink alone. */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Log ${active.label}`}
@@ -322,7 +377,7 @@ export default function MetricEntryScreen() {
           onPress={log}
           className={
             canLog
-              ? 'mt-4 min-h-[48px] items-center justify-center rounded-btn bg-pine active:opacity-70'
+              ? 'mt-4 min-h-[48px] items-center justify-center rounded-btn border-[1.4px] border-pine-deep bg-pine active:opacity-70'
               : 'mt-4 min-h-[48px] items-center justify-center rounded-btn border border-hairline bg-paper-dim'
           }>
           <Text

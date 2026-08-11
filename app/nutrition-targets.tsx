@@ -51,11 +51,42 @@ type FieldProps = {
   value: string;
   onChange: (next: string) => void;
   keyboardType?: TextInputProps['keyboardType'];
+  /**
+   * Set ONLY when this field shares a `flex-row` with siblings and should take
+   * an equal share of the width. See the note on {@link FormField} — in a column
+   * it collapses the field to zero height instead.
+   */
+  fill?: boolean;
 };
 
-function FormField({ label, value, onChange, keyboardType }: FieldProps) {
+/**
+ * One labelled, recessed field.
+ *
+ * ## Why the flex is opt-in even though nothing here renders wrong
+ *
+ * The wrapper used to be `<View className="flex-1">` unconditionally. All five
+ * fields on this screen happen to sit in a `flex-row`, so that was correct — by
+ * luck of the layout, not by design.
+ *
+ * The moment someone adds a sixth target and gives it a row of its own, the
+ * unconditional flex becomes the bug that made New Protocol and Create-a-food
+ * draw boxes over other boxes: in a column the main axis is vertical, `flex-1`
+ * resolves to `flexBasis: 0%` **on the height**, the `mt-*` parent has no height
+ * of its own (it sizes to content inside a `<Screen scroll>`) so `flexGrow` gets
+ * nothing to distribute, and the field lays out at **zero height**. Yoga has no
+ * `min-height: auto` floor and views do not clip, so the label and the bordered
+ * input still paint at full size — over whatever follows. The failure is silent
+ * until it is on a screen.
+ *
+ * So the flex is opt-in and named for what it is: `fill` belongs to a field
+ * sharing a **row**. The wrapper stays (a label stacked over an input needs
+ * something to stack in) but it is plain by default, and because the row
+ * distributes the wrapper rather than the input, `fill` lands on the wrapper.
+ * The reference fix and its full post-mortem are in app/protocol-edit.tsx.
+ */
+function FormField({ label, value, onChange, keyboardType, fill }: FieldProps) {
   return (
-    <View className="flex-1">
+    <View className={fill ? 'flex-1' : undefined}>
       <Text className="mb-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
         {label}
       </Text>
@@ -140,14 +171,16 @@ export default function NutritionTargetsScreen() {
       <View className="mt-5">
         <SectionLabel label="Targets" note="Any subset" />
 
+        {/* `fill` on every field here because every one of them shares a row.
+            A field that ever gets a row to itself must NOT carry it. */}
         <View className="mt-2 flex-row gap-3">
-          <FormField label="kcal" value={kcal} onChange={setKcal} />
-          <FormField label="Protein g" value={protein} onChange={setProtein} />
+          <FormField label="kcal" value={kcal} onChange={setKcal} fill />
+          <FormField label="Protein g" value={protein} onChange={setProtein} fill />
         </View>
         <View className="mt-3 flex-row gap-3">
-          <FormField label="Carbs g" value={carbs} onChange={setCarbs} />
-          <FormField label="Fat g" value={fat} onChange={setFat} />
-          <FormField label="Fiber g" value={fiber} onChange={setFiber} />
+          <FormField label="Carbs g" value={carbs} onChange={setCarbs} fill />
+          <FormField label="Fat g" value={fat} onChange={setFat} fill />
+          <FormField label="Fiber g" value={fiber} onChange={setFiber} fill />
         </View>
 
         {problem ? (
