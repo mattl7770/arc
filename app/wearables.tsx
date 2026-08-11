@@ -21,12 +21,15 @@ import { deviceLabel } from '@/lib/db/repositories/wearables';
  * Each metric group is a **ruled plate** — a record is a table
  * (src/components/ui/block.tsx). The one exception is the first-run state,
  * which is a **measured field**, because "no wearable data yet" is a *verdict*
- * about the state of the record, not a record itself. That device is now
- * **unmarked** — it drew 11px corner ticks until 2026-08-09, when the owner
- * read them as artefacts on hardware and they were cut (block.tsx, "Devices
- * that stopped paying rent"). The verdict is separated by air and type instead,
- * which on this screen is the whole point: an empty state should be the
- * quietest thing on the sheet.
+ * about the state of the record, not a record itself. It draws the field's 11pt
+ * corner ticks. They were cut on 2026-08-09, when the owner read them as
+ * artefacts on hardware — correctly, as it turned out, but not for the reason
+ * assumed: each tick was one 11×11 view carrying `border-l border-t`, which
+ * React Native paints as a complete small box. There were no brackets on that
+ * screen to judge. Restored 2026-08-11 as filled bars (block.tsx).
+ *
+ * Two ticks and no enclosure is still the quietest mark in the set, which on
+ * this screen is the whole point: an empty state should not shout.
  *
  * **The accent budget on this screen is zero.** This is a reading surface and
  * it is never directive, so even the one call to action — nothing synced yet,

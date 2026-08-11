@@ -63,9 +63,11 @@ export class ErrorBoundary extends Component<Props, State> {
               ARC stopped drawing this screen.
             </Text>
 
+            {/* The sentence that opened this line restated the headline above
+                it, and the one that closed it restated the button below; both
+                were cut by the owner as explanatory copy on 2026-08-11. */}
             <Text className="mt-2.5 font-serif text-[15px] leading-6 text-ink-secondary">
-              Something threw while rendering. Your data is safe on this device — nothing is written
-              when a screen fails. Try again, or reopen the app.
+              Your data is safe on this device — nothing is written when a screen fails.
             </Text>
 
             <Pressable

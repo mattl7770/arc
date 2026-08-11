@@ -14,30 +14,34 @@ Where Porcelain Ledger is a printed lab report, this is the architect's set that
 
 Every content block is a drafting container, and **the container encodes the content type**. This is the whole design. A plate on everything reads flat; boxing nothing reads unreadable. Each kind of content gets its correct drawing device.
 
-> **AMENDED 2026-08-09, on the owner's first look at real hardware.** Three of the six devices lost their marks and now draw nothing, and the chat thread stopped being a capture surface. The table below is what `src/components/ui/block.tsx` and `app/(tabs)/coach.tsx` actually do today; the reasoning is under it. The previous wording — corner ticks, a margin rule, between-cell hairlines, "chat thread" as a well — described marks that no longer render anywhere in the app.
+> **RE-AMENDED 2026-08-11. The 2026-08-09 amendment is WITHDRAWN.** It removed the marks from three of the six devices on the evidence of one sentence of hardware feedback. That sentence was describing a rendering fault, not a design fault, and the three devices are drawn again — every mark now built from **filled views**, never from borders. The chat thread staying off the well was the unrelated half of that amendment and **stands**. The table below is what `src/components/ui/block.tsx` and `app/(tabs)/coach.tsx` actually do today.
 
 | Content | Device | Treatment **as shipped** |
 | --- | --- | --- |
 | Schedules, ledgers, record lists (mission, Data trends, Settings rows, Protocols, Screenings) | **Ruled plate** — a record is a table | `paper-hi` fill, 1px `paper-line` border, ruled rows inside |
-| Readiness / status verdict | **Measured field** — a verdict, not a box | **draws nothing.** Set apart by air and by type |
-| Prose (Coach brief, rationale) | **Margin annotation** | **draws nothing.** No rule, no indent — prose sits on the sheet |
-| Metric grids | **Ruled grid, no outer box** — the grid *is* the object | **draws nothing.** The grid is built from alignment and whitespace; cells carry no rules |
+| Readiness / status verdict | **Measured field** — a verdict, not a box | No enclosure. 11pt L-shaped corner ticks at top-left and bottom-right, each **two filled bars** |
+| Prose (Coach brief, rationale) | **Margin annotation** | A 2pt filled `paper-line` column beside the prose, content indented 12pt. Structural — it cannot be a border |
+| Metric grids | **Ruled grid, no outer box** — the grid *is* the object | Rules **between** cells only, drawn by `GridCell`: a leading rule per cell, and a vertical conditioned on a cell actually following |
 | Capture surfaces (the Log command field, the Coach composer) | **Recessed stock** — an input well | `paper-dim` fill, `paper-deep` border |
-| The one next action | **Stamped plate** | `paper-hi` fill, 1.5px accent border |
+| The one next action | **Stamped plate** | `paper-hi` fill, 1.5px accent border, plus an opt-in **hatched cap** — a 3pt accent/ink barber hatch over the top edge (`.cf-card--accent::before`). Accent cards take it; Home's hero does not |
 
-**Why three devices stopped drawing.** Seeing the Conformed Set on a phone for the first time, the owner's first note was: *"there are some weird boxes and lines in some places, notably the metrics and coach brief on the home screen, but there are more."* That is the surface system reading as **noise instead of structure**, which is the one failure mode it cannot survive — the marks were not being read as a drawing vocabulary, they were being read as artefacts. §5's own rule settles it: **drafting chrome pays rent or goes**, and a mark a viewer has to interpret before it helps them is decoration.
+**Why they came back, and why the paragraph this replaces was wrong.** It reasoned: the owner's first note off a phone was *"there are some weird boxes and lines in some places, notably the metrics and coach brief on the home screen, but there are more"*; that is the surface system reading as noise instead of structure; §5 says **drafting chrome pays rent or goes**; therefore cut the marks.
 
-- **Field** — was two 11px L-shaped corner ticks at opposite corners. The most abstract device in the set and the least self-explanatory: nothing on screen teaches you that a bracket means *"this region was measured"*, so a lone L with no outer edge reads as a stray glyph or a clipped border.
-- **Margin** — was a 2px left rule and a 12px indent. Beside a paragraph that IS the section rather than an aside to one, the rule annotates nothing and reads as a rendering glitch.
-- **Grid** — was hairlines between cells (top rule on every cell, plus a vertical between the two columns). On a phone that reads as a half-drawn box: an L of lines floating with no outer edge. Columns line up on their own, and a two-column block of label / value / detail is legible as a table without a single stroke (`src/components/home/metrics-strip.tsx` is the reference form).
+Every step of that holds except the premise. Go and look at what the two named surfaces were made of:
 
-All three are **kept as named devices rather than deleted**, because the call site still declares what kind of content it holds — that declaration is the documentation the surface system exists for — and because restoring a mark is one line in `DEVICE` if the owner ever wants one back. The padding went with the marks: with nothing enclosing the content, an inset only knocks those sections out of alignment with the unboxed sections above and below.
+- **Field** — each 11px corner tick was one 11×11 view carrying `border-l border-t border-ink-muted`.
+- **Margin** — the 2px left rule was `border-l-2 border-hairline`.
+- **Grid** — the between-cell hairlines were `border-t border-hairline` and `border-r border-hairline`.
 
-**What is left drawn is the set where enclosure does real work:** `plate` closes a record, `well` recesses a capture surface, `stamp` marks the one next action. Everything else is separated by air and distinguished by type — which is what this design already says sections do (§4: *rules enclose objects, never pages*).
+Every one is a **one-sided border width against a whole-element border colour**. React Native resolves borders into per-edge width and colour structs and takes its cheap CoreAnimation path only when both are uniform; colour-uniform + width-non-uniform falls through to a generated border bitmap that paints **all four edges**. So the margin rule drew a box around the Coach brief. The cell rules drew a box around every metric. The corner ticks drew two small boxes floating at opposite corners of the readiness block.
+
+The owner was not reporting that a bracket is hard to interpret. They were reporting boxes, and naming the two devices whose marks were most conspicuously wrong. The whole amendment was a design answer to a rendering question. (This is the *second* time the same class of mistake cost this project a round — see `paperGrid` in `src/constants/theme.ts`, where an opacity was tripled to compensate for a layer that was not drawing at all. **Establish that a thing renders before concluding anything about how it looks.**)
+
+**How a mark is drawn here, permanently: a filled view.** A background colour has no per-edge struct, no uniformity test, and no fast/slow path to fall off. `Divider`, `VerticalDivider`, `CornerTicks`, `GridCell` and `HatchCap` in `src/components/ui/block.tsx` are the complete set; the trap and its trace are documented above `Divider`. **A one-sided border width with a border-colour class is a bug in this codebase, everywhere, without exception.**
 
 **The chat thread is not a well.** It was drawn as one, on the reading "a capture surface, and the turns are marks made on it". On hardware that read as a conversation put in a box for no reason (owner, 2026-08-09) — and the reading was wrong anyway: a well is for a surface you *capture into*, and the thing you capture into on the Coach screen is the composer, which wears the well already. The conversation is not a record filed on the page, it **is** the page. So the thread sits directly on the sheet with no device and no section label, and only the turns are drawn (`app/(tabs)/coach.tsx`, `src/components/coach/message-bubble.tsx`). The turns themselves did not change: the user speaks in solid accent, the Coach answers on bordered `paper-hi` slips.
 
-**Rule:** a block gets exactly one device. Never nest devices (no plate inside a plate). This still holds for the three unmarked devices — they draw nothing, but the call site is still a claim about content. It is enforced at runtime in `__DEV__`: a nested `Block` logs a `console.error` naming both devices.
+**Rule:** a block gets exactly one device. Never nest devices (no plate inside a plate). It is enforced at runtime in `__DEV__`: a nested `Block` logs a `console.error` naming both devices. Note the rule is about **devices**, not about enclosure in general — a pillar cell inside a field, a boxed tile inside a plate, a chip inside a row are content, not devices, and the sheet boxes all three. "A drawn box inside a device" was invented mid-sweep as a reason to delete the sheet's own marks, and it is not a rule here.
 
 ## 2. Colour
 

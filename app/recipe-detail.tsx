@@ -4,7 +4,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
-import { Block, Divider } from '@/components/ui/block';
+import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -219,7 +219,9 @@ export default function RecipeDetailScreen() {
         <Block device="grid">
           <SectionLabel label="Per serving" />
           {nutrition.complete ? (
-            <View className="mt-2 flex-row gap-5">
+            /* The restored grid draws its rules through GridCell, not through
+               cell styling — four metrics in one ruled row, no outer box. */
+            <View className="mt-2 flex-row flex-wrap">
               {(
                 [
                   // No data, no number: an em-dash, never a stand-in zero.
@@ -228,13 +230,17 @@ export default function RecipeDetailScreen() {
                   ['carbs', per.carbs_g === null ? '—' : `${fmtQty(per.carbs_g)} g`],
                   ['fat', per.fat_g === null ? '—' : `${fmtQty(per.fat_g)} g`],
                 ] as [string, string][]
-              ).map(([label, value]) => (
-                <View key={label}>
-                  <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
-                    {label}
-                  </Text>
-                  <Text className="mt-1 font-mono text-[20px] font-semibold text-ink">{value}</Text>
-                </View>
+              ).map(([label, value], index, all) => (
+                <GridCell key={label} index={index} count={all.length} columns={4}>
+                  <View>
+                    <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+                      {label}
+                    </Text>
+                    <Text className="mt-1 font-mono text-[20px] font-semibold text-ink">
+                      {value}
+                    </Text>
+                  </View>
+                </GridCell>
               ))}
             </View>
           ) : nutrition.unresolvedCount > 0 ? (

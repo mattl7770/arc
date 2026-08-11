@@ -137,9 +137,46 @@ type FieldProps = {
   mono?: boolean;
   maxLength?: number;
   multiline?: boolean;
+  /**
+   * Set ONLY when this field is a child of a `flex-row` and should take the
+   * remaining width. See the note on {@link FormField} — passing it in a column
+   * is the bug that made this screen draw boxes over other boxes.
+   */
+  fill?: boolean;
   accessibilityLabel: string;
 };
 
+/**
+ * One recessed field.
+ *
+ * ## `flex-1` in a column is what drew "boxes covering other boxes"
+ *
+ * Every field used to be wrapped in `<View className="flex-1">`, unconditionally
+ * — and four of this screen's six fields are children of a **column**, not a
+ * row: the protocol name, the description, the time (inside a `w-24`) and the
+ * change note.
+ *
+ * In a column container the main axis is vertical, so `flex-1` resolves to
+ * `flexBasis: 0%` **on the height**. The parent (`<View className="mt-2">`) has
+ * no height of its own and sizes to its content, so there is no free space for
+ * `flexGrow` to claim, and the wrapper lays out at **zero height**. Views do not
+ * clip by default, so the `TextInput` inside it still drew at its natural
+ * height — on top of whatever section came next. The description field is the
+ * worst case, because it is `multiline` with a 64pt floor: 64pt of bordered
+ * input painted over the block below it.
+ *
+ * That is the report, exactly: boxes covering other boxes, on the New Protocol
+ * screen specifically — which is the path where the fields are empty and the
+ * collapse is total. It survived the 2026-08-10 pass because that pass read the
+ * complaint as a *surface* problem and answered it by removing the plate around
+ * the item list. The plate was a real second issue (a raised box full of
+ * recessed boxes, and it stays off — see the screen docblock above); it was
+ * simply not this one. Nothing about de-plating could fix a collapsed wrapper.
+ *
+ * So the flex is opt-in and named for what it is: `fill` belongs to a field
+ * sharing a **row**, and nowhere else. The wrapper view is gone entirely — a
+ * `TextInput` takes the flex directly, one view less per field.
+ */
 function FormField({
   value,
   onChange,
@@ -148,24 +185,23 @@ function FormField({
   mono,
   maxLength,
   multiline,
+  fill,
   accessibilityLabel,
 }: FieldProps) {
   return (
-    <View className="flex-1">
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={palette.inkMuted}
-        keyboardType={keyboardType}
-        maxLength={maxLength}
-        multiline={multiline}
-        accessibilityLabel={accessibilityLabel}
-        className={`border border-paper-deep bg-paper-dim px-3.5 py-3 text-[15px] text-ink ${
-          mono ? 'font-mono' : ''
-        } ${multiline ? 'max-h-28 min-h-[64px] leading-5' : ''}`}
-      />
-    </View>
+    <TextInput
+      value={value}
+      onChangeText={onChange}
+      placeholder={placeholder}
+      placeholderTextColor={palette.inkMuted}
+      keyboardType={keyboardType}
+      maxLength={maxLength}
+      multiline={multiline}
+      accessibilityLabel={accessibilityLabel}
+      className={`border border-paper-deep bg-paper-dim px-3.5 py-3 text-[15px] text-ink ${
+        fill ? 'flex-1' : ''
+      } ${mono ? 'font-mono' : ''} ${multiline ? 'max-h-28 min-h-[64px] leading-5' : ''}`}
+    />
   );
 }
 
@@ -368,10 +404,12 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
         {items.map((it, index) => (
           <View key={it.key} className={index === 0 ? 'mt-2' : 'mt-5'}>
             <View className="flex-row items-center gap-2">
+              {/* `fill` because this shares a row with the remove button. */}
               <FormField
                 value={it.title}
                 onChange={(title) => updateItem(it.key, { title })}
                 placeholder="e.g. Creatine"
+                fill
                 accessibilityLabel="Item title"
               />
               <Pressable
@@ -394,10 +432,12 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
                   accessibilityLabel="Item time"
                 />
               </View>
+              {/* `fill` because this shares a row with the fixed-width time. */}
               <FormField
                 value={it.dose}
                 onChange={(dose) => updateItem(it.key, { dose })}
                 placeholder="Dose or note — 5 g, with food…"
+                fill
                 accessibilityLabel="Item dose or note"
               />
             </View>

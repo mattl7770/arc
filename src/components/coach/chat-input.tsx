@@ -42,6 +42,22 @@ type Props = {
  * contrast — it still has to be readable to explain why it can't be pressed.
  * This is the same recess the rest of the app uses for a disabled control.
  *
+ * ## No mic glyph, and that is a decision — do not "restore" it
+ *
+ * Every composer in the mockup draws `.cf-composer-mic` at the left of the
+ * field, and this one draws nothing there, because **ARC has no voice input to
+ * hand it to.** There is no speech capability anywhere in the project: no
+ * `expo-speech`, no `@react-native-voice/voice`, no audio module in
+ * package.json, and no code that records or transcribes. The other place the
+ * sheet draws a mic — the Log tab's command field — is not a counter-example: it
+ * is a stub whose entire behaviour is to print "Voice capture arrives with the
+ * Coach" (log/command-field.tsx), which is an honest placeholder only because it
+ * has a caption underneath in which to say so. A bare glyph sitting inside this
+ * field has no such room; it would simply be an affordance that does nothing,
+ * which §5 forbids in the same breath as invented reference codes — drafting
+ * chrome pays rent or goes. It arrives WITH voice capture, not before it, and
+ * adding a speech module means a fresh EAS build regardless.
+ *
  * Owns its own draft text so a keystroke doesn't re-render the whole thread.
  */
 export function ChatInput({ onSend, disabled = false, blockedReason }: Props) {

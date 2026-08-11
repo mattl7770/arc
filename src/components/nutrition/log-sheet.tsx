@@ -99,9 +99,11 @@ type FieldProps = {
 };
 
 /**
- * One labelled field of the manual meal form. The input wears the well's own
- * tokens — `border-paper-deep bg-paper-dim` — because it *is* the well. An
- * input is never `bg-paper-hi`.
+ * One row of the manual form's **ruled register** — a 60px label gutter, a bare
+ * input beside it, and a rule under the pair. No fill and no box: the row IS
+ * the surface, so nothing is recessed and nothing is raised. This is the form
+ * main restored on 2026-08-11 for app/nutrition.tsx's own manual entry, and the
+ * two must not drift — it is one form, drawn in two places.
  */
 function FormField({
   label,
@@ -113,24 +115,29 @@ function FormField({
   maxLength,
 }: FieldProps) {
   return (
-    <View className="flex-1">
-      <Text className="mb-1 font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary">
-        {label}
-      </Text>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={palette.inkMuted}
-        keyboardType={keyboardType}
-        maxLength={maxLength}
-        accessibilityLabel={label}
-        className={
-          mono
-            ? 'border border-paper-deep bg-paper-dim px-3 py-3 font-mono text-[16px] text-ink'
-            : 'border border-paper-deep bg-paper-dim px-3 py-3 font-serif text-[16px] text-ink'
-        }
-      />
+    <View>
+      <View className="flex-row items-center gap-2.5">
+        <Text className="w-[60px] font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+          {label}
+        </Text>
+        <TextInput
+          value={value}
+          onChangeText={onChange}
+          placeholder={placeholder}
+          placeholderTextColor={palette.inkMuted}
+          keyboardType={keyboardType}
+          maxLength={maxLength}
+          accessibilityLabel={label}
+          className={
+            mono
+              ? 'min-h-[44px] flex-1 py-2 font-mono text-[15px] text-ink'
+              : 'min-h-[44px] flex-1 py-2 font-serif text-[15px] text-ink'
+          }
+        />
+      </View>
+      {/* The rule under the row is the whole surface — a filled view, never a
+          border, for the reason Divider exists. */}
+      <View className="h-px self-stretch bg-hairline" />
     </View>
   );
 }
@@ -182,9 +189,12 @@ function AddMealForm({ onSaved }: { onSaved: () => void }) {
   };
 
   return (
+    /* Six ruled rows in ONE column, 12pt apart — a register, not a grid of
+       boxes. Side-by-side pairs would put two rules on one line and break the
+       label gutter's alignment. */
     <View className="mt-3">
       <FormField label="Meal" value={name} onChange={setName} placeholder="e.g. Salmon + lentils" />
-      <View className="mt-3 flex-row gap-3">
+      <View className="mt-3">
         <FormField
           label="Time"
           value={time}
@@ -203,7 +213,7 @@ function AddMealForm({ onSaved }: { onSaved: () => void }) {
           mono
         />
       </View>
-      <View className="mt-3 flex-row gap-3">
+      <View className="mt-3">
         <FormField
           label="Protein g"
           value={protein}

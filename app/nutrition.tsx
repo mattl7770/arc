@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { LogSheet } from '@/components/nutrition/log-sheet';
-import { Block, Divider } from '@/components/ui/block';
+import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
@@ -91,11 +91,15 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  *
  * ## Conformed Set surface system (00-design-spec.md §1)
  *
- *   Today        → **grid**. The macro cells are BOXED — an owner call on
- *                  2026-08-11 ("put boxes for the nutrition info at the top"),
- *                  and a departure from the device, which draws nothing. Small
- *                  figures are what struggle against the sheet's texture; the
- *                  hero stays unboxed because at 36px it holds its own ground.
+ *   Today        → **grid**, drawn by {@link GridCell}: the rules run BETWEEN
+ *                  the macro cells and there is no outer box, because the grid
+ *                  IS the object. The owner asked for boxes here on 2026-08-11,
+ *                  while the device still drew nothing; main then established
+ *                  that it had never been drawing at all and restored its marks
+ *                  (docs/decisions.md — the withdrawal ADR). The hand-rolled
+ *                  border and fill came off with that merge: the separation the
+ *                  request was after is now the device's job, drawn once, the
+ *                  same way every other metric grid in the app draws it.
  *   Eaten today  → **ruled plate**: the day's record is a table. Dropped
  *                  through empty — a plate closes a record, and before the first
  *                  meal there is only a sentence.
@@ -132,7 +136,7 @@ function MacroCell({ label, figure }: { label: string; figure: DayFigure }) {
   const mode = over ? `${label} over` : remaining ? `${label} left` : label;
   const denominator = figure.target !== null ? `of ${Math.round(figure.target)} g` : 'g';
   return (
-    <View className="flex-1 border border-hairline bg-paper-hi px-3 py-2.5">
+    <View>
       <Text
         numberOfLines={1}
         className="font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary">
@@ -471,9 +475,18 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                 <TargetRule value={kcal.eaten} target={kcal.target} />
               ) : null}
 
-              <View className="mt-4 flex-row gap-2">
-                {macroFigures.map((m) => (
-                  <MacroCell key={m.metric} label={m.label} figure={m.figure} />
+              {/* THE BOXES ARE THE DEVICE'S NOW. The owner asked for boxes on
+                  2026-08-11 while the grid device drew nothing; the same week
+                  main established that the device had never been DRAWING and
+                  restored its marks (docs/decisions.md, the withdrawal ADR). So
+                  the hand-rolled border/fill comes off and GridCell owns the
+                  rules — same visual separation, drawn once, by the primitive
+                  every other metric grid in the app uses. */}
+              <View className="mt-2 flex-row flex-wrap">
+                {macroFigures.map((m, index) => (
+                  <GridCell key={m.metric} index={index} count={macroFigures.length} columns={3}>
+                    <MacroCell label={m.label} figure={m.figure} />
+                  </GridCell>
                 ))}
               </View>
             </>

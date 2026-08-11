@@ -99,9 +99,17 @@ A **"Log a symptom" row** on the Log tab (kept separate from the routine quick-a
 
 Same owner review as the tab bar: *"sections should be foldable in the data tab, and biomarkers should be below 'the full file'."* Both shipped in `app/(tabs)/data.tsx`.
 
-**Order, top to bottom:** folio line + title → the **Labs import stamp** (this screen's one accent, and the only directive thing on it) → **Trends** → **The full file** → **Biomarkers** → **Settings**.
+**Order, top to bottom (revised again 2026-08-11):** folio line + title → **Trends** → **The full file** → **Settings**.
 
-**Why Biomarkers moved below the index.** The catalogue is **65 markers** (`BIOMARKER_SEED`, `src/lib/labs/catalog.ts` — counted 2026-08-10; this passage read "66" in three places until then), and every one of them is drawn. Before a lab import that is 65 rows of em-dash sitting between the two sections you actually navigate with — and it would have buried the new Settings row entirely.
+> **The Labs stamp and Biomarkers both came off this screen**, on the owner's instruction: *"The big 'bring in your bloodwork' on the top of the data page should be within the labs & reports section. Furthermore, the 'biomarkers' should also be within the labs & reports only."* Both live on `app/labs.tsx` now, reached from the **Labs** row of The full file.
+>
+> What that actually fixed was a **duplication**, not only an ordering. `app/labs.tsx` was already drawing its own import action and its own complete biomarker list grouped by category; the Data tab was drawing a second, flatter copy of both. Two screens, the same rows, two treatments — and the Data root was carrying 65 marker rows its own sibling already owned.
+>
+> Two consequences worth recording. The Data tab's **accent budget is now zero** — the stamp was its one accent, and nothing left on the screen is directive. And the row that reaches Labs was relabelled from "Labs & reports" to **"Labs"**: "& reports" described only the imported-PDF list, which since this change is one of three things on that sheet.
+>
+> This also settles the ⚠️ open question logged against Data on 2026-08-10 and quoted in the tab table above — *"the unfoldable lab-import stamp headlines a few-times-a-year action"*. It no longer does. What stays open is the larger half: Data still reads as an index of indexes, and what it should *lead* with is unanswered.
+
+**Why Biomarkers moved below the index first, and then off it entirely.** The catalogue is **65 markers** (`BIOMARKER_SEED`, `src/lib/labs/catalog.ts` — counted 2026-08-10; this passage read "66" in three places until then), and every one of them is drawn. Before a lab import that is 65 rows of em-dash sitting between the two sections you actually navigate with, and it would have buried the Settings row entirely. Demoting it below The full file (2026-08-09) treated the symptom; moving it to Labs treated the cause.
 
 **Folding.** Trends, The full file and Biomarkers each fold; the import stamp and the Settings row do not. Rules that govern it:
 

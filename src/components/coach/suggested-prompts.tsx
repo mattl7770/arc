@@ -36,20 +36,21 @@ import { useSessionKeySet } from '@/hooks/use-session-key';
  * session line has no room for: **what connecting buys, and where to do it.**
  *
  * The state itself is already reported by the session line above this block, so
- * this block does not report it again. It states the *consequence* instead
- * (these questions get answered from the record only once a model is
- * connected), then gives the destination that fixes it.
+ * this block does not report it again. The lede states the *consequence*
+ * instead (these questions get answered from the record only once a model is
+ * connected), and the destination that fixes it is the action below.
  *
- * That note takes the **margin annotation** device: it is prose about the sheet
- * rather than a record, and the margin device is UNMARKED as of 2026-08-09 — prose sits on the sheet, separated by air and distinguished by the serif voice. It is a sibling
- * of the plate, never a child — devices do not nest.
+ * That action sits on the **margin annotation** device, which is UNMARKED as of
+ * 2026-08-09 — it sits on the sheet, separated by air. It is a sibling of the
+ * plate, never a child — devices do not nest. The sentence that used to head it
+ * was cut by the owner as explanatory copy on 2026-08-11.
  *
  * `keySet` comes from the store hook rather than a prop because the screen does
  * not pass one and this block must not read `apiKeyStore.has()` bare in render
  * (under the React Compiler a render that reads mutable external state directly
  * can memoize stale, which is why every other reader of it takes it as a prop).
  * `useSessionKeySet` is `useSyncExternalStore`, so it re-renders the moment a
- * key is pasted into the line above and the note retires itself.
+ * key is pasted into the line above and the preview block retires itself.
  */
 const PROMPTS = [
   'How’s my recovery today?',
@@ -63,14 +64,6 @@ const LEDE_LIVE = 'Nothing asked yet. Pick a starting point, or type your own qu
 /** Preview: same list, but say plainly what it can and cannot reach right now. */
 const LEDE_PREVIEW =
   'Nothing asked yet. Each of these is answered from your own record — labs, wearables, today’s log. Until a model is connected the Coach replies in preview and reads none of it.';
-/**
- * Where to connect one. The sentence that used to open this — "Connect a model
- * and these become real answers, grounded in your own numbers" — was a pitch,
- * not an instruction, and the lede above already states what preview cannot
- * reach. What is left is the route (owner's slop sweep, 2026-08-10).
- */
-const PREVIEW_NOTE =
-  'The quickest path is the line at the top of this screen; the key and the model it runs are managed in Settings.';
 
 export function SuggestedPrompts({ onPick }: { onPick: (text: string) => void }) {
   const keySet = useSessionKeySet();
@@ -112,10 +105,10 @@ export function SuggestedPrompts({ onPick }: { onPick: (text: string) => void })
       {keySet ? null : (
         <View className="mt-3">
           <Block device="margin">
-            <Text className="font-serif text-[13px] leading-5 text-ink-muted">{PREVIEW_NOTE}</Text>
-
             {/* The one action this empty state carries, and it is drawn in ink:
-                the screen's accent belongs to the composer's send. */}
+                the screen's accent belongs to the composer's send. The sentence
+                that used to stand above it, naming the same route in prose, was
+                cut by the owner as explanatory copy on 2026-08-11. */}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Open Coach settings"

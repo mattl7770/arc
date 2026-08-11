@@ -204,8 +204,11 @@ function MissionComplete() {
         <Text className="mt-2.5 text-center font-serif text-[22px] font-semibold text-ink">
           Today is handled
         </Text>
+        {/* The wind-down advice that followed was cut by the owner as
+            explanatory copy on 2026-08-11. The statement of the empty state
+            itself is load-bearing and stays. */}
         <Text className="mt-2 max-w-[260px] text-center font-serif text-[13px] leading-5 text-ink-secondary">
-          Nothing left on the list. Protect the evening wind-down and let recovery do its work.
+          Nothing left on the list.
         </Text>
       </View>
     </Block>
