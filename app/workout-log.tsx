@@ -3,7 +3,9 @@ import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -24,6 +26,18 @@ import type { WorkoutKind } from '@/lib/exercise/types';
  * Either way one save writes the session and its sets in a single transaction
  * (src/lib/db/repositories/exercise.ts). Set weight is entered in lb — the
  * app's display unit today — and stored canonical kg.
+ *
+ * ## The surface system (00-design-spec.md §1)
+ *
+ *   Drafted sets   plate   a record is a table, so the set list is ruled
+ *   Entry caveats  margin  the "what saves and what doesn't" annotation
+ *
+ * Everything else here is form chrome: entry fields are recessed stock styled
+ * inline, exactly as in app/workout-live.tsx, because an input is not a content
+ * block and does not take a device of its own. Every reps/weight/duration value
+ * is mono — serif speaks, mono measures.
+ *
+ * **Accent budget: one.** The Finish/Save button, and nothing else.
  */
 const KINDS: { key: WorkoutKind; label: string }[] = [
   { key: 'strength', label: 'Strength' },
@@ -44,18 +58,14 @@ function formatElapsed(ms: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
 }
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
-
-/** The recessed field wrapper every input on this screen sits in. */
+/**
+ * The recessed field every input on this screen sits in — an input well, drawn
+ * inline rather than as a `<Block device="well">`: a single text field is not a
+ * content block, and wrapping each one would nest devices inside the plate.
+ */
 function Field({ children }: { children: React.ReactNode }) {
   return (
-    <View className="min-h-[44px] justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+    <View className="min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
       {children}
     </View>
   );
@@ -200,12 +210,14 @@ export default function WorkoutLogScreen() {
         </View>
 
         {/* Session */}
-        <View className="mt-2">
-          <SectionLabel>Session</SectionLabel>
+        <View className="mt-3">
+          <SectionLabel label="Session" />
           {mode === 'live' ? (
             <View className="mt-2 flex-row items-baseline gap-2">
               <Text className="font-mono text-2xl text-ink">{formatElapsed(now - startedAt)}</Text>
-              <Text className="text-[11px] uppercase tracking-[1px] text-ink-muted">elapsed</Text>
+              <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                elapsed
+              </Text>
             </View>
           ) : null}
           <View className="mt-2">
@@ -215,12 +227,12 @@ export default function WorkoutLogScreen() {
                 onChangeText={setName}
                 placeholder="Session name — Upper A, Zone 2…"
                 placeholderTextColor={palette.inkMuted}
-                className="py-2.5 text-[15px] text-ink"
+                className="py-2.5 font-serif text-[15px] text-ink"
                 accessibilityLabel="Session name"
               />
             </Field>
           </View>
-          <View className="mt-2 flex-row gap-2">
+          <View className="mt-2 flex-row flex-wrap gap-2">
             {KINDS.map((k) => {
               const on = k.key === kind;
               return (
@@ -229,10 +241,15 @@ export default function WorkoutLogScreen() {
                   accessibilityRole="button"
                   accessibilityState={{ selected: on }}
                   onPress={() => setKind(k.key)}
-                  className={`rounded-btn border px-3 py-1.5 ${
-                    on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline'
+                  // 44pt floor (§4), matching FilterChip in
+                  // src/components/exercise/exercise-picker.tsx.
+                  className={`min-h-[44px] justify-center rounded-btn border px-3 ${
+                    on ? 'border-hairline bg-paper-dim' : 'border-hairline'
                   }`}>
-                  <Text className={`text-[13px] ${on ? 'font-medium text-ink' : 'text-ink-muted'}`}>
+                  <Text
+                    className={`font-label text-[11px] uppercase tracking-[1px] ${
+                      on ? 'font-semibold text-ink' : 'text-ink-muted'
+                    }`}>
                     {k.label}
                   </Text>
                 </Pressable>
@@ -255,48 +272,65 @@ export default function WorkoutLogScreen() {
                     />
                   </Field>
                 </View>
-                <Text className="text-[13px] text-ink-muted">
+                <Text className="font-label text-[11px] uppercase tracking-[1px] text-ink-muted">
                   {durationValid ? 'min' : 'min — that looks off'}
                 </Text>
               </View>
-              <Text className="mt-2 text-xs leading-5 text-ink-muted">
+              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
                 Saved to today — backdating lands with the workout builder.
               </Text>
             </>
           ) : null}
         </View>
 
-        {/* Sets */}
-        <View className="mt-8">
-          <SectionLabel>Sets</SectionLabel>
-
-          {sets.length > 0 ? (
-            <View className="mt-2 rounded-card border border-hairline bg-porcelain px-4">
-              {sets.map((s, index) => (
-                <View
-                  key={`${index}-${s.exercise}`}
-                  className={`flex-row items-center gap-3 py-2.5 ${
-                    index === 0 ? '' : 'border-t border-hairline-soft'
-                  }`}>
-                  <Text className="w-5 font-mono text-[11px] text-ink-muted">{index + 1}</Text>
-                  <Text className="flex-1 text-[14px] text-ink" numberOfLines={1}>
-                    {s.exercise}
-                  </Text>
-                  <Text className="font-mono text-[13px] text-ink-secondary">
-                    {setLine(s.reps, s.weightLb)}
-                  </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Remove set ${index + 1}, ${s.exercise}`}
-                    onPress={() => removeDraftSet(index)}
-                    className="-mr-1 h-8 w-8 items-center justify-center rounded-btn active:bg-paper-deep">
-                    <Ionicons name="close" size={16} color={palette.inkMuted} />
-                  </Pressable>
-                </View>
-              ))}
+        {/* Sets — a record is a table, so the drafted list is a ruled plate,
+            and the plate is drawn ONLY once a set is drafted. A plate closes a
+            record; an empty draft has no record to close, only a paragraph —
+            and a border around one paragraph is the box-around-a-single-thing
+            the owner keeps seeing. This screen always opens in that state. Same
+            shape as app/protocols.tsx. */}
+        <View className="mt-7">
+          {sets.length === 0 ? (
+            <View>
+              <SectionLabel label="Sets" />
+              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+                Nothing drafted yet. Add sets below — or save a session with none, for cardio and
+                mobility work.
+              </Text>
             </View>
-          ) : null}
+          ) : (
+            <Block device="plate">
+              <SectionLabel label="Sets" note={`${sets.length} drafted`} />
 
+              <View className="mt-1">
+                {sets.map((s, index) => (
+                  <View
+                    key={`${index}-${s.exercise}`}
+                    className={`min-h-[44px] flex-row items-center gap-3 py-2 ${
+                      index === 0 ? '' : 'border-t border-hairline'
+                    }`}>
+                    <Text className="w-5 font-mono text-[11px] text-ink-muted">{index + 1}</Text>
+                    <Text className="flex-1 font-serif text-[14px] text-ink" numberOfLines={1}>
+                      {s.exercise}
+                    </Text>
+                    <Text className="font-mono text-[13px] text-ink-secondary">
+                      {setLine(s.reps, s.weightLb)}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Remove set ${index + 1}, ${s.exercise}`}
+                      onPress={() => removeDraftSet(index)}
+                      hitSlop={10}
+                      className="-mr-1 h-8 w-8 items-center justify-center active:opacity-60">
+                      <Ionicons name="close" size={16} color={palette.inkMuted} />
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
+            </Block>
+          )}
+
+          {/* Entry row — recessed stock on the sheet, not a device. */}
           <View className="mt-2">
             <Field>
               <TextInput
@@ -304,7 +338,7 @@ export default function WorkoutLogScreen() {
                 onChangeText={changeExercise}
                 placeholder="Exercise — Bench press…"
                 placeholderTextColor={palette.inkMuted}
-                className="py-2.5 text-[15px] text-ink"
+                className="py-2.5 font-serif text-[15px] text-ink"
                 accessibilityLabel="Exercise name"
               />
             </Field>
@@ -342,27 +376,35 @@ export default function WorkoutLogScreen() {
               accessibilityState={{ disabled: !canAddSet }}
               disabled={!canAddSet}
               onPress={addDraftSet}
-              className={`min-h-[44px] items-center justify-center rounded-btn border px-3.5 ${
-                canAddSet ? 'border-hairline-strong active:bg-paper-deep' : 'border-hairline'
+              className={`min-h-[44px] items-center justify-center rounded-btn border border-hairline px-3.5 ${
+                canAddSet ? 'active:bg-paper-dim' : ''
               }`}>
               <Text
-                className={`text-[13px] font-medium ${canAddSet ? 'text-ink' : 'text-ink-muted'}`}>
+                className={`font-label text-[11px] font-semibold uppercase tracking-[1px] ${
+                  canAddSet ? 'text-ink' : 'text-ink-muted'
+                }`}>
                 Add set
               </Text>
             </Pressable>
           </View>
-          <Text className="mt-2 text-xs leading-5 text-ink-muted">
-            {entryBlocking ? (
-              <Text className="text-ink-secondary">
-                That set won’t save as typed — fix or clear it.
+
+          {/* What saves and what doesn't — an annotation, so: margin. */}
+          <View className="mt-3">
+            <Block device="margin">
+              <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
+                {entryBlocking
+                  ? 'That set won’t save as typed — fix or clear it.'
+                  : 'Reps and weight are optional — leave weight blank for bodyweight work. Stored in kg.'}
               </Text>
-            ) : (
-              'Reps and weight are optional — leave weight blank for bodyweight work. Stored in kg.'
-            )}
-          </Text>
+            </Block>
+          </View>
         </View>
 
-        {/* The one pine action on this screen. */}
+        {/*
+          The one primary action on this screen. Disabled reads as an unfilled
+          outline rather than a filled grey: muted ink on the sheet clears
+          4.5:1, where muted ink on a hairline fill does not.
+        */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={mode === 'live' ? 'Finish workout' : 'Save session'}
@@ -370,10 +412,12 @@ export default function WorkoutLogScreen() {
           disabled={!canSave}
           onPress={save}
           className={`mt-8 h-12 items-center justify-center rounded-btn ${
-            canSave ? 'bg-pine active:opacity-70' : 'bg-hairline'
+            canSave ? 'bg-pine active:opacity-70' : 'border border-hairline'
           }`}>
           <Text
-            className={`text-[15px] font-semibold ${canSave ? 'text-pine-on' : 'text-ink-muted'}`}>
+            className={`font-label text-[15px] font-semibold ${
+              canSave ? 'text-pine-on' : 'text-ink-muted'
+            }`}>
             {mode === 'live' ? 'Finish workout' : 'Save session'}
           </Text>
         </Pressable>

@@ -10,6 +10,7 @@
  */
 import type { Database } from '@/lib/db/database';
 import { localDayUtcRange, todayISODate } from '@/lib/db/date';
+import { dailyMetricSeries } from '@/lib/db/repositories/wearables';
 
 /**
  * The exclusive end of the local day containing `now`, as a UTC instant — the
@@ -57,6 +58,70 @@ export function wearableDailySeries(
      WHERE metric_type = ? AND date >= ?${untilDate ? ' AND date <= ?' : ''}
      GROUP BY date ORDER BY date`,
     untilDate ? [metricType, sinceDate, untilDate] : [metricType, sinceDate]
+  );
+}
+
+/** Whole days from `from` to `to` inclusive-of-both-ends counting (UTC, DST-proof). */
+export function daysBetweenISO(from: string, to: string): number {
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+  return Math.round((b - a) / 86_400_000);
+}
+
+/**
+ * Daily series for a wearable metric using the SAME source arbitration Home and
+ * the Data tab use ({@link dailyMetricSeries}): one winning row per day, richest
+ * device first. This is the read for anything HealthKit day-buckets (steps,
+ * sleep, energy, HRV, RHR, VO2max…) — pooling those across devices with
+ * avg/sum would either blur two devices' nights together or double-count them,
+ * and would make the Coach disagree with the number Home is showing.
+ *
+ * Contrast {@link wearableDailySeries}, which pools every row: correct only for
+ * metrics that genuinely ACCUMULATE many rows a day (water sips, workouts).
+ */
+export function wearableArbitratedSeries(
+  db: Database,
+  metricType: string,
+  sinceDate: string,
+  today: string
+): SeriesPoint[] {
+  // dailyMetricSeries' window is `date > today - days`, so a `since`-inclusive
+  // window of N days needs days = N.
+  const days = Math.max(1, daysBetweenISO(sinceDate, today) + 1);
+  return dailyMetricSeries(db, metricType, days, today).map((p) => ({
+    date: p.date,
+    value: p.value,
+  }));
+}
+
+/** What one metric_type actually holds — the basis for data-driven discovery. */
+export type WearableMetricPresence = {
+  metricType: string;
+  /** The unit the rows carry (they are written per metric, so max() is it). */
+  unit: string | null;
+  /** Distinct days with a row. */
+  days: number;
+  /** Most recent day with a row. */
+  lastDate: string;
+};
+
+/**
+ * Every metric_type that ACTUALLY exists in wearable_data, discovered from the
+ * data itself. `wearable_data.metric_type` is deliberately free text so a new
+ * vendor metric is not a migration (CLAUDE.md §9) — so anything that enumerates
+ * metrics from a hardcoded list rots the moment a new one is ingested. This is
+ * the antidote: the Coach's readable set is derived, not declared.
+ */
+export function wearableMetricInventory(db: Database): WearableMetricPresence[] {
+  return db.all<WearableMetricPresence>(
+    `SELECT metric_type AS metricType,
+            max(unit)          AS unit,
+            count(DISTINCT date) AS days,
+            max(date)          AS lastDate
+     FROM wearable_data
+     GROUP BY metric_type
+     ORDER BY metric_type`
   );
 }
 

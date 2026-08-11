@@ -3,10 +3,10 @@
  *
  *  - `seedReferenceData` fills the biomarker catalogue (app-shipped reference
  *    data, idempotent via INSERT OR IGNORE on the unique slug). Runs on boot.
- *  - `ensureTodaySeeded` plants a demo mission for today the first time the app
- *    opens on a given day, so the Home screen has something real to render
- *    before any live data exists. Caller passes the seed items (kept data-
- *    agnostic so it's testable and so mock-day stays the single source).
+ *  - `ensureTodaySeeded` makes sure a day has its mission, expanded from the
+ *    user's OWN active protocols (plus the day's mode). It fabricates nothing:
+ *    a user with no protocols gets a genuinely empty day, and Home renders its
+ *    honest first-run state over that.
  *
  * Both are safe to call repeatedly.
  */
@@ -25,7 +25,7 @@ import { BIOMARKER_SEED } from '@/lib/labs/catalog';
 import { modeChangesPlan } from '@/lib/modes/registry';
 import type { MissionItem } from '@/types/home';
 
-/** Mock category label → a real log_entry.type for stored entries. */
+/** Mission category label → a real log_entry.type for stored entries. */
 const TYPE_BY_CATEGORY: Record<string, LogEntryType> = {
   Morning: 'habit',
   Supplements: 'supplement',
@@ -71,44 +71,53 @@ export function seedReferenceData(db: Database): void {
 }
 
 /**
- * Ensure `date` has a mission, protocol-first. The user's ACTIVE protocols are
- * the plan: {@link generateMissionForDay} expands their live versions into the
- * day's `log_entries`. The `fallbackMission` (mock-day) is planted ONLY when the
- * generator produced nothing — i.e. a fresh install with no protocols yet — so
- * Home is never empty before the user (or the Coach) has built any protocol.
+ * Ensure `date` has its mission. The user's ACTIVE protocols are the only plan:
+ * {@link generateMissionForDay} expands their live versions (adapted by the
+ * day's mode) into `log_entries`. **Nothing is invented.** A user with no
+ * protocols gets an empty day, which is the truth — Home renders its first-run
+ * state (`src/components/home/mission-empty.tsx`) rather than a demo mission.
  *
- * Both paths are guarded on *planned* entries (`countMissionEntries`), not
- * ad-hoc Log-tab captures — otherwise a note logged before Home opens on a new
- * day would suppress the whole day's mission (the note is filtered out of it).
- * The guard is per-day, so this fires on the first open of *every* day; once
- * protocols exist that is exactly right (the day is regenerated from them), and
- * a protocol edited today only reshapes tomorrow (today is already committed).
- * Fallback rows carry `seed: true`, generated rows `generated: true`, so the
- * three sources (protocol / mock seed / ad-hoc) stay distinguishable.
+ * Home used to plant an eleven-item mock day here whenever the generator
+ * produced nothing, two of its rows pre-marked `completed`. That wrote fiction
+ * into the user's own health database — the mission opened at "2 of 11", the
+ * hero pinned to an invented supplement stack at any hour, and the Coach's
+ * `get_today_snapshot` reported the invented rows as genuinely done. Nothing
+ * auto-creates protocols, so it replanted every single day. Removed 2026-08-07.
+ *
+ * The generator is idempotent (it no-ops once the day has planned entries), so
+ * this is cheap to call on every open AND every focus — which is what makes
+ * "create your first protocol → return to Home" fill the day immediately.
+ *
+ * `fallbackMission` is a **test fixture affordance only**: passing items plants
+ * them (marked `seed: true`) when the day is otherwise empty, so the headless
+ * db suites can build a deterministic hand-made day. No app code passes it, and
+ * the `seed: true` marking must stay supported regardless — devices that ran
+ * the old build still hold seed rows, and the mode re-derive
+ * (`mission-generate.ts`) keys off it to avoid deleting them.
+ *
+ * The guard is on *planned* entries (`countMissionEntries`), not ad-hoc Log-tab
+ * captures — otherwise a note logged before Home opens on a new day would
+ * suppress the whole day's mission (the note is filtered out of it).
  */
 export function ensureTodaySeeded(
   db: Database,
   date: string,
-  fallbackMission: MissionItem[]
+  fallbackMission: MissionItem[] = []
 ): void {
-  // Protocols drive the day; if any active protocol produced entries, done.
-  //
-  // Since 2026-08-08 a RUNNING EXPERIMENT also contributes an item (its
-  // intervention, so adherence is visible), which means a user with an
-  // experiment and no protocols gets a real one-item mission and no demo. That
-  // is the intended reading of this guard, not an accident: the mock day exists
-  // only to keep Home from being EMPTY on a fresh install, and a day with a
-  // live experiment on it is not empty. Papering a fake demo over the user's
-  // own experiment would be strictly worse.
+  // Protocols, the day's mode, and any RUNNING experiment drive the day; if
+  // they produced entries, done. The experiment's intervention is a real
+  // mission row (mission-generate.ts) so adherence is visible and the readout
+  // can tell "it didn't work" from "he didn't do it" — which also means a user
+  // with an experiment and no protocols has a genuine one-item day, not an
+  // empty one.
   if (generateMissionForDay(db, date) > 0) return;
+  if (fallbackMission.length === 0) return;
 
-  // No protocols (or the day is already populated) — fall back to the mock demo
-  // only when the day is genuinely empty of planned entries.
   const log = getOrCreateDailyLog(db, date);
   if (countMissionEntries(db, log.id) > 0) return;
   // A plan-changing mode that produced no entries (e.g. a future Fasting mode
   // dropping all meals with no additions) has still HANDLED the day — never
-  // paper the mock demo over an intentionally-spare mode day.
+  // paper a fixture over an intentionally-spare mode day.
   if (modeChangesPlan(getActiveMode(db, date))) return;
   db.transaction(() => {
     for (const item of fallbackMission) {

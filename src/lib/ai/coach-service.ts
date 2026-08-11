@@ -2,14 +2,13 @@ import { fetch as expoFetch } from 'expo/fetch';
 
 import type { ChatMessage } from '@/types/coach';
 import { getDb } from '@/lib/db/client';
-import { notificationsAvailable } from '@/lib/notifications/reminders';
 
 import { runCoachTurn, type FetchLike } from './model-client';
 import { apiKeyStore } from './api-key-store';
 import { buildCoachSystemPrompt } from './system-prompt';
 import { buildTurnContext } from './turn-context';
 import { buildWireHistory } from './history-window';
-import { COACH_TOOLS, toolByName, toWireTools } from './tools';
+import { COACH_TOOLS, toolByName, toWireTools, type CoachToolContext } from './tools';
 import type { CoachTurnResult } from './types';
 
 /**
@@ -57,10 +56,25 @@ export type StreamOptions = {
   onToolCall?: (call: { name: string; label: string }) => void;
   /**
    * The thread's rolling summary of turns that have aged out of the window
-   * (ai_conversations.summary, 0028) — prepended so a long thread keeps its
+   * (ai_conversations.summary, 0030) — prepended so a long thread keeps its
    * spine instead of silently losing its first half.
    */
   priorSummary?: string | null;
+  /**
+   * The turn's clock source. Injectable for the same reason
+   * {@link CoachToolContext} takes one — a headless test must be able to place
+   * the turn at a chosen instant, and to move that instant between the moment a
+   * confirmation card is rendered and the moment the user approves it
+   * (db/coach-tools.test.mjs). The app never passes it; on device this is
+   * `new Date`.
+   *
+   * It is a FACTORY, not a fixed `Date`, because a turn is long-lived: reads
+   * spread over minutes of streaming and approval latency, and each tool call
+   * must run against the wall clock as it is when that call happens, not as it
+   * was when the user hit send. What must NOT vary is the clock WITHIN one tool
+   * call — see the single read in `executeTool` below.
+   */
+  now?: () => Date;
 };
 
 /** "get_metric_series" → "metric series" — the caption chips' vocabulary. */
@@ -84,6 +98,14 @@ export async function streamCoachReply(
   if (!apiKey) return mockTurn(history, options);
 
   const db = getDb();
+  // The ONE clock this turn reads. Every `new Date()` that used to be scattered
+  // through this function goes through it, so a test can place the turn — and
+  // move it mid-turn — deterministically.
+  const clock = options.now ?? (() => new Date());
+  // Windowing, the leading-assistant shed, and the tool-result digests all live
+  // in buildWireHistory (src/lib/ai/history-window.ts) — pure, so the same code
+  // is headless-tested. It also folds in the rolling summary of turns that have
+  // aged out, which the inline version here could not.
   const messages = buildWireHistory(history, options.priorSummary);
 
   const result = await runCoachTurn(
@@ -96,11 +118,16 @@ export async function streamCoachReply(
       fetchImpl: expoFetch as unknown as FetchLike,
     },
     {
-      system: buildCoachSystemPrompt({ notificationsLive: notificationsAvailable() }),
-      // The per-turn facts (date, readiness, mode, mission, experiments, the
-      // brief) ride an uncached second system block, so the model never
-      // starts a turn blind — and the cached static prefix survives midnight.
-      systemContext: buildTurnContext(db),
+      // STATIC, and takes no arguments — it is the cached prefix, so anything
+      // per-turn interpolated here would bust the cache on every request.
+      system: buildCoachSystemPrompt(),
+      // Everything per-turn (date, profile, mode, readiness, today's wearable
+      // numbers, mission, experiments, memory, declines, the brief) rides an
+      // UNCACHED second system block after the breakpoint. Read at turn start,
+      // which is when the prompt is built and sent; a tool call minutes later
+      // reads the clock again for itself (below) rather than inheriting this
+      // instant.
+      systemContext: buildTurnContext(db, clock()),
       messages,
       tools: toWireTools(COACH_TOOLS),
     },
@@ -112,11 +139,28 @@ export async function streamCoachReply(
         const tool = toolByName(name);
         if (!tool) return { content: `Unknown tool: ${name}.`, isError: true };
 
-        // ONE clock per tool call, shared by the confirmation card and
-        // execute — so a knowable failure (a future log date) throws at CARD
-        // time instead of after the user's Approve, and the two can never
-        // disagree across a midnight boundary.
-        const context = { now: new Date() };
+        // THE turn clock for this tool call — read ONCE, here, above the
+        // confirmation gate, and handed to both halves of the call. This is the
+        // whole fix: the card the user approves and the row that lands must be
+        // computed from the SAME instant.
+        //
+        // Both halves derive a DAY from it (a bare-time one-off reminder pins to
+        // today or tomorrow depending on whether that clock time has gone by; a
+        // log without an explicit `date` lands on today). Reading the clock a
+        // second time after `await confirmWrite` — which suspends for however
+        // long the user takes to decide — lets those two answers disagree
+        // whenever the approval straddles a boundary: a card rendered at
+        // 08:59:30 for "at 09:00" shows a bare time, and the row written at
+        // 09:00:10 is dated tomorrow. One read, one instant, no window.
+        //
+        // Frozen only for the DURATION OF THIS CALL, deliberately: the user
+        // approved what the card said, so the write must be what the card said.
+        // The next tool call reads the clock again.
+        //
+        // The card VALIDATES against this same instant too, so a knowable
+        // failure (a log date in the future, a mode window that ends before it
+        // begins) throws before the user spends an Approve tap on it.
+        const context: CoachToolContext = { now: clock() };
 
         if (!tool.readOnly) {
           let summary: string;

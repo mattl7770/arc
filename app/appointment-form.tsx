@@ -3,7 +3,9 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -30,17 +32,20 @@ import type { AppointmentInput } from '@/lib/screenings/types';
  * Linking the appointment to a standing screening makes "Mark completed" stamp
  * that screening done and roll its cadence — attending the booked colonoscopy
  * IS completing the screening (completeAppointment, one transaction).
+ *
+ * Conformed Set treatment: every field is **recessed stock** (paper-dim on a
+ * paper-deep edge, square); date and time are measured values and stay in mono;
+ * the two explanatory lines are **margin annotations**.
+ *
+ * Accent budget: exactly one — Save, the single primary action here. "Mark
+ * completed", "Cancel appointment" and "Delete" are neutral ink.
  */
 
 const TIME_SHAPE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
-  );
-}
+/** Shared by every plain text field here: recessed stock, square, no radius. */
+const FIELD =
+  'mt-2 border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] text-ink';
 
 export default function AppointmentFormScreen() {
   const router = useRouter();
@@ -157,21 +162,21 @@ export default function AppointmentFormScreen() {
         </View>
 
         {/* Title */}
-        <View className="mt-2">
-          <SectionLabel>Appointment</SectionLabel>
+        <View className="mt-3">
+          <SectionLabel label="Appointment" />
           <TextInput
             value={title}
             onChangeText={setTitle}
             placeholder="e.g. Dermatology skin check"
             placeholderTextColor={palette.inkMuted}
-            className="mt-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink"
+            className={FIELD}
             accessibilityLabel="Appointment title"
           />
         </View>
 
-        {/* When */}
+        {/* When — both halves are measured values, so both are mono. */}
         <View className="mt-8">
-          <SectionLabel>When</SectionLabel>
+          <SectionLabel label="When" />
           <View className="mt-2 flex-row gap-2">
             <TextInput
               value={date}
@@ -179,7 +184,7 @@ export default function AppointmentFormScreen() {
               placeholder="YYYY-MM-DD"
               placeholderTextColor={palette.inkMuted}
               keyboardType="numbers-and-punctuation"
-              className="flex-1 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 font-mono text-[15px] text-ink"
+              className="min-h-[44px] flex-1 border border-paper-deep bg-paper-dim px-3.5 py-3 font-mono text-[15px] text-ink"
               accessibilityLabel="Appointment date"
             />
             <TextInput
@@ -188,22 +193,24 @@ export default function AppointmentFormScreen() {
               placeholder="HH:MM"
               placeholderTextColor={palette.inkMuted}
               keyboardType="numbers-and-punctuation"
-              className="w-24 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 font-mono text-[15px] text-ink"
+              className="min-h-[44px] w-24 border border-paper-deep bg-paper-dim px-3.5 py-3 font-mono text-[15px] text-ink"
               accessibilityLabel="Appointment time, 24-hour"
             />
           </View>
-          <Text className="mt-1.5 text-[11px] text-ink-muted">Local time, 24-hour clock</Text>
+          <Text className="mt-1.5 font-serif text-[11px] text-ink-muted">
+            Local time, 24-hour clock
+          </Text>
         </View>
 
         {/* Provider / location */}
         <View className="mt-8">
-          <SectionLabel>Provider (optional)</SectionLabel>
+          <SectionLabel label="Provider (optional)" />
           <TextInput
             value={provider}
             onChangeText={setProvider}
             placeholder="e.g. Dr. Osei"
             placeholderTextColor={palette.inkMuted}
-            className="mt-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink"
+            className={FIELD}
             accessibilityLabel="Provider"
           />
           <TextInput
@@ -211,7 +218,7 @@ export default function AppointmentFormScreen() {
             onChangeText={setLocation}
             placeholder="Location"
             placeholderTextColor={palette.inkMuted}
-            className="mt-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] text-ink"
+            className={FIELD}
             accessibilityLabel="Location"
           />
         </View>
@@ -219,7 +226,7 @@ export default function AppointmentFormScreen() {
         {/* Link to a standing screening */}
         {screenings.length > 0 ? (
           <View className="mt-8">
-            <SectionLabel>For screening (optional)</SectionLabel>
+            <SectionLabel label="For screening (optional)" />
             <View className="mt-2 flex-row flex-wrap gap-2">
               {screenings.map((s) => {
                 const on = screeningId === s.id;
@@ -229,46 +236,52 @@ export default function AppointmentFormScreen() {
                     accessibilityRole="button"
                     accessibilityState={{ selected: on }}
                     onPress={() => setScreeningId((cur) => (cur === s.id ? null : s.id))}
-                    className={`rounded-btn border px-3 py-2 active:bg-paper-deep ${
-                      on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline bg-porcelain'
+                    className={`min-h-[44px] justify-center rounded-btn border px-3 py-2 active:bg-paper-dim ${
+                      on ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'
                     }`}>
                     <Text
-                      className={`text-[13px] ${on ? 'font-medium text-ink' : 'text-ink-secondary'}`}>
+                      className={`font-label text-[13px] ${
+                        on ? 'font-semibold text-ink' : 'text-ink-secondary'
+                      }`}>
                       {s.name}
                     </Text>
                   </Pressable>
                 );
               })}
             </View>
-            <Text className="mt-1.5 text-[11px] text-ink-muted">
-              Completing a linked appointment marks the screening done
-            </Text>
+            <View className="mt-2">
+              <Block device="margin">
+                <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+                  Completing a linked appointment marks the screening done.
+                </Text>
+              </Block>
+            </View>
           </View>
         ) : null}
 
         {/* Notes */}
         <View className="mt-8">
-          <SectionLabel>Notes (optional)</SectionLabel>
+          <SectionLabel label="Notes (optional)" />
           <TextInput
             value={notes}
             onChangeText={setNotes}
             placeholder="Prep instructions, referral number, questions…"
             placeholderTextColor={palette.inkMuted}
             multiline
-            className="mt-2 max-h-28 min-h-[64px] rounded-btn border border-hairline-soft bg-paper-deep px-3.5 py-3 text-[15px] leading-5 text-ink"
+            className="mt-2 max-h-28 min-h-[64px] border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] leading-5 text-ink"
             accessibilityLabel="Notes"
           />
         </View>
 
-        {/* The one pine action on this screen. */}
+        {/* The one accent on this screen. */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={editingId ? 'Save appointment' : 'Add appointment'}
           accessibilityState={{ disabled: !canSave }}
           disabled={!canSave}
           onPress={save}
-          className={`mt-8 flex-row items-center justify-center gap-2 rounded-btn py-3.5 ${
-            canSave ? 'bg-pine active:opacity-70' : 'bg-hairline'
+          className={`mt-8 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn py-3.5 ${
+            canSave ? 'bg-pine active:opacity-70' : 'border border-hairline bg-paper-dim'
           }`}>
           <Ionicons
             name="calendar-outline"
@@ -276,7 +289,9 @@ export default function AppointmentFormScreen() {
             color={canSave ? palette.pineOn : palette.inkMuted}
           />
           <Text
-            className={`text-[15px] font-semibold ${canSave ? 'text-pine-on' : 'text-ink-muted'}`}>
+            className={`font-label text-[15px] font-semibold ${
+              canSave ? 'text-pine-on' : 'text-ink-muted'
+            }`}>
             {editingId ? 'Save appointment' : 'Add appointment'}
           </Text>
         </Pressable>
@@ -287,9 +302,9 @@ export default function AppointmentFormScreen() {
               accessibilityRole="button"
               accessibilityLabel="Mark completed"
               onPress={markCompleted}
-              className="mt-3 flex-row items-center justify-center gap-2 rounded-btn border border-hairline-strong py-3 active:bg-paper-deep">
+              className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
               <Ionicons name="checkmark" size={16} color={palette.inkSecondary} />
-              <Text className="text-[14px] font-medium text-ink-secondary">
+              <Text className="font-label text-[14px] font-medium text-ink-secondary">
                 {linkedName ? `Mark completed · stamps ${linkedName} done` : 'Mark completed'}
               </Text>
             </Pressable>
@@ -299,15 +314,15 @@ export default function AppointmentFormScreen() {
                 accessibilityRole="button"
                 accessibilityLabel="Cancel appointment"
                 onPress={confirmCancel}
-                className="py-2 active:opacity-60">
-                <Text className="text-[13px] text-ink-muted">Cancel appointment</Text>
+                className="min-h-[44px] justify-center active:opacity-60">
+                <Text className="font-label text-[13px] text-ink-muted">Cancel appointment</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Delete appointment"
                 onPress={confirmDelete}
-                className="py-2 active:opacity-60">
-                <Text className="text-[13px] text-ink-muted">Delete</Text>
+                className="min-h-[44px] justify-center active:opacity-60">
+                <Text className="font-label text-[13px] text-ink-muted">Delete</Text>
               </Pressable>
             </View>
           </>

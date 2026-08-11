@@ -1,8 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { router } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Block } from '@/components/ui/block';
+import { PaperGrid } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import {
@@ -17,8 +21,34 @@ import type { CatalogExercise, Equipment, Muscle } from '@/lib/exercise/types';
  * The exercise picker — a modal reused by the routine builder and the live
  * logger. Loads the whole catalog once (69 seeded + any custom) and filters
  * in-memory by search + muscle, so there are no DB reads during render. Also
- * creates a custom exercise inline and selects it. Porcelain Ledger throughout:
- * one pine action per view (Create), mono for the muscle/equipment meta.
+ * creates a custom exercise inline and selects it.
+ *
+ * ## The surface system (00-design-spec.md §1)
+ *
+ *   Catalog list   plate   a catalog is a record, so the results are ruled
+ *
+ * The search field and the filter chips are controls, not content blocks, so
+ * they take no device: the field is recessed stock drawn inline and the chips
+ * are outlined in the label voice.
+ *
+ * **Accent budget: one per view, and only in one of the two.** Browsing has no
+ * accent at all — picking a row *is* the action, and it is a plain tap. The
+ * create form has exactly one: "Create & add".
+ *
+ * ## Two affordances per row, and why it is two
+ *
+ * This picker is the app's only route into `app/exercise-detail` (history,
+ * estimated-1RM trend, personal records). The row itself cannot carry both jobs:
+ * `onSelect` is the picker's contract with app/routine-edit.tsx and
+ * app/workout-live.tsx, and tapping a name there must keep meaning "add this
+ * one". So the detail sits BESIDE the row as its own 44pt button with its own
+ * label — visible, not a hidden long-press, and impossible to hit by accident
+ * while adding.
+ *
+ * Opening it has to survive the modal. A pushed route renders *under* a native
+ * `Modal`, so the detail would open invisibly behind this sheet; the id is
+ * parked instead and pushed from `onDismiss`, which fires once the sheet is
+ * actually gone. (`onDismiss` is iOS-only, and ARC is iOS-only — CLAUDE.md §3.)
  */
 
 type Props = {
@@ -56,6 +86,8 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
   const [search, setSearch] = useState('');
   const [muscle, setMuscle] = useState<Muscle | null>(null);
   const [creating, setCreating] = useState(false);
+  // Set when the user asks for a detail screen; consumed by onDismiss below.
+  const [pendingDetailId, setPendingDetailId] = useState<string | null>(null);
 
   const reloadCatalog = useCallback(() => setAll(listExercises(getDb())), []);
 
@@ -76,46 +108,76 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
     onSelect(ex);
   };
 
-  return (
-    <Modal visible={visible} animationType="slide" onRequestClose={close} transparent={false}>
-      <SafeAreaView edges={['top', 'bottom']} className="flex-1 bg-paper">
-        <View className="flex-1 px-5">
-          {/* Header */}
-          <View className="flex-row items-center gap-1 pb-1 pt-2">
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-              onPress={close}
-              className="-ml-2 h-9 w-9 items-center justify-center rounded-btn active:opacity-60">
-              <Ionicons name="close" size={22} color={palette.ink} />
-            </Pressable>
-            <Text className="font-serif text-lg font-semibold text-ink">
-              {creating ? 'New exercise' : 'Add exercise'}
-            </Text>
-          </View>
+  /**
+   * Park the id and dismiss. Nothing is selected — the caller's `onSelect` is
+   * untouched — so backing out of the detail screen leaves the routine or the
+   * live workout exactly as it was.
+   */
+  const openDetail = (ex: CatalogExercise) => {
+    setPendingDetailId(ex.id);
+    close();
+  };
 
-          {creating ? (
-            <CreateExerciseForm
-              onCancel={() => setCreating(false)}
-              onCreated={(id) => {
-                reloadCatalog();
-                const ex = getExercise(getDb(), id);
-                if (ex) select(ex);
-              }}
-            />
-          ) : (
-            <BrowseCatalog
-              search={search}
-              setSearch={setSearch}
-              muscle={muscle}
-              setMuscle={setMuscle}
-              filtered={filtered}
-              onSelect={select}
-              onNew={() => setCreating(true)}
-            />
-          )}
-        </View>
-      </SafeAreaView>
+  /** Runs after the sheet is really gone, so the pushed screen is on top of it. */
+  const afterDismiss = () => {
+    if (pendingDetailId === null) return;
+    const id = pendingDetailId;
+    setPendingDetailId(null);
+    router.push({ pathname: '/exercise-detail', params: { id } });
+  };
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={close}
+      onDismiss={afterDismiss}
+      transparent={false}>
+      {/* A native Modal never passes through `<Screen>`, so it prints the sheet
+          itself. Outside the SafeAreaView (edge to edge, no seam at the inset)
+          and outside every ScrollView below (the paper does not scroll). */}
+      <View className="flex-1 bg-paper">
+        <PaperGrid />
+        <SafeAreaView edges={['top', 'bottom']} className="flex-1">
+          <View className="flex-1 px-5">
+            {/* Header */}
+            <View className="flex-row items-center gap-1 pb-1 pt-2">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                onPress={close}
+                className="-ml-2 h-11 w-11 items-center justify-center active:opacity-60">
+                <Ionicons name="close" size={22} color={palette.ink} />
+              </Pressable>
+              <Text className="font-serif text-lg font-semibold text-ink">
+                {creating ? 'New exercise' : 'Add exercise'}
+              </Text>
+            </View>
+
+            {creating ? (
+              <CreateExerciseForm
+                onCancel={() => setCreating(false)}
+                onCreated={(id) => {
+                  reloadCatalog();
+                  const ex = getExercise(getDb(), id);
+                  if (ex) select(ex);
+                }}
+              />
+            ) : (
+              <BrowseCatalog
+                search={search}
+                setSearch={setSearch}
+                muscle={muscle}
+                setMuscle={setMuscle}
+                filtered={filtered}
+                onSelect={select}
+                onOpenDetail={openDetail}
+                onNew={() => setCreating(true)}
+              />
+            )}
+          </View>
+        </SafeAreaView>
+      </View>
     </Modal>
   );
 }
@@ -127,6 +189,7 @@ function BrowseCatalog({
   setMuscle,
   filtered,
   onSelect,
+  onOpenDetail,
   onNew,
 }: {
   search: string;
@@ -135,19 +198,20 @@ function BrowseCatalog({
   setMuscle: (m: Muscle | null) => void;
   filtered: CatalogExercise[];
   onSelect: (ex: CatalogExercise) => void;
+  onOpenDetail: (ex: CatalogExercise) => void;
   onNew: () => void;
 }) {
   return (
     <>
-      {/* Search */}
-      <View className="mt-2 min-h-[44px] flex-row items-center gap-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+      {/* Search — recessed stock: you write into it. */}
+      <View className="mt-2 min-h-[44px] flex-row items-center gap-2 border border-paper-deep bg-paper-dim px-3.5">
         <Ionicons name="search" size={16} color={palette.inkMuted} />
         <TextInput
           value={search}
           onChangeText={setSearch}
           placeholder="Search exercises"
           placeholderTextColor={palette.inkMuted}
-          className="flex-1 py-2.5 text-[15px] text-ink"
+          className="flex-1 py-2.5 font-serif text-[15px] text-ink"
           accessibilityLabel="Search exercises"
           autoCorrect={false}
         />
@@ -175,65 +239,107 @@ function BrowseCatalog({
         accessibilityRole="button"
         accessibilityLabel="Create a custom exercise"
         onPress={onNew}
-        className="mt-3 h-11 flex-row items-center justify-center gap-2 rounded-btn border border-hairline-strong active:bg-paper-deep">
+        className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
         <Ionicons name="add" size={17} color={palette.inkSecondary} />
-        <Text className="text-[13px] font-medium text-ink">New exercise</Text>
+        <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+          New exercise
+        </Text>
       </Pressable>
 
-      {/* List */}
+      {/* Results — a catalog is a record, so: one ruled plate, and only when
+          the search actually returns one. A plate closes a record; a search
+          that matched nothing has no record to close, only a sentence — and a
+          border around one sentence is the box-around-a-single-thing the owner
+          keeps seeing. It appears mid-typing here, so it is seen often. Same
+          shape as app/protocols.tsx. */}
       <ScrollView
         className="-mx-5 mt-3 flex-1 px-5"
         keyboardShouldPersistTaps="handled"
         contentContainerClassName="pb-8">
         {filtered.length === 0 ? (
-          <Text className="mt-4 text-[13px] leading-5 text-ink-muted">
-            No exercises match. Try a different search, or create a custom one above.
-          </Text>
-        ) : (
-          <View className="rounded-card border border-hairline bg-porcelain">
-            {filtered.map((ex, i) => (
-              <Pressable
-                key={ex.id}
-                accessibilityRole="button"
-                accessibilityLabel={`Add ${ex.name}`}
-                onPress={() => onSelect(ex)}
-                className={`flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep ${
-                  i === 0 ? '' : 'border-t border-hairline-soft'
-                }`}>
-                <View className="flex-1">
-                  <Text className="text-[15px] text-ink">{ex.name}</Text>
-                  <Text className="mt-0.5 font-mono text-[10.5px] uppercase tracking-[1px] text-ink-muted">
-                    {ex.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ') || '—'} ·{' '}
-                    {equipmentLabel(ex.equipment)}
-                  </Text>
-                </View>
-                {ex.isCustom ? (
-                  <View className="rounded-btn bg-paper-deep px-2 py-0.5">
-                    <Text className="font-mono text-[9px] uppercase tracking-[1px] text-ink-muted">
-                      Custom
-                    </Text>
-                  </View>
-                ) : null}
-                <Ionicons name="add" size={18} color={palette.inkMuted} />
-              </Pressable>
-            ))}
+          <View>
+            <SectionLabel label="Catalog" />
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              No exercises match. Try a different search, or create a custom one above.
+            </Text>
           </View>
+        ) : (
+          <Block device="plate">
+            <SectionLabel label="Catalog" note={String(filtered.length)} />
+            <View className="mt-1">
+              {filtered.map((ex, i) => (
+                // Two controls, one row. The row proper adds; the button past
+                // the rule opens that exercise's history and records. The rule
+                // is what says they are two things — without it the icons read
+                // as one cluster of decoration on a single tap target.
+                <View
+                  key={ex.id}
+                  className={`flex-row items-center ${i === 0 ? '' : 'border-t border-hairline'}`}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Add ${ex.name}`}
+                    onPress={() => onSelect(ex)}
+                    className="min-h-[44px] flex-1 flex-row items-center gap-3 py-2 pr-3 active:opacity-60">
+                    <View className="flex-1">
+                      <Text className="font-serif text-[15px] text-ink">{ex.name}</Text>
+                      <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                        {ex.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ') || '—'} ·{' '}
+                        {equipmentLabel(ex.equipment)}
+                      </Text>
+                    </View>
+                    {/* A one-word marker, not an object: it used to sit in its
+                        own hairline box, which put a border inside a plate row
+                        that is already ruled top and bottom (owner, 2026-08-10 —
+                        boxes around a single item). The label voice is what
+                        marks it, the same as the muscle/equipment line above. */}
+                    {ex.isCustom ? (
+                      <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                        Custom
+                      </Text>
+                    ) : null}
+                    <Ionicons name="add" size={18} color={palette.inkMuted} />
+                  </Pressable>
+                  {/* `self-stretch` so the rule matches the row it divides even
+                      when a long name wraps; width holds the 44pt floor. */}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${ex.name} history and records`}
+                    onPress={() => onOpenDetail(ex)}
+                    className="min-h-[44px] w-11 items-center justify-center self-stretch border-l border-hairline active:bg-paper-dim">
+                    <Ionicons name="analytics-outline" size={17} color={palette.inkMuted} />
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          </Block>
         )}
       </ScrollView>
     </>
   );
 }
 
+/**
+ * A filter / option chip in the label voice. Selection is marked by a recessed fill
+ * and weight, never by the accent — a chip is chrome, and the accent budget is
+ * spent on the one primary action per view.
+ *
+ * `min-h-[44px]` is the tap-target floor and has to be declared here: this chip
+ * is laid out in a horizontal ScrollView and in two `flex-wrap` rows, none of
+ * which stretch a child to a height it did not ask for. It was 36pt.
+ */
 function FilterChip({ label, on, onPress }: { label: string; on: boolean; onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ selected: on }}
       onPress={onPress}
-      className={`rounded-btn border px-3 py-1.5 active:bg-paper-deep ${
-        on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline bg-porcelain'
+      className={`min-h-[44px] justify-center rounded-btn border border-hairline px-3 active:opacity-60 ${
+        on ? 'bg-paper-dim' : ''
       }`}>
-      <Text className={`text-[12.5px] ${on ? 'font-medium text-ink' : 'text-ink-secondary'}`}>
+      <Text
+        className={`font-label text-[11px] uppercase tracking-[1px] ${
+          on ? 'font-semibold text-ink' : 'text-ink-secondary'
+        }`}>
         {label}
       </Text>
     </Pressable>
@@ -271,21 +377,21 @@ function CreateExerciseForm({
       className="-mx-5 mt-2 flex-1 px-5"
       keyboardShouldPersistTaps="handled"
       contentContainerClassName="pb-8">
-      <View className="min-h-[44px] justify-center rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
+      <View className="min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
         <TextInput
           value={name}
           onChangeText={setName}
           placeholder="Exercise name"
           placeholderTextColor={palette.inkMuted}
-          className="py-2.5 text-[15px] text-ink"
+          className="py-2.5 font-serif text-[15px] text-ink"
           accessibilityLabel="Exercise name"
           autoFocus
         />
       </View>
 
-      <Text className="mt-6 text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-        Equipment
-      </Text>
+      <View className="mt-6">
+        <SectionLabel label="Equipment" />
+      </View>
       <View className="mt-2 flex-row flex-wrap gap-2">
         {EQUIPMENT_OPTIONS.map((o) => (
           <FilterChip
@@ -297,9 +403,9 @@ function CreateExerciseForm({
         ))}
       </View>
 
-      <Text className="mt-6 text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-        Primary muscle
-      </Text>
+      <View className="mt-6">
+        <SectionLabel label="Primary muscle" />
+      </View>
       <View className="mt-2 flex-row flex-wrap gap-2">
         {MUSCLE_ORDER.map((m) => (
           <FilterChip
@@ -311,7 +417,11 @@ function CreateExerciseForm({
         ))}
       </View>
 
-      {/* The one pine action in this view. */}
+      {/*
+        The one primary action in this view. Disabled reads as an unfilled
+        outline rather than a filled grey: muted ink on the sheet clears 4.5:1,
+        on a hairline fill it does not.
+      */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Create exercise"
@@ -319,10 +429,12 @@ function CreateExerciseForm({
         disabled={!canCreate}
         onPress={create}
         className={`mt-8 h-12 items-center justify-center rounded-btn ${
-          canCreate ? 'bg-pine active:opacity-70' : 'bg-hairline'
+          canCreate ? 'bg-pine active:opacity-70' : 'border border-hairline'
         }`}>
         <Text
-          className={`text-[15px] font-semibold ${canCreate ? 'text-pine-on' : 'text-ink-muted'}`}>
+          className={`font-label text-[15px] font-semibold ${
+            canCreate ? 'text-pine-on' : 'text-ink-muted'
+          }`}>
           Create & add
         </Text>
       </Pressable>
@@ -330,8 +442,10 @@ function CreateExerciseForm({
         accessibilityRole="button"
         accessibilityLabel="Cancel"
         onPress={onCancel}
-        className="mt-3 h-11 items-center justify-center rounded-btn active:bg-paper-deep">
-        <Text className="text-[13px] text-ink-secondary">Back to search</Text>
+        className="mt-3 min-h-[44px] items-center justify-center active:opacity-60">
+        <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
+          Back to search
+        </Text>
       </Pressable>
     </ScrollView>
   );

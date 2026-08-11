@@ -8,10 +8,21 @@
  * a new migration's tables ride along automatically and the export can never
  * silently fall behind the schema. "Never silently" is enforced, not assumed:
  * every value must be a JSON-safe scalar or the export FAILS LOUD (see
- * assertScalar) — so the day a BLOB column or a sqlite-vec vec0 table lands,
- * the export (and the tripwire in db/export.test.mjs) demands an explicit
- * decision instead of writing a corrupted file. Reads are synchronous on a
- * single connection, so the snapshot is consistent without a transaction.
+ * assertScalar) — so the day a BLOB column lands, the export (and the tripwire
+ * in db/export.test.mjs) demands an explicit decision instead of writing a
+ * corrupted file. Reads are synchronous on a single connection, so the snapshot
+ * is consistent without a transaction.
+ *
+ * The ONE thing enumeration must not swallow is a VIRTUAL table: the sqlite-vec
+ * `vec0` index (`vec_chunks`, created lazily on device by
+ * src/lib/db/repositories/rag.ts) plus the shadow tables SQLite materialises
+ * under it hold packed float BLOBs, so a naive `SELECT *` over sqlite_master
+ * would hit assertScalar and break export permanently the first time RAG runs.
+ * They are therefore excluded by construction ({@link partitionTables}) and
+ * named in the envelope, never silently dropped. Nothing of value is lost:
+ * vectors are DERIVED — re-embeddable from the exported knowledge_chunks /
+ * memory_chunks text — which is exactly why they, and not the chunk text, are
+ * the part that may be left behind.
  *
  * Format: one JSON document, every table as an array of row objects, plus
  * enough envelope (schema version, format version, timestamp) for a future
@@ -32,20 +43,122 @@ export interface ArcExport {
   appVersion: string | null;
   /** The DB's PRAGMA user_version — which migrations the tables reflect. */
   schemaVersion: number;
+  /**
+   * Tables deliberately left out: virtual tables and their shadow tables (the
+   * `vec0` vector index). Recorded rather than silently dropped, so anyone
+   * reading the file can see exactly what is NOT in it. `[]` until RAG has run
+   * on device. Their content is derived and rebuildable — see the file header.
+   */
+  omittedTables: string[];
   tables: Record<string, Record<string, Scalar>[]>;
 }
 
+/** The candidate set: every table except SQLite's own `sqlite_*` internals. */
+const USER_TABLES_SQL =
+  "SELECT name, sql FROM sqlite_master WHERE type = 'table' " +
+  "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name";
+
 /**
- * Every user table in the database, alphabetical. Excludes only SQLite's own
- * internals (sqlite_sequence etc.) — reference/seed tables are included on
- * purpose: an export should restore to a working dataset, not a partial one.
+ * The engine's OWN classification of each table (SQLite >= 3.37). `type` is
+ * 'table' | 'view' | 'virtual' | 'shadow', decided by the loaded module rather
+ * than by us guessing from a name.
+ */
+const TABLE_LIST_SQL =
+  "SELECT name FROM pragma_table_list WHERE schema = 'main' AND type IN ('virtual', 'shadow')";
+
+/**
+ * A virtual table, identified from its own stored DDL. sqlite_master.sql holds
+ * the CREATE statement as written (minus `IF NOT EXISTS`, which SQLite strips),
+ * so this matches whatever module made it — vec0, fts5, rtree — without a
+ * hardcoded name list. Shadow tables do NOT match: their stored sql is a plain
+ * `CREATE TABLE`, which is the whole reason a second rule is needed below.
+ */
+const CREATE_VIRTUAL_TABLE = /^\s*CREATE\s+VIRTUAL\s+TABLE\b/i;
+
+type SchemaRow = { name: string; sql: string | null };
+
+export interface TablePartition {
+  /** Real tables, alphabetical — what actually gets dumped. */
+  exported: string[];
+  /** Virtual + shadow tables, alphabetical — what is skipped, and reported. */
+  omitted: string[];
+}
+
+/**
+ * Split sqlite_master's tables into "dump this" and "skip this", using THREE
+ * independent signals so no single engine assumption can break the export:
+ *
+ *  1. `CREATE VIRTUAL TABLE` in the table's own sqlite_master.sql — catches the
+ *     virtual table itself on any engine, any SQLite version, no module
+ *     cooperation required.
+ *  2. SQLite's own shadow-table NAMING rule: a shadow table is `<vtab>_<suffix>`
+ *     for some virtual table `<vtab>`. This is not a guess — it is the rule
+ *     sqlite3ShadowTableName() applies for defensive mode, and it is what
+ *     sqlite-vec follows (`vec_chunks` ⇒ `vec_chunks_chunks`,
+ *     `vec_chunks_rowids`, `vec_chunks_vector_chunks00`, `vec_chunks_info`, …).
+ *     Shadow rows look like ordinary tables in sqlite_master, so signal 1 alone
+ *     would miss them — and they are the ones holding the BLOBs.
+ *  3. `pragma_table_list.type` — the engine's own verdict, cross-checking 1+2.
+ *     Wrapped in try/catch: it needs SQLite >= 3.37 and can be compiled out, and
+ *     it depends on the module implementing xShadowName, so it is a bonus rather
+ *     than the foundation. op-sqlite ships a modern SQLite and will answer it;
+ *     if anything ever doesn't, 1+2 still stand on their own.
+ *
+ * Signals 1+2 are pure sqlite_master reads, which is why this is correct on
+ * op-sqlite and not merely on node:sqlite (whose build has no vec0 at all).
+ * The accepted ambiguity is SQLite's own: a REAL table literally named
+ * `<vtab>_something` would be treated as a shadow. Nothing in the schema is
+ * (`knowledge_chunks` / `memory_chunks` do not start with `vec_chunks_`), and
+ * signal 2 lies dormant until a virtual table actually exists.
+ */
+export function partitionTables(db: Database): TablePartition {
+  const rows = db.all<SchemaRow>(USER_TABLES_SQL);
+  const known = new Set(rows.map((row) => row.name));
+  const omitted = new Set<string>();
+
+  // (1) The virtual tables themselves.
+  const virtuals: string[] = [];
+  for (const row of rows) {
+    if (typeof row.sql === 'string' && CREATE_VIRTUAL_TABLE.test(row.sql)) {
+      omitted.add(row.name);
+      virtuals.push(row.name);
+    }
+  }
+
+  // (2) Their shadow tables, by SQLite's `<vtab>_<suffix>` rule.
+  if (virtuals.length > 0) {
+    for (const row of rows) {
+      if (omitted.has(row.name)) continue;
+      const isShadow = virtuals.some(
+        (vtab) => row.name.length > vtab.length + 1 && row.name.startsWith(`${vtab}_`)
+      );
+      if (isShadow) omitted.add(row.name);
+    }
+  }
+
+  // (3) The engine's own classification, where the engine offers one.
+  try {
+    for (const row of db.all<{ name: string }>(TABLE_LIST_SQL)) {
+      if (known.has(row.name)) omitted.add(row.name);
+    }
+  } catch {
+    // Pre-3.37 or introspection pragmas compiled out — (1)+(2) already suffice.
+  }
+
+  return {
+    exported: rows.map((row) => row.name).filter((name) => !omitted.has(name)),
+    omitted: [...omitted].sort(),
+  };
+}
+
+/**
+ * Every REAL user table in the database, alphabetical. Excludes SQLite's own
+ * internals (sqlite_sequence etc.) and virtual/shadow tables ({@link
+ * partitionTables}) — reference/seed tables are included on purpose: an export
+ * should restore to a working dataset, not a partial one.
  */
 export function listExportTables(db: Database): string[] {
-  return db
-    .all<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name"
-    )
-    .map((row) => row.name);
+  return partitionTables(db).exported;
 }
 
 /** Names come from sqlite_master, but quote anyway so odd names can't break SQL. */
@@ -103,8 +216,9 @@ export function buildExport(
   db: Database,
   meta: { exportedAt: string; appVersion?: string | null }
 ): ArcExport {
+  const { exported, omitted } = partitionTables(db);
   const tables: Record<string, Record<string, Scalar>[]> = {};
-  for (const name of listExportTables(db)) {
+  for (const name of exported) {
     tables[name] = readAllRows(db, name);
   }
   return {
@@ -113,6 +227,7 @@ export function buildExport(
     exportedAt: meta.exportedAt,
     appVersion: meta.appVersion ?? null,
     schemaVersion: schemaVersion(db),
+    omittedTables: omitted,
     tables,
   };
 }

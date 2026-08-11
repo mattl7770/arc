@@ -7,10 +7,11 @@
  */
 import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
-import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
-import { biomarkerSeries } from '@/lib/db/repositories/labs';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { listMission } from '@/lib/db/repositories/mission';
+import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
+import { biomarkerSeries } from '@/lib/db/repositories/labs';
+import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/experiments';
 import { weekSummary } from '@/lib/db/repositories/exercise';
@@ -18,18 +19,17 @@ import { listTodayMeals, todayTotals } from '@/lib/db/repositories/nutrition';
 import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocols';
 import { isDueOn, listActiveReminders } from '@/lib/db/repositories/reminders';
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
-import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
 import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
-import { dailyMetricSeries } from '@/lib/db/repositories/wearables';
+import { deviceLabel, pickDailyMetric } from '@/lib/db/repositories/wearables';
+import { SAMPLE_METRICS, STATISTIC_METRICS } from '@/lib/health/mapping';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
 import { getModeDefinition } from '@/lib/modes/registry';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import type { BiomarkerRow } from '@/lib/db/types';
+import type { UnitPreferences } from '@/lib/user/types';
 
-import { ageOn } from '../turn-context';
-
-import { computeInsights, generateDailyBrief } from '../insights';
+import { computeInsights, dueRemindersFor, generateDailyBrief } from '../insights';
 import {
   bodyDailySeries,
   endOfLocalDayUtc,
@@ -38,11 +38,15 @@ import {
   round1,
   seriesStats,
   trainingDailyTotals,
+  wearableArbitratedSeries,
   wearableDailySeries,
+  wearableMetricInventory,
   type SeriesPoint,
+  type WearableMetricPresence,
 } from '../series';
 import { retrievePassages } from '@/lib/rag/retrieve';
 import { searchUserHistory } from '../history-search';
+import { ageOn } from '../turn-context';
 import {
   asRecord,
   daysWindow,
@@ -55,16 +59,344 @@ import {
 
 const json = (value: unknown): string => JSON.stringify(value);
 
+// --- The wearable metric catalog ---------------------------------------------
+//
+// `wearable_data.metric_type` is deliberately free text so a new vendor metric
+// is never a migration (CLAUDE.md §9). A hardcoded enum of readable metrics
+// therefore rots on contact with the next ingest — which is exactly how the
+// Coach ended up blind to steps, sleep, energy and VO2max while the HealthKit
+// pipeline was happily writing all of them.
+//
+// So the readable set is built in two layers and never typed out by hand:
+//
+//   1. DERIVED from the ingest specs themselves (src/lib/health/mapping.ts's
+//      SAMPLE_METRICS + STATISTIC_METRICS, plus the sleep rows sleepDailyRows
+//      emits and the manual-log wearable targets). Add a metric to the pipeline
+//      and it is readable here with no edit to this file.
+//   2. DISCOVERED from the data (SELECT DISTINCT metric_type). Anything present
+//      that layer 1 does not describe still becomes readable, with its unit
+//      taken from the rows and `inferred: true` flagged in the output so the
+//      model knows the semantics were guessed rather than declared.
+
+type WearableAgg =
+  /** One winning source per day — the rule Home and the Data tab use. */
+  | 'arbitrated'
+  /** Genuinely accumulating: many rows a day that must be added up. */
+  | 'sum';
+
+type WearableMetricSpec = {
+  metricType: string;
+  label: string;
+  /** The canonical unit stored in wearable_data.unit. */
+  canonicalUnit: string;
+  agg: WearableAgg;
+  decimals: number;
+  /** Minutes-valued: also rendered "7h 11m", never left as a raw minute count. */
+  isDuration?: boolean;
+  /**
+   * True when today's value is a RUNNING TOTAL that keeps growing until
+   * midnight (steps, energy burned, water). The same distinction insights.ts
+   * calls `accumulating` — and it is NOT the same axis as {@link WearableAgg}.
+   * `agg` says how to fold MANY ROWS into one day; this says whether that day,
+   * once folded, is finished. Steps arbitrate to one source (agg 'arbitrated')
+   * and still accumulate all day, which is exactly how a two-hour-old today of
+   * 900 steps got averaged in beside seven complete 8,000-step days.
+   *
+   * False for whole-fact readings: an HRV sample, a night's sleep, a VO2max
+   * estimate are each complete the moment they are written and must keep
+   * counting today.
+   */
+  accumulating?: boolean;
+  /** Dimensions the user has a Settings preference for. */
+  display?: 'volume' | 'temperature';
+  /** True when the spec was guessed from the rows, not declared by the pipeline. */
+  inferred?: boolean;
+};
+
+/** Readable names for the pipeline's metric_types (the specs carry no label). */
+const WEARABLE_LABELS: Record<string, string> = {
+  hrv: 'HRV',
+  rhr: 'Resting heart rate',
+  respiratory_rate: 'Respiratory rate',
+  spo2_pct: 'Blood oxygen',
+  body_temp_c: 'Body temperature',
+  wrist_temp_c: 'Sleeping wrist temperature',
+  vo2max: 'VO2max',
+  steps: 'Steps',
+  active_energy_kcal: 'Active energy',
+  resting_energy_kcal: 'Resting energy',
+};
+
+/** The sleep rows sleepDailyRows() emits, in the order a night reads. */
+const SLEEP_METRICS: readonly (readonly [string, string])[] = [
+  ['sleep_duration_min', 'Sleep (asleep)'],
+  ['sleep_in_bed_min', 'Time in bed'],
+  ['sleep_deep_min', 'Deep sleep'],
+  ['sleep_rem_min', 'REM sleep'],
+  ['sleep_core_min', 'Core sleep'],
+  ['sleep_awake_min', 'Awake during the night'],
+];
+
+function humanize(metricType: string): string {
+  const words = metricType.replace(/_/g, ' ').trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function tempSpec(metricType: string): WearableMetricSpec {
+  return {
+    metricType,
+    label: WEARABLE_LABELS[metricType] ?? humanize(metricType),
+    canonicalUnit: 'c',
+    agg: 'arbitrated',
+    decimals: 2,
+    display: 'temperature',
+  };
+}
+
+/** Layer 1: everything the ingest pipeline is known to write. */
+const DECLARED_WEARABLE_METRICS: readonly WearableMetricSpec[] = [
+  ...SAMPLE_METRICS.map((spec): WearableMetricSpec =>
+    spec.unit === 'c'
+      ? tempSpec(spec.metricType)
+      : {
+          metricType: spec.metricType,
+          label: WEARABLE_LABELS[spec.metricType] ?? humanize(spec.metricType),
+          canonicalUnit: spec.unit,
+          agg: 'arbitrated',
+          decimals: spec.decimals,
+        }
+  ),
+  ...STATISTIC_METRICS.map((spec): WearableMetricSpec => ({
+    metricType: spec.metricType,
+    label: WEARABLE_LABELS[spec.metricType] ?? humanize(spec.metricType),
+    canonicalUnit: spec.unit,
+    agg: 'arbitrated',
+    decimals: spec.decimals,
+    // A HealthKit *statistic* is a cumulative sum over the day (steps, active
+    // energy, resting energy). One row per day, rewritten as the day grows, so
+    // arbitration picks a single source — but today's number is still partial.
+    accumulating: true,
+  })),
+  ...SLEEP_METRICS.map(([metricType, label]): WearableMetricSpec => ({
+    metricType,
+    label,
+    canonicalUnit: 'min',
+    agg: 'arbitrated',
+    decimals: 0,
+    isDuration: true,
+  })),
+  {
+    // Many sessions a day, each its own row keyed by the HK sample UUID — this
+    // one really does accumulate, unlike every day-bucketed metric above.
+    metricType: 'workout',
+    label: 'Workout minutes (Apple Health)',
+    canonicalUnit: 'min',
+    agg: 'sum',
+    decimals: 1,
+    isDuration: true,
+  },
+  {
+    // Manual capture: one row per sip logged, so the day is a sum.
+    metricType: 'water_ml',
+    label: 'Water',
+    canonicalUnit: 'ml',
+    agg: 'sum',
+    decimals: 0,
+    display: 'volume',
+  },
+];
+
+/** Layer 2: declared ∪ whatever the table actually holds today. */
+function wearableCatalog(inventory: WearableMetricPresence[]): Map<string, WearableMetricSpec> {
+  const catalog = new Map<string, WearableMetricSpec>(
+    DECLARED_WEARABLE_METRICS.map((spec) => [spec.metricType, spec])
+  );
+  for (const row of inventory) {
+    if (catalog.has(row.metricType)) continue;
+    const unit = row.unit ?? '';
+    catalog.set(row.metricType, {
+      metricType: row.metricType,
+      label: humanize(row.metricType),
+      canonicalUnit: unit,
+      // Unknown cadence: arbitration can only ever under-report, summing could
+      // silently double a day. Prefer the claim that cannot be inflated.
+      agg: 'arbitrated',
+      decimals: 2,
+      isDuration: unit === 'min',
+      inferred: true,
+    });
+  }
+  return catalog;
+}
+
+/** Friendly names the model is likely to reach for → the real metric_type. */
+const METRIC_ALIASES: Record<string, string> = {
+  water: 'water_ml',
+  sleep: 'sleep_duration_min',
+  sleep_min: 'sleep_duration_min',
+  asleep: 'sleep_duration_min',
+  deep_sleep: 'sleep_deep_min',
+  rem_sleep: 'sleep_rem_min',
+  core_sleep: 'sleep_core_min',
+  time_in_bed: 'sleep_in_bed_min',
+  in_bed: 'sleep_in_bed_min',
+  active_energy: 'active_energy_kcal',
+  active_calories: 'active_energy_kcal',
+  resting_energy: 'resting_energy_kcal',
+  calories_burned: 'active_energy_kcal',
+  spo2: 'spo2_pct',
+  oxygen_saturation: 'spo2_pct',
+  body_temp: 'body_temp_c',
+  wrist_temp: 'wrist_temp_c',
+  vo2: 'vo2max',
+  vo2_max: 'vo2max',
+  workouts: 'workout',
+  workout_minutes: 'workout',
+  step_count: 'steps',
+  heart_rate_variability: 'hrv',
+  resting_heart_rate: 'rhr',
+  respiration: 'respiratory_rate',
+};
+
+/** Body metrics keep their own path — they live in body_metrics, not wearables. */
+const BODY_METRIC_KEYS = ['weight', 'body_fat', 'waist'] as const;
+
+type WearableDisplaySpec = {
+  unit: string;
+  decimals: number;
+  fromCanonical: (canonical: number) => number;
+};
+
+/**
+ * How a wearable value should be reported for THIS user's Settings › Units.
+ * Same contract the rest of the tool layer honours via resolveDisplay: the
+ * Coach must never cite °F to a °C user, or oz to an ml user.
+ */
+function wearableDisplay(spec: WearableMetricSpec, units: UnitPreferences): WearableDisplaySpec {
+  if (spec.display === 'volume') {
+    const water = resolveDisplay(metricByKey('water')!, units);
+    return { unit: water.unit, decimals: water.decimals, fromCanonical: water.fromCanonical };
+  }
+  if (spec.display === 'temperature') {
+    return units.temperature === 'C'
+      ? { unit: '°C', decimals: 1, fromCanonical: (c) => c }
+      : { unit: '°F', decimals: 1, fromCanonical: (c) => c * 1.8 + 32 };
+  }
+  return {
+    unit: spec.canonicalUnit,
+    decimals: spec.decimals,
+    fromCanonical: (v) => v,
+  };
+}
+
+/** 431 → "7h 11m", 45 → "45m". Hermes has no Intl; this is hand-formatted. */
+function formatDuration(minutes: number): string {
+  const total = Math.round(minutes);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function roundTo(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+/** The one place a canonical wearable value becomes a reportable object. */
+function reportValue(
+  spec: WearableMetricSpec,
+  display: WearableDisplaySpec,
+  canonical: number
+): { value: number; unit: string; hm?: string } {
+  return {
+    value: roundTo(display.fromCanonical(canonical), display.decimals),
+    unit: display.unit,
+    ...(spec.isDuration ? { hm: formatDuration(canonical) } : {}),
+  };
+}
+
+/**
+ * Does today's value for this metric keep growing until midnight?
+ *
+ * Summing many rows into a day (agg 'sum': water sipped, workouts logged) is
+ * accumulation by construction, so it needs no declaration. The declared flag
+ * covers the day-bucketed totals that still arbitrate to one source — steps and
+ * the energy metrics. A DISCOVERED metric (layer 2) declares neither and is
+ * treated as a level reading: its cadence is unknown, and holding a real
+ * same-day reading out of the statistics is the more damaging guess of the two,
+ * given `inferred: true` already tells the model the semantics were assumed.
+ */
+function accumulatesThroughDay(spec: WearableMetricSpec): boolean {
+  return spec.agg === 'sum' || spec.accumulating === true;
+}
+
+/** Everything get_metric_series will accept right now, for error text + discovery. */
+function readableMetricNames(catalog: Map<string, WearableMetricSpec>): string[] {
+  return [...BODY_METRIC_KEYS, ...catalog.keys()];
+}
+
 // --- get_today_snapshot ------------------------------------------------------
+
+// The Coach only needs enough of the due set to lead the day; an un-dismissed
+// one-off keeps surfacing forever (see isDueOn), so a user who ignores nudges
+// can accumulate an unbounded tail of them. Cap it — but report `omitted` so the
+// model knows the list is partial instead of confidently under-counting.
+const SNAPSHOT_REMINDER_LIMIT = 10;
+
+/**
+ * The wearable signals whose ABSENCE is worth stating out loud. A missing step
+ * count and a step count of zero are completely different claims about the
+ * user's day, so these are reported by name in `wearables.noDataToday` rather
+ * than silently omitted — the model must be able to say "Health hasn't synced
+ * steps today" instead of quietly implying nothing happened.
+ */
+const CORE_WEARABLES: readonly string[] = [
+  'steps',
+  'sleep_duration_min',
+  'hrv',
+  'rhr',
+  'active_energy_kcal',
+];
+
+/** Today's value for one wearable metric under its own aggregation rule. */
+function wearableToday(
+  db: Database,
+  spec: WearableMetricSpec,
+  date: string
+): { value: number; source: string | null } | null {
+  if (spec.agg === 'sum') {
+    const point = wearableDailySeries(db, spec.metricType, date, 'sum').find(
+      (p) => p.date === date
+    );
+    // Summed across every source by definition — no single device owns it.
+    return point ? { value: point.value, source: null } : null;
+  }
+  const point = pickDailyMetric(db, spec.metricType, date);
+  return point ? { value: point.value, source: deviceLabel(point.sourceDevice) } : null;
+}
 
 const getTodaySnapshot: CoachTool = {
   name: 'get_today_snapshot',
   description:
-    "Today's full picture: readiness (the same verdict the Home screen shows), the day's " +
-    'mode, mission items (with ids) and status, meals eaten with macro totals, workouts, ' +
-    'symptoms, ad-hoc captures, reminders due today, running experiments, and the user ' +
-    "profile. Call this before answering anything about today ('how am I doing', " +
-    "'what's left', 'what did I eat').",
+    "Today's full picture: mission items with status, meals eaten with macro totals, " +
+    'workouts, symptoms, ad-hoc captures, reminders due today, TODAY’S WEARABLE DATA ' +
+    '(steps, sleep with hours/minutes, HRV, resting HR, active/resting energy — whatever ' +
+    'Apple Health has synced) and the derived `readiness` verdict + pillars, which is the ' +
+    'exact same derivation the Home screen shows. Call this before answering anything ' +
+    "about today ('how am I doing', 'what's left', 'what did I eat', 'how many steps', " +
+    "'how did I sleep'). " +
+    // The general "absence is not zero" rail lives in the system prompt, which
+    // is cached once and applies to every tool. What stays here is what is
+    // TRUE OF THIS TOOL'S SHAPE and cannot be inferred from the field names.
+    '`wearables.neverRecorded` is the subset of `noDataToday` this device has no sensor for ' +
+    'at all (a phone with no watch has no HRV, ever) — a hardware fact, not a sync failure. ' +
+    'ANYTHING PRESENT IN `wearables.today` HAS SYNCED: never tell the user a metric has not ' +
+    'synced while it carries a value there, whatever any other field says. ' +
+    '`readiness.detail` describes the RECOVERY verdict only; `readiness.level: unknown` ' +
+    'means recovery inputs are missing, never that Apple Health is off. ' +
+    'In `remindersDueToday` items are ranked today’s-own first, each with its pinned `date` ' +
+    'and `daysOverdue`; anything with daysOverdue > 0 is a carried-over obligation — say so, ' +
+    'never present it as part of today’s plan.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   readOnly: true,
   execute: (db, _input, context) => {
@@ -73,36 +405,92 @@ const getTodaySnapshot: CoachTool = {
     const modeDef = getModeDefinition(mode);
     const meals = listTodayMeals(db, date);
     const totals = todayTotals(db, date);
-    const units = getPreferences(db).units;
-    const user = getOrCreateUser(db);
     const workouts = db.all<{
       name: string;
       kind: string;
       duration_min: number | null;
     }>('SELECT name, kind, duration_min FROM workouts WHERE date = ? ORDER BY created_at', [date]);
 
-    // The SAME derivation Home renders (src/lib/home/readiness.ts), so the
-    // Coach and the Home card can never disagree about the morning's facts.
-    // This reports state — whether/how to act on a "caution" morning is a
-    // judgment call, weighed against program, cause, schedule, and the user.
-    const readiness = deriveReadiness(db, date);
+    // Ranked today-first (dueRemindersFor), so the cap below drops the stalest
+    // tail FIRST. It is not a guarantee today's own items survive: with more
+    // than SNAPSHOT_REMINDER_LIMIT due on their own day the cap trims those too.
+    // Either way remindersDueTodayOmitted always reports the count, so the
+    // model is never silently handed a truncated list.
+    const due = dueRemindersFor(db, date);
+
+    // --- The wearables plane -------------------------------------------------
+    // Discovered from the data, so a metric ingested tomorrow shows up here
+    // without an edit. Values respect Settings › Units, durations read as
+    // hours/minutes, and an absent metric is named rather than zeroed.
+    const units = getPreferences(db).units;
+    const user = getOrCreateUser(db);
+    const inventory = wearableMetricInventory(db);
+    const catalog = wearableCatalog(inventory);
+    const todayWearables: Record<string, unknown> = {};
+    for (const presence of inventory) {
+      // max(date) < today ⇒ nothing today; skip the per-metric query entirely.
+      if (presence.lastDate < date) continue;
+      const spec = catalog.get(presence.metricType)!;
+      const observed = wearableToday(db, spec, date);
+      if (!observed) continue;
+      todayWearables[presence.metricType] = {
+        label: spec.label,
+        ...reportValue(spec, wearableDisplay(spec, units), observed.value),
+        ...(observed.source ? { source: observed.source } : {}),
+        ...(spec.inferred ? { inferred: true } : {}),
+      };
+    }
+    const noDataToday = CORE_WEARABLES.filter((m) => !(m in todayWearables));
+    // "Nothing today" and "this device has never had one" are different facts,
+    // and conflating them is how a phone-only user — no watch, so no HRV sensor,
+    // ever — gets told their sync is broken by a metric that will never arrive.
+    const neverRecorded = noDataToday.filter((m) => !inventory.some((r) => r.metricType === m));
+    const syncedTodayCount = Object.keys(todayWearables).length;
+
+    // The SAME derivation Home renders (src/lib/home/readiness.ts) — reused, not
+    // recomputed, so the Coach and the Home screen can never disagree about
+    // today's readiness. Its evidence gates hold here too: `unknown` means there
+    // is not enough baseline yet, and must be reported as that, not as "poor".
+    const view = deriveReadiness(db, date);
+
+    // --- readiness.detail is UI COPY, and its fallback is a CALL TO ACTION ---
+    //
+    // THIS IS THE BUG the owner reported twice. deriveReadiness ends with
+    // `detail = "Connect Apple Health in Settings to power readiness."` whenever
+    // it has no usable RECOVERY input — no HRV or resting HR with a 30-day
+    // baseline, and no sleep last night. On HOME that sentence sits under a
+    // strip that is simultaneously rendering today's step count, so a human
+    // reads it as "no recovery signal yet" and ignores it. Handed to a model as
+    // a JSON field it reads as a flat assertion that Apple Health is not
+    // connected — and the model dutifully tells the user nothing has synced,
+    // while `wearables.today.steps` sits a few lines above it holding 8,432.
+    // Home shows the steps; the Coach denies them. Same database, same day, one
+    // sentence of interface copy in between.
+    //
+    // For a phone-only user (no watch ⇒ no HRV, no RHR, no sleep) that fallback
+    // is not a first-run state at all: it is EVERY day, forever.
+    //
+    // A tool must never launder an interface instruction into a claim about the
+    // data. `unknown` is exactly the state in which the fallback fires — the
+    // verdict is the worse of recovery and sleep, and the three `detail`
+    // branches above the fallback are true on precisely the conditions that
+    // keep either of those from being `unknown` — so that is what to substitute
+    // on. Derived, never string-matched: a copy edit in readiness.ts must not be
+    // able to make this guard silently stop working.
+    const readinessDetail =
+      view.readiness.level === 'unknown'
+        ? 'Readiness needs a recovery input — HRV or resting HR with a 30-day baseline, ' +
+          "or last night's sleep — and today has none. This is about RECOVERY ONLY. It does " +
+          'NOT mean Apple Health is disconnected, and it does NOT mean nothing synced: read ' +
+          '`wearables.today` for what actually did' +
+          (syncedTodayCount > 0 ? ` (${syncedTodayCount} metric(s) have values today).` : '.')
+        : view.readiness.detail;
 
     return json({
       date,
-      profile: {
-        age: ageOn(user.date_of_birth, date),
-        sex: user.biological_sex,
-      },
-      readiness: readiness.hasSignal
-        ? {
-            verdict: readiness.readiness.level,
-            label: readiness.readiness.label,
-            detail: readiness.readiness.detail,
-            pillars: Object.fromEntries(
-              readiness.pillars.map((p) => [p.label.toLowerCase(), p.level])
-            ),
-          }
-        : { verdict: 'unknown', label: 'No recovery signal yet', detail: null, pillars: null },
+      // Age and sex, so age-dependent reasoning (and every reference range) is
+      // right from the first token instead of after a question.
+      profile: { age: ageOn(user.date_of_birth, date), sex: user.biological_sex },
       // The day's mode adapts plan/priorities/tone/adherence. When not Normal,
       // heroFocus + toneGuidance tell the Coach how to lead and speak, and
       // excusesSkips means a skipped item is the RIGHT call, not a miss.
@@ -113,8 +501,9 @@ const getTodaySnapshot: CoachTool = {
         ...(modeDef.coachTone ? { toneGuidance: modeDef.coachTone } : {}),
         excusesSkips: modeDef.excusesSkips,
       },
-      // Item ids ride along so mission-level tools (and the ones coming) can
-      // address a specific row — the user still only ever sees titles.
+      // The id rides along because adjust_today addresses rows BY id — without
+      // it the Coach can see the day but cannot change it. The user still only
+      // ever sees titles.
       mission: listMission(db, date).map((m) => ({
         id: m.id,
         title: m.title,
@@ -138,17 +527,26 @@ const getTodaySnapshot: CoachTool = {
       })),
       // The Log feed also lists symptoms; they're already reported (structured)
       // in `symptoms` above, so drop them here rather than double-counting.
-      // Units passed through so capture titles honor the user's preference.
-      captures: listTodayEntries(db, context.now, units)
+      captures: listTodayEntries(db, context.now)
         .filter((e) => e.category !== 'Symptom')
         .map((e) => ({
           time: e.time,
           title: e.title,
           category: e.category,
         })),
-      remindersDueToday: listActiveReminders(db)
-        .filter((r) => isDueOn(r, date))
-        .map((r) => ({ id: r.id, title: r.title, time: r.time, repeat: r.repeat })),
+      remindersDueToday: due.slice(0, SNAPSHOT_REMINDER_LIMIT).map(({ reminder, daysOverdue }) => ({
+        id: reminder.id,
+        title: reminder.title,
+        time: reminder.time,
+        // The pinned day (null for a recurring or undated one), so an overdue
+        // nudge is legible as months old rather than as one of today's.
+        date: reminder.date,
+        repeat: reminder.repeat,
+        daysOverdue,
+      })),
+      remindersDueTodayOmitted: Math.max(0, due.length - SNAPSHOT_REMINDER_LIMIT),
+      // Running experiments, so the improvement loop is visible without a
+      // second call. `ready` means the window has CLOSED and a readout is owed.
       experiments: activeExperiments(db, date).map((e) => ({
         id: e.id,
         title: e.title,
@@ -157,98 +555,84 @@ const getTodaySnapshot: CoachTool = {
         daysLeft: e.daysLeft,
         ready: e.ready,
       })),
+      wearables: {
+        today: todayWearables,
+        // Named absences. "No steps row today" ≠ "0 steps today" — say the former.
+        noDataToday,
+        // Of those, the ones this device has NEVER recorded: a missing sensor,
+        // not a missing sync. Saying "your HRV hasn't synced" every day to
+        // someone who owns no HRV sensor is how the Coach loses their trust.
+        neverRecorded,
+        // Every metric_type on this device; all are valid get_metric_series input.
+        availableMetrics: [...catalog.keys()].filter((m) =>
+          inventory.some((row) => row.metricType === m)
+        ),
+        // Stated in ALL THREE cases, including the good one. It used to be
+        // `undefined` when data existed — silence, next to a `noDataToday` list
+        // and (before the fix above) a "Connect Apple Health" sentence. Nothing
+        // in the payload ever affirmed that the sync was working, so every
+        // ambiguity resolved toward "it isn't". Say the true thing out loud.
+        note:
+          inventory.length === 0
+            ? 'No wearable data on this device at all — Apple Health has never synced (Settings › Apple Health).'
+            : syncedTodayCount === 0
+              ? 'Nothing synced for today yet — Apple Health may not have run since midnight. Say so; do not report zeros.'
+              : `Apple Health IS connected and HAS synced today: ${syncedTodayCount} metric(s) in \`today\` carry real values — report them as fact. Names in \`noDataToday\` are missing for TODAY only and say nothing about the rest; names in \`neverRecorded\` have no sensor on this device at all.`,
+      },
+      // The SAME derivation Home renders for this day (src/lib/home/readiness.ts):
+      // identical level, label and pillars, so the two surfaces can never
+      // disagree about the verdict. `detail` alone is re-worded — it is Home's
+      // on-screen copy, and its no-signal branch is an instruction to the user,
+      // not a fact about the data. See the note above `readinessDetail`.
+      readiness: {
+        level: view.readiness.level,
+        label: view.readiness.label,
+        // Never Home's raw copy when the verdict is `unknown` — see above.
+        detail: readinessDetail,
+        pillars: view.pillars,
+        // False ⇒ not one wearable signal exists; readiness is not a low score,
+        // it is an absence. Never present `unknown` as a bad result.
+        hasSignal: view.hasSignal,
+      },
     });
   },
 };
 
 // --- get_metric_series -------------------------------------------------------
 
-const SERIES_METRICS = [
-  'weight',
-  'body_fat',
-  'waist',
-  'hrv',
-  'rhr',
-  'water',
-  'sleep',
-  'sleep_deep',
-  'steps',
-  'active_energy',
-] as const;
-type SeriesMetric = (typeof SERIES_METRICS)[number];
-
-/**
- * Metrics read straight off `wearable_data` with a fixed unit — no registry
- * descriptor, no unit-preference conversion (minutes are minutes everywhere).
- * These are the ingested Apple Health series the Coach was blind to before
- * 2026-08-08 (readiness runs on sleep the model couldn't read; create_experiment
- * pitched sleep metrics no tool could return).
- *
- * These read through dailyMetricSeries — the wearables repo's SOURCE-ARBITRATED
- * one-winner-per-day pick — because it is the exact series Home's readiness and
- * metric strip consume. Sleep is one row per (night, device), so on a
- * dual-writer night (watch 450 min + ring 380 min) a pooled average would hand
- * the Coach a number (415) that no surface in the app shows; arbitration keeps
- * the Coach and Home citing the same 450. Steps/energy are already one
- * HK-merged row per day, so arbitration is a no-op there.
- */
-const WEARABLE_DIRECT: Partial<
-  Record<SeriesMetric, { metricType: string; unit: string; label: string }>
-> = {
-  sleep: { metricType: 'sleep_duration_min', unit: 'min', label: 'sleep duration' },
-  sleep_deep: { metricType: 'sleep_deep_min', unit: 'min', label: 'deep sleep' },
-  steps: { metricType: 'steps', unit: 'steps', label: 'steps' },
-  active_energy: { metricType: 'active_energy_kcal', unit: 'kcal', label: 'active energy' },
-};
-
-function loadSeries(
-  db: Database,
-  metric: SeriesMetric,
-  since: string,
-  until: string,
-  days: number,
-  now: Date
-): SeriesPoint[] {
-  const direct = WEARABLE_DIRECT[metric];
-  if (direct) {
-    // Same window as [since, until]: dailyMetricSeries selects
-    // date > until - days AND date <= until, and since = until - (days - 1).
-    return dailyMetricSeries(db, direct.metricType, days, until).map((p) => ({
-      date: p.date,
-      value: p.value,
-    }));
-  }
-  const descriptor = metricByKey(metric as MetricKey)!;
-  const target = descriptor.target;
-  // body_metrics is an INSTANT column — bound it at the end of the local day,
-  // never with a date string (see bodyDailySeries).
-  if (target.kind === 'body') {
-    return bodyDailySeries(db, target.column, since, endOfLocalDayUtc(now));
-  }
-  if (target.kind === 'wearable') {
-    return wearableDailySeries(
-      db,
-      target.metricType,
-      since,
-      metric === 'water' ? 'sum' : 'avg',
-      until
-    );
-  }
-  return [];
-}
-
 const getMetricSeries: CoachTool = {
   name: 'get_metric_series',
   description:
-    'Daily history for one metric (weight, body_fat, waist, hrv, rhr, water, sleep ' +
-    '[minutes asleep], sleep_deep [minutes], steps, active_energy [kcal]) over the last ' +
-    'N days, in display units, with min/avg/max. Call this whenever the user asks about ' +
-    'a trend, a change, or "how has X been" — and to read out an experiment watching ' +
-    'sleep or activity — answer from these numbers only.',
+    'Daily history for ONE metric over the last N days, in the user’s display units, with ' +
+    'min/avg/max. Call this whenever the user asks about a trend, a change, or "how has X ' +
+    'been" — answer from these numbers only. ' +
+    // Trimmed 2026-08-10: the 17-name metric enumeration that used to sit here
+    // is discoverable at runtime (`wearables.availableMetrics`) and an unknown
+    // name already errors WITH the valid set, so listing them cost ~200 tokens
+    // on every request to duplicate something the tool tells you when you need
+    // it. Every SEMANTIC rule below is kept — those the model cannot infer.
+    'Accepts body metrics (weight, body_fat, waist) and every wearable metric_type on the ' +
+    'device; friendly aliases work ("sleep", "vo2max"). get_today_snapshot’s ' +
+    '`wearables.availableMetrics` lists them, and an unknown name errors with the valid set. ' +
+    'Duration metrics carry an `hm` field ("7h 11m") — quote that, not raw minutes. ' +
+    'ACCUMULATING metrics (steps, energy, water, workout minutes) build through the day, so ' +
+    'TODAY is a running total. For those `stats` covers COMPLETE days only and today comes ' +
+    'back separately as `todaySoFar` (`partial: true` in `points`); `statsBasis` and ' +
+    '`statsExcludesToday` say which convention is in force. Give both figures ("about 8,000 ' +
+    'a day over the last week, 900 so far today"); NEVER average today into the daily ' +
+    'figure. Level metrics (HRV, sleep, weight, VO2max) are whole facts when written, so ' +
+    'today counts normally. `hasData: false` means no data, NEVER zero; `stats` can be null ' +
+    'while `hasData` is true when the only day in the window is a still-accumulating today.',
   inputSchema: {
     type: 'object',
     properties: {
-      metric: { type: 'string', enum: [...SERIES_METRICS] },
+      metric: {
+        type: 'string',
+        description:
+          'A body metric (weight, body_fat, waist) or a wearable metric_type ' +
+          '(steps, sleep_duration_min, hrv, vo2max, …). See ' +
+          'get_today_snapshot.wearables.availableMetrics for this device’s set.',
+      },
       days: { type: 'integer', minimum: 1, maximum: 365, description: 'Window, default 30.' },
     },
     required: ['metric'],
@@ -257,45 +641,244 @@ const getMetricSeries: CoachTool = {
   readOnly: true,
   execute: (db, input, context) => {
     const args = asRecord(input);
-    const metric = optEnum(args, 'metric', SERIES_METRICS);
-    if (!metric) throw new Error(`"metric" must be one of: ${SERIES_METRICS.join(', ')}.`);
+    const requested = reqString(args, 'metric').toLowerCase();
     const days = daysWindow(args, 30);
-    const since = isoDaysAgo(context.now, days - 1);
     const today = todayISODate(context.now);
+    const since = isoDaysAgo(context.now, days - 1);
+    const units = getPreferences(db).units;
 
-    const direct = WEARABLE_DIRECT[metric];
-    // Registry metrics report in the user's chosen unit (Settings › Units),
-    // matching what the app shows and what the write path stores — the Coach
-    // must never cite lb to a kg user. Wearable-direct metrics have one fixed
-    // unit (min/steps/kcal) and skip conversion entirely.
-    const spec = direct
-      ? null
-      : resolveDisplay(metricByKey(metric as MetricKey)!, getPreferences(db).units);
+    // --- Body metrics: their own table, their own display preferences --------
+    if ((BODY_METRIC_KEYS as readonly string[]).includes(requested)) {
+      const descriptor = metricByKey(requested as MetricKey)!;
+      const target = descriptor.target as {
+        kind: 'body';
+        column: 'weight_kg' | 'body_fat_pct' | 'waist_cm';
+      };
+      // Report in the user's chosen unit (Settings › Units), matching what the
+      // app shows and what the write path stores — the Coach must never cite lb
+      // to a kg user. resolveDisplay is identity for the unit-less metrics.
+      const spec = resolveDisplay(descriptor, units);
+      // Closed at the end of the LOCAL day, as a UTC instant. Without the bound
+      // a future-dated row (clock skew, a bad import) lands in the series and
+      // moves the average; with a naive `substr(measured_at,1,10) <= today`
+      // bound instead, an evening weigh-in west of UTC — already carrying
+      // tomorrow's UTC date — would be dropped from the user's own series.
+      const points = bodyDailySeries(db, target.column, since, endOfLocalDayUtc(context.now)).map(
+        (p) => ({
+          date: p.date,
+          value: round1(spec.fromCanonical(p.value)),
+        })
+      );
+      return json(
+        seriesPayload({
+          metric: requested,
+          label: descriptor.label,
+          source: 'body_metrics',
+          unit: spec.unit,
+          aggregation: 'daily average of that day’s measurements',
+          days,
+          points,
+        })
+      );
+    }
 
-    const points = loadSeries(db, metric, since, today, days, context.now).map((p) => ({
+    // --- Wearables: discovered, so a new metric_type needs no code change ----
+    const inventory = wearableMetricInventory(db);
+    const catalog = wearableCatalog(inventory);
+    const metricType = METRIC_ALIASES[requested] ?? requested;
+    const spec = catalog.get(metricType);
+    if (!spec) {
+      throw new Error(
+        `Unknown metric "${requested}". Available on this device: ${readableMetricNames(catalog).join(', ')}.`
+      );
+    }
+
+    const display = wearableDisplay(spec, units);
+    const raw: SeriesPoint[] =
+      spec.agg === 'sum'
+        ? wearableDailySeries(db, metricType, since, 'sum')
+        : wearableArbitratedSeries(db, metricType, since, today);
+    // Today stays IN the points — the owner's steps so far today are real and
+    // useful — but an accumulating today is flagged as partial, and held out of
+    // the statistics below. See the note on `partialToday` in seriesPayload.
+    const accumulating = accumulatesThroughDay(spec);
+    const points = raw.map((p) => ({
       date: p.date,
-      value: round1(spec ? spec.fromCanonical(p.value) : p.value),
+      ...reportValue(spec, display, p.value),
+      ...(accumulating && p.date === today ? { partial: true } : {}),
     }));
-    const stats = seriesStats(points);
-    return json({
-      metric,
-      unit: direct ? direct.unit : spec!.unit,
-      days,
-      points,
-      stats:
-        stats === null
-          ? null
-          : {
-              count: stats.count,
-              min: round1(stats.min),
-              avg: round1(stats.avg),
-              max: round1(stats.max),
-              first: stats.first,
-              last: stats.last,
-            },
-    });
+
+    const presence = inventory.find((row) => row.metricType === metricType);
+    return json(
+      seriesPayload({
+        metric: metricType,
+        label: spec.label,
+        source: 'wearable_data',
+        unit: display.unit,
+        aggregation:
+          spec.agg === 'sum'
+            ? 'daily sum of every logged row'
+            : 'one source per day, richest device first (same rule the Home screen uses)',
+        days,
+        points,
+        isDuration: spec.isDuration === true,
+        inferred: spec.inferred === true,
+        // Only an accumulating metric has a partial today to hold out.
+        partialDate: accumulating ? today : null,
+        // A metric that exists but is silent in this window is a different
+        // statement from one that has never been recorded — say which.
+        lastRecorded: presence?.lastDate ?? null,
+      })
+    );
   },
 };
+
+/**
+ * One day as reported. `unit` rides along on the wearable branch (reportValue
+ * stamps it); `partial` marks the still-accumulating today that `stats`
+ * deliberately leaves out.
+ */
+type SeriesReportPoint = {
+  date: string;
+  value: number;
+  unit?: string;
+  hm?: string;
+  partial?: boolean;
+};
+
+type SeriesPayloadInput = {
+  metric: string;
+  label: string;
+  source: 'body_metrics' | 'wearable_data';
+  unit: string;
+  aggregation: string;
+  days: number;
+  points: SeriesReportPoint[];
+  isDuration?: boolean;
+  inferred?: boolean;
+  lastRecorded?: string | null;
+  /**
+   * Today's date when this metric ACCUMULATES through the day, else null.
+   * That day is a running total, not a finished day, so it is excluded from
+   * `stats` and reported on its own as `todaySoFar`. Null (or an absent point
+   * for that date) leaves every day counting, which is correct for a level
+   * metric — an HRV sample or a night's sleep is whole the moment it lands.
+   */
+  partialDate?: string | null;
+};
+
+/** Layer 2 of the catalog guessed this metric's semantics; say so. */
+const INFERRED_NOTE =
+  'This metric is not one ARC declares; its unit and daily aggregation were ' +
+  'inferred from the stored rows. Say so if you quote it precisely.';
+
+/**
+ * The one shape both branches return. `hasData` is explicit and the note spells
+ * absence out in words, because "0 points" read fast is exactly how a model
+ * ends up telling someone they walked zero steps.
+ *
+ * **The notes are ADDITIVE, never alternative.** They describe two independent
+ * facts — "the semantics were guessed" and "there is nothing in this window" —
+ * and a DISCOVERED metric can easily be both: layer 2 of the catalog only sees
+ * it because rows exist, and the requested window can still be empty. An
+ * earlier cut made them two branches of one ternary, so exactly that case
+ * dropped the absence sentence and its `lastRecorded` wording, leaving the
+ * model an empty `points` array with nothing telling it that empty ≠ zero.
+ * That is the confusion this whole payload exists to prevent, so absence is
+ * stated FIRST and is never displaced.
+ *
+ * **`stats` covers COMPLETE days.** For an accumulating metric (`partialDate`
+ * set) today is a running total: at 09:00 it is a fraction of a day, and
+ * averaging it in drops `avg`, and usually owns `min` and `last` outright —
+ * seven complete 8,000-step days plus a two-hour-old today reported avg 7,492.9
+ * and min 900, which is not a fact about the user's week. Today is NOT dropped
+ * from the data — the steps walked so far are real — it is moved to its own
+ * labelled `todaySoFar` and flagged `partial: true` inside `points`, so the
+ * model can say "8,000 a day over the last week; 900 so far today" instead of
+ * blending the two. `statsBasis`/`statsExcludesToday` name which convention is
+ * in force, so `points` and `stats` can never be silently read as the same set.
+ */
+function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
+  const partialToday =
+    input.partialDate == null
+      ? null
+      : (input.points.find((p) => p.date === input.partialDate) ?? null);
+  const statPoints = partialToday
+    ? input.points.filter((p) => p.date !== input.partialDate)
+    : input.points;
+  const stats = seriesStats(statPoints);
+  const noteForEmpty = () => {
+    if (input.lastRecorded) {
+      return `No ${input.label} recorded in the last ${input.days} days. The most recent value on record is from ${input.lastRecorded}. This is missing data, not a zero — do not report a value.`;
+    }
+    return `No ${input.label} has ever been recorded on this device. This is missing data, not a zero — do not report a value.`;
+  };
+  const notes: string[] = [];
+  if (input.points.length === 0) notes.push(noteForEmpty());
+  if (partialToday) {
+    notes.push(
+      `${input.label} accumulates through the day, so ${partialToday.date} is a RUNNING TOTAL, not a finished ` +
+        'day. Every number in `stats` therefore covers COMPLETE days only — today is excluded from it and ' +
+        'appears instead as `todaySoFar` (and as the `partial: true` entry in `points`). Never average today ' +
+        'in, and never present `todaySoFar` as a full day.'
+    );
+    notes.push(
+      stats === null
+        ? `There is no COMPLETE day of ${input.label} in this window — the only data is today, still ` +
+            'accumulating — so there is nothing to average yet. Say exactly that; do not report `todaySoFar` ' +
+            'as a daily figure.'
+        : `Cite the two separately, e.g. "${round1(stats.avg)} ${input.unit} a day over the last ` +
+            `${stats.count} complete day(s); ${partialToday.value} ${input.unit} so far today".`
+    );
+  }
+  if (input.inferred) notes.push(INFERRED_NOTE);
+  return {
+    metric: input.metric,
+    label: input.label,
+    source: input.source,
+    unit: input.unit,
+    aggregation: input.aggregation,
+    days: input.days,
+    hasData: input.points.length > 0,
+    // Every day with data, today included. `partial: true` marks the one day
+    // that `stats` deliberately leaves out.
+    points: input.points,
+    // Spelled out so `points` and `stats` can never be read as the same set.
+    statsBasis: partialToday
+      ? 'complete days only — today is still accumulating and is excluded (see `todaySoFar`)'
+      : 'every day in `points`, today included',
+    statsExcludesToday: partialToday !== null,
+    stats:
+      stats === null
+        ? null
+        : {
+            count: stats.count,
+            min: round1(stats.min),
+            avg: round1(stats.avg),
+            max: round1(stats.max),
+            first: stats.first,
+            last: stats.last,
+            ...(input.isDuration ? { avgHm: formatDuration(stats.avg) } : {}),
+          },
+    // Today's real running total, kept — never silently dropped — but in its own
+    // clearly-labelled place so it cannot be mistaken for a completed day.
+    ...(partialToday
+      ? {
+          todaySoFar: {
+            date: partialToday.date,
+            value: partialToday.value,
+            unit: input.unit,
+            ...(partialToday.hm !== undefined ? { hm: partialToday.hm } : {}),
+            partial: true,
+            note: 'Real, and still climbing — the total so far today, not a finished day.',
+          },
+        }
+      : {}),
+    ...(input.lastRecorded !== undefined ? { lastRecorded: input.lastRecorded } : {}),
+    ...(input.inferred ? { inferred: true } : {}),
+    ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
+  };
+}
 
 // --- get_training_summary ----------------------------------------------------
 
@@ -303,10 +886,12 @@ const getTrainingSummary: CoachTool = {
   name: 'get_training_summary',
   description:
     'Training over the last N days (default 28): per-day sessions/minutes, average weekly ' +
-    'cardio-minute and strength-session rates over that rolling window, and recent sessions. ' +
-    '`thisWeek` is the CURRENT Monday-start calendar week — use it for "this week" questions; ' +
-    'the rolling `totals`/`weeklyRates` are "the last N days", never "this week". Call it for ' +
-    'anything about workouts, training load, or consistency.',
+    'cardio-minute and strength-session RATES over that rolling window, and the most recent ' +
+    'sessions. Also returns `thisWeek` — the CURRENT Monday-start calendar week (cardio ' +
+    'minutes + strength sessions), which matches the Data tab\'s "this week" exactly. Use ' +
+    '`thisWeek` for "this week" questions; the rolling `totals`/`weeklyRates` are "the last ' +
+    'N days", never "this week". Call this for anything about workouts, training load, ' +
+    'consistency, or recovery context.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -318,8 +903,7 @@ const getTrainingSummary: CoachTool = {
   execute: (db, input, context) => {
     const days = daysWindow(asRecord(input), 28);
     const since = isoDaysAgo(context.now, days - 1);
-    const today = todayISODate(context.now);
-    const daily = trainingDailyTotals(db, since, today);
+    const daily = trainingDailyTotals(db, since);
     // The Monday-start calendar week, from the SAME weekSummary the Data tab
     // renders as "Zone 2 · this week" — so the Coach and the Data tab can never
     // disagree on "this week". Distinct from the rolling `totals` below.
@@ -337,8 +921,8 @@ const getTrainingSummary: CoachTool = {
       duration_min: number | null;
     }>(
       `SELECT date, name, kind, duration_min FROM workouts
-       WHERE date >= ? AND date <= ? ORDER BY date DESC, created_at DESC LIMIT 10`,
-      [since, today]
+       WHERE date >= ? ORDER BY date DESC, created_at DESC LIMIT 10`,
+      [since]
     );
 
     return json({
@@ -390,11 +974,7 @@ const getNutritionSummary: CoachTool = {
   readOnly: true,
   execute: (db, input, context) => {
     const days = daysWindow(asRecord(input), 14);
-    const daily = nutritionDailyTotals(
-      db,
-      isoDaysAgo(context.now, days - 1),
-      todayISODate(context.now)
-    );
+    const daily = nutritionDailyTotals(db, isoDaysAgo(context.now, days - 1));
     const loggedDays = daily.length;
     const avg = (pick: (d: (typeof daily)[number]) => number) =>
       loggedDays === 0 ? null : round1(daily.reduce((a, d) => a + pick(d), 0) / loggedDays);
@@ -432,7 +1012,6 @@ const getSymptomHistory: CoachTool = {
   execute: (db, input, context) => {
     const days = daysWindow(asRecord(input), 30);
     const since = isoDaysAgo(context.now, days - 1);
-    const today = todayISODate(context.now);
     const rows = db.all<{
       date: string;
       time: string | null;
@@ -441,13 +1020,13 @@ const getSymptomHistory: CoachTool = {
       body_area: string | null;
     }>(
       `SELECT date, time, name, severity, body_area FROM symptoms
-       WHERE date >= ? AND date <= ? ORDER BY date, (time IS NULL), time`,
-      [since, today]
+       WHERE date >= ? ORDER BY date, (time IS NULL), time`,
+      [since]
     );
     const counts = db.all<{ name: string; occurrences: number; avg_severity: number | null }>(
       `SELECT name, count(*) AS occurrences, avg(severity) AS avg_severity FROM symptoms
-       WHERE date >= ? AND date <= ? GROUP BY name ORDER BY occurrences DESC, name`,
-      [since, today]
+       WHERE date >= ? GROUP BY name ORDER BY occurrences DESC, name`,
+      [since]
     );
     return json({ days, occurrences: rows, byName: counts });
   },
@@ -656,6 +1235,48 @@ const searchKnowledge: CoachTool = {
         text: p.text,
       })),
     });
+  },
+};
+
+// --- get_experiments ---------------------------------------------------------
+
+const getExperiments: CoachTool = {
+  name: 'get_experiments',
+  description:
+    "The user's n-of-1 experiments: ACTIVE ones (each with daysLeft, and ready=true once its " +
+    'window has closed and it is time to read out) and, when include_completed is set, recent ' +
+    'concluded ones with their verdicts. Call before concluding one (complete_experiment needs ' +
+    'the id), or when the user asks how an experiment is going.',
+  inputSchema: {
+    type: 'object',
+    properties: { include_completed: { type: 'boolean' } },
+    additionalProperties: false,
+  },
+  readOnly: true,
+  execute: (db, input, context) => {
+    const today = todayISODate(context.now);
+    const active = activeExperiments(db, today).map((e) => ({
+      id: e.id,
+      title: e.title,
+      hypothesis: e.hypothesis,
+      intervention: e.intervention,
+      metrics: e.metrics,
+      startDate: e.start_date,
+      endDate: e.end_date,
+      daysLeft: e.daysLeft,
+      ready: e.ready,
+      successCriteria: e.success_criteria,
+    }));
+    const completed =
+      asRecord(input)['include_completed'] === true
+        ? recentlyConcluded(db, 5).map((e) => ({
+            id: e.id,
+            title: e.title,
+            conclusion: e.conclusion,
+            endDate: e.end_date,
+          }))
+        : undefined;
+    return json({ active, ...(completed ? { completed } : {}) });
   },
 };
 
@@ -905,74 +1526,30 @@ const searchHistory: CoachTool = {
   },
 };
 
-// --- get_experiments ---------------------------------------------------------
-
-const getExperiments: CoachTool = {
-  name: 'get_experiments',
-  description:
-    "The user's n-of-1 experiments: ACTIVE ones (each with daysLeft, and ready=true once its " +
-    'window has closed and it is time to read out) and, when include_completed is set, recent ' +
-    'concluded ones with their verdicts. Call before concluding one (complete_experiment needs ' +
-    'the id), or when the user asks how an experiment is going.',
-  inputSchema: {
-    type: 'object',
-    properties: { include_completed: { type: 'boolean' } },
-    additionalProperties: false,
-  },
-  readOnly: true,
-  execute: (db, input, context) => {
-    const today = todayISODate(context.now);
-    const active = activeExperiments(db, today).map((e) => ({
-      id: e.id,
-      title: e.title,
-      hypothesis: e.hypothesis,
-      intervention: e.intervention,
-      metrics: e.metrics,
-      startDate: e.start_date,
-      endDate: e.end_date,
-      daysLeft: e.daysLeft,
-      ready: e.ready,
-      successCriteria: e.success_criteria,
-    }));
-    const completed =
-      asRecord(input)['include_completed'] === true
-        ? recentlyConcluded(db, 5).map((e) => ({
-            id: e.id,
-            title: e.title,
-            conclusion: e.conclusion,
-            endDate: e.end_date,
-          }))
-        : undefined;
-    return json({ active, ...(completed ? { completed } : {}) });
-  },
-};
+/**
+ * search_knowledge is deliberately NOT here. It needs the on-device embedder
+ * (Phase 6 #25), which has no native build yet, so every call returns
+ * `available: false` — a few hundred tokens of schema on every single request
+ * advertising a dead end, and an invitation for the model to try it and then
+ * apologise. search_history covers the same ground today by keyword, over both
+ * the user's own writing AND the curated corpus. Re-register this the day the
+ * embedder ships.
+ */
+export const UNREGISTERED_READ_TOOLS: CoachTool[] = [searchKnowledge];
 
 export const READ_TOOLS: CoachTool[] = [
   getTodaySnapshot,
   getMetricSeries,
   getTrainingSummary,
-  getTrainingRecommendation,
   getNutritionSummary,
   getSymptomHistory,
   getBiomarkers,
-  getBiomarkerHistory,
   getProtocols,
   listRemindersTool,
   getInsights,
+  getExperiments,
+  getTrainingRecommendation,
+  getBiomarkerHistory,
   getMemories,
   searchHistory,
-  getExperiments,
 ];
-
-/**
- * search_knowledge is deliberately NOT registered (2026-08-08).
- *
- * Its retrieval path cannot return a passage on any device: the embedder is a
- * hardcoded null pending an ONNX runtime and its own EAS build, and no corpus
- * has been ingested. Advertising it burned a round-trip per call to learn
- * "not available yet" and taught the model to distrust the registry — exactly
- * what stubs.ts warns about. `search_history` covers recall over the user's
- * own words today; this graduates back into READ_TOOLS when the embedder and
- * a corpus actually ship (docs/coach-intelligence-review.md §4 Phase 6).
- */
-export const UNREGISTERED_READ_TOOLS: CoachTool[] = [searchKnowledge];

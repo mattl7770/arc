@@ -376,10 +376,18 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   const allToolTokens = jsonTok(JSON.stringify(toWireTools(COACH_TOOLS)));
   const readToolTokens = jsonTok(JSON.stringify(toWireTools(READ_TOOLS)));
 
-  allToolTokens < 7600
+  // The ceilings rose at the 2026-08-10 merge and that was a deliberate trade,
+  // not drift. Main's VOICE section (~900 tok) fixes a real owner complaint —
+  // the Coach "speaks a bit AIy" — and its wearables doctrine fixes a Coach
+  // that was misinformed about the user's own Health data. Both are worth their
+  // tokens, and both sit in the CACHED prefix, so past the first request of the
+  // hour they bill at 0.1×. What is not acceptable is silent creep: these are
+  // still hard ceilings, and the fix when one trips is to delete duplication
+  // (a tool description restating a system-prompt rail), not to raise it again.
+  allToolTokens < 8000
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad('tool schemas over budget', `${allToolTokens} tok — trim descriptions before adding more`);
-  systemTokens < 2400
+  systemTokens < 3500
     ? ok(`the static system prompt fits its budget (~${systemTokens} tok)`)
     : bad('system prompt over budget', String(systemTokens));
 

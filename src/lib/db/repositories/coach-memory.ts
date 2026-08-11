@@ -1,5 +1,5 @@
 /**
- * Coach memory (0028) — the small, curated set of durable facts about the user
+ * Coach memory (0030) — the small, curated set of durable facts about the user
  * that survives every context window.
  *
  * This is the "deeply familiar with the user" half of CLAUDE.md §6, and it is
@@ -16,7 +16,7 @@ import type { Database } from '../database';
 import { newId } from '../id';
 import type { Timestamp } from '../types';
 
-/** What kind of durable fact a memory holds (0028 CHECK vocabulary). */
+/** What kind of durable fact a memory holds (0030 CHECK vocabulary). */
 export type MemoryCategory = 'preference' | 'constraint' | 'context' | 'goal';
 
 /** Who put it there: the Coach (approved at the gate) or the user directly. */

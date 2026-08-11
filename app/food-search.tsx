@@ -3,7 +3,9 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { type ReactNode, useCallback, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -29,6 +31,24 @@ import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
  * grams always); Add either appends to the meal this screen was pushed for
  * (`mealId` param, from meal detail) or creates a day-part-named meal on the
  * first add and keeps appending to it — multi-add without leaving the screen.
+ *
+ * ## Conformed Set surface system
+ *
+ *   Search field         → **recessed well**: a capture surface is stock you
+ *                          write on, so the command field is the well itself.
+ *   Recents / Favorites
+ *   / Results            → **ruled plates**: a list of records is a table.
+ *   Portion editor       → no device. It opens inside a plate row, and devices
+ *                          never nest — only the grams input keeps a recessed
+ *                          treatment, because an input is a well at control
+ *                          scale.
+ *   Catalog actions      → a closing **ruled plate** *only when it holds both
+ *                          of its rows*. Until the first add lands there is no
+ *                          scan row, and one row gets no enclosure and no rule
+ *                          (docs/decisions.md §1a).
+ *
+ * **Accent budget: one.** The expanded row's Add, and only one row is ever
+ * expanded. "Done · N" is neutral: it leaves, it does not commit.
  */
 
 /** What a from-scratch add names the meal: the day-part, CalAI-slot style. */
@@ -208,35 +228,73 @@ export default function FoodSearchScreen() {
       ? (expanded.food.kcal_100g * gramsPreview) / 100
       : null;
 
+  /** The one catalog action that is always offered. It renders in two places —
+   * ruled inside the plate when a scan row precedes it, bare on the sheet when
+   * it is the only row — so it is built once here rather than written twice. */
+  const createFoodRow = (ruled: boolean) => (
+    <CatalogRow
+      icon="add-circle-outline"
+      label={`Create a food${query.trim() !== '' ? ` — “${query.trim()}”` : ''}`}
+      ruled={ruled}
+      accessibilityLabel="Create a food"
+      onPress={() =>
+        router.push({
+          pathname: '/food-new',
+          params: query.trim() ? { name: query.trim() } : {},
+        })
+      }
+    />
+  );
+
+  const editorFor = (section: ListSection, food: FoodRow) =>
+    expanded?.section === section && expanded.food.id === food.id ? (
+      <PortionEditor
+        expanded={expanded}
+        gramsPreview={gramsPreview}
+        kcalPreview={kcalPreview}
+        onStep={stepQty}
+        onEditGrams={editGrams}
+        onToggleFavorite={toggleFavorite}
+        onAdd={addExpanded}
+      />
+    ) : null;
+
   return (
     <Screen scroll>
       <View className="pt-2">
         <StackHeader title="Add food" />
       </View>
 
-      <View className="mt-2 flex-row items-center gap-2">
-        <View className="flex-1 flex-row items-center gap-2 rounded-btn border border-hairline-soft bg-paper-deep px-3.5">
-          <Ionicons name="search-outline" size={16} color={palette.inkMuted} />
-          <TextInput
-            value={query}
-            onChangeText={runSearch}
-            placeholder="Search foods"
-            placeholderTextColor={palette.inkMuted}
-            autoFocus
-            autoCorrect={false}
-            accessibilityLabel="Search foods"
-            className="flex-1 py-3 text-[15px] text-ink"
-          />
+      <View className="mt-2 flex-row items-stretch gap-2">
+        <View className="flex-1">
+          <Block device="well">
+            {/* min-h keeps the well itself ≥44pt: its own py-3 plus a bare
+                single-line TextInput would land just under. */}
+            <View className="min-h-[24px] flex-row items-center gap-2">
+              <Ionicons name="search-outline" size={16} color={palette.inkMuted} />
+              <TextInput
+                value={query}
+                onChangeText={runSearch}
+                placeholder="Search foods"
+                placeholderTextColor={palette.inkMuted}
+                autoFocus
+                autoCorrect={false}
+                accessibilityLabel="Search foods"
+                className="h-6 flex-1 font-serif text-[15px] text-ink"
+              />
+            </View>
+          </Block>
         </View>
         {added > 0 ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Done, ${added} added`}
             onPress={() => router.back()}
-            className="rounded-btn border border-hairline-strong px-3.5 py-3 active:bg-paper-deep">
-            <Text className="text-[13px] font-semibold text-ink">
-              Done <Text className="font-mono text-[12px]">· {added}</Text>
+            className="min-h-[44px] items-center justify-center rounded-btn border border-ink px-4 active:opacity-60">
+            <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
+              Done
             </Text>
+            <Text className="font-mono text-[10px] text-ink-muted">{added} added</Text>
           </Pressable>
         ) : null}
       </View>
@@ -247,156 +305,139 @@ export default function FoodSearchScreen() {
               the food at the portion it was last logged at. */}
           {base.recents.length > 0 ? (
             <View className="mt-6">
-              <SectionLabel>Recent</SectionLabel>
-              <View className="mt-1">
-                {base.recents.map((recent, index) => (
-                  <View
-                    key={recent.food.id}
-                    className={index === 0 ? '' : 'border-t border-hairline-soft'}>
-                    <FoodListRow
-                      food={recent.food}
-                      subtitle={lastPortionLabel(recent)}
-                      onPress={() =>
-                        setExpanded({
-                          food: recent.food,
-                          portion: initialPortion(recent.food),
-                          section: 'recents',
-                        })
-                      }
-                      trailing={
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={`Add ${recent.food.name} again`}
-                          hitSlop={8}
-                          onPress={() => addRecent(recent)}
-                          className="h-8 w-8 items-center justify-center rounded-btn border border-hairline-strong active:bg-paper-deep">
-                          <Ionicons name="add" size={18} color={palette.ink} />
-                        </Pressable>
-                      }
-                    />
-                    {expanded?.section === 'recents' && expanded.food.id === recent.food.id ? (
-                      <PortionEditor
-                        expanded={expanded}
-                        gramsPreview={gramsPreview}
-                        kcalPreview={kcalPreview}
-                        onStep={stepQty}
-                        onEditGrams={editGrams}
-                        onToggleFavorite={toggleFavorite}
-                        onAdd={addExpanded}
+              <Block device="plate">
+                <SectionLabel label="Recent" />
+                <View className="mt-1">
+                  {base.recents.map((recent, index) => (
+                    <View
+                      key={recent.food.id}
+                      className={index === 0 ? '' : 'border-t border-hairline'}>
+                      <FoodListRow
+                        food={recent.food}
+                        subtitle={lastPortionLabel(recent)}
+                        onPress={() =>
+                          setExpanded({
+                            food: recent.food,
+                            portion: initialPortion(recent.food),
+                            section: 'recents',
+                          })
+                        }
+                        trailing={
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Add ${recent.food.name} again`}
+                            hitSlop={10}
+                            onPress={() => addRecent(recent)}
+                            className="h-9 w-9 items-center justify-center rounded-btn border border-hairline active:opacity-60">
+                            <Ionicons name="add" size={18} color={palette.ink} />
+                          </Pressable>
+                        }
                       />
-                    ) : null}
-                  </View>
-                ))}
-              </View>
+                      {editorFor('recents', recent.food)}
+                    </View>
+                  ))}
+                </View>
+              </Block>
             </View>
           ) : null}
 
           {base.favorites.length > 0 ? (
             <View className="mt-6">
-              <SectionLabel>Favorites</SectionLabel>
-              <View className="mt-1">
-                {base.favorites.map((food, index) => (
-                  <View
-                    key={food.id}
-                    className={index === 0 ? '' : 'border-t border-hairline-soft'}>
-                    <FoodListRow
-                      food={food}
-                      subtitle={null}
-                      onPress={() =>
-                        setExpanded({ food, portion: initialPortion(food), section: 'favorites' })
-                      }
-                    />
-                    {expanded?.section === 'favorites' && expanded.food.id === food.id ? (
-                      <PortionEditor
-                        expanded={expanded}
-                        gramsPreview={gramsPreview}
-                        kcalPreview={kcalPreview}
-                        onStep={stepQty}
-                        onEditGrams={editGrams}
-                        onToggleFavorite={toggleFavorite}
-                        onAdd={addExpanded}
+              <Block device="plate">
+                <SectionLabel label="Favorites" />
+                <View className="mt-1">
+                  {base.favorites.map((food, index) => (
+                    <View key={food.id} className={index === 0 ? '' : 'border-t border-hairline'}>
+                      <FoodListRow
+                        food={food}
+                        subtitle={null}
+                        onPress={() =>
+                          setExpanded({ food, portion: initialPortion(food), section: 'favorites' })
+                        }
                       />
-                    ) : null}
-                  </View>
-                ))}
-              </View>
+                      {editorFor('favorites', food)}
+                    </View>
+                  ))}
+                </View>
+              </Block>
             </View>
           ) : null}
 
           {base.recents.length === 0 && base.favorites.length === 0 ? (
-            <Text className="mt-6 text-[13px] leading-5 text-ink-muted">
-              Search the catalog — foods you log appear here for one-tap re-adds.
+            <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
+              Nothing logged yet. Search the catalog — foods you log appear here for one-tap
+              re-adds.
             </Text>
           ) : null}
         </>
       ) : (
         <View className="mt-4">
           {results.length === 0 ? (
-            <Text className="mt-2 text-[13px] leading-5 text-ink-muted">
+            <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
               Nothing matches “{query.trim()}”.
             </Text>
           ) : (
-            <View>
-              {results.map((food, index) => (
-                <View key={food.id} className={index === 0 ? '' : 'border-t border-hairline-soft'}>
-                  <FoodListRow
-                    food={food}
-                    subtitle={null}
-                    onPress={() =>
-                      setExpanded((prev) =>
-                        prev?.food.id === food.id
-                          ? null
-                          : { food, portion: initialPortion(food), section: 'results' }
-                      )
-                    }
-                  />
-                  {expanded?.section === 'results' && expanded.food.id === food.id ? (
-                    <PortionEditor
-                      expanded={expanded}
-                      gramsPreview={gramsPreview}
-                      kcalPreview={kcalPreview}
-                      onStep={stepQty}
-                      onEditGrams={editGrams}
-                      onToggleFavorite={toggleFavorite}
-                      onAdd={addExpanded}
+            <Block device="plate">
+              <SectionLabel
+                label="Results"
+                note={`${results.length} match${results.length === 1 ? '' : 'es'}`}
+              />
+              <View className="mt-1">
+                {results.map((food, index) => (
+                  <View key={food.id} className={index === 0 ? '' : 'border-t border-hairline'}>
+                    <FoodListRow
+                      food={food}
+                      subtitle={null}
+                      onPress={() =>
+                        setExpanded((prev) =>
+                          prev?.section === 'results' && prev.food.id === food.id
+                            ? null
+                            : { food, portion: initialPortion(food), section: 'results' }
+                        )
+                      }
                     />
-                  ) : null}
-                </View>
-              ))}
-            </View>
+                    {editorFor('results', food)}
+                  </View>
+                ))}
+              </View>
+            </Block>
           )}
         </View>
       )}
 
-      {/* Scan a barcode — only once a meal is in progress here, so the scan
-          continues THIS meal (scanning fresh would fork a separate day-part
-          meal; the fresh-scan entry point is the Nutrition screen). */}
-      {targetMealId ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Scan a barcode into this meal"
-          onPress={() =>
-            router.push({ pathname: '/barcode-scan', params: { mealId: targetMealId } })
-          }
-          className="mt-6 flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep">
-          <Ionicons name="barcode-outline" size={17} color={palette.inkSecondary} />
-          <Text className="text-[13px] text-ink">Scan a barcode</Text>
-        </Pressable>
-      ) : null}
+      {/* Catalog actions. Scanning only appears once a meal is in progress here,
+          so the scan continues THIS meal (scanning fresh would fork a separate
+          day-part meal; the fresh-scan entry point is the Nutrition screen).
 
-      {/* Not in the catalog → create it, query prefilled. */}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Create a food"
-        onPress={() =>
-          router.push({ pathname: '/food-new', params: query.trim() ? { name: query.trim() } : {} })
-        }
-        className={`${targetMealId ? 'mt-2' : 'mt-6'} flex-row items-center gap-2 rounded-card border border-hairline bg-porcelain px-3.5 py-3 active:bg-paper-deep`}>
-        <Ionicons name="add-circle-outline" size={17} color={palette.inkSecondary} />
-        <Text className="text-[13px] text-ink">
-          Create a food{query.trim() !== '' ? ` — “${query.trim()}”` : ''}
-        </Text>
-      </Pressable>
+          Which means that until the first add lands, this section is exactly ONE
+          row — and that is the PRIMARY path, not an edge case: the Nutrition
+          tab's "Add food" pushes this screen with no params (app/nutrition.tsx),
+          so the plate used to be the first thing that arrival drew, closed
+          around a lone "Create a food". A plate encloses a multi-row record;
+          around one row it is the box-around-a-single-thing the owner keeps
+          reporting (docs/decisions.md §1a). So the plate is drawn only in the
+          genuinely two-row branch, and the lone row goes bare on the sheet with
+          no rule above it either — a hairline separates rows only inside an
+          enclosure (§1). Same treatment as the "Scan another" rows in
+          app/barcode-scan.tsx. */}
+      <View className="mt-6">
+        {targetMealId !== null ? (
+          <Block device="plate">
+            <CatalogRow
+              icon="barcode-outline"
+              label="Scan a barcode"
+              ruled={false}
+              accessibilityLabel="Scan a barcode into this meal"
+              onPress={() =>
+                router.push({ pathname: '/barcode-scan', params: { mealId: targetMealId } })
+              }
+            />
+            {createFoodRow(true)}
+          </Block>
+        ) : (
+          createFoodRow(false)
+        )}
+      </View>
     </Screen>
   );
 }
@@ -411,11 +452,42 @@ function lastPortionLabel(recent: RecentFood): string | null {
   return null;
 }
 
-function SectionLabel({ children }: { children: string }) {
+/**
+ * One row of the closing catalog section.
+ *
+ * `ruled` draws the hairline that separates it from the row above. It is stated
+ * by the caller rather than derived from an index because the rule is a property
+ * of the *enclosure*, not of the position: this row also renders bare on the
+ * sheet, and there a stroke would terminate in mid-air at both ends
+ * (docs/decisions.md §1). Unplated means unruled, always.
+ */
+function CatalogRow({
+  icon,
+  label,
+  ruled,
+  accessibilityLabel,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  ruled: boolean;
+  accessibilityLabel: string;
+  onPress: () => void;
+}) {
   return (
-    <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-      {children}
-    </Text>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      onPress={onPress}
+      className={
+        ruled
+          ? 'min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60'
+          : 'min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60'
+      }>
+      <Ionicons name={icon} size={17} color={palette.inkSecondary} />
+      <Text className="flex-1 font-serif text-[15px] text-ink">{label}</Text>
+      <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+    </Pressable>
   );
 }
 
@@ -432,33 +504,44 @@ function FoodListRow({
 }) {
   const kcal = rowKcal(food);
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={food.name}
-      onPress={onPress}
-      className="flex-row items-center gap-3 py-3 active:opacity-60">
-      <View className="flex-1">
-        <Text className="text-[15px] leading-5 text-ink">
-          {food.name}
-          {food.brand ? <Text className="text-ink-muted"> · {food.brand}</Text> : null}
-        </Text>
-        {subtitle ? (
-          <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">{subtitle}</Text>
-        ) : null}
-      </View>
-      <View className="items-end">
-        <Text className="font-mono text-[13px] text-ink-secondary">{kcal.value}</Text>
-        {kcal.unit !== '' ? (
-          <Text className="font-mono text-[10px] text-ink-muted">{kcal.unit}</Text>
-        ) : null}
-      </View>
+    <View className="min-h-[44px] flex-row items-center gap-3">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={food.name}
+        onPress={onPress}
+        className="min-h-[44px] flex-1 flex-row items-center gap-3 py-3 active:opacity-60">
+        <View className="flex-1">
+          <Text className="font-serif text-[15px] leading-5 text-ink">
+            {food.name}
+            {/* Part of the row's name, not a control label: serif, stated
+                rather than inherited from the parent Text. */}
+            {food.brand ? <Text className="font-serif text-ink-muted"> · {food.brand}</Text> : null}
+          </Text>
+          {subtitle ? (
+            <Text className="mt-0.5 font-mono text-[10px] leading-4 text-ink-muted">
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        <View className="items-end">
+          <Text className="font-mono text-[13px] text-ink-secondary">{kcal.value}</Text>
+          {kcal.unit !== '' ? (
+            <Text className="font-mono text-[10px] text-ink-muted">{kcal.unit}</Text>
+          ) : null}
+        </View>
+      </Pressable>
       {trailing}
-    </Pressable>
+    </View>
   );
 }
 
-/** The inline portion editor under a tapped row. The Add button is this
- * screen's one pine action (only one editor is ever open at a time). */
+/**
+ * The inline portion editor under a tapped row. It draws **no device of its
+ * own** — it lives inside a plate, and devices never nest. Only the grams input
+ * takes the recessed treatment, because an input is a well at control scale.
+ *
+ * The Add button is this screen's one accent (only one editor is ever open).
+ */
 function PortionEditor({
   expanded,
   gramsPreview,
@@ -477,16 +560,18 @@ function PortionEditor({
   onAdd: () => void;
 }) {
   const { food, portion } = expanded;
+  const canAdd = gramsPreview !== null && gramsPreview > 0;
   return (
-    <View className="mb-3 rounded-card border border-hairline bg-porcelain p-3">
+    <View className="pb-3">
       <View className="flex-row items-center gap-2">
         {food.serving_grams !== null ? (
           <View className="flex-row items-center gap-1">
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Less"
+              hitSlop={6}
               onPress={() => onStep(-0.5)}
-              className="h-9 w-9 items-center justify-center rounded-btn border border-hairline-strong active:bg-paper-deep">
+              className="h-9 w-9 items-center justify-center rounded-btn border border-hairline active:opacity-60">
               <Ionicons name="remove" size={16} color={palette.ink} />
             </Pressable>
             <Text className="w-14 text-center font-mono text-[15px] text-ink">
@@ -495,11 +580,14 @@ function PortionEditor({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="More"
+              hitSlop={6}
               onPress={() => onStep(0.5)}
-              className="h-9 w-9 items-center justify-center rounded-btn border border-hairline-strong active:bg-paper-deep">
+              className="h-9 w-9 items-center justify-center rounded-btn border border-hairline active:opacity-60">
               <Ionicons name="add" size={16} color={palette.ink} />
             </Pressable>
-            <Text className="ml-1 text-xs text-ink-secondary">× {food.serving_name}</Text>
+            <Text className="ml-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+              × {food.serving_name}
+            </Text>
           </View>
         ) : null}
         <View className="ml-auto flex-row items-center gap-2">
@@ -508,21 +596,21 @@ function PortionEditor({
             onChangeText={onEditGrams}
             keyboardType="decimal-pad"
             accessibilityLabel="Grams"
-            className="w-16 rounded-btn border border-hairline-soft bg-paper-deep px-2 py-2 text-right font-mono text-[13px] text-ink"
+            className="w-16 border border-paper-deep bg-paper-dim px-2 py-2 text-right font-mono text-[13px] text-ink"
           />
-          <Text className="text-xs text-ink-secondary">g</Text>
+          <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
         </View>
       </View>
 
       <View className="mt-3 flex-row items-center justify-between">
-        <Text className="font-mono text-[11px] text-ink-muted">
+        <Text className="font-mono text-[10px] text-ink-muted">
           {kcalPreview !== null ? `≈ ${fmtInt(kcalPreview)} kcal` : 'no energy recorded'}
         </Text>
         <View className="flex-row items-center gap-2">
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={food.is_favorite === 1 ? 'Remove favorite' : 'Mark favorite'}
-            hitSlop={6}
+            hitSlop={10}
             onPress={() => onToggleFavorite(food)}
             className="h-9 w-9 items-center justify-center rounded-btn active:opacity-60">
             <Ionicons
@@ -534,17 +622,20 @@ function PortionEditor({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Add ${food.name}`}
-            disabled={gramsPreview === null || gramsPreview <= 0}
+            accessibilityState={{ disabled: !canAdd }}
+            disabled={!canAdd}
             onPress={onAdd}
-            className={`rounded-btn px-4 py-2 ${
-              gramsPreview !== null && gramsPreview > 0
-                ? 'bg-pine active:opacity-70'
-                : 'bg-hairline'
-            }`}>
+            className={
+              canAdd
+                ? 'min-h-[44px] justify-center rounded-btn bg-pine px-5 active:opacity-70'
+                : 'min-h-[44px] justify-center rounded-btn border border-paper-deep px-5'
+            }>
             <Text
-              className={`text-[13px] font-semibold ${
-                gramsPreview !== null && gramsPreview > 0 ? 'text-pine-on' : 'text-ink-muted'
-              }`}>
+              className={
+                canAdd
+                  ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine-on'
+                  : 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+              }>
               Add
             </Text>
           </Pressable>

@@ -1,5 +1,5 @@
 /**
- * The rolling thread summary (0028 `ai_conversations.summary`) — what the
+ * The rolling thread summary (0030 `ai_conversations.summary`) — what the
  * Coach would otherwise forget as a long conversation scrolls past its context
  * window.
  *

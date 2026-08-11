@@ -303,9 +303,12 @@ console.log('6. a running experiment is ON the day, and its readout surfaces its
   row
     ? ok('the intervention appears on the mission — adherence becomes visible')
     : bad('intervention missing', JSON.stringify(mission.map((m) => m.title)));
-  row && row.protocol === 'Experiment · Magnesium PM'
-    ? ok('labelled as the experiment, not as a protocol item')
-    : bad('label', row && row.protocol);
+  // `category`, not `protocol` — main's exclusivity rule (mission-generate.ts):
+  // a row names its origin ONCE. An experiment is no more a protocol than a
+  // mode is, and "ROUTINE · EXPERIMENT" reads worse than "EXPERIMENT".
+  row && row.category === 'Experiment · Magnesium PM' && row.protocol === undefined
+    ? ok('labelled as the experiment, in the category slot, with no protocol attribution')
+    : bad('label', JSON.stringify({ category: row?.category, protocol: row?.protocol }));
   row && /Day 3 of this experiment/.test(row.why ?? '')
     ? ok('and it says which day of the run this is')
     : bad('day number', row && row.why);

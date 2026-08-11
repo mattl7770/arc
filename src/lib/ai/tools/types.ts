@@ -17,7 +17,12 @@ import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 
 export type CoachToolContext = {
-  /** The turn's clock — injectable so headless tests are deterministic. */
+  /**
+   * The clock for ONE tool call — injectable so headless tests are
+   * deterministic, and read exactly once per call by the service layer
+   * (src/lib/ai/coach-service.ts) so {@link CoachTool.confirmSummary} and
+   * {@link CoachTool.execute} cannot disagree about what time it is.
+   */
   now: Date;
 };
 
@@ -34,15 +39,31 @@ export type CoachTool = {
    * Writes only: the one human line the confirmation card shows
    * ("Log weight 178.0 lb"). Built from validated input; `db` is available so
    * an id-shaped input can be resolved to what it actually names — the user
-   * must never approve a bare identifier blind. `context` carries the turn's
-   * clock so date validation at CARD time agrees with execute (a knowable
-   * failure — e.g. a future log date — must throw HERE, before the user
-   * spends an Approve tap on a write that can only error).
+   * must never approve a bare identifier blind.
+   *
+   * `context` is the SAME {@link CoachToolContext} instance {@link execute}
+   * gets — the service layer reads the clock once per tool call and passes that
+   * one object to both halves. That matters because some writes derive part of
+   * what they store from `now`: set_reminder pins the day of a bare-time
+   * one-off, which is tomorrow once that clock time has gone by. A card built
+   * off a different instant than the row is exactly how "at 09:00" gets
+   * approved and a row dated tomorrow lands.
+   *
+   * REQUIRED, not optional. It was optional once, to spare call sites that
+   * passed only `(input, db)` — and the single real call site then quietly kept
+   * doing that, so the clock-sharing this parameter exists for never happened.
+   * Requiring it makes rendering a card without the turn clock a type error.
+   * A summary that doesn't need the clock simply omits the parameter.
+   *
+   * The same shared clock is what lets a summary VALIDATE. A knowable failure —
+   * a log date in the future, a mode window that ends before it begins — must
+   * throw HERE, judged against the same instant execute will use, rather than
+   * costing the user an Approve tap on a write that can only error.
    */
   confirmSummary?: (
     input: Record<string, unknown>,
     db: Database,
-    context?: CoachToolContext
+    context: CoachToolContext
   ) => string;
   /**
    * Run the tool against the on-device database. Returns the tool_result

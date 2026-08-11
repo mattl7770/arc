@@ -1,0 +1,107 @@
+-- ============================================================================
+-- ARC 0029 — purge the fabricated first-run mission rows
+--
+-- ⚠️ THIS MIGRATION DELETES ROWS FROM THE OWNER'S HEALTH RECORD. It is the only
+-- migration in the project that destroys user data, and it cannot be undone
+-- from inside the app. Read the whole header before changing a character of it.
+--
+-- WHAT IT REMOVES, AND WHY
+-- ------------------------
+-- Until 2026-08-07, Home planted an eleven-item MOCK day into `log_entries`
+-- whenever the day produced no protocol-generated entries (`ensureTodaySeeded`
+-- + the now-deleted `src/lib/home/mock-day.ts`). Those rows invented supplement
+-- stacks and attributed them to protocol names that never existed, and TWO of
+-- the eleven were written pre-marked `completed`. Nothing auto-creates a
+-- protocol, so for a user without one the fallback fired again on every new
+-- day: the device holds many days of it.
+--
+-- The fabrication itself is already stopped on main — `ensureTodaySeeded`'s
+-- fallback is empty by default and the mock file is gone. That fix does nothing
+-- for what already accumulated, which is what this migration is for. The rows
+-- are not merely clutter: `get_today_snapshot` reports them to the Coach as
+-- genuinely-done work, and the completed ones are counted in adherence history.
+-- A health record that lies is worse than one with gaps.
+--
+-- THE MARKER
+-- ----------
+-- A fabricated row is identified SOLELY by `seed: true` in the presentation-
+-- extras JSON in `log_entries.value`. `insertMissionItem`
+-- (src/lib/db/repositories/mission.ts, `MissionExtras.seed`) is the ONLY writer
+-- of that key anywhere in the repo, and `ensureTodaySeeded` is its only caller
+-- that passes `{ seed: true }`. Every version of that line in git history has
+-- written the JSON literal `true`, never 1 and never "true".
+--
+-- Do not confuse this with the other "seed" in the codebase: `seedReferenceData`
+-- fills the `biomarkers` table with 65 rows of app-shipped REFERENCE DATA via
+-- INSERT OR IGNORE, and `foods.source = 'seed'` marks the 0016 starter food
+-- catalogue. Both are real shipped data in other tables. Neither is touched
+-- here — this migration names exactly one table.
+--
+-- WHY EACH TERM OF THE PREDICATE IS THERE
+-- ---------------------------------------
+--   json_type(value, '$.seed') = 'true'
+--       The marker. Deliberately `json_type(...) = 'true'` and NOT
+--       `json_extract(...) = 1`: json_extract coerces, so `{"seed":1}` would
+--       also match it, while json_type matches ONLY the JSON boolean literal
+--       that the writer actually emits. Verified against real SQLite over the
+--       full hostile matrix in db/migrate.test.mjs §5. **Do not "simplify" this
+--       back to json_extract — that widens the delete set.**
+--
+--   json_extract(value, '$.adhoc') IS NULL
+--       This is PLANNED_ROW_SQL (src/lib/db/repositories/mission.ts) reproduced
+--       exactly, so this DELETE reasons about "is this a mission row" in the
+--       identical way `listMission`, `countMissionEntries` and the mode
+--       re-derive do. `adhoc` marks the user's own Log-tab captures — notes,
+--       keypad metrics, supplement/therapy captures. Those are real. A seed row
+--       never carries the flag, so this term can only ever protect.
+--
+--   json_extract(value, '$.generated') IS NULL  /  protocol_id IS NULL
+--       Belt and braces around protocol-generated rows, which are real plan
+--       entries expanded from the user's own protocols. `insertGenerated`
+--       stamps `generated: true` and `insertMissionItem` never sets
+--       `protocol_id` at all, so a genuine seed row satisfies both. Two
+--       independent columns have to agree before anything dies.
+--
+-- Every term can only ever REMOVE rows from the delete set. Ambiguity therefore
+-- resolves toward KEEPING a row, which is the correct bias: leaving one fake
+-- row behind is a nuisance, deleting one real row is unrecoverable.
+--
+-- STATUS IS DELIBERATELY NOT FILTERED
+-- -----------------------------------
+-- Seeded rows in EVERY status are removed — `pending`, `completed`, `partial`
+-- and `skipped` alike. This is intentional and is not an oversight: a completed
+-- fake supplement stack is still fabricated, and those completed rows are
+-- precisely the ones corrupting adherence history and misinforming the Coach.
+-- **Do not "fix" this by adding `AND status = 'pending'`** — that would keep the
+-- most damaging rows and delete only the harmless ones.
+--
+-- BLAST RADIUS
+-- ------------
+-- Nothing in any migration declares `REFERENCES log_entries`, so there is no
+-- cascade out of this table. `log_entries` carries only an AFTER UPDATE trigger
+-- (`log_entries_set_updated_at`), which a DELETE does not fire.
+--
+-- `daily_logs` is deliberately NOT touched, including days this DELETE empties
+-- completely. A `daily_log` carries the user's own `summary`, `notes` and
+-- `overall_adherence_score`; the day existing with nothing in it is the honest
+-- post-purge state, and Home renders its empty state over exactly that.
+--
+-- RECOVERY, STATED HONESTLY
+-- -------------------------
+-- `backupBeforeMigrate` (src/lib/db/client.ts) takes a `VACUUM INTO` snapshot
+-- before `migrate()` runs, and both of its guard conditions hold here (the
+-- device is at user_version 28 with this migration pending), so this migration
+-- IS covered by it. But that call is wrapped in try/catch and on failure only
+-- `console.warn`s and PROCEEDS — a pre-release app must not brick on a backup
+-- hiccup. The snapshot is therefore BEST-EFFORT, not guaranteed. Do not treat
+-- it as a rollback you can rely on.
+--
+-- Numbered 0029: next free above the current max (0028). Never renumber it
+-- below a shipped version — `pendingMigrations` filters `version > user_version`
+-- and would skip it in silence.
+-- ============================================================================
+DELETE FROM log_entries
+WHERE json_type(value, '$.seed') = 'true'
+  AND json_extract(value, '$.adhoc') IS NULL
+  AND json_extract(value, '$.generated') IS NULL
+  AND protocol_id IS NULL;

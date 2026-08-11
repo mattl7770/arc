@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
@@ -28,6 +29,43 @@ import {
  * Fully wired: "Log" converts the typed display value to the metric's canonical
  * unit and writes it (src/lib/db/repositories/logs.ts → body_metrics /
  * wearable_data / log_entries), then returns; the Log tab re-reads on focus.
+ *
+ * Conformed Set treatment (00-design-spec.md §1): the readout is the
+ * **measured field** — a verdict about a number, so no enclosure at all.
+ * Everything below it is instrument, not content: square chips, square keys,
+ * every digit in mono ("serif speaks, mono measures"). The one accent on this
+ * screen is the Log button; the active metric chip is stamped in ink, not pine,
+ * because a selection is chrome and the budget is a ceiling.
+ *
+ * The field device draws nothing now — its corner ticks and its padding were cut
+ * together (src/components/ui/block.tsx). Losing the ticks is fine here; losing
+ * the padding is not, because this call site is a 6xl numeral wedged between the
+ * metric chips and the keypad, and it needs the air to read as an instrument
+ * face rather than as a line of body copy. So the readout carries the vertical
+ * padding explicitly. Vertical only, and deliberately the same amount the device
+ * used to contribute — the screen does not scroll, so every point added here
+ * comes out of the Log button's clearance on a small phone.
+ *
+ * ## The blank keypad (mockup sheet K-02)
+ *
+ * Audited against K-02 and left alone, which is the finding rather than an
+ * omission. The blank state is already authored end to end and by the right
+ * component: the readout drops to `ink-muted` so an untyped `0` reads as a
+ * placeholder and not as a reading, and the line beneath it is written by the
+ * repository, which knows whether there is history to report — "No readings
+ * yet", "No readings yet — usually auto from Apple Health", "No water logged yet
+ * today" (src/lib/db/repositories/logs.ts → `recentSummary`). No data, no
+ * number: the screen never invents a plausible last value to sit under the pad.
+ *
+ * The one thing that could have gone blank is that line collapsing to zero
+ * height, which would shift the pad; it now falls back to an em-dash — the
+ * spec's own answer for an absent value (§5) — rather than to nothing.
+ *
+ * The screen is deliberately NOT scrollable: a keypad that scrolls under the
+ * thumb is a broken instrument. That is also why the water estimates carry no
+ * section label of their own, tempting as one is — the "+8 oz" line already says
+ * what they do, and every point of height added above the pad comes out of the
+ * Log button's clearance on a small phone.
  */
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'] as const;
 
@@ -36,6 +74,19 @@ const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'] as c
  * are in the CURRENT display unit — a "Glass" adds 8 oz or 240 ml depending on
  * the volume preference — so the additive maths stays in display units and the
  * stored value is still converted to canonical ml at log time.
+ *
+ * These already conform to K-02's `.cf-quickadd` (raised plate stock inside a
+ * hairline, sitting on the sheet rather than in a well, so the raise is a
+ * button's and not an inverted recess) and to the three voices — with one
+ * deliberate departure from the mockup, which sets the whole tile in mono. It is
+ * split here because the two halves are different things: "Glass" is a button
+ * label and takes the label voice, "+8 oz" is a measured value and takes mono.
+ * §3 is explicit that a measured value inside a label stays mono, and that a
+ * control which falls back to the reading face stops looking pressable.
+ *
+ * The `+` is load-bearing: these ADD to whatever is on the readout rather than
+ * replacing it, so three taps of Glass is 24 oz. Without the sign a tile reading
+ * "8 oz" would promise a set, not an add.
  */
 const WATER_QUICK: Record<'oz' | 'ml', readonly { label: string; amount: number }[]> = {
   oz: [
@@ -54,6 +105,13 @@ const WATER_QUICK: Record<'oz' | 'ml', readonly { label: string; amount: number 
 function withinCap(next: string): boolean {
   return next.replace('.', '').length <= 6;
 }
+
+/**
+ * Metric switch chips. Whole class strings, never a built prefix — Tailwind's
+ * scanner only sees literals. Both states carry an explicit 44pt floor.
+ */
+const CHIP = 'min-h-[44px] justify-center rounded-btn border border-hairline px-3.5';
+const CHIP_ON = 'min-h-[44px] justify-center rounded-btn border border-ink bg-ink px-3.5';
 
 export default function MetricEntryScreen() {
   const router = useRouter();
@@ -145,10 +203,13 @@ export default function MetricEntryScreen() {
               accessibilityRole="button"
               accessibilityState={{ selected: on }}
               onPress={() => switchMetric(m.key)}
-              className={`rounded-btn border px-3 py-1.5 ${
-                on ? 'border-hairline-strong bg-paper-deep' : 'border-hairline'
-              }`}>
-              <Text className={`text-[13px] ${on ? 'font-medium text-ink' : 'text-ink-muted'}`}>
+              className={on ? CHIP_ON : CHIP}>
+              <Text
+                className={
+                  on
+                    ? 'font-label text-[13px] font-semibold text-paper-hi'
+                    : 'font-label text-[13px] font-semibold text-ink-secondary'
+                }>
                 {m.label}
               </Text>
             </Pressable>
@@ -156,22 +217,54 @@ export default function MetricEntryScreen() {
         })}
       </ScrollView>
 
-      {/* Readout */}
-      <View className="mt-8 flex-row items-baseline justify-center gap-2">
-        <Text
-          numberOfLines={1}
-          maxFontSizeMultiplier={1.3}
-          className={`font-mono text-6xl ${value ? 'text-ink' : 'text-ink-muted'}`}>
-          {value || '0'}
-        </Text>
-        <Text className="font-mono text-lg text-ink-muted">{spec.unit}</Text>
+      {/* Readout — the measured field: no enclosure, and its own padding
+          because the device stopped supplying any (see the note above). */}
+      <View className="mt-7">
+        <Block device="field">
+          <View className="py-3">
+            <View className="flex-row items-baseline justify-center gap-2">
+              <Text
+                numberOfLines={1}
+                maxFontSizeMultiplier={1.3}
+                className={
+                  value
+                    ? 'font-mono text-6xl font-semibold text-ink'
+                    : 'font-mono text-6xl font-semibold text-ink-muted'
+                }>
+                {value || '0'}
+              </Text>
+              <Text className="font-mono text-lg text-ink-muted">{spec.unit}</Text>
+            </View>
+            {/*
+              `recent` is authored by the repository when there is nothing to
+              report ("No readings yet", "No water logged yet today") — no data,
+              no number. The out-of-range warning is prose, so it takes the serif
+              voice; the recent line is a measurement and stays mono.
+
+              The em-dash fallback is defensive, not a state this screen reaches:
+              `recentSummary` only returns '' for a metric key it cannot resolve,
+              and the key here always comes from the METRICS table. It is here so
+              the line can never collapse to zero height and shift the pad under a
+              thumb already on its way down — and an em-dash is what the spec says
+              an absent value looks like (§5), so the fallback is honest rather
+              than a filler string.
+            */}
+            <Text
+              className={
+                outOfRange
+                  ? 'mt-2 text-center font-serif text-[13px] leading-5 text-ink-secondary'
+                  : 'mt-2 text-center font-mono text-[11px] text-ink-muted'
+              }>
+              {outOfRange
+                ? `That looks out of range for ${active.label.toLowerCase()}`
+                : recent || '—'}
+            </Text>
+          </View>
+        </Block>
       </View>
-      <Text className="mt-2 text-center text-xs text-ink-muted">
-        {outOfRange ? `That looks out of range for ${active.label.toLowerCase()}` : recent}
-      </Text>
 
       {/* Keypad */}
-      <View className="mt-8 flex-1 justify-end">
+      <View className="mt-6 flex-1 justify-end">
         {active.key === 'water' ? (
           <View className="mb-3 flex-row gap-2">
             {WATER_QUICK[units.volume].map((q) => (
@@ -180,9 +273,9 @@ export default function MetricEntryScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={`Add ${q.amount} ${spec.unit} (${q.label})`}
                 onPress={() => addWater(q.amount)}
-                className="flex-1 items-center rounded-btn border border-hairline bg-porcelain py-2 active:bg-paper-deep">
-                <Text className="text-[13px] font-medium text-ink">{q.label}</Text>
-                <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
+                className="min-h-[44px] flex-1 items-center justify-center rounded-btn border border-hairline bg-paper-hi px-1 py-2 active:bg-paper-dim">
+                <Text className="font-label text-[12px] font-semibold text-ink">{q.label}</Text>
+                <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
                   +{q.amount} {spec.unit}
                 </Text>
               </Pressable>
@@ -190,18 +283,26 @@ export default function MetricEntryScreen() {
           </View>
         ) : null}
 
-        <View className="-mx-1.5 flex-row flex-wrap">
+        {/* Square keys, tight gaps: an instrument, not a set of cards. Every
+            digit is mono; the two function keys sit back in ink-muted. */}
+        <View className="-mx-0.5 flex-row flex-wrap">
           {KEYS.map((key) => (
-            <View key={key} className="w-1/3 p-1.5">
+            <View key={key} className="w-1/3 p-0.5">
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={key === 'del' ? 'Delete' : key}
                 onPress={() => press(key)}
-                className="h-16 items-center justify-center rounded-card active:bg-paper-deep">
+                className="h-16 items-center justify-center active:bg-paper-dim">
                 {key === 'del' ? (
-                  <Ionicons name="backspace-outline" size={24} color={palette.inkSecondary} />
+                  <Ionicons name="backspace-outline" size={22} color={palette.inkMuted} />
                 ) : (
-                  <Text maxFontSizeMultiplier={1.3} className="font-mono text-2xl text-ink">
+                  <Text
+                    maxFontSizeMultiplier={1.3}
+                    className={
+                      key === '.'
+                        ? 'font-mono text-2xl font-semibold text-ink-muted'
+                        : 'font-mono text-2xl font-semibold text-ink'
+                    }>
                     {key}
                   </Text>
                 )}
@@ -210,17 +311,26 @@ export default function MetricEntryScreen() {
           ))}
         </View>
 
+        {/* The one pine action on this screen. Disabled is a bordered recess
+            rather than a filled hairline — ink-muted clears 4.5:1 on paper-dim
+            (5.17:1), which it does not on the hairline it used to sit on. */}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Log ${active.label}`}
           accessibilityState={{ disabled: !canLog }}
           disabled={!canLog}
           onPress={log}
-          className={`mt-4 h-12 items-center justify-center rounded-btn ${
-            canLog ? 'bg-pine active:opacity-70' : 'bg-hairline'
-          }`}>
+          className={
+            canLog
+              ? 'mt-4 min-h-[48px] items-center justify-center rounded-btn bg-pine active:opacity-70'
+              : 'mt-4 min-h-[48px] items-center justify-center rounded-btn border border-hairline bg-paper-dim'
+          }>
           <Text
-            className={`text-[15px] font-semibold ${canLog ? 'text-pine-on' : 'text-ink-muted'}`}>
+            className={
+              canLog
+                ? 'font-label text-[12px] font-semibold uppercase tracking-[1px] text-pine-on'
+                : 'font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink-muted'
+            }>
             Log {active.label}
           </Text>
         </Pressable>

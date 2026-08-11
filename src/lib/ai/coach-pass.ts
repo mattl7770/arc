@@ -144,7 +144,7 @@ export async function runCoachPass(
         fetchImpl,
       },
       {
-        system: buildCoachSystemPrompt({ notificationsLive: false }),
+        system: buildCoachSystemPrompt(),
         systemContext: buildTurnContext(db, now),
         messages: [{ role: 'user', content: passDirective(options.trigger, today) }],
         // READ tools only: with no write in the registry there is nothing to
