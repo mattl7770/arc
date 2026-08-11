@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, View } from 'react-native';
 
 import { RoutinePicker } from '@/components/exercise/routine-picker';
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -264,25 +264,25 @@ function ProgramEditor({ id }: { id: string | undefined }) {
             {DOWS.map((d, i) => {
               const assigned = days[d.dow];
               return (
-                <Pressable
-                  key={d.dow}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${d.label}: ${assigned ? assigned.routineName : 'rest'}. Change.`}
-                  onPress={() => setPickerDow(d.dow)}
-                  className={`min-h-[44px] flex-row items-center gap-3 py-2 active:opacity-60 ${
-                    i === 0 ? '' : 'border-t border-hairline'
-                  }`}>
-                  <Text className="w-24 font-label text-[11px] uppercase tracking-[1px] text-ink-muted">
-                    {d.label}
-                  </Text>
-                  <Text
-                    className={`flex-1 font-serif text-[15px] ${
-                      assigned ? 'text-ink' : 'text-ink-muted'
-                    }`}>
-                    {assigned ? assigned.routineName : 'Rest'}
-                  </Text>
-                  <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
-                </Pressable>
+                <View key={d.dow}>
+                  <Divider first={i === 0} />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${d.label}: ${assigned ? assigned.routineName : 'rest'}. Change.`}
+                    onPress={() => setPickerDow(d.dow)}
+                    className="min-h-[44px] flex-row items-center gap-3 py-2 active:opacity-60">
+                    <Text className="w-24 font-label text-[11px] uppercase tracking-[1px] text-ink-muted">
+                      {d.label}
+                    </Text>
+                    <Text
+                      className={`flex-1 font-serif text-[15px] ${
+                        assigned ? 'text-ink' : 'text-ink-muted'
+                      }`}>
+                      {assigned ? assigned.routineName : 'Rest'}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+                  </Pressable>
+                </View>
               );
             })}
           </View>

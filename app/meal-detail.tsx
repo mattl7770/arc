@@ -3,7 +3,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -36,8 +36,9 @@ import type { FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/type
  *              object — no outer box and no rules, held by alignment and
  *              whitespace (src/components/ui/block.tsx).
  *   Notes    → **margin annotation**: prose belongs in the margin, not a card.
- *   Items    → **ruled plate**: a record is a table. "Add food" is its closing
- *              row, so the way to extend the record sits with the record.
+ *   Items    → **ruled plate**: a record is a table, drawn in both the itemized
+ *              and the free-form state. "Add food" is its closing row, so the
+ *              way to extend the record sits with the record.
  *   Actions  → **ruled plate**: another list of things you can do.
  *
  * **The ledger rule.** Once a meal is itemized, `recomputeMealTotals` writes the
@@ -136,26 +137,25 @@ function ActionRow({
   onPress: () => void;
 }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      accessibilityState={{ disabled: disabled === true }}
-      disabled={disabled}
-      onPress={onPress}
-      className={
-        first
-          ? 'min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60'
-          : 'min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60'
-      }>
-      <Ionicons name={icon} size={17} color={palette.inkSecondary} />
-      <View className="flex-1">
-        <Text className="font-serif text-[15px] text-ink">{label}</Text>
-        {detail ? (
-          <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-muted">{detail}</Text>
-        ) : null}
-      </View>
-      <Ionicons name={trailing ?? 'chevron-forward'} size={16} color={palette.inkMuted} />
-    </Pressable>
+    <View>
+      <Divider first={first} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+        accessibilityState={{ disabled: disabled === true }}
+        disabled={disabled}
+        onPress={onPress}
+        className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+        <Ionicons name={icon} size={17} color={palette.inkSecondary} />
+        <View className="flex-1">
+          <Text className="font-serif text-[15px] text-ink">{label}</Text>
+          {detail ? (
+            <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-muted">{detail}</Text>
+          ) : null}
+        </View>
+        <Ionicons name={trailing ?? 'chevron-forward'} size={16} color={palette.inkMuted} />
+      </Pressable>
+    </View>
   );
 }
 
@@ -358,37 +358,20 @@ export default function MealDetailScreen() {
         </View>
       ) : null}
 
-      {/* Items — the record, with the way to extend it as its closing row.
-
-          The plate is drawn ONLY when there are items. A plate closes a record;
-          a free-form meal has no item record to close, only a sentence and the
-          one row that starts one — and a border around that is the
-          box-around-a-single-thing the owner keeps seeing. `first` on the
-          unplated Add-food row so it draws no top rule, which would be a rule
-          dividing nothing. Same shape as app/protocols.tsx. */}
+      {/* Items — the record, with the way to extend it as its closing row. The
+          plate is drawn in both states: a free-form meal's Items block still
+          stands where the itemized one stands, and the Add-food row that starts
+          the record belongs on the same plate as the record. (The sweep of
+          2026-08-10 made it conditional; reverted at the owner's instruction.) */}
       <View className="mt-8">
-        {items.length === 0 ? (
-          <View>
-            <SectionLabel label="Items" />
+        <Block device="plate">
+          <SectionLabel label="Items" note={itemsNote} />
+
+          {items.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               Free-form entry — totals were recorded directly. Add a food to itemize it.
             </Text>
-            <View className="mt-1">
-              <ActionRow
-                icon="add"
-                label="Add food"
-                first
-                accessibilityLabel="Add food to this meal"
-                onPress={() =>
-                  router.push({ pathname: '/food-search', params: { mealId: meal.id } })
-                }
-              />
-            </View>
-          </View>
-        ) : (
-          <Block device="plate">
-            <SectionLabel label="Items" note={itemsNote} />
-
+          ) : (
             <View className="mt-1">
               {items.map((item, index) => {
                 const portion = portionLabel(item);
@@ -398,7 +381,8 @@ export default function MealDetailScreen() {
                 const canEdit = item.food_id != null || item.grams != null;
                 const isEditing = editing?.itemId === item.id;
                 return (
-                  <View key={item.id} className={index === 0 ? '' : 'border-t border-hairline'}>
+                  <View key={item.id}>
+                    <Divider first={index === 0} />
                     <View className="flex-row items-center gap-3">
                       {/* The 44pt floor and the row's padding both sit on the
                           control, not on this wrapper — the wrapper is
@@ -455,33 +439,23 @@ export default function MealDetailScreen() {
                 );
               })}
             </View>
+          )}
 
-            <View className="mt-1">
-              <ActionRow
-                icon="add"
-                label="Add food"
-                first={false}
-                accessibilityLabel="Add food to this meal"
-                onPress={() =>
-                  router.push({ pathname: '/food-search', params: { mealId: meal.id } })
-                }
-              />
-            </View>
-          </Block>
-        )}
+          <View className="mt-1">
+            <ActionRow
+              icon="add"
+              label="Add food"
+              first={false}
+              accessibilityLabel="Add food to this meal"
+              onPress={() => router.push({ pathname: '/food-search', params: { mealId: meal.id } })}
+            />
+          </View>
+        </Block>
       </View>
 
-      {/* Actions.
-
-          "Save as template" is only meaningful for an itemized meal (a template
-          needs items to re-stamp), so on a free-form meal this block is exactly
-          ONE row — and a plate round one row is the same box-around-a-
-          single-thing as a plate round one paragraph. So the plate is drawn
-          only when both rows are, and the lone Log-again row stands bare on the
-          sheet otherwise, `first` so it draws no rule dividing nothing. Same
-          cut as Data's Settings row and the Log tab's symptom row. */}
+      {/* Actions */}
       <View className="mt-8">
-        {items.length === 0 ? (
+        <Block device="plate">
           <ActionRow
             icon="repeat-outline"
             label="Log again"
@@ -490,16 +464,10 @@ export default function MealDetailScreen() {
             accessibilityLabel="Log this meal again now"
             onPress={logAgain}
           />
-        ) : (
-          <Block device="plate">
-            <ActionRow
-              icon="repeat-outline"
-              label="Log again"
-              detail="Duplicates this meal onto today, timed now"
-              first
-              accessibilityLabel="Log this meal again now"
-              onPress={logAgain}
-            />
+
+          {/* Save as template — only meaningful for an itemized meal (a template
+              needs items to re-stamp). */}
+          {items.length > 0 ? (
             <ActionRow
               icon="albums-outline"
               label="Save as template"
@@ -515,8 +483,8 @@ export default function MealDetailScreen() {
               accessibilityLabel="Save this meal as a template"
               onPress={saveAsTemplate}
             />
-          </Block>
-        )}
+          ) : null}
+        </Block>
 
         <Pressable
           accessibilityRole="button"

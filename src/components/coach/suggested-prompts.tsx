@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { useSessionKeySet } from '@/hooks/use-session-key';
@@ -87,20 +87,24 @@ export function SuggestedPrompts({ onPick }: { onPick: (text: string) => void })
 
         <View className="mt-1">
           {PROMPTS.map((prompt) => (
-            <Pressable
-              key={prompt}
-              accessibilityRole="button"
-              onPress={() => onPick(prompt)}
-              className="min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60">
-              <Text className="flex-1 font-serif text-[15px] leading-5 text-ink">{prompt}</Text>
-              <Ionicons
-                name="chevron-forward"
-                size={13}
-                color={palette.inkMuted}
-                accessibilityElementsHidden
-                importantForAccessibility="no"
-              />
-            </Pressable>
+            <View key={prompt}>
+              {/* Unconditional: the lede paragraph above is what the first
+                  rule separates this list from. */}
+              <Divider />
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => onPick(prompt)}
+                className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+                <Text className="flex-1 font-serif text-[15px] leading-5 text-ink">{prompt}</Text>
+                <Ionicons
+                  name="chevron-forward"
+                  size={13}
+                  color={palette.inkMuted}
+                  accessibilityElementsHidden
+                  importantForAccessibility="no"
+                />
+              </Pressable>
+            </View>
           ))}
         </View>
       </Block>

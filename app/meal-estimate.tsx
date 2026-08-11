@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -428,76 +428,73 @@ export default function MealEstimateScreen() {
             </View>
           ) : null}
 
-          {/* The plate is drawn ONLY when rows survive. A plate closes a
-              record; with every row removed there is no record to close, only a
-              sentence — and a border around one sentence is the
-              box-around-a-single-thing the owner keeps seeing. Same shape as
-              app/protocols.tsx. */}
+          {/* The plate holds in both states: with every row removed the block
+              still stands where the draft record stands. (The sweep of
+              2026-08-10 made it conditional; reverted at the owner's
+              instruction.) */}
           <View className="mt-4">
-            {rows.length === 0 ? (
-              <View>
-                <SectionLabel label="Items" />
+            <Block device="plate">
+              <SectionLabel
+                label="Items"
+                note={reviewKcal !== null ? `${fmtInt(reviewKcal)} kcal` : undefined}
+              />
+
+              {rows.length === 0 ? (
                 <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
                   No items left. Discard, or go back and re-estimate.
                 </Text>
-              </View>
-            ) : (
-              <Block device="plate">
-                <SectionLabel
-                  label="Items"
-                  note={reviewKcal !== null ? `${fmtInt(reviewKcal)} kcal` : undefined}
-                />
-
+              ) : (
                 <View className="mt-1">
                   {rows.map((row, index) => {
                     const p = currentPortion(row);
                     return (
-                      <View
-                        key={row.key}
-                        className={index === 0 ? 'py-3' : 'border-t border-hairline py-3'}>
-                        <View className="min-h-[44px] flex-row items-center gap-3">
-                          <View className="flex-1">
-                            <Text className="font-serif text-[15px] leading-5 text-ink">
-                              {row.name}
-                              <Text className="font-mono text-[10px] text-ink-muted">
-                                {'  '}≈ {row.confidence}
-                                {row.foodId ? ' · matched' : ''}
+                      <View key={row.key}>
+                        <Divider first={index === 0} />
+                        <View className="py-3">
+                          <View className="min-h-[44px] flex-row items-center gap-3">
+                            <View className="flex-1">
+                              <Text className="font-serif text-[15px] leading-5 text-ink">
+                                {row.name}
+                                <Text className="font-mono text-[10px] text-ink-muted">
+                                  {'  '}≈ {row.confidence}
+                                  {row.foodId ? ' · matched' : ''}
+                                </Text>
                               </Text>
+                            </View>
+                            <View className="flex-row items-center gap-1">
+                              <TextInput
+                                value={row.gramsText}
+                                onChangeText={(t) => setGrams(row.key, t)}
+                                keyboardType="decimal-pad"
+                                accessibilityLabel={`${row.name} grams`}
+                                className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+                              />
+                              <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
+                            </View>
+                            <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
+                              {p.kcal != null ? fmtInt(p.kcal) : '—'}
                             </Text>
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`Remove ${row.name}`}
+                              hitSlop={12}
+                              onPress={() => removeRow(row.key)}
+                              className="h-8 w-8 items-center justify-center rounded-btn active:opacity-60">
+                              <Ionicons name="close" size={16} color={palette.inkMuted} />
+                            </Pressable>
                           </View>
-                          <View className="flex-row items-center gap-1">
-                            <TextInput
-                              value={row.gramsText}
-                              onChangeText={(t) => setGrams(row.key, t)}
-                              keyboardType="decimal-pad"
-                              accessibilityLabel={`${row.name} grams`}
-                              className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
-                            />
-                            <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
-                          </View>
-                          <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
-                            {p.kcal != null ? fmtInt(p.kcal) : '—'}
+                          <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                            {p.protein_g != null ? `P ${Math.round(p.protein_g)}g` : ''}
+                            {p.carbs_g != null ? ` · C ${Math.round(p.carbs_g)}g` : ''}
+                            {p.fat_g != null ? ` · F ${Math.round(p.fat_g)}g` : ''}
                           </Text>
-                          <Pressable
-                            accessibilityRole="button"
-                            accessibilityLabel={`Remove ${row.name}`}
-                            hitSlop={12}
-                            onPress={() => removeRow(row.key)}
-                            className="h-8 w-8 items-center justify-center rounded-btn active:opacity-60">
-                            <Ionicons name="close" size={16} color={palette.inkMuted} />
-                          </Pressable>
                         </View>
-                        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                          {p.protein_g != null ? `P ${Math.round(p.protein_g)}g` : ''}
-                          {p.carbs_g != null ? ` · C ${Math.round(p.carbs_g)}g` : ''}
-                          {p.fat_g != null ? ` · F ${Math.round(p.fat_g)}g` : ''}
-                        </Text>
                       </View>
                     );
                   })}
                 </View>
-              </Block>
-            )}
+              )}
+            </Block>
           </View>
 
           {/* The decision, in future tense, immediately above the control that

@@ -3,7 +3,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -117,9 +117,8 @@ export default function MealTemplatesScreen() {
               {templates.map((t, index) => {
                 const expanded = expandedId === t.template.id;
                 return (
-                  <View
-                    key={t.template.id}
-                    className={index === 0 ? '' : 'border-t border-hairline'}>
+                  <View key={t.template.id}>
+                    <Divider first={index === 0} />
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={t.template.name}
@@ -150,26 +149,23 @@ export default function MealTemplatesScreen() {
                           const portion = itemPortion(item);
                           const line = macroLine(item);
                           return (
-                            <View
-                              key={item.id}
-                              className={
-                                itemIndex === 0
-                                  ? 'flex-row items-baseline gap-3 py-2'
-                                  : 'flex-row items-baseline gap-3 border-t border-hairline py-2'
-                              }>
-                              <View className="flex-1">
-                                <Text className="font-serif text-[14px] leading-5 text-ink">
-                                  {item.name}
-                                </Text>
-                                {portion || line ? (
-                                  <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                                    {[portion, line].filter(Boolean).join(' · ')}
+                            <View key={item.id}>
+                              <Divider first={itemIndex === 0} />
+                              <View className="flex-row items-baseline gap-3 py-2">
+                                <View className="flex-1">
+                                  <Text className="font-serif text-[14px] leading-5 text-ink">
+                                    {item.name}
                                   </Text>
-                                ) : null}
+                                  {portion || line ? (
+                                    <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                                      {[portion, line].filter(Boolean).join(' · ')}
+                                    </Text>
+                                  ) : null}
+                                </View>
+                                <Text className="font-mono text-[12px] text-ink-secondary">
+                                  {item.kcal != null ? fmtInt(item.kcal) : '—'}
+                                </Text>
                               </View>
-                              <Text className="font-mono text-[12px] text-ink-secondary">
-                                {item.kcal != null ? fmtInt(item.kcal) : '—'}
-                              </Text>
                             </View>
                           );
                         })}

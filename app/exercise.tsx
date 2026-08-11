@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter, useSegments } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -59,21 +59,21 @@ import { useTrainingHub } from '@/hooks/use-training';
  *   Weekly volume            margin  advisory prose — unmarked, same reason
  *   Muscle freshness         plate   a record, ruled
  *   This week                grid    aligned columns, no outer box, no rules
- *   Programs / Routines      plate   records, ruled — WHEN NON-EMPTY
- *   Quick log                none    one navigating row, label + air only
- *   Recent sessions          plate   a record, ruled — WHEN NON-EMPTY
+ *   Programs / Routines      plate   records, ruled
+ *   Quick log                plate   a row that navigates, like its neighbours
+ *   Recent sessions          plate   a record, ruled
  *
  * Each block carries exactly one device and none of them nest; every other
  * `View` here is layout and spacing only. Sections are separated by whitespace,
  * never by a rule — rules enclose objects, not the page.
  *
- * **A plate is conditional on having a record to close.** Programs, Routines
- * and Recent sessions each render their plate only in the non-empty branch;
- * empty is a SectionLabel and one authored sentence, bare on the sheet. A
- * border around a single paragraph — or a single row, which is why Quick log
- * carries no device at all — is the box-around-a-single-thing the owner keeps
- * reporting. This is a tab root, so empty is the first thing a fresh install
- * shows.
+ * **A plate holds through the empty branch.** Programs, Routines and Recent
+ * sessions each draw their plate whether or not they have rows: a record with
+ * nothing in it still stands where the record stands, and drawing its place
+ * before it has contents is what makes an empty tab root read as a form waiting
+ * to be filled rather than as a page that failed to load. The sweep of
+ * 2026-08-10 made all three conditional and stripped Quick log's plate outright;
+ * the owner rejected that and they are restored.
  *
  * **Accent budget: one.** The Train-today stamp and its Start button are this
  * screen's single primary action. Everything else is neutral ink. The mirror
@@ -203,29 +203,28 @@ export default function ExerciseScreen() {
           <SectionLabel label="Muscle freshness" />
           <View className="mt-2">
             {ledger.map((m, i) => (
-              <View
-                key={m.muscle}
-                className={`flex-row items-center gap-3 py-2 ${
-                  i === 0 ? '' : 'border-t border-hairline'
-                }`}>
-                <Text className="w-24 font-serif text-[13px] text-ink">
-                  {MUSCLE_LABEL[m.muscle]}
-                </Text>
-                {/*
+              <View key={m.muscle}>
+                <Divider first={i === 0} />
+                <View className="flex-row items-center gap-3 py-2">
+                  <Text className="w-24 font-serif text-[13px] text-ink">
+                    {MUSCLE_LABEL[m.muscle]}
+                  </Text>
+                  {/*
                   Biology, so a signal colour is the sanctioned use here. The
                   track is paper-deep, which is what forces the ink cut on the
                   fill — see freshnessColor. Changing this track changes that
                   measurement, so move the two together.
                 */}
-                <View className="h-1.5 flex-1 bg-paper-deep">
-                  <View
-                    style={{ width: `${m.freshness}%`, backgroundColor: freshnessColor(m.state) }}
-                    className="h-full"
-                  />
+                  <View className="h-1.5 flex-1 bg-paper-deep">
+                    <View
+                      style={{ width: `${m.freshness}%`, backgroundColor: freshnessColor(m.state) }}
+                      className="h-full"
+                    />
+                  </View>
+                  <Text className="w-9 text-right font-mono text-[12px] text-ink-secondary">
+                    {m.freshness}
+                  </Text>
                 </View>
-                <Text className="w-9 text-right font-mono text-[12px] text-ink-secondary">
-                  {m.freshness}
-                </Text>
               </View>
             ))}
           </View>
@@ -256,29 +255,26 @@ export default function ExerciseScreen() {
         </Block>
       </View>
 
-      {/* Programs.
-
-          The plate is drawn ONLY in the non-empty branch. A plate closes a
-          record; with no programs there is no record to close, only a paragraph
-          — and a border around one paragraph is the box-around-a-single-thing
-          the owner keeps seeing. This is the Train tab, and empty is the state a
-          fresh install opens it in, so it is the one that matters most. Same
-          shape as app/protocols.tsx and app/wearables.tsx. */}
+      {/* Programs — a plate in both states. The record's place is drawn before
+          it has contents; an empty record still stands where a record stands.
+          (Made conditional by the de-plating sweep of 2026-08-10, restored the
+          same day at the owner's instruction.) */}
       <View className="mt-7">
-        {programs.length === 0 ? (
-          <View>
-            <SectionLabel label="Programs" />
+        <Block device="plate">
+          <SectionLabel
+            label="Programs"
+            note={programs.length > 0 ? String(programs.length) : undefined}
+          />
+          {programs.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               No programs yet. A program schedules your routines across a multi-week block with
               planned deload weeks; start one and Train today follows the plan.
             </Text>
-          </View>
-        ) : (
-          <Block device="plate">
-            <SectionLabel label="Programs" note={String(programs.length)} />
+          ) : (
             <View className="mt-1">
               {programs.map((p, i) => (
-                <View key={p.id} className={i === 0 ? '' : 'border-t border-hairline'}>
+                <View key={p.id}>
+                  <Divider first={i === 0} />
                   <ProgramRow
                     program={p}
                     onPress={() => router.push({ pathname: '/program-edit', params: { id: p.id } })}
@@ -286,8 +282,8 @@ export default function ExerciseScreen() {
                 </View>
               ))}
             </View>
-          </Block>
-        )}
+          )}
+        </Block>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="New program"
@@ -300,22 +296,23 @@ export default function ExerciseScreen() {
         </Pressable>
       </View>
 
-      {/* Routines — plate only when there are routines to close. */}
+      {/* Routines — a plate in both states, same call as Programs above. */}
       <View className="mt-7">
-        {routines.length === 0 ? (
-          <View>
-            <SectionLabel label="Routines" />
+        <Block device="plate">
+          <SectionLabel
+            label="Routines"
+            note={routines.length > 0 ? String(routines.length) : undefined}
+          />
+          {routines.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               No routines yet. Build one — an ordered exercise list with targets — and starting it
               pre-fills last session&rsquo;s numbers.
             </Text>
-          </View>
-        ) : (
-          <Block device="plate">
-            <SectionLabel label="Routines" note={String(routines.length)} />
+          ) : (
             <View className="mt-1">
               {routines.map((r, i) => (
-                <View key={r.id} className={i === 0 ? '' : 'border-t border-hairline'}>
+                <View key={r.id}>
+                  <Divider first={i === 0} />
                   <RoutineRow
                     routine={r}
                     today={today}
@@ -330,8 +327,8 @@ export default function ExerciseScreen() {
                 </View>
               ))}
             </View>
-          </Block>
-        )}
+          )}
+        </Block>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="New routine"
@@ -347,28 +344,27 @@ export default function ExerciseScreen() {
       {/*
         Quick log — free-form / cardio / past session (the older logger).
 
-        Unboxed. It is not a well: recessed stock is reserved for surfaces you
-        actually write on (src/components/ui/block.tsx), and no keystroke is
-        ever taken here — the row's only job is to push /workout-log. Nor is it
-        a plate: a plate closes a record and one row is not a record, so the
-        border drew a rectangle around a single line. Identical cut to Data's
-        Settings row (app/(tabs)/data.tsx) and the Log tab's symptom row
-        (app/(tabs)/log.tsx). The label above it and the air around it are what
-        set it apart now.
+        A **ruled plate**, not a well. Recessed stock is reserved for surfaces
+        you actually write on (src/components/ui/block.tsx), and no keystroke is
+        ever taken here: the row's only job is to push /workout-log, exactly
+        like the Programs, Routines and Recent-sessions rows around it. Drawing
+        it as a capture surface promised an input that isn't there.
       */}
       <View className="mt-7">
-        <SectionLabel label="Quick log" />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Log a session free-form"
-          onPress={() => router.push({ pathname: '/workout-log', params: { mode: 'past' } })}
-          className="mt-1 min-h-[44px] flex-row items-center gap-2 active:opacity-60">
-          <Ionicons name="time-outline" size={17} color={palette.inkSecondary} />
-          <Text className="flex-1 font-serif text-[14px] text-ink">
-            Cardio, mobility, or a past session
-          </Text>
-          <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
-        </Pressable>
+        <Block device="plate">
+          <SectionLabel label="Quick log" />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Log a session free-form"
+            onPress={() => router.push({ pathname: '/workout-log', params: { mode: 'past' } })}
+            className="mt-1 min-h-[44px] flex-row items-center gap-2 active:opacity-60">
+            <Ionicons name="time-outline" size={17} color={palette.inkSecondary} />
+            <Text className="flex-1 font-serif text-[14px] text-ink">
+              Cardio, mobility, or a past session
+            </Text>
+            <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+          </Pressable>
+        </Block>
       </View>
 
       {/*
@@ -377,37 +373,33 @@ export default function ExerciseScreen() {
         §5 — a number on screen has to be the number it looks like).
       */}
       <View className="mt-7">
-        {sessions.length === 0 ? (
-          <View>
-            <SectionLabel label="Recent sessions" />
+        <Block device="plate">
+          <SectionLabel label="Recent sessions" />
+          {sessions.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               Nothing logged yet — start a workout above.
             </Text>
-          </View>
-        ) : (
-          <Block device="plate">
-            <SectionLabel label="Recent sessions" />
+          ) : (
             <View className="mt-1">
               {sessions.map((s, index) => (
-                <View
-                  key={s.id}
-                  className={`flex-row gap-3 py-2.5 ${
-                    index === 0 ? '' : 'border-t border-hairline'
-                  }`}>
-                  <Text className="w-16 pt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                    {dayLabel(s.date, today)}
-                  </Text>
-                  <View className="flex-1">
-                    <Text className="font-serif text-[15px] leading-5 text-ink">{s.name}</Text>
-                    <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">
-                      {sessionDetail(s)}
+                <View key={s.id}>
+                  <Divider first={index === 0} />
+                  <View className="flex-row gap-3 py-2.5">
+                    <Text className="w-16 pt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                      {dayLabel(s.date, today)}
                     </Text>
+                    <View className="flex-1">
+                      <Text className="font-serif text-[15px] leading-5 text-ink">{s.name}</Text>
+                      <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">
+                        {sessionDetail(s)}
+                      </Text>
+                    </View>
                   </View>
                 </View>
               ))}
             </View>
-          </Block>
-        )}
+          )}
+        </Block>
       </View>
     </Screen>
   );

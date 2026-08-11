@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { useCallback, useState, type ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
@@ -300,54 +300,54 @@ export default function DataScreen() {
           {() => (
             <View className="mt-1">
               {trends.map((t, index) => (
-                <Pressable
-                  key={t.key}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    t.empty
-                      ? `${t.name}. ${t.emptyLabel}. Open.`
-                      : `${t.name}. ${t.value} ${t.unit}${t.qualifier ? ', ' + t.qualifier : ''}. Open.`
-                  }
-                  onPress={() => openTrend(t.key)}
-                  className={`min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60 ${
-                    index === 0 ? '' : 'border-t border-hairline'
-                  }`}>
-                  <View className="flex-1">
-                    <Text className="font-serif text-[15px] text-ink">{t.name}</Text>
-                    {/* The descriptor slot carries the authored empty when there
+                <View key={t.key}>
+                  <Divider first={index === 0} />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      t.empty
+                        ? `${t.name}. ${t.emptyLabel}. Open.`
+                        : `${t.name}. ${t.value} ${t.unit}${t.qualifier ? ', ' + t.qualifier : ''}. Open.`
+                    }
+                    onPress={() => openTrend(t.key)}
+                    className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+                    <View className="flex-1">
+                      <Text className="font-serif text-[15px] text-ink">{t.name}</Text>
+                      {/* The descriptor slot carries the authored empty when there
                         is nothing to describe — it has room to read as a sentence
                         there, and the value slot stays a value slot. */}
-                    <Text className="mt-0.5 font-serif text-[11px] leading-4 text-ink-muted">
-                      {t.empty ? t.emptyLabel : t.sub}
-                    </Text>
-                  </View>
-
-                  {t.empty ? null : <Sparkline data={t.spark} baseline={t.sparkBaseline} />}
-
-                  <View className="items-end">
-                    <View className="flex-row items-baseline gap-1">
-                      {/* No data, no number: an em-dash, never a stand-in zero. */}
-                      <Text
-                        className={
-                          t.empty
-                            ? 'font-mono text-[17px] text-ink-muted'
-                            : 'font-mono text-[17px] text-ink'
-                        }>
-                        {t.empty ? '—' : t.value}
+                      <Text className="mt-0.5 font-serif text-[11px] leading-4 text-ink-muted">
+                        {t.empty ? t.emptyLabel : t.sub}
                       </Text>
-                      {!t.empty && t.unit ? (
-                        <Text className="font-mono text-[11px] text-ink-muted">{t.unit}</Text>
+                    </View>
+
+                    {t.empty ? null : <Sparkline data={t.spark} baseline={t.sparkBaseline} />}
+
+                    <View className="items-end">
+                      <View className="flex-row items-baseline gap-1">
+                        {/* No data, no number: an em-dash, never a stand-in zero. */}
+                        <Text
+                          className={
+                            t.empty
+                              ? 'font-mono text-[17px] text-ink-muted'
+                              : 'font-mono text-[17px] text-ink'
+                          }>
+                          {t.empty ? '—' : t.value}
+                        </Text>
+                        {!t.empty && t.unit ? (
+                          <Text className="font-mono text-[11px] text-ink-muted">{t.unit}</Text>
+                        ) : null}
+                      </View>
+                      {!t.empty && t.qualifier ? (
+                        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                          {t.qualifier}
+                        </Text>
                       ) : null}
                     </View>
-                    {!t.empty && t.qualifier ? (
-                      <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                        {t.qualifier}
-                      </Text>
-                    ) : null}
-                  </View>
 
-                  <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-                </Pressable>
+                    <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+                  </Pressable>
+                </View>
               ))}
             </View>
           )}
@@ -367,9 +367,7 @@ export default function DataScreen() {
             <View className="mt-1">
               {fileRows.map((row, index) => {
                 const tappable = row.onPress != null;
-                const rowClass = `min-h-[44px] flex-row items-center gap-3 py-3 ${
-                  index === 0 ? '' : 'border-t border-hairline'
-                }`;
+                const rowClass = 'min-h-[44px] flex-row items-center gap-3 py-3';
                 const iconColor = tappable ? palette.inkSecondary : palette.inkMuted;
 
                 // Both tags are neutral chrome. Signal colours mark biological
@@ -414,18 +412,22 @@ export default function DataScreen() {
                   </>
                 );
 
-                return tappable ? (
-                  <Pressable
-                    key={row.key}
-                    accessibilityRole="button"
-                    accessibilityLabel={row.label}
-                    onPress={row.onPress}
-                    className={`${rowClass} active:opacity-60`}>
-                    {inner}
-                  </Pressable>
-                ) : (
-                  <View key={row.key} className={rowClass} accessibilityElementsHidden={false}>
-                    {inner}
+                return (
+                  <View key={row.key}>
+                    <Divider first={index === 0} />
+                    {tappable ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={row.label}
+                        onPress={row.onPress}
+                        className={`${rowClass} active:opacity-60`}>
+                        {inner}
+                      </Pressable>
+                    ) : (
+                      <View className={rowClass} accessibilityElementsHidden={false}>
+                        {inner}
+                      </View>
+                    )}
                   </View>
                 );
               })}
@@ -448,45 +450,46 @@ export default function DataScreen() {
           {() => (
             <View className="mt-1">
               {biomarkers.map((b, index) => (
-                <View
-                  key={b.slug}
-                  accessible
-                  accessibilityLabel={`${b.name}. Optimal ${rangeText(b)}. ${
-                    b.latestValue != null
-                      ? `${fmtNum(b.latestValue)} ${b.unit ?? ''}`
-                      : 'No reading yet'
-                  }.`}
-                  className={`flex-row items-center gap-3 py-3 ${
-                    index === 0 ? '' : 'border-t border-hairline'
-                  }`}>
-                  <View className="flex-1">
-                    <Text className="font-serif text-[15px] text-ink">{b.name}</Text>
-                    <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                      {rangeText(b)}
-                    </Text>
-                  </View>
-                  {b.latestValue != null ? (
-                    <View className="flex-row items-baseline gap-1">
-                      <Text className="font-mono text-[15px] text-ink">
-                        {fmtNum(b.latestValue)}
+                <View key={b.slug}>
+                  <Divider first={index === 0} />
+                  <View
+                    accessible
+                    accessibilityLabel={`${b.name}. Optimal ${rangeText(b)}. ${
+                      b.latestValue != null
+                        ? `${fmtNum(b.latestValue)} ${b.unit ?? ''}`
+                        : 'No reading yet'
+                    }.`}
+                    className="flex-row items-center gap-3 py-3">
+                    <View className="flex-1">
+                      <Text className="font-serif text-[15px] text-ink">{b.name}</Text>
+                      <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
+                        {rangeText(b)}
                       </Text>
-                      {b.unit ? (
-                        <Text className="font-mono text-[11px] text-ink-muted">{b.unit}</Text>
-                      ) : null}
                     </View>
-                  ) : (
-                    <Text className="font-mono text-[15px] text-ink-muted">—</Text>
-                  )}
+                    {b.latestValue != null ? (
+                      <View className="flex-row items-baseline gap-1">
+                        <Text className="font-mono text-[15px] text-ink">
+                          {fmtNum(b.latestValue)}
+                        </Text>
+                        {b.unit ? (
+                          <Text className="font-mono text-[11px] text-ink-muted">{b.unit}</Text>
+                        ) : null}
+                      </View>
+                    ) : (
+                      <Text className="font-mono text-[15px] text-ink-muted">—</Text>
+                    )}
+                  </View>
                 </View>
               ))}
 
               {/* Neutral invite into the labs screen — this screen's accent is
                   already spent on the import stamp. */}
+              <Divider />
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="See all reference ranges"
                 onPress={() => router.push('/labs')}
-                className="min-h-[44px] flex-row items-center justify-between gap-3 border-t border-hairline py-3 active:opacity-60">
+                className="min-h-[44px] flex-row items-center justify-between gap-3 py-3 active:opacity-60">
                 <View className="flex-1">
                   <Text className="font-serif text-[14px] text-ink-secondary">
                     See all reference ranges
@@ -511,24 +514,28 @@ export default function DataScreen() {
           is exactly as findable as "scroll to the bottom of Data". Neutral ink
           like every other row here — Data spends its one accent on the import
           stamp, and settings never carries an accent anywhere in the app. */}
-      {/* Unboxed: a plate closes a record, and one row is not a record. The
-          row was drawn inside its own plate, which put a rectangle around a
-          single line at the foot of the sheet. */}
+      {/* Plated, like every other row on this sheet. It was stripped in the
+          de-plating sweep of 2026-08-10 on the rule "one row is not a record";
+          the owner rejected that rule outright, and the boxes it removed are
+          back. A plate encloses a record, and a destination into the whole of
+          Settings is a record entry like Labs or Protocols above it. */}
       <View className="mt-7">
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Settings"
-          onPress={() => router.push('/settings')}
-          className="min-h-[44px] flex-row items-center gap-3 active:opacity-60">
-          <Ionicons name="settings-outline" size={18} color={palette.inkSecondary} />
-          <View className="flex-1">
-            <Text className="font-serif text-[15px] text-ink">Settings</Text>
-            <Text className="mt-0.5 font-serif text-[12px] leading-4 text-ink-muted">
-              Profile, units, Coach model, Apple Health, app lock and export
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-        </Pressable>
+        <Block device="plate">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Settings"
+            onPress={() => router.push('/settings')}
+            className="min-h-[44px] flex-row items-center gap-3 active:opacity-60">
+            <Ionicons name="settings-outline" size={18} color={palette.inkSecondary} />
+            <View className="flex-1">
+              <Text className="font-serif text-[15px] text-ink">Settings</Text>
+              <Text className="mt-0.5 font-serif text-[12px] leading-4 text-ink-muted">
+                Profile, units, Coach model, Apple Health, app lock and export
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+          </Pressable>
+        </Block>
       </View>
     </Screen>
   );

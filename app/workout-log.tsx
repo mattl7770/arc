@@ -3,7 +3,7 @@ import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -284,51 +284,49 @@ export default function WorkoutLogScreen() {
         </View>
 
         {/* Sets — a record is a table, so the drafted list is a ruled plate,
-            and the plate is drawn ONLY once a set is drafted. A plate closes a
-            record; an empty draft has no record to close, only a paragraph —
-            and a border around one paragraph is the box-around-a-single-thing
-            the owner keeps seeing. This screen always opens in that state. Same
-            shape as app/protocols.tsx. */}
+            drawn whether or not a set has been added yet. This screen always
+            opens empty, and the plate is what says the draft record goes here.
+            (The sweep of 2026-08-10 made it conditional; reverted at the
+            owner's instruction.) */}
         <View className="mt-7">
-          {sets.length === 0 ? (
-            <View>
-              <SectionLabel label="Sets" />
+          <Block device="plate">
+            <SectionLabel
+              label="Sets"
+              note={sets.length > 0 ? `${sets.length} drafted` : undefined}
+            />
+
+            {sets.length === 0 ? (
               <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
                 Nothing drafted yet. Add sets below — or save a session with none, for cardio and
                 mobility work.
               </Text>
-            </View>
-          ) : (
-            <Block device="plate">
-              <SectionLabel label="Sets" note={`${sets.length} drafted`} />
-
+            ) : (
               <View className="mt-1">
                 {sets.map((s, index) => (
-                  <View
-                    key={`${index}-${s.exercise}`}
-                    className={`min-h-[44px] flex-row items-center gap-3 py-2 ${
-                      index === 0 ? '' : 'border-t border-hairline'
-                    }`}>
-                    <Text className="w-5 font-mono text-[11px] text-ink-muted">{index + 1}</Text>
-                    <Text className="flex-1 font-serif text-[14px] text-ink" numberOfLines={1}>
-                      {s.exercise}
-                    </Text>
-                    <Text className="font-mono text-[13px] text-ink-secondary">
-                      {setLine(s.reps, s.weightLb)}
-                    </Text>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Remove set ${index + 1}, ${s.exercise}`}
-                      onPress={() => removeDraftSet(index)}
-                      hitSlop={10}
-                      className="-mr-1 h-8 w-8 items-center justify-center active:opacity-60">
-                      <Ionicons name="close" size={16} color={palette.inkMuted} />
-                    </Pressable>
+                  <View key={`${index}-${s.exercise}`}>
+                    <Divider first={index === 0} />
+                    <View className="min-h-[44px] flex-row items-center gap-3 py-2">
+                      <Text className="w-5 font-mono text-[11px] text-ink-muted">{index + 1}</Text>
+                      <Text className="flex-1 font-serif text-[14px] text-ink" numberOfLines={1}>
+                        {s.exercise}
+                      </Text>
+                      <Text className="font-mono text-[13px] text-ink-secondary">
+                        {setLine(s.reps, s.weightLb)}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove set ${index + 1}, ${s.exercise}`}
+                        onPress={() => removeDraftSet(index)}
+                        hitSlop={10}
+                        className="-mr-1 h-8 w-8 items-center justify-center active:opacity-60">
+                        <Ionicons name="close" size={16} color={palette.inkMuted} />
+                      </Pressable>
+                    </View>
                   </View>
                 ))}
               </View>
-            </Block>
-          )}
+            )}
+          </Block>
 
           {/* Entry row — recessed stock on the sheet, not a device. */}
           <View className="mt-2">

@@ -4,7 +4,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider, VerticalDivider } from '@/components/ui/block';
 import { PaperGrid } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
@@ -246,73 +246,77 @@ function BrowseCatalog({
         </Text>
       </Pressable>
 
-      {/* Results — a catalog is a record, so: one ruled plate, and only when
-          the search actually returns one. A plate closes a record; a search
-          that matched nothing has no record to close, only a sentence — and a
-          border around one sentence is the box-around-a-single-thing the owner
-          keeps seeing. It appears mid-typing here, so it is seen often. Same
-          shape as app/protocols.tsx. */}
+      {/* Results — a catalog is a record, so: one ruled plate, drawn whether or
+          not the search matched. A no-match state appears mid-typing here, and
+          the plate holding steady across it is what keeps the results list in
+          one place instead of collapsing and re-drawing under the reader's
+          thumb. (The sweep of 2026-08-10 made it conditional; reverted at the
+          owner's instruction.) */}
       <ScrollView
         className="-mx-5 mt-3 flex-1 px-5"
         keyboardShouldPersistTaps="handled"
         contentContainerClassName="pb-8">
-        {filtered.length === 0 ? (
-          <View>
-            <SectionLabel label="Catalog" />
+        <Block device="plate">
+          <SectionLabel
+            label="Catalog"
+            note={filtered.length > 0 ? String(filtered.length) : undefined}
+          />
+          {filtered.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               No exercises match. Try a different search, or create a custom one above.
             </Text>
-          </View>
-        ) : (
-          <Block device="plate">
-            <SectionLabel label="Catalog" note={String(filtered.length)} />
+          ) : (
             <View className="mt-1">
               {filtered.map((ex, i) => (
                 // Two controls, one row. The row proper adds; the button past
                 // the rule opens that exercise's history and records. The rule
                 // is what says they are two things — without it the icons read
                 // as one cluster of decoration on a single tap target.
-                <View
-                  key={ex.id}
-                  className={`flex-row items-center ${i === 0 ? '' : 'border-t border-hairline'}`}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Add ${ex.name}`}
-                    onPress={() => onSelect(ex)}
-                    className="min-h-[44px] flex-1 flex-row items-center gap-3 py-2 pr-3 active:opacity-60">
-                    <View className="flex-1">
-                      <Text className="font-serif text-[15px] text-ink">{ex.name}</Text>
-                      <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                        {ex.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ') || '—'} ·{' '}
-                        {equipmentLabel(ex.equipment)}
-                      </Text>
-                    </View>
-                    {/* A one-word marker, not an object: it used to sit in its
+                <View key={ex.id}>
+                  <Divider first={i === 0} />
+                  <View className="flex-row items-center">
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Add ${ex.name}`}
+                      onPress={() => onSelect(ex)}
+                      className="min-h-[44px] flex-1 flex-row items-center gap-3 py-2 pr-3 active:opacity-60">
+                      <View className="flex-1">
+                        <Text className="font-serif text-[15px] text-ink">{ex.name}</Text>
+                        <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                          {ex.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ') || '—'} ·{' '}
+                          {equipmentLabel(ex.equipment)}
+                        </Text>
+                      </View>
+                      {/* A one-word marker, not an object: it used to sit in its
                         own hairline box, which put a border inside a plate row
                         that is already ruled top and bottom (owner, 2026-08-10 —
                         boxes around a single item). The label voice is what
                         marks it, the same as the muscle/equipment line above. */}
-                    {ex.isCustom ? (
-                      <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                        Custom
-                      </Text>
-                    ) : null}
-                    <Ionicons name="add" size={18} color={palette.inkMuted} />
-                  </Pressable>
-                  {/* `self-stretch` so the rule matches the row it divides even
-                      when a long name wraps; width holds the 44pt floor. */}
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`${ex.name} history and records`}
-                    onPress={() => onOpenDetail(ex)}
-                    className="min-h-[44px] w-11 items-center justify-center self-stretch border-l border-hairline active:bg-paper-dim">
-                    <Ionicons name="analytics-outline" size={17} color={palette.inkMuted} />
-                  </Pressable>
+                      {ex.isCustom ? (
+                        <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                          Custom
+                        </Text>
+                      ) : null}
+                      <Ionicons name="add" size={18} color={palette.inkMuted} />
+                    </Pressable>
+                    {/* The rule that splits the two controls. `self-stretch` on
+                      the divider matches the row's height even when a long name
+                      wraps; a `border-l` here would box the button (see
+                      Divider). The button width holds the 44pt floor. */}
+                    <VerticalDivider />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`${ex.name} history and records`}
+                      onPress={() => onOpenDetail(ex)}
+                      className="min-h-[44px] w-11 items-center justify-center self-stretch active:bg-paper-dim">
+                      <Ionicons name="analytics-outline" size={17} color={palette.inkMuted} />
+                    </Pressable>
+                  </View>
                 </View>
               ))}
             </View>
-          </Block>
-        )}
+          )}
+        </Block>
       </ScrollView>
     </>
   );

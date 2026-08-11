@@ -2,7 +2,7 @@ import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
@@ -35,7 +35,7 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  *
  *   Records          grid   three measured cells, aligned — no box, no rules
  *   Estimated 1RM    field  a readout about the lift; unmarked, set apart by air
- *   History          plate  a record of sessions, ruled
+ *   History          plate  a record of sessions, ruled — in both states
  *
  * **No accent anywhere on this screen.** Nothing here is an action, and the
  * budget is a ceiling, not a quota. Every measured value is mono — "serif
@@ -185,42 +185,36 @@ export default function ExerciseDetailScreen() {
         </Block>
       </View>
 
-      {/* History — a record of sessions, so: ruled plate, but ONLY once there
-          are sessions to rule. A plate closes a record; an exercise never
-          logged has no record to close, only a sentence — and a border around
-          one sentence is the box-around-a-single-thing the owner keeps seeing.
-          Every catalog exercise opens this way until it is run. Same shape as
-          app/protocols.tsx. */}
+      {/* History — a record of sessions, so: ruled plate, in both states. The
+          empty branch keeps the plate: a record with nothing in it still stands
+          where the record stands. (The sweep of 2026-08-10 made the plate
+          conditional; reverted the same day at the owner's instruction.) */}
       <View className="mt-7">
-        {sessions.length === 0 ? (
-          <View>
-            <SectionLabel label="History" />
+        <Block device="plate">
+          <SectionLabel label="History" />
+          {sessions.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               Nothing logged yet.
             </Text>
-          </View>
-        ) : (
-          <Block device="plate">
-            <SectionLabel label="History" />
+          ) : (
             <View className="mt-1">
               {sessions.map((s, i) => (
-                <View
-                  key={`${s.date}-${i}`}
-                  className={`flex-row items-center gap-3 py-2.5 ${
-                    i === 0 ? '' : 'border-t border-hairline'
-                  }`}>
-                  <Text className="w-16 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                    {dayLabel(s.date, today)}
-                  </Text>
-                  <Text className="flex-1 font-mono text-[14px] text-ink">
-                    {setLineKg(s.reps, s.weightKg, units)}
-                    {s.rpe != null ? `  @${s.rpe}` : ''}
-                  </Text>
+                <View key={`${s.date}-${i}`}>
+                  <Divider first={i === 0} />
+                  <View className="flex-row items-center gap-3 py-2.5">
+                    <Text className="w-16 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                      {dayLabel(s.date, today)}
+                    </Text>
+                    <Text className="flex-1 font-mono text-[14px] text-ink">
+                      {setLineKg(s.reps, s.weightKg, units)}
+                      {s.rpe != null ? `  @${s.rpe}` : ''}
+                    </Text>
+                  </View>
                 </View>
               ))}
             </View>
-          </Block>
-        )}
+          )}
+        </Block>
       </View>
     </Screen>
   );

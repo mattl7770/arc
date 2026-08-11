@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -73,35 +73,39 @@ export default function NutritionMicrosScreen() {
                   const value = micros[m.key] ?? null;
                   const pct = value !== null ? Math.min(100, (value / m.reference) * 100) : 0;
                   return (
-                    <View
-                      key={m.key}
-                      className={index === 0 ? 'py-3' : 'border-t border-hairline py-3'}>
-                      <View className="flex-row items-baseline justify-between gap-3">
-                        <Text className="flex-1 font-serif text-[14px] text-ink">{m.label}</Text>
-                        <View className="flex-row items-baseline gap-1">
-                          {value !== null ? (
-                            <>
-                              <Text className="font-mono text-[14px] text-ink">
-                                {fmtMicro(value, m.decimals)}
-                              </Text>
+                    <View key={m.key}>
+                      <Divider first={index === 0} />
+                      <View className="py-3">
+                        <View className="flex-row items-baseline justify-between gap-3">
+                          <Text className="flex-1 font-serif text-[14px] text-ink">{m.label}</Text>
+                          <View className="flex-row items-baseline gap-1">
+                            {value !== null ? (
+                              <>
+                                <Text className="font-mono text-[14px] text-ink">
+                                  {fmtMicro(value, m.decimals)}
+                                </Text>
+                                <Text className="font-mono text-[10px] text-ink-muted">
+                                  {m.unit} {m.ceiling ? 'of ' : '/ '}
+                                  {fmtMicro(m.reference, m.decimals)}
+                                  {m.ceiling ? ' limit' : ''}
+                                </Text>
+                              </>
+                            ) : (
                               <Text className="font-mono text-[10px] text-ink-muted">
-                                {m.unit} {m.ceiling ? 'of ' : '/ '}
-                                {fmtMicro(m.reference, m.decimals)}
-                                {m.ceiling ? ' limit' : ''}
+                                not recorded
                               </Text>
-                            </>
-                          ) : (
-                            <Text className="font-mono text-[10px] text-ink-muted">
-                              not recorded
-                            </Text>
-                          )}
+                            )}
+                          </View>
                         </View>
+                        {value !== null ? (
+                          <View className="mt-1.5 h-[3px] bg-paper-deep">
+                            <View
+                              className="h-[3px] bg-ink-secondary"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </View>
+                        ) : null}
                       </View>
-                      {value !== null ? (
-                        <View className="mt-1.5 h-[3px] bg-paper-deep">
-                          <View className="h-[3px] bg-ink-secondary" style={{ width: `${pct}%` }} />
-                        </View>
-                      ) : null}
                     </View>
                   );
                 })}

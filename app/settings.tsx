@@ -4,7 +4,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, Pressable, Switch, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -34,11 +34,10 @@ import { isHealthKitSupported } from '@/lib/health/healthkit';
  * exactly like Labs, Protocols and Wearables. A hidden tab would have left the
  * bar visible with nothing lit and no way back except tapping another tab.
  *
- * Conformed Set treatment — a group of settings is a **ruled plate**: a settings
- * list is a record of what is set, and a record is a table (00-design-spec.md
- * §1). Two blocks are not: About takes the **margin annotation** device because
- * it is prose about the app rather than a list of settings, and "Not yet built"
- * is a single row, which a plate would box rather than close.
+ * Conformed Set treatment — every group is a **ruled plate**: a settings list is
+ * a record of what is set, and a record is a table (00-design-spec.md §1). The
+ * About block is the exception, and takes the **margin annotation** device
+ * because it is prose about the app rather than a list of settings.
  *
  * ## Zero accent, deliberately
  *
@@ -88,22 +87,23 @@ function NavRow({
   onPress: () => void;
 }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      onPress={onPress}
-      className={`min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60 ${
-        first ? '' : 'border-t border-hairline'
-      }`}>
-      <Ionicons name={icon} size={18} color={palette.inkSecondary} />
-      <View className="flex-1">
-        <Text className="font-serif text-[15px] text-ink">{label}</Text>
-        <Text className="mt-0.5 font-serif text-[12px] text-ink-muted" numberOfLines={1}>
-          {sub}
-        </Text>
-      </View>
-      <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-    </Pressable>
+    <View>
+      <Divider first={first} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        onPress={onPress}
+        className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+        <Ionicons name={icon} size={18} color={palette.inkSecondary} />
+        <View className="flex-1">
+          <Text className="font-serif text-[15px] text-ink">{label}</Text>
+          <Text className="mt-0.5 font-serif text-[12px] text-ink-muted" numberOfLines={1}>
+            {sub}
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+      </Pressable>
+    </View>
   );
 }
 
@@ -272,13 +272,14 @@ export default function SettingsScreen() {
               )}
             </View>
 
+            <Divider />
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Export data"
               accessibilityState={{ disabled: exporting }}
               disabled={exporting}
               onPress={() => void handleExport()}
-              className="min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60">
+              className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
               <Ionicons name="download-outline" size={18} color={palette.inkSecondary} />
               <View className="flex-1">
                 <Text className="font-serif text-[15px] text-ink">Export data</Text>
@@ -293,35 +294,33 @@ export default function SettingsScreen() {
       </View>
 
       {/* Not yet built — visible so the shape is honest, muted so it stays
-          quiet. Unplated: this is one row today, and a plate around a single row
-          draws a box around a line.
-
-          NO INTER-ROW RULE, and that holds however long this list grows. The
-          rule is general (ADR 2026-08-10, `docs/decisions.md`): a hairline
-          separates rows *inside* an enclosure; with no plate to run between it
-          closes nothing and reads as a stroke lying loose on the sheet. Rows
-          are separated by air — `py-3` on each gives 24pt between them, which
-          is the separation. Same call as `app/screenings.tsx` and
-          `app/protocol-edit.tsx`. This used to carry an `index === 0` guard
-          that suppressed the rule on the only row there is, so the list looked
-          correct while the disagreement sat armed for whoever added row two. */}
+          quiet. Plated like every other group on this screen: a settings list is
+          a record of what is set, and "not set yet" is part of that record. (The
+          sweep of 2026-08-10 stripped the plate on the "one row is not a record"
+          rule; the owner rejected it.) Rows are separated by `Divider`, which
+          renders a filled 1px view rather than a one-sided border — the shape
+          that draws a full rectangle on React Native. */}
       <View className="mt-8">
         <SectionLabel label="Not yet built" />
-        <View className="mt-1">
-          {SOON.map((row) => (
-            <View
-              key={row.key}
-              accessible
-              accessibilityLabel={`${row.label}. ${row.sub}. ${row.chip}.`}
-              className="min-h-[44px] flex-row items-center gap-3 py-3">
-              <Ionicons name={row.icon} size={18} color={palette.inkMuted} />
-              <View className="flex-1">
-                <Text className="font-serif text-[15px] text-ink-muted">{row.label}</Text>
-                <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">{row.sub}</Text>
+        <View className="mt-3">
+          <Block device="plate">
+            {SOON.map((row, index) => (
+              <View
+                key={row.key}
+                accessible
+                accessibilityLabel={`${row.label}. ${row.sub}. ${row.chip}.`}>
+                <Divider first={index === 0} />
+                <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+                  <Ionicons name={row.icon} size={18} color={palette.inkMuted} />
+                  <View className="flex-1">
+                    <Text className="font-serif text-[15px] text-ink-muted">{row.label}</Text>
+                    <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">{row.sub}</Text>
+                  </View>
+                  <Tag>{row.chip}</Tag>
+                </View>
               </View>
-              <Tag>{row.chip}</Tag>
-            </View>
-          ))}
+            ))}
+          </Block>
         </View>
       </View>
 
