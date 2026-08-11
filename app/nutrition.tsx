@@ -144,10 +144,18 @@ function MacroCell({ label, figure }: { label: string; figure: DayFigure }) {
  * below the grid is the invitation then, and two invitations to the same screen
  * is one too many.
  */
-function targetsCorner(targets: NutritionTargetsRow | null, eatenKcal: number): string | null {
+function targetsCorner(
+  targets: NutritionTargetsRow | null,
+  eatenKcal: number
+): { label: string; mono: boolean } | null {
   if (targets === null) return null;
-  if (targets.kcal !== null) return `${fmtInt(eatenKcal)} of ${fmtInt(targets.kcal)} kcal`;
-  return 'Edit targets';
+  // A measured value takes mono; "Edit targets" is a CONTROL, so it takes the
+  // label voice. Same split the shipped corner made — a control set in the
+  // measuring face reads as a number that will not add up to anything.
+  if (targets.kcal !== null) {
+    return { label: `${fmtInt(eatenKcal)} of ${fmtInt(targets.kcal)} kcal`, mono: true };
+  }
+  return { label: 'Edit targets', mono: false };
 }
 
 /** A square progress rule — drawn only under an EATEN reading, where a bar that
@@ -412,7 +420,14 @@ export default function NutritionScreen() {
                 hitSlop={16}
                 onPress={() => router.push('/nutrition-targets')}
                 className="active:opacity-60">
-                <Text className="font-mono text-[11px] text-ink-secondary">{corner}</Text>
+                <Text
+                  className={
+                    corner.mono
+                      ? 'font-mono text-[11px] text-ink-secondary'
+                      : 'font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary'
+                  }>
+                  {corner.label}
+                </Text>
               </Pressable>
             ) : null}
           </View>

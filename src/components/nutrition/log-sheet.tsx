@@ -293,17 +293,35 @@ function LogRow({
   );
 }
 
+/** The five rows that leave this sheet for a screen of their own. */
+type LogRoute = '/meal-estimate' | '/food-search' | '/barcode-scan' | '/meal-templates' | '/recipes';
+
 export function LogSheet({ visible, onClose, onSaved }: Props) {
   const router = useRouter();
   const [manualOpen, setManualOpen] = useState(false);
+  // Set when a row asks for a screen; consumed by onDismiss below.
+  const [pending, setPending] = useState<LogRoute | null>(null);
 
-  // Every navigating row closes the sheet first: a modal left standing behind a
-  // pushed screen is what re-appears when you come back, over the thing you
-  // just logged.
-  const go = (
-    path: '/meal-estimate' | '/food-search' | '/barcode-scan' | '/meal-templates' | '/recipes'
-  ) => {
+  /**
+   * A navigating row PARKS its route and closes the sheet — it does not push.
+   *
+   * Pushing in the same tick as the close races the dismissal animation: the
+   * modal is still on screen while the new route mounts underneath it, and on
+   * iOS the sheet can end up sitting over the screen you just asked for. The
+   * exercise picker hit this first and solved it the same way
+   * (src/components/exercise/exercise-picker.tsx) — the push happens in
+   * `onDismiss`, which fires once the sheet is genuinely gone. `onDismiss` is
+   * iOS-only, and ARC is iOS-only (CLAUDE.md §3).
+   */
+  const go = (path: LogRoute) => {
+    setPending(path);
     onClose();
+  };
+
+  const afterDismiss = () => {
+    if (pending === null) return;
+    const path = pending;
+    setPending(null);
     router.push(path);
   };
 
@@ -317,8 +335,9 @@ export function LogSheet({ visible, onClose, onSaved }: Props) {
     <Modal
       visible={visible}
       animationType="slide"
-      presentationStyle="fullScreen"
-      onRequestClose={onClose}>
+      onRequestClose={onClose}
+      onDismiss={afterDismiss}
+      transparent={false}>
       {/* A native Modal builds its own root, so it never passes through
           `Screen` — it prints the sheet and the paper grid itself. */}
       <View className="flex-1 bg-paper">
