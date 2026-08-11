@@ -67,11 +67,11 @@ export function signalTextClass(level: SignalLevel): string {
  * something other than colour has to. There the answer was FORM, because a
  * progress lane has no room for words. Here there is room, so the primary
  * carrier is a WORD — `signalConditionLabel`, set in the signal INK cut, which
- * clears 4.5:1 on every stock the cell has worn: 5.12–5.60:1 on the paper-dim
- * it used to sit on, 5.91–6.46:1 on the bare sheet it sits on since the cell's
- * box and fill came off (./readiness-strip.tsx). A word is exact, it is what the
- * mockup specifies for this cell, and it is the only encoding a screen reader
- * can also read.
+ * clears 4.5:1 on every stock the cell has worn: 5.12–5.60:1 on the `paper-dim`
+ * cell the sheet specifies and the app draws again since 2026-08-10, and
+ * 5.91–6.46:1 on the bare page it sat on in between (./readiness-strip.tsx). A
+ * word is exact, it is what the mockup specifies for this cell, and it is the
+ * only encoding a screen reader can also read.
  *
  * ## What the mark itself now does
  *

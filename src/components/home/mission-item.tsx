@@ -6,6 +6,8 @@ import type { MissionItem, MissionStatus } from '@/types/home';
 
 type Props = {
   item: MissionItem;
+  /** True on the one row the hero is also showing — the day's "you are here". */
+  active?: boolean;
   onToggle: (id: string) => void;
 };
 
@@ -26,8 +28,42 @@ type Props = {
  * than adding to it, so time and category are folded into the label below.
  * Without that they are simply never announced, and the sentence above would
  * be true of the screen and false of the reader.
+ *
+ * ## The row reads when → what → what kind (2026-08-10)
+ *
+ * `.cf-mrow-line` is ONE baseline-aligned line: **mono time first**, then the
+ * serif title, then the category pushed to the right edge. The app had it
+ * inverted — title left, time right-aligned, and the category dropped to a
+ * second line underneath — which cost about 18pt of height per row and, worse,
+ * inverted the scan on a list whose entire organising principle is the clock.
+ * A chronological schedule that leads with the title is a to-do list with times
+ * attached; leading with the time is what makes the plate read as the day.
+ *
+ * The protocol name went with that second line. It is not on the sheet, every
+ * row on this screen comes from a protocol (so it separates nothing), and the
+ * hero above already names the one for the item you are about to do. `Snoozed`
+ * stays — it is a fact about *this* row's state — and rides at the right edge
+ * beside the category.
+ *
+ * ## The active row
+ *
+ * The sheet marks the current item twice: once by the hero, once in the list.
+ * Two of its three marks ship here — the title goes **bold**, and the why-line
+ * is rendered **on this row alone**. The app had been printing a why-line under
+ * every pending row, which is what a rationale looks like when it stops being a
+ * rationale and becomes noise; scoping it to the active row is what makes the
+ * rest of the list scan.
+ *
+ * The third mark — `.cf-mrow--active`'s accent wash plus a 3px accent bar down
+ * the left edge — is **deliberately not built**. 00-design-spec.md §2 enumerates
+ * what the accent may mark on this screen (the hero, one primary action,
+ * completion stamps, the Coach presence dot) and an active-row wash is not among
+ * them; it would be a fifth claim on Home, one section below the block the
+ * accent border exists to single out. The sheet and the spec genuinely disagree
+ * here and it is the owner's call, not an agent's. Weight and the why-line carry
+ * the same hierarchy without spending anything.
  */
-export function MissionItemRow({ item, onToggle }: Props) {
+export function MissionItemRow({ item, active = false, onToggle }: Props) {
   const done = item.status === 'completed';
   const skipped = item.status === 'skipped';
   const muted = done || skipped;
@@ -51,47 +87,52 @@ export function MissionItemRow({ item, onToggle }: Props) {
       </View>
 
       <View className="flex-1">
-        <View className="flex-row items-start justify-between gap-3">
+        {/* when → what → what kind, on one baseline. */}
+        <View className="flex-row items-baseline gap-2">
+          {item.scheduledTime ? (
+            <Text className="font-mono text-[11px] text-ink-secondary">{item.scheduledTime}</Text>
+          ) : null}
+
           <Text
-            className={
-              muted
-                ? 'flex-1 font-serif text-[15px] leading-5 text-ink-muted'
-                : 'flex-1 font-serif text-[15px] leading-5 text-ink'
-            }
+            className={TITLE[muted ? 'muted' : active ? 'active' : 'plain']}
             style={skipped ? { textDecorationLine: 'line-through' } : undefined}>
             {item.title}
           </Text>
 
-          {item.scheduledTime ? (
-            <Text className="font-mono text-[11px] text-ink-muted">{item.scheduledTime}</Text>
-          ) : null}
+          {/* `numberOfLines` stands in for the sheet's `white-space: nowrap` on
+              `.cf-mcat` — without it a long category wraps against the flex-1
+              title and the one-baseline row becomes two. */}
+          <Text
+            numberOfLines={1}
+            className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+            {item.snoozed && item.status === 'pending'
+              ? `${item.category} · Snoozed`
+              : item.category}
+          </Text>
         </View>
 
-        {item.why && !muted ? (
-          <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
+        {item.why && active ? (
+          <Text className="mt-1 font-serif text-[13px] italic leading-5 text-ink-secondary">
             {item.why}
           </Text>
         ) : null}
-
-        <View className="mt-1.5 flex-row items-center gap-2">
-          <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-            {item.category}
-          </Text>
-          {item.protocol ? (
-            <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-              · {item.protocol}
-            </Text>
-          ) : null}
-          {item.snoozed && item.status === 'pending' ? (
-            <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-              · Snoozed
-            </Text>
-          ) : null}
-        </View>
       </View>
     </Pressable>
   );
 }
+
+/**
+ * The row title's three faces. `flex-1` is what pushes the category to the right
+ * edge, standing in for the sheet's `margin-left: auto` on `.cf-mcat`.
+ *
+ * Whole class strings in a lookup, never a built fragment — Tailwind's scanner
+ * only sees literals (the documented ARC pattern, ./signal.tsx).
+ */
+const TITLE = {
+  active: 'flex-1 font-serif text-[14px] font-semibold leading-5 text-ink',
+  plain: 'flex-1 font-serif text-[14px] leading-5 text-ink',
+  muted: 'flex-1 font-serif text-[14px] leading-5 text-ink-muted',
+} as const;
 
 /**
  * Completion state as a single 22pt square control, stamped in the accent when

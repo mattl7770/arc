@@ -184,19 +184,25 @@ export const palette = {
  *     0.06     #DBD8CE       1.12:1      12%   ← was: invisible on device
  *     0.10     #D3D0C6       1.21:1      21%
  *     0.14     #CBC8BE       1.32:1      32%
- *     0.20     #BEBBB2       1.51:1      51%   ← chosen
+ *     0.20     #BEBBB2       1.51:1      51%   ← WAS chosen; far too strong
  *     0.26     #B2AFA6       1.72:1      72%
  *     0.30     #AAA79E       1.89:1      89%   ← too close to a real rule
  *     0.35     #A09D94       2.13:1     113%   ← exceeds the ceiling
  *
- * **0.20 is the value the prose always described**: a mark at half the weight of
- * the faintest thing that means "this encloses an object". A plate edge stays
- * unmistakably twice the departure of the texture under it, which is the gap
- * that keeps §4's "rules enclose objects, never pages" true, and it leaves ~0.5
- * of ratio in hand before the grid reaches hairline weight. Sane range
- * **0.16–0.24** (1.37:1 – 1.65:1). **If the grid starts reading as a rule rather
- * than as tooth in the paper it is too strong** — but note that the failure for
- * two rounds running was the opposite one, so err high rather than low.
+ * **0.06 is the design value, and it is what the mockup always specified**
+ * (`--paper-grid: rgba(28, 24, 14, 0.06)` on `.cf-screen`,
+ * docs/design-research/arc-conformed-set.html:121).
+ *
+ * The 0.20 above was a mistake with an instructive history. The grid shipped
+ * twice as an `<Image resizeMode="repeat">` that never rendered at all, and the
+ * opacity was raised 0.06 → 0.20 to "fix" an invisibility that had nothing to do
+ * with opacity. When the layer was rewritten as Views and finally drew, the
+ * compensation was still in: the owner's Home came back as graph paper competing
+ * with the content instead of tooth in the paper. Restored 2026-08-11.
+ *
+ * The lesson worth keeping: NEVER re-tune a value to compensate for something
+ * not rendering. Establish that it renders, then tune. Two rounds of "it must be
+ * too faint" were spent on a layer that was drawing nothing.
  *
  * Why the dial and not the pitch: a 1pt rule at 1.12:1 is under threshold at any
  * spacing, so coarsening the pitch would only have produced fewer invisible
@@ -218,11 +224,12 @@ export const paperGrid = {
    */
   pitch: 9,
   /**
-   * The dial. The mockup's `rgba(28, 24, 14, .06)` was picked in a browser on a
-   * bright desktop monitor and did not survive the transfer to a phone; 0.20 is
-   * the calibrated device value. See the table above before changing it.
+   * The dial. The mockup's `rgba(28, 24, 14, .06)`, restored 2026-08-11 after
+   * 0.20 shipped and read as graph paper on device. The claim that 0.06 "did not
+   * survive the transfer to a phone" was never true — it was never tested,
+   * because the layer it was applied to was not rendering. See the table above.
    */
-  opacity: 0.2,
+  opacity: 0.06,
 } as const;
 
 /**
