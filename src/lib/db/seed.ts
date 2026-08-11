@@ -11,6 +11,7 @@
  * Both are safe to call repeatedly.
  */
 import type { Database } from './database';
+import { ingestCorpus } from '@/lib/rag/corpus';
 import { newId } from './id';
 import {
   countMissionEntries,
@@ -63,6 +64,10 @@ export function seedReferenceData(db: Database): void {
       );
     }
   });
+  // ARC's curated longevity reference (src/lib/rag/corpus.ts) — the corpus the
+  // Coach cites. Idempotent by pack version, and cheap: a few thousand words
+  // of text, no vectors (those backfill when the embedder ships).
+  ingestCorpus(db);
 }
 
 /**
@@ -87,6 +92,14 @@ export function ensureTodaySeeded(
   fallbackMission: MissionItem[]
 ): void {
   // Protocols drive the day; if any active protocol produced entries, done.
+  //
+  // Since 2026-08-08 a RUNNING EXPERIMENT also contributes an item (its
+  // intervention, so adherence is visible), which means a user with an
+  // experiment and no protocols gets a real one-item mission and no demo. That
+  // is the intended reading of this guard, not an accident: the mock day exists
+  // only to keep Home from being EMPTY on a fresh install, and a day with a
+  // live experiment on it is not empty. Papering a fake demo over the user's
+  // own experiment would be strictly worse.
   if (generateMissionForDay(db, date) > 0) return;
 
   // No protocols (or the day is already populated) — fall back to the mock demo

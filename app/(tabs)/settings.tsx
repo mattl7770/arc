@@ -9,6 +9,7 @@ import { palette } from '@/constants/theme';
 import { useAppLockPreference } from '@/hooks/use-app-lock-preference';
 import { useSessionKeySet } from '@/hooks/use-session-key';
 import { getDb } from '@/lib/db/client';
+import { listMemories } from '@/lib/db/repositories/coach-memory';
 import { getOrCreateUser, isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { exportDataToFile } from '@/lib/export/export-file';
 import { isHealthKitSupported } from '@/lib/health/healthkit';
@@ -74,9 +75,14 @@ export default function SettingsScreen() {
   const appLock = useAppLockPreference();
   const [exporting, setExporting] = useState(false);
   const [exportNote, setExportNote] = useState<string | null>(null);
+  const [memoryCount, setMemoryCount] = useState(() => listMemories(getDb()).length);
 
-  // Re-read on focus so a name edited on the Profile screen shows up on return.
-  const reload = useCallback(() => setProfile(getOrCreateUser(getDb())), []);
+  // Re-read on focus so a name edited on the Profile screen — or a memory
+  // deleted on the Coach-memory screen — shows up on return.
+  const reload = useCallback(() => {
+    setProfile(getOrCreateUser(getDb()));
+    setMemoryCount(listMemories(getDb()).length);
+  }, []);
   useFocusEffect(reload);
 
   const name = profile.full_name?.trim();
@@ -183,6 +189,23 @@ export default function SettingsScreen() {
               <Text className="text-[15px] text-ink">Coach</Text>
               <Text className="mt-0.5 text-[12px] text-ink-muted">
                 {keySet ? 'Model connected' : 'API key and model'}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Coach memory"
+            onPress={() => router.push('/coach-memory')}
+            className="flex-row items-center gap-3 border-t border-hairline-soft px-4 py-3 active:bg-paper-deep">
+            <Ionicons name="bookmark-outline" size={18} color={palette.inkSecondary} />
+            <View className="flex-1">
+              <Text className="text-[15px] text-ink">Coach memory</Text>
+              <Text className="mt-0.5 text-[12px] text-ink-muted">
+                {memoryCount === 0
+                  ? 'Nothing remembered yet'
+                  : `${memoryCount} thing${memoryCount === 1 ? '' : 's'} remembered`}
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />

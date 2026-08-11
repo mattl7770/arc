@@ -60,10 +60,26 @@ export function MessageBubble({ message, onRetry }: Props) {
         </Text>
       </View>
 
-      {/* Transparency chips: which data the turn actually read or wrote. */}
+      {/* Transparency chips: which data the turn actually read or wrote, and
+          what it cost — the only recurring cost in ARC is model tokens, so it
+          should be visible rather than a black box. */}
       {message.tools && message.tools.length > 0 ? (
         <Text className="mt-1 font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
           {message.tools.join(' · ')}
+        </Text>
+      ) : null}
+      {message.usageCaption && !message.streaming ? (
+        <Text className="mt-0.5 font-mono text-[10px] tracking-[0.5px] text-ink-muted">
+          {message.usageCaption}
+        </Text>
+      ) : null}
+
+      {/* Honesty over polish: a reply that hit a length/round-trip cap must
+          never read as complete. Quiet ink, no alarm color — it's a fact,
+          not a failure. */}
+      {message.truncated && !message.streaming ? (
+        <Text className="mt-1 text-xs text-ink-muted">
+          Reply cut short — ask the Coach to continue.
         </Text>
       ) : null}
 

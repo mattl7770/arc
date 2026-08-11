@@ -27,7 +27,39 @@ export type RecommendInput = {
   routines: RoutineCandidate[];
   /** Freshest-muscle movements to offer when there are no routines. */
   fallbackExercises: RecommendedExercise[];
+  /**
+   * A CALLER-SUPPLIED working-volume multiplier (0.1–1.5), applied to every
+   * exercise's target sets. Deliberately not derived from anything: this
+   * engine never decides that a day should be lighter or harder. It exists so
+   * that when the Coach (with the user) decides "today should be ~60%", that
+   * decision compiles into real per-exercise numbers instead of a sticky note
+   * saying "go easier". Absent = the plan as written.
+   *
+   * See docs/coach-intelligence-review.md §4 — deterministic code perceives
+   * and compiles; judgment is the model's.
+   */
+  volumeScale?: number;
 };
+
+/** Clamp a caller's dial to a sane band; undefined/NaN means "no adjustment". */
+export function normalizeVolumeScale(scale: number | undefined): number | undefined {
+  if (scale === undefined || !Number.isFinite(scale)) return undefined;
+  const clamped = Math.min(1.5, Math.max(0.1, scale));
+  // A 1.0 dial is a no-op; treat it as absent so nothing renders "adjusted".
+  return Math.abs(clamped - 1) < 0.001 ? undefined : clamped;
+}
+
+/**
+ * Apply the dial to one exercise's planned sets. Always leaves at least one
+ * working set — "lighter" never silently means "nothing".
+ */
+export function scaleExerciseVolume(
+  exercise: RecommendedExercise,
+  scale: number
+): RecommendedExercise {
+  if (exercise.targetSets == null) return exercise;
+  return { ...exercise, targetSets: Math.max(1, Math.ceil(exercise.targetSets * scale)) };
+}
 
 /** Mean freshness across a routine's exercises (100 when it has none). */
 export function routineFreshness(exercises: RecommendedExercise[]): number {
@@ -58,8 +90,17 @@ function topMuscles(exercises: RecommendedExercise[], ledger: MuscleFreshness[])
     .join(' · ');
 }
 
+/** " · volume cut to 60% (your call)" — names the dial on the session's why. */
+function volumeNote(scale: number): string {
+  return ` · volume ${scale < 1 ? 'cut' : 'raised'} to ${Math.round(scale * 100)}% of the plan`;
+}
+
 export function recommendToday(input: RecommendInput, now: Date = new Date()): Recommendation {
-  const { ledger, routines, fallbackExercises } = input;
+  const { ledger, routines } = input;
+  const scale = normalizeVolumeScale(input.volumeScale);
+  const apply = (list: RecommendedExercise[]) =>
+    scale === undefined ? list : list.map((e) => scaleExerciseVolume(e, scale));
+  const fallbackExercises = apply(input.fallbackExercises);
 
   if (routines.length > 0) {
     // Pick the freshest routine; ties break toward the one done longest ago.
@@ -75,7 +116,7 @@ export function recommendToday(input: RecommendInput, now: Date = new Date()): R
     const caution = best.freshness < ROUTINE_CAUTION;
     const last = daysAgoLabel(best.r.lastStartedAt, now);
     const muscles = topMuscles(best.r.exercises, ledger);
-    const why = caution
+    const base = caution
       ? `${muscles || 'These muscles'} — still recovering; go lighter or swap if it's flat.`
       : `${muscles}${last ? ` · last done ${last}` : ''}`;
     return {
@@ -84,8 +125,8 @@ export function recommendToday(input: RecommendInput, now: Date = new Date()): R
       routineName: best.r.routineName,
       freshness: best.freshness,
       caution,
-      exercises: best.r.exercises,
-      why,
+      exercises: apply(best.r.exercises),
+      why: scale === undefined ? base : `${base}${volumeNote(scale)}`,
     };
   }
 

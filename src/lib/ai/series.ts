@@ -9,7 +9,15 @@
  * at the edge (the metric registry).
  */
 import type { Database } from '@/lib/db/database';
-import { todayISODate } from '@/lib/db/date';
+import { localDayUtcRange, todayISODate } from '@/lib/db/date';
+
+/**
+ * The exclusive end of the local day containing `now`, as a UTC instant — the
+ * correct upper bound for anything stored as a `measured_at` instant.
+ */
+export function endOfLocalDayUtc(now: Date): string {
+  return localDayUtcRange(now).endUtc;
+}
 
 /** One daily observation. */
 export type SeriesPoint = { date: string; value: number };
@@ -30,19 +38,25 @@ export function isoDatePlusDays(date: string, delta: number): string {
  * Daily series for a wearable metric — avg per day for level metrics
  * (hrv/rhr), sum per day for accumulating ones (water). All source devices
  * pooled: the question is "what was my HRV", not "what did the ring say".
+ *
+ * `untilDate` closes the window (inclusive). Callers should pass today: a
+ * future-dated row (clock skew, a mis-entered backdate) must never leak into
+ * "recent" averages or read as the latest value — the deferred hardening item
+ * from project-status.md (2026-07-31), closed 2026-08-08.
  */
 export function wearableDailySeries(
   db: Database,
   metricType: string,
   sinceDate: string,
-  agg: 'avg' | 'sum'
+  agg: 'avg' | 'sum',
+  untilDate?: string
 ): SeriesPoint[] {
   const fn = agg === 'sum' ? 'sum' : 'avg';
   return db.all<SeriesPoint>(
     `SELECT date, ${fn}(value) AS value FROM wearable_data
-     WHERE metric_type = ? AND date >= ?
+     WHERE metric_type = ? AND date >= ?${untilDate ? ' AND date <= ?' : ''}
      GROUP BY date ORDER BY date`,
-    [metricType, sinceDate]
+    untilDate ? [metricType, sinceDate, untilDate] : [metricType, sinceDate]
   );
 }
 
@@ -55,14 +69,25 @@ export function wearableDailySeries(
 export function bodyDailySeries(
   db: Database,
   column: 'weight_kg' | 'body_fat_pct' | 'waist_cm',
-  sinceDate: string
+  sinceDate: string,
+  /**
+   * Exclusive upper bound as a UTC ISO INSTANT — pass
+   * `localDayUtcRange(now).endUtc` to close the window at the end of the local
+   * day. It must be an instant, not a date string: `measured_at` is a UTC
+   * instant, so west of UTC an evening weigh-in already carries TOMORROW's UTC
+   * date and a `substr(...) <= today` bound would drop the user's own reading
+   * (caught by db/coach-tools.test.mjs on a UTC-behind machine).
+   */
+  untilExclusiveUtc?: string
 ): SeriesPoint[] {
   // `column` is a fixed union from the signature, never user/model input.
   return db.all<SeriesPoint>(
     `SELECT substr(measured_at, 1, 10) AS date, avg(${column}) AS value FROM body_metrics
-     WHERE ${column} IS NOT NULL AND substr(measured_at, 1, 10) >= ?
+     WHERE ${column} IS NOT NULL AND substr(measured_at, 1, 10) >= ?${
+       untilExclusiveUtc ? ' AND measured_at < ?' : ''
+     }
      GROUP BY substr(measured_at, 1, 10) ORDER BY date`,
-    [sinceDate]
+    untilExclusiveUtc ? [sinceDate, untilExclusiveUtc] : [sinceDate]
   );
 }
 
@@ -76,7 +101,11 @@ export type NutritionDay = {
   meals: number;
 };
 
-export function nutritionDailyTotals(db: Database, sinceDate: string): NutritionDay[] {
+export function nutritionDailyTotals(
+  db: Database,
+  sinceDate: string,
+  untilDate?: string
+): NutritionDay[] {
   return db.all<NutritionDay>(
     `SELECT date,
        coalesce(sum(kcal), 0)      AS kcal,
@@ -84,9 +113,9 @@ export function nutritionDailyTotals(db: Database, sinceDate: string): Nutrition
        coalesce(sum(carbs_g), 0)   AS carbs_g,
        coalesce(sum(fat_g), 0)     AS fat_g,
        count(*)                    AS meals
-     FROM meals WHERE date >= ?
+     FROM meals WHERE date >= ?${untilDate ? ' AND date <= ?' : ''}
      GROUP BY date ORDER BY date`,
-    [sinceDate]
+    untilDate ? [sinceDate, untilDate] : [sinceDate]
   );
 }
 
@@ -99,16 +128,20 @@ export type TrainingDay = {
   cardio_min: number;
 };
 
-export function trainingDailyTotals(db: Database, sinceDate: string): TrainingDay[] {
+export function trainingDailyTotals(
+  db: Database,
+  sinceDate: string,
+  untilDate?: string
+): TrainingDay[] {
   return db.all<TrainingDay>(
     `SELECT date,
        coalesce(sum(duration_min), 0) AS minutes,
        count(*)                       AS sessions,
        sum(CASE WHEN kind = 'strength' THEN 1 ELSE 0 END) AS strength_sessions,
        sum(CASE WHEN kind = 'cardio' THEN coalesce(duration_min, 0) ELSE 0 END) AS cardio_min
-     FROM workouts WHERE date >= ?
+     FROM workouts WHERE date >= ?${untilDate ? ' AND date <= ?' : ''}
      GROUP BY date ORDER BY date`,
-    [sinceDate]
+    untilDate ? [sinceDate, untilDate] : [sinceDate]
   );
 }
 

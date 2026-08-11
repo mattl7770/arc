@@ -89,26 +89,44 @@ export function getOrCreateDailyLog(db: Database, date: string): DailyLogRow {
  */
 export const PLANNED_ROW_SQL = "json_extract(value, '$.adhoc') IS NULL";
 
+/**
+ * A row the user removed from the day. It stays in the table as a TOMBSTONE
+ * (see {@link removeMissionItem}) and must be invisible everywhere the mission
+ * is shown — but visible to the mode re-derive, which is the whole point.
+ */
+export const NOT_REMOVED_SQL = "json_extract(value, '$.removed') IS NULL";
+
 export function listMission(db: Database, date: string): MissionItem[] {
   const log = db.get<{ id: string }>('SELECT id FROM daily_logs WHERE date = ?', [date]);
   if (!log) return [];
   const rows = db.all<LogEntryRow>(
     `SELECT * FROM log_entries
-     WHERE daily_log_id = ? AND ${PLANNED_ROW_SQL}
+     WHERE daily_log_id = ? AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}
      ORDER BY (scheduled_time IS NULL), scheduled_time, created_at, id`,
     [log.id]
   );
   return rows.map(toMissionItem);
 }
 
-/** Set a log entry's status, stamping completed_at only when completing. */
+/**
+ * Set a log entry's status, stamping completed_at only when completing.
+ *
+ * Completion is IDEMPOTENT: re-completing an already-completed row keeps the
+ * original timestamp rather than moving a 06:40 workout to whenever the second
+ * call happened. Any other status clears it, which is what un-completing means.
+ */
 export function setMissionStatus(db: Database, id: string, status: MissionStatus): void {
-  const completedAt = status === 'completed' ? new Date().toISOString() : null;
-  db.run('UPDATE log_entries SET status = ?, completed_at = ? WHERE id = ?', [
-    status as LogEntryStatus,
-    completedAt,
-    id,
-  ]);
+  if (status !== 'completed') {
+    db.run('UPDATE log_entries SET status = ?, completed_at = NULL WHERE id = ?', [
+      status as LogEntryStatus,
+      id,
+    ]);
+    return;
+  }
+  db.run(
+    "UPDATE log_entries SET status = 'completed', completed_at = COALESCE(completed_at, ?) WHERE id = ?",
+    [new Date().toISOString(), id]
+  );
 }
 
 /** Flip a log entry between completed and pending (the row-tap gesture). */
@@ -153,6 +171,71 @@ export function insertMissionItem(
       'manual',
     ]
   );
+}
+
+/**
+ * Reschedule one PENDING planned item. Returns false when the row isn't
+ * eligible (already acted on, an ad-hoc capture, or not on this day) rather
+ * than throwing — the caller reports which ops applied.
+ *
+ * The guards mirror {@link removeMissionItem}: moving a completed item would
+ * rewrite history, and an ad-hoc capture is not part of the plan.
+ */
+export function moveMissionItem(
+  db: Database,
+  dailyLogId: string,
+  id: string,
+  scheduledTime: string | null
+): boolean {
+  const row = db.get<{ id: string }>(
+    `SELECT id FROM log_entries
+     WHERE id = ? AND daily_log_id = ? AND status = 'pending' AND ${PLANNED_ROW_SQL}`,
+    [id, dailyLogId]
+  );
+  if (!row) return false;
+  db.run('UPDATE log_entries SET scheduled_time = ? WHERE id = ?', [scheduledTime, id]);
+  return true;
+}
+
+/**
+ * Remove one PENDING planned item from the day. Returns false when the row
+ * isn't eligible (already acted on, an ad-hoc capture, or not on this day).
+ *
+ * A TOMBSTONE, not a DELETE. Deleting the row worked exactly until the next
+ * mode change: `rederiveMissionForDay` recomputes the day from the protocols,
+ * finds the removed item still in the plan and nothing on the day matching it,
+ * and dutifully puts it back. The user's approved removal was undone by an
+ * unrelated action, with no message either way.
+ *
+ * So the row stays, marked `removed` and settled as `skipped`:
+ *   - {@link listMission} hides it, so "removed" still means removed on screen;
+ *   - the re-derive counts it among the PRESERVED rows (status ≠ pending), so
+ *     its plan entry is already satisfied and is never re-added;
+ *   - and the day keeps an honest record that the item was planned and dropped.
+ *
+ * The guards below are defence in depth on a state-changing statement, exactly
+ * as the re-derive does: even with a wrong id this can never reach an ad-hoc
+ * Log-tab capture, an acted-on row, or another day.
+ */
+export function removeMissionItem(db: Database, dailyLogId: string, id: string): boolean {
+  const before = db.get<{ c: number }>(
+    `SELECT count(*) c FROM log_entries
+     WHERE id = ? AND daily_log_id = ? AND status = 'pending'
+       AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`,
+    [id, dailyLogId]
+  );
+  if ((before?.c ?? 0) === 0) return false;
+  db.run(
+    // COALESCE: a row with a NULL value column would otherwise json_set to NULL
+    // and lose the tombstone — which is precisely the row that then resurrects.
+    `UPDATE log_entries
+     SET status = 'skipped',
+         value = json_set(COALESCE(value, '{}'), '$.removed', json('true'))
+     WHERE id = ? AND daily_log_id = ? AND status = 'pending'
+       AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`,
+    [id, dailyLogId]
+  );
+  return true;
 }
 
 /**

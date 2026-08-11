@@ -7,6 +7,8 @@
  * format, not on screen. When this starts persisting to `ai_messages`, that is
  * a widening, not a redesign.
  */
+import type { CoachToolCall } from '@/lib/ai/types';
+
 export type ChatRole = 'user' | 'assistant';
 
 export type ChatMessage = {
@@ -19,11 +21,25 @@ export type ChatMessage = {
   /** Set when the send failed, so the row can offer a retry. */
   error?: boolean;
   /**
+   * Set when the reply stopped early (max_tokens or the tool-round-trip cap)
+   * — the bubble shows a quiet "cut short" line so a half-answer is never
+   * mistaken for a whole one.
+   */
+  truncated?: boolean;
+  /**
    * Human labels of the tools the turn used ("metric series", "reminder") —
    * the transparency chips under an assistant bubble. Derived from the
    * persisted `ai_messages.tool_calls` record.
    */
   tools?: string[];
+  /**
+   * The turn's RAW tool record, replayed to the model as a compact digest so
+   * it can still see the numbers it cited (src/lib/ai/coach-service.ts
+   * toolDigest). Not rendered — `tools` is the UI's view of the same record.
+   */
+  toolCalls?: CoachToolCall[];
+  /** Muted cost/usage caption for this reply ("3 tool calls · ~$0.04"). */
+  usageCaption?: string;
 };
 
 /** What the service seam reports back as a reply streams in. */

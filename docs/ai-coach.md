@@ -1,7 +1,9 @@
 # ARC AI Coach — Capability Specification
 
-**Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, and protocol write-back (2026-07-27)
-**Last updated:** 2026-07-27
+**Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, protocol write-back (2026-07-27); Modes + Experiments tools shipped (2026-07-31/08-01); **perception layer shipped (2026-08-08** — per-turn "Current state" context block, readiness/sleep/training-engine/lab-trend visibility; see `docs/coach-intelligence-review.md` for the review that drove it and the phases that follow**)**
+**Last updated:** 2026-08-08
+
+> **Governing principle (owner call, 2026-08-08):** deterministic code **detects and grounds**; the **model decides**; tools **enact**; the user **confirms**. No pure function may encode a clinical judgment ("low HRV → cut volume") — detection can surface a signal, but what to do about it is always the model's call, weighed with the user. The review doc's §4 table is the reference.
 
 This is the concrete capability surface of the Coach: every tool it has (shipped, stubbed, or planned), its proactive behaviors, memory, safety rails, and the sequenced long tail — each item flagged with what it depends on. **Items marked `⚑ MATT` are product decisions to steer before the long tail gets built.**
 
@@ -45,15 +47,21 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 
 | Tool | Input | Reads | Returns |
 | --- | --- | --- | --- |
-| `get_today_snapshot` | — | mission (`log_entries`), `meals`, `workouts`, `symptoms`, ad-hoc captures, reminders due today | Today's full picture in one call |
-| `get_metric_series` | `metric: weight\|body_fat\|waist\|hrv\|rhr\|water`, `days?≤365` | `body_metrics` / `wearable_data` daily series | Daily points + min/avg/max in display units |
-| `get_training_summary` | `days?` (28) | `workouts` (+ recent sessions) | Totals, weekly rates, per-day load |
+| `get_today_snapshot` | — | **readiness (`deriveReadiness` — the same verdict Home shows)**, the day's **mode**, mission (`log_entries`, **with item ids**), `meals`, `workouts`, `symptoms`, ad-hoc captures (in the user's units), reminders due today, **running experiments**, **profile (age/sex)** | Today's full picture in one call |
+| `get_metric_series` | `metric: weight\|body_fat\|waist\|hrv\|rhr\|water\|sleep\|sleep_deep\|steps\|active_energy`, `days?≤365` | `body_metrics` / `wearable_data` daily series, windows closed at today | Daily points + min/avg/max (display units; sleep/steps/energy in fixed min/steps/kcal) |
+| `get_training_summary` | `days?` (28) | `workouts` (+ recent sessions) | Totals, weekly rates, per-day load, `thisWeek` calendar block |
+| `get_training_recommendation` | — | the whole training engine (`buildRecommendation`) | Today's session recommendation + per-exercise progression targets, muscle freshness ledger, program week/deload state, weekly volume vs MEV/MAV/MRV. **Reports state; the tool description tells the model the training decision is its own to make with the user** |
 | `get_nutrition_summary` | `days?` (14) | `meals` | Per-day kcal/macros + averages across logged days |
 | `get_symptom_history` | `days?` (30) | `symptoms` | Occurrences + counts by name w/ avg severity |
 | `get_biomarkers` | `category?`, `biomarker?` | `biomarkers` ⋈ latest `lab_results` | Latest value per marker + optimal/standard ranges; explicit "no labs imported" when empty |
+| `get_biomarker_history` | `biomarker` (slug or name) | all `lab_results` for one marker | The full series oldest-first + ranges; exact-match-first resolution that returns candidates on ambiguity instead of guessing |
 | `get_protocols` | — | `protocols` ⋈ live `protocol_versions` | Each stack/routine/block with its live version number + current items (title, time, dose) |
 | `list_reminders` | — | `reminders` | Active reminders + due-today flags |
 | `get_insights` | — | insights engine | Precomputed trends/gaps/correlations + the brief line |
+| `get_experiments` | `include_completed?` | `experiments` | Active experiments w/ daysLeft + ready flags; recent verdicts on request |
+| `search_knowledge` | `query`, `scope?` | RAG layer (0025) | Honest "not available yet" until the on-device embedder ships |
+
+**Every turn also opens with a "Current state" system block** (`src/lib/ai/turn-context.ts`, 2026-08-08): date+weekday, profile+units, mode, readiness verdict+pillars, mission progress, running/ready experiments, and the deterministic brief — sent as a second uncached system block after the prompt-cache breakpoint. The model starts oriented and spends tool calls on depth, not on discovering what Home already shows.
 
 ### 2b. Shipped — write (confirmation-gated)
 
@@ -69,6 +77,11 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 | `complete_reminder` | `id` (one-offs only — refuses recurring) | `completeReminder` | "Mark reminder "Book DEXA" done" |
 | `dismiss_reminder` | `id` | `dismissReminder` | "Dismiss reminder "Take magnesium"" |
 | `update_protocol` | `protocol_slug`, `items[]` (the COMPLETE new list), `change_notes` | `addVersion(…, 'ai')` — writes a NEW immutable version, never edits the live one | "Update "Evening Stack": 3 items (was 2) — added magnesium" |
+| `set_mode` | `mode`, `until?`, `note?` | `setMode` + `rederiveMissionForDay` (today reshapes immediately, work preserved) | "Set Sick mode for today" |
+| `create_experiment` | `name`, `hypothesis`, `intervention`, `metrics[]`, `duration_days`, `success_criteria?` | `createExperiment` (starts today, computed end date) | "Start experiment "Magnesium PM" — 14 days" |
+| `complete_experiment` | `id`, `conclusion`, `outcome_notes?` | `completeExperiment` (active-only guard) | "Conclude experiment "Magnesium PM"" |
+
+Log tools reject a **future** `date` (`optPastDate`, 2026-08-08) — a mis-parsed "next Tuesday" used to silently poison every trend window. `log_workout` sets now resolve their catalog **`exercise_id`** by unique exact name/alias match (never fuzzy), so Coach-logged training feeds e1RM/freshness/volume instead of being invisible to the engine; unmatched names are reported back in the tool result.
 
 A Coach-logged row is indistinguishable from a hand-logged one downstream — the tools call the same repositories the capture screens use. Three contract rules, enforced in code and covered by tests: **units convert in code, never in the model** (values arrive as the user said them — lb, oz — and the registry/exercise helpers canonicalize); **backdating is explicit** (every log tool takes an optional real-calendar `date`; the confirmation line shows a backdate, and the system prompt instructs the model to pass one for "yesterday…" reports); **the confirmation line carries everything consequential** — macros, sets, dates, and the resolved *name* behind any id (the user never approves a bare identifier).
 
@@ -76,22 +89,19 @@ A Coach-logged row is indistinguishable from a hand-logged one downstream — th
 
 ### 2c. Stubbed — interface defined, NOT registered (`src/lib/ai/tools/stubs.ts`)
 
-Withheld from the model on purpose: a tool that always fails teaches the model not to call it. Each ships when its dependency lands.
+Withheld from the model on purpose: a tool that always fails teaches the model not to call it. Each ships when its dependency lands. *(2026-08-08: `create_experiment` and `set_mode` graduated to registered writes — see 2b; the coach-assist wrapper stub was deleted outright.)*
 
 | Tool | Blocked on | Notes |
 | --- | --- | --- |
-| `create_experiment` | **`experiments` table** (Coach Phase 2 migration) | n-of-1: hypothesis, intervention, metrics, duration, success criteria. |
-| `set_mode` | **Modes** (docs/information-architecture.md) | Sets today's mode so plan/priorities/tone/adherence adapt. |
-| `complete_mission_item` | **Home integration decision** — mission ids must be surfaced to the Coach; Home is integrator-owned | Snapshot already exposes titles/status read-only. |
-| `navigate_to` | **A navigation seam** — tools execute headless; navigation is a UI side effect the service must broker (an event the screen subscribes to) | "Pull up my labs" ends on the Labs screen, not in prose. |
+| `complete_mission_item` | Superseded by **`adjust_today`** (coach-intelligence-review.md §4 Phase 2) — snapshot now exposes mission ids, so the batch mission-write tool absorbs this | Snapshot exposes ids + titles/status read-only today. |
+| `navigate_to` | **A navigation seam** — tools execute headless; navigation is a UI side effect the service must broker (an event the screen subscribes to; the listener-set idiom already ships 3× in-repo) | "Pull up my labs" ends on the Labs screen, not in prose. |
 
 ### 2d. Planned — not yet designed in code
 
+- `adjust_today` — batch mission surgery (complete/skip/add/move/remove) behind ONE diff confirmation card; the lever that turns the model's judgment into a changed day. Design: coach-intelligence-review.md §4 Phase 2. `⚑ MATT` (ruthlessness rope) resolved conservatively: the confirmation gate IS the rope.
 - `explain_metric` — curated explainer per metric/biomarker; becomes real with the knowledge base (RAG corpus).
-- `propose_today_adjustment` — restructure today's mission (needs Protocols + mission write access; the highest-leverage write of all). `⚑ MATT`: this is where "slightly ruthless" becomes real — how much rope does the Coach get to rearrange a day unprompted?
 - `generate_grocery_list` — needs meal templates (Protocols).
-- `search_knowledge` — RAG over the curated longevity corpus via sqlite-vec (deliberately out of this slice).
-- `log_labs` — manual lab-result entry by voice/chat; deferred until the Function PDF pipeline defines the dedupe rules.
+- `log_labs` — manual lab-result entry by voice/chat; its old blocker (the Function PDF pipeline's dedupe rules) shipped 2026-07-29 — needs a design pass now.
 
 ---
 
@@ -116,15 +126,34 @@ The Coach's proactivity is **deterministic detection + model narration** — the
 
 ### Daily brief
 
-`generateDailyBrief(db, now)` composes top insights + reminders due today into 1–3 sentences with no model call, so the brief is real even offline. Surfaced today on the Coach screen's brief card. **Integrator step (flagged, not done): replace Home's `mockDay.brief` with this.** Later: the model rewrites the deterministic skeleton in voice (one cheap call on app open) — the numbers stay the engine's.
+`generateDailyBrief(db, now)` composes top insights + reminders due today into 1–3 sentences with no model call, so the brief is real even offline. Surfaced on the Coach screen's brief card AND Home (`useDailyBrief` — the old "integrator step" note here was stale; it shipped). Since 2026-08-08 the brief also rides the per-turn "Current state" block, so the model reads the same briefing the user does. Later: the model rewrites the deterministic skeleton in voice (one cheap call on app open) — the numbers stay the engine's.
+
+### The coach pass — the one place the Coach speaks without being asked
+
+Shipped 2026-08-08 (`src/lib/ai/coach-pass.ts`, `pass-schedule.ts`, `pass-store.ts`). Everything else in the Coach runs because the user typed something; this runs on its own.
+
+**When.** `duePass()` decides, and only ever decides *whether to wake the model* — never what it should conclude. Two triggers: **daily** (once per calendar day, first app open, bounded by a stored date so ten launches cost one pass) and **signal** (a watch-tone insight that was not present at the last pass — keyed by insight id, so a standing HRV trend fires once, not every launch). A clock rolled backwards cannot re-fire the day.
+
+**What it may do.** The pass is given the **read tools only**, so there is no write to gate and nothing it decides can change data unattended. When it concludes something should change, it says so, and acting on that happens in the thread where the confirmation gate lives and the user is present.
+
+**It may say nothing.** The directive tells the model to reply with exactly `SKIP` when the day doesn't warrant a word, and the directive deliberately names **no scenario** — it does not mention recovery, or training, or any other domain. A coach that produces a paragraph every morning trains the user to ignore it.
+
+**Four rules the implementation had to learn the hard way** (all four were live defects; see `coach-intelligence-review.md` §4b):
+
+- **One runner.** Running and reading are separate: `pass-store.ts` owns the state, the root drives it, everything else subscribes. Mounting a single do-both hook in two places meant two model calls and two assistant turns per trigger.
+- **After hydration.** The API key arrives from the Keychain *asynchronously*. A synchronous `has()` check on mount is always false on a cold start — which made the daily pass, the entire point of this feature, unable to fire at all.
+- **Never while locked.** The pass reads health data and posts it to the model API. Behind the Face ID gate nobody has authenticated, so it waits and fires the moment the gate opens.
+- **Offline is not silence.** `CoachPassStatus` distinguishes `spoke` / `silent` / `failed`. Silence is a *judgment* and consumes the day; a failure is an *absence* and must not — otherwise one aeroplane-mode morning cancels that day's pass and the user is told nothing by a system that never looked.
+
+What it says is written into the thread as a normal assistant turn (auditable, in context on the Coach tab) and surfaced on Home as a dismissible "Coach noticed" card above readiness. It defaults to a cheap model — paying Opus rates for `SKIP` every morning is indefensible.
 
 ### Planned proactive surfaces (sequenced)
 
 1. **Turn-level proactivity (shipped):** the system prompt instructs the model to voice notable insights it reads mid-conversation, unprompted.
 2. **Self-initiated reminders (shipped):** the Coach can propose a nudge for a logging gap ("want a daily nudge?") → `set_reminder`, still user-confirmed.
-3. **Evening accountability** — an end-of-day check-in comparing plan vs. actuals. Needs: a scheduled trigger (OS notification or app-open-in-evening heuristic). `⚑ MATT`: how nagging may the Coach be? (opt-in cadence, quiet hours)
-4. **Predictive alerts** — "3 poor sleeps + rising RHR: historically your next 2 days trend sick; consider Deload." Needs: more history + Modes.
-5. **Mid-day corrections** — needs Modes + mission write access.
+3. **Evening accountability (shipped as a trigger):** `PassTrigger.checkin` carries a morning/evening part, and the evening directive compares what the day planned against what happened. `⚑ MATT`: cadence and quiet hours are still yours to set — it is off by default.
+4. **Predictive alerts** — "3 poor sleeps + rising RHR: historically your next 2 days trend sick." Needs more history. Note the phrasing: the *detector* surfaces the pattern; whether it means a deload is the model's call, not a rule's.
+5. **Mid-day corrections (shipped):** `adjust_today` + `set_mode`'s re-derive give the Coach real levers on the current day, behind one confirmation.
 
 ---
 
@@ -133,6 +162,7 @@ The Coach's proactivity is **deterministic detection + model narration** — the
 **Shipped now:**
 - **Conversation persistence** — `ai_conversations` / `ai_messages` (0008). Append-only turns; every assistant turn stores its full tool-call record (`tool_calls` JSON), so a transcript is auditable: what the Coach said traces to what it actually read. Reload resumes the latest thread.
 - **Bounded context** — the last 30 turns go to the model; the data itself is *not* stuffed into context — the model re-reads through tools, which is both fresher and cheaper.
+- **Per-turn state (2026-08-08)** — the "Current state" block (`turn-context.ts`) means within-day orientation is free. It is NOT memory: nothing durable survives the 30-turn window yet — `coach_memories` + `remember`/`forget` are the next phase (coach-intelligence-review.md §4 Phase 3).
 
 **Planned (sequenced):**
 1. **Coach notes** — a `coach_memories` table (or `users.preferences` initially) of durable facts the model asks to remember ("prefers training fasted", "magnesium gives GI trouble"), written via a `remember` tool (confirmation-gated), injected into the system prompt. Small, curated, user-inspectable — memory the user can read and delete. `⚑ MATT`: where should this be visible/editable? (Settings vs Data)
@@ -169,9 +199,47 @@ Enforced in code, not vibes:
 
 ## 7. System prompt
 
-The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + tool doctrine + safety rails + date/context tail) and is the refined form of the old skeleton. Keep the two in sync; note voice changes in `docs/decisions.md`.
+The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + tool doctrine + safety rails) and is the refined form of the old skeleton. Since 2026-08-08 it is **two system blocks**: the static block (this file's doctrine — carries the prompt-cache breakpoint; the reminders line is runtime capability truth via `notificationsAvailable()`, so the Coach never denies a delivery channel the binary actually has) and the uncached per-turn "Current state" block from `turn-context.ts` (which owns the date — keeping it out of the static block is what lets the cache survive midnight). Keep the two in sync with this doc; note voice changes in `docs/decisions.md`.
 
 ---
+
+## 7b. Cost model — what a turn actually costs, and why
+
+Model tokens are ARC's only recurring cost, so this is a first-class design constraint, not an afterthought. First live testing (2026-08-10) burned **48,312 tokens on three trivial questions (~$0.20)**. The post-mortem is worth keeping, because the cause was not what it looked like.
+
+**The fixed payload.** Every model round-trip re-sends the same prefix:
+
+| Component | Tokens | Cached? |
+| --- | ---: | --- |
+| Tool schemas (31 tools) | 6,960 | yes |
+| Static system prompt | 1,949 | yes |
+| Per-turn context block | ~124 | no — deliberately after the breakpoint |
+
+Tools are ~78% of it. That is the price of a Coach that can actually *do* things, and it is paid on every round-trip of every turn — so it must be cached, and the cache must actually hit.
+
+**What went wrong.** Caching was configured correctly (breakpoints on the last tool and the static system block; the prefix was verified stable, with no interpolated date). It was on the **default 5-minute TTL**. Coach use is bursty — ask, read the answer, think, ask again — so nearly every *user-initiated* question arrived cold and re-paid a 1.25× cache **write** on the whole prefix. Three spaced-out questions × (write + read) × $5/MTok on Opus reproduces the observed $0.206 almost exactly.
+
+**The fixes** (`CACHE_TTL` in `src/lib/ai/model-client.ts`):
+
+1. **1-hour cache TTL.** Writes at 2× instead of 1.25×, but survives the gaps. One turn is already 2–3 round-trips, so it breaks even inside the first question and every question for the next hour reads at 0.1×.
+2. **Tool-description diet.** 8,206 → 6,960 tokens, by deleting doctrine that the system prompt already states globally (the unit rule, "judgment is yours, not a rule's"), a doc path the model cannot open, and property descriptions restating their own field names. Descriptions fell 4,300 → 3,083; the remaining 3,202 is JSON Schema structure, which can only shrink by removing parameters.
+3. **Default model → Sonnet 5** ($2/$10 introductory through 2026-08-31, then $3/$15) rather than Opus 5 ($5/$25). A measure-then-decide default; Opus is one tap away in Settings.
+
+Net: **~$0.069 → ~$0.004 per question** in steady state, ~19×.
+
+**Two traps this leaves behind**, both guarded by tests in `db/coach-eval.test.mjs` §6:
+
+- **Prompt-cache minimums differ by model** — 512 tokens on Opus 5, 1,024 on Sonnet 5, but **4,096 on Haiku 4.5**, which is what the unattended coach pass runs on with the READ tools only. That prefix is ~4,599 tokens: it clears the floor by 12%. Trim read-tool descriptions much further and Haiku's caching stops *silently* — no error, just `cache_creation_input_tokens: 0` and full price forever.
+- **Tool schemas creep.** Every new tool is a permanent tax on every request. The budget test fails past 7,600 tokens; trim before adding.
+
+**Round two (same day): killing round-trips, not just bytes.** "How many steps have I taken today?" still cost ~10k tokens. The cause was structural, not prefix size: the state block carried readiness *levels* but not today's actual numbers, and the system prompt ordered a read tool "before answering anything about today". So the model spent an entire extra round-trip on `get_metric_series` — re-sending the whole ~9k prefix — to fetch one integer already on disk.
+
+- **Today's wearable numbers now ride in the state block** (`Today so far: 8,432 steps · 412 kcal active · slept 7h02 · …`). **23 uncached tokens**, and the commonest class of question drops from two round-trips to one. Only metrics with data for today appear, so a quiet morning adds nothing and the model still knows to reach for a tool rather than inferring a zero.
+- **The prompt now says to answer from the block when it already holds the answer**, and reserves tools for history, windows, breakdowns, and any day but today. Without this the first change would have achieved nothing — the old rail *required* the wasted call.
+
+**The floor.** One round-trip carries ~9k cached tokens no matter how trivial the question. That is the price of 31 always-available tools. Cached, it bills ~$0.002; the raw *count* still looks alarming in a provider dashboard, which is why `usageCaption` now breaks out `cache write` / `cached` / `in` / `out` separately — a warm re-read and a cold write are a 20× cost difference that a single lump total completely hides. The one remaining lever on raw count is sending fewer tools per request (read-only subset: 2,650 vs 6,960), which trades against the Coach's ability to offer an action unprompted.
+
+**Still unmeasured:** output tokens. Sonnet 5 and Opus 5 both run adaptive thinking by default, billed as output ($10 and $25 per MTok respectively). After the cache fix, output is likely the dominant cost — `usageCaption` records input/cache/output per turn, so the next real session decides whether to touch `effort` or `thinking: {type: "disabled"}` (Opus 5 allows the latter only at effort `high` or lower).
 
 ## 8. Verified scenarios (the two required flows)
 
@@ -193,7 +261,7 @@ The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + tool doctr
 - Row types kept slice-local per convention (`src/lib/ai/types.ts`, `src/lib/reminders/types.ts`) — fold into `src/lib/db/types.ts` if preferred
 - Home: wire `generateDailyBrief` into the brief card; decide mission-id exposure for `complete_mission_item`
 
-**Feature deps:** Protocols → `update_protocol` / `propose_today_adjustment` / grocery lists / real targets · Modes → `set_mode` · `experiments` migration → `create_experiment` · knowledge base + sqlite-vec → RAG + `explain_metric` · navigation seam → `navigate_to`.
+**Feature deps (updated 2026-08-08):** ~~Protocols → `update_protocol`~~, ~~Modes → `set_mode`~~, ~~experiments migration → `create_experiment`~~ — all shipped. Still dependent: mission write access → `adjust_today` (design in coach-intelligence-review.md §4 Phase 2) · protocol-derived targets → target-adherence signals (Phase 5) · knowledge base + on-device embedder → working RAG + `explain_metric` (Phase 6) · navigation seam → `navigate_to`.
 
 **Known approximations (reviewed 2026-07-26, accepted for now):**
 - `body_metrics` daily series group by the **UTC** day of `measured_at` while window boundaries are local days — an evening weigh-in near the boundary can land on the adjacent day. Weight thresholds are conservative and the tone is info; the clean fix (store a local `date` alongside, like every other table) is a future migration.
@@ -206,7 +274,7 @@ The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + tool doctr
 
 ## 10. Implementation phases (updated)
 
-**v1 — SHIPPED (this slice):** agentic chat over real data · 8 read + 9 write tools · confirmation gate · deterministic insights + brief · reminders (data + in-app) · persistence · session key affordance · honest mock fallback.
+**v1 — SHIPPED:** agentic chat over real data · **13 read + 13 write tools** (2026-08-08 count) · confirmation gate · deterministic insights + brief · reminders (data + in-app + OS scheduling layer) · persistence · Keychain key + model picker · honest mock fallback · per-turn "Current state" context block.
 
 **v1.5 — integrator + Settings:** Keychain key + provider/model Settings screen · OS notification delivery · Home brief wiring · conversation history UX.
 

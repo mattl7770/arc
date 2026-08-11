@@ -2,15 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { humanizeToolName, streamCoachReply } from '@/lib/ai/coach-service';
 import { CoachTurnError } from '@/lib/ai/model-client';
-import type { CoachToolCall } from '@/lib/ai/types';
+import { TRUNCATION_MARKER, type CoachToolCall } from '@/lib/ai/types';
+import { usageCaption } from '@/lib/ai/cost';
+import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { getDb } from '@/lib/db/client';
 import {
   appendMessage,
+  getConversationSummary,
   getOrCreateActiveConversation,
-  listMessages,
+  listRecentMessages,
   parseToolCalls,
   setConversationTitle,
 } from '@/lib/db/repositories/ai-chat';
+import { updateRollingSummary } from '@/lib/ai/thread-summary';
 import type { ChatMessage, PendingWrite } from '@/types/coach';
 
 export type CoachChat = {
@@ -41,18 +45,33 @@ function makeId(seq: number): string {
   return `${Date.now()}-${seq}`;
 }
 
+/**
+ * How many turns of a thread the screen holds. The thread is append-only and
+ * lives forever, so loading all of it into React state degrades the Coach tab
+ * a little more every month; the model's own window is smaller than this, and
+ * anything older is carried by the rolling summary (0028).
+ */
+const THREAD_PAGE_SIZE = 100;
+
 /** Load the persisted thread as view-models (conversational roles only). */
 function loadThread(conversationId: string): ChatMessage[] {
-  return listMessages(getDb(), conversationId)
+  return listRecentMessages(getDb(), conversationId, THREAD_PAGE_SIZE)
     .filter((row) => row.role === 'user' || row.role === 'assistant')
     .map((row) => {
-      const tools = parseToolCalls(row.tool_calls).map((call) => humanizeToolName(call.name));
+      const calls = parseToolCalls(row.tool_calls);
+      // The truncation sentinel is a persistence detail, never a chip.
+      const truncated = calls.some((call) => call.name === TRUNCATION_MARKER);
+      const real = calls.filter((call) => call.name !== TRUNCATION_MARKER);
+      const tools = real.map((call) => humanizeToolName(call.name));
       return {
         id: row.id,
         role: row.role as ChatMessage['role'],
         content: row.content,
         createdAt: Date.parse(row.created_at),
         ...(tools.length > 0 ? { tools } : {}),
+        // Kept for the model's digest replay, not for rendering.
+        ...(real.length > 0 ? { toolCalls: real } : {}),
+        ...(truncated ? { truncated: true } : {}),
       };
     });
 }
@@ -153,6 +172,8 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
 
       streamCoachReply(history, {
         signal: controller.signal,
+        // Everything older than the model's window survives only as this.
+        priorSummary: getConversationSummary(getDb(), conversationId),
         onToken: (chunk) => patch((m) => ({ ...m, content: m.content + chunk })),
         onToolCall: ({ label }) => setActivity(label),
         confirmWrite: (request) =>
@@ -164,22 +185,47 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
       })
         .then((result) => {
           const tools = result.toolCalls.map((call: CoachToolCall) => humanizeToolName(call.name));
+          // A reply that hit the output cap or the tool-round-trip cap is a
+          // HALF answer — flag it so it can never pass as a finished one
+          // (mirrors the labs parser's explicit max_tokens handling).
+          const caption = usageCaption(
+            result.usage,
+            apiKeyStore.getModel(),
+            result.toolCalls.length
+          );
+          const truncated =
+            result.stopReason === 'max_tokens' || result.stopReason === 'tool_use_limit';
           patch((m) => ({
             ...m,
             streaming: false,
             content: result.text.length > 0 ? result.text : m.content,
             ...(tools.length > 0 ? { tools } : {}),
+            // Raw record kept in state so the NEXT turn can replay its digest
+            // without re-reading the thread.
+            ...(result.toolCalls.length > 0 ? { toolCalls: result.toolCalls } : {}),
+            ...(caption ? { usageCaption: caption } : {}),
+            ...(truncated ? { truncated: true } : {}),
           }));
           // Persist the completed turn (its tool record included); failed and
           // aborted turns are deliberately not persisted, so retry is clean.
+          // Truncation rides the tool_calls JSON as a sentinel — no migration.
           if (result.text.trim().length > 0 || result.toolCalls.length > 0) {
+            const persistedCalls: CoachToolCall[] = truncated
+              ? [
+                  ...result.toolCalls,
+                  { id: 'stop', name: TRUNCATION_MARKER, input: {}, result: result.stopReason },
+                ]
+              : result.toolCalls;
             appendMessage(
               getDb(),
               conversationId,
               'assistant',
               result.text,
-              result.toolCalls.length > 0 ? result.toolCalls : null
+              persistedCalls.length > 0 ? persistedCalls : null
             );
+            // Keep the spine of a long thread: everything that just aged out
+            // of the model's window is folded into the rolling summary.
+            updateRollingSummary(getDb(), conversationId);
           }
         })
         .catch((err: unknown) => {

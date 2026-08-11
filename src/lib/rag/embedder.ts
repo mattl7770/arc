@@ -1,6 +1,29 @@
 /**
  * The on-device text embedder seam (docs/rag-embeddings.md §3, §7).
  *
+ * STATUS (2026-08-08) — this is the ONE genuinely device-gated piece of coach
+ * intelligence, and it is deliberately still a null.
+ *
+ * What works WITHOUT it: the curated corpus now has real content
+ * (src/lib/rag/corpus.ts, loaded at boot) and is searchable by keyword through
+ * the Coach's `search_history` tool alongside the user's own written history.
+ * `search_knowledge` — the semantic path — is UNREGISTERED
+ * (read-tools.ts UNREGISTERED_READ_TOOLS) precisely so the model is never
+ * offered a tool that cannot answer.
+ *
+ * What semantic retrieval still needs, in order:
+ *   1. `onnxruntime-react-native` — deliberately NOT in package.json; it wants
+ *      its own EAS build, separate from the two already queued.
+ *   2. A tokenizer decision (onnxruntime-extensions vs transformers.js) —
+ *      spike the runtime first; the likeliest source of surprise.
+ *   3. The EmbeddingGemma weights (~200–300 MB) downloaded on first run, with
+ *      a UX for the download, its failure, and its storage.
+ *   4. A backfill pass embedding the corpus and the accrued memory_chunks.
+ *
+ * When those land, embedText returns real vectors, search_knowledge moves back
+ * into READ_TOOLS, and the tool contract the model already knows is unchanged —
+ * only recall quality upgrades from keyword to semantic.
+ *
  * ARC embeds BOTH the curated corpus and the user's private memory with ONE
  * model — EmbeddingGemma (768-dim, owner's pick) — because a query vector can
  * only search a corpus embedded by the same model (§2). Everything personal is

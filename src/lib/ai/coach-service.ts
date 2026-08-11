@@ -2,11 +2,13 @@ import { fetch as expoFetch } from 'expo/fetch';
 
 import type { ChatMessage } from '@/types/coach';
 import { getDb } from '@/lib/db/client';
-import { todayISODate } from '@/lib/db/date';
+import { notificationsAvailable } from '@/lib/notifications/reminders';
 
-import { runCoachTurn, type FetchLike, type WireMessage } from './model-client';
+import { runCoachTurn, type FetchLike } from './model-client';
 import { apiKeyStore } from './api-key-store';
 import { buildCoachSystemPrompt } from './system-prompt';
+import { buildTurnContext } from './turn-context';
+import { buildWireHistory } from './history-window';
 import { COACH_TOOLS, toolByName, toWireTools } from './tools';
 import type { CoachTurnResult } from './types';
 
@@ -53,10 +55,13 @@ export type StreamOptions = {
   confirmWrite?: (request: WriteConfirmation) => Promise<boolean>;
   /** Tool activity for the UI ("Reading metric series…"). */
   onToolCall?: (call: { name: string; label: string }) => void;
+  /**
+   * The thread's rolling summary of turns that have aged out of the window
+   * (ai_conversations.summary, 0028) — prepended so a long thread keeps its
+   * spine instead of silently losing its first half.
+   */
+  priorSummary?: string | null;
 };
-
-/** Bound the request: the model doesn't need the whole thread forever. */
-const MAX_HISTORY_MESSAGES = 30;
 
 /** "get_metric_series" → "metric series" — the caption chips' vocabulary. */
 export function humanizeToolName(name: string): string {
@@ -79,11 +84,7 @@ export async function streamCoachReply(
   if (!apiKey) return mockTurn(history, options);
 
   const db = getDb();
-  const windowed = history.slice(-MAX_HISTORY_MESSAGES).filter((m) => m.content.trim().length > 0);
-  // The API requires the first message to be a user turn — the window boundary
-  // can land mid-pair, so shed any leading assistant turns.
-  while (windowed.length > 0 && windowed[0]!.role !== 'user') windowed.shift();
-  const messages: WireMessage[] = windowed.map((m) => ({ role: m.role, content: m.content }));
+  const messages = buildWireHistory(history, options.priorSummary);
 
   const result = await runCoachTurn(
     {
@@ -95,7 +96,11 @@ export async function streamCoachReply(
       fetchImpl: expoFetch as unknown as FetchLike,
     },
     {
-      system: buildCoachSystemPrompt({ date: todayISODate() }),
+      system: buildCoachSystemPrompt({ notificationsLive: notificationsAvailable() }),
+      // The per-turn facts (date, readiness, mode, mission, experiments, the
+      // brief) ride an uncached second system block, so the model never
+      // starts a turn blind — and the cached static prefix survives midnight.
+      systemContext: buildTurnContext(db),
       messages,
       tools: toWireTools(COACH_TOOLS),
     },
@@ -107,11 +112,17 @@ export async function streamCoachReply(
         const tool = toolByName(name);
         if (!tool) return { content: `Unknown tool: ${name}.`, isError: true };
 
+        // ONE clock per tool call, shared by the confirmation card and
+        // execute — so a knowable failure (a future log date) throws at CARD
+        // time instead of after the user's Approve, and the two can never
+        // disagree across a midnight boundary.
+        const context = { now: new Date() };
+
         if (!tool.readOnly) {
           let summary: string;
           try {
             summary =
-              tool.confirmSummary?.(input as Record<string, unknown>, db) ??
+              tool.confirmSummary?.(input as Record<string, unknown>, db, context) ??
               humanizeToolName(tool.name);
           } catch (error) {
             // Invalid input surfaces at summary time — report it, don't gate.
@@ -133,7 +144,7 @@ export async function streamCoachReply(
           // (search_knowledge embeds the query on-device); a rejection lands in
           // the catch below exactly like a synchronous throw.
           return {
-            content: await tool.execute(db, input as Record<string, unknown>, { now: new Date() }),
+            content: await tool.execute(db, input as Record<string, unknown>, context),
           };
         } catch (error) {
           return { content: errorText(error), isError: true };

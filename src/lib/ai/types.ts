@@ -54,6 +54,26 @@ export type CoachToolCall = {
 /** Why a Coach turn stopped — the subset of wire stop reasons callers act on. */
 export type CoachStopReason = 'end_turn' | 'max_tokens' | 'refusal' | 'tool_use_limit';
 
+/**
+ * Sentinel entry appended to a persisted turn's `tool_calls` when the reply
+ * stopped early (max_tokens / the round-trip cap), so truncation survives a
+ * reload without a schema migration. Never a real tool: the UI strips it from
+ * the transparency chips and maps it to ChatMessage.truncated instead.
+ */
+export const TRUNCATION_MARKER = '__truncated__';
+
+/**
+ * Token counts for a whole turn, summed across its round-trips. Surfaced to
+ * the user as a muted per-reply caption so the cost of the Coach is visible
+ * rather than a black box (docs/coach-intelligence-review.md §4 #23).
+ */
+export type CoachUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
 /** The full outcome of one Coach turn (possibly many model round-trips). */
 export type CoachTurnResult = {
   /** The final assistant text, as streamed. */
@@ -61,4 +81,6 @@ export type CoachTurnResult = {
   /** Every tool call the turn made, in execution order. */
   toolCalls: CoachToolCall[];
   stopReason: CoachStopReason;
+  /** What the turn cost, summed over its round-trips. */
+  usage?: CoachUsage;
 };

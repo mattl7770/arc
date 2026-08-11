@@ -116,6 +116,22 @@ export function activeExperiments(
   }));
 }
 
+/**
+ * Experiments actually being RUN on `date` — status `active` AND `date` inside
+ * `[start_date, end_date]`.
+ *
+ * Distinct from {@link activeExperiments}, and the distinction matters. An
+ * experiment stays `active` until someone concludes it, so "active" spans three
+ * states: not started yet, running, and finished-but-unread. Only the middle
+ * one is a thing the user should be asked to DO today. Using `activeExperiments`
+ * to build the mission put the intervention on every day forever — including
+ * days before it began, and every day after it ended until the readout was
+ * acknowledged, which is exactly when the adherence data stops meaning anything.
+ */
+export function experimentsRunningOn(db: Database, date: string): Experiment[] {
+  return listExperiments(db, 'active').filter((e) => e.start_date <= date && date <= e.end_date);
+}
+
 /** The most-recently-CONCLUDED experiments, newest readout first (by
  * updated_at, which is stamped at completion — not start_date). */
 export function recentlyConcluded(db: Database, limit = 5): Experiment[] {

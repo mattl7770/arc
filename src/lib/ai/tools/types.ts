@@ -14,6 +14,7 @@
  * correct. Bad input must never reach a repository.
  */
 import type { Database } from '@/lib/db/database';
+import { todayISODate } from '@/lib/db/date';
 
 export type CoachToolContext = {
   /** The turn's clock — injectable so headless tests are deterministic. */
@@ -33,9 +34,16 @@ export type CoachTool = {
    * Writes only: the one human line the confirmation card shows
    * ("Log weight 178.0 lb"). Built from validated input; `db` is available so
    * an id-shaped input can be resolved to what it actually names — the user
-   * must never approve a bare identifier blind.
+   * must never approve a bare identifier blind. `context` carries the turn's
+   * clock so date validation at CARD time agrees with execute (a knowable
+   * failure — e.g. a future log date — must throw HERE, before the user
+   * spends an Approve tap on a write that can only error).
    */
-  confirmSummary?: (input: Record<string, unknown>, db: Database) => string;
+  confirmSummary?: (
+    input: Record<string, unknown>,
+    db: Database,
+    context?: CoachToolContext
+  ) => string;
   /**
    * Run the tool against the on-device database. Returns the tool_result
    * content (JSON), or a Promise of it — most tools are synchronous SQL, but a
@@ -138,6 +146,30 @@ export function optDate(input: Record<string, unknown>, key: string): string | u
     parsed.toISOString().slice(0, 10) === value;
   if (!roundTrips) {
     throw new Error(`"${key}" must be a real "YYYY-MM-DD" calendar date.`);
+  }
+  return value;
+}
+
+/**
+ * A "YYYY-MM-DD" that must not be in the future — the shape every log
+ * backdate takes. A future date (the model mis-parsing "next Tuesday", a
+ * typo'd year) would poison every trend window it lands in, so it is rejected
+ * with a message the model can correct from. `now` is the turn's clock
+ * (CoachToolContext.now), so tests stay deterministic.
+ */
+export function optPastDate(
+  input: Record<string, unknown>,
+  key: string,
+  now: Date
+): string | undefined {
+  const value = optDate(input, key);
+  if (value === undefined) return undefined;
+  const today = todayISODate(now);
+  if (value > today) {
+    throw new Error(
+      `"${key}" (${value}) is in the future — logs record what already happened. ` +
+        `Today is ${today}; pass a past date or omit "${key}" for today.`
+    );
   }
   return value;
 }

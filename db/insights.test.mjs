@@ -103,10 +103,48 @@ console.log('0. an empty database yields no insights and an honest brief');
   insights.length === 0
     ? ok('no data → no insights (nothing invented)')
     : bad('empty', JSON.stringify(insights));
+  // Three distinct empty states, because they call for different things. With
+  // NOTHING logged the brief must say to start — not "no notable movements",
+  // which sounds like a reading was taken.
   const brief = generateDailyBrief(db, NOW);
-  brief.includes('No notable movements')
-    ? ok('brief admits there is nothing to read yet')
+  brief.includes('Nothing logged yet')
+    ? ok('an empty database asks the user to start, rather than reporting a null reading')
     : bad('empty brief', brief);
+}
+
+console.log('0b. the three empty states are distinguished honestly');
+{
+  // BUILDING — data is arriving but the detectors need ~10 days. Say where we
+  // are, never "not enough logged" (which reads as an accusation).
+  const building = freshDb();
+  for (let d = 0; d <= 4; d++) seedWearable(building.raw, 'hrv', d, 55);
+  const buildingBrief = generateDailyBrief(building.db, NOW);
+  buildingBrief.includes('Baseline building') && buildingBrief.includes('5 days')
+    ? ok('a few days in: says how far along the baseline is')
+    : bad('building brief', buildingBrief);
+
+  // STABLE — plenty of data, nothing moving. That is GOOD NEWS and a
+  // monitoring system should say so, not imply the user under-logged.
+  const stable = freshDb();
+  for (let d = 0; d <= 20; d++) {
+    seedWearable(stable.raw, 'hrv', d, 55);
+    seedMeal(stable.raw, d, 150);
+  }
+  const stableBrief = generateDailyBrief(stable.db, NOW);
+  stableBrief.includes('holding steady') && !stableBrief.includes('not enough logged')
+    ? ok('a data-rich stable user is told things are steady, not accused of under-logging')
+    : bad('stable brief', stableBrief);
+
+  // MODE-AWARE — a Sick day must not get cadence-nagging (home-screen.md:110).
+  const sick = freshDb();
+  sick.db.run(
+    `INSERT INTO day_modes (id, mode, start_date, end_date) VALUES ('dm1', 'sick', ?, ?)`,
+    [isoDaysAgo(NOW, 0), isoDaysAgo(NOW, 0)]
+  );
+  const sickBrief = generateDailyBrief(sick.db, NOW);
+  sickBrief.includes('Sick day') && !/Start with today|Baseline building/.test(sickBrief)
+    ? ok('a Sick day is not nagged about logging cadence')
+    : bad('sick brief', sickBrief);
 }
 
 console.log('1. HRV down vs baseline → watch trend with real numbers');
@@ -142,7 +180,10 @@ console.log('3. too few readings stays silent (minimum observations)');
   seedWearable(raw, 'hrv', 10, 55);
   seedWearable(raw, 'hrv', 9, 55);
   for (let d = 0; d <= 4; d++) seedWearable(raw, 'hrv', d, 40);
-  computeInsights(db, NOW).length === 0
+  // Scoped to TRENDS: the readiness detector has its own (5-day) evidence gate
+  // and legitimately speaks about today from the same rows — it is not a trend
+  // claim, so it must not be counted against this minimum.
+  computeInsights(db, NOW).filter((i) => i.kind === 'trend').length === 0
     ? ok('2 baseline points < the 3-point minimum → no trend claim')
     : bad('fired on thin data');
 }
@@ -204,7 +245,10 @@ console.log('6. symptom volume above baseline → watch');
 console.log('7. prior-day training ↔ HRV correlation (perfectly anti-correlated seed)');
 {
   const { db, raw } = freshDb();
-  for (let i = 1; i <= 10; i++) {
+  // 16 pairs: the detector now requires n >= 14 AND |r| past the alpha=0.05
+  // critical value — 10 pairs at |r|>=0.5 was p~0.20, a coin flip dressed as
+  // a finding.
+  for (let i = 1; i <= 16; i++) {
     const minutes = i % 2 === 0 ? 60 : 0;
     seedWorkout(raw, i + 1, minutes); // training the day BEFORE each HRV reading
     seedWearable(raw, 'hrv', i, minutes === 60 ? 40 : 60);
@@ -262,7 +306,7 @@ console.log('11. correlation treats unlogged days as rest days (0 minutes)');
   const { db, raw } = freshDb();
   // Workouts only on alternate days — NO explicit 0-minute rows — and HRV
   // dipping the morning after each. Rest days must count as 0 for the pairs.
-  for (let i = 1; i <= 10; i++) {
+  for (let i = 1; i <= 16; i++) {
     const trainedPrior = (i + 1) % 2 === 1; // prior day (i+1 ago) odd → trained
     if (trainedPrior) seedWorkout(raw, i + 1, 60);
     seedWearable(raw, 'hrv', i, trainedPrior ? 40 : 60);
@@ -271,6 +315,31 @@ console.log('11. correlation treats unlogged days as rest days (0 minutes)');
   insight
     ? ok('train/rest alternation is detected without explicit 0-minute rows')
     : bad('rest-day correlation missed', JSON.stringify(computeInsights(db, NOW)));
+}
+
+console.log('12. future-dated rows cannot poison the windows (deferred item, closed)');
+{
+  // A wild future HRV reading lands in what used to be the "recent" bucket and
+  // fabricates a trend. With closed [since, today] windows it must not fire.
+  const { db, raw } = freshDb();
+  for (let d = 8; d <= 17; d++) seedWearable(raw, 'hrv', d, 55);
+  for (let d = 0; d <= 4; d++) seedWearable(raw, 'hrv', d, 55); // flat — no real trend
+  seedWearable(raw, 'hrv', -2, 200); // "the future" (clock skew / bad import)
+  const hrvUp = byId(computeInsights(db, NOW), 'trend-hrv-up');
+  !hrvUp
+    ? ok('a future 200ms reading no longer fabricates an HRV trend')
+    : bad('future row fired a trend', JSON.stringify(hrvUp));
+}
+{
+  // A future weigh-in used to make daysSince negative and permanently silence
+  // the weight-gap detector; bounded windows restore the honest gap.
+  const { db, raw } = freshDb();
+  seedWeight(raw, 10, 80);
+  seedWeight(raw, -5, 81); // future
+  const gap = byId(computeInsights(db, NOW), 'gap-weight');
+  gap && gap.headline.includes('10 days')
+    ? ok('weight gap counts from the last REAL weigh-in, not a future row')
+    : bad('gap detector', JSON.stringify(computeInsights(db, NOW)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

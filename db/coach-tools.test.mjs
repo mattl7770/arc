@@ -9,9 +9,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
+import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { weekSummary } from '../src/lib/db/repositories/exercise.ts';
-import { setUnitPreference } from '../src/lib/db/repositories/user.ts';
+import { setUnitPreference, updateProfile } from '../src/lib/db/repositories/user.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import {
   COACH_TOOLS,
@@ -447,9 +448,13 @@ console.log('13. protocols: get_protocols reads live items; update_protocol vers
     ],
     change_notes: 'Bumped magnesium to 400 mg, added zinc',
   };
-  const summary = toolByName('update_protocol').confirmSummary(changeInput, db);
-  summary === 'Update "Evening Stack": 3 items (was 2) — Bumped magnesium to 400 mg, added zinc'
-    ? ok(`confirmation shows the item-count delta ("${summary}")`)
+  const summary = toolByName('update_protocol').confirmSummary(changeInput, db, CTX);
+  // The card carries the item-count delta AND which day the change lands on —
+  // approving "added zinc" and seeing nothing on today's mission reads as a
+  // broken promise, so "takes effect tomorrow" is part of the contract.
+  summary ===
+  'Update "Evening Stack": 3 items (was 2) — Bumped magnesium to 400 mg, added zinc · takes effect tomorrow'
+    ? ok(`confirmation shows the item-count delta and the effective day ("${summary}")`)
     : bad('update summary', summary);
 
   const out = run('update_protocol', db, changeInput);
@@ -604,6 +609,307 @@ console.log('15. get_training_summary.thisWeek is the calendar week (agrees with
   near(summary.totals.cardioMinutes, 75) && summary.thisWeek.cardioMinutes === 45
     ? ok('rolling 7-day totals include the Sunday session (75); thisWeek excludes it (45)')
     : bad('rolling vs calendar', JSON.stringify(summary));
+}
+
+let extraSeq = 0;
+const xid = () => `x-${++extraSeq}`;
+const seedWearableRow = (raw, metricType, daysAgo, value) =>
+  raw
+    .prepare(
+      `INSERT INTO wearable_data (id, date, metric_type, value, source_device) VALUES (?, ?, ?, ?, 'manual')`
+    )
+    .run(xid(), isoDaysAgo(NOW, daysAgo), metricType, value);
+
+console.log('16. snapshot carries readiness, profile, mission ids, experiments');
+{
+  const { db, raw } = freshDb();
+  const empty = run('get_today_snapshot', db);
+  empty.readiness &&
+  empty.readiness.verdict === 'unknown' &&
+  empty.profile &&
+  empty.profile.age === null &&
+  Array.isArray(empty.experiments) &&
+  empty.experiments.length === 0
+    ? ok('empty day: readiness unknown, profile nulls, experiments []')
+    : bad('empty snapshot extras', JSON.stringify(empty.readiness));
+
+  updateProfile(db, { dateOfBirth: '1992-01-15', biologicalSex: 'male' });
+  for (let d = 1; d <= 6; d++) seedWearableRow(raw, 'hrv', d, 50);
+  seedWearableRow(raw, 'hrv', 0, 40);
+  createExperiment(db, {
+    title: 'Magnesium PM',
+    hypothesis: 'Better sleep',
+    intervention: '400 mg at night',
+    metrics: ['hrv', 'sleep'],
+    startDate: TODAY,
+    durationDays: 14,
+  });
+
+  const snap = run('get_today_snapshot', db);
+  snap.profile.sex === 'male' && typeof snap.profile.age === 'number'
+    ? ok('profile carries age + sex')
+    : bad('profile', JSON.stringify(snap.profile));
+  // HRV 40 vs a 50 baseline (ratio 0.8) → the same "caution" Home renders.
+  snap.readiness.verdict === 'caution' &&
+  snap.readiness.pillars &&
+  snap.readiness.pillars.recovery === 'caution'
+    ? ok('readiness verdict + pillars mirror deriveReadiness')
+    : bad('readiness', JSON.stringify(snap.readiness));
+  snap.experiments.length === 1 &&
+  snap.experiments[0].title === 'Magnesium PM' &&
+  snap.experiments[0].ready === false &&
+  snap.experiments[0].daysLeft === 13
+    ? ok('running experiments ride the snapshot')
+    : bad('experiments', JSON.stringify(snap.experiments));
+}
+
+console.log('17. snapshot mission items expose ids (the address a mission tool needs)');
+{
+  const { db } = freshDb();
+  run('log_metric', db, { metric: 'weight', value: 178 }); // ensures a daily_log exists
+  const snap = run('get_today_snapshot', db);
+  // Mission may be empty (no protocols seeded), but WHEN items exist they must
+  // carry ids — assert on the shape contract via a seeded item instead.
+  const { getOrCreateDailyLog, insertMissionItem } = await import(
+    '../src/lib/db/repositories/mission.ts'
+  );
+  const log = getOrCreateDailyLog(db, TODAY);
+  insertMissionItem(db, log.id, 'habit', {
+    id: 'unused',
+    title: 'Morning light',
+    status: 'pending',
+    category: 'Routine',
+    why: 'Circadian anchor',
+  });
+  const snap2 = run('get_today_snapshot', db);
+  snap2.mission.length === 1 &&
+  typeof snap2.mission[0].id === 'string' &&
+  snap2.mission[0].id.length > 0 &&
+  snap2.mission[0].category === 'Routine' &&
+  snap2.mission[0].why === 'Circadian anchor'
+    ? ok('mission items carry id + category + why')
+    : bad('mission ids', JSON.stringify(snap2.mission));
+  snap.mission.length === 0
+    ? ok('before seeding, an unplanned day reports an empty mission (no fabricated rows)')
+    : bad('pre-seed mission not empty', JSON.stringify(snap.mission));
+}
+
+console.log('18. get_metric_series reads sleep/steps/energy; future rows never leak');
+{
+  const { db, raw } = freshDb();
+  for (let d = 0; d <= 4; d++) seedWearableRow(raw, 'sleep_duration_min', d, 420 + d);
+  seedWearableRow(raw, 'steps', 1, 9000);
+  seedWearableRow(raw, 'active_energy_kcal', 1, 650);
+  // A future-dated row (clock skew / bad import) must not appear at all.
+  seedWearableRow(raw, 'sleep_duration_min', -3, 999);
+
+  const sleep = run('get_metric_series', db, { metric: 'sleep', days: 14 });
+  sleep.unit === 'min' && sleep.stats.count === 5
+    ? ok('sleep series in fixed minutes, 5 real days')
+    : bad('sleep series', JSON.stringify(sleep.stats));
+  sleep.points.every((p) => p.date <= TODAY) && sleep.stats.max < 999
+    ? ok('the future-dated row is excluded from points and stats')
+    : bad('future leak', JSON.stringify(sleep.points));
+  run('get_metric_series', db, { metric: 'steps', days: 7 }).stats.count === 1
+    ? ok('steps series reads')
+    : bad('steps');
+  run('get_metric_series', db, { metric: 'active_energy', days: 7 }).unit === 'kcal'
+    ? ok('active_energy series reads in kcal')
+    : bad('energy');
+}
+
+console.log('19. get_biomarker_history: trend behind the latest value, exact-first resolution');
+{
+  const { db, raw } = freshDb();
+  const insertMarker = (id, slug, name) =>
+    raw
+      .prepare(
+        `INSERT INTO biomarkers (id, slug, name, category, unit, optimal_range_low, optimal_range_high)
+         VALUES (?, ?, ?, 'hormone', 'ng/dL', 20, 60)`
+      )
+      .run(id, slug, name);
+  insertMarker('bm1', 'apob', 'ApoB');
+  insertMarker('bm2', 'testosterone', 'Testosterone');
+  insertMarker('bm3', 'testosterone_free', 'Testosterone, Free');
+  raw
+    .prepare(
+      `INSERT INTO lab_results (id, biomarker_id, value, collected_at, source) VALUES (?, ?, ?, ?, 'manual')`
+    )
+    .run('lr1', 'bm1', 95, '2026-01-10');
+  raw
+    .prepare(
+      `INSERT INTO lab_results (id, biomarker_id, value, collected_at, source) VALUES (?, ?, ?, ?, 'manual')`
+    )
+    .run('lr2', 'bm1', 78, '2026-06-01');
+
+  const bySlug = run('get_biomarker_history', db, { biomarker: 'apob' });
+  bySlug.found && bySlug.resultCount === 2 && bySlug.results[0].value === 95
+    ? ok('slug lookup returns the full series, oldest first')
+    : bad('slug lookup', JSON.stringify(bySlug));
+  // "Testosterone" is a substring of "Testosterone, Free" — the exact name
+  // match must win outright, never read as ambiguous (the labs discipline).
+  const exact = run('get_biomarker_history', db, { biomarker: 'Testosterone' });
+  exact.found && exact.slug === 'testosterone'
+    ? ok('exact name beats the substring trap (Testosterone vs Testosterone, Free)')
+    : bad('exact-name', JSON.stringify(exact));
+  const ambiguous = run('get_biomarker_history', db, { biomarker: 'testo' });
+  !ambiguous.found && ambiguous.candidates && ambiguous.candidates.length === 2
+    ? ok('an ambiguous fragment returns candidates instead of guessing')
+    : bad('ambiguous', JSON.stringify(ambiguous));
+  const missing = run('get_biomarker_history', db, { biomarker: 'zzz' });
+  !missing.found ? ok('no match → found:false, no invention') : bad('missing', JSON.stringify(missing));
+}
+
+console.log('20. get_training_recommendation reports engine state (never decides)');
+{
+  const { db } = freshDb();
+  const rec = run('get_training_recommendation', db);
+  rec.recommendation && typeof rec.recommendation.kind === 'string' && rec.recommendation.why
+    ? ok(`recommendation present (kind: ${rec.recommendation.kind})`)
+    : bad('recommendation shape', JSON.stringify(rec.recommendation));
+  Array.isArray(rec.muscleFreshness) && rec.muscleFreshness.length >= 10
+    ? ok(`muscle freshness ledger rides along (${rec.muscleFreshness.length} muscles)`)
+    : bad('ledger', JSON.stringify(rec.muscleFreshness));
+  Array.isArray(rec.weeklyVolume) && rec.weeklyVolume.length === 0
+    ? ok('no logged sets → empty weekly volume, not 16 zero rows')
+    : bad('volume', JSON.stringify(rec.weeklyVolume));
+  if (rec.recommendation.exercises) {
+    rec.recommendation.exercises.every((e) => e.target && typeof e.target.kind === 'string')
+      ? ok('every recommended exercise carries a progression target')
+      : bad('targets', JSON.stringify(rec.recommendation.exercises[0]));
+  } else {
+    ok('no exercises on this recommendation kind (nothing to target)');
+  }
+}
+
+console.log('21. log_workout resolves catalog exercise ids — exact match only');
+{
+  const { db, raw } = freshDb();
+  const result = run('log_workout', db, {
+    name: 'Upper A',
+    kind: 'strength',
+    duration_min: 50,
+    sets: [
+      { exercise: 'Barbell Bench Press', reps: 8, weight: 100, unit: 'kg' },
+      { exercise: 'bench press', reps: 8, weight: 100, unit: 'kg' }, // alias, case-insensitive
+      { exercise: 'Press', reps: 5, weight: 60, unit: 'kg' }, // no unique exact match
+    ],
+  });
+  const ids = raw
+    .prepare(`SELECT exercise_id FROM workout_sets ORDER BY set_index, rowid`)
+    .all()
+    .map((r) => r.exercise_id);
+  ids[0] === 'barbell-bench-press' && ids[1] === 'barbell-bench-press'
+    ? ok('exact name and exact alias both resolve to the catalog id')
+    : bad('resolution', JSON.stringify(ids));
+  ids[2] === null
+    ? ok('a non-unique name stays NULL — never a guess')
+    : bad('ambiguous resolved', JSON.stringify(ids));
+  result.unmatchedExercises &&
+  result.unmatchedExercises.length === 1 &&
+  result.unmatchedExercises[0] === 'Press'
+    ? ok('the tool result names the unmatched exercise so the model can say so')
+    : bad('unmatched note', JSON.stringify(result));
+}
+
+console.log('22. future log dates are rejected; set_mode "until" may still be future');
+{
+  const { db } = freshDb();
+  const future = isoDaysAgo(NOW, -2);
+  throws(() => run('log_metric', db, { metric: 'weight', value: 178, date: future }))
+    ? ok('log_metric refuses a future date')
+    : bad('future weight accepted');
+  throws(() => run('log_meal', db, { name: 'Lunch', date: future }))
+    ? ok('log_meal refuses a future date')
+    : bad('future meal accepted');
+  const past = run('log_metric', db, { metric: 'weight', value: 178, date: isoDaysAgo(NOW, 1) });
+  past.logged ? ok('a real backdate still logs') : bad('backdate broken');
+  const mode = run('set_mode', db, { mode: 'travel', until: future });
+  mode.set && mode.until === future
+    ? ok('set_mode "until" legitimately reaches into the future')
+    : bad('set_mode until', JSON.stringify(mode));
+
+  // The rejection must fire at CARD time too — a knowable failure must never
+  // cost the user an Approve tap (card shows, user approves, execute throws).
+  throws(() =>
+    toolByName('log_metric').confirmSummary({ metric: 'weight', value: 178, date: future }, db, CTX)
+  )
+    ? ok('confirmSummary throws on a future date BEFORE the card is shown')
+    : bad('future date reached the confirmation card');
+  const reminderCard = toolByName('set_reminder').confirmSummary(
+    { title: 'Book DEXA', date: future },
+    db,
+    CTX
+  );
+  reminderCard.includes(future)
+    ? ok("set_reminder's card still accepts a future date (its dates reach forward)")
+    : bad('reminder card', reminderCard);
+}
+
+console.log('23. an evening weigh-in west of UTC still lands in its own series');
+{
+  // REGRESSION: body_metrics stores a UTC INSTANT, so west of UTC an evening
+  // weigh-in already carries tomorrow's UTC date. Bounding the window with a
+  // local date string (`substr(measured_at,1,10) <= today`) silently dropped
+  // the user's own reading; the bound must be the end-of-local-day instant.
+  const { db, raw } = freshDb();
+  const local = todayISODate(NOW);
+  // Stamp it the way the local evening does: an instant inside today locally,
+  // whose UTC date may be tomorrow.
+  const eveningUtc = new Date(
+    NOW.getFullYear(),
+    NOW.getMonth(),
+    NOW.getDate(),
+    23,
+    30,
+    0,
+    0
+  ).toISOString();
+  raw
+    .prepare(
+      `INSERT INTO body_metrics (id, measured_at, weight_kg, source) VALUES (?, ?, ?, 'manual')`
+    )
+    .run('bm-evening', eveningUtc, 80);
+  const series = run('get_metric_series', db, { metric: 'weight', days: 7 });
+  series.points.length === 1
+    ? ok(`a 23:30 local weigh-in is in the series (UTC date ${eveningUtc.slice(0, 10)}, local ${local})`)
+    : bad('evening weigh-in dropped', JSON.stringify(series));
+
+  // A genuinely future reading (tomorrow evening) is still excluded.
+  const tomorrowUtc = new Date(
+    NOW.getFullYear(),
+    NOW.getMonth(),
+    NOW.getDate() + 1,
+    20,
+    0,
+    0,
+    0
+  ).toISOString();
+  raw
+    .prepare(
+      `INSERT INTO body_metrics (id, measured_at, weight_kg, source) VALUES (?, ?, ?, 'manual')`
+    )
+    .run('bm-future', tomorrowUtc, 99);
+  run('get_metric_series', db, { metric: 'weight', days: 7 }).points.length === 1
+    ? ok('a genuinely future weigh-in is still excluded')
+    : bad('future weigh-in leaked', JSON.stringify(run('get_metric_series', db, { metric: 'weight', days: 7 })));
+}
+
+console.log('24. dual-writer sleep night: the Coach cites the arbitrated winner, like Home');
+{
+  const { db, raw } = freshDb();
+  const day = isoDaysAgo(NOW, 1);
+  const insert = raw.prepare(
+    `INSERT INTO wearable_data (id, date, metric_type, value, source_device) VALUES (?, ?, ?, ?, ?)`
+  );
+  insert.run('dw-1', day, 'sleep_duration_min', 450, 'apple_watch');
+  insert.run('dw-2', day, 'sleep_duration_min', 380, 'oura');
+  const sleep = run('get_metric_series', db, { metric: 'sleep', days: 7 });
+  // SOURCE_PRIORITY ranks apple_watch above oura — Home shows 450; a pooled
+  // average (415) would be a number no app surface displays.
+  sleep.stats.count === 1 && sleep.points[0].value === 450
+    ? ok('sleep series returns the source-arbitrated 450, not the 415 pooled average')
+    : bad('dual-writer sleep', JSON.stringify(sleep.points));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

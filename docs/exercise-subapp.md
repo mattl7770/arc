@@ -203,7 +203,7 @@ Cardio logged with kind `cardio` subtracts a flat small fatigue (0.5) from quads
 4. Per exercise, attach the progression target (§4.3) and a warmup ramp for the first exercise per muscle group: bar×5 → 50%×5 → 70%×3 → 85%×2 of working weight, rounded to plate math, skipped when working weight < 1.5× bar (Starting Strength scheme).
 5. Rest defaults per set, auto-started on completion: compound ≤ 6 reps → 180 s · compound 7–12 → 150 s · isolation → 90 s (2024 Bayesian meta-analysis: ≥ 60 s matters, > 90 s marginal).
 
-Readiness (sleep/HRV) does **not** modify volume yet — that lands with wearables via Apple Health and routes through the same one modifier function (`recommend.ts` takes an optional `readiness` argument, default neutral — the seam is in the signature from day one).
+Readiness (sleep/HRV) does **not** modify volume, and — corrected 2026-08-08 — `recommend.ts` has **no** readiness parameter (an earlier version of this line claimed the seam was in the signature; it never was). This is now deliberate, not deferred: readiness must never scale volume *automatically* — whether a low-recovery morning means backing off is a judgment call that depends on program phase, cause, and context, so it belongs to the Coach model (which reads readiness via `get_today_snapshot` and the engine's state via `get_training_recommendation`). The planned seam is a **caller-supplied adjustment dial** (e.g. `volumeScale`) the Coach passes when *it* decides — see `docs/coach-intelligence-review.md` §4 Phase 2.
 
 ---
 
@@ -231,7 +231,7 @@ The live-workout screen's one pine action is **Finish workout**; set checks are 
 | **In-app rest timer** (foreground) | pure JS — ships in slice C |
 | **Background rest-timer notification** | needs `expo-notifications` → **native, new dev build** — deferred; batch with `expo-secure-store` / `expo-local-authentication` per project-status. Until then the timer is honest: it keeps counting on return to foreground (timestamps, not ticks). |
 | **HR / VO₂max / readiness inputs** | HealthKit → **native** — deferred to wearables phase. VO₂max stays `—`. |
-| **Coach model client** (`src/lib/ai/coach-service.ts`) | owned by the parallel Coach window — **not touched.** Slice D calls it through a typed seam (`src/lib/exercise/coach-assist.ts`, honest stub now). |
+| **Coach model client** (`src/lib/ai/coach-service.ts`) | merged and live. The old `coach-assist.ts` wrapper seam was **deleted 2026-08-08** (never called; its premise went stale) — the Coach now reads the engine directly through its `get_training_recommendation` tool, and slice D's "AI refinement" happens as model judgment over that state, not a wrapper (see `docs/coach-intelligence-review.md` §4). |
 | New JS deps | **none** — no react-native-svg (existing Sparkline covers charts), no timer libs. |
 
 ---

@@ -219,7 +219,10 @@ console.log('6. the real set_mode Coach tool writes a mode + honest confirmation
     ? ok('set_mode is a registered, gated write tool (no longer a stub)')
     : bad('not registered');
 
-  const summary = tool.confirmSummary({ mode: 'travel', until: '2026-08-07' }, db);
+  // `ctx` matters here: the card validates the window against the SAME clock
+  // execute uses. Omitting it silently judged a 2026-08-07 range against the
+  // real wall clock — which is why this call used to pass by accident.
+  const summary = tool.confirmSummary({ mode: 'travel', until: '2026-08-07' }, db, ctx);
   summary === 'Set Travel mode through 2026-08-07'
     ? ok(`confirmation names the mode + range ("${summary}")`)
     : bad('confirm', summary);
@@ -257,6 +260,49 @@ console.log('6. the real set_mode Coach tool writes a mode + honest confirmation
   threw
     ? ok('an `until` before today is rejected, not silently stored inert')
     : bad('past until accepted');
+
+  // …and the CARD must refuse it too. A card that renders happily and then
+  // throws on approval is a promise the tool can't keep (adversarial review).
+  let cardThrew = false;
+  try {
+    tool.confirmSummary({ mode: 'travel', until: '2026-07-31' }, db, ctx);
+  } catch {
+    cardThrew = true;
+  }
+  cardThrew
+    ? ok('the confirmation card refuses the same window execute refuses')
+    : bad('card/execute validation mismatch: card accepted an invalid window');
+}
+
+console.log('6b. a Normal reset must NAME the future modes it cancels');
+{
+  const { db } = freshDb();
+  const now = new Date(2026, 7, 1); // 2026-08-01 local
+  const ctx = { now };
+  const tool = toolByName('set_mode');
+
+  // Book a trip for next week, the way a user actually would.
+  tool.execute(db, { mode: 'travel', from: '2026-08-10', until: '2026-08-14' }, ctx);
+  getActiveMode(db, '2026-08-12') === 'travel'
+    ? ok('Travel is scheduled for 2026-08-12')
+    : bad('scheduling failed');
+
+  // "Back to normal" today ALSO wipes that trip — newest-set wins, open-ended.
+  const card = tool.confirmSummary({ mode: 'normal' }, db, ctx);
+  card.includes('cancels') && card.includes('Travel') && card.includes('2026-08-10')
+    ? ok(`the card names the casualty ("${card}")`)
+    : bad('reset card hides the cancellation', card);
+
+  tool.execute(db, { mode: 'normal' }, ctx);
+  getActiveMode(db, '2026-08-12') === 'normal'
+    ? ok('…and the reset does in fact cancel it — which is why the card had to say so')
+    : bad('reset did not supersede the future mode');
+
+  // With nothing scheduled, the card stays clean — no phantom warning.
+  const quiet = toolByName('set_mode').confirmSummary({ mode: 'normal' }, freshDb().db, ctx);
+  !quiet.includes('cancels')
+    ? ok('with no future modes booked, the reset card adds nothing')
+    : bad('phantom cancellation warning', quiet);
 }
 
 console.log('7. get_today_snapshot surfaces the active mode + its guidance');

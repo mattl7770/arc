@@ -1,6 +1,7 @@
 import { View } from 'react-native';
 
 import { CoachBrief } from '@/components/home/coach-brief';
+import { CoachNote } from '@/components/home/coach-note';
 import { DateEyebrow } from '@/components/home/date-eyebrow';
 import { HeroCard } from '@/components/home/hero-card';
 import { MetricsStrip } from '@/components/home/metrics-strip';
@@ -8,6 +9,7 @@ import { Mission } from '@/components/home/mission';
 import { ModeControl } from '@/components/home/mode-control';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
+import { useCoachPassMessage } from '@/hooks/use-coach-pass';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
 import { useMode } from '@/hooks/use-mode';
 import { useReadiness } from '@/hooks/use-readiness';
@@ -49,6 +51,9 @@ export default function HomeScreen() {
   const brief = useDailyBrief();
   const readiness = useReadiness();
   const modeView = useMode();
+  // The one thing here the user did not ask for: the Coach's own daily pass,
+  // shown only when it judged the day worth a word (it usually says nothing).
+  const pass = useCoachPassMessage();
 
   return (
     <Screen scroll>
@@ -68,6 +73,14 @@ export default function HomeScreen() {
           onSkip={(id) => mission.setStatus(id, 'skipped')}
         />
       </View>
+
+      {/* Above readiness, below the hero: what the Coach came to say outranks
+          supporting evidence, but never the one action the day is built on. */}
+      {pass.message ? (
+        <View className="mt-6">
+          <CoachNote message={pass.message} onDismiss={pass.dismiss} />
+        </View>
+      ) : null}
 
       <View className="mt-8">
         <ReadinessStrip readiness={readiness.readiness} pillars={readiness.pillars} />

@@ -37,7 +37,7 @@ import {
 } from '../src/lib/rag/embedder.ts';
 import { retrievePassages } from '../src/lib/rag/retrieve.ts';
 import { ingestMemory } from '../src/lib/rag/memory.ts';
-import { toolByName } from '../src/lib/ai/tools/index.ts';
+import { UNREGISTERED_READ_TOOLS, toolByName } from '../src/lib/ai/tools/index.ts';
 
 let pass = 0;
 let fail = 0;
@@ -208,7 +208,15 @@ console.log('6. retrievePassages + search_knowledge degrade to an honest "not av
     ? ok('retrievePassages reports available:false with a reason (embedder not wired)')
     : bad('retrieve fallback', JSON.stringify(result));
 
-  const tool = toolByName('search_knowledge');
+  // search_knowledge is deliberately UNREGISTERED while its embedder cannot
+  // return a passage (2026-08-08): advertising a tool that always fails
+  // teaches the model to distrust the registry, and search_history covers
+  // recall today. Its implementation still has to degrade honestly for the
+  // day the embedder ships, so it is tested off the unregistered export.
+  toolByName('search_knowledge') === undefined
+    ? ok('search_knowledge is not advertised to the model while it cannot work')
+    : bad('search_knowledge still registered');
+  const tool = UNREGISTERED_READ_TOOLS.find((t) => t.name === 'search_knowledge');
   const out = JSON.parse(
     await tool.execute(db, { query: 'why does ApoB matter' }, { now: new Date() })
   );
