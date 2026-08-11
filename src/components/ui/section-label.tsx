@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Text, View } from 'react-native';
 
 type Props = {
@@ -10,6 +11,22 @@ type Props = {
    * action (00-design-spec.md §5).
    */
   note?: string;
+  /**
+   * An optional mark rendered on the label's own baseline, immediately before
+   * `note`. The mockup's `.cf-sec-note` is a container, not a string: Home's
+   * mission block puts its progress ticks inside it, right-aligned and inline
+   * with the label, so the tick cluster and the "3 of 11" it belongs to read as
+   * one object on one line.
+   *
+   * Keep it small and measured — a cluster of marks, never a second sentence.
+   * A section label is an eyebrow; anything that needs room of its own is
+   * content, and content goes under the label rather than beside it.
+   *
+   * The row aligns on the TEXT baseline, which a mark with no text in it has
+   * none of — give the accessory `self-center` so it centres on the row instead
+   * of hanging its bottom edge off the label's baseline.
+   */
+  accessory?: ReactNode;
 };
 
 /**
@@ -27,16 +44,20 @@ type Props = {
  * Sits at 10px — the metadata layer is specified at 9.5–10px so the 9px render
  * floor is never load-bearing (00-design-spec.md §4).
  *
+ * The label takes `flex-1` and everything to its right sizes to content, so a
+ * long label wraps rather than pushing the tally off the sheet.
+ *
  * Several screens still define their own local `SectionLabel` helper. This is
  * the shared one for the Conformed Set surface system; sweeping the rest onto
  * it is a separate pass, not something to do opportunistically.
  */
-export function SectionLabel({ label, note }: Props) {
+export function SectionLabel({ label, note, accessory }: Props) {
   return (
     <View className="flex-row items-baseline gap-2">
       <Text className="flex-1 font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
         {label}
       </Text>
+      {accessory}
       {note ? <Text className="font-mono text-[10px] text-ink-muted">{note}</Text> : null}
     </View>
   );

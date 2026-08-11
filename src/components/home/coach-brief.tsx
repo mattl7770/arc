@@ -59,7 +59,11 @@ export function CoachBrief({ brief }: { brief: string }) {
           </View>
         </View>
 
-        <Text className="mt-2 font-serif text-[15px] leading-6 text-ink-secondary">{brief}</Text>
+        {/* 13px, not 15: the sheet sets the brief at 10.8px ≈ 12.9pt, and 15
+            was the largest type overshoot on Home — prose louder than the
+            hero's own why-line, which flattens the hierarchy the hero is drawn
+            in the accent to establish. */}
+        <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">{brief}</Text>
 
         <View className="mt-3 min-h-[24px] flex-row items-center gap-1">
           {/* A bare text button is still a button — Label voice (§3). */}

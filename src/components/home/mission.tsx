@@ -14,6 +14,15 @@ type Props = {
   rest: MissionItem[];
   completed: number;
   total: number;
+  /**
+   * The item the hero is currently showing, so the list can mark the same row
+   * as "you are here". Passed down from Home rather than re-derived here: the
+   * hero is `deriveMissionView().next`, which is the first non-snoozed *pending*
+   * item — not simply the first row of `rest`, which may be snoozed or partial.
+   * Two definitions of "next" is exactly the drift the single chronological list
+   * exists to prevent.
+   */
+  activeId?: string | null;
   onToggle: (id: string) => void;
 };
 
@@ -91,6 +100,16 @@ type Props = {
  * stamps, which is exactly what Home's accent budget covers
  * (00-design-spec.md §2). Partial is the same hue at less ink, not a second
  * colour.
+ *
+ * **Fixed 3px lanes, inline with the section label** (2026-08-10). The strip
+ * used to be a full-width row of its own under the label, each lane `flex-1`,
+ * which made an eleven-item day draw an edge-to-edge bar chart across the plate
+ * and cost the block a whole row of height. The sheet puts the cluster inside
+ * `.cf-sec-note` — 3px lanes at a 1.6px gutter, right-aligned on the label's own
+ * baseline, immediately before the `3 of 11` it belongs to. That is what makes
+ * it read as a *tally mark* beside its own number rather than as a progress bar,
+ * and it is the largest silhouette difference between the shipped block and the
+ * drawing. The four forms are unchanged: all of them still work at 3 × 8.
  */
 /**
  * One lane of the progress strip: an 8px-tall cell whose MARK states the item's
@@ -110,24 +129,24 @@ type Props = {
  * four forms is that **skipped and partial can never read as done**.
  */
 function Tick({ status }: { status: MissionStatus }) {
-  if (status === 'completed') return <View className="h-2 flex-1 bg-pine" />;
+  if (status === 'completed') return <View className="h-2 w-[3px] bg-pine" />;
   if (status === 'partial') {
     return (
-      <View className="h-2 flex-1 justify-end">
+      <View className="h-2 w-[3px] justify-end">
         <View className="h-[3px] bg-pine" />
       </View>
     );
   }
   if (status === 'skipped') {
     return (
-      <View className="h-2 flex-1 justify-between">
+      <View className="h-2 w-[3px] justify-between">
         <View className="h-0.5 bg-ink-muted" />
         <View className="h-0.5 bg-ink-muted" />
       </View>
     );
   }
   return (
-    <View className="h-2 flex-1 justify-end">
+    <View className="h-2 w-[3px] justify-end">
       <View className="h-px bg-ink-muted" />
     </View>
   );
@@ -172,7 +191,7 @@ function progressLabel(items: MissionItem[]): string {
   return `Progress by item: ${parts.join(', ')}. ${items.length} in total.`;
 }
 
-export function Mission({ leadingSettled, rest, completed, total, onToggle }: Props) {
+export function Mission({ leadingSettled, rest, completed, total, activeId, onToggle }: Props) {
   const [showSettled, setShowSettled] = useState(false);
   // Folding one row saves nothing and costs a tap, so the control only exists
   // for a run of two or more. `foldable` is whether the control is drawn at
@@ -188,19 +207,23 @@ export function Mission({ leadingSettled, rest, completed, total, onToggle }: Pr
 
   return (
     <Block device="plate">
-      <SectionLabel label="Today’s Mission" note={`${completed} of ${total}`} />
-
-      {ordered.length > 0 ? (
-        <View
-          accessible
-          accessibilityRole="text"
-          accessibilityLabel={progressLabel(ordered)}
-          className="mt-2.5 flex-row gap-0.5">
-          {ordered.map((item) => (
-            <Tick key={item.id} status={item.status} />
-          ))}
-        </View>
-      ) : null}
+      <SectionLabel
+        label="Today’s Mission"
+        note={`${completed} of ${total}`}
+        accessory={
+          ordered.length > 0 ? (
+            <View
+              accessible
+              accessibilityRole="text"
+              accessibilityLabel={progressLabel(ordered)}
+              className="flex-row gap-[1.6px] self-center">
+              {ordered.map((item) => (
+                <Tick key={item.id} status={item.status} />
+              ))}
+            </View>
+          ) : null
+        }
+      />
 
       <View className="mt-1">
         {foldable ? (
@@ -245,7 +268,7 @@ export function Mission({ leadingSettled, rest, completed, total, onToggle }: Pr
         {visible.map((item, index) => (
           <View key={item.id}>
             <Divider first={index === 0 && !foldable} />
-            <MissionItemRow item={item} onToggle={onToggle} />
+            <MissionItemRow item={item} active={item.id === activeId} onToggle={onToggle} />
           </View>
         ))}
       </View>

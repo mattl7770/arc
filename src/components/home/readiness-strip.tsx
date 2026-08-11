@@ -34,21 +34,27 @@ type Props = {
  * swatches, and a detail line — separated from its neighbours by air, like
  * every other section on this screen.
  *
- * ## The pillar cells lost their boxes too (2026-08-10)
+ * ## The pillar cells got their boxes back (2026-08-10, later the same day)
  *
- * They were four `border-hairline bg-paper-dim` cells in a row. The argument for
- * them was that a swatch reads as a *sample* of a state — but four equal boxes
- * abreast is a grid, and **a grid draws no rules** (block.tsx): the row is held
- * by `flex-1` columns and a 6px gutter whether or not anything is drawn around
- * them. The owner raised the stray-mark point a second time on 2026-08-10 ("more
- * lines on things that shouldn't have them"), and four hairline boxes directly
- * under the one unboxed verdict line on the sheet is the loudest remaining
- * instance on Home.
+ * They are four `border-hairline bg-paper-dim` cells again — `.cf-pillar` on the
+ * sheet, and what this file drew until earlier that day. The argument for taking
+ * them off was that four equal boxes abreast is a grid, and **a grid draws no
+ * rules**. That argument does not survive contact with the spec it cites:
+ * 00-design-spec.md §1 cuts the marks from the *field, margin and grid DEVICES*,
+ * and a pillar cell is none of the three — it is content sitting inside a field,
+ * the same way a mission row is content sitting inside a plate. The rule was
+ * invented for the occasion.
  *
- * Dropping the `paper-dim` fill with them *improves* the numbers this block was
- * tuned against: the signal ink cut measures 5.12–5.60:1 on paper-dim and
- * 5.91–6.46:1 on the sheet (the same figures metrics-strip.tsx cites for the
- * same words on the same stock). Nothing here got harder to read.
+ * It was also removed in the same sweep whose governing rule the owner rejected
+ * outright that day — *"All the wrong boxes were removed, bring them back!"*
+ * (decisions.md 2026-08-10 §1a, WITHDRAWN). The pillar cells are not named in
+ * that ADR's restore list, which is why they stayed off; they were a missed
+ * restoration, not a decision.
+ *
+ * The contrast argument was never a reason either way: the signal ink cut
+ * measures 5.12–5.60:1 on paper-dim and 5.91–6.46:1 on the bare sheet — the ink
+ * clears 4.5:1 comfortably on both, so nothing here got harder to read when the
+ * fill came off, and nothing gets harder now it is back.
  *
  * Every colour that remains is a signal colour and every signal colour here is
  * biology — the accent is not permitted anywhere in this block.
@@ -77,9 +83,19 @@ export function ReadinessStrip({ readiness, pillars }: Props) {
     <Block device="field">
       <SectionLabel label="Readiness" />
 
-      <View className="mt-2.5 flex-row items-center gap-2.5">
+      {/* Tick, then the caption, then the word — the sheet's order: `.cf-verdict`
+          draws its swatch in a `::before`, so the mark leads and the caption
+          names what the word after it IS. Without the caption the verdict reads
+          as a heading for the block rather than as its finding, which is what
+          "Guarded" sitting alone on a line looked like. */}
+      <View className="mt-2.5 flex-row items-center gap-2">
         <SignalTick level={readiness.level} />
-        <Text className="flex-1 font-serif text-lg font-semibold text-ink">{readiness.label}</Text>
+        <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+          Verdict
+        </Text>
+        <Text className="flex-1 font-serif text-lg font-semibold italic text-ink">
+          {readiness.label}
+        </Text>
       </View>
 
       <View className="mt-3 flex-row gap-1.5">
@@ -89,7 +105,7 @@ export function ReadinessStrip({ readiness, pillars }: Props) {
             accessible
             accessibilityRole="text"
             accessibilityLabel={`${pillar.label}, ${signalConditionSpoken(pillar.level)}`}
-            className="flex-1 items-center gap-1 px-0.5 py-2">
+            className="flex-1 items-center gap-1 border border-hairline bg-paper-dim px-0.5 py-2">
             <View className={signalMarkClass(pillar.level)} />
             <Text className="font-label text-[10px] uppercase tracking-[0.5px] text-ink-secondary">
               {pillar.label}
