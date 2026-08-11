@@ -1,6 +1,6 @@
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
@@ -100,12 +100,12 @@ function Row({
   children: React.ReactNode;
 }) {
   return (
-    <View
-      className={`min-h-[44px] flex-row items-center justify-between gap-3 py-2.5 ${
-        first ? '' : 'border-t border-hairline'
-      }`}>
-      <Text className="font-serif text-[15px] text-ink">{label}</Text>
-      {children}
+    <View>
+      <Divider first={first} />
+      <View className="min-h-[44px] flex-row items-center justify-between gap-3 py-2.5">
+        <Text className="font-serif text-[15px] text-ink">{label}</Text>
+        {children}
+      </View>
     </View>
   );
 }

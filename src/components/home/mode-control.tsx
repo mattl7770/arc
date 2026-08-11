@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { PaperGrid } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import {
@@ -23,8 +23,9 @@ import {
  * Deliberately NEUTRAL, never pine: Home's one sanctioned accent is already
  * spent on the hero card, and a mode is a state, not an action. So the
  * indicator is the app's standard status chip (paper-deep + tracked caps) and
- * Normal reads as a bare muted "Set mode" — quiet when nothing is on,
- * unmistakable when something is.
+ * Normal reads as the same chip outlined rather than filled — quiet when nothing
+ * is on, unmistakable when something is. Either way it states the mode's NAME,
+ * the way the mockup's `.cf-modechip` does.
  *
  * Both faces of the control are the **label voice** (00-design-spec.md §3:
  * "uppercase section labels, eyebrows, buttons, chips"). The chip used to be
@@ -145,7 +146,7 @@ export function ModeControl({
     <>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={active ? `Mode: ${def.label}. Change` : 'Set mode'}
+        accessibilityLabel={`Mode: ${def.label}. Change`}
         onPress={() => setOpen(true)}
         // min-h-[44px] is the tap-target floor, stated here rather than inferred
         // from padding: the chip's own text is 10px, so py-2.5 alone only reached
@@ -153,15 +154,24 @@ export function ModeControl({
         // gutter.
         className="-mr-2 min-h-[44px] flex-row items-center gap-1.5 rounded-btn px-2 py-2.5 active:bg-paper-deep">
         {/*
-          Both faces are now DRAWN chips. The resting face used to be bare
+          Both faces are DRAWN chips. The resting face used to be bare
           `ink-muted` text, and the owner's first hardware session ended with
           them having to be told the control was there — unsurprising, since
           nothing distinguished it from the date eyebrow opposite it except the
           chevron. A hairline outline is the smallest mark that says "this is
           pressable" without spending accent (a mode is a state, not an action)
           and without a fill, which would make the resting state as loud as the
-          active one. Filled = on, outlined = off, and the two are now
+          active one. Filled = on, outlined = off, and the two are
           distinguishable at a glance from across the row.
+
+          **Both faces now name the MODE, not the action** (2026-08-10). The
+          resting chip read "Set mode", which is an instruction; the sheet's
+          `.cf-modechip` reads `Normal`, which is a fact about today — and the
+          folio row it sits on is a row of facts (the drawing's mark, its date,
+          its mode). An imperative there was the one thing on the line that was
+          not stating today. The affordance work above is untouched: the outline,
+          the chevron and the 44pt target are what say "pressable", which is what
+          the hardware finding was actually about.
         */}
         {active ? (
           <View className="rounded-btn bg-paper-deep px-2 py-0.5">
@@ -172,7 +182,7 @@ export function ModeControl({
         ) : (
           <View className="rounded-btn border border-hairline px-2 py-0.5">
             <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
-              Set mode
+              {def.label}
             </Text>
           </View>
         )}
@@ -218,29 +228,29 @@ export function ModeControl({
                   const option = getModeDefinition(key);
                   const selected = key === mode;
                   return (
-                    <Pressable
-                      key={key}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      accessibilityLabel={`${option.label}. ${option.tagline}`}
-                      onPress={() => {
-                        setOpen(false);
-                        onSelect(key);
-                      }}
-                      className={`min-h-[44px] flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep ${
-                        index === 0 ? '' : 'border-t border-hairline'
-                      }`}>
-                      <View className="flex-1">
-                        {/* List ROW, not a control label — see the voice note above. */}
-                        <Text className="font-serif text-[15px] text-ink">{option.label}</Text>
-                        <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
-                          {option.tagline}
-                        </Text>
-                      </View>
-                      {selected ? (
-                        <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
-                      ) : null}
-                    </Pressable>
+                    <View key={key}>
+                      <Divider first={index === 0} />
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                        accessibilityLabel={`${option.label}. ${option.tagline}`}
+                        onPress={() => {
+                          setOpen(false);
+                          onSelect(key);
+                        }}
+                        className="min-h-[44px] flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep">
+                        <View className="flex-1">
+                          {/* List ROW, not a control label — see the voice note above. */}
+                          <Text className="font-serif text-[15px] text-ink">{option.label}</Text>
+                          <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                            {option.tagline}
+                          </Text>
+                        </View>
+                        {selected ? (
+                          <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
+                        ) : null}
+                      </Pressable>
+                    </View>
                   );
                 })}
               </View>

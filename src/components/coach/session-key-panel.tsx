@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
+import { Divider } from '@/components/ui/block';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
@@ -39,8 +40,8 @@ import { apiKeyStore } from '@/lib/ai/api-key-store';
  * line of state, and one control — drawn straight **on the sheet**, not on a
  * plate. It is not a record and not a verdict; it is a caption on the page, and
  * giving it a card would make a status line look like content. It draws **no
- * rule at all**: the screen header's own `border-b` sits directly above it, and
- * a second hairline below turned the caption into a boxed band (2026-08-10).
+ * rule at all**: the screen header's own closing rule sits directly above it,
+ * and a second hairline below turned the caption into a boxed band (2026-08-10).
  * The expanded form keeps one, because a multi-control form genuinely needs
  * closing off from the thread it is covering.
  *
@@ -78,7 +79,7 @@ export function SessionKeyPanel({ keySet }: { keySet: boolean }) {
   if (!expanded) {
     return (
       // **No rule of its own.** This band sits immediately under the header's
-      // `border-b`, so drawing a second hairline ~28px lower boxed the session
+      // closing rule, so drawing a second hairline ~28px lower boxed the session
       // line between two parallel rules — a box the owner never asked for around
       // a one-line caption, and exactly the "more lines on things that shouldn't
       // have them" they raised on 2026-08-10. The header's rule is the
@@ -104,85 +105,91 @@ export function SessionKeyPanel({ keySet }: { keySet: boolean }) {
   const canConnect = draft.trim().length > 0;
 
   return (
-    <View className="border-b border-hairline px-5 pb-2 pt-2.5">
-      <SectionLabel label="Paste API key" />
+    <View>
+      <View className="px-5 pb-2 pt-2.5">
+        <SectionLabel label="Paste API key" />
 
-      <View className="mt-2 flex-row items-center gap-2">
-        {/* The recessed stock of the `well` device, sized to a field rather than
+        <View className="mt-2 flex-row items-center gap-2">
+          {/* The recessed stock of the `well` device, sized to a field rather than
             wrapped in <Block>: the Block carries fixed padding, and this one has
             to flex beside a 44pt button. Same tokens, same reading. */}
-        <View className="flex-1 border border-paper-deep bg-paper-dim px-3">
-          <TextInput
-            value={draft}
-            onChangeText={setDraft}
-            placeholder="sk-ant-…"
-            placeholderTextColor={palette.inkMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-            className="py-3 font-mono text-[13px] text-ink"
-            accessibilityLabel="API key"
-          />
+          <View className="flex-1 border border-paper-deep bg-paper-dim px-3">
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              placeholder="sk-ant-…"
+              placeholderTextColor={palette.inkMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              className="py-3 font-mono text-[13px] text-ink"
+              accessibilityLabel="API key"
+            />
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !canConnect }}
+            disabled={!canConnect}
+            onPress={() => {
+              void apiKeyStore.setKey(draft);
+              setDraft('');
+              setExpanded(false);
+            }}
+            className={
+              canConnect
+                ? 'min-h-[44px] items-center justify-center bg-ink px-4 active:opacity-70'
+                : 'min-h-[44px] items-center justify-center bg-hairline px-4'
+            }>
+            <Text
+              className="font-label text-[11px] font-semibold uppercase tracking-[1.2px]"
+              style={{ color: canConnect ? palette.paperHi : palette.inkMuted }}>
+              Connect
+            </Text>
+          </Pressable>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ disabled: !canConnect }}
-          disabled={!canConnect}
-          onPress={() => {
-            void apiKeyStore.setKey(draft);
-            setDraft('');
-            setExpanded(false);
-          }}
-          className={
-            canConnect
-              ? 'min-h-[44px] items-center justify-center bg-ink px-4 active:opacity-70'
-              : 'min-h-[44px] items-center justify-center bg-hairline px-4'
-          }>
-          <Text
-            className="font-label text-[11px] font-semibold uppercase tracking-[1.2px]"
-            style={{ color: canConnect ? palette.paperHi : palette.inkMuted }}>
-            Connect
-          </Text>
-        </Pressable>
-      </View>
 
-      <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
-        Saved to this device&rsquo;s Keychain — it never leaves except on the calls it makes to
-        Anthropic.
-      </Text>
+        <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
+          Saved to this device&rsquo;s Keychain — it never leaves except on the calls it makes to
+          Anthropic.
+        </Text>
 
-      <View className="flex-row items-center justify-between">
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            setDraft('');
-            setExpanded(false);
-          }}
-          className="min-h-[44px] justify-center active:opacity-60">
-          <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
-            Cancel
-          </Text>
-        </Pressable>
+        <View className="flex-row items-center justify-between">
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              setDraft('');
+              setExpanded(false);
+            }}
+            className="min-h-[44px] justify-center active:opacity-60">
+            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+              Cancel
+            </Text>
+          </Pressable>
 
-        {/* Where the model is chosen — neutral ink, like everything else in this
+          {/* Where the model is chosen — neutral ink, like everything else in this
             band. The panel's one sanctioned accent is the presence dot. */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Open Coach settings"
-          onPress={() => router.push('/settings-coach')}
-          className="min-h-[44px] flex-row items-center gap-1.5 active:opacity-60">
-          <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink">
-            Settings › Coach
-          </Text>
-          <Ionicons
-            name="chevron-forward"
-            size={11}
-            color={palette.ink}
-            accessibilityElementsHidden
-            importantForAccessibility="no"
-          />
-        </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open Coach settings"
+            onPress={() => router.push('/settings-coach')}
+            className="min-h-[44px] flex-row items-center gap-1.5 active:opacity-60">
+            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink">
+              Settings › Coach
+            </Text>
+            <Ionicons
+              name="chevron-forward"
+              size={11}
+              color={palette.ink}
+              accessibilityElementsHidden
+              importantForAccessibility="no"
+            />
+          </Pressable>
+        </View>
       </View>
+      {/* The rule closing this band. Drawn, not a `border-b` — that is the same
+          four-sided trap as `border-t` (see Divider) and would have boxed the
+          whole panel. Outside the padding so it spans the full width. */}
+      <Divider />
     </View>
   );
 }

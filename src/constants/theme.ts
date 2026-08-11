@@ -141,27 +141,33 @@ export const palette = {
  *                             dropped it along with the desk (owner caught it
  *                             on device, 2026-08-09).
  *
- * Drawn once by `src/components/ui/screen.tsx`, behind every screen, as a
- * repeat-tiled PNG (`assets/images/paper-grid*.png`) — RN has no
- * `repeating-linear-gradient`, and hundreds of hairline `View`s on a scrolling
- * page is not a trade worth making. The tile is a static, non-scrolling,
- * `pointerEvents="none"` layer: zero per-frame cost, no touch interference.
+ * Drawn once by `PaperGrid` in `src/components/ui/screen.tsx`, behind every
+ * screen, as absolutely-positioned 1pt `View`s — one per rule, sized to
+ * `useWindowDimensions()`. RN has no `repeating-linear-gradient`, and the two
+ * rounds that shipped a `<Image resizeMode="repeat">` tile instead never
+ * rendered on the owner's device even once. The layer is static, non-scrolling
+ * and `pointerEvents="none"`: it derives from nothing but the window size, so it
+ * mounts once and never re-renders — no per-frame work, no touch interference.
  *
- * TUNING. `opacity` is the dial — change it here and nowhere else. Ink is baked
- * into the tile at full alpha precisely so this one number is the whole control.
+ * TUNING. `opacity` is the dial — change it here and nowhere else. Ink is drawn
+ * at full alpha and the whole group is faded precisely so this one number is the
+ * entire control, and so the crossings (verticals and horizontals DO overlap)
+ * stay at the same weight as the rules rather than printing a darker lattice.
  *
- * GEOMETRY, decoded from the shipped PNGs rather than assumed. The tile rules
- * its top edge AND its left edge, so a 9×9 cell is **17 of 81 opaque pixels =
- * 21.0% ruled** — identical at @2x (68/324) and @3x (153/729). The rule is 1pt
- * at every density (1px/2px/3px on a 9/18/27px tile), the pitch is an integer
- * number of physical pixels at 1x/2x/3x so nothing is ever resampled, and the
- * ink is a flat #1C1911 at alpha 255. The tiles are correct and always were.
+ * GEOMETRY. A rule on every 9pt boundary in both axes — 42v + 75h = 117 Views on
+ * a 375×667 SE, 44 + 95 = 139 on a 393×852 iPhone 16, 49 + 107 = 156 on a
+ * 440×956 Pro Max. Each rule is 1pt (NOT `hairlineWidth`, which is a third of
+ * that at @3x and would put the texture back under threshold), ink flat #1C1911,
+ * and every offset is a whole multiple of 9 so nothing lands on a half-pixel.
+ * This matches the retired PNG exactly: its 9×9 tile ruled its top and left
+ * edge, i.e. the same two rules per cell.
  *
  * CALIBRATION — corrected 2026-08-10, after the owner reported for the SECOND
- * time that the sheet still read as blank. It was never a rendering fault: the
- * layer draws on all seven roots and the tiles are sound. The dial was simply
- * set to a value below the eye's detection threshold, and the comment that
- * justified it contained an arithmetic error that hid this for two rounds.
+ * time that the sheet still read as blank. The dial was set below the eye's
+ * detection threshold, and the comment that justified it contained an arithmetic
+ * error that hid this for two rounds. (A THIRD report followed even after the
+ * correction, which is what finally condemned the `Image` path itself; the
+ * calibration below was sound, nothing was drawing it.)
  *
  * The error: this comment used to say the grid "sits at a bit over half the
  * weight" of `hairline`, reading 1.12:1 against 2.00:1 as ≈56%. But a contrast
@@ -178,19 +184,25 @@ export const palette = {
  *     0.06     #DBD8CE       1.12:1      12%   ← was: invisible on device
  *     0.10     #D3D0C6       1.21:1      21%
  *     0.14     #CBC8BE       1.32:1      32%
- *     0.20     #BEBBB2       1.51:1      51%   ← chosen
+ *     0.20     #BEBBB2       1.51:1      51%   ← WAS chosen; far too strong
  *     0.26     #B2AFA6       1.72:1      72%
  *     0.30     #AAA79E       1.89:1      89%   ← too close to a real rule
  *     0.35     #A09D94       2.13:1     113%   ← exceeds the ceiling
  *
- * **0.20 is the value the prose always described**: a mark at half the weight of
- * the faintest thing that means "this encloses an object". A plate edge stays
- * unmistakably twice the departure of the texture under it, which is the gap
- * that keeps §4's "rules enclose objects, never pages" true, and it leaves ~0.5
- * of ratio in hand before the grid reaches hairline weight. Sane range
- * **0.16–0.24** (1.37:1 – 1.65:1). **If the grid starts reading as a rule rather
- * than as tooth in the paper it is too strong** — but note that the failure for
- * two rounds running was the opposite one, so err high rather than low.
+ * **0.06 is the design value, and it is what the mockup always specified**
+ * (`--paper-grid: rgba(28, 24, 14, 0.06)` on `.cf-screen`,
+ * docs/design-research/arc-conformed-set.html:121).
+ *
+ * The 0.20 above was a mistake with an instructive history. The grid shipped
+ * twice as an `<Image resizeMode="repeat">` that never rendered at all, and the
+ * opacity was raised 0.06 → 0.20 to "fix" an invisibility that had nothing to do
+ * with opacity. When the layer was rewritten as Views and finally drew, the
+ * compensation was still in: the owner's Home came back as graph paper competing
+ * with the content instead of tooth in the paper. Restored 2026-08-11.
+ *
+ * The lesson worth keeping: NEVER re-tune a value to compensate for something
+ * not rendering. Establish that it renders, then tune. Two rounds of "it must be
+ * too faint" were spent on a layer that was drawing nothing.
  *
  * Why the dial and not the pitch: a 1pt rule at 1.12:1 is under threshold at any
  * spacing, so coarsening the pitch would only have produced fewer invisible
@@ -198,19 +210,26 @@ export const palette = {
  * — an order of magnitude above visual acuity, so the spacing was never what was
  * failing to register. The individual rule's contrast was.
  *
- * `pitch` is BAKED INTO THE PNG and is here to be read, not assigned — nothing
- * consumes it. Changing the pitch means regenerating the three tiles; the
- * recipe is in docs/design-research/implementation/00-design-spec.md §4.
+ * `pitch` is now LIVE — `PaperGrid` reads it to place the rules, so changing it
+ * changes the render with no asset step (it used to be baked into a PNG and was
+ * documentation only). That also makes it the cost dial if the node count above
+ * ever needs to come down: 18 halves it. Spec:
+ * docs/design-research/implementation/00-design-spec.md §4a.
  */
 export const paperGrid = {
-  /** Points between rules. Matches the mockup's `--paper-grid` at 9px. */
+  /**
+   * Points between rules, in both axes. Matches the mockup's `--paper-grid` at
+   * 9px — the mockup phone is ~1 CSS px ≈ 1pt, so 9 transfers 1:1 and the
+   * angular size on device matches what was reviewed. Read by `PaperGrid`.
+   */
   pitch: 9,
   /**
-   * The dial. The mockup's `rgba(28, 24, 14, .06)` was picked in a browser on a
-   * bright desktop monitor and did not survive the transfer to a phone; 0.20 is
-   * the calibrated device value. See the table above before changing it.
+   * The dial. The mockup's `rgba(28, 24, 14, .06)`, restored 2026-08-11 after
+   * 0.20 shipped and read as graph paper on device. The claim that 0.06 "did not
+   * survive the transfer to a phone" was never true — it was never tested,
+   * because the layer it was applied to was not rendering. See the table above.
    */
-  opacity: 0.2,
+  opacity: 0.06,
 } as const;
 
 /**

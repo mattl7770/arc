@@ -167,6 +167,10 @@ export default function HomeScreen() {
             rest={mission.rest}
             completed={mission.completed}
             total={mission.total}
+            // The hero and the list must never imply different next actions, so
+            // the list is told which row the hero is showing rather than
+            // guessing at it. One definition of "next", passed down.
+            activeId={mission.next?.id ?? null}
             onToggle={mission.toggle}
           />
         </View>

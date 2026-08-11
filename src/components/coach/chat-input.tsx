@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
 import { Platform, Pressable, Text, TextInput, View } from 'react-native';
 
+import { Divider } from '@/components/ui/block';
 import { palette } from '@/constants/theme';
 
 type Props = {
@@ -55,57 +56,67 @@ export function ChatInput({ onSend, disabled = false, blockedReason }: Props) {
   };
 
   return (
-    <View className="border-t border-hairline bg-paper px-5 pb-2 pt-2.5">
-      {blocked ? (
-        <Text className="mb-2 font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
-          {blockedReason}
-        </Text>
-      ) : null}
+    <View className="bg-paper">
+      {/* The composer's top edge, where the docked bar meets the thread. Drawn
+          as a rule rather than a `border-t`, which would box the whole bar —
+          see Divider. It sits outside the padding so it spans the full width. */}
+      <Divider />
+      <View className="px-5 pb-2 pt-2.5">
+        {blocked ? (
+          <Text className="mb-2 font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+            {blockedReason}
+          </Text>
+        ) : null}
 
-      <View className="flex-row items-end gap-2">
-        <View
-          className={
-            blocked
-              ? 'max-h-32 flex-1 justify-center border border-paper-deep bg-paper-dim px-3.5 opacity-60'
-              : 'max-h-32 flex-1 justify-center border border-paper-deep bg-paper-dim px-3.5'
-          }>
-          <TextInput
-            value={text}
-            onChangeText={setText}
-            editable={!blocked}
-            placeholder="Message the Coach"
-            placeholderTextColor={palette.inkMuted}
-            multiline
-            // Enter sends on web; Shift+Enter (and native return) still add a line.
-            onKeyPress={
-              Platform.OS === 'web'
-                ? (event) => {
-                    const native = event.nativeEvent as { key?: string; shiftKey?: boolean };
-                    if (native.key === 'Enter' && !native.shiftKey) {
-                      event.preventDefault();
-                      submit();
+        <View className="flex-row items-end gap-2">
+          <View
+            className={
+              blocked
+                ? 'max-h-32 flex-1 justify-center border border-paper-deep bg-paper-dim px-3.5 opacity-60'
+                : 'max-h-32 flex-1 justify-center border border-paper-deep bg-paper-dim px-3.5'
+            }>
+            <TextInput
+              value={text}
+              onChangeText={setText}
+              editable={!blocked}
+              placeholder="Message the Coach"
+              placeholderTextColor={palette.inkMuted}
+              multiline
+              // Enter sends on web; Shift+Enter (and native return) still add a line.
+              onKeyPress={
+                Platform.OS === 'web'
+                  ? (event) => {
+                      const native = event.nativeEvent as { key?: string; shiftKey?: boolean };
+                      if (native.key === 'Enter' && !native.shiftKey) {
+                        event.preventDefault();
+                        submit();
+                      }
                     }
-                  }
-                : undefined
-            }
-            className="py-2.5 font-serif text-[15px] leading-5 text-ink"
-            accessibilityLabel="Message the Coach"
-          />
-        </View>
+                  : undefined
+              }
+              className="py-2.5 font-serif text-[15px] leading-5 text-ink"
+              accessibilityLabel="Message the Coach"
+            />
+          </View>
 
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Send"
-          accessibilityState={{ disabled: !canSend }}
-          disabled={!canSend}
-          onPress={submit}
-          className={
-            canSend
-              ? 'h-11 w-11 items-center justify-center bg-pine active:opacity-70'
-              : 'h-11 w-11 items-center justify-center border border-hairline bg-paper-dim'
-          }>
-          <Ionicons name="arrow-up" size={20} color={canSend ? palette.pineOn : palette.inkMuted} />
-        </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Send"
+            accessibilityState={{ disabled: !canSend }}
+            disabled={!canSend}
+            onPress={submit}
+            className={
+              canSend
+                ? 'h-11 w-11 items-center justify-center bg-pine active:opacity-70'
+                : 'h-11 w-11 items-center justify-center border border-hairline bg-paper-dim'
+            }>
+            <Ionicons
+              name="arrow-up"
+              size={20}
+              color={canSend ? palette.pineOn : palette.inkMuted}
+            />
+          </Pressable>
+        </View>
       </View>
     </View>
   );

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -552,36 +552,42 @@ function WorkoutLive({
 
       {/* Rest timer — a quiet docked line, no modal, no glow. Foreground only. */}
       {restRemaining != null ? (
-        <View className="absolute inset-x-0 bottom-0 flex-row items-center gap-3 border-t border-hairline bg-paper-hi px-5 py-3">
-          <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-            Rest
-          </Text>
-          <Text className="font-mono text-lg text-ink">{formatClock(restRemaining)}</Text>
-          <View className="flex-1" />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Subtract 15 seconds"
-            onPress={() => bumpRest(-15)}
-            hitSlop={8}
-            className="min-h-[32px] justify-center rounded-btn border border-hairline px-2.5 active:bg-paper-dim">
-            <Text className="font-mono text-[12px] text-ink-secondary">−15</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Add 15 seconds"
-            onPress={() => bumpRest(15)}
-            hitSlop={8}
-            className="min-h-[32px] justify-center rounded-btn border border-hairline px-2.5 active:bg-paper-dim">
-            <Text className="font-mono text-[12px] text-ink-secondary">+15</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Dismiss rest timer"
-            onPress={dismissRest}
-            hitSlop={8}
-            className="h-8 w-8 items-center justify-center active:opacity-60">
-            <Ionicons name="close" size={16} color={palette.inkMuted} />
-          </Pressable>
+        <View className="absolute inset-x-0 bottom-0 bg-paper-hi">
+          {/* The bar's top edge. A `border-t` here would draw all four sides —
+              see Divider's docblock — so the edge is a filled 1px view, and it
+              sits outside the bar's padding so it spans the full width. */}
+          <Divider />
+          <View className="flex-row items-center gap-3 px-5 py-3">
+            <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+              Rest
+            </Text>
+            <Text className="font-mono text-lg text-ink">{formatClock(restRemaining)}</Text>
+            <View className="flex-1" />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Subtract 15 seconds"
+              onPress={() => bumpRest(-15)}
+              hitSlop={8}
+              className="min-h-[32px] justify-center rounded-btn border border-hairline px-2.5 active:bg-paper-dim">
+              <Text className="font-mono text-[12px] text-ink-secondary">−15</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Add 15 seconds"
+              onPress={() => bumpRest(15)}
+              hitSlop={8}
+              className="min-h-[32px] justify-center rounded-btn border border-hairline px-2.5 active:bg-paper-dim">
+              <Text className="font-mono text-[12px] text-ink-secondary">+15</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss rest timer"
+              onPress={dismissRest}
+              hitSlop={8}
+              className="h-8 w-8 items-center justify-center active:opacity-60">
+              <Ionicons name="close" size={16} color={palette.inkMuted} />
+            </Pressable>
+          </View>
         </View>
       ) : null}
 
@@ -655,7 +661,7 @@ function ExerciseBlock({
         </View>
 
         {/* Column header — the label voice, closed by the rule beneath it. */}
-        <View className="mt-1.5 flex-row items-center gap-1.5 border-b border-hairline pb-1.5">
+        <View className="mt-1.5 flex-row items-center gap-1.5 pb-1.5">
           <Text className="w-7 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
             Set
           </Text>
@@ -675,6 +681,9 @@ function ExerciseBlock({
           </Text>
           <View className="w-8" />
         </View>
+        {/* The rule that closes the column header. Drawn, not bordered — a
+            `border-b` here is the same four-sided trap as `border-t`. */}
+        <Divider />
 
         {block.sets.map((set, i) => {
           const prev = block.prev[i];
@@ -683,91 +692,91 @@ function ExerciseBlock({
             : '—';
           const tag = setTypeTag(set.setType);
           return (
-            <View
-              key={set.key}
-              className={`flex-row items-center gap-1.5 py-1.5 ${
-                i === 0 ? '' : 'border-t border-hairline'
-              }`}>
-              {/* Set number / type tag */}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Set ${i + 1} type: ${set.setType}. Tap to change.`}
-                onPress={() => onCycleType(block.key, set.key, set.setType)}
-                hitSlop={10}
-                className="h-8 w-7 items-center justify-center active:opacity-60">
-                <Text className="font-mono text-[12px] text-ink-secondary">{tag || i + 1}</Text>
-              </Pressable>
+            <View key={set.key}>
+              <Divider first={i === 0} />
+              <View className="flex-row items-center gap-1.5 py-1.5">
+                {/* Set number / type tag */}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Set ${i + 1} type: ${set.setType}. Tap to change.`}
+                  onPress={() => onCycleType(block.key, set.key, set.setType)}
+                  hitSlop={10}
+                  className="h-8 w-7 items-center justify-center active:opacity-60">
+                  <Text className="font-mono text-[12px] text-ink-secondary">{tag || i + 1}</Text>
+                </Pressable>
 
-              <Text className="w-16 font-mono text-[11px] text-ink-muted" numberOfLines={1}>
-                {prevText}
-              </Text>
+                <Text className="w-16 font-mono text-[11px] text-ink-muted" numberOfLines={1}>
+                  {prevText}
+                </Text>
 
-              {showWeight ? (
+                {showWeight ? (
+                  <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                    <TextInput
+                      value={set.weight}
+                      onChangeText={(weight) => onPatch(block.key, set.key, { weight })}
+                      placeholder={
+                        prev?.weightKg != null ? String(displayWeight(prev.weightKg, units)) : '—'
+                      }
+                      placeholderTextColor={palette.inkMuted}
+                      keyboardType="decimal-pad"
+                      className="py-1.5 text-center font-mono text-[15px] text-ink"
+                      accessibilityLabel={`Weight for set ${i + 1}`}
+                    />
+                  </View>
+                ) : null}
+
                 <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
                   <TextInput
-                    value={set.weight}
-                    onChangeText={(weight) => onPatch(block.key, set.key, { weight })}
-                    placeholder={
-                      prev?.weightKg != null ? String(displayWeight(prev.weightKg, units)) : '—'
-                    }
+                    value={set.reps}
+                    onChangeText={(reps) => onPatch(block.key, set.key, { reps })}
+                    placeholder={prev?.reps != null ? String(prev.reps) : '—'}
                     placeholderTextColor={palette.inkMuted}
-                    keyboardType="decimal-pad"
+                    keyboardType="number-pad"
                     className="py-1.5 text-center font-mono text-[15px] text-ink"
-                    accessibilityLabel={`Weight for set ${i + 1}`}
+                    accessibilityLabel={`Reps for set ${i + 1}`}
                   />
                 </View>
-              ) : null}
 
-              <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
-                <TextInput
-                  value={set.reps}
-                  onChangeText={(reps) => onPatch(block.key, set.key, { reps })}
-                  placeholder={prev?.reps != null ? String(prev.reps) : '—'}
-                  placeholderTextColor={palette.inkMuted}
-                  keyboardType="number-pad"
-                  className="py-1.5 text-center font-mono text-[15px] text-ink"
-                  accessibilityLabel={`Reps for set ${i + 1}`}
-                />
-              </View>
+                <View className={`min-h-[36px] w-12 ${INPUT_WELL}`}>
+                  <TextInput
+                    value={set.rpe}
+                    onChangeText={(rpe) => onPatch(block.key, set.key, { rpe })}
+                    placeholder="—"
+                    placeholderTextColor={palette.inkMuted}
+                    keyboardType="decimal-pad"
+                    className="py-1.5 text-center font-mono text-[13px] text-ink"
+                    accessibilityLabel={`RPE for set ${i + 1}`}
+                  />
+                </View>
 
-              <View className={`min-h-[36px] w-12 ${INPUT_WELL}`}>
-                <TextInput
-                  value={set.rpe}
-                  onChangeText={(rpe) => onPatch(block.key, set.key, { rpe })}
-                  placeholder="—"
-                  placeholderTextColor={palette.inkMuted}
-                  keyboardType="decimal-pad"
-                  className="py-1.5 text-center font-mono text-[13px] text-ink"
-                  accessibilityLabel={`RPE for set ${i + 1}`}
-                />
-              </View>
-
-              {/*
+                {/*
                 The completion stamp. Chrome, not biology — so it is the accent
                 and never a signal green (the firewall, 00-design-spec.md §2).
               */}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ checked: set.done }}
-                accessibilityLabel={`Mark set ${i + 1} ${set.done ? 'incomplete' : 'complete'}`}
-                onPress={() => onToggleDone(block, set)}
-                onLongPress={() => onRemoveSet(block.key, set.key)}
-                hitSlop={8}
-                className={`h-8 w-8 items-center justify-center border ${
-                  set.done ? 'border-pine bg-pine' : 'border-hairline'
-                } active:opacity-70`}>
-                <Ionicons
-                  name="checkmark"
-                  size={16}
-                  color={set.done ? palette.pineOn : palette.hairline}
-                />
-              </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ checked: set.done }}
+                  accessibilityLabel={`Mark set ${i + 1} ${set.done ? 'incomplete' : 'complete'}`}
+                  onPress={() => onToggleDone(block, set)}
+                  onLongPress={() => onRemoveSet(block.key, set.key)}
+                  hitSlop={8}
+                  className={`h-8 w-8 items-center justify-center border ${
+                    set.done ? 'border-pine bg-pine' : 'border-hairline'
+                  } active:opacity-70`}>
+                  <Ionicons
+                    name="checkmark"
+                    size={16}
+                    color={set.done ? palette.pineOn : palette.hairline}
+                  />
+                </Pressable>
+              </View>
             </View>
           );
         })}
 
         {/* PR marker + add set */}
-        <View className="flex-row items-center gap-2 border-t border-hairline pt-1.5">
+        <Divider />
+        <View className="flex-row items-center gap-2 pt-1.5">
           {block.sets.some((s) => s.pr) ? (
             <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
               PR

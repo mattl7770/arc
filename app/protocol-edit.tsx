@@ -50,6 +50,14 @@ import { type ProtocolDetail, useProtocol } from '@/hooks/use-protocols';
  * see. capture.tsx, symptom.tsx, screening-form.tsx and appointment-form.tsx are
  * the reference form and always were.
  *
+ * **This screen is the ONE de-plating of 2026-08-10 that survives.** The plate
+ * rule that sweep invented — "no plate around one row or an empty state" — was
+ * withdrawn and every other plate it removed has been restored (docs/decisions.md
+ * §1a). This one stays off, and not because of that rule: it stays off because
+ * of the standing one, **devices never nest**, and because the owner reported
+ * this exact screen as "boxes on top of other boxes". Do not restore it, and do
+ * not cite it as precedent for de-plating anything that is not a form.
+ *
  * Accent budget: exactly one — Save. It is the single primary action on the
  * screen and the one sanctioned accent here; the type chips, the status chips,
  * "Add item" and "Delete protocol" are all neutral ink. The version number is a

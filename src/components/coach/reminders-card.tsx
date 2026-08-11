@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import type { ReminderRow } from '@/lib/reminders/types';
@@ -49,31 +49,35 @@ export function RemindersCard({
 
       <View className="mt-1">
         {reminders.map((reminder) => (
-          <View
-            key={reminder.id}
-            className="min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-2">
-            <View className="flex-1">
-              <Text className="font-serif text-[15px] leading-5 text-ink">{reminder.title}</Text>
-              <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                {reminder.time ?? 'anytime'}
-                {reminder.repeat !== 'once' ? ` · ${reminder.repeat}` : ''}
-                {reminder.created_by === 'ai' ? ' · via Coach' : ''}
-              </Text>
+          <View key={reminder.id}>
+            {/* Unconditional: the section label above is the row this rule
+                separates from, so even the first reminder has something above
+                it. */}
+            <Divider />
+            <View className="min-h-[44px] flex-row items-center gap-3 py-2">
+              <View className="flex-1">
+                <Text className="font-serif text-[15px] leading-5 text-ink">{reminder.title}</Text>
+                <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                  {reminder.time ?? 'anytime'}
+                  {reminder.repeat !== 'once' ? ` · ${reminder.repeat}` : ''}
+                  {reminder.created_by === 'ai' ? ' · via Coach' : ''}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Mark "${reminder.title}" done`}
+                onPress={() => onComplete(reminder.id)}
+                className="h-11 w-11 items-center justify-center border border-hairline active:opacity-60">
+                <Ionicons name="checkmark" size={17} color={palette.inkSecondary} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Dismiss "${reminder.title}"`}
+                onPress={() => onDismiss(reminder.id)}
+                className="h-11 w-11 items-center justify-center border border-hairline active:opacity-60">
+                <Ionicons name="close" size={17} color={palette.inkMuted} />
+              </Pressable>
             </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Mark "${reminder.title}" done`}
-              onPress={() => onComplete(reminder.id)}
-              className="h-11 w-11 items-center justify-center border border-hairline active:opacity-60">
-              <Ionicons name="checkmark" size={17} color={palette.inkSecondary} />
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Dismiss "${reminder.title}"`}
-              onPress={() => onDismiss(reminder.id)}
-              className="h-11 w-11 items-center justify-center border border-hairline active:opacity-60">
-              <Ionicons name="close" size={17} color={palette.inkMuted} />
-            </Pressable>
           </View>
         ))}
       </View>

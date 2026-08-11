@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Link } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
@@ -11,17 +12,16 @@ import { palette } from '@/constants/theme';
  *
  * **Empty is authored, never blank** (00-design-spec.md §5) — that rule applies
  * to a dead end as much as to an empty day, so this is written rather than
- * left as two lines of stray text.
+ * left as two lines of stray text. Conformed Set treatment: the **ruled plate**
+ * device, matching MissionEmpty, which is the same shape of moment — a surface
+ * that has nothing to show, says so plainly, and offers the one thing that
+ * fixes it.
  *
- * Conformed Set treatment: **no device**, matching MissionEmpty, which is the
- * same shape of moment — a surface that has nothing to show, says so plainly,
- * and offers the one thing that fixes it. Both drew a plate until 2026-08-10;
- * "authored, never blank" is a rule about *copy*, and it was being answered with
- * a *border*. A plate closes a record, and a dead route is not a record — it is
- * one label, one sentence and one way out, which is the plate-around-a-single-
- * thing docs/decisions.md §1a bans outright. The centred block on an otherwise
- * bare sheet is already unmistakably the subject of the screen; the box added
- * nothing but an edge to wonder about.
+ * The plate was stripped on 2026-08-10 and **restored the same day**. The sweep
+ * that took it argued a plate around a single message is a box around nothing;
+ * the owner rejected that reading. The stray rectangles reported from hardware
+ * were a NativeWind divider artefact — `border-t border-hairline` rendering as
+ * a full box on React Native — and not the plates at all.
  *
  * It also drops the native header it used to switch back on. Every other pushed
  * screen in ARC is chrome-less by design (the root Stack sets `headerShown:
@@ -36,27 +36,31 @@ export default function NotFoundScreen() {
   return (
     <Screen>
       <View className="flex-1 justify-center">
-        <SectionLabel label="Route not found" />
+        <Block device="plate">
+          <SectionLabel label="Route not found" />
 
-        <Text className="mt-2.5 font-serif text-[21px] font-semibold leading-7 text-ink">
-          This screen does not exist.
-        </Text>
+          <Text className="mt-2.5 font-serif text-[21px] font-semibold leading-7 text-ink">
+            This screen does not exist.
+          </Text>
 
-        <Text className="mt-2.5 font-serif text-[15px] leading-6 text-ink-secondary">
-          The link you followed points somewhere ARC has no screen for. Nothing was lost — every
-          log, protocol and lab on this device is exactly where you left it.
-        </Text>
+          <Text className="mt-2.5 font-serif text-[15px] leading-6 text-ink-secondary">
+            The link you followed points somewhere ARC has no screen for. Nothing was lost — every
+            log, protocol and lab on this device is exactly where you left it.
+          </Text>
 
-        {/* The one accent: the only way out of a dead route. */}
-        <Link href="/" asChild>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Back to Home"
-            className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3 active:opacity-70">
-            <Ionicons name="home" size={17} color={palette.pineOn} />
-            <Text className="font-label text-[15px] font-semibold text-pine-on">Back to Home</Text>
-          </Pressable>
-        </Link>
+          {/* The one accent: the only way out of a dead route. */}
+          <Link href="/" asChild>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to Home"
+              className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3 active:opacity-70">
+              <Ionicons name="home" size={17} color={palette.pineOn} />
+              <Text className="font-label text-[15px] font-semibold text-pine-on">
+                Back to Home
+              </Text>
+            </Pressable>
+          </Link>
+        </Block>
       </View>
     </Screen>
   );

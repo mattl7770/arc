@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import type { MissionItem, MissionStatus } from '@/types/home';
@@ -14,6 +14,15 @@ type Props = {
   rest: MissionItem[];
   completed: number;
   total: number;
+  /**
+   * The item the hero is currently showing, so the list can mark the same row
+   * as "you are here". Passed down from Home rather than re-derived here: the
+   * hero is `deriveMissionView().next`, which is the first non-snoozed *pending*
+   * item — not simply the first row of `rest`, which may be snoozed or partial.
+   * Two definitions of "next" is exactly the drift the single chronological list
+   * exists to prevent.
+   */
+  activeId?: string | null;
   onToggle: (id: string) => void;
 };
 
@@ -91,13 +100,57 @@ type Props = {
  * stamps, which is exactly what Home's accent budget covers
  * (00-design-spec.md §2). Partial is the same hue at less ink, not a second
  * colour.
+ *
+ * **Fixed 3px lanes, inline with the section label** (2026-08-10). The strip
+ * used to be a full-width row of its own under the label, each lane `flex-1`,
+ * which made an eleven-item day draw an edge-to-edge bar chart across the plate
+ * and cost the block a whole row of height. The sheet puts the cluster inside
+ * `.cf-sec-note` — 3px lanes at a 1.6px gutter, right-aligned on the label's own
+ * baseline, immediately before the `3 of 11` it belongs to. That is what makes
+ * it read as a *tally mark* beside its own number rather than as a progress bar,
+ * and it is the largest silhouette difference between the shipped block and the
+ * drawing. The four forms are unchanged: all of them still work at 3 × 8.
  */
-const TICK: Record<MissionStatus, string> = {
-  completed: 'bg-pine',
-  partial: 'border-b-[3px] border-pine',
-  skipped: 'border-y-2 border-ink-muted',
-  pending: 'border-b border-ink-muted',
-};
+/**
+ * One lane of the progress strip: an 8px-tall cell whose MARK states the item's
+ * status, drawn as filled bars rather than as borders.
+ *
+ * The four marks are exactly the ones the note above specifies — solid block,
+ * 3px baseline bar, hollow 2px top+bottom, 1px baseline rule — and the geometry
+ * is identical to the borders they replace, because a border draws inside the
+ * box: `border-b-[3px]` on an `h-2` cell IS a 3px bar along its bottom edge.
+ *
+ * They are drawn rather than bordered for the same reason every rule in the app
+ * now is (see `Divider` in src/components/ui/block.tsx): a one-sided width plus
+ * a whole-element `border-color` is the shape that makes React Native abandon
+ * its CoreAnimation border path and render the mark as a full rectangle. Here
+ * that failure would have been worse than cosmetic — `partial` boxed is a
+ * nearly-solid pine cell, which is `completed`, and the whole point of these
+ * four forms is that **skipped and partial can never read as done**.
+ */
+function Tick({ status }: { status: MissionStatus }) {
+  if (status === 'completed') return <View className="h-2 w-[3px] bg-pine" />;
+  if (status === 'partial') {
+    return (
+      <View className="h-2 w-[3px] justify-end">
+        <View className="h-[3px] bg-pine" />
+      </View>
+    );
+  }
+  if (status === 'skipped') {
+    return (
+      <View className="h-2 w-[3px] justify-between">
+        <View className="h-0.5 bg-ink-muted" />
+        <View className="h-0.5 bg-ink-muted" />
+      </View>
+    );
+  }
+  return (
+    <View className="h-2 w-[3px] justify-end">
+      <View className="h-px bg-ink-muted" />
+    </View>
+  );
+}
 
 /**
  * The strip's accessible form. It is **summarised, not hidden** — the strip is
@@ -138,7 +191,7 @@ function progressLabel(items: MissionItem[]): string {
   return `Progress by item: ${parts.join(', ')}. ${items.length} in total.`;
 }
 
-export function Mission({ leadingSettled, rest, completed, total, onToggle }: Props) {
+export function Mission({ leadingSettled, rest, completed, total, activeId, onToggle }: Props) {
   const [showSettled, setShowSettled] = useState(false);
   // Folding one row saves nothing and costs a tap, so the control only exists
   // for a run of two or more. `foldable` is whether the control is drawn at
@@ -154,19 +207,23 @@ export function Mission({ leadingSettled, rest, completed, total, onToggle }: Pr
 
   return (
     <Block device="plate">
-      <SectionLabel label="Today’s Mission" note={`${completed} of ${total}`} />
-
-      {ordered.length > 0 ? (
-        <View
-          accessible
-          accessibilityRole="text"
-          accessibilityLabel={progressLabel(ordered)}
-          className="mt-2.5 flex-row gap-0.5">
-          {ordered.map((item) => (
-            <View key={item.id} className={`h-2 flex-1 ${TICK[item.status]}`} />
-          ))}
-        </View>
-      ) : null}
+      <SectionLabel
+        label="Today’s Mission"
+        note={`${completed} of ${total}`}
+        accessory={
+          ordered.length > 0 ? (
+            <View
+              accessible
+              accessibilityRole="text"
+              accessibilityLabel={progressLabel(ordered)}
+              className="flex-row gap-[1.6px] self-center">
+              {ordered.map((item) => (
+                <Tick key={item.id} status={item.status} />
+              ))}
+            </View>
+          ) : null
+        }
+      />
 
       <View className="mt-1">
         {foldable ? (
@@ -209,10 +266,9 @@ export function Mission({ leadingSettled, rest, completed, total, onToggle }: Pr
           not "currently folded".
         */}
         {visible.map((item, index) => (
-          <View
-            key={item.id}
-            className={index === 0 && !foldable ? '' : 'border-t border-hairline'}>
-            <MissionItemRow item={item} onToggle={onToggle} />
+          <View key={item.id}>
+            <Divider first={index === 0 && !foldable} />
+            <MissionItemRow item={item} active={item.id === activeId} onToggle={onToggle} />
           </View>
         ))}
       </View>

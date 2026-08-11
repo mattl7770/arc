@@ -36,11 +36,8 @@ import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
  * an input is a well at control scale; the steppers carry a hairline and no fill.
  * A `<Block device="well">` here would invert the surface system — a recessed
  * container can only hold raised controls, and an input is never `bg-paper-hi`
- * (the rule in src/components/ui/block.tsx). The "Scan another" row that follows
- * each phase sits **bare on the sheet**: a plate encloses a record of several
- * rows, and one row is not a record — a border around a single control is the
- * stray box the owner has flagged repeatedly. The miss path is a **margin
- * annotation**, because its reason is prose.
+ * (the rule in src/components/ui/block.tsx). The follow-on choices are their own
+ * plate. The miss path is a **margin annotation**, because its reason is prose.
  * The scanned code is a measured value, so it is mono everywhere it appears; it
  * is real data the next scan matches on, not a decorative reference.
  *
@@ -75,11 +72,12 @@ const offFetch = (
 ) => fetch(url, init);
 
 /**
- * The follow-on choice, unplated and unruled. It draws no `border-t`: a hairline
- * between rows is the plate's own edge continued inward, so with no plate there
- * is nothing for it to subdivide (see the 2026-08-10 ADR in docs/decisions.md).
- * The row's own padding is the separation. The rule is dropped outright rather
- * than left behind a `first` flag, so a second row can't quietly resurrect it.
+ * One row of the follow-on plate.
+ *
+ * It is the plate's only row today, so it draws no `border-t` — a hairline
+ * between rows needs a row above it. The `first` flag the sweep deleted is not
+ * reinstated: a second row would state its own rule at the call site rather
+ * than inherit a boolean.
  */
 function ScanRow({
   icon,
@@ -399,12 +397,14 @@ export default function BarcodeScanScreen() {
           </Block>
 
           <View className="mt-2">
-            <ScanRow
-              icon="barcode-outline"
-              label="Scan another"
-              accessibilityLabel="Scan another"
-              onPress={resumeScanning}
-            />
+            <Block device="plate">
+              <ScanRow
+                icon="barcode-outline"
+                label="Scan another"
+                accessibilityLabel="Scan another"
+                onPress={resumeScanning}
+              />
+            </Block>
           </View>
         </View>
       ) : null}
@@ -432,12 +432,14 @@ export default function BarcodeScanScreen() {
           </Pressable>
 
           <View className="mt-2">
-            <ScanRow
-              icon="barcode-outline"
-              label="Scan another"
-              accessibilityLabel="Scan another"
-              onPress={resumeScanning}
-            />
+            <Block device="plate">
+              <ScanRow
+                icon="barcode-outline"
+                label="Scan another"
+                accessibilityLabel="Scan another"
+                onPress={resumeScanning}
+              />
+            </Block>
           </View>
         </View>
       ) : null}

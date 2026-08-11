@@ -3,7 +3,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { type ReactNode, useCallback, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -42,10 +42,9 @@ import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
  *                          never nest — only the grams input keeps a recessed
  *                          treatment, because an input is a well at control
  *                          scale.
- *   Catalog actions      → a closing **ruled plate** *only when it holds both
- *                          of its rows*. Until the first add lands there is no
- *                          scan row, and one row gets no enclosure and no rule
- *                          (docs/decisions.md §1a).
+ *   Catalog actions      → a closing **ruled plate**, holding one row before a
+ *                          meal exists and two after (the scan row only appears
+ *                          once there is a meal to scan into).
  *
  * **Accent budget: one.** The expanded row's Add, and only one row is ever
  * expanded. "Done · N" is neutral: it leaves, it does not commit.
@@ -228,9 +227,9 @@ export default function FoodSearchScreen() {
       ? (expanded.food.kcal_100g * gramsPreview) / 100
       : null;
 
-  /** The one catalog action that is always offered. It renders in two places —
-   * ruled inside the plate when a scan row precedes it, bare on the sheet when
-   * it is the only row — so it is built once here rather than written twice. */
+  /** The one catalog action that is always offered. `ruled` is true only when a
+   * scan row precedes it inside the plate; as the plate's first row it draws no
+   * hairline, because a rule between rows needs a row above it. */
   const createFoodRow = (ruled: boolean) => (
     <CatalogRow
       icon="add-circle-outline"
@@ -309,9 +308,8 @@ export default function FoodSearchScreen() {
                 <SectionLabel label="Recent" />
                 <View className="mt-1">
                   {base.recents.map((recent, index) => (
-                    <View
-                      key={recent.food.id}
-                      className={index === 0 ? '' : 'border-t border-hairline'}>
+                    <View key={recent.food.id}>
+                      <Divider first={index === 0} />
                       <FoodListRow
                         food={recent.food}
                         subtitle={lastPortionLabel(recent)}
@@ -347,7 +345,8 @@ export default function FoodSearchScreen() {
                 <SectionLabel label="Favorites" />
                 <View className="mt-1">
                   {base.favorites.map((food, index) => (
-                    <View key={food.id} className={index === 0 ? '' : 'border-t border-hairline'}>
+                    <View key={food.id}>
+                      <Divider first={index === 0} />
                       <FoodListRow
                         food={food}
                         subtitle={null}
@@ -384,7 +383,8 @@ export default function FoodSearchScreen() {
               />
               <View className="mt-1">
                 {results.map((food, index) => (
-                  <View key={food.id} className={index === 0 ? '' : 'border-t border-hairline'}>
+                  <View key={food.id}>
+                    <Divider first={index === 0} />
                     <FoodListRow
                       food={food}
                       subtitle={null}
@@ -405,24 +405,17 @@ export default function FoodSearchScreen() {
         </View>
       )}
 
-      {/* Catalog actions. Scanning only appears once a meal is in progress here,
-          so the scan continues THIS meal (scanning fresh would fork a separate
-          day-part meal; the fresh-scan entry point is the Nutrition screen).
-
-          Which means that until the first add lands, this section is exactly ONE
-          row — and that is the PRIMARY path, not an edge case: the Nutrition
-          tab's "Add food" pushes this screen with no params (app/nutrition.tsx),
-          so the plate used to be the first thing that arrival drew, closed
-          around a lone "Create a food". A plate encloses a multi-row record;
-          around one row it is the box-around-a-single-thing the owner keeps
-          reporting (docs/decisions.md §1a). So the plate is drawn only in the
-          genuinely two-row branch, and the lone row goes bare on the sheet with
-          no rule above it either — a hairline separates rows only inside an
-          enclosure (§1). Same treatment as the "Scan another" rows in
-          app/barcode-scan.tsx. */}
+      {/* Catalog actions — the closing plate. Scanning only appears once a meal
+          is in progress here, so the scan continues THIS meal (scanning fresh
+          would fork a separate day-part meal; the fresh-scan entry point is the
+          Nutrition screen), which means the plate holds one row on arrival and
+          two once a meal exists. It is drawn either way: the sweep of
+          2026-08-10 made it conditional and the owner rejected that. `ruled`
+          still keys off whether a row precedes it, which is a fact about the
+          rows, not about the enclosure. */}
       <View className="mt-6">
-        {targetMealId !== null ? (
-          <Block device="plate">
+        <Block device="plate">
+          {targetMealId !== null ? (
             <CatalogRow
               icon="barcode-outline"
               label="Scan a barcode"
@@ -432,11 +425,9 @@ export default function FoodSearchScreen() {
                 router.push({ pathname: '/barcode-scan', params: { mealId: targetMealId } })
               }
             />
-            {createFoodRow(true)}
-          </Block>
-        ) : (
-          createFoodRow(false)
-        )}
+          ) : null}
+          {createFoodRow(targetMealId !== null)}
+        </Block>
       </View>
     </Screen>
   );
@@ -453,13 +444,12 @@ function lastPortionLabel(recent: RecentFood): string | null {
 }
 
 /**
- * One row of the closing catalog section.
+ * One ruled row of the closing catalog plate.
  *
  * `ruled` draws the hairline that separates it from the row above. It is stated
- * by the caller rather than derived from an index because the rule is a property
- * of the *enclosure*, not of the position: this row also renders bare on the
- * sheet, and there a stroke would terminate in mid-air at both ends
- * (docs/decisions.md §1). Unplated means unruled, always.
+ * by the caller rather than derived from an index because whether a row precedes
+ * this one depends on whether a meal is in progress, which the caller is the
+ * only one that knows.
  */
 function CatalogRow({
   icon,
@@ -475,19 +465,18 @@ function CatalogRow({
   onPress: () => void;
 }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      onPress={onPress}
-      className={
-        ruled
-          ? 'min-h-[44px] flex-row items-center gap-3 border-t border-hairline py-3 active:opacity-60'
-          : 'min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60'
-      }>
-      <Ionicons name={icon} size={17} color={palette.inkSecondary} />
-      <Text className="flex-1 font-serif text-[15px] text-ink">{label}</Text>
-      <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
-    </Pressable>
+    <View>
+      <Divider first={!ruled} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+        onPress={onPress}
+        className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+        <Ionicons name={icon} size={17} color={palette.inkSecondary} />
+        <Text className="flex-1 font-serif text-[15px] text-ink">{label}</Text>
+        <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+      </Pressable>
+    </View>
   );
 }
 

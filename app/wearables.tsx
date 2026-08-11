@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
@@ -70,46 +70,49 @@ function reportingNote(rows: WearableMetricRow[]): string {
 
 function MetricRow({ row, first }: { row: WearableMetricRow; first: boolean }) {
   return (
-    <View
-      accessible
-      accessibilityLabel={
-        row.empty
-          ? `${row.name}. No data yet.`
-          : `${row.name}. ${row.value} ${row.unit}${row.qualifier ? ', ' + row.qualifier : ''}.`
-      }
-      className={`min-h-[44px] flex-row items-center gap-3 py-3 ${
-        first ? '' : 'border-t border-hairline'
-      }`}>
-      <View className="flex-1">
-        <Text className="font-serif text-[15px] text-ink">{row.name}</Text>
-        {/* Authored empty in the descriptor slot, so the value slot stays a
+    <View>
+      <Divider first={first} />
+      <View
+        accessible
+        accessibilityLabel={
+          row.empty
+            ? `${row.name}. No data yet.`
+            : `${row.name}. ${row.value} ${row.unit}${row.qualifier ? ', ' + row.qualifier : ''}.`
+        }
+        className="min-h-[44px] flex-row items-center gap-3 py-3">
+        <View className="flex-1">
+          <Text className="font-serif text-[15px] text-ink">{row.name}</Text>
+          {/* Authored empty in the descriptor slot, so the value slot stays a
             value slot and never has to carry a sentence. */}
-        <Text className="mt-0.5 font-serif text-[11px] leading-4 text-ink-muted">
-          {row.empty ? 'No data yet' : row.sub}
-        </Text>
-      </View>
-
-      {/* No mark without a series: two points are the minimum that can trend. */}
-      {!row.empty && row.spark.length > 1 ? (
-        <Sparkline data={row.spark} baseline={row.sparkBaseline} />
-      ) : null}
-
-      <View className="items-end">
-        <View className="flex-row items-baseline gap-1">
-          {/* `row.value` is already '—' when the metric is empty (use-wearables). */}
-          <Text
-            className={
-              row.empty ? 'font-mono text-[17px] text-ink-muted' : 'font-mono text-[17px] text-ink'
-            }>
-            {row.value}
+          <Text className="mt-0.5 font-serif text-[11px] leading-4 text-ink-muted">
+            {row.empty ? 'No data yet' : row.sub}
           </Text>
-          {!row.empty && row.unit ? (
-            <Text className="font-mono text-[11px] text-ink-muted">{row.unit}</Text>
+        </View>
+
+        {/* No mark without a series: two points are the minimum that can trend. */}
+        {!row.empty && row.spark.length > 1 ? (
+          <Sparkline data={row.spark} baseline={row.sparkBaseline} />
+        ) : null}
+
+        <View className="items-end">
+          <View className="flex-row items-baseline gap-1">
+            {/* `row.value` is already '—' when the metric is empty (use-wearables). */}
+            <Text
+              className={
+                row.empty
+                  ? 'font-mono text-[17px] text-ink-muted'
+                  : 'font-mono text-[17px] text-ink'
+              }>
+              {row.value}
+            </Text>
+            {!row.empty && row.unit ? (
+              <Text className="font-mono text-[11px] text-ink-muted">{row.unit}</Text>
+            ) : null}
+          </View>
+          {!row.empty && row.qualifier ? (
+            <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{row.qualifier}</Text>
           ) : null}
         </View>
-        {!row.empty && row.qualifier ? (
-          <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{row.qualifier}</Text>
-        ) : null}
       </View>
     </View>
   );
@@ -167,57 +170,58 @@ export default function WearablesScreen() {
         </View>
       ))}
 
-      {/* Recent workouts as ingested from other apps/devices. With none
-          ingested the block is a label and one sentence, which is not a record —
-          so the plate only goes round the rows when there are rows. */}
-      {workouts.length === 0 ? (
-        <View className="mt-7">
-          <SectionLabel label="Workouts" note="None ingested" />
-          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
-            Nothing has come through Apple Health yet — sessions logged in ARC live in the Exercise
-            tab.
-          </Text>
-        </View>
-      ) : (
-        <View className="mt-7">
-          <Block device="plate">
-            <SectionLabel label="Workouts" note={`${workouts.length} ingested`} />
-            <View className="mt-1">
-              {workouts.map((workout, index) => (
-                <View
-                  key={`${workout.date}-${index}`}
-                  accessible
-                  accessibilityLabel={`${workout.activity ?? 'Workout'}, ${Math.round(workout.durationMin)} minutes, ${shortDay(workout.date)}, ${deviceLabel(workout.sourceDevice)}.`}
-                  className={`min-h-[44px] flex-row items-center gap-3 py-3 ${
-                    index === 0 ? '' : 'border-t border-hairline'
-                  }`}>
-                  <View className="flex-1">
-                    <Text className="font-serif text-[15px] text-ink">
-                      {workout.activity ?? 'Workout'}
-                    </Text>
-                    <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                      {shortDay(workout.date)} · {deviceLabel(workout.sourceDevice)}
-                    </Text>
-                  </View>
-                  <View className="items-end">
-                    <View className="flex-row items-baseline gap-1">
-                      <Text className="font-mono text-[15px] text-ink">
-                        {Math.round(workout.durationMin)}
+      {/* Recent workouts as ingested from other apps/devices. Plated in both
+          states — the ingest record stands where the record stands, whether or
+          not anything has come through yet. (The sweep of 2026-08-10 made the
+          plate conditional; reverted at the owner's instruction.) */}
+      <View className="mt-7">
+        <Block device="plate">
+          <SectionLabel
+            label="Workouts"
+            note={workouts.length === 0 ? 'None ingested' : `${workouts.length} ingested`}
+          />
+          <View className="mt-1">
+            {workouts.length === 0 ? (
+              <Text className="py-3 font-serif text-[13px] leading-5 text-ink-muted">
+                Nothing has come through Apple Health yet — sessions logged in ARC live in the
+                Exercise tab.
+              </Text>
+            ) : (
+              workouts.map((workout, index) => (
+                <View key={`${workout.date}-${index}`}>
+                  <Divider first={index === 0} />
+                  <View
+                    accessible
+                    accessibilityLabel={`${workout.activity ?? 'Workout'}, ${Math.round(workout.durationMin)} minutes, ${shortDay(workout.date)}, ${deviceLabel(workout.sourceDevice)}.`}
+                    className="min-h-[44px] flex-row items-center gap-3 py-3">
+                    <View className="flex-1">
+                      <Text className="font-serif text-[15px] text-ink">
+                        {workout.activity ?? 'Workout'}
                       </Text>
-                      <Text className="font-mono text-[11px] text-ink-muted">min</Text>
-                    </View>
-                    {workout.kcal !== null ? (
                       <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                        {Math.round(workout.kcal)} kcal
+                        {shortDay(workout.date)} · {deviceLabel(workout.sourceDevice)}
                       </Text>
-                    ) : null}
+                    </View>
+                    <View className="items-end">
+                      <View className="flex-row items-baseline gap-1">
+                        <Text className="font-mono text-[15px] text-ink">
+                          {Math.round(workout.durationMin)}
+                        </Text>
+                        <Text className="font-mono text-[11px] text-ink-muted">min</Text>
+                      </View>
+                      {workout.kcal !== null ? (
+                        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                          {Math.round(workout.kcal)} kcal
+                        </Text>
+                      ) : null}
+                    </View>
                   </View>
                 </View>
-              ))}
-            </View>
-          </Block>
-        </View>
-      )}
+              ))
+            )}
+          </View>
+        </Block>
+      </View>
 
       {/* Sync footer — quiet, mono, honest. Unruled: a rule here would close a
           box around the page rather than around an object. */}

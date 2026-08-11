@@ -1,6 +1,6 @@
 import { Pressable, Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, Divider } from '@/components/ui/block';
 import { humanizeToolName } from '@/lib/ai/coach-service';
 import type { PendingWrite } from '@/types/coach';
 
@@ -55,21 +55,26 @@ export function PendingWriteCard({
   onResolve: (id: number, approved: boolean) => void;
 }) {
   return (
-    <View accessibilityLiveRegion="polite" className="border-t border-hairline bg-paper px-5 py-3">
-      <Block device="stamp">
-        <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
-          Proposed change · needs your OK
-        </Text>
+    <View accessibilityLiveRegion="polite" className="bg-paper">
+      {/* The pinned card's top edge — a drawn rule, not a `border-t`, which
+          would box the whole docked band (see Divider). Outside the padding so
+          it spans the full width. */}
+      <Divider />
+      <View className="px-5 py-3">
+        <Block device="stamp">
+          <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
+            Proposed change · needs your OK
+          </Text>
 
-        <Text className="mt-2 font-serif text-[17px] font-semibold leading-6 text-ink">
-          {pending.summary}
-        </Text>
+          <Text className="mt-2 font-serif text-[17px] font-semibold leading-6 text-ink">
+            {pending.summary}
+          </Text>
 
-        <Text className="mt-1 font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
-          {humanizeToolName(pending.tool)}
-        </Text>
+          <Text className="mt-1 font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
+            {humanizeToolName(pending.tool)}
+          </Text>
 
-        {/* The revision diff — current state above, proposed state below.
+          {/* The revision diff — current state above, proposed state below.
             **No lane rules.** Each lane used to carry a 2px left rule (neutral
             for Now, pine for On approve) with a 10px indent. That is the exact
             mark the `margin` device lost on 2026-08-09 for the exact reason:
@@ -79,47 +84,48 @@ export function PendingWriteCard({
             the two labels were always what told the lanes apart — "Now" in
             muted ink, "On approve" in pine — and they still do, inside a stamp
             that is already drawn. Nothing here needed a second enclosure. */}
-        <View className="mt-3">
-          <View>
-            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
-              Now
-            </Text>
-            <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
-              Nothing has been written. The Coach is suspended until you answer.
-            </Text>
+          <View className="mt-3">
+            <View>
+              <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+                Now
+              </Text>
+              <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+                Nothing has been written. The Coach is suspended until you answer.
+              </Text>
+            </View>
+
+            <View className="mt-2.5">
+              <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
+                On approve
+              </Text>
+              <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink">
+                This is written to your on-device record, once, and the Coach carries on from there.
+              </Text>
+            </View>
           </View>
 
-          <View className="mt-2.5">
-            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
-              On approve
-            </Text>
-            <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink">
-              This is written to your on-device record, once, and the Coach carries on from there.
-            </Text>
+          <View className="mt-3.5 flex-row gap-2">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Approve: ${pending.summary}`}
+              onPress={() => onResolve(pending.id, true)}
+              className="min-h-[44px] flex-1 items-center justify-center bg-pine px-4 active:opacity-70">
+              <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine-on">
+                Approve
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Decline: ${pending.summary}`}
+              onPress={() => onResolve(pending.id, false)}
+              className="min-h-[44px] items-center justify-center border border-hairline px-6 active:opacity-60">
+              <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+                Decline
+              </Text>
+            </Pressable>
           </View>
-        </View>
-
-        <View className="mt-3.5 flex-row gap-2">
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Approve: ${pending.summary}`}
-            onPress={() => onResolve(pending.id, true)}
-            className="min-h-[44px] flex-1 items-center justify-center bg-pine px-4 active:opacity-70">
-            <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine-on">
-              Approve
-            </Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Decline: ${pending.summary}`}
-            onPress={() => onResolve(pending.id, false)}
-            className="min-h-[44px] items-center justify-center border border-hairline px-6 active:opacity-60">
-            <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
-              Decline
-            </Text>
-          </Pressable>
-        </View>
-      </Block>
+        </Block>
+      </View>
     </View>
   );
 }
