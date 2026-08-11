@@ -2,10 +2,7 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Text, View } from 'react-native';
 
-import {
-  FRESHNESS_SPOKEN,
-  freshnessTone,
-} from '@/components/exercise/freshness-display';
+import { FRESHNESS_SPOKEN, freshnessTone } from '@/components/exercise/freshness-display';
 import { MuscleFigure, MuscleFigureLegend } from '@/components/exercise/muscle-figure';
 import { Block, Divider } from '@/components/ui/block';
 import { GaugeTrack, gaugeTextClass } from '@/components/ui/gauge';

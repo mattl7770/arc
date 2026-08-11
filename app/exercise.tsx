@@ -479,9 +479,7 @@ function TrainTodayCard({
         onPress={onStart}
         className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3 active:opacity-70">
         <Ionicons name="play" size={17} color={palette.pineOn} />
-        <Text className="font-label text-[15px] font-semibold text-pine-on">
-          Start recommended
-        </Text>
+        <Text className="font-label text-[15px] font-semibold text-pine-on">Start recommended</Text>
       </Pressable>
       <StartEmptyButton onPress={onStartEmpty} />
     </Block>
