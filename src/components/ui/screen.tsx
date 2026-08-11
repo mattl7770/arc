@@ -44,9 +44,20 @@ const styles = StyleSheet.create({
  * **How to place it:** first child of a root `View` that carries `bg-paper` and
  * NO padding, sitting *outside* the SafeAreaView so the grid runs edge to edge
  * with no seam at the status-bar inset, and outside any ScrollView so the paper
- * stays fixed while content moves over it. (Padding matters because React
- * Native's Yoga insets absolutely-positioned children by the parent's padding,
- * unlike CSS — a padded parent would leave the sheet's margins bare.)
+ * stays fixed while content moves over it.
+ *
+ * (This used to justify the no-padding rule by claiming "Yoga insets
+ * absolutely-positioned children by the parent's padding, unlike CSS". **That
+ * is false in this RN version whenever an inset is defined.**
+ * `ReactCommon/yoga/yoga/algorithm/AbsoluteLayout.cpp` offsets by
+ * `position + border + margin`; padding enters only through the static-position
+ * helpers, which are reached when NO inset is given at all. `absoluteFill`
+ * defines all four, so this layer fills a padded parent edge to edge anyway.
+ * The no-padding rule stands on the two reasons above — the status-bar seam and
+ * the scroll — not on that one. Recorded rather than deleted because
+ * `HatchCap` and `CornerTicks` in ./block.tsx both rely on the TRUE behaviour to
+ * land on the edges they bracket, and "correcting" them to match the false claim
+ * would push both marks inside those edges.)
  *
  * **Why plain Views and not an image.** This shipped twice as
  * `<Image resizeMode="repeat">` over a 9pt tile and **never once rendered on the

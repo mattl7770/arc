@@ -4,8 +4,6 @@ import { useFocusEffect } from 'expo-router';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { bodySeries, latestBody } from '@/lib/db/repositories/body';
-import type { BiomarkerRange } from '@/lib/db/repositories/biomarkers';
-import { listBiomarkerRanges } from '@/lib/db/repositories/biomarkers';
 import { weeklyTrainingSeries, weekSummary } from '@/lib/db/repositories/exercise';
 import { dailyIntakeSeries, todayTotals } from '@/lib/db/repositories/nutrition';
 import { listTodaySymptoms, symptomDailySeries } from '@/lib/db/repositories/symptoms';
@@ -58,9 +56,23 @@ export interface DataTrend {
   emptyLabel: string;
 }
 
+/**
+ * `biomarkers` is deliberately NOT here. This hook used to load the whole
+ * 65-marker catalogue alongside the trends, because the Data tab drew both. It
+ * no longer does — the biomarker list moved to app/labs.tsx on 2026-08-11, at
+ * the owner's instruction, and that screen loads it itself.
+ *
+ * The read was left in place for a while after its consumer went away, which is
+ * the expensive kind of leftover: it ran on **every focus of the Data tab**,
+ * including the return trip from Labs, so opening the list and coming back
+ * executed the same 65-row scan twice — a full table scan plus 65 correlated
+ * subqueries, each needing a temp B-tree because the subquery's
+ * `created_at DESC, id DESC` tie-breakers are not in the index. Cheap on 65
+ * rows; entirely wasted regardless, and a field on a public interface that
+ * nothing reads is how the next screen ends up reading it by accident.
+ */
 export interface DataOverviewState {
   trends: DataTrend[];
-  biomarkers: BiomarkerRange[];
 }
 
 export type DataOverview = DataOverviewState & {
@@ -175,7 +187,6 @@ function read(): DataOverviewState {
 
   return {
     trends: [weight, nutrition, training, symptoms],
-    biomarkers: listBiomarkerRanges(db),
   };
 }
 

@@ -1,6 +1,6 @@
 import { Text, View } from 'react-native';
 
-import { Block } from '@/components/ui/block';
+import { Block, GridCell } from '@/components/ui/block';
 import { SectionLabel } from '@/components/ui/section-label';
 import type { Metric, SignalLevel } from '@/types/home';
 
@@ -13,31 +13,28 @@ import { signalConditionLabel, signalConditionSpoken, signalTextClass } from './
  * evidence behind it.
  *
  * Conformed Set treatment — the **grid** device: no outer box, because the grid
- * *is* the object.
+ * *is* the object. It is drawn by the rules that run BETWEEN its cells — a top
+ * rule on each, a vertical down the middle — which is what makes four readings
+ * read as a dimension table rather than as four floating numbers.
  *
- * ## The rules are gone (2026-08-09, owner call on hardware)
+ * ## The rules went away for two days, and it was a rendering bug (2026-08-11)
  *
- * This block used to draw hairlines BETWEEN its cells: a top rule on every
- * cell, plus a vertical rule down the middle of the first column. On paper that
- * is a table. On a phone the owner read it as a defect — it was one of the two
- * surfaces they named unprompted ("weird boxes and lines... notably the metrics
- * and coach brief"). The reason is structural, not a matter of taste: a rule
- * above the first row and a rule down the middle, with no outer edge to close
- * them, is a *half-drawn box*. A viewer has to work out that the missing edges
- * are deliberate before the lines help them, and 00-design-spec.md §5 says
- * drafting chrome that has to be interpreted before it pays is decoration.
+ * They were cut on 2026-08-09 because the owner named this block, unprompted,
+ * as one of two carrying "weird boxes and lines" on hardware. The reading at
+ * the time was that a rule with no outer edge to close it is a half-drawn box a
+ * viewer has to interpret, and 00-design-spec.md §5 says chrome that has to be
+ * interpreted is decoration. That reasoning was sound and the premise was
+ * false: the cells were not drawing rules. They drew `border-t border-hairline`
+ * and `border-r border-hairline`, a one-sided width against a whole-element
+ * colour, which React Native paints as a COMPLETE RECTANGLE (the full trace is
+ * under `Divider` in src/components/ui/block.tsx). The owner was not describing
+ * an under-drawn table. They were describing a box around every metric, because
+ * that is what was on the glass.
  *
- * So the cells are held by alignment and whitespace alone. Two equal columns,
- * consistent row rhythm, and the three type voices doing the separating —
- * muted tracked-caps label, mono value, mono detail. Nothing is lost: the
- * columns were already aligned, and the rules were tracing an order the layout
- * establishes by itself.
- *
- * A side benefit worth recording, because it was a real bug this file carried
- * a long comment about: with no rules there is no "does a cell follow this
- * one" question, so an odd number of metrics can no longer draw a vertical
- * rule into empty space off the final cell. The whole class of defect is
- * deleted rather than guarded.
+ * The rules are back, drawn as filled views by {@link GridCell}, which also
+ * retires the long-standing trailing-rule bug this file used to carry a comment
+ * about: the vertical is conditioned on a cell actually following, so an odd
+ * number of metrics can no longer rule off into empty space.
  *
  * Values come from src/lib/home/readiness.ts, which renders every missing
  * signal as an em-dash — no data, no number, and never a plausible-looking
@@ -74,10 +71,6 @@ import { signalConditionLabel, signalConditionSpoken, signalTextClass } from './
  * The cell is grouped for assistive tech and speaks as one phrase — "Sleep,
  * 7h 12m, good. Deep 42m." — because a label, a number and a condition read as
  * three separate items are three facts the listener has to reassemble.
- *
- * This is also why dropping the rules costs the block nothing: the cell already
- * states its own condition in words. The hairlines were never carrying meaning,
- * only enclosure.
  */
 
 /** What readiness.ts prints for a missing reading. Spoken, not read aloud. */
@@ -105,18 +98,6 @@ function metricSpoken(metric: Metric): string {
   return `${metric.label}, ${metric.value}${condition}${detail}.`;
 }
 
-/**
- * The two columns. No rules — only the gutter that keeps the right column's
- * text off the left column's, and the row rhythm that replaces the old top
- * rule. Whole class strings, never a built prefix.
- */
-const CELL_LEFT = 'w-1/2 pr-3 pt-4';
-const CELL_RIGHT = 'w-1/2 pl-3 pt-4';
-
-function cellClass(index: number): string {
-  return index % 2 === 0 ? CELL_LEFT : CELL_RIGHT;
-}
-
 export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
   return (
     <Block device="grid">
@@ -135,44 +116,41 @@ export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
           No readings yet today. Connect Apple Health in Settings to populate this.
         </Text>
       ) : (
-        <View className="flex-row flex-wrap">
+        <View className="mt-2 flex-row flex-wrap">
           {metrics.map((metric, index) => {
             const level = gradedLevel(metric);
 
             return (
-              <View
-                key={metric.id}
-                accessible
-                accessibilityRole="text"
-                accessibilityLabel={metricSpoken(metric)}
-                className={cellClass(index)}>
-                <View className="flex-row items-center justify-between gap-1.5">
-                  <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                    {metric.label}
+              <GridCell key={metric.id} index={index} count={metrics.length}>
+                <View accessible accessibilityRole="text" accessibilityLabel={metricSpoken(metric)}>
+                  <View className="flex-row items-center justify-between gap-1.5">
+                    <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                      {metric.label}
+                    </Text>
+                    {level ? (
+                      <Text
+                        className={`font-label text-[10px] font-semibold uppercase tracking-[0.5px] ${signalTextClass(
+                          level
+                        )}`}>
+                        {signalConditionLabel(level)}
+                      </Text>
+                    ) : null}
+                  </View>
+
+                  <Text
+                    className={`mt-1 font-mono text-lg font-semibold ${
+                      level ? signalTextClass(level) : 'text-ink'
+                    }`}>
+                    {metric.value}
                   </Text>
-                  {level ? (
-                    <Text
-                      className={`font-label text-[10px] font-semibold uppercase tracking-[0.5px] ${signalTextClass(
-                        level
-                      )}`}>
-                      {signalConditionLabel(level)}
+
+                  {metric.detail ? (
+                    <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                      {metric.detail}
                     </Text>
                   ) : null}
                 </View>
-
-                <Text
-                  className={`mt-1 font-mono text-lg font-semibold ${
-                    level ? signalTextClass(level) : 'text-ink'
-                  }`}>
-                  {metric.value}
-                </Text>
-
-                {metric.detail ? (
-                  <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                    {metric.detail}
-                  </Text>
-                ) : null}
-              </View>
+              </GridCell>
             );
           })}
         </View>

@@ -15,7 +15,7 @@ import { MICROS, type Micros } from '@/lib/nutrition/micros';
 /**
  * Today's micronutrient totals (0014 snapshots), summed from meal items.
  *
- * Conformed Set treatment: the two prose passages are **margin annotations**
+ * Conformed Set treatment: the closing prose passage is a **margin annotation**
  * (unmarked as of 2026-08-09 — prose sits on the sheet, set apart by air and the
  * serif voice, not by a rule), and the
  * totals are a **ruled plate**, because a list of measured records is a table.
@@ -29,7 +29,9 @@ import { MICROS, type Micros } from '@/lib/nutrition/micros';
  * Read-only, so there is **no accent on this screen at all**.
  *
  * A micronutrient with no recorded contribution reads "not recorded" and draws
- * no rule — no data, no number.
+ * no rule — no data, no number. A PARTIAL one still draws a figure and a filled
+ * rule, because the sum cannot tell which foods were missing from it; the
+ * caveat above the rows is what keeps that figure honest.
  */
 
 function readMicros(): Micros {
@@ -49,15 +51,19 @@ export default function NutritionMicrosScreen() {
         <StackHeader title="Micronutrients" />
       </View>
 
-      <View className="mt-2">
-        <Block device="margin">
-          <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
-            Today’s totals from logged foods, against a general daily reference. Only foods with
-            recorded micronutrients contribute — coverage grows as your catalog does.
-          </Text>
-        </Block>
-      </View>
-
+      {/* The opening annotation was cut on 2026-08-11 against the closing one.
+          Half of that was right — "today's totals from logged foods" is what
+          the title already says. The other half was not: the closing annotation
+          qualifies the DENOMINATOR (reference values), and the clause cut with
+          it qualified the NUMERATOR. `dayMicroTotals` sums only meal items
+          `WHERE mi.micros IS NOT NULL` (repositories/nutrition.ts), so a day
+          holding any food without micro data undercounts, silently — the
+          section note counts micros with a value, not foods that contributed,
+          and the per-row "not recorded" only fires at zero. That is a number
+          the data cannot support (00-design-spec.md §5), so the numerator
+          caveat is restored below, next to the figures it governs rather than
+          in the closing annotation. Not on this empty branch: nothing is
+          claimed here, and the line below already names the catalog. */}
       {recorded === 0 ? (
         <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
           Nothing recorded yet today. Log foods from the catalog (many seeded staples carry micros)
@@ -68,6 +74,12 @@ export default function NutritionMicrosScreen() {
           <View className="mt-6">
             <Block device="plate">
               <SectionLabel label="Today" note={`${recorded} of ${MICROS.length} recorded`} />
+              {/* The numerator caveat, inside the plate so it governs every
+                  figure under it. Muted 13px serif is this file's caveat voice
+                  (the closing annotation). */}
+              <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-muted">
+                Only foods with recorded micronutrients contribute, so these totals can run low.
+              </Text>
               <View className="mt-1">
                 {MICROS.map((m, index) => {
                   const value = micros[m.key] ?? null;

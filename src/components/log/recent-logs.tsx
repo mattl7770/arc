@@ -8,9 +8,6 @@ import type { LogFeedItem } from '@/types/log';
 
 /** The absence, stated as a fact. */
 const EMPTY_STATE = 'Nothing logged yet today.';
-/** The fastest way to end it, and what happens when you do. */
-const EMPTY_NEXT =
-  'The field at the top takes a number it recognises — “weight 178” — or any note in your own words; the tiles above cover the rest. Whatever you capture lands here in time order, and the Coach reads this record.';
 
 /**
  * Today's log so far — a running record beneath the capture controls, newest
@@ -38,8 +35,8 @@ const EMPTY_NEXT =
  *
  * "Empty is authored, never blank" (00-design-spec.md §5), and the mockup's
  * empty-ledger sheet (S-02) sets the idiom: an italic muted line **stating the
- * absence as a fact**, then the way to end it. Two lines, in that order — what
- * is missing, then the fastest path to fill it and what happens when you do.
+ * absence as a fact**. The second line that followed it — the one pointing at
+ * the command field — was cut by the owner as explanatory copy on 2026-08-11.
  *
  * **The plate holds steady across both states**, so the record's *place* is
  * drawn before it has contents. It was made conditional on 2026-08-10 and
@@ -47,10 +44,9 @@ const EMPTY_NEXT =
  * were a NativeWind divider artefact, not the plates, and de-plating the empty
  * branches was the wrong answer to a rendering bug.
  *
- * The fastest path out of empty is the command field at the top of this same
- * screen, so it is pointed at in words rather than duplicated as a button here:
- * the block would otherwise carry a second control that does nothing the
- * visible one above it doesn't already do, and the screen's single accent is
+ * The way out of empty is the command field at the top of this same screen, so
+ * this block carries no control of its own: it would otherwise do nothing the
+ * visible field above it doesn't already do, and the screen's single accent is
  * already spent on that field's send. Nothing in this block is tappable, which
  * is the honest shape for a record with no records in it.
  */
@@ -68,9 +64,6 @@ export function RecentLogs({ entries }: { entries: LogFeedItem[] }) {
         <View className="mt-2.5">
           <Text className="font-serif text-[15px] italic leading-5 text-ink-muted">
             {EMPTY_STATE}
-          </Text>
-          <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-            {EMPTY_NEXT}
           </Text>
         </View>
       ) : (

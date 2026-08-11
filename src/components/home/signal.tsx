@@ -1,5 +1,6 @@
-import { View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
+import { palette } from '@/constants/theme';
 import type { SignalLevel } from '@/types/home';
 
 /*
@@ -91,6 +92,36 @@ export function signalTextClass(level: SignalLevel): string {
  * split. The mark grew 10px → 12px because a doubled border cannot read at
  * 10px — the same reason that strip's lane grew from 3px to 8px.
  *
+ * ## And a second hue-free dimension, because one binary split is not four states
+ *
+ * Ink weight splits in-range from needs-attention and stops there: `caution` and
+ * `poor` are the SAME mark — `h-3 w-3 border-2 border-ink` over two fills that
+ * measure 1.59:1 against each other. Without hue they are one square. The word
+ * still names them apart, but the *scan* — the thing the weight split exists for
+ * — cannot tell the flagged pillar from the worst one.
+ *
+ * The sheet already solved this and the port dropped it. `.cf-swatch--poor`
+ * (and `.cf-barfill--poor`, and `.cf-mrow2-fill--poor` — every `poor` fill in
+ * the set) lays
+ * `repeating-linear-gradient(135deg, rgba(0,0,0,.34) 0 2px, transparent 2px 5px)`
+ * over the flat colour, so the worst biological state is the only one wearing a
+ * texture. That is a FORM cue, and it is the one that separates `poor` from
+ * `caution` when hue is gone. Restored 2026-08-11 — see {@link PoorHatch} for
+ * the mechanism and the measured strength.
+ *
+ * ⚠️ **The hatch cannot ride on this map, and that is why there is no accessor
+ * for it.** A class string lands on a *childless* view, and the hatch is drawn
+ * as rotated child views. So the map stays exactly what it is — the fill, the
+ * size and the border weight — and {@link SignalMark} is the only public form,
+ * rendering the map AND the hatch together.
+ *
+ * A `signalMarkClass(level)` accessor existed alongside it for one commit and is
+ * deliberately **not** kept. It compiled, it drew four of the five states
+ * correctly, and it silently dropped the hatch on the fifth — which is the one
+ * state the hatch exists for. A helper whose only failure mode is losing an
+ * accessibility cue on the worst reading in the set is a trap, not a
+ * convenience. Render the component.
+ *
  * `unknown` keeps the *page* colour behind a 1px border: no data, no mark.
  * Whole class strings, never a built prefix — see the note at the top of this
  * file.
@@ -103,9 +134,126 @@ const MARK: Record<SignalLevel, string> = {
   unknown: 'h-3 w-3 border border-ink bg-paper',
 };
 
-export function signalMarkClass(level: SignalLevel): string {
-  return MARK[level];
+/**
+ * The pillar mark, drawn whole: the {@link MARK} class plus the diagonal hatch
+ * that `poor` — and only `poor` — wears. The one form to render; see the note
+ * on {@link MARK} for why no class-string accessor is offered beside it.
+ */
+export function SignalMark({ level }: { level: SignalLevel }) {
+  return <View className={MARK[level]}>{level === 'poor' ? <PoorHatch /> : null}</View>;
 }
+
+/**
+ * The `bio-poor` hatch — the sheet's
+ * `repeating-linear-gradient(135deg, rgba(0,0,0,.34) 0 2px, transparent 2px 5px)`,
+ * drawn as filled views.
+ *
+ * ## Why it is back after 01-rn-port-guide.md §1.4 dropped it
+ *
+ * That section's argument is a dependency argument, not a design one: a
+ * `repeating-linear-gradient` needs `expo-linear-gradient`, which is a native
+ * module, which forces the owner into a fresh EAS cloud build (§5). The
+ * constraint is real and still holds. What it never established is that the
+ * hatch was unwanted — it is the set's only non-hue marker of the worst
+ * biological state, and dropping it is why `caution` and `poor` ship today as
+ * the same square in two indistinguishable greys.
+ *
+ * `HatchCap` (src/components/ui/block.tsx) settled the mechanism: an
+ * `overflow: 'hidden'` box with rotated filled bars inside it. No library, no
+ * rebuild, no gradient. This is the same technique at a twentieth of the area.
+ *
+ * ## The pitch is not the CSS number
+ *
+ * A gradient's stripe width is measured PERPENDICULAR to the stripe; these bars
+ * are spaced along the horizontal. The 5pt perpendicular period projects to
+ * 5/cos45° ≈ 7.07pt of horizontal pitch, so the bars sit at 7.08pt centres
+ * (2pt wide + 2.54pt of margin on each side). The bar's own `width` IS the
+ * perpendicular stripe width — rotation preserves a rectangle's thickness — so
+ * that stays at the sheet's 2pt and is NOT divided. Copying 2-and-5 straight
+ * across as horizontal numbers would have drawn the hatch at 1.41× density.
+ *
+ * **The slant matches the cap's, and the sheet's two angles are a trap.** It
+ * writes the cap at `-45deg` and this swatch at `135deg`, which reads like two
+ * opposite tilts and is not: a gradient's stripes run PERPENDICULAR to its
+ * angle, and `-45deg` and `135deg` are the same gradient line traced in
+ * opposite directions. Both therefore produce stripes at 45° — a `/` — and a
+ * vertical bar rotated +45° draws exactly that. `HatchCap` shipped at `-45deg`
+ * for one commit by copying the CSS angle straight onto the transform, which
+ * mirrored it; both marks are `+45deg` now. An earlier version of this
+ * paragraph asserted the opposite as fact, which is worth recording: it was
+ * describing the code rather than checking the geometry.
+ *
+ * ## Sized by the box, not by numbers
+ *
+ * The bars are laid out by a centred flex row rather than by absolute offsets,
+ * so the middle bar's centre always lands on the box's centre and the hatch
+ * re-phases itself at whatever size it is dropped into — 8pt inside the
+ * `border-2` pillar mark, 8pt inside a default {@link SignalTick}, 4pt inside a
+ * `small` one. An absolute child inset to 0 on all four sides fills its
+ * parent's PADDING box in Yoga, not its border box, so the hatch stops at the
+ * ink border and never paints over it. Three bars is one more than the box can
+ * ever show; the container clips the rest.
+ *
+ * ## What it measures, and what it does not
+ *
+ * Verified at the mark's real size, which is smaller than it looks: the sheet's
+ * `.cf-swatch` is 10px with a 1px ink border, so its hatched fill is 8×8 — and
+ * this mark is 12pt with a 2pt border, so its fill is 8pt too. The transfer is
+ * 1:1 and **no deviation from the sheet's 2/5 was needed**. Across an 8pt
+ * square the diagonal run is 8√2 ≈ 11.3pt, or 2.26 periods: one stripe corner
+ * to corner and a clipped one in each of the opposite corners. Three marks, the
+ * same three the mockup draws. It does not turn to mud.
+ *
+ * What it is NOT is a strong signal. `palette.ink` at the sheet's .34 over
+ * `signal.poor` #AA402C composites to #7A3323, which is **1.50:1** against the
+ * fill it sits on — texture weight, by the sheet's own choice of alpha, and
+ * well under the 3:1 a load-bearing non-text cue would need. So it is ranked
+ * accordingly: the primary carrier on this cell is still the WORD (5.12–5.60:1
+ * on the pillar's paper-dim stock), the border weight still carries the
+ * in-range/needs-attention split at 11.95:1, and the hatch is the third cue —
+ * the one that splits the two flagged states from each other. Raising the alpha
+ * would buy contrast at the cost of matching the drawing; that is an owner
+ * call, not a silent one, so it ships at the sheet's value.
+ *
+ * `palette.ink` rather than the sheet's literal `rgba(0,0,0,.34)`: the set has
+ * no pure black, and ink is what this drawing is drawn in. Alpha rides on the
+ * container so the three bars composite as one layer.
+ */
+function PoorHatch() {
+  return (
+    <View pointerEvents="none" style={styles.hatch}>
+      {HATCH_BARS.map((index) => (
+        <View key={index} style={styles.hatchBar} />
+      ))}
+    </View>
+  );
+}
+
+const HATCH_BARS = [0, 1, 2];
+
+const styles = StyleSheet.create({
+  hatch: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    opacity: 0.34,
+  },
+  // 18pt is longer than the 11.3pt diagonal of the largest box this lands in,
+  // so the bar always crosses edge to edge and the container clips the excess.
+  hatchBar: {
+    width: 2,
+    height: 18,
+    marginHorizontal: 2.54,
+    backgroundColor: palette.ink,
+    transform: [{ rotate: '45deg' }],
+  },
+});
 
 /**
  * The condition, in words. Product nouns for a state, nothing rhetorical
@@ -145,11 +293,22 @@ export function signalConditionSpoken(level: SignalLevel): string {
  * The readiness colour, carried consistently everywhere it appears — a square
  * tick, not a dot. Corners are square across this design: this is a drawing,
  * not a bubble (00-design-spec.md §4).
+ *
+ * At its default size this IS the sheet's `.cf-swatch` — 10px on a 1px ink
+ * border — so `poor` takes the same {@link PoorHatch} the sheet puts on
+ * `.cf-swatch--poor`, over the identical 8pt of fill. Drawing the worst state
+ * hatched in one place and flat in another would make the texture read as
+ * decoration rather than as a state, which is the whole reason it is here.
+ *
+ * `small` is 6pt, so its fill is 4pt and only the centre stripe survives the
+ * clip. One diagonal on a 4pt square is a shading, not a hatch — recorded
+ * rather than special-cased, because `small` has no call sites today and a
+ * branch guarding a size nothing uses is a branch nobody will maintain.
  */
 export function SignalTick({ level, small = false }: { level: SignalLevel; small?: boolean }) {
   return (
-    <View
-      className={`${small ? 'h-1.5 w-1.5' : 'h-2.5 w-2.5'} border border-ink ${SWATCH[level]}`}
-    />
+    <View className={`${small ? 'h-1.5 w-1.5' : 'h-2.5 w-2.5'} border border-ink ${SWATCH[level]}`}>
+      {level === 'poor' ? <PoorHatch /> : null}
+    </View>
   );
 }

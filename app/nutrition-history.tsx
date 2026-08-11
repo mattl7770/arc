@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block, Divider } from '@/components/ui/block';
+import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
@@ -18,7 +18,7 @@ import type { NutritionHistoryDay } from '@/lib/nutrition/types';
  * per-day adherence judged against that day's own targets (nutritionHistory).
  *
  * Conformed Set treatment: the averages are a **grid** (the grid is the object —
- * no outer box and no rules, held by alignment and whitespace alone; see
+ * no outer box, drawn by the rules that run between its cells; see
  * src/components/ui/block.tsx), the per-day record is a **ruled plate** (a record
  * is a table), and the window chips are controls in the label voice. Every number
  * on the screen is mono, because mono measures.
@@ -36,24 +36,6 @@ const WINDOWS = [7, 14, 30] as const;
 type Window = (typeof WINDOWS)[number];
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/**
- * The two columns. **No rules** — only the gutter that keeps the right column's
- * text off the left column's, and the row rhythm (`pt-4`) that replaces the old
- * top rule. src/components/home/metrics-strip.tsx is the reference form; this
- * grid matches it exactly so the app reads as one convention rather than two.
- *
- * The rules used to be conditioned on a cell actually FOLLOWING, to stop an odd
- * count drawing a vertical rule into empty space. With no rules there is no such
- * question, so the whole `count` argument and the `*_LAST` class go with them —
- * column position is now the only input.
- */
-const CELL_LEFT = 'w-1/2 pr-3 pt-4';
-const CELL_RIGHT = 'w-1/2 pl-3 pt-4';
-
-function cellClass(index: number): string {
-  return index % 2 === 0 ? CELL_LEFT : CELL_RIGHT;
-}
 
 /** "2026-07-24" → "Jul 24", parsed as local Y/M/D (no Intl, no UTC shift). */
 function shortDate(iso: string): string {
@@ -73,20 +55,14 @@ function meanPositive(values: number[]): number {
   return present.length === 0 ? 0 : present.reduce((a, b) => a + b, 0) / present.length;
 }
 
-/** One average cell of the grid. */
-function AvgCell({
-  label,
-  value,
-  unit,
-  className,
-}: {
-  label: string;
-  value: number;
-  unit: string;
-  className: string;
-}) {
+/**
+ * One average cell of the grid — its contents only. The `GridCell` around it
+ * owns the column width, the padding and the rules between cells
+ * (src/components/ui/block.tsx), so this carries no wrapper of its own.
+ */
+function AvgCell({ label, value, unit }: { label: string; value: number; unit: string }) {
   return (
-    <View className={className}>
+    <>
       <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
         {label}
       </Text>
@@ -94,7 +70,7 @@ function AvgCell({
         <Text className="font-mono text-lg font-semibold text-ink">{fmtInt(value)}</Text>
         <Text className="font-mono text-[10px] text-ink-muted">{unit}</Text>
       </View>
-    </View>
+    </>
   );
 }
 
@@ -183,17 +159,15 @@ export default function NutritionHistoryScreen() {
                 <Sparkline data={kcalSeries} width={96} height={32} baseline="zero" />
               </View>
 
-              {/* No margin: the cells' own `pt-4` is the row rhythm that
-                  replaced the top rule. */}
-              <View className="flex-row flex-wrap">
+              {/* `mt-2` keeps the first cells' top rule off the kcal figure
+                  above. Three macros in a two-column grid leaves Fat alone on
+                  the last row, and `count` is what tells `GridCell` there is
+                  nothing beside it to rule against. */}
+              <View className="mt-2 flex-row flex-wrap">
                 {avgCells.map((cell, index) => (
-                  <AvgCell
-                    key={cell.label}
-                    label={cell.label}
-                    value={cell.value}
-                    unit="g"
-                    className={cellClass(index)}
-                  />
+                  <GridCell key={cell.label} index={index} count={avgCells.length}>
+                    <AvgCell label={cell.label} value={cell.value} unit="g" />
+                  </GridCell>
                 ))}
               </View>
             </Block>

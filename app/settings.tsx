@@ -344,16 +344,16 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      {/* About — prose plus one measured value, so the margin annotation device
-          rather than a plate. The version is the only mono on this screen. */}
+      {/* About — the wordmark plus one measured value, so the margin annotation
+          device rather than a plate. The version is the only mono on this
+          screen. */}
       <View className="mt-8">
         <SectionLabel label="About" />
         <View className="mt-3">
           <Block device="margin">
             <Text className="font-serif text-[16px] text-ink">ARC</Text>
-            <Text className="mt-1 font-serif text-[12px] leading-5 text-ink-secondary">
-              Architecture for Resilience &amp; Continuity
-            </Text>
+            {/* The expansion of the wordmark was cut by the owner as
+                explanatory copy on 2026-08-11. */}
             {APP_VERSION ? (
               <Text className="mt-2 font-mono text-[11px] text-ink-muted">v{APP_VERSION}</Text>
             ) : null}

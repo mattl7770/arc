@@ -5,10 +5,10 @@ import { SectionLabel } from '@/components/ui/section-label';
 import type { Pillar, Readiness } from '@/types/home';
 
 import {
+  SignalMark,
   SignalTick,
   signalConditionLabel,
   signalConditionSpoken,
-  signalMarkClass,
   signalTextClass,
 } from './signal';
 
@@ -21,18 +21,19 @@ type Props = {
  * Readiness verdict + pillar swatches, below the hero (owner call,
  * 2026-07-24): the screen answers "what do I do" before "how am I doing".
  *
- * Conformed Set treatment — the **field** device: no box at all. It used to
- * carry 11px L-shaped corner ticks at opposite corners, which were meant to say
- * "this region was measured". On hardware they said nothing of the kind — two
- * disconnected brackets with no enclosure are the most abstract mark in the set
- * and the least self-explanatory, and they were the prime suspect behind the
- * owner's "weird boxes" on first sight. They are gone (2026-08-09); the full
- * reasoning is in src/components/ui/block.tsx.
+ * Conformed Set treatment — the **field** device: no enclosure, just 11px
+ * L-shaped corner ticks at top-left and bottom-right. A measured field, not a
+ * box. It is the mark that says a region was *taken as a reading*, which is
+ * exactly what a readiness verdict is.
  *
- * What still says "verdict" is the content, which is stronger than a bracket
- * was: a section label, a signal tick beside a serif verdict line, four pillar
- * swatches, and a detail line — separated from its neighbours by air, like
- * every other section on this screen.
+ * The ticks were cut on 2026-08-09 as the prime suspect behind the owner's
+ * "weird boxes" on first sight of hardware, on the reading that two
+ * disconnected brackets are the most abstract mark in the set. They were indeed
+ * the culprit, but not for that reason: each L was drawn as one 11×11 view
+ * carrying `border-l border-t`, which React Native paints as a full rectangle
+ * (src/components/ui/block.tsx). The owner was looking at two small boxes, not
+ * at two brackets, so no argument about legibility was ever going to survive
+ * contact with the screen. They are back as filled bars, restored 2026-08-11.
  *
  * ## The pillar cells got their boxes back (2026-08-10, later the same day)
  *
@@ -106,7 +107,13 @@ export function ReadinessStrip({ readiness, pillars }: Props) {
             accessibilityRole="text"
             accessibilityLabel={`${pillar.label}, ${signalConditionSpoken(pillar.level)}`}
             className="flex-1 items-center gap-1 border border-hairline bg-paper-dim px-0.5 py-2">
-            <View className={signalMarkClass(pillar.level)} />
+            {/* `SignalMark`, not the bare `signalMarkClass` view it replaced: a
+                `poor` mark carries the sheet's diagonal hatch, and a hatch is
+                rotated child views, which a childless `<View className={…} />`
+                has nowhere to put. `caution` and `poor` sit at 1.59:1 against
+                each other, so the hatch is the only thing separating the two
+                flagged states for a viewer not reading hue. */}
+            <SignalMark level={pillar.level} />
             <Text className="font-label text-[10px] uppercase tracking-[0.5px] text-ink-secondary">
               {pillar.label}
             </Text>

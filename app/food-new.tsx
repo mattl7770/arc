@@ -51,11 +51,48 @@ type FieldProps = {
   placeholder?: string;
   keyboardType?: TextInputProps['keyboardType'];
   mono?: boolean;
+  /**
+   * Set ONLY when this field shares a `flex-row` with siblings and should take
+   * an equal share of the width. See the note on {@link FormField} — passing it
+   * in a column is what made Name, Brand and the serving row draw on top of
+   * each other.
+   */
+  fill?: boolean;
 };
 
-function FormField({ label, value, onChange, placeholder, keyboardType, mono }: FieldProps) {
+/**
+ * One labelled, recessed field.
+ *
+ * ## `flex-1` in a column is what made this screen paint over itself
+ *
+ * The wrapper used to be `<View className="flex-1">` unconditionally, and seven
+ * of the nine fields here genuinely do share a row — so the flex looked like the
+ * house style rather than a per-call-site decision. The two that do not share a
+ * row are the first two the user meets: Name inside `<View className="mt-2">`
+ * and Brand inside `<View className="mt-3">`, each the only child of its wrapper.
+ *
+ * In a column the main axis is vertical, so `flex-1` resolves to
+ * `flexBasis: 0%` **on the height**. Those `mt-*` parents have no height of
+ * their own — they size to their content, inside a `<Screen scroll>` — so there
+ * is no free space for `flexGrow` to claim and the field lays out at **zero
+ * height**. Yoga has no `min-height: auto` floor to rescue it, and views do not
+ * clip, so the label and the ~46pt bordered `TextInput` still drew at their
+ * natural size: on top of whatever came next. Name landed over Brand, Brand over
+ * the Serving name / Serving grams row.
+ *
+ * That is the owner's report — boxes covering other boxes — and this screen is
+ * where a barcode that missed both the local cache and Open Food Facts sends
+ * you, so it is the first thing seen after a failed scan.
+ *
+ * So the flex is opt-in and named for what it is: `fill` belongs to a field
+ * sharing a **row**, and nowhere else. The wrapper stays (a label stacked over
+ * an input needs something to stack in) but it is plain by default; `fill` is
+ * what the row distributes, so `fill` lands on the wrapper, not the input.
+ * Same fix, same reasoning as app/protocol-edit.tsx.
+ */
+function FormField({ label, value, onChange, placeholder, keyboardType, mono, fill }: FieldProps) {
   return (
-    <View className="flex-1">
+    <View className={fill ? 'flex-1' : undefined}>
       <Text className="mb-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
         {label}
       </Text>
@@ -168,6 +205,9 @@ export default function FoodNewScreen() {
       <View className="mt-2">
         <SectionLabel label="Identity" note={barcode !== '' ? barcode : undefined} />
 
+        {/* No `fill` on these two: they are alone in a column, and a flexed
+            child of a content-height column collapses to nothing — see
+            {@link FormField}. They already span the full width without it. */}
         <View className="mt-2">
           <FormField
             label="Name"
@@ -179,12 +219,14 @@ export default function FoodNewScreen() {
         <View className="mt-3">
           <FormField label="Brand (optional)" value={brand} onChange={setBrand} placeholder="—" />
         </View>
+        {/* `fill` on both: this row splits its width between them. */}
         <View className="mt-3 flex-row gap-3">
           <FormField
             label="Serving name"
             value={servingName}
             onChange={setServingName}
             placeholder="e.g. 1 jar"
+            fill
           />
           <FormField
             label="Serving grams"
@@ -193,6 +235,7 @@ export default function FoodNewScreen() {
             placeholder="—"
             keyboardType="decimal-pad"
             mono
+            fill
           />
         </View>
 
@@ -231,6 +274,7 @@ export default function FoodNewScreen() {
           ))}
         </View>
 
+        {/* `fill` throughout: the macro fields sit two and three to a row. */}
         <View className="mt-3 flex-row gap-3">
           <FormField
             label="kcal"
@@ -239,6 +283,7 @@ export default function FoodNewScreen() {
             placeholder="—"
             keyboardType="decimal-pad"
             mono
+            fill
           />
           <FormField
             label="Protein g"
@@ -247,6 +292,7 @@ export default function FoodNewScreen() {
             placeholder="—"
             keyboardType="decimal-pad"
             mono
+            fill
           />
         </View>
         <View className="mt-3 flex-row gap-3">
@@ -257,6 +303,7 @@ export default function FoodNewScreen() {
             placeholder="—"
             keyboardType="decimal-pad"
             mono
+            fill
           />
           <FormField
             label="Fat g"
@@ -265,6 +312,7 @@ export default function FoodNewScreen() {
             placeholder="—"
             keyboardType="decimal-pad"
             mono
+            fill
           />
           <FormField
             label="Fiber g"
@@ -273,6 +321,7 @@ export default function FoodNewScreen() {
             placeholder="—"
             keyboardType="decimal-pad"
             mono
+            fill
           />
         </View>
 

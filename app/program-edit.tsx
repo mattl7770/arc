@@ -257,8 +257,12 @@ function ProgramEditor({ id }: { id: string | undefined }) {
         <Block device="plate">
           {/* The tally reconciles: seven lines are drawn, `trainingDays` of them assigned. */}
           <SectionLabel label="Weekly split" note={`${trainingDays} of 7`} />
+          {/* The instruction that opened this line ("Assign a routine to each
+              training day.") was cut by the owner as explanatory copy on
+              2026-08-11 — the rows afford it. What survives is the fact the
+              rows do not state. */}
           <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-            Assign a routine to each training day. This split repeats every week.
+            This split repeats every week.
           </Text>
           <View className="mt-2">
             {DOWS.map((d, i) => {
@@ -292,9 +296,19 @@ function ProgramEditor({ id }: { id: string | undefined }) {
       {/* Week kinds — a control strip, not a record: chips, no device. */}
       <View className="mt-7">
         <SectionLabel label="Weeks" />
+        {/* Cut on 2026-08-11 as an affordance the chips already show. The tap
+            is afforded; the ORDER is not, and an accumulation week carries no
+            label at all (WEEK_KIND_LABEL), so the state a chip starts in is
+            unnamed too. There is no other route to setting a week kind, which
+            left the survivor naming "Deload weeks" with no account of how one
+            comes about. The order is back, declarative rather than the
+            imperative it was, and in agreement with each chip's spoken "Tap to
+            change." (The sibling cut in the Weekly split above was correct —
+            those rows are pressable, chevroned and say "Change." — so it
+            stays cut.) */}
         <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-          Tap a week to cycle accumulation → deload → test. Deload weeks run the same split with the
-          volume cut.
+          Tapping a week cycles accumulation → deload → test. Deload weeks run the same split with
+          the volume cut.
         </Text>
         <View className="mt-2 flex-row flex-wrap gap-2">
           {displayKinds.map((kind, i) => {

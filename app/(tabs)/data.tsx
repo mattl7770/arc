@@ -9,47 +9,60 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
 import { palette } from '@/constants/theme';
 import { useDataOverview, type TrendKey } from '@/hooks/use-data-overview';
-import { fmtNum, rangeText } from '@/lib/biomarkers/format';
 
 /**
  * Data — the standing record (docs/information-architecture.md).
  *
  * The exploratory surface: never directive — that is Home's job — just a calm,
- * drafted record. Top to bottom: today's folio line and title; the one accent
- * on the sheet, an invite to import bloodwork; **Trends** (Weight, Nutrition,
- * Training, Symptoms, each with a live sparkline and headline, or an honest
- * first-run invite); **The full file**, the manage/browse index into everything;
- * **Biomarkers**, the reference ranges waiting to be filled by a lab import; and
- * finally the row into **Settings**.
+ * drafted record. Top to bottom: today's folio line and title; **Trends**
+ * (Weight, Nutrition, Training, Symptoms, each with a live sparkline and
+ * headline, or an honest first-run invite); **The full file**, the manage/browse
+ * index into everything; and the row into **Settings**.
  *
- * ## Order and folding (owner call on hardware, 2026-08-09)
+ * ## Bloodwork lives on the Labs screen — all of it (owner call, 2026-08-11)
  *
- * Two changes came out of the first device review, and they are the same
- * problem: *"sections should be foldable in the data tab, and biomarkers should
- * be below 'the full file'."*
+ * Off hardware: *"The big 'bring in your bloodwork' on the top of the data page
+ * should be within the labs & reports section. Furthermore, the 'biomarkers'
+ * should also be within the labs & reports only."*
  *
- * The reason both are right is one number: **the biomarker catalogue is 65
- * markers** (`BIOMARKER_SEED` in src/lib/labs/catalog.ts — 65 entries, 65
- * distinct slugs; `grep -c 'slug:'` says 66 only because it also counts the
- * `slug: string;` line in the type declaration above the array). Every one of
- * them is drawn. Before a lab import that is 65 rows of em-dash between the two
- * sections you
- * actually navigate with, and it pushed the index — and now Settings — off the
- * bottom of a long scroll. So Biomarkers moved below the index, and the three
- * list sections fold.
+ * What that names is a **duplication**, not a layout preference. app/labs.tsx —
+ * pushed from the "Labs" row of The full file below — already drew an import
+ * action, and already drew the whole biomarker catalogue grouped by category
+ * with a measured tally per group. This screen drew a second copy of both: the
+ * accent import stamp at the top of the sheet, and a flat 65-row `Biomarkers`
+ * fold beneath the index. Two screens, the same rows, different treatments, and
+ * nothing on either to tell the reader which one was the real file.
  *
- * **Fold defaults are per-section, and chosen from that same number.** Trends
- * (4 rows) and The full file (8 rows) open — together they are about a screen
- * and a half, which is the tab as it should first read. Biomarkers (65 rows)
- * starts folded: until a report is imported it has nothing to say that its own
- * tally does not say better, and it is the only section long enough to bury
- * what follows it.
+ * Neither was deleted; both consolidated one level down. The stamp is now the
+ * head of app/labs.tsx, moved verbatim (cap and all), and the marker rows were
+ * already there in a better form than this screen ever gave them — grouped by
+ * category, tallied per group, and beside the reports they came out of. The
+ * index row is the single route in, which is what an index is for.
  *
- * **A folded section still states what it holds.** Every section header carries
- * a mono tally that is true in both states — `2 of 4 tracked`, `5 of 8 built`,
- * `0 of 65 measured` — so folding hides rows, never facts (00-design-spec.md
- * §5). Each tally is derived from the same array it renders, so the two can
- * never drift.
+ * **The instruction line went at the same time**, on the same call: *"In the
+ * data tab, there is 'Tap a section heading to fold it away.' get rid of this."*
+ * The chevron on every section header states that affordance already, and a
+ * sheet that opens by explaining its own controls is not a calm one. Nothing
+ * replaced it — the title stands alone.
+ *
+ * ## Folding (owner call on hardware, 2026-08-09)
+ *
+ * The list sections fold, from the first device review: *"sections should be
+ * foldable in the data tab, and biomarkers should be below 'the full file'."*
+ *
+ * Both halves of that were about one number — **the biomarker catalogue is 65
+ * markers** (`BIOMARKER_SEED` in src/lib/labs/catalog.ts), every one of them
+ * drawn, which before an import was 65 rows of "No reading yet" burying the
+ * index and Settings under a long scroll. That section has now left the screen
+ * entirely (above), so what remains is Trends (4 rows) and The full file (8
+ * rows), **both open**: together they are about a screen and a half, which is
+ * the tab as it should first read. The fold survives as a way to put a section
+ * aside, no longer as the thing that made this screen navigable.
+ *
+ * **A folded section still states what it holds.** Each section header carries a
+ * mono tally that is true in both states — `2 of 4 tracked`, `5 of 8 built` — so
+ * folding hides rows, never facts (00-design-spec.md §5). Each tally is derived
+ * from the same array it renders, so the two can never drift.
  *
  * **Folds go both ways.** The header is one toggle, `!open`, with
  * `accessibilityState.expanded` on it — an earlier one-way fold on Home was a
@@ -69,27 +82,34 @@ import { fmtNum, rangeText } from '@/lib/biomarkers/format';
  *
  * ## The surface system
  *
- * Almost everything here is a **ruled plate** — a record is a table, and this
- * whole screen is records (src/components/ui/block.tsx). The single exception
- * is the import card, which is the one thing on the sheet asking to be acted
- * on, so it takes the **stamped plate**.
+ * Everything here is a **ruled plate** — a record is a table, and this whole
+ * screen is records (src/components/ui/block.tsx).
  *
- * **The accent budget on this screen is exactly one: that stamp.** A reference
- * surface that highlights six things highlights nothing, and the moment Data
- * starts competing with Home for attention the home screen stops being the
- * answer to "what now?". Every other emphasis here is ink weight and rule —
- * including the Settings row at the bottom, which is neutral like every other
- * row on this sheet.
+ * **The accent budget on this screen is now zero, and that is the right
+ * number.** It was exactly one — the import stamp — on the reasoning that a
+ * reference surface highlighting six things highlights nothing, and that the
+ * moment Data starts competing with Home for attention the home screen stops
+ * being the answer to "what now?". The stamp was the one directive thing here;
+ * it left with the bloodwork, and nothing was promoted to fill the hole. Data is
+ * a surface you read and navigate, so every emphasis on it is ink weight and
+ * rule — including the Settings row at the bottom, neutral like every other row
+ * on this sheet.
  *
  * **Signal colours do not appear on this screen's chrome at any point.** The
  * "Set up"/"Later" tags are interface state, not biology, so they are drawn as
  * outlined neutral chips — the firewall rule (00-design-spec.md §2).
  *
- * ## No data, no number
+ * ## No data, no number — and empty is authored
  *
- * Every absent value renders as an em-dash in the mono voice, never as a
- * plausible-looking zero or estimate, and the authored empty text sits in the
- * row's descriptor slot where it has room to read as a sentence.
+ * No absent value is ever a plausible-looking zero or estimate. A **trend** row
+ * has somewhere to put the sentence: its descriptor line carries the authored
+ * empty ("No entries yet") and its value slot stays a value slot, so an em-dash
+ * sits there. Both rules of §5 are satisfied — the row prints no figure, and the
+ * empty is written out — because the slot that can hold words sits directly
+ * under the one that cannot. (A **biomarker** row has no such second slot, its
+ * sub-line being the reference range, so it says "No reading yet" in the value
+ * slot itself; those rows are on app/labs.tsx now and that is where the rule is
+ * recorded.)
  *
  * Everything here reads real on-device data (src/hooks/use-data-overview.ts).
  */
@@ -106,19 +126,20 @@ type FileRow = {
   onPress?: () => void;
 };
 
-/** Which list sections fold. The import stamp and the Settings row do not. */
-type SectionKey = 'trends' | 'file' | 'biomarkers';
+/** Which list sections fold. The Settings row does not — it is one row. */
+type SectionKey = 'trends' | 'file';
 
 /**
  * A foldable section: a plate whose header row is the toggle.
  *
  * The header stays inside the plate rather than above it, so a collapsed
  * section is still a drawn object on the sheet — a closed drawer, not a
- * disappeared one. The chevron is `palette.inkMuted`: this screen's one accent
- * belongs to the import stamp, and a fold control is chrome.
+ * disappeared one. The chevron is `palette.inkMuted`: this screen carries no
+ * accent at all, and a fold control is chrome even where one exists.
  *
  * `children` is a **function**, not an element. A collapsed section then costs
- * nothing to render — which is the whole point when the section holds 65 rows.
+ * nothing to render — which mattered most for the 65-row biomarker list that
+ * has since moved to app/labs.tsx, and still holds for the two that remain.
  */
 function FoldSection({
   label,
@@ -154,14 +175,14 @@ function FoldSection({
 
 export default function DataScreen() {
   const router = useRouter();
-  const { trends, biomarkers } = useDataOverview();
+  const { trends } = useDataOverview();
 
-  // Session-scoped, not persisted — see the header comment. Biomarkers starts
-  // folded because it is 65 rows and, before a lab import, 65 em-dashes.
+  // Session-scoped, not persisted — see the header comment. Both sections open:
+  // the only one that ever started folded was Biomarkers, and it now lives on
+  // app/labs.tsx.
   const [open, setOpen] = useState<Record<SectionKey, boolean>>({
     trends: true,
     file: true,
-    biomarkers: false,
   });
   const toggle = useCallback(
     (key: SectionKey) => setOpen((prev) => ({ ...prev, [key]: !prev[key] })),
@@ -176,7 +197,11 @@ export default function DataScreen() {
   const openTrend = (key: TrendKey) => {
     switch (key) {
       case 'weight':
-        router.push('/metric-entry');
+        // `from` names this screen on the keypad's back control. That screen is
+        // reached from the Log tab twice and from here once, and the sheet's
+        // `‹ Log` is its default — so the one caller that is NOT the Log tab has
+        // to say so, or the control names a destination it will not go to.
+        router.push({ pathname: '/metric-entry', params: { from: 'Data' } });
         return;
       case 'nutrition':
         router.push('/nutrition');
@@ -193,7 +218,13 @@ export default function DataScreen() {
   const fileRows: FileRow[] = [
     {
       key: 'labs',
-      label: 'Labs & reports',
+      // "Labs", not "Labs & reports": the row and the screen it pushes have to
+      // agree, app/labs.tsx titles itself Labs, and "Labs" is what the route,
+      // the file and docs/information-architecture.md all call this domain. The
+      // "& reports" half named only the imported-PDF list, which since
+      // 2026-08-11 is one of three things on that sheet — so the compound was
+      // both redundant with "Labs" and no longer a complete description.
+      label: 'Labs',
       icon: 'flask-outline',
       chip: 'setup',
       onPress: () => router.push('/labs'),
@@ -231,17 +262,12 @@ export default function DataScreen() {
     { key: 'export', label: 'Reports & export', icon: 'download-outline', chip: 'later' },
   ];
 
-  // The three tallies. Each counts the very array its section renders, so a
-  // folded header can never claim something the open rows would contradict.
+  // Both tallies. Each counts the very array its section renders, so a folded
+  // header can never claim something the open rows would contradict.
   const tracked = trends.filter((t) => !t.empty).length;
   const trendsNote = `${tracked} of ${trends.length} tracked`;
   const built = fileRows.filter((r) => r.onPress != null).length;
   const fileNote = `${built} of ${fileRows.length} built`;
-  const measured = biomarkers.filter((b) => b.latestValue != null).length;
-  // Always the full ratio, never "No readings yet": a folded section has to say
-  // how much it is holding, and "no readings" hides that there are 65 rows in
-  // there waiting on an import.
-  const biomarkersNote = `${measured} of ${biomarkers.length} measured`;
 
   return (
     <Screen scroll>
@@ -253,44 +279,13 @@ export default function DataScreen() {
           {eyebrow}
         </Text>
         <Text className="mt-1 font-serif text-[26px] font-semibold text-ink">Data</Text>
-        {/* Instruction, not a tagline: the fold is this screen's one
-            non-obvious interaction, and "your standing record" — which used to
-            open this line — told the reader nothing the sheet below does not. */}
-        <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
-          Tap a section heading to fold it away.
-        </Text>
       </View>
 
-      {/* b. THE ONE ACCENT — the stamped plate. Nothing else on this screen is
-          drawn in the accent, and nothing else on it is directive. It does not
-          fold: it is the one action here, and an action you can hide is not
-          one. */}
-      <View className="mt-5">
-        <Block device="stamp">
-          <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
-            Labs
-          </Text>
-          <Text className="mt-2 font-serif text-[19px] font-semibold leading-6 text-ink">
-            Bring in your bloodwork
-          </Text>
-          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-            Function Health PDF → 160+ biomarkers, parsed on-device. Review every row before
-            anything is saved, graded against ARC&rsquo;s longevity-optimal ranges.
-          </Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Import a lab report"
-            onPress={() => router.push('/lab-import')}
-            className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine px-4 py-3 active:opacity-70">
-            <Ionicons name="document-text-outline" size={18} color={palette.pineOn} />
-            <Text className="font-label text-[15px] font-semibold text-pine-on">
-              Import a report
-            </Text>
-          </Pressable>
-        </Block>
-      </View>
-
-      {/* c. Trends — four domains, live sparklines or honest invites. */}
+      {/* b. Trends — four domains, live sparklines or honest invites. First
+          object on the sheet as of 2026-08-11: the import stamp that used to
+          open the screen is on app/labs.tsx now (see the header), and a
+          reference surface is right to open on a reading rather than on an
+          action performed a few times a year. */}
       <View className="mt-7">
         <FoldSection
           label="Trends"
@@ -312,7 +307,24 @@ export default function DataScreen() {
                     onPress={() => openTrend(t.key)}
                     className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
                     <View className="flex-1">
-                      <Text className="font-serif text-[15px] text-ink">{t.name}</Text>
+                      {/* LABEL voice, not serif. The sheet's `.cf-trendrow-t` is
+                        `font-label` / 700, and its `.cf-trendrow-s` beneath it is
+                        serif — the reading face on the sub-line, the label face
+                        on the name. That inversion is deliberate: "Weight" is not
+                        speech, it is the name of an instrument channel, and the
+                        sentence about it ("Last 30 days", "No entries yet") is
+                        the thing being read. The port had them the other way
+                        round, which made a domain name look like prose.
+
+                        Size stays at the app's row-name scale rather than the
+                        sheet's 11px. Every size on that mockup was drawn for a
+                        browser phone and this app has upscaled all of them
+                        (`.cf-brow-name` 11 → 15, `.cf-card-title` 14.5 → 19); at
+                        a literal 11px the name would land smaller than the
+                        sub-line it heads. The voice was the bug, not the scale. */}
+                      <Text className="font-label text-[15px] font-semibold text-ink">
+                        {t.name}
+                      </Text>
                       {/* The descriptor slot carries the authored empty when there
                         is nothing to describe — it has room to read as a sentence
                         there, and the value slot stays a value slot. */}
@@ -354,9 +366,10 @@ export default function DataScreen() {
         </FoldSection>
       </View>
 
-      {/* d. The full file — the manage/browse index, most of it still to come.
-          Above Biomarkers now (owner call): this is the section you navigate
-          with, and 65 marker rows should not sit between it and the trends. */}
+      {/* c. The full file — the manage/browse index, most of it still to come.
+          The last section on the sheet before Settings: the 65 marker rows that
+          once sat under it are on app/labs.tsx, one tap down the "Labs" row
+          below (owner call, 2026-08-11 — see the header). */}
       <View className="mt-7">
         <FoldSection
           label="The full file"
@@ -370,26 +383,36 @@ export default function DataScreen() {
                 const rowClass = 'min-h-[44px] flex-row items-center gap-3 py-3';
                 const iconColor = tappable ? palette.inkSecondary : palette.inkMuted;
 
-                // Both tags are neutral chrome. Signal colours mark biological
+                // BOXED, as the sheet draws them: `.cf-lrow-tag` is
+                // `1px solid var(--paper-line)` with `3px 7px` of padding.
+                //
+                // The outline was stripped on 2026-08-10 with the reasoning "a
+                // border around one word encloses nothing". That reasoning is
+                // WITHDRAWN. It was invented during a de-plating sweep whose
+                // governing rule the owner rejected outright ("All the wrong
+                // boxes were removed, bring them back!"), and the noise that
+                // sweep was chasing turned out to be a rendering fault, not a
+                // design one — one-sided border widths paired with a border
+                // colour, which React Native paints as a full rectangle (see the
+                // header of src/components/ui/block.tsx). These tags never had
+                // that shape. A UNIFORM four-sided border is the case that always
+                // drew correctly, and it is what the design asked for: the box is
+                // what makes "Set up" read as a status stamped on the row rather
+                // than as a second, quieter label competing with the first.
+                //
+                // Both tags stay neutral chrome. Signal colours mark biological
                 // state only, and "Set up" / "Later" are interface state — the
                 // firewall was a finding in all six hostile reviews. "Set up"
                 // sits a shade stronger than "Later" via ink weight alone, no
-                // hue.
-                //
-                // UNBOXED. Each tag used to be outlined, on the argument that an
-                // outline reads as an annotation rather than as a second surface
-                // inside the plate. Eight rows means eight little rectangles
-                // ruled inside a ruled plate, which on hardware is the noise the
-                // owner keeps reporting — a border around one word encloses
-                // nothing. The tags stay legible as a column because they are
-                // right-aligned in mono against serif labels.
+                // hue, and both wear the same rule so the column reads as one
+                // kind of mark.
                 const chip =
                   row.chip === 'setup' ? (
-                    <Text className="font-mono text-[10px] tracking-[0.3px] text-ink-secondary">
+                    <Text className="border border-hairline px-[7px] py-[3px] font-mono text-[10px] tracking-[0.3px] text-ink-secondary">
                       Set up
                     </Text>
                   ) : (
-                    <Text className="font-mono text-[10px] tracking-[0.3px] text-ink-muted">
+                    <Text className="border border-hairline px-[7px] py-[3px] font-mono text-[10px] tracking-[0.3px] text-ink-muted">
                       Later
                     </Text>
                   );
@@ -436,84 +459,14 @@ export default function DataScreen() {
         </FoldSection>
       </View>
 
-      {/* e. Biomarkers — the reference ranges, awaiting a lab import to fill in.
-          Values are biology, so this is the one place a signal colour would
-          belong; until a reading is graded, ink and an em-dash carry it.
-          Folded by default: 65 catalogued markers, and before an import every
-          one of them reads as an em-dash. */}
-      <View className="mt-7">
-        <FoldSection
-          label="Biomarkers"
-          note={biomarkersNote}
-          open={open.biomarkers}
-          onToggle={() => toggle('biomarkers')}>
-          {() => (
-            <View className="mt-1">
-              {biomarkers.map((b, index) => (
-                <View key={b.slug}>
-                  <Divider first={index === 0} />
-                  <View
-                    accessible
-                    accessibilityLabel={`${b.name}. Optimal ${rangeText(b)}. ${
-                      b.latestValue != null
-                        ? `${fmtNum(b.latestValue)} ${b.unit ?? ''}`
-                        : 'No reading yet'
-                    }.`}
-                    className="flex-row items-center gap-3 py-3">
-                    <View className="flex-1">
-                      <Text className="font-serif text-[15px] text-ink">{b.name}</Text>
-                      <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                        {rangeText(b)}
-                      </Text>
-                    </View>
-                    {b.latestValue != null ? (
-                      <View className="flex-row items-baseline gap-1">
-                        <Text className="font-mono text-[15px] text-ink">
-                          {fmtNum(b.latestValue)}
-                        </Text>
-                        {b.unit ? (
-                          <Text className="font-mono text-[11px] text-ink-muted">{b.unit}</Text>
-                        ) : null}
-                      </View>
-                    ) : (
-                      <Text className="font-mono text-[15px] text-ink-muted">—</Text>
-                    )}
-                  </View>
-                </View>
-              ))}
-
-              {/* Neutral invite into the labs screen — this screen's accent is
-                  already spent on the import stamp. */}
-              <Divider />
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="See all reference ranges"
-                onPress={() => router.push('/labs')}
-                className="min-h-[44px] flex-row items-center justify-between gap-3 py-3 active:opacity-60">
-                <View className="flex-1">
-                  <Text className="font-serif text-[14px] text-ink-secondary">
-                    See all reference ranges
-                  </Text>
-                  {measured === 0 ? (
-                    <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                      Import labs to populate
-                    </Text>
-                  ) : null}
-                </View>
-                <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
-              </Pressable>
-            </View>
-          )}
-        </FoldSection>
-      </View>
-
-      {/* f. Settings — off the tab bar as of 2026-08-09 and living here, at the
+      {/* d. Settings — off the tab bar as of 2026-08-09 and living here, at the
           foot of the record (owner call; see app/(tabs)/_layout.tsx).
           Deliberately NOT foldable and deliberately not inside another section:
           it is one row, always drawn, always the last thing on the sheet, so it
           is exactly as findable as "scroll to the bottom of Data". Neutral ink
-          like every other row here — Data spends its one accent on the import
-          stamp, and settings never carries an accent anywhere in the app. */}
+          like every other row here — Data carries no accent at all since the
+          import stamp left, and settings never carries one anywhere in the
+          app. */}
       {/* Plated, like every other row on this sheet. It was stripped in the
           de-plating sweep of 2026-08-10 on the rule "one row is not a record";
           the owner rejected that rule outright, and the boxes it removed are

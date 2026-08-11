@@ -1,5 +1,34 @@
 # Architecture Decision Records (ADR)
 
+## 2026-08-11 — WITHDRAWN: the three drafting devices never "stopped paying rent". They were never drawn.
+
+**Decision: the 2026-08-09 ADR below is withdrawn in full.** `field`, `margin` and `grid` draw their marks again — the corner ticks, the margin rule, the rules between grid cells — and the sheet's boxes are restored everywhere the same sweep removed them. The Coach thread staying off the `well`, which was the unrelated second half of that ADR, **stands**: that one was an owner call on hardware and has nothing to do with what follows.
+
+**The whole reason, in one paragraph.** The 2026-08-09 decision rests entirely on one sentence of owner feedback: _"there are some weird boxes and lines in some places, notably the metrics and coach brief on the home screen, but there are more."_ It read that as the surface system failing to communicate — marks a viewer had to interpret before they helped, which §5 calls decoration. Now look at what the two named surfaces actually were. **The metrics** are `device="grid"`, whose cells drew `border-t border-hairline` and `border-r border-hairline`. **The coach brief** is `device="margin"`, which drew `border-l-2 border-hairline`. The third device, `field`, drew each corner tick as an 11×11 view carrying `border-l border-t border-ink-muted`. Every one of the three is a **one-sided border width against a whole-element border colour** — the precise pair identified in the 2026-08-10 ADR (§1a) as the shape React Native paints as a complete rectangle.
+
+So the owner was not describing three devices that failed to communicate. They were describing three devices that **rendered wrong**, and they named the two worst offenders in the sentence that got quoted back as the justification for deleting them. A 2px margin rule came out as a box around the Coach brief. A 1px rule between two metric cells came out as a box around each metric. Two 11px corner brackets came out as two small boxes floating at opposite corners of the readiness block. _That_ is what "weird boxes and lines" means, and no argument about whether a bracket is self-explanatory was ever going to survive contact with the screen.
+
+**This is the same bug and the same misdiagnosis as §1a below, one round earlier and against a different set of files.** §1a caught the plates; it did not occur to anyone that the three _unmarked_ devices had been deleted for the identical reason. The tell was there in that ADR's own text: it quotes the owner naming "the metrics and coach brief", which are not plates and were never part of the plate sweep, and it never asks why those two.
+
+**How the marks are drawn now — filled views, never borders.** A background colour has no per-edge struct, no uniformity test and no bitmap path to fall off:
+
+- **`field`** — `CornerTicks` draws each L as **two bars**, an 11×1 and a 1×11 sharing a corner, rather than one bordered square.
+- **`margin`** — `Block` renders a row: a 2px `bg-hairline` column, then the content indented beside it. It cannot be a class on the container, so it is structural.
+- **`grid`** — a new exported `GridCell` primitive owns the rules. It also retires by construction the trailing-rule bug the old CSS carried: the sheet's `nth-child(odd)` gives the left column a right-hand rule, so an **odd** number of cells rules off the last one into empty space. `GridCell` conditions the vertical on a cell actually _following_, not on the column.
+
+**Also restored in the same pass, all of them the sheet's own marks that the sweeps took:**
+
+- **The Log tab's quick-add tiles are boxed again** and the block is a `plate`. It was marked `device="grid"` in the port, which was never right — the sheet puts `.cf-tilegrid` (a `gap: 7px` grid of closed `1px` boxes) inside a plain `.cf-block`, and `.cf-tilegrid` is not `.cf-dims`, so the selector that strips the plate off a metric grid never matched it. The tiles then inherited the metric grid's cell rules, drew as boxes, and the fix chosen was to delete the rules _and_ reject the sheet's boxes on the ground that "it puts a drawn enclosure inside `device='grid'`". The premise was false: it was never a grid. Gateway tiles (Nutrition, Workout) carry the sheet's chevron again.
+- **The `Set up` / `Later` tag boxes on the Data index** (`.cf-lrow-tag`), removed with "a border around one word encloses nothing" — another rule invented mid-sweep.
+- **The hatched cap** (`.cf-card--accent::before`): a 3pt accent/ink barber hatch over the top edge of every accent card. This one was never removed — it was never built. It is the loudest drafting mark in the set and most of what separates "a card with a coloured border" from "a drawing that has been stamped". It ships as an opt-in `cap` prop on `Block` because the sheet is opt-in about it: `.cf-card--accent` carries it, `.cf-hero` is a separate class with the same accent border and no cap.
+- **No new dependency for any of it.** The hatch is an `overflow: hidden` band with rotated filled bars inside — there is no `expo-linear-gradient` in this project and adding one would force a fresh EAS cloud build.
+
+**One live instance of the original bug was still shipping** and is fixed: `app/coach-memory.tsx` ruled both its lists with `border-t border-hairline-soft`. It was missed by the 58-site sweep because that screen predates the Conformed Set entirely and rules in the _soft_ hairline, so a grep for the standard token walked past it.
+
+**The lesson, and it is now the second time it has cost a round of this project.** From `paperGrid` (`src/constants/theme.ts`), where an opacity was tripled to compensate for a layer that was not rendering at all: **establish that a thing draws before concluding anything about how it looks.** Four rounds of "weird boxes" produced three rounds of design changes, every one of them wrong, because nobody compiled the classes and asked what the platform did with them. A complaint about appearance on device is a _rendering_ question until proven otherwise. And when the reporter names specific surfaces, go and read what those surfaces are made of before generalising about the system they belong to.
+
+**What is NOT restored, and why — so this does not swing the other way.** The presentation chrome stays out: no folio bars (`Log · SHEET L-01 · SCALE NTS`), no sheet numbers, no registration ticks. Those sit **outside `.cf-phone`** in the mockup's own markup, on the desk surround, and the mockup's CSS header says so itself; §5 forbids them independently ("no sheet numbers, tile keys, or designator badges inside the app that key no user action"). They are visible in any screenshot of the mockup, which makes them an easy thing to ask for — the answer is that they were never on the screen.
+
 ## 2026-08-10 — A rule needs an enclosure; and the paper grid goes to 0.20
 
 Two calls from the same hardware pass, both about marks that were reasoned about in a browser and judged on a phone.

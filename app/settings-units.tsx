@@ -149,9 +149,16 @@ export default function SettingsUnitsScreen() {
 
       <View className="mt-5">
         <Block device="margin">
+          {/* "Storage stays metric; this only changes how numbers display." was
+              cut on 2026-08-11 as explanatory copy — but it was the half that
+              carried a fact. It is not obtainable from a screen of toggles, it
+              is what makes switching reversible and an export readable
+              (CLAUDE.md §2), and without it the survivor's "apply now" had
+              nothing to apply TO. Restored as one sentence, the referent
+              supplied by the clause it lost. */}
           <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-            Storage stays metric; this only changes how numbers display. Weight, volume, and length
-            apply now; distance and temperature take effect as workouts and environment tracking
+            Storage stays metric; these toggles only change how numbers display — weight, volume,
+            and length already do, distance and temperature once workouts and environment tracking
             land.
           </Text>
         </Block>

@@ -168,10 +168,17 @@ export default function SettingsProfileScreen() {
         <Text className="font-label text-[15px] font-semibold text-paper-hi">Save</Text>
       </Pressable>
 
+      {/* Cut on 2026-08-11 as a restatement of four other screens. The sweep
+          took those four as well, so after it the app asserted local-first data
+          ownership — CLAUDE.md §2's FIRST non-negotiable — nowhere. The one
+          survivor, coach/session-key-panel.tsx, is about the API key and says
+          the key *does* leave on model calls. Back here, in the shortest form
+          that carries the fact; the "one user, one device, no account"
+          preamble, which was the restatement, is not. */}
       <View className="mt-4">
         <Block device="margin">
           <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-            One user, one device, no account — this record never leaves the phone.
+            This record never leaves the phone.
           </Text>
         </Block>
       </View>

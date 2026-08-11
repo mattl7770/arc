@@ -178,9 +178,11 @@ export default function SettingsCoachScreen() {
 
         <View className="mt-4">
           <Block device="margin">
+            {/* "Switch anytime." was cut by the owner as explanatory copy on
+                2026-08-11 — the picker above it affords the switch. */}
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
               Sonnet handles this workload at near-Opus quality for a fraction of the cost; Opus is
-              worth it for deep, whole-history analysis. Switch anytime.
+              worth it for deep, whole-history analysis.
             </Text>
           </Block>
         </View>

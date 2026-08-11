@@ -59,11 +59,8 @@ export default function CoachMemoryScreen() {
         <StackHeader title="Coach memory" />
       </View>
 
-      <Text className="mt-2 text-[13px] leading-6 text-ink-secondary">
-        What the Coach knows about you between conversations. It only remembers what you approved,
-        and everything here is yours to remove.
-      </Text>
-
+      {/* The standing explainer that sat here was cut by the owner as
+          explanatory copy on 2026-08-11. */}
       {active.length === 0 ? (
         <View className="mt-5 rounded-card border border-hairline bg-porcelain px-4 py-4">
           <Text className="text-[15px] text-ink">Nothing remembered yet.</Text>
@@ -75,24 +72,32 @@ export default function CoachMemoryScreen() {
       ) : (
         <View className="mt-5 overflow-hidden rounded-card border border-hairline bg-porcelain">
           {active.map((memory, index) => (
-            <View
-              key={memory.id}
-              className={`px-4 py-3 ${index > 0 ? 'border-t border-hairline-soft' : ''}`}>
-              <Text className="text-[11px] uppercase tracking-[2px] text-ink-muted">
-                {CATEGORY_LABEL[memory.category]}
-              </Text>
-              <Text className="mt-1 text-[15px] leading-6 text-ink">{memory.content}</Text>
-              <View className="mt-2 flex-row items-center justify-between">
-                <Text className="font-mono text-[11px] text-ink-muted">
-                  since {memory.created_at.slice(0, 10)}
+            <View key={memory.id}>
+              {/* Drawn, never a `border-t`. A one-sided width against a
+                  whole-element colour is the pair React Native paints as a
+                  complete rectangle, which boxed every row of this list on
+                  device — the full trace is above `Divider` in
+                  src/components/ui/block.tsx. Not `Divider` itself only because
+                  this screen predates the Conformed Set and still rules in the
+                  soft hairline. */}
+              {index > 0 ? <View className="h-px self-stretch bg-hairline-soft" /> : null}
+              <View className="px-4 py-3">
+                <Text className="text-[11px] uppercase tracking-[2px] text-ink-muted">
+                  {CATEGORY_LABEL[memory.category]}
                 </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  hitSlop={8}
-                  onPress={() => confirmDelete(memory)}
-                  className="active:opacity-60">
-                  <Text className="text-[13px] text-ink-muted">Delete</Text>
-                </Pressable>
+                <Text className="mt-1 text-[15px] leading-6 text-ink">{memory.content}</Text>
+                <View className="mt-2 flex-row items-center justify-between">
+                  <Text className="font-mono text-[11px] text-ink-muted">
+                    since {memory.created_at.slice(0, 10)}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    hitSlop={8}
+                    onPress={() => confirmDelete(memory)}
+                    className="active:opacity-60">
+                    <Text className="text-[13px] text-ink-muted">Delete</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           ))}
@@ -106,32 +111,34 @@ export default function CoachMemoryScreen() {
           </Text>
           <View className="mt-2 overflow-hidden rounded-card border border-hairline bg-paper-deep">
             {forgotten.map((memory, index) => (
-              <View
-                key={memory.id}
-                className={`px-4 py-3 ${index > 0 ? 'border-t border-hairline-soft' : ''}`}>
-                <Text className="text-[14px] leading-6 text-ink-muted">{memory.content}</Text>
-                <View className="mt-2 flex-row items-center justify-between">
-                  <Text className="font-mono text-[11px] text-ink-muted">
-                    forgotten {(memory.archived_at ?? '').slice(0, 10)}
-                  </Text>
-                  <View className="flex-row gap-4">
-                    <Pressable
-                      accessibilityRole="button"
-                      hitSlop={8}
-                      onPress={() => {
-                        restoreMemory(getDb(), memory.id);
-                        reload();
-                      }}
-                      className="active:opacity-60">
-                      <Text className="text-[13px] text-pine">Restore</Text>
-                    </Pressable>
-                    <Pressable
-                      accessibilityRole="button"
-                      hitSlop={8}
-                      onPress={() => confirmDelete(memory)}
-                      className="active:opacity-60">
-                      <Text className="text-[13px] text-ink-muted">Delete</Text>
-                    </Pressable>
+              <View key={memory.id}>
+                {/* Drawn, never a `border-t` — see the active list above. */}
+                {index > 0 ? <View className="h-px self-stretch bg-hairline-soft" /> : null}
+                <View className="px-4 py-3">
+                  <Text className="text-[14px] leading-6 text-ink-muted">{memory.content}</Text>
+                  <View className="mt-2 flex-row items-center justify-between">
+                    <Text className="font-mono text-[11px] text-ink-muted">
+                      forgotten {(memory.archived_at ?? '').slice(0, 10)}
+                    </Text>
+                    <View className="flex-row gap-4">
+                      <Pressable
+                        accessibilityRole="button"
+                        hitSlop={8}
+                        onPress={() => {
+                          restoreMemory(getDb(), memory.id);
+                          reload();
+                        }}
+                        className="active:opacity-60">
+                        <Text className="text-[13px] text-pine">Restore</Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        hitSlop={8}
+                        onPress={() => confirmDelete(memory)}
+                        className="active:opacity-60">
+                        <Text className="text-[13px] text-ink-muted">Delete</Text>
+                      </Pressable>
+                    </View>
                   </View>
                 </View>
               </View>

@@ -43,9 +43,11 @@ export default function NotFoundScreen() {
             This screen does not exist.
           </Text>
 
+          {/* The opening sentence restated the headline above it and was cut by
+              the owner as explanatory copy on 2026-08-11. */}
           <Text className="mt-2.5 font-serif text-[15px] leading-6 text-ink-secondary">
-            The link you followed points somewhere ARC has no screen for. Nothing was lost — every
-            log, protocol and lab on this device is exactly where you left it.
+            Nothing was lost — every log, protocol and lab on this device is exactly where you left
+            it.
           </Text>
 
           {/* The one accent: the only way out of a dead route. */}

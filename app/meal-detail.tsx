@@ -3,7 +3,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, View } from 'react-native';
 
-import { Block, Divider } from '@/components/ui/block';
+import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -33,8 +33,8 @@ import type { FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/type
  * ## Conformed Set surface system
  *
  *   Totals   → **grid**: energy and macros are a metric grid, so the grid is the
- *              object — no outer box and no rules, held by alignment and
- *              whitespace (src/components/ui/block.tsx).
+ *              object — no outer box, drawn by the rules that run between its
+ *              cells (src/components/ui/block.tsx).
  *   Notes    → **margin annotation**: prose belongs in the margin, not a card.
  *   Items    → **ruled plate**: a record is a table, drawn in both the itemized
  *              and the free-form state. "Add food" is its closing row, so the
@@ -78,31 +78,15 @@ function parseGrams(text: string): number | null {
 }
 
 /**
- * The two columns. **No rules** — only the gutter between them and the `pt-4`
- * row rhythm that replaced the old top rule, matching
- * src/components/home/metrics-strip.tsx. The dangling-rule guard (a `count`
- * argument and a `*_LAST` class, so an odd cell never drew a rule into empty
- * space) went with the rules: with nothing drawn there is nothing to dangle.
+ * One macro cell. An unrecorded macro is an em-dash — no data, no number.
+ *
+ * It carries no wrapper of its own: the `GridCell` around it owns the column
+ * width, the padding and the rules between cells (src/components/ui/block.tsx),
+ * so this is only the contents of a cell.
  */
-const CELL_LEFT = 'w-1/2 pr-3 pt-4';
-const CELL_RIGHT = 'w-1/2 pl-3 pt-4';
-
-function cellClass(index: number): string {
-  return index % 2 === 0 ? CELL_LEFT : CELL_RIGHT;
-}
-
-/** One macro cell. An unrecorded macro is an em-dash — no data, no number. */
-function MacroCell({
-  label,
-  grams,
-  className,
-}: {
-  label: string;
-  grams: number | null;
-  className: string;
-}) {
+function MacroCell({ label, grams }: { label: string; grams: number | null }) {
   return (
-    <View className={className}>
+    <>
       <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
         {label}
       </Text>
@@ -112,7 +96,7 @@ function MacroCell({
         </Text>
         {grams != null ? <Text className="font-mono text-[10px] text-ink-muted">g</Text> : null}
       </View>
-    </View>
+    </>
   );
 }
 
@@ -333,16 +317,15 @@ export default function MealDetailScreen() {
             <Text className="font-mono text-sm text-ink-muted">kcal</Text>
           </View>
 
-          {/* No margin: the cells' own `pt-4` is the row rhythm that replaced
-              the top rule. */}
-          <View className="flex-row flex-wrap">
+          {/* `mt-2` keeps the first cells' top rule off the kcal figure above.
+              Three macros in a two-column grid leaves Fat alone on the last
+              row: `count` is what tells `GridCell` there is nothing beside it,
+              so no vertical rule is drawn into that empty half. */}
+          <View className="mt-2 flex-row flex-wrap">
             {macroCells.map((cell, index) => (
-              <MacroCell
-                key={cell.label}
-                label={cell.label}
-                grams={cell.grams}
-                className={cellClass(index)}
-              />
+              <GridCell key={cell.label} index={index} count={macroCells.length}>
+                <MacroCell label={cell.label} grams={cell.grams} />
+              </GridCell>
             ))}
           </View>
         </Block>

@@ -277,8 +277,11 @@ export default function BarcodeScanScreen() {
                 onBarcodeScanned={({ data }) => void onScanned(data)}
               />
             </View>
+            {/* "Point at a product barcode." was cut by the owner as
+                explanatory copy on 2026-08-11 — the live viewfinder above says
+                it. What survives is the fact the viewfinder cannot. */}
             <Text className="mt-3 text-center font-serif text-[13px] leading-5 text-ink-muted">
-              Point at a product barcode. Found items cache for offline next time.
+              Found items cache for offline next time.
             </Text>
           </View>
         )

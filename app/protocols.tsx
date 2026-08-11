@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
-import { Block, Divider } from '@/components/ui/block';
+import { Block, DashedDivider, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -26,6 +26,29 @@ import { protocolTypeLabel } from '@/lib/protocols/format';
  * The live versions drive Today's Mission — a day's plan is committed when it is
  * generated, which the closing note states plainly rather than implying an edit
  * lands immediately.
+ */
+
+/**
+ * The DASHED rule — the sheet's `.cf-protocard-foot` / `.cf-vhist-cap` mark,
+ * drawn as a row of short filled bars because there is no other honest way.
+ *
+ * ## Why dashed, and why it cannot be a solid rule here
+ *
+ * This rule runs INSIDE a row, between a protocol's description and its
+ * type/version line. The plate it sits in already separates its ROWS with solid
+ * hairlines ({@link Divider}). Draw this one solid too and the two marks become
+ * indistinguishable: the reader cannot tell where one protocol ends and the next
+ * begins, because every boundary looks the same. The sheet dashes it for exactly
+ * that reason — a dashed rule is subordinate, a division within an object rather
+ * than between objects — so the dash is carrying meaning, not texture, and a
+ * solid substitute would lose the meaning.
+ *
+ * The mark itself is `DashedDivider` in src/components/ui/block.tsx, beside the
+ * other rule primitives — read the note there for why a dash has to be drawn as
+ * filled bars rather than as `border-t border-dashed`. It lived here as a local
+ * copy for one commit, and in `app/protocol-versions.tsx` and `app/exercise.tsx`
+ * as two more; three copies of a drawing primitive is exactly how three drawings
+ * drift.
  */
 export default function ProtocolsScreen() {
   const router = useRouter();
@@ -111,7 +134,16 @@ export default function ProtocolsScreen() {
                       </Text>
                     ) : null}
 
-                    <View className="mt-1.5 flex-row items-center justify-between gap-3">
+                    {/* The foot rule. `.cf-protocard-foot` closes each card with
+                        `margin-top: 10px; padding-top: 8px; border-top: 1px
+                        dashed var(--paper-line)`, and the port had only a 6pt
+                        gap — so the type and version read as a third line of the
+                        description rather than as the card's stamp. Spacing
+                        follows the sheet: 10pt above the rule, 8pt below it. */}
+                    <View className="mt-2.5">
+                      <DashedDivider />
+                    </View>
+                    <View className="mt-2 flex-row items-center justify-between gap-3">
                       <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
                         {protocolTypeLabel(p.type)}
                       </Text>
