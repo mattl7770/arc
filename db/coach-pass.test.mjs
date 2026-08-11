@@ -343,7 +343,8 @@ console.log('7. abandon_experiment exists so a broken run needs no fabricated ve
     startDate: isoDaysAgo(NOW, 3),
     durationDays: 14,
   });
-  toolByName('abandon_experiment').confirmSummary({ id, reason: 'Sauna was closed all week' }, db, CTX)
+  toolByName('abandon_experiment')
+    .confirmSummary({ id, reason: 'Sauna was closed all week' }, db, CTX)
     .includes('Sauna nightly')
     ? ok('the card names the experiment and the reason')
     : bad('abandon card');
@@ -424,9 +425,8 @@ console.log('R9. the pass store: one run, only when it is safe and possible');
 
   const { apiKeyStore } = await import('../src/lib/ai/api-key-store.ts');
   const { coachPassStore } = await import('../src/lib/ai/pass-store.ts');
-  const { listMessages, getOrCreateActiveConversation } = await import(
-    '../src/lib/db/repositories/ai-chat.ts'
-  );
+  const { listMessages, getOrCreateActiveConversation } =
+    await import('../src/lib/db/repositories/ai-chat.ts');
 
   // --- LOCKED: the pass reads health data and posts it to the model API.
   // Behind Face ID nobody has proven they are the user yet.
@@ -486,8 +486,16 @@ console.log('R9. the pass store: one run, only when it is safe and possible');
     await apiKeyStore.hydrate();
     const counter = { n: 0 };
     const results = await Promise.all([
-      coachPassStore.maybeRun(db, { unlocked: true, now: NOW, fetchImpl: fetchFor(sse('One.'), counter) }),
-      coachPassStore.maybeRun(db, { unlocked: true, now: NOW, fetchImpl: fetchFor(sse('One.'), counter) }),
+      coachPassStore.maybeRun(db, {
+        unlocked: true,
+        now: NOW,
+        fetchImpl: fetchFor(sse('One.'), counter),
+      }),
+      coachPassStore.maybeRun(db, {
+        unlocked: true,
+        now: NOW,
+        fetchImpl: fetchFor(sse('One.'), counter),
+      }),
     ]);
     counter.n === 1
       ? ok('two concurrent callers collapse into ONE model call')
@@ -517,7 +525,9 @@ console.log('R9. the pass store: one run, only when it is safe and possible');
         throw new Error('offline');
       },
     });
-    outcome === 'offline' ? ok('a failed pass reports offline, not silence') : bad('offline', outcome);
+    outcome === 'offline'
+      ? ok('a failed pass reports offline, not silence')
+      : bad('offline', outcome);
     getPassState(db).lastDate === before
       ? ok('…and the day stays OPEN, so a real pass can still happen later')
       : bad('offline pass consumed the day', String(getPassState(db).lastDate));

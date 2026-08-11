@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
@@ -23,6 +23,7 @@ import {
   MealEstimationUnavailableError,
 } from '@/lib/nutrition/estimate';
 import { fmtInt } from '@/lib/nutrition/format';
+import { pickPhotoBase64 } from '@/lib/media/photo-library';
 import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
 
@@ -124,6 +125,11 @@ export default function MealEstimateScreen() {
   const [phase, setPhase] = useState<Phase>({ kind: 'input' });
   const [description, setDescription] = useState('');
   const [rows, setRows] = useState<ReviewItem[]>([]);
+  // The model call is a live stream. Leaving mid-estimate must stop it, or it
+  // runs to completion and is billed in full while its results land on an
+  // unmounted screen. app/recipe-import.tsx does exactly this.
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   /** Turn a grounded estimate into editable review rows (loads each grounded
    * food so grams edits re-price from it). */
@@ -162,17 +168,52 @@ export default function MealEstimateScreen() {
   };
 
   const run = async (input: EstimateInput) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setPhase({ kind: 'estimating' });
     try {
-      const grounded = groundMealEstimate(getDb(), await estimateMeal(input));
+      const grounded = groundMealEstimate(getDb(), await estimateMeal(input, controller.signal));
       toReview(grounded);
     } catch (error) {
+      // A cancel is not a failure and gets no message — the screen is gone.
+      if (controller.signal.aborted) return;
       const message =
         error instanceof MealEstimationUnavailableError
           ? error.message
           : 'Couldn’t estimate that meal. Check your connection and try again, or log it manually.';
       setPhase({ kind: 'error', message });
     }
+  };
+
+  /**
+   * The photo-library path (owner request, 2026-08-11). It is a third INPUT to
+   * the pipeline that already exists — pick, downscale, then the same
+   * estimate → ground → editable review as the camera and the description. A
+   * typed description, if there is one, rides along as context.
+   *
+   * Like the camera, it is native and therefore dormant until the next EAS
+   * build; unlike a crash, `unavailable` is a sentence.
+   */
+  const choosePhoto = async () => {
+    const picked = await pickPhotoBase64();
+    if (picked.kind === 'canceled') return;
+    if (picked.kind === 'unavailable') {
+      return setPhase({
+        kind: 'error',
+        message:
+          'Choosing a photo needs the next app build (the photo-library module isn’t in this one yet). Photograph it, or describe the meal instead.',
+      });
+    }
+    if (picked.kind === 'failed') {
+      return setPhase({ kind: 'error', message: 'Couldn’t read that photo. Try another one.' });
+    }
+    await run({
+      kind: 'photo',
+      base64Jpeg: picked.base64Jpeg,
+      mediaType: 'image/jpeg',
+      description: description.trim() || undefined,
+    });
   };
 
   const capturePhoto = async () => {
@@ -320,16 +361,31 @@ export default function MealEstimateScreen() {
             </Text>
           </Pressable>
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Photograph the meal"
-            onPress={() => setPhase({ kind: 'camera' })}
-            className="mt-2 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:opacity-60">
-            <Ionicons name="camera-outline" size={18} color={palette.inkSecondary} />
-            <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
-              Photograph it instead
-            </Text>
-          </Pressable>
+          {/* Two photo paths, equal weight: the camera for the plate in front
+              of you, the library for the one you already took. Both outlined —
+              the accent on this screen belongs to Estimate. */}
+          <View className="mt-2 flex-row gap-2">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Take a photo of the meal"
+              onPress={() => setPhase({ kind: 'camera' })}
+              className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:opacity-60">
+              <Ionicons name="camera-outline" size={18} color={palette.inkSecondary} />
+              <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+                Take a photo
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Choose a photo from the library"
+              onPress={() => void choosePhoto()}
+              className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:opacity-60">
+              <Ionicons name="images-outline" size={18} color={palette.inkSecondary} />
+              <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+                Choose a photo
+              </Text>
+            </Pressable>
+          </View>
 
           <View className="mt-4">
             <Block device="margin">

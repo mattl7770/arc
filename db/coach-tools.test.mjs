@@ -4,6 +4,7 @@
  * tables the capture screens use. Mirrors db/nutrition.test.mjs; op-sqlite and
  * the model client are never loaded. Run: npm run db:test.
  */
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { apiKeyStore } from '../src/lib/ai/api-key-store.ts';
@@ -1562,9 +1563,8 @@ console.log('23. snapshot mission items expose ids (the address a mission tool n
   const snap = run('get_today_snapshot', db);
   // Mission may be empty (no protocols seeded), but WHEN items exist they must
   // carry ids — assert on the shape contract via a seeded item instead.
-  const { getOrCreateDailyLog, insertMissionItem } = await import(
-    '../src/lib/db/repositories/mission.ts'
-  );
+  const { getOrCreateDailyLog, insertMissionItem } =
+    await import('../src/lib/db/repositories/mission.ts');
   const log = getOrCreateDailyLog(db, TODAY);
   insertMissionItem(db, log.id, 'habit', {
     id: 'unused',
@@ -1649,7 +1649,9 @@ console.log('25. get_biomarker_history: trend behind the latest value, exact-fir
     ? ok('an ambiguous fragment returns candidates instead of guessing')
     : bad('ambiguous', JSON.stringify(ambiguous));
   const missing = run('get_biomarker_history', db, { biomarker: 'zzz' });
-  !missing.found ? ok('no match → found:false, no invention') : bad('missing', JSON.stringify(missing));
+  !missing.found
+    ? ok('no match → found:false, no invention')
+    : bad('missing', JSON.stringify(missing));
 }
 
 console.log('26. get_training_recommendation reports engine state (never decides)');
@@ -1764,7 +1766,9 @@ console.log('29. an evening weigh-in west of UTC still lands in its own series')
     .run('bm-evening', eveningUtc, 80);
   const series = run('get_metric_series', db, { metric: 'weight', days: 7 });
   series.points.length === 1
-    ? ok(`a 23:30 local weigh-in is in the series (UTC date ${eveningUtc.slice(0, 10)}, local ${local})`)
+    ? ok(
+        `a 23:30 local weigh-in is in the series (UTC date ${eveningUtc.slice(0, 10)}, local ${local})`
+      )
     : bad('evening weigh-in dropped', JSON.stringify(series));
 
   // A genuinely future reading (tomorrow evening) is still excluded.
@@ -1784,7 +1788,10 @@ console.log('29. an evening weigh-in west of UTC still lands in its own series')
     .run('bm-future', tomorrowUtc, 99);
   run('get_metric_series', db, { metric: 'weight', days: 7 }).points.length === 1
     ? ok('a genuinely future weigh-in is still excluded')
-    : bad('future weigh-in leaked', JSON.stringify(run('get_metric_series', db, { metric: 'weight', days: 7 })));
+    : bad(
+        'future weigh-in leaked',
+        JSON.stringify(run('get_metric_series', db, { metric: 'weight', days: 7 }))
+      );
 }
 
 console.log('30. dual-writer sleep night: the Coach cites the arbitrated winner, like Home');
@@ -1802,6 +1809,282 @@ console.log('30. dual-writer sleep night: the Coach cites the arbitrated winner,
   sleep.stats.count === 1 && sleep.points[0].value === 450
     ? ok('sleep series returns the source-arbitrated 450, not the 415 pooled average')
     : bad('dual-writer sleep', JSON.stringify(sleep.points));
+}
+
+console.log('31. recipes + grocery tools (docs/recipes-grocery.md §6)');
+{
+  const { db } = freshDb();
+  const summary = (name, input) => toolByName(name).confirmSummary(input, db, CTX);
+
+  // Empty book reads honestly.
+  const emptyBook = run('get_recipes', db);
+  emptyBook.recipes.length === 0 && emptyBook.omitted === 0
+    ? ok('get_recipes on an empty book → empty, omitted 0')
+    : bad('empty book', JSON.stringify(emptyBook));
+
+  // save_recipe: card, then the row — source 'ai', lines unresolved.
+  const chili = {
+    title: 'High-protein chili',
+    servings: 4,
+    ingredients: [
+      { raw: '500 g lean ground beef' },
+      { raw: '2 cans black beans' },
+      { raw: 'salt to taste' },
+    ],
+    steps: ['Brown the beef.', 'Simmer with the beans.'],
+  };
+  summary('save_recipe', chili) === 'Save recipe "High-protein chili" — 3 ingredients, 4 servings'
+    ? ok('save_recipe card names title, line count, servings')
+    : bad('save_recipe card', summary('save_recipe', chili));
+  const saved = run('save_recipe', db, chili);
+  const { getRecipe, listIngredients, resolveIngredient, setIngredientNegligible } =
+    await import('../src/lib/db/repositories/recipes.ts');
+  const savedRow = getRecipe(db, saved.id);
+  savedRow.source === 'ai' && savedRow.servings === 4
+    ? ok('save_recipe lands source=ai')
+    : bad('save_recipe row', JSON.stringify(savedRow));
+  const chiliLines = listIngredients(db, saved.id);
+  chiliLines.every((l) => l.grams === null) &&
+  chiliLines[0].qty === 500 &&
+  chiliLines[0].unit === 'g'
+    ? ok('lines land UNRESOLVED with the overlay parsed from raw')
+    : bad('save_recipe lines', JSON.stringify(chiliLines[0]));
+  throws(() => summary('save_recipe', { ...chili, ingredients: [] }))
+    ? ok('empty ingredients refused')
+    : bad('empty ingredients');
+  throws(() => summary('save_recipe', { ...chili, servings: 0 }))
+    ? ok('servings 0 refused')
+    : bad('servings 0');
+
+  // get_recipe detail: ids + resolution state; unknown id corrects the model.
+  const detail = run('get_recipe', db, { recipe_id: saved.id });
+  detail.ingredients.length === 3 &&
+  detail.ingredients.every((l) => typeof l.id === 'string' && l.resolved === false) &&
+  detail.nutrition.complete === false &&
+  detail.nutrition.perServing.kcal === null
+    ? ok('get_recipe: ingredient ids + honest incomplete nutrition')
+    : bad('get_recipe', JSON.stringify(detail.nutrition));
+  throws(() => run('get_recipe', db, { recipe_id: 'nope' }))
+    ? ok('get_recipe unknown id → corrective error')
+    : bad('get_recipe unknown');
+
+  // Resolve the two real lines; the salt is negligible → nutrition completes.
+  const { createFood } = await import('../src/lib/db/repositories/foods.ts');
+  const beef = createFood(db, {
+    name: 'Lean ground beef',
+    kcal_100g: 250,
+    protein_g_100g: 26,
+    carbs_g_100g: 0,
+    fat_g_100g: 15,
+  });
+  const beans = createFood(db, {
+    name: 'Black beans',
+    kcal_100g: 130,
+    protein_g_100g: 9,
+    carbs_g_100g: 24,
+    fat_g_100g: 0.5,
+  });
+  resolveIngredient(db, chiliLines[0].id, beef, 500);
+  resolveIngredient(db, chiliLines[1].id, beans, 480);
+  setIngredientNegligible(db, chiliLines[2].id, true);
+  const completeDetail = run('get_recipe', db, { recipe_id: saved.id });
+  // 500g beef = 1250 kcal + 480g beans = 624 kcal → 1874 / 4 = 468.5 → 469 rounded
+  completeDetail.nutrition.complete === true && completeDetail.nutrition.perServing.kcal === 469
+    ? ok('resolution + negligible → gate opens, per-serving kcal rounded')
+    : bad('complete detail', JSON.stringify(completeDetail.nutrition));
+
+  // log_recipe: card carries portion + honest kcal; backdate suffix; XOR guards.
+  summary('log_recipe', { recipe_id: saved.id, servings: 2 }) ===
+  'Log 2 servings of "High-protein chili" (~937 kcal)'
+    ? ok('log_recipe card: portion + ~kcal from the gate')
+    : bad('log_recipe card', summary('log_recipe', { recipe_id: saved.id, servings: 2 }));
+  summary('log_recipe', { recipe_id: saved.id, date: '2026-08-01' }) ===
+  'Log 1 serving of "High-protein chili" (~469 kcal) · 2026-08-01'
+    ? ok('log_recipe card names a backdate')
+    : bad('backdate card', summary('log_recipe', { recipe_id: saved.id, date: '2026-08-01' }));
+  throws(() => summary('log_recipe', { recipe_id: saved.id, servings: 1, grams: 100 }))
+    ? ok('servings AND grams refused before the card')
+    : bad('XOR');
+  throws(() => summary('log_recipe', { recipe_id: saved.id, grams: 100 }))
+    ? ok('grams without a recorded cooked weight refused with the corrective error')
+    : bad('grams refusal');
+  const logged = run('log_recipe', db, { recipe_id: saved.id, servings: 2, time: '19:00' });
+  const { getMeal } = await import('../src/lib/db/repositories/nutrition.ts');
+  const cookedMeal = getMeal(db, logged.mealId);
+  logged.uncountedIngredients === 0 &&
+  cookedMeal.recipe_id === saved.id &&
+  near(cookedMeal.kcal, 937, 1)
+    ? ok('log_recipe stamps the meal with recipe provenance and scaled snapshots')
+    : bad('log_recipe meal', JSON.stringify(cookedMeal));
+
+  // An incomplete recipe's card says so instead of showing a number.
+  const draft = run('save_recipe', db, {
+    title: 'Mystery stew',
+    servings: 2,
+    ingredients: [{ raw: 'some vegetables' }],
+  });
+  summary('log_recipe', { recipe_id: draft.id }) ===
+  'Log 1 serving of "Mystery stew" (nutrition incomplete — 1 ingredient uncounted)'
+    ? ok('incomplete recipe card discloses the undercount, never a number')
+    : bad('incomplete card', summary('log_recipe', { recipe_id: draft.id }));
+
+  // A recipe with nothing loggable refuses BEFORE the card — never an approved
+  // action that then fails (bug-hunt 2026-08-08).
+  const saltWater = run('save_recipe', db, {
+    title: 'Salt water',
+    servings: 1,
+    ingredients: [{ raw: 'water' }, { raw: 'salt to taste' }],
+  });
+  for (const l of listIngredients(db, saltWater.id)) setIngredientNegligible(db, l.id, true);
+  throws(() => summary('log_recipe', { recipe_id: saltWater.id }))
+    ? ok('all-negligible recipe refused before the card')
+    : bad('all-negligible card');
+
+  // add_grocery_items: batch card, coach provenance, guards.
+  const addInput = { items: [{ name: 'Milk', qty: '2' }, { name: 'Spinach' }] };
+  summary('add_grocery_items', addInput) === 'Add 2 items to the grocery list: Milk (2) · Spinach'
+    ? ok('add_grocery_items card lists every item with qty')
+    : bad('grocery card', summary('add_grocery_items', addInput));
+  run('add_grocery_items', db, addInput).added === 2 ? ok('batch add lands') : bad('batch add');
+  const { listOpenGroceryItems, getGroceryItem } =
+    await import('../src/lib/db/repositories/grocery.ts');
+  listOpenGroceryItems(db).every((i) => i.source === 'coach')
+    ? ok('coach-added items carry source=coach')
+    : bad('source coach');
+  throws(() => summary('add_grocery_items', { items: [] }))
+    ? ok('empty batch refused')
+    : bad('empty batch');
+
+  // get_grocery_list: ids + categories; complete_grocery_items resolves names.
+  const list = run('get_grocery_list', db);
+  const milk = list.sections.flatMap((s) => s.items).find((i) => i.name === 'Milk');
+  list.openCount === 2 && typeof milk.id === 'string'
+    ? ok('get_grocery_list returns the ids the write tools need')
+    : bad('grocery list', JSON.stringify(list));
+  summary('complete_grocery_items', { ids: [milk.id] }) === 'Check off 1 item: Milk'
+    ? ok('complete_grocery_items card resolves ids to names')
+    : bad('checkoff card', summary('complete_grocery_items', { ids: [milk.id] }));
+  throws(() => summary('complete_grocery_items', { ids: ['bogus'] }))
+    ? ok('unknown grocery id refused before the card')
+    : bad('unknown grocery id');
+  run('complete_grocery_items', db, { ids: [milk.id] }).checked === 1 &&
+  getGroceryItem(db, milk.id).checked_at !== null
+    ? ok('check-off stamps checked_at (soft state)')
+    : bad('checkoff execute');
+
+  // add_recipe_to_grocery_list: card counts the included lines; exclude works.
+  const addRecipeInput = { recipe_id: saved.id, exclude: [chiliLines[2].id] };
+  summary('add_recipe_to_grocery_list', addRecipeInput) ===
+  'Add 2 ingredients from "High-protein chili" to the grocery list'
+    ? ok('add_recipe_to_grocery_list card: title + included count')
+    : bad('recipe→list card', summary('add_recipe_to_grocery_list', addRecipeInput));
+  run('add_recipe_to_grocery_list', db, addRecipeInput).added === 2
+    ? ok('excluded line stays off the list')
+    : bad('recipe→list execute');
+  const withRecipe = run('get_grocery_list', db);
+  withRecipe.sections.flatMap((s) => s.items).some((i) => i.forRecipe === 'High-protein chili')
+    ? ok('list items carry their recipe backlink title')
+    : bad('forRecipe', JSON.stringify(withRecipe));
+  throws(() =>
+    summary('add_recipe_to_grocery_list', {
+      recipe_id: saved.id,
+      exclude: chiliLines.map((l) => l.id),
+    })
+  )
+    ? ok('all-excluded refused (nothing to add)')
+    : bad('all excluded');
+}
+
+console.log('32. schema/parser drift: every key a tool reads is a key it declares');
+{
+  // WHY THIS EXISTS. On 2026-08-11 a description-trimming pass rewrote several
+  // tool schemas and renamed two of their properties — complete_grocery_items
+  // declared "item_ids" while both handlers read "ids", and
+  // add_recipe_to_grocery_list declared "exclude_ingredient_ids" while both read
+  // "exclude". The first threw on EVERY call; the second silently ignored every
+  // exclusion and re-added ingredients the user already had.
+  //
+  // Nothing caught it. tsc cannot: inputSchema is an untyped record, so a
+  // property NAME is just a string. This suite could not: every other test here
+  // calls handlers directly with hand-built objects, which is precisely the
+  // contract the model does NOT get — the schema is what reaches the model
+  // verbatim (toWireTools), with additionalProperties: false forbidding the key
+  // the code actually wanted.
+  //
+  // So this reads the SOURCE of each tool's object literal and asserts that
+  // every top-level input key it looks up is one the schema declares. Scope is
+  // deliberately the literal itself: keys parsed inside shared helpers are not
+  // scanned (a false negative we accept) rather than attributed to whichever
+  // tool happens to sit next to the helper (a false positive we do not).
+  const sources = [
+    readFileSync(new URL('../src/lib/ai/tools/read-tools.ts', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/lib/ai/tools/write-tools.ts', import.meta.url), 'utf8'),
+  ];
+
+  /** The tool object literal: `const xTool: CoachTool = {` … a lone `};`. */
+  function toolLiteral(name) {
+    for (const src of sources) {
+      const at = src.indexOf("  name: '" + name + "',");
+      if (at < 0) continue;
+      const open = src.lastIndexOf(': CoachTool = {', at);
+      const close = src.indexOf('\n};', at);
+      if (open < 0 || close < 0) continue;
+      return src.slice(open, close);
+    }
+    return null;
+  }
+
+  // Both shapes the codebase uses to pull a key out of the tool's own input:
+  // a helper call — reqString(args, 'x') — and a direct read — args.x.
+  const HELPER =
+    /\b(?:reqString|reqNumber|reqEnum|reqBoolean|optString|optNumber|optDate|optEnum|optBoolean|parseIdArray)\s*\(\s*(?:args|asRecord\(input\))\s*,\s*'([^']+)'/g;
+  const DIRECT = /\bargs\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+
+  let drift = 0;
+  let scanned = 0;
+  for (const tool of COACH_TOOLS) {
+    const body = toolLiteral(tool.name);
+    if (body === null) continue;
+    scanned += 1;
+    const declared = new Set(Object.keys(tool.inputSchema?.properties ?? {}));
+    const read = new Set();
+    for (const re of [HELPER, DIRECT]) {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(body)) !== null) read.add(m[1]);
+    }
+    for (const key of read) {
+      if (!declared.has(key)) {
+        drift += 1;
+        bad(
+          tool.name + ' reads "' + key + '"',
+          'schema declares {' + [...declared].join(', ') + '}'
+        );
+      }
+    }
+  }
+
+  scanned === COACH_TOOLS.length
+    ? ok('every registered tool literal was located and scanned (' + scanned + ')')
+    : bad('tool literals not found', scanned + ' of ' + COACH_TOOLS.length);
+  drift === 0
+    ? ok('no schema/parser key drift across ' + COACH_TOOLS.length + ' tools')
+    : bad('schema/parser drift', drift + ' mismatched keys');
+
+  // The other half of the same contract.
+  let undeclaredRequired = 0;
+  for (const tool of COACH_TOOLS) {
+    const declared = new Set(Object.keys(tool.inputSchema?.properties ?? {}));
+    for (const key of tool.inputSchema?.required ?? []) {
+      if (!declared.has(key)) {
+        undeclaredRequired += 1;
+        bad(tool.name + ' requires "' + key + '"', 'which its properties do not declare');
+      }
+    }
+  }
+  undeclaredRequired === 0
+    ? ok('every required key is declared in properties')
+    : bad('required/properties drift', String(undeclaredRequired));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

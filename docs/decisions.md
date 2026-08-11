@@ -29,6 +29,74 @@ So the owner was not describing three devices that failed to communicate. They w
 
 **What is NOT restored, and why — so this does not swing the other way.** The presentation chrome stays out: no folio bars (`Log · SHEET L-01 · SCALE NTS`), no sheet numbers, no registration ticks. Those sit **outside `.cf-phone`** in the mockup's own markup, on the desk surround, and the mockup's CSS header says so itself; §5 forbids them independently ("no sheet numbers, tile keys, or designator badges inside the app that key no user action"). They are visible in any screenshot of the mockup, which makes them an easy thing to ask for — the answer is that they were never on the screen.
 
+## 2026-08-11 — The Eat tab leads with what is LEFT, and the number is guarded
+
+**Decision:** the Eat tab's hero is the day's **remainder**, not its total — and a remainder is computed **per metric**, rendered only when a target governs that metric **and** every meal logged today carries a value for it. Otherwise that metric falls back to the shipped eaten-with-denominator reading, and an authored line names what is missing. `src/lib/nutrition/remaining.ts` is the whole rule; `db/nutrition-remaining.test.mjs` pins it.
+
+**Why the flip.** The owner's reading from the device (2026-08-10): *"it leads with a retrospective total… 'what am I short / what should this meal be' exists only as a `/ 140g` denominator on a 3px progress rule."* Opening the tab you are usually about to eat.
+
+**Why the guard, which is the part that matters.** A day's totals **skip NULL by design** — `sumRounded` adds a meal's value or nothing at all, and the ledger row honestly renders an em-dash for a meal logged by name with no numbers. Eaten-so-far survives that; it is "what has been recorded", and the visible rows add to it. *What's left* does not: `target − incomplete sum` is too large by exactly the meals nobody measured, and it would print as a confident figure on the very day the screen below it admits it has no number. That is §5's *"no data, no number… never a plausible-looking estimate"*, and it is the one place this redesign could have shipped a lie. An empty day passes the test vacuously, which is right — with nothing logged, the whole target is what's left.
+
+**Consequences.**
+
+- The hero has two shapes, distinguished by the word beside it (`780 kcal left` / `1,620 kcal`), and the macro cells carry the mode in their **label** (`PROTEIN LEFT` vs `PROTEIN`) so a mixed grid is never ambiguous.
+- **No progress rule under a remainder.** A bar that fills as you eat, drawn under a number that counts down, is two opposite encodings of one quantity — the mark is drawn only in the eaten fallback, where it agrees with the figure above it.
+- **Fiber left the top grid.** It is summed from `meal_items`, so a manually-entered meal contributes none *by construction* and there is no per-meal column to test completeness against. It stays on the micronutrients screen, read against a reference rather than counted down.
+- Over-target renders as `120 over` in the same ink as every other state. Adherence-neutral: no red, no streak, no badge.
+
+---
+
+## 2026-08-11 — The macro cells are boxed (an owner override of the `grid` device)
+
+**Decision:** the three macro cells at the top of the Eat tab are drawn as boxes — `border border-hairline bg-paper-hi`, a 9pt gutter between them — while the kcal hero stays unboxed.
+
+**Why, and by whom.** Owner instruction, 2026-08-11: *"maybe put boxes for the nutrition info at the top for now though"*, given in the same breath as *"lets make it all a bit more readable"* while the paper grid was being retuned separately. Small figures are what struggle against a textured sheet; a box gives them their own ground. The hero is exempt because at 36px it holds itself, and five boxes stacked would read as a slab rather than a set of readings.
+
+**What it departs from.** `Block device="grid"` draws **nothing** — between-cell hairlines were cut on 2026-08-09 because an L of rules with no outer edge reads as a half-drawn box, and the owner has reported "weird boxes" four separate times. Four bordered cells abreast is close to the shape that was removed from Home in that same pass. **This is therefore an override, not a reinterpretation**, and it is recorded as one so the next person does not "fix" it back or cite it as precedent elsewhere.
+
+**How to unwind it if hardware disagrees:** remove the border/fill from the cell class in `app/nutrition.tsx` and let the lifted type scale carry the legibility on its own. Nothing else depends on the boxes.
+
+---
+
+## 2026-08-11 — One `Log` button, and the entry-method chooser moves into a sheet
+
+**Decision:** the Eat tab spends its single accent on one full-width button reading **`Log`**, which opens a full-screen modal (`src/components/nutrition/log-sheet.tsx`) holding every entry path: describe-or-photograph, add food, scan a barcode, from a template, cook a recipe, enter it manually.
+
+**Why.** Owner, 2026-08-10: five parallel affordances in the tab's most valuable strip is *"an entry-method chooser, which is pushed-screen grammar"*. An intermediate round replaced them with a stamp plus a fold, which was the same menu one tap deeper; the owner's next call was blunter and better — *"condense all the logging into just one Log button… and tone it down on the word salad, just call the button 'Log'"*.
+
+**Why a modal rather than a pushed route.** It matches the mode picker and the exercise picker, and it dismisses instead of stacking: logging a meal must never leave a back-stack entry pointing at a chooser. Because a `Modal` builds its own root it also prints its own `PaperGrid` — six surfaces in this app already had to learn that, and a seventh on blank stock would be visible immediately.
+
+**What it bought.** ~150pt of the first screen, which is why Kitchen now reaches the fold on a three-meal day. **Cook a recipe** is new: logging from the book previously required opening the recipe first.
+
+---
+
+## 2026-08-08 — Recipes are first-class tables; one standing grocery list
+
+**Decision:** recipes get their own tables (`recipes` + `recipe_ingredients`, migration 0031) rather than being modelled as protocol content or as an extension of `meal_templates`; and the grocery list is **one standing list** (`grocery_items` + a `grocery_name_prefs` memory table, 0032) rather than per-recipe lists or a per-trip document.
+
+**Reasoning.** A template is *what I ate* — a snapshot to re-log. A recipe is *how to cook one batch*: it has servings, instructions, a source, and ingredient lines that are text first and resolved foods second. Forcing that into `meal_templates` would have meant a nullable half of every template row and a "kind" column doing the work a table should. Protocols were rejected for the same reason in the other direction: a protocol is a versioned intention, and a recipe is not something you adhere to.
+
+**The ingredient model is the load-bearing part.** Each line keeps its **raw text as the source of truth**, with a parsed qty/unit/name overlay and an **optional, explicit** link to a catalog food — never fuzzy-matched (the labs rule: `Testosterone` is a substring of `Testosterone, Free`). Per-serving nutrition is computed only from resolved lines and is gated: `resolved = grams IS NOT NULL AND kcal IS NOT NULL`, enforced by a table-level `CHECK ((grams IS NULL) = (kcal IS NULL))`, and the screen says "not computed" rather than showing a partial sum as a total.
+
+**One list, because that is how a kitchen works.** You do not keep a list per recipe; you keep a list, and recipes contribute to it. Check-off is **soft** (`checked_at`, cleared by hand) so history can feed autocomplete and staples, and consolidation is a **view** — `consolidatedOpenList` merges same-name lines for display and never destroys the member rows. That distinction is why the Eat tab counts `openGroceryLineCount` (lines drawn) rather than raw rows (which double when two recipes both want milk).
+
+**Cooking a recipe logs through the existing meal path** (`logMealWithItems`), scaled from the recipe's own per-batch snapshots — never a live catalog read, so editing a food next month cannot rewrite what you ate last month (the 0018 snapshot discipline). Deleting a recipe `SET NULL`s `meals.recipe_id`: eating history outlives the book.
+
+---
+
+## 2026-08-08 — A third sanctioned network exception: user-initiated recipe-source fetches
+
+**Decision:** at import time, and only then, the app may fetch **the URL the user explicitly shared or pasted** plus its derived oEmbed / embed-captioned variants, reading caption and metadata **text** only. This joins Open Food Facts (barcode lookup) and air quality as the third non-AI network exception in a local-first, offline-except-AI app.
+
+**Reasoning.** The alternative is a proxy server, which the architecture forbids outright. The fetch is single-shot, user-initiated, and carries nothing personal — it is the same request the user's browser would make opening the link they already have. Every rung degrades: if the fetch fails or the page carries no recipe, the UI falls back to paste-the-caption and screenshot-vision, which must remain first-class paths rather than error states.
+
+**Bounds, which are the decision.** Never in the background. Never polling. Never media downloads — no video, no audio, no images fetched for storage. And the App Store framing follows from that: this is "save recipes you were sent", not "download from Instagram", which is the canonical 5.2.3 rejection case.
+
+**Anti-fabrication is doctrine, not a preference.** If the source does not contain the recipe, the import says so. It never generates a plausible recipe from a dish name and hashtags — the documented competitor failure (Flavorish), and the labs "never fuzzy-match" rule applied to food.
+
+---
+
+
 ## 2026-08-10 — A rule needs an enclosure; and the paper grid goes to 0.20
 
 Two calls from the same hardware pass, both about marks that were reasoned about in a browser and judged on a phone.

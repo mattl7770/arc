@@ -45,6 +45,17 @@ import {
   type WearableMetricPresence,
 } from '../series';
 import { retrievePassages } from '@/lib/rag/retrieve';
+import {
+  getRecipe,
+  isResolved,
+  listIngredients,
+  listRecipes,
+  parseSteps,
+  recipeCookStats,
+  recipeNutrition,
+} from '@/lib/db/repositories/recipes';
+import { listCheckedGroceryItems, listOpenGroceryItems } from '@/lib/db/repositories/grocery';
+import { CATEGORY_LABELS } from '@/lib/grocery/categories';
 import { searchUserHistory } from '../history-search';
 import { ageOn } from '../turn-context';
 import {
@@ -1526,6 +1537,170 @@ const searchHistory: CoachTool = {
   },
 };
 
+// --- get_recipes / get_recipe / get_grocery_list (docs/recipes-grocery.md §6) --
+
+/** round1 for nullable per-macro values (null = honest "—", stays null). */
+const round1OrNull = (v: number | null): number | null => (v === null ? null : round1(v));
+
+/** Tolerant parse of a recipe's tags JSON → string array. */
+function parseTags(tagsJson: string | null): string[] {
+  if (tagsJson === null) return [];
+  try {
+    const raw: unknown = JSON.parse(tagsJson);
+    return Array.isArray(raw) ? raw.filter((t): t is string => typeof t === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+const getRecipesTool: CoachTool = {
+  name: 'get_recipes',
+  description:
+    "The user's recipe book, as summaries — and where recipe_id comes from. " +
+    'perServingKcal is null when the nutrition is incomplete.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Title search; omit for the whole book.' },
+      favorite_only: { type: 'boolean' },
+      limit: { type: 'number', description: 'Default 10, cap 25.' },
+    },
+    additionalProperties: false,
+  },
+  readOnly: true,
+  execute: (db, input) => {
+    const args = asRecord(input);
+    const query = optString(args, 'query') ?? '';
+    const favoriteOnly = args.favorite_only === true;
+    const rawLimit = optNumber(args, 'limit');
+    const limit = Math.min(Math.max(Math.trunc(rawLimit ?? 10), 1), 25);
+    const all = listRecipes(db, query, { favoriteOnly, limit: 1000 });
+    const shown = all.slice(0, limit).map((r) => ({
+      id: r.recipe.id,
+      title: r.recipe.title,
+      servings: r.recipe.servings,
+      perServingKcal: r.perServingKcal === null ? null : Math.round(r.perServingKcal),
+      nutritionComplete: r.nutritionComplete,
+      ingredientCount: r.ingredientCount,
+      timesCooked: r.timesCooked,
+      lastCooked: r.lastCooked,
+      tags: parseTags(r.recipe.tags),
+    }));
+    return json({ recipes: shown, omitted: all.length - shown.length });
+  },
+};
+
+const getRecipeTool: CoachTool = {
+  name: 'get_recipe',
+  description:
+    'One recipe in full: ingredient lines with their ids and resolution state, steps, and ' +
+    'per-serving nutrition (null where it is not computed).',
+  inputSchema: {
+    type: 'object',
+    properties: { recipe_id: { type: 'string' } },
+    required: ['recipe_id'],
+    additionalProperties: false,
+  },
+  readOnly: true,
+  execute: (db, input) => {
+    const id = reqString(asRecord(input), 'recipe_id');
+    const recipe = getRecipe(db, id);
+    if (!recipe) throw new Error('No recipe with that id — call get_recipes to see the book.');
+    const nutrition = recipeNutrition(db, id);
+    const stats = recipeCookStats(db, id);
+    const per = nutrition.perServing;
+    return json({
+      id: recipe.id,
+      title: recipe.title,
+      servings: recipe.servings,
+      totalWeightG: recipe.total_weight_g,
+      prepMin: recipe.prep_min,
+      cookMin: recipe.cook_min,
+      source: {
+        kind: recipe.source,
+        url: recipe.source_url,
+        platform: recipe.source_platform,
+        author: recipe.source_author,
+      },
+      ingredients: listIngredients(db, id).map((line) => ({
+        id: line.id,
+        raw: line.raw_text,
+        qty: line.qty,
+        unit: line.unit,
+        name: line.name,
+        grams: line.grams,
+        resolved: isResolved(line),
+        negligible: line.negligible === 1,
+      })),
+      steps: parseSteps(recipe.steps),
+      nutrition: {
+        complete: nutrition.complete,
+        unresolvedCount: nutrition.unresolvedCount,
+        perServing: {
+          kcal: per.kcal === null ? null : Math.round(per.kcal),
+          protein_g: round1OrNull(per.protein_g),
+          carbs_g: round1OrNull(per.carbs_g),
+          fat_g: round1OrNull(per.fat_g),
+          fiber_g: round1OrNull(per.fiber_g),
+        },
+      },
+      timesCooked: stats.timesCooked,
+      lastCooked: stats.lastCooked,
+      notes: recipe.notes,
+    });
+  },
+};
+
+const getGroceryListTool: CoachTool = {
+  name: 'get_grocery_list',
+  description: 'The standing grocery list: open items with their ids and categories.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      include_checked: { type: 'boolean', description: 'Also return what is in the cart.' },
+    },
+    additionalProperties: false,
+  },
+  readOnly: true,
+  execute: (db, input) => {
+    const args = asRecord(input);
+    const open = listOpenGroceryItems(db);
+    const recipeTitles = new Map<string, string>();
+    for (const item of open) {
+      if (item.recipe_id && !recipeTitles.has(item.recipe_id)) {
+        recipeTitles.set(
+          item.recipe_id,
+          getRecipe(db, item.recipe_id)?.title ?? 'a deleted recipe'
+        );
+      }
+    }
+    const sections: { category: string; items: unknown[] }[] = [];
+    for (const item of open) {
+      const label = CATEGORY_LABELS[item.category] ?? item.category;
+      let section = sections.find((s) => s.category === label);
+      if (!section) {
+        section = { category: label, items: [] };
+        sections.push(section);
+      }
+      section.items.push({
+        id: item.id,
+        name: item.name,
+        qty: item.qty_text,
+        forRecipe: item.recipe_id ? (recipeTitles.get(item.recipe_id) ?? null) : null,
+      });
+    }
+    const checked =
+      args.include_checked === true
+        ? listCheckedGroceryItems(db, 20).map((i) => ({ id: i.id, name: i.name }))
+        : undefined;
+    return json({
+      openCount: open.length,
+      sections,
+      ...(checked ? { inCart: checked } : {}),
+    });
+  },
+};
+
 /**
  * search_knowledge is deliberately NOT here. It needs the on-device embedder
  * (Phase 6 #25), which has no native build yet, so every call returns
@@ -1552,4 +1727,7 @@ export const READ_TOOLS: CoachTool[] = [
   getBiomarkerHistory,
   getMemories,
   searchHistory,
+  getRecipesTool,
+  getRecipeTool,
+  getGroceryListTool,
 ];

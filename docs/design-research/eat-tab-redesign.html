@@ -1,0 +1,640 @@
+<title>ARC — The Eat tab, redrawn</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --page-bg:#e7e8e6; --page-panel:#f4f5f3; --page-ink:#181b1a; --page-ink2:#505553;
+  --page-muted:#858b88; --page-border:#d4d6d3; --page-ring:#12454e;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --page-bg:#101211; --page-panel:#191c1b; --page-ink:#eceeed; --page-ink2:#acb3b0;
+    --page-muted:#757c79; --page-border:#292d2b; --page-ring:#4e96a1; }
+}
+:root[data-theme="light"]{ --page-bg:#e7e8e6; --page-panel:#f4f5f3; --page-ink:#181b1a; --page-ink2:#505553;
+  --page-muted:#858b88; --page-border:#d4d6d3; --page-ring:#12454e; }
+:root[data-theme="dark"]{ --page-bg:#101211; --page-panel:#191c1b; --page-ink:#eceeed; --page-ink2:#acb3b0;
+  --page-muted:#757c79; --page-border:#292d2b; --page-ring:#4e96a1; }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--page-bg);color:var(--page-ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;line-height:1.5;}
+@media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important}}
+.wrap{max-width:1180px;margin:0 auto;padding:40px 24px 20px;}
+.kicker{font:600 11px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:2.5px;text-transform:uppercase;
+  color:var(--page-ring);margin:0 0 14px;}
+/* The page speaks in the product's own reading face — Iowan on iOS, Palatino
+   Linotype on Windows — so the sheets and the prose around them are one voice. */
+h1{font:600 clamp(28px,4.2vw,42px)/1.08 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  margin:0 0 16px;letter-spacing:-.005em;max-width:26ch;text-wrap:balance;}
+.lede{font-size:16px;color:var(--page-ink2);margin:0;max-width:68ch;}
+.lede em{font-style:normal;color:var(--page-ink);font-weight:600}
+.provenance{font-size:13.5px;color:var(--page-muted);margin:14px 0 0;max-width:82ch;}
+.provenance b{color:var(--page-ink2);font-weight:600}
+
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px;margin:26px 0 0;}
+.panel{background:var(--page-panel);border:1px solid var(--page-border);border-radius:3px;padding:14px 16px;}
+.panel h3{font:600 10px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:1.4px;text-transform:uppercase;
+  color:var(--page-muted);margin:0 0 9px;}
+.panel p{margin:0 0 8px;font-size:13.5px;color:var(--page-ink2);}
+.panel p:last-child{margin-bottom:0}
+.panel b{color:var(--page-ink);font-weight:600}
+.panel .was{color:var(--page-muted);}
+.panel code,.unit-note code{font:600 12.5px/1.4 Menlo,Consolas,ui-monospace,monospace;color:var(--page-ink);
+  background:var(--page-bg);border:1px solid var(--page-border);border-radius:2px;padding:1px 5px;}
+.fixlist{margin:0;padding:0;list-style:none;}
+.fixlist li{font-size:13.5px;color:var(--page-ink2);padding:7px 0;border-top:1px solid var(--page-border);}
+.fixlist li:first-child{border-top:none;padding-top:0}
+.fixlist .q{display:block;color:var(--page-muted);font-size:12.5px;margin-bottom:2px;font-style:italic}
+.fixlist b{color:var(--page-ink);font-weight:600}
+.verdict{border-left:3px solid var(--page-ring);padding-left:11px;margin:0 0 8px}
+
+.hintbar{display:flex;gap:9px;align-items:baseline;margin:22px 0 2px;color:var(--page-muted);font-size:12.5px;flex-wrap:wrap}
+.hintbar .tt{font-weight:600;color:var(--page-ink2)}
+.stage{position:relative;width:100%;overflow-x:auto;padding:10px 0 40px;}
+.stage:focus-visible{outline:2px solid var(--page-ring);outline-offset:3px}
+.lane{display:flex;gap:26px;align-items:flex-start;padding:0 24px;min-width:min-content;}
+.unit{flex:none;width:375px;}
+.unit-label{font:600 10px/1.4 ui-monospace,Menlo,Consolas,monospace;letter-spacing:1.6px;text-transform:uppercase;
+  color:var(--page-muted);margin:10px 0 0;}
+.unit-note{font-size:12.5px;color:var(--page-ink2);margin:6px 0 0;line-height:1.55;}
+.unit-note b{color:var(--page-ink);font-weight:600}
+
+/* ======================= THE SHEET — Conformed Set, as shipped =======================
+   Tokens are the live ones (tailwind.config.js + src/constants/theme.ts); geometry is
+   the live one (px-5 gutter, plate px-3.5 py-3 on a 1px rule, sections on whitespace).
+   TWO deliberate departures, both flagged in the notes: the type scale is lifted a
+   step for readability, and the paper grid is drawn at half its shipped weight because
+   the sheet texture is being retuned in parallel.                                    */
+.ph{
+  --paper:#E7E4DA; --paper-hi:#F5F3EC; --paper-dim:#D9D5C8; --paper-deep:#C6C1B0;
+  --rule:#A9A28E; --ink:#1C1911; --ink-2:#443F30; --ink-3:#5C5340;
+  --pine:#12454E; --pine-on:#F5F3EC;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --label:"Avenir Next Condensed","Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --mono:Menlo,Consolas,"Courier New",monospace;
+  position:relative;width:375px;height:812px;overflow:hidden;
+  display:flex;flex-direction:column;
+  background-color:var(--paper);
+  background-image:
+    repeating-linear-gradient(0deg, rgba(28,25,17,.10) 0 1px, transparent 1px 9px),
+    repeating-linear-gradient(90deg, rgba(28,25,17,.10) 0 1px, transparent 1px 9px);
+  border:1px solid var(--rule);
+  color:var(--ink);
+  font-variant-numeric:tabular-nums;
+}
+.statusbar{height:44px;flex:none;display:flex;align-items:flex-end;justify-content:space-between;
+  padding:0 22px 6px;font:600 13px/1 var(--mono);color:var(--ink)}
+.statusbar .glyphs{display:flex;gap:5px;align-items:flex-end;color:var(--ink)}
+.statusbar .bar{display:inline-block;width:3px;background:var(--ink)}
+.sheet{flex:1;min-height:0;overflow:hidden;padding:0 20px 20px;} /* Screen's px-5 gutter */
+.tabbar{flex:none;height:83px;background:var(--paper-hi);
+  border-top:1px solid var(--rule);display:flex;padding:8px 0 24px;}
+.tabbar div{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
+  font:600 10px/1 var(--label);letter-spacing:.6px;text-transform:uppercase;color:var(--ink-3)}
+.tabbar div.on{color:var(--pine)}
+.tabbar .ic{width:22px;height:22px;border:1.5px solid currentColor;border-radius:3px}
+.tabbar div.on .ic{background:currentColor}
+
+.title{font:600 26px/1.15 var(--serif);color:var(--ink);padding-top:8px}
+.modalhdr{display:flex;align-items:center;justify-content:space-between;padding-top:8px}
+.modalhdr .t{font:600 19px/1.2 var(--serif);color:var(--ink)}
+.modalhdr .x{width:26px;height:26px;position:relative;opacity:.75}
+.modalhdr .x:before,.modalhdr .x:after{content:"";position:absolute;left:3px;top:12px;width:20px;height:1.5px;background:var(--ink-2)}
+.modalhdr .x:before{transform:rotate(45deg)}.modalhdr .x:after{transform:rotate(-45deg)}
+.sec{margin-top:28px}          /* mt-7 — the house section gap */
+.seclabel{display:flex;align-items:baseline;gap:8px}
+.seclabel .t{flex:1;font:600 11px/1.3 var(--label);letter-spacing:1.2px;text-transform:uppercase;color:var(--ink-2)}
+.seclabel .n{font:400 11px/1.3 var(--mono);color:var(--ink-2)}
+.plate{background:var(--paper-hi);border:1px solid var(--rule);padding:13px 14px}
+.rule{height:1px;background:var(--rule)}
+
+.hero{display:flex;align-items:baseline;gap:7px;margin-top:9px}
+.hero .v{font:400 38px/1 var(--mono);color:var(--ink)}
+.hero .u{font:400 15px/1 var(--mono);color:var(--ink-2)}
+.track{height:3px;background:var(--paper-deep);margin-top:7px}
+.track i{display:block;height:3px;background:var(--ink-2)}
+/* OWNER OVERRIDE (2026-08-11): the macro cells are BOXED. The shipped `grid`
+   device draws nothing — but small figures are what struggle against a textured
+   sheet, and a box is the cheapest way to give them their own ground. The hero
+   is left unboxed: at 38px it holds itself, and five boxes would be a slab. */
+.cells{display:flex;flex-wrap:wrap;gap:9px;margin-top:16px}
+.cell{width:calc(50% - 4.5px);border:1px solid var(--rule);background:var(--paper-hi);padding:10px 12px}
+.cell .k{font:600 11px/1.3 var(--label);letter-spacing:1.2px;text-transform:uppercase;color:var(--ink-2)}
+.cell .v{font:600 20px/1.1 var(--mono);color:var(--ink);margin-top:5px}
+.cell .v small{font-weight:400;font-size:11px;color:var(--ink-2);margin-left:5px}
+
+.row{display:flex;align-items:center;gap:12px;min-height:46px;padding:13px 0}
+.row .body{flex:1}
+.row .t{font:400 16px/1.35 var(--serif);color:var(--ink)}
+.row .s{font:400 13px/1.45 var(--serif);color:var(--ink-2);margin-top:3px}
+.row .m{font:400 12px/1.45 var(--mono);color:var(--ink-2);margin-top:4px}
+.row .meta{font:400 18px/1.2 var(--mono);color:var(--ink)}
+.row .meta small{font-size:11px;color:var(--ink-2);margin-left:3px}
+.row .kcal{font:400 15px/1.3 var(--mono);color:var(--ink)}
+.row .time{width:46px;font:400 12px/1.5 var(--mono);color:var(--ink-2);align-self:flex-start;padding-top:3px}
+.chev{width:7px;height:12px;border-right:1.5px solid var(--ink-2);border-top:1.5px solid var(--ink-2);
+  transform:rotate(45deg);flex:none}
+.chev--down{transform:rotate(135deg);margin-top:-4px}
+.ic{width:19px;height:19px;flex:none;border:1.5px solid var(--ink-2);border-radius:2px}
+.prose{font:400 14px/1.6 var(--serif);color:var(--ink-2);margin-top:9px}
+.note{font:400 13px/1.55 var(--serif);color:var(--ink-2);margin-top:16px}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;min-height:46px;
+  border:1px solid var(--rule);border-radius:2px;margin-top:16px;
+  font:600 13px/1 var(--label);letter-spacing:1.2px;text-transform:uppercase;color:var(--ink)}
+/* The one action, the whole word: a full-width accent button (the sanctioned
+   alternative to a stamp — app/protocols.tsx, app/labs.tsx). */
+.logbtn{display:flex;align-items:center;justify-content:center;min-height:52px;
+  background:var(--pine);border-radius:2px;
+  font:600 16px/1 var(--label);letter-spacing:.3px;color:var(--pine-on)}
+.btnrow{display:flex;gap:9px;margin-top:12px}
+.btnrow .btn{flex:1;margin-top:0}
+/* Capture surface — form (a): the well IS the field, the input inside is bare. */
+.well{border:1px solid var(--paper-deep);background:var(--paper-dim);padding:13px 14px;min-height:92px;
+  font:400 15px/1.5 var(--serif);color:var(--ink-3)}
+.stackhdr{display:flex;align-items:center;gap:10px;padding-top:8px}
+.stackhdr .back{width:9px;height:15px;border-left:1.5px solid var(--ink-2);border-bottom:1.5px solid var(--ink-2);
+  transform:rotate(45deg);margin-left:3px}
+.stackhdr .t{font:600 19px/1.2 var(--serif);color:var(--ink);margin-left:6px}
+.spark{display:flex;align-items:flex-end;gap:1px;height:24px;width:58px;flex:none}
+.spark i{display:block;width:3px;background:var(--ink-2)}
+.spark i:last-child{background:var(--ink)}
+
+/* Sheet 00 only — the shipped type scale, so the readability change is visible. */
+.ph--shipped .seclabel .t,.ph--shipped .seclabel .n{font-size:10px;color:var(--ink-3)}
+/* Sheet 00 keeps the shipped grid: no boxes, column padding, no gap. */
+.ph--shipped .cells{gap:0;margin-top:0}
+.ph--shipped .cell{width:50%;border:0;background:none;padding:18px 0 0}
+.ph--shipped .cell:nth-child(odd){padding-right:12px}
+.ph--shipped .cell:nth-child(even){padding-left:12px}
+.ph--shipped .cell .k{font-size:10px;color:var(--ink-3)}
+.ph--shipped .cell .v{font-size:18px}
+.ph--shipped .cell .v small{font-size:10px;color:var(--ink-3)}
+.ph--shipped .row .t{font-size:15px}
+.ph--shipped .row .s{font-size:13px;color:var(--ink-3)}
+.ph--shipped .row .m{font-size:11px;color:var(--ink-3)}
+.ph--shipped .row .time{font-size:11px;color:var(--ink-3)}
+.ph--shipped .row .kcal{font-size:13px;color:var(--ink-2)}
+.ph--shipped .hero .v{font-size:36px}
+.ph--shipped .hero .u{font-size:14px;color:var(--ink-3)}
+.ph--shipped .row{min-height:44px;padding:12px 0}
+</style>
+
+<div class="wrap">
+  <p class="kicker">ARC · Eat tab · Layout proposal · Round 3</p>
+  <h1>The Eat tab, redrawn as a tab root.</h1>
+  <p class="lede">Eat became a tab on 09 Aug by a one-line re-export of the pushed nutrition hub — <em>the route changed and the screen did not</em>. This is the screen redrawn for the job, and widened to hold what nutrition now contains: the <em>recipe book</em>, the <em>grocery list</em>, link <em>import</em>, and the Coach’s eight new food tools.</p>
+  <p class="provenance"><b>Where it stands:</b> the type scale is lifted a step and the metadata layer darkened for legibility; all logging collapses into <b>one button that says <em>Log</em></b>; the macro cells are now <b>boxed</b>; recipe import moves into the recipe book; and the estimate screen gains a <b>photo-library</b> input. The sheets are drawn at <b>half the shipped paper-grid weight</b>, on the assumption that the background retune lands separately — everything else is the live Conformed Set: <b>px-5</b> gutter, plates at <b>px-3.5 py-3</b> on a 1px rule, sections on whitespace alone, one accent per screen. Every phone is a true 375 × 812, so the cut at the tab bar is the real fold.</p>
+
+  <div class="grid2">
+    <div class="panel">
+      <h3>What you asked for, round by round</h3>
+      <ul class="fixlist">
+        <li><span class="q">“Put boxes for the nutrition info at the top.”</span><b>The four macro cells are boxed</b> — 1px rule on plate stock, a 9pt gutter between them. The hero stays unboxed: at 38px it holds its own ground, and five boxes would read as a slab. Sheet 00 keeps the unboxed grid for comparison.</li>
+        <li><span class="q">“Upload a photo from my photo library for nutrition tracking.”</span><b>A third input on the estimate screen</b> — type it, take a photo, or choose one — feeding the pipeline that already exists: one model turn, grounded against the catalog, editable review, nothing written until you save. Sheet 06.</li>
+        <li><span class="q">“Make it all a bit more readable.”</span><b>Every type role goes up a step and the metadata layer darkens</b> — section labels 10 → 11px, row titles 15 → 16px, detail lines 11 → 12–13px and off the muted ink onto <code>ink-secondary</code>, rows 44 → 46pt with more air.</li>
+        <li><span class="q">“Condense all the logging into just one Log button.”</span><b>One full-width accent button reading <em>Log</em>.</b> No stamp, no fold, no sub-heading, no explanatory sentence. Every path lives inside it — sheet 05.</li>
+        <li><span class="q">“Move the import recipe button into the recipe book screen.”</span><b>Done — Kitchen is two rows now.</b> Import is already the book’s own primary action, so the tab root stops carrying a third door to the same place.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Your original four notes, still answered</h3>
+      <p><b>Leads with what’s left</b>, not what’s eaten: <code>780 kcal left</code>, with <code>1,620 of 2,400 kcal</code> as the corner note, so the three figures reconcile on one line.</p>
+      <p><b>One obvious action</b> instead of a five-item menu — now literally one word.</p>
+      <p><b>“Set daily targets”</b> is a full-width control while targets are null, and retires the moment they exist.</p>
+      <p><b>“Over time”</b> carries two real readings — 14-day energy and protein — so the tab can finally answer how a month has gone.</p>
+    </div>
+    <div class="panel">
+      <h3>The honesty rule the hero has to pass</h3>
+      <p>A day’s totals <b>skip NULL by design</b> — a meal logged without a kcal figure contributes nothing to the sum (<code>sumRounded</code>, nutrition.tsx:183). Eaten-so-far survives that; <b>“what’s left” does not</b>. Subtract an incomplete sum from a target and the tab prints a confident number that is simply too large, on the exact days its own ledger shows an em-dash.</p>
+      <p>So the remainder is computed <b>per metric</b>, and shown only when a target exists <b>and</b> every meal logged today carries a value for it. Otherwise that metric falls back to the reading that ships now — eaten, with its denominator — and one line says why. Sheet 06 is that state.</p>
+    </div>
+    <div class="panel">
+      <h3>Sharing from Instagram — where it actually stands</h3>
+      <p class="verdict"><b>Not yet, and it cannot be until you run an EAS build.</b> A share extension is a <b>new native target</b>; it does not exist in the binary on your phone, so ARC will not appear in Instagram’s share sheet today.</p>
+      <p><b>Written and verified as far as is possible without a device:</b> the extension is configured in <code>app.json</code> for text, links and images; the plugin chain evaluates cleanly and emits the target EAS provisions; the deep link routes to the import screen; the payload router (link beats link-in-text beats text beats screenshot) is pinned by tests. On the current binary it all no-ops rather than breaking.</p>
+      <p><b>Working right now:</b> copy the link, open the recipe book, Import, paste. That path needs only the network and stays the permanent fallback.</p>
+      <p class="was">Two caveats worth holding: Expo’s first-party receive API is <b>experimental</b> and cold/warm delivery is unproven on hardware (<code>expo-share-intent</code> is the recorded fallback), and the build needs regenerated provisioning — a new target plus an App Group entitlement, and the last attempt already failed on signing.</p>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:12px">
+    <h3>Calls that are yours to overrule</h3>
+    <p><b>1 · “Kitchen” as the section name.</b> A real-world noun for where food lives before it is a meal, and it leaves room for a pantry row later. If it reads as conceit vocabulary, the plain alternative is “Recipes &amp; grocery”.</p>
+    <p><b>2 · The Log button is solid petrol, not a bordered stamp.</b> One word wants weight; a 1.5px outline around the word “Log” would read as a spacer. It stays the tab’s only accent in every state — including first run, where “Set daily targets” is an outlined secondary above it.</p>
+    <p><b>3 · Log opens a full-screen sheet, not a menu that pushes a screen.</b> Same shape as the mode picker and the exercise picker, so it dismisses with a close control and never adds a back-stack.</p>
+    <p><b>4 · Over time shows energy and protein, with no chooser.</b> No chips, no window switcher — no tab root in this app has in-page sub-navigation, and the 7/30/90 chooser already lives one tap down in History.</p>
+    <p><b>5 · Boxing the cells departs from the shipped surface system, on your instruction.</b> The <code>grid</code> device draws nothing today — the between-cell hairlines were cut in August because they read as a half-drawn box, and four bordered cells abreast is close to the shape you rejected on Home. Worth a look on hardware before it sticks; if it reads as noise, the fallback is boxing nothing and letting the lifted type scale carry the legibility on its own.</p>
+    <p class="was"><b>Out of scope, still true:</b> the Eat tab stays mode-blind — a Sick day does not move these targets — which belongs to the Modes item. And the five recipe/grocery screens on the feature branch are still drawn in Porcelain Ledger; they need a Conformed Set restyle in the same pass that builds this, since that branch was cut before the restyle landed.</p>
+  </div>
+
+  <div class="hintbar">
+    <span class="tt">Reading the lane:</span>
+    <span>00 is what ships today, at shipped type sizes and with the unboxed grid, for comparison. 01 is the proposal at 16:20 on a normal day; 02 is that same screen scrolled to the new sections; 03 is the state the tab wakes up in every morning; 04 is a fresh install; 05 is what the Log button opens; 06 is the photo path, library included; 07 is the day the data cannot support a remainder.</span>
+  </div>
+</div>
+
+<div class="wrap" style="padding-top:0;padding-bottom:0;max-width:none">
+  <div class="stage">
+    <div class="lane">
+
+      <!-- ============================================ 00 · AS SHIPPED -->
+      <div class="unit">
+        <div class="ph ph--shipped">
+          <div class="statusbar"><span>16:20</span>
+            <span class="glyphs"><i class="bar" style="height:5px"></i><i class="bar" style="height:7px"></i><i class="bar" style="height:9px"></i><i class="bar" style="height:11px"></i></span>
+          </div>
+          <div class="sheet">
+            <div class="title">Nutrition</div>
+
+            <div class="sec" style="margin-top:20px">
+              <div class="seclabel"><span class="t">Today</span><span class="n">of 2,400 target</span></div>
+              <div class="hero"><span class="v">1,620</span><span class="u">kcal</span></div>
+              <div class="track"><i style="width:67.5%"></i></div>
+              <div class="cells">
+                <div class="cell"><div class="k">Protein</div><div class="v">112<small>/ 180g</small></div><div class="track"><i style="width:62%"></i></div></div>
+                <div class="cell"><div class="k">Carbs</div><div class="v">156<small>/ 240g</small></div><div class="track"><i style="width:65%"></i></div></div>
+                <div class="cell"><div class="k">Fat</div><div class="v">61<small>/ 70g</small></div><div class="track"><i style="width:87%"></i></div></div>
+                <div class="cell"><div class="k">Fiber</div><div class="v">22<small>/ 38g</small></div><div class="track"><i style="width:58%"></i></div></div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="seclabel"><span class="t">Log a meal</span></div>
+              <div class="plate" style="margin-top:8px;border-width:1.5px;border-color:#12454E">
+                <div class="row" style="padding:3px 0">
+                  <span class="ic" style="border-color:#12454E;width:20px;height:20px"></span>
+                  <div class="body">
+                    <div class="t" style="font-weight:600">Describe or snap a meal</div>
+                    <div class="s">Type it or photograph the plate — you review before it logs</div>
+                  </div>
+                  <span class="chev" style="border-color:#12454E"></span>
+                </div>
+              </div>
+              <div class="plate" style="margin-top:8px">
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Add food</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Scan a barcode</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">From a template</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Manual entry</div></div><span class="chev chev--down"></span></div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="plate">
+                <div class="seclabel"><span class="t">Eaten today</span><span class="n">1,620 kcal</span></div>
+                <div class="row"><span class="time">08:30</span><div class="body"><div class="t">Protein oats</div><div class="m">42P · 68C · 20F</div></div><span class="kcal">620</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div><span class="ic"></span>Home</div><div><span class="ic"></span>Coach</div><div><span class="ic"></span>Log</div>
+            <div class="on"><span class="ic"></span>Eat</div><div><span class="ic"></span>Train</div><div><span class="ic"></span>Data</div>
+          </div>
+        </div>
+        <p class="unit-label">00 · As shipped today</p>
+        <p class="unit-note">The pushed hub, promoted to a tab with only its header changed — drawn here at its real type sizes. <b>Everything above the fold is retrospective or a menu:</b> energy already eaten, then five parallel ways to log, of which the loudest spends four lines explaining itself. “Set daily targets” — the action that gives every number here a meaning — is the 10px corner label, on the app’s absolute text floor.</p>
+      </div>
+
+      <!-- ============================================ 01 · PROPOSED, mid-afternoon -->
+      <div class="unit">
+        <div class="ph">
+          <div class="statusbar"><span>16:20</span>
+            <span class="glyphs"><i class="bar" style="height:5px"></i><i class="bar" style="height:7px"></i><i class="bar" style="height:9px"></i><i class="bar" style="height:11px"></i></span>
+          </div>
+          <div class="sheet">
+            <div class="title">Nutrition</div>
+
+            <!-- TODAY — prospective. The hero is what is LEFT; the corner note names
+                 the eaten ledger it was subtracted from and opens the targets editor.
+                 No progress rules in this mode: a bar that fills as you eat, drawn
+                 under a number that counts down, is two opposite encodings of one
+                 quantity. "68 left of 180 g" states the ratio in words. -->
+            <div class="sec" style="margin-top:20px">
+              <div class="seclabel"><span class="t">Today</span><span class="n">1,620 of 2,400 kcal</span></div>
+              <div class="hero"><span class="v">780</span><span class="u">kcal left</span></div>
+              <div class="cells">
+                <div class="cell"><div class="k">Protein</div><div class="v">68<small>left of 180 g</small></div></div>
+                <div class="cell"><div class="k">Carbs</div><div class="v">84<small>left of 240 g</small></div></div>
+                <div class="cell"><div class="k">Fat</div><div class="v">9<small>left of 70 g</small></div></div>
+                <div class="cell"><div class="k">Fiber</div><div class="v">16<small>left of 38 g</small></div></div>
+              </div>
+            </div>
+
+            <!-- The one action, the whole word. -->
+            <div class="sec"><div class="logbtn">Log</div></div>
+
+            <!-- EATEN TODAY — the ledger. Its note is the sum of its rows, and that
+                 same figure is the "1,620" in the Today corner. -->
+            <div class="sec">
+              <div class="plate">
+                <div class="seclabel"><span class="t">Eaten today</span><span class="n">1,620 kcal</span></div>
+                <div class="row"><span class="time">08:30</span><div class="body"><div class="t">Protein oats</div><div class="m">42P · 68C · 20F</div></div><span class="kcal">620</span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="time">12:40</span><div class="body"><div class="t">Salmon + lentils</div><div class="m">46P · 62C · 33F · 3 items</div></div><span class="kcal">740</span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="time">16:10</span><div class="body"><div class="t">Greek yogurt + berries</div><div class="m">24P · 26C · 8F</div></div><span class="kcal">260</span></div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="seclabel"><span class="t">Kitchen</span></div>
+              <div class="plate" style="margin-top:9px">
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Recipe book</div><div class="m">24 recipes · 3 cooked this month</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Grocery list</div><div class="m">12 to buy · 3 in the cart</div></div><span class="chev"></span></div>
+              </div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div><span class="ic"></span>Home</div><div><span class="ic"></span>Coach</div><div><span class="ic"></span>Log</div>
+            <div class="on"><span class="ic"></span>Eat</div><div><span class="ic"></span>Train</div><div><span class="ic"></span>Data</div>
+          </div>
+        </div>
+        <p class="unit-label">01 · Proposed — a normal afternoon</p>
+        <p class="unit-note"><b>Prospective first, then one word, then the record.</b> Collapsing five logging affordances into one button bought back about 150pt — enough that <b>Kitchen now reaches the first screen</b> on a three-meal day, where before it was a scroll away. The corner note still opens the targets editor; it no longer has to advertise itself. The old “Log a meal” heading is gone with the menu it labelled.</p>
+      </div>
+
+      <!-- ============================================ 02 · SAME SCREEN, SCROLLED -->
+      <div class="unit">
+        <div class="ph">
+          <div class="statusbar"><span>16:20</span>
+            <span class="glyphs"><i class="bar" style="height:5px"></i><i class="bar" style="height:7px"></i><i class="bar" style="height:9px"></i><i class="bar" style="height:11px"></i></span>
+          </div>
+          <div class="sheet">
+            <div style="margin-top:-300px">
+              <div class="title">Nutrition</div>
+              <div class="sec" style="margin-top:20px">
+                <div class="seclabel"><span class="t">Today</span><span class="n">1,620 of 2,400 kcal</span></div>
+                <div class="hero"><span class="v">780</span><span class="u">kcal left</span></div>
+                <div class="cells">
+                  <div class="cell"><div class="k">Protein</div><div class="v">68<small>left of 180 g</small></div></div>
+                  <div class="cell"><div class="k">Carbs</div><div class="v">84<small>left of 240 g</small></div></div>
+                  <div class="cell"><div class="k">Fat</div><div class="v">9<small>left of 70 g</small></div></div>
+                  <div class="cell"><div class="k">Fiber</div><div class="v">16<small>left of 38 g</small></div></div>
+                </div>
+              </div>
+              <div class="sec"><div class="logbtn">Log</div></div>
+              <div class="sec">
+                <div class="plate">
+                  <div class="seclabel"><span class="t">Eaten today</span><span class="n">1,620 kcal</span></div>
+                  <div class="row"><span class="time">08:30</span><div class="body"><div class="t">Protein oats</div><div class="m">42P · 68C · 20F</div></div><span class="kcal">620</span></div>
+                  <div class="rule"></div>
+                  <div class="row"><span class="time">12:40</span><div class="body"><div class="t">Salmon + lentils</div><div class="m">46P · 62C · 33F · 3 items</div></div><span class="kcal">740</span></div>
+                  <div class="rule"></div>
+                  <div class="row"><span class="time">16:10</span><div class="body"><div class="t">Greek yogurt + berries</div><div class="m">24P · 26C · 8F</div></div><span class="kcal">260</span></div>
+                </div>
+              </div>
+
+              <!-- KITCHEN — two standing objects. Live state sits in the row body,
+                   the way a meal row carries its macros; never in the chevron slot. -->
+              <div class="sec">
+                <div class="seclabel"><span class="t">Kitchen</span></div>
+                <div class="plate" style="margin-top:9px">
+                  <div class="row"><span class="ic"></span><div class="body"><div class="t">Recipe book</div><div class="m">24 recipes · 3 cooked this month</div></div><span class="chev"></span></div>
+                  <div class="rule"></div>
+                  <div class="row"><span class="ic"></span><div class="body"><div class="t">Grocery list</div><div class="m">12 to buy · 3 in the cart</div></div><span class="chev"></span></div>
+                </div>
+              </div>
+
+              <!-- OVER TIME — the tab's answer to "how has my protein been this month".
+                   Data's own Trends row anatomy; both rows open nutrition-history. -->
+              <div class="sec">
+                <div class="seclabel"><span class="t">Over time</span><span class="n">12 of 14 days recorded</span></div>
+                <div class="plate" style="margin-top:9px">
+                  <div class="row"><div class="body"><div class="t">Energy</div><div class="s">Daily average</div></div>
+                    <span class="spark"><i style="height:14px"></i><i style="height:19px"></i><i style="height:11px"></i><i style="height:21px"></i><i style="height:17px"></i><i style="height:8px"></i><i style="height:20px"></i><i style="height:16px"></i><i style="height:22px"></i><i style="height:13px"></i><i style="height:18px"></i><i style="height:15px"></i></span>
+                    <span class="meta">2,180<small>kcal</small></span><span class="chev"></span></div>
+                  <div class="rule"></div>
+                  <div class="row"><div class="body"><div class="t">Protein</div><div class="s">Daily average</div></div>
+                    <span class="spark"><i style="height:16px"></i><i style="height:20px"></i><i style="height:13px"></i><i style="height:18px"></i><i style="height:22px"></i><i style="height:12px"></i><i style="height:19px"></i><i style="height:21px"></i><i style="height:15px"></i><i style="height:17px"></i><i style="height:23px"></i><i style="height:20px"></i></span>
+                    <span class="meta">146<small>g</small></span><span class="chev"></span></div>
+                  <div class="rule"></div>
+                  <div class="row"><span class="ic"></span><div class="body"><div class="t">Micronutrients</div><div class="s">Today’s totals vs reference</div></div><span class="chev"></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div><span class="ic"></span>Home</div><div><span class="ic"></span>Coach</div><div><span class="ic"></span>Log</div>
+            <div class="on"><span class="ic"></span>Eat</div><div><span class="ic"></span>Train</div><div><span class="ic"></span>Data</div>
+          </div>
+        </div>
+        <p class="unit-label">02 · The same screen, scrolled</p>
+        <p class="unit-note"><b>Kitchen</b> is two rows now that import lives in the book — the book and the standing list, each carrying its own live state. <b>Over time</b> answers “nothing on the tab spans more than today”: two readings in Data’s exact Trends row anatomy, drawn with the existing dependency-free sparkline, both opening History. Both averages come from <code>dailyIntakeSeries(db, 14)</code>, one grouped query, and the note states the cohort out loud — 12 of the 14 days actually have intake recorded.</p>
+      </div>
+
+      <!-- ============================================ 03 · MORNING, NOTHING LOGGED -->
+      <div class="unit">
+        <div class="ph">
+          <div class="statusbar"><span>7:05</span>
+            <span class="glyphs"><i class="bar" style="height:5px"></i><i class="bar" style="height:7px"></i><i class="bar" style="height:9px"></i><i class="bar" style="height:11px"></i></span>
+          </div>
+          <div class="sheet">
+            <div class="title">Nutrition</div>
+
+            <div class="sec" style="margin-top:20px">
+              <div class="seclabel"><span class="t">Today</span><span class="n">0 of 2,400 kcal</span></div>
+              <div class="hero"><span class="v">2,400</span><span class="u">kcal left</span></div>
+              <div class="cells">
+                <div class="cell"><div class="k">Protein</div><div class="v">180<small>left of 180 g</small></div></div>
+                <div class="cell"><div class="k">Carbs</div><div class="v">240<small>left of 240 g</small></div></div>
+                <div class="cell"><div class="k">Fat</div><div class="v">70<small>left of 70 g</small></div></div>
+                <div class="cell"><div class="k">Fiber</div><div class="v">38<small>left of 38 g</small></div></div>
+              </div>
+            </div>
+
+            <div class="sec"><div class="logbtn">Log</div></div>
+
+            <div class="sec">
+              <div class="seclabel"><span class="t">Eaten today</span></div>
+              <div class="prose">Nothing logged yet today.</div>
+            </div>
+
+            <div class="sec">
+              <div class="seclabel"><span class="t">Kitchen</span></div>
+              <div class="plate" style="margin-top:9px">
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Recipe book</div><div class="m">24 recipes · 3 cooked this month</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Grocery list</div><div class="m">12 to buy · 3 in the cart</div></div><span class="chev"></span></div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="seclabel"><span class="t">Over time</span><span class="n">12 of 14 days recorded</span></div>
+              <div class="plate" style="margin-top:9px">
+                <div class="row"><div class="body"><div class="t">Energy</div><div class="s">Daily average</div></div>
+                  <span class="spark"><i style="height:14px"></i><i style="height:19px"></i><i style="height:11px"></i><i style="height:21px"></i><i style="height:17px"></i><i style="height:8px"></i><i style="height:20px"></i><i style="height:16px"></i><i style="height:22px"></i><i style="height:13px"></i><i style="height:18px"></i><i style="height:15px"></i></span>
+                  <span class="meta">2,180<small>kcal</small></span><span class="chev"></span></div>
+              </div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div><span class="ic"></span>Home</div><div><span class="ic"></span>Coach</div><div><span class="ic"></span>Log</div>
+            <div class="on"><span class="ic"></span>Eat</div><div><span class="ic"></span>Train</div><div><span class="ic"></span>Data</div>
+          </div>
+        </div>
+        <p class="unit-label">03 · The state it re-enters every morning</p>
+        <p class="unit-note">The day is empty but the tab is not: the whole target is still the number, the ledger states its absence in one authored sentence <b>with no plate around it</b> (a plate encloses a record, and there is no record yet), and the standing objects still carry state — the grocery list does not reset at midnight. With logging down to one button, <b>the morning tab now reaches Over time without scrolling</b>. This is the state the Eat tab wakes into ~365 times a year, so it is the one the layout is tuned for.</p>
+      </div>
+
+      <!-- ============================================ 04 · FIRST RUN -->
+      <div class="unit">
+        <div class="ph">
+          <div class="statusbar"><span>9:41</span>
+            <span class="glyphs"><i class="bar" style="height:5px"></i><i class="bar" style="height:7px"></i><i class="bar" style="height:9px"></i><i class="bar" style="height:11px"></i></span>
+          </div>
+          <div class="sheet">
+            <div class="title">Nutrition</div>
+
+            <div class="sec" style="margin-top:20px">
+              <div class="seclabel"><span class="t">Today</span></div>
+              <div class="prose">Nothing logged yet today, and no targets set — so there is nothing here to measure the day against.</div>
+              <div class="btn">Set daily targets</div>
+            </div>
+
+            <div class="sec"><div class="logbtn">Log</div></div>
+
+            <div class="sec">
+              <div class="seclabel"><span class="t">Eaten today</span></div>
+              <div class="prose">Nothing logged yet today.</div>
+            </div>
+
+            <div class="sec">
+              <div class="seclabel"><span class="t">Kitchen</span></div>
+              <div class="plate" style="margin-top:9px">
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Recipe book</div><div class="s">Empty — import your first recipe</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Grocery list</div><div class="s">Nothing on the list</div></div><span class="chev"></span></div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="seclabel"><span class="t">Over time</span></div>
+              <div class="prose">No days recorded yet. The 14-day averages appear once meals are on the record.</div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div><span class="ic"></span>Home</div><div><span class="ic"></span>Coach</div><div><span class="ic"></span>Log</div>
+            <div class="on"><span class="ic"></span>Eat</div><div><span class="ic"></span>Train</div><div><span class="ic"></span>Data</div>
+          </div>
+        </div>
+        <p class="unit-label">04 · First run — no targets, nothing yet</p>
+        <p class="unit-note"><b>“Set daily targets” is promoted from a 10px corner label to a full-width control</b> — drawn in outline, not petrol, so the tab still spends exactly one accent and the Log button never moves between states. It <b>retires completely</b> once targets exist (sheets 01–03): a setup affordance that survives its own success is noise. No figure here carries a denominator, because no target exists to be one.</p>
+      </div>
+
+      <!-- ============================================ 05 · WHAT LOG OPENS -->
+      <div class="unit">
+        <div class="ph">
+          <div class="statusbar"><span>16:21</span>
+            <span class="glyphs"><i class="bar" style="height:5px"></i><i class="bar" style="height:7px"></i><i class="bar" style="height:9px"></i><i class="bar" style="height:11px"></i></span>
+          </div>
+          <div class="sheet">
+            <div class="modalhdr"><span class="t">Log</span><span class="x"></span></div>
+
+            <div class="sec" style="margin-top:22px">
+              <div class="plate">
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Describe or photograph</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Add food</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Scan a barcode</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">From a template</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Cook a recipe</div></div><span class="chev"></span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="ic"></span><div class="body"><div class="t">Enter it manually</div></div><span class="chev chev--down"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="unit-label">05 · What the Log button opens</p>
+        <p class="unit-note">A full-screen sheet in the app’s existing picker shape (the mode picker, the exercise picker) — it closes rather than pushing, so logging never adds a back-stack. <b>Six rows, no descriptions</b>: every one says what it is. “Describe or photograph” leads because it is the fastest and needs no prior setup; <b>“Cook a recipe” is new here</b> — logging from the book was previously reachable only by opening the recipe itself. Enter-it-manually still expands its fields in place. Nothing was deleted from the tab; it was moved one tap in.</p>
+      </div>
+
+      <!-- ============================================ 06 · DESCRIBE OR PHOTOGRAPH -->
+      <div class="unit">
+        <div class="ph">
+          <div class="statusbar"><span>16:21</span>
+            <span class="glyphs"><i class="bar" style="height:5px"></i><i class="bar" style="height:7px"></i><i class="bar" style="height:9px"></i><i class="bar" style="height:11px"></i></span>
+          </div>
+          <div class="sheet">
+            <div class="stackhdr"><span class="back"></span><span class="t">Describe or photograph</span></div>
+
+            <div class="sec" style="margin-top:22px">
+              <div class="seclabel"><span class="t">The meal</span></div>
+              <div class="well" style="margin-top:9px">What did you eat?</div>
+              <div class="btnrow">
+                <div class="btn">Take a photo</div>
+                <div class="btn">Choose a photo</div>
+              </div>
+              <div class="note">Nothing is logged until you have seen every item and saved it.</div>
+            </div>
+
+            <div class="sec"><div class="logbtn">Estimate</div></div>
+
+            <div class="sec">
+              <div class="seclabel"><span class="t">Last estimate</span><span class="n">≈ 640 kcal</span></div>
+              <div class="plate" style="margin-top:9px">
+                <div class="row"><div class="body"><div class="t">Chicken thigh, grilled</div><div class="m">≈ 165 g · est</div></div><span class="kcal">315</span></div>
+                <div class="rule"></div>
+                <div class="row"><div class="body"><div class="t">Jasmine rice, cooked</div><div class="m">≈ 180 g · est</div></div><span class="kcal">234</span></div>
+                <div class="rule"></div>
+                <div class="row"><div class="body"><div class="t">Broccoli, steamed</div><div class="m">≈ 120 g · est</div></div><span class="kcal">41</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="unit-label">06 · Describe or photograph — with the library added</p>
+        <p class="unit-note"><b>“Choose a photo” is the new path</b>, and it is a third input to a pipeline that already exists: the model itemizes it in one turn, every item is grounded against the food catalog, and it lands in this editable review where <b>nothing is written until you save</b>. Estimates stay marked as estimates — <code>≈</code> and a muted <i>est</i>, never dressed up as measurements. <b>Both photo paths need the EAS build</b> (camera and library alike); typing a description works as soon as an API key is set. <code>expo-image-picker</code> is already on this branch — its permission string currently mentions recipes only and would widen to cover meals.</p>
+      </div>
+
+      <!-- ============================================ 06 · THE GUARDED FALLBACK -->
+      <div class="unit">
+        <div class="ph">
+          <div class="statusbar"><span>21:15</span>
+            <span class="glyphs"><i class="bar" style="height:5px"></i><i class="bar" style="height:7px"></i><i class="bar" style="height:9px"></i><i class="bar" style="height:11px"></i></span>
+          </div>
+          <div class="sheet">
+            <div class="title">Nutrition</div>
+
+            <div class="sec" style="margin-top:20px">
+              <div class="seclabel"><span class="t">Today</span><span class="n">of 2,400 target</span></div>
+              <div class="hero"><span class="v">1,360</span><span class="u">kcal</span></div>
+              <div class="track"><i style="width:57%"></i></div>
+              <div class="cells">
+                <div class="cell"><div class="k">Protein</div><div class="v">88<small>/ 180g</small></div><div class="track"><i style="width:49%"></i></div></div>
+                <div class="cell"><div class="k">Carbs</div><div class="v">130<small>/ 240g</small></div><div class="track"><i style="width:54%"></i></div></div>
+                <div class="cell"><div class="k">Fat</div><div class="v">53<small>/ 70g</small></div><div class="track"><i style="width:76%"></i></div></div>
+                <div class="cell"><div class="k">Fiber</div><div class="v">19<small>/ 38g</small></div><div class="track"><i style="width:50%"></i></div></div>
+              </div>
+              <div class="note">One meal has no energy or macros recorded, so what is left of today is not known. This is what has been logged.</div>
+            </div>
+
+            <div class="sec"><div class="logbtn">Log</div></div>
+
+            <div class="sec">
+              <div class="plate">
+                <div class="seclabel"><span class="t">Eaten today</span><span class="n">1,360 kcal</span></div>
+                <div class="row"><span class="time">08:30</span><div class="body"><div class="t">Protein oats</div><div class="m">42P · 68C · 20F</div></div><span class="kcal">620</span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="time">12:40</span><div class="body"><div class="t">Salmon + lentils</div><div class="m">46P · 62C · 33F · 3 items</div></div><span class="kcal">740</span></div>
+                <div class="rule"></div>
+                <div class="row"><span class="time">19:05</span><div class="body"><div class="t">Dinner at Rossi’s</div><div class="s">Nothing recorded — tap to fill it in</div></div><span class="kcal">—</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div><span class="ic"></span>Home</div><div><span class="ic"></span>Coach</div><div><span class="ic"></span>Log</div>
+            <div class="on"><span class="ic"></span>Eat</div><div><span class="ic"></span>Train</div><div><span class="ic"></span>Data</div>
+          </div>
+        </div>
+        <p class="unit-label">07 · When the data hasn’t earned a remainder</p>
+        <p class="unit-note">A meal was logged by name with no numbers — so “what’s left” <b>cannot</b> be computed, because the day’s sums skip what was never recorded. Rather than print a confident 1,040 that is wrong by a whole dinner, the tab <b>falls back to exactly the reading that ships today</b> — eaten, its denominator, its progress rules — and one line says why. The em-dash in the ledger and the missing remainder above are the same fact, stated twice. Fill the meal in and the sheet becomes 01.</p>
+      </div>
+
+    </div>
+  </div>
+</div>

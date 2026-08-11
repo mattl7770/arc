@@ -34,11 +34,22 @@ import { activeNutritionTargets, setNutritionTargets } from '@/lib/db/repositori
  * save is the only action on it either way.
  */
 
+/**
+ * Blank means "no target"; a typed number must be POSITIVE.
+ *
+ * It used to accept 0 for everything but kcal, and 0 is the one value every
+ * reader throws away: `dayFigure` treats a non-positive target as no target
+ * (a "0 g carbs" goal is not a frame of reference, and it is what a progress
+ * rule divides by). So a saved 0 was stored user intent that the Eat tab then
+ * behaved as though it had never been set, with nothing on either screen
+ * explaining the disagreement. Leave the field blank instead — that is the same
+ * intent, stated in the way the whole app already reads.
+ */
 function validNumber(text: string): boolean {
   const t = text.trim();
   if (t === '') return true;
   const n = Number(t);
-  return Number.isFinite(n) && n >= 0;
+  return Number.isFinite(n) && n > 0;
 }
 
 function toNumber(text: string): number | null {
@@ -122,7 +133,7 @@ export default function NutritionTargetsScreen() {
   const canSave = numbersValid && kcalValid && anySet;
 
   const problem = !numbersValid
-    ? 'Numbers only — blank a field to drop that target.'
+    ? 'Positive numbers only — blank a field to drop that target.'
     : !kcalValid
       ? 'A kcal target has to be above zero — blank it to drop it.'
       : !anySet

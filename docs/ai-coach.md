@@ -45,7 +45,7 @@ Everything runs on-device except the model call itself (local-first, offline-exc
 
 Every tool the model can call. **Read tools run freely; every write suspends the loop until the user approves it in the UI** (see §5). Inputs are validated at the tool layer — bad input becomes an `is_error` tool result the model can correct, and never reaches a repository.
 
-> **The registry today: 24 tools — 11 read + 13 write.** `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the five added since are in **§2c**, and the two deliberately withheld are in **§2d**.
+> **The registry today: 39 tools — 17 read + 22 write.** `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the ones added since are in **§2c** (modes, experiments, knowledge) and **§2f** (recipes + grocery, 3 read + 5 write), and the deliberately withheld ones are in **§2d**. Counted 2026-08-11 by importing the registry, not by adding up this document.
 
 ### 2a. Shipped — read (execute immediately)
 
@@ -143,6 +143,23 @@ Withheld from the model on purpose: a tool that always fails teaches the model n
 | --- | --- | --- |
 | `complete_mission_item` | Superseded by **`adjust_today`** (coach-intelligence-review.md §4 Phase 2) — snapshot now exposes mission ids, so the batch mission-write tool absorbs this | Snapshot exposes ids + titles/status read-only today. |
 | `navigate_to` | **A navigation seam** — tools execute headless; navigation is a UI side effect the service must broker (an event the screen subscribes to; the listener-set idiom already ships 3× in-repo) | "Pull up my labs" ends on the Labs screen, not in prose. |
+
+### 2f. Shipped — recipes + grocery (`docs/recipes-grocery.md` §6)
+
+Eight tools that put the recipe book and the standing grocery list inside the Coach's reach, so *"we're out of milk"* and *"what should I cook tonight"* are the model calling a tool rather than a phrase detector firing. Judgment stays in the model; these only report and write.
+
+| Tool | Kind | What it does, and the rule it carries |
+| --- | --- | --- |
+| `get_recipes` | read | The book as summaries, for suggesting what to cook and for finding the `recipe_id` the write tools need. `perServingKcal` is **null** whenever the recipe's honesty gate failed — the model must say so rather than guess. |
+| `get_recipe` | read | One recipe in full: ingredient ids, resolution state, per-macro nulls. Without it the ids the other tools consume would be unobtainable. |
+| `get_grocery_list` | read | Open items with ids and category labels, optionally including the cart. Every id a write tool consumes is an id a read tool returned. |
+| `add_grocery_items` | write | **Batched** — up to 30 items in ONE call, so "milk, eggs and spinach" is one approval card, never three. |
+| `complete_grocery_items` | write | Batched check-off by id. Names are resolved *before* the card is drawn, so the user never approves a bare identifier. |
+| `add_recipe_to_grocery_list` | write | A recipe's ingredients, minus the ones already on the list. Refusing before the card when everything was excluded, rather than showing a card that would do nothing. |
+| `log_recipe` | write | Cooking it: servings XOR grams, scaled from the recipe's own snapshots. When the result reports `uncountedIngredients > 0` the meal is a **known undercount** and the model must say so. Refuses before the card if the recipe has nothing loggable. |
+| `save_recipe` | write | The Coach authoring a recipe (`source = 'ai'`). Its lines land **unresolved**, so its nutrition reads "not computed" until the user links foods in the app — never a fabricated total. |
+
+**Prompt-cache note:** the tool list is part of the cached prefix, so adding tools invalidates it. These eight landed as one batch for that reason.
 
 ### 2e. Planned — not yet designed in code
 

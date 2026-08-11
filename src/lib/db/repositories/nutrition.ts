@@ -201,8 +201,8 @@ export function logMealWithItems(
   const itemIds: string[] = [];
   db.transaction(() => {
     db.run(
-      `INSERT INTO meals (id, date, time, name, kcal, protein_g, carbs_g, fat_g, source, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO meals (id, date, time, name, kcal, protein_g, carbs_g, fat_g, source, notes, recipe_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         mealId,
         meal.date,
@@ -214,6 +214,7 @@ export function logMealWithItems(
         sumOrNull(meal.items.map((i) => i.fat_g)),
         meal.source ?? 'manual',
         meal.notes ?? null,
+        meal.recipe_id ?? null,
       ]
     );
     for (const item of meal.items) itemIds.push(insertMealItem(db, mealId, item));
@@ -312,7 +313,7 @@ export function listMealItems(db: Database, mealId: string): MealItemWithServing
      FROM meal_items mi
      LEFT JOIN foods f ON f.id = mi.food_id
      WHERE mi.meal_id = ?
-     ORDER BY mi.created_at, mi.id`,
+     ORDER BY mi.created_at, mi.rowid`,
     [mealId]
   );
 }
@@ -328,6 +329,62 @@ export function mealItemCounts(db: Database, date: string): Record<string, numbe
     [date]
   );
   return Object.fromEntries(rows.map((r) => [r.meal_id, r.n]));
+}
+
+/**
+ * meal_id → the metrics whose total is **knowingly short**, for one day.
+ *
+ * An itemized meal's macro columns are sums over its items, and those sums SKIP
+ * NULL. So a meal can carry a perfectly non-null kcal that is short by every
+ * ingredient nobody priced — which is exactly what `logRecipe` writes when a
+ * recipe is partially resolved: the counted lines land with snapshots, the rest
+ * land as name-only items with NULL macros, and the meal's own kcal is the sum
+ * of the counted half.
+ *
+ * That is honest as a LEDGER (the row shows what is known, and the recipe screen
+ * discloses the undercount), but it is not honest as a MINUEND: subtracting it
+ * from a target over-states what is left, silently, on the days the user did the
+ * most work. `src/lib/nutrition/remaining.ts` takes this map so the countdown
+ * can refuse those meals the same way it refuses a meal with no numbers at all.
+ *
+ * A meal with no items at all (the manual-entry path) simply does not appear —
+ * its columns are what the user typed, and NULL there is already handled.
+ */
+export function partialMealMetrics(
+  db: Database,
+  date: string
+): Record<string, Partial<Record<'kcal' | 'protein_g' | 'carbs_g' | 'fat_g', boolean>>> {
+  const rows = db.all<{
+    meal_id: string;
+    kcal: number;
+    protein_g: number;
+    carbs_g: number;
+    fat_g: number;
+  }>(
+    `SELECT mi.meal_id                            AS meal_id,
+            max(mi.kcal IS NULL)                  AS kcal,
+            max(mi.protein_g IS NULL)             AS protein_g,
+            max(mi.carbs_g IS NULL)               AS carbs_g,
+            max(mi.fat_g IS NULL)                 AS fat_g
+     FROM meal_items mi
+     JOIN meals m ON m.id = mi.meal_id
+     WHERE m.date = ?
+     GROUP BY mi.meal_id`,
+    [date]
+  );
+  const out: Record<
+    string,
+    Partial<Record<'kcal' | 'protein_g' | 'carbs_g' | 'fat_g', boolean>>
+  > = {};
+  for (const row of rows) {
+    const partial: Partial<Record<'kcal' | 'protein_g' | 'carbs_g' | 'fat_g', boolean>> = {};
+    if (row.kcal) partial.kcal = true;
+    if (row.protein_g) partial.protein_g = true;
+    if (row.carbs_g) partial.carbs_g = true;
+    if (row.fat_g) partial.fat_g = true;
+    if (Object.keys(partial).length > 0) out[row.meal_id] = partial;
+  }
+  return out;
 }
 
 export function getMeal(db: Database, id: string): MealRow | undefined {
@@ -370,13 +427,18 @@ export function relogMeal(
   const meal = getMeal(db, mealId);
   if (!meal) return null;
   const source = meal.source === 'ai_suggested' ? 'ai_suggested' : 'manual';
-  const items = db.all<MealItemWithServing>('SELECT * FROM meal_items WHERE meal_id = ?', [mealId]);
+  const items = db.all<MealItemWithServing>(
+    // Insertion order — a whole batch shares one millisecond created_at, and a
+    // UUID tie-break would scramble it (rowid is monotonic per insert).
+    'SELECT * FROM meal_items WHERE meal_id = ? ORDER BY created_at, rowid',
+    [mealId]
+  );
   if (items.length === 0) {
     // Direct insert rather than logMeal, which stamps source='manual'.
     const id = newId(db);
     db.run(
-      `INSERT INTO meals (id, date, time, name, kcal, protein_g, carbs_g, fat_g, source, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO meals (id, date, time, name, kcal, protein_g, carbs_g, fat_g, source, notes, recipe_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         date,
@@ -388,16 +450,19 @@ export function relogMeal(
         meal.fat_g,
         source,
         meal.notes,
+        meal.recipe_id,
       ]
     );
     return id;
   }
+  // "Log again" of a cooked recipe is cooking it again — provenance carries.
   return logMealWithItems(db, {
     date,
     time,
     name: meal.name,
     notes: meal.notes,
     source,
+    recipe_id: meal.recipe_id,
     items: items.map((i) => ({
       food_id: i.food_id,
       name: i.name,

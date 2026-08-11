@@ -41,6 +41,21 @@ import {
 } from '@/lib/db/repositories/reminders';
 import { modesSupersededFrom, setMode } from '@/lib/db/repositories/day-modes';
 import {
+  addGroceryItems,
+  addRecipeToGroceryList,
+  checkGroceryItem,
+  getGroceryItem,
+} from '@/lib/db/repositories/grocery';
+import {
+  createRecipe,
+  getRecipe,
+  listIngredients,
+  logRecipe,
+  portionFactor,
+  recipeNutrition,
+} from '@/lib/db/repositories/recipes';
+import type { RecipePortion } from '@/lib/recipes/types';
+import {
   abandonExperiment,
   completeExperiment,
   createExperiment,
@@ -1433,6 +1448,334 @@ const completeExperimentTool: CoachTool = {
   },
 };
 
+// --- Grocery + recipes (docs/recipes-grocery.md §6) ---------------------------
+
+/** Pluralize the card copy without an Intl dependency. */
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** " · milk (2) · eggs" card fragment, capped so a big batch stays readable. */
+function itemListForCard(names: string[], cap: number = 8): string {
+  const shown = names.slice(0, cap).join(' · ');
+  const more = names.length - Math.min(names.length, cap);
+  return more > 0 ? `${shown} +${more} more` : shown;
+}
+
+type GroceryToolItem = { name: string; qty?: string };
+
+/** Validate add_grocery_items' batch: 1..30 items, each a non-empty name. */
+function parseGroceryItems(input: Record<string, unknown>): GroceryToolItem[] {
+  const raw = input.items;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error('"items" must be a non-empty array — batch every add into ONE call.');
+  }
+  if (raw.length > 30) throw new Error('"items" is capped at 30 per call.');
+  return raw.map((entry) => {
+    const e = asRecord(entry);
+    return { name: reqString(e, 'name'), qty: optString(e, 'qty') };
+  });
+}
+
+const addGroceryItemsTool: CoachTool = {
+  name: 'add_grocery_items',
+  description: 'Add items to the standing grocery list. BATCH every item into ONE call.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      items: {
+        type: 'array',
+        description: 'Up to 30.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            qty: { type: 'string', description: 'Free text, e.g. "2 L".' },
+          },
+          required: ['name'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['items'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input) => {
+    const items = parseGroceryItems(asRecord(input));
+    const names = items.map((i) => (i.qty ? `${i.name} (${i.qty})` : i.name));
+    return `Add ${plural(items.length, 'item')} to the grocery list: ${itemListForCard(names)}`;
+  },
+  execute: (db, input) => {
+    const items = parseGroceryItems(asRecord(input));
+    const ids = addGroceryItems(
+      db,
+      items.map((i) => ({ name: i.name, qty_text: i.qty ?? null, source: 'coach' as const }))
+    );
+    return json({ added: ids.length });
+  },
+};
+
+/** Resolve a grocery-item id → its row; the card never shows a blind id. */
+function requireGroceryItem(db: Database, id: string) {
+  const item = getGroceryItem(db, id);
+  if (!item) throw new Error(`No grocery item "${id}" — call get_grocery_list for current ids.`);
+  return item;
+}
+
+/** Validate a 1..30 array of id strings. */
+function parseIdArray(input: Record<string, unknown>, key: string): string[] {
+  const raw = input[key];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error(`"${key}" must be a non-empty array of ids.`);
+  }
+  if (raw.length > 30) throw new Error(`"${key}" is capped at 30 per call.`);
+  return raw.map((v) => {
+    if (typeof v !== 'string' || v.trim() === '') throw new Error(`"${key}" entries must be ids.`);
+    return v.trim();
+  });
+}
+
+const completeGroceryItemsTool: CoachTool = {
+  name: 'complete_grocery_items',
+  description: 'Check items off the list, by id, batched. A soft state, never a delete.',
+  inputSchema: {
+    type: 'object',
+    properties: { ids: { type: 'array', items: { type: 'string' } } },
+    required: ['ids'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db) => {
+    const ids = parseIdArray(asRecord(input), 'ids');
+    const names = ids.map((id) => requireGroceryItem(db, id).name);
+    return `Check off ${plural(ids.length, 'item')}: ${itemListForCard(names)}`;
+  },
+  execute: (db, input) => {
+    const ids = parseIdArray(asRecord(input), 'ids');
+    for (const id of ids) {
+      requireGroceryItem(db, id);
+      checkGroceryItem(db, id);
+    }
+    return json({ checked: ids.length });
+  },
+};
+
+/** Resolve a recipe id → its row, with a message that points the model at the fix. */
+function requireRecipe(db: Database, id: string) {
+  const recipe = getRecipe(db, id);
+  if (!recipe) throw new Error('No recipe with that id — call get_recipes to see the book.');
+  return recipe;
+}
+
+const addRecipeToGroceryListTool: CoachTool = {
+  name: 'add_recipe_to_grocery_list',
+  description: "A recipe's ingredients onto the list, minus any excluded ingredient ids.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      recipe_id: { type: 'string' },
+      exclude: {
+        type: 'array',
+        description: 'Ingredient ids (from get_recipe) the user already has.',
+        items: { type: 'string' },
+      },
+    },
+    required: ['recipe_id'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db) => {
+    const args = asRecord(input);
+    const recipe = requireRecipe(db, reqString(args, 'recipe_id'));
+    const exclude = new Set(Array.isArray(args.exclude) ? (args.exclude as string[]) : []);
+    const include = listIngredients(db, recipe.id).filter((l) => !exclude.has(l.id));
+    if (include.length === 0) {
+      throw new Error('Nothing to add — every ingredient is excluded (or the recipe has none).');
+    }
+    return `Add ${plural(include.length, 'ingredient')} from "${recipe.title}" to the grocery list`;
+  },
+  execute: (db, input) => {
+    const args = asRecord(input);
+    const recipe = requireRecipe(db, reqString(args, 'recipe_id'));
+    const exclude = new Set(Array.isArray(args.exclude) ? (args.exclude as string[]) : []);
+    const includeIds = listIngredients(db, recipe.id)
+      .filter((l) => !exclude.has(l.id))
+      .map((l) => l.id);
+    const ids = addRecipeToGroceryList(db, recipe.id, includeIds);
+    return json({ added: ids.length, recipe: recipe.title });
+  },
+};
+
+/**
+ * log_recipe's portion argument: servings XOR grams; NEITHER → 1 serving.
+ * Validation throws BEFORE the card renders (grams needs a recorded cooked
+ * weight — portionFactor's corrective error names the fix).
+ */
+function parseRecipePortion(args: Record<string, unknown>): RecipePortion {
+  const servings = optNumber(args, 'servings');
+  const grams = optNumber(args, 'grams');
+  if (servings !== undefined && grams !== undefined) {
+    throw new Error('Log by "servings" OR "grams", not both.');
+  }
+  if (grams !== undefined) {
+    if (grams <= 0) throw new Error('"grams" must be > 0.');
+    return { grams };
+  }
+  if (servings !== undefined && servings <= 0) throw new Error('"servings" must be > 0.');
+  return { servings: servings ?? 1 };
+}
+
+const logRecipeTool: CoachTool = {
+  name: 'log_recipe',
+  description:
+    'Log a cooked recipe as a meal: servings XOR grams (default 1 serving). A result with ' +
+    'uncountedIngredients > 0 is a KNOWN UNDERCOUNT.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      recipe_id: { type: 'string' },
+      servings: { type: 'number' },
+      grams: { type: 'number', description: 'Cooked grams eaten; needs total_weight_g.' },
+      date: { type: 'string', description: 'YYYY-MM-DD; omit for today.' },
+      time: { type: 'string', description: 'HH:MM.' },
+    },
+    required: ['recipe_id'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db, context) => {
+    const args = asRecord(input);
+    const recipe = requireRecipe(db, reqString(args, 'recipe_id'));
+    const portion = parseRecipePortion(args);
+    const factor = portionFactor(recipe, portion);
+    // Fully validate BEFORE the card: a recipe with nothing loggable (no lines,
+    // or all-negligible) must refuse here, never after the user approves.
+    const loggable = listIngredients(db, recipe.id).filter((l) => l.negligible === 0);
+    if (loggable.length === 0) {
+      throw new Error('That recipe has no ingredient lines to log.');
+    }
+    const nutrition = recipeNutrition(db, recipe.id);
+    const portionLabel =
+      'grams' in portion ? `${portion.grams} g` : plural(portion.servings, 'serving');
+    const kcalNote =
+      nutrition.complete && nutrition.perServing.kcal !== null
+        ? ` (~${Math.round(nutrition.perServing.kcal * recipe.servings * factor)} kcal)`
+        : ` (nutrition incomplete — ${plural(nutrition.unresolvedCount, 'ingredient')} uncounted)`;
+    return `Log ${portionLabel} of "${recipe.title}"${kcalNote}${pastDateSuffix(args, context?.now)}`;
+  },
+  execute: (db, input, context) => {
+    const args = asRecord(input);
+    const recipeId = reqString(args, 'recipe_id');
+    requireRecipe(db, recipeId);
+    const result = logRecipe(db, recipeId, parseRecipePortion(args), {
+      date: logDate(args, context.now),
+      time: optTime(args, 'time') ?? null,
+    });
+    if (!result) throw new Error('That recipe has no ingredient lines to log.');
+    return json({
+      logged: true,
+      mealId: result.mealId,
+      uncountedIngredients: result.uncountedCount,
+    });
+  },
+};
+
+type RecipeToolIngredient = { raw: string; qty?: number; unit?: string; name?: string };
+
+/** Validate save_recipe's ingredient lines: 1..40, each with a raw line. */
+function parseRecipeIngredients(input: Record<string, unknown>): RecipeToolIngredient[] {
+  const raw = input.ingredients;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error('"ingredients" must be a non-empty array.');
+  }
+  if (raw.length > 40) throw new Error('"ingredients" is capped at 40 lines.');
+  return raw.map((entry) => {
+    const e = asRecord(entry);
+    const qty = optNumber(e, 'qty');
+    if (qty !== undefined && qty <= 0) throw new Error('ingredient "qty" must be > 0.');
+    return {
+      raw: reqString(e, 'raw'),
+      qty,
+      unit: optString(e, 'unit'),
+      name: optString(e, 'name'),
+    };
+  });
+}
+
+/** Validate an optional array of step strings. */
+function parseStepsArray(input: Record<string, unknown>): string[] {
+  const raw = input.steps;
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) throw new Error('"steps" must be an array of strings.');
+  return raw.map((s) => {
+    if (typeof s !== 'string' || s.trim() === '') {
+      throw new Error('"steps" entries must be non-empty strings.');
+    }
+    return s.trim();
+  });
+}
+
+const saveRecipeTool: CoachTool = {
+  name: 'save_recipe',
+  description:
+    'Save a new recipe to the book. Its lines land UNRESOLVED, so its nutrition reads ' +
+    '"not computed" until the user links foods in the app.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string' },
+      servings: { type: 'number', description: 'Default 1.' },
+      ingredients: {
+        type: 'array',
+        description: 'Up to 40 lines as written, e.g. "200 g chicken thighs".',
+        items: {
+          type: 'object',
+          properties: {
+            raw: { type: 'string' },
+            qty: { type: 'number' },
+            unit: { type: 'string' },
+            name: { type: 'string' },
+          },
+          required: ['raw'],
+          additionalProperties: false,
+        },
+      },
+      steps: { type: 'array', items: { type: 'string' } },
+      notes: { type: 'string' },
+    },
+    required: ['title', 'ingredients'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input) => {
+    const args = asRecord(input);
+    const title = reqString(args, 'title');
+    const servings = optNumber(args, 'servings') ?? 1;
+    if (servings <= 0) throw new Error('"servings" must be > 0.');
+    const ingredients = parseRecipeIngredients(args);
+    parseStepsArray(args);
+    return `Save recipe "${title}" — ${plural(ingredients.length, 'ingredient')}, ${plural(servings, 'serving')}`;
+  },
+  execute: (db, input) => {
+    const args = asRecord(input);
+    const servings = optNumber(args, 'servings') ?? 1;
+    if (servings <= 0) throw new Error('"servings" must be > 0.');
+    const id = createRecipe(db, {
+      title: reqString(args, 'title'),
+      source: 'ai',
+      servings,
+      steps: parseStepsArray(args),
+      notes: optString(args, 'notes') ?? null,
+      ingredients: parseRecipeIngredients(args).map((i) => ({
+        raw_text: i.raw,
+        qty: i.qty ?? undefined,
+        unit: i.unit ?? undefined,
+        name: i.name ?? undefined,
+      })),
+    });
+    return json({ saved: true, id });
+  },
+};
+
 export const WRITE_TOOLS: CoachTool[] = [
   logMetricTool,
   logMealTool,
@@ -1451,4 +1794,9 @@ export const WRITE_TOOLS: CoachTool[] = [
   setReminderTool,
   completeReminderTool,
   dismissReminderTool,
+  addGroceryItemsTool,
+  completeGroceryItemsTool,
+  addRecipeToGroceryListTool,
+  logRecipeTool,
+  saveRecipeTool,
 ];

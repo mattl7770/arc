@@ -47,7 +47,27 @@
           "faceIDPermission": "ARC uses Face ID to lock the app so only you can open your health data."
         }
       ],
-      "expo-sharing",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "ARC opens your photo library so you can log a meal from a photo you already took, or import a recipe from a screenshot.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-sharing",
+        {
+          "ios": {
+            "enabled": true,
+            "activationRule": {
+              "supportsText": true,
+              "supportsWebUrlWithMaxCount": 1,
+              "supportsImageWithMaxCount": 1
+            }
+          }
+        }
+      ],
       [
         "@kingstinct/react-native-healthkit",
         {

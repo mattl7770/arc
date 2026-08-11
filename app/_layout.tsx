@@ -128,6 +128,12 @@ export default function RootLayout() {
           <Stack.Screen name="nutrition-history" />
           <Stack.Screen name="barcode-scan" />
           <Stack.Screen name="meal-estimate" />
+          {/* INTEGRATOR-MERGE: recipes + grocery family (docs/recipes-grocery.md). */}
+          <Stack.Screen name="recipes" />
+          <Stack.Screen name="recipe-detail" />
+          <Stack.Screen name="recipe-edit" />
+          <Stack.Screen name="recipe-import" />
+          <Stack.Screen name="grocery" />
           <Stack.Screen name="exercise" />
           <Stack.Screen name="workout-log" />
           {/* INTEGRATOR-MERGE: Exercise sub-app routes (docs/exercise-subapp.md). */}

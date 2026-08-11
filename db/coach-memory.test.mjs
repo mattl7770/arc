@@ -105,7 +105,10 @@ const card = (name, db, input = {}) => toolByName(name).confirmSummary(input, db
 console.log('0. migration 0028 shipped the table and the summary column');
 {
   const { db, raw } = freshDb();
-  const cols = raw.prepare(`PRAGMA table_info(coach_memories)`).all().map((c) => c.name);
+  const cols = raw
+    .prepare(`PRAGMA table_info(coach_memories)`)
+    .all()
+    .map((c) => c.name);
   ['id', 'content', 'category', 'source', 'archived_at', 'created_at', 'updated_at'].every((c) =>
     cols.includes(c)
   )
@@ -118,9 +121,7 @@ console.log('0. migration 0028 shipped the table and the summary column');
     ? ok('ai_conversations.summary added')
     : bad('summary column missing');
   // The CHECK must reject an empty memory at the DB layer, not just in code.
-  throws(() =>
-    db.run(`INSERT INTO coach_memories (id, content) VALUES ('m0', '   ')`)
-  )
+  throws(() => db.run(`INSERT INTO coach_memories (id, content) VALUES ('m0', '   ')`))
     ? ok('a whitespace-only memory is rejected by the CHECK')
     : bad('empty memory accepted');
   throws(() =>
@@ -160,8 +161,10 @@ console.log('1. remember / forget / restore, with dedupe and soft delete');
 console.log('2. the tools: remember, forget, get_memories');
 {
   const { db } = freshDb();
-  card('remember', db, { content: 'Magnesium citrate upsets his stomach', category: 'constraint' }) ===
-  'Remember: "Magnesium citrate upsets his stomach"'
+  card('remember', db, {
+    content: 'Magnesium citrate upsets his stomach',
+    category: 'constraint',
+  }) === 'Remember: "Magnesium citrate upsets his stomach"'
     ? ok('the confirmation card quotes the exact fact being stored')
     : bad('remember card');
   const result = run('remember', db, {
@@ -441,9 +444,7 @@ console.log('R6. a decline expires — it is not a permanent veto');
 {
   const { db } = freshDb();
   const conversation = getOrCreateActiveConversation(db);
-  const declined = [
-    { id: 't1', name: 'set_mode', input: { mode: 'deload' }, declined: true },
-  ];
+  const declined = [{ id: 't1', name: 'set_mode', input: { mode: 'deload' }, declined: true }];
   const id = appendMessage(db, conversation.id, 'assistant', 'Proposed a deload.', declined);
 
   recentDeclines(db).length === 1
@@ -451,7 +452,7 @@ console.log('R6. a decline expires — it is not a permanent veto');
     : bad('fresh decline missing');
 
   // Backdate it 90 days. It happened, but it is no longer current preference.
-  db.run("UPDATE ai_messages SET created_at = ? WHERE id = ?", [
+  db.run('UPDATE ai_messages SET created_at = ? WHERE id = ?', [
     new Date(Date.now() - 90 * 86400000).toISOString(),
     id,
   ]);

@@ -122,7 +122,13 @@ console.log('1. adjust_today applies a whole batch behind ONE confirmation line'
     { action: 'complete', id: byTitle.get('Morning light').id },
     { action: 'skip', id: byTitle.get('Strength — Upper A').id },
     { action: 'move', id: byTitle.get('Magnesium').id, scheduled_time: '22:30' },
-    { action: 'add', title: '20-min easy walk', type: 'habit', scheduled_time: '18:00', why: 'Keep blood flow' },
+    {
+      action: 'add',
+      title: '20-min easy walk',
+      type: 'habit',
+      scheduled_time: '18:00',
+      why: 'Keep blood flow',
+    },
   ];
   const summary = card('adjust_today', db, { ops });
   summary.includes('complete "Morning light"') &&
@@ -183,7 +189,9 @@ console.log('3. adjust_today validates the whole batch before applying any of it
   listMission(db, TODAY).length === before
     ? ok('nothing was written — validation runs before the transaction')
     : bad('partial batch applied');
-  throws(() => run('adjust_today', db, { ops: [] })) ? ok('an empty batch is refused') : bad('empty ops');
+  throws(() => run('adjust_today', db, { ops: [] }))
+    ? ok('an empty batch is refused')
+    : bad('empty ops');
 }
 
 console.log('4. update_protocol states WHICH day it changes, and can apply today on request');
@@ -223,7 +231,7 @@ console.log('4. update_protocol states WHICH day it changes, and can apply today
     change_notes: 'added zinc',
   });
   deferred.effective === 'tomorrow' && typeof deferred.note === 'string'
-    ? ok('the tool result tells the model the change is not on today\'s mission')
+    ? ok("the tool result tells the model the change is not on today's mission")
     : bad('deferred result', JSON.stringify(deferred));
 
   const applied = run('update_protocol', db, {
@@ -350,7 +358,8 @@ console.log('7. readiness insight: states the verdict, prescribes nothing, no br
     : bad('readiness detail', readiness && readiness.detail);
   // The engine must hand the model STATE, never an instruction — Home's own
   // "Back off today" copy is a prescription and must not become the headline.
-  readiness && !/(should|cut|reduce|skip|deload|back off|go easy|rest today)/i.test(readiness.headline)
+  readiness &&
+  !/(should|cut|reduce|skip|deload|back off|go easy|rest today)/i.test(readiness.headline)
     ? ok('the headline states the level without prescribing a response')
     : bad('prescriptive headline', readiness && readiness.headline);
   readiness && readiness.detail.includes('Home shows this as')
