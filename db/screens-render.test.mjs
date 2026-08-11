@@ -17,7 +17,7 @@
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 
-import { __setParams, __setSegments } from './render-stubs/expo-router.mjs';
+import { __setParams } from './render-stubs/expo-router.mjs';
 import { getDb } from './render-stubs/db-client.mjs';
 
 import { todayISODate } from '../src/lib/db/date.ts';
@@ -60,10 +60,10 @@ const bad = (n, e) => {
 };
 
 /** Render a screen to HTML; a throw anywhere in the tree is a failure. */
-function render(name, Component, params = {}) {
+function render(name, Component, params = {}, props = {}) {
   __setParams(params);
   try {
-    return renderToString(React.createElement(Component));
+    return renderToString(React.createElement(Component, props));
   } catch (e) {
     bad(`${name} rendered`, e instanceof Error ? e.message : String(e));
     return null;
@@ -297,7 +297,7 @@ const db = getDb();
 
     const html = render('nutrition hub (fallback)', NutritionScreen);
     expect('nutrition hub (fallback)', html, [
-      'One meal has no energy, protein, carbs and fat recorded',
+      'One meal is not fully counted for energy, protein, carbs or fat',
       'what is left of today is not known',
       'Nothing recorded — tap to fill it in', // the same fact, stated on the row
       '1,360 of 2,400 kcal', // the eaten reading, denominator intact
@@ -308,10 +308,12 @@ const db = getDb();
 
   console.log('6. Both routes of the same file still render');
   {
-    __setSegments(['(tabs)', 'eat']);
-    const tabRoot = render('nutrition hub (tab root)', NutritionScreen);
+    // The tab root is a PROP now, not global route state — app/(tabs)/eat.tsx
+    // renders <NutritionScreen asTab />, so that is what this renders.
+    const tabRoot = render('nutrition hub (tab root)', NutritionScreen, {}, { asTab: true });
     expect('nutrition hub (tab root)', tabRoot, ['Nutrition']);
-    __setSegments(['nutrition']);
+    const pushed = render('nutrition hub (pushed)', NutritionScreen);
+    expect('nutrition hub (pushed)', pushed, ['Nutrition']);
   }
 
   console.log('7. Edited shipped screens still render');

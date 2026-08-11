@@ -331,6 +331,62 @@ export function mealItemCounts(db: Database, date: string): Record<string, numbe
   return Object.fromEntries(rows.map((r) => [r.meal_id, r.n]));
 }
 
+/**
+ * meal_id → the metrics whose total is **knowingly short**, for one day.
+ *
+ * An itemized meal's macro columns are sums over its items, and those sums SKIP
+ * NULL. So a meal can carry a perfectly non-null kcal that is short by every
+ * ingredient nobody priced — which is exactly what `logRecipe` writes when a
+ * recipe is partially resolved: the counted lines land with snapshots, the rest
+ * land as name-only items with NULL macros, and the meal's own kcal is the sum
+ * of the counted half.
+ *
+ * That is honest as a LEDGER (the row shows what is known, and the recipe screen
+ * discloses the undercount), but it is not honest as a MINUEND: subtracting it
+ * from a target over-states what is left, silently, on the days the user did the
+ * most work. `src/lib/nutrition/remaining.ts` takes this map so the countdown
+ * can refuse those meals the same way it refuses a meal with no numbers at all.
+ *
+ * A meal with no items at all (the manual-entry path) simply does not appear —
+ * its columns are what the user typed, and NULL there is already handled.
+ */
+export function partialMealMetrics(
+  db: Database,
+  date: string
+): Record<string, Partial<Record<'kcal' | 'protein_g' | 'carbs_g' | 'fat_g', boolean>>> {
+  const rows = db.all<{
+    meal_id: string;
+    kcal: number;
+    protein_g: number;
+    carbs_g: number;
+    fat_g: number;
+  }>(
+    `SELECT mi.meal_id                            AS meal_id,
+            max(mi.kcal IS NULL)                  AS kcal,
+            max(mi.protein_g IS NULL)             AS protein_g,
+            max(mi.carbs_g IS NULL)               AS carbs_g,
+            max(mi.fat_g IS NULL)                 AS fat_g
+     FROM meal_items mi
+     JOIN meals m ON m.id = mi.meal_id
+     WHERE m.date = ?
+     GROUP BY mi.meal_id`,
+    [date]
+  );
+  const out: Record<
+    string,
+    Partial<Record<'kcal' | 'protein_g' | 'carbs_g' | 'fat_g', boolean>>
+  > = {};
+  for (const row of rows) {
+    const partial: Partial<Record<'kcal' | 'protein_g' | 'carbs_g' | 'fat_g', boolean>> = {};
+    if (row.kcal) partial.kcal = true;
+    if (row.protein_g) partial.protein_g = true;
+    if (row.carbs_g) partial.carbs_g = true;
+    if (row.fat_g) partial.fat_g = true;
+    if (Object.keys(partial).length > 0) out[row.meal_id] = partial;
+  }
+  return out;
+}
+
 export function getMeal(db: Database, id: string): MealRow | undefined {
   return db.get<MealRow>('SELECT * FROM meals WHERE id = ?', [id]);
 }

@@ -1539,8 +1539,8 @@ const completeGroceryItemsTool: CoachTool = {
   description: 'Check items off the list, by id, batched. A soft state, never a delete.',
   inputSchema: {
     type: 'object',
-    properties: { item_ids: { type: 'array', items: { type: 'string' } } },
-    required: ['item_ids'],
+    properties: { ids: { type: 'array', items: { type: 'string' } } },
+    required: ['ids'],
     additionalProperties: false,
   },
   readOnly: false,
@@ -1573,7 +1573,11 @@ const addRecipeToGroceryListTool: CoachTool = {
     type: 'object',
     properties: {
       recipe_id: { type: 'string' },
-      exclude_ingredient_ids: { type: 'array', items: { type: 'string' } },
+      exclude: {
+        type: 'array',
+        description: 'Ingredient ids (from get_recipe) the user already has.',
+        items: { type: 'string' },
+      },
     },
     required: ['recipe_id'],
     additionalProperties: false,
@@ -1745,7 +1749,7 @@ const saveRecipeTool: CoachTool = {
   confirmSummary: (input) => {
     const args = asRecord(input);
     const title = reqString(args, 'title');
-    const servings = reqNumber(args, 'servings');
+    const servings = optNumber(args, 'servings') ?? 1;
     if (servings <= 0) throw new Error('"servings" must be > 0.');
     const ingredients = parseRecipeIngredients(args);
     parseStepsArray(args);
@@ -1753,7 +1757,7 @@ const saveRecipeTool: CoachTool = {
   },
   execute: (db, input) => {
     const args = asRecord(input);
-    const servings = reqNumber(args, 'servings');
+    const servings = optNumber(args, 'servings') ?? 1;
     if (servings <= 0) throw new Error('"servings" must be > 0.');
     const id = createRecipe(db, {
       title: reqString(args, 'title'),

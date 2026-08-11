@@ -14,6 +14,7 @@ import {
   getMeal,
   listMealItems,
   logMealWithItems,
+  partialMealMetrics,
   relogMeal,
 } from '../src/lib/db/repositories/nutrition.ts';
 import {
@@ -404,6 +405,17 @@ function fixtureFood(db, overrides = {}) {
   if (uncounted && uncounted.name === 'mystery marinade' && uncounted.grams === null) {
     ok('unresolved line lands as a name-only NULL-macro item');
   } else bad('uncounted item', JSON.stringify(uncounted));
+
+  // …and the Eat tab must be able to SEE that undercount. The meal's own kcal
+  // column is a non-null sum over the priced half, so nothing about the row
+  // says 'short' — partialMealMetrics is what tells the countdown to refuse it.
+  const partial = partialMealMetrics(db, '2026-08-08');
+  if (partial[result.mealId] && partial[result.mealId].kcal === true) {
+    ok('partialMealMetrics flags the cooked meal as knowingly short on kcal');
+  } else bad('partial flag', JSON.stringify(partial));
+  if (meal && meal.kcal !== null) {
+    ok('even though the meal row itself carries a perfectly non-null total');
+  } else bad('meal total unexpectedly null');
 
   // Grams mode against total cooked weight.
   const byGrams = logRecipe(db, recipeId, { grams: 250 }, { date: '2026-08-08', time: null });

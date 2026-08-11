@@ -93,7 +93,7 @@ Him: no protein?<br><br>Recipe<br>-2 tbsp oil<br>-2 garlic cloves<br>
 
 const TIKTOK_OEMBED = JSON.stringify({
   version: '1.0',
-  type: 'video',
+  shareType: 'video',
   title: 'High protein pasta! 2 cups pasta, 1 lb chicken, parm #recipe #fyp',
   author_name: 'testcook',
   author_url: 'https://www.tiktok.com/@testcook',
@@ -494,35 +494,35 @@ function fakeFetch(routes) {
   console.log('8. Share payloads → import input');
   const cases = [
     [
-      [{ value: 'https://www.instagram.com/reel/ABC123/', type: 'url' }],
+      [{ value: 'https://www.instagram.com/reel/ABC123/', shareType: 'url' }],
       { kind: 'url', url: 'https://www.instagram.com/reel/ABC123/' },
     ],
     // Instagram often shares as TEXT containing the link.
     [
-      [{ value: 'Check this recipe! https://vm.tiktok.com/ZMabc/ so good', type: 'text' }],
+      [{ value: 'Check this recipe! https://vm.tiktok.com/ZMabc/ so good', shareType: 'text' }],
       { kind: 'url', url: 'https://vm.tiktok.com/ZMabc/' },
     ],
     // Bare recipe text → the paste rung, prefilled.
     [
-      [{ value: 'Chili: 500g beef, 2 cans beans. Simmer.', type: 'text' }],
+      [{ value: 'Chili: 500g beef, 2 cans beans. Simmer.', shareType: 'text' }],
       { kind: 'text', text: 'Chili: 500g beef, 2 cans beans. Simmer.' },
     ],
     // A screenshot share → the vision rung.
     [
-      [{ value: 'file:///tmp/screenshot.png', type: 'image' }],
+      [{ value: 'file:///tmp/screenshot.png', shareType: 'image' }],
       { kind: 'photo', uri: 'file:///tmp/screenshot.png' },
     ],
     // URL beats image when both arrive.
     [
       [
-        { value: 'file:///tmp/thumb.jpg', type: 'image' },
-        { value: 'https://example.com/r', type: 'url' },
+        { value: 'file:///tmp/thumb.jpg', shareType: 'image' },
+        { value: 'https://example.com/r', shareType: 'url' },
       ],
       { kind: 'url', url: 'https://example.com/r' },
     ],
     [[], null],
     [null, null],
-    [[{ value: '   ', type: 'text' }], null],
+    [[{ value: '   ', shareType: 'text' }], null],
   ];
   for (const [payloads, want] of cases) {
     const got = recipeImportShareFromPayloads(payloads);

@@ -237,11 +237,20 @@ export default function RecipeDetailScreen() {
                 </View>
               ))}
             </View>
-          ) : (
+          ) : nutrition.unresolvedCount > 0 ? (
             <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
               Nutrition not computed — {nutrition.unresolvedCount} ingredient
               {nutrition.unresolvedCount === 1 ? '' : 's'} unresolved. Link each line to a food (or
               mark it “counts as 0”) and the numbers appear.
+            </Text>
+          ) : (
+            /* The gate has two halves, and this is the other one: every line is
+               resolved or negligible, but NOTHING is counted — a recipe of
+               water, salt and pepper. Saying "0 ingredients unresolved" there
+               told the user to fix a list with nothing wrong in it. */
+            <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
+              Nothing here counts toward nutrition — every line is marked “counts as 0”. Link a line
+              to a food and the numbers appear.
             </Text>
           )}
         </Block>

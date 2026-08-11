@@ -55,17 +55,31 @@ function sourceBadge(r: RecipeSummary): string | null {
   return null;
 }
 
+/**
+ * The whole book, not a page of it. The Eat tab's Kitchen row counts recipes
+ * with an uncapped COUNT(*), so a repository default of 100 would let the hub
+ * promise 118 and this screen show 100 — the ledger rule broken across two
+ * screens. 500 is a ceiling no personal recipe book reaches, and the query is
+ * one statement either way.
+ */
+const BOOK_LIMIT = 500;
+
 export default function RecipesScreen() {
   const router = useRouter();
   const [query, setQuery] = useState('');
-  const [recipes, setRecipes] = useState<RecipeSummary[]>(() => listRecipes(getDb()));
+  const [recipes, setRecipes] = useState<RecipeSummary[]>(() =>
+    listRecipes(getDb(), '', { limit: BOOK_LIMIT })
+  );
 
-  const reload = useCallback(() => setRecipes(listRecipes(getDb(), query)), [query]);
+  const reload = useCallback(
+    () => setRecipes(listRecipes(getDb(), query, { limit: BOOK_LIMIT })),
+    [query]
+  );
   useFocusEffect(reload);
 
   const search = (text: string) => {
     setQuery(text);
-    setRecipes(listRecipes(getDb(), text));
+    setRecipes(listRecipes(getDb(), text, { limit: BOOK_LIMIT }));
   };
 
   const searching = query.trim() !== '';

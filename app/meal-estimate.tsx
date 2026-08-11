@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
@@ -125,6 +125,11 @@ export default function MealEstimateScreen() {
   const [phase, setPhase] = useState<Phase>({ kind: 'input' });
   const [description, setDescription] = useState('');
   const [rows, setRows] = useState<ReviewItem[]>([]);
+  // The model call is a live stream. Leaving mid-estimate must stop it, or it
+  // runs to completion and is billed in full while its results land on an
+  // unmounted screen. app/recipe-import.tsx does exactly this.
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   /** Turn a grounded estimate into editable review rows (loads each grounded
    * food so grams edits re-price from it). */
@@ -163,11 +168,16 @@ export default function MealEstimateScreen() {
   };
 
   const run = async (input: EstimateInput) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setPhase({ kind: 'estimating' });
     try {
-      const grounded = groundMealEstimate(getDb(), await estimateMeal(input));
+      const grounded = groundMealEstimate(getDb(), await estimateMeal(input, controller.signal));
       toReview(grounded);
     } catch (error) {
+      // A cancel is not a failure and gets no message — the screen is gone.
+      if (controller.signal.aborted) return;
       const message =
         error instanceof MealEstimationUnavailableError
           ? error.message

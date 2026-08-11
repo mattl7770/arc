@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRouter, useSegments } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
@@ -32,12 +32,22 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  *
  * ## Two routes, two headers (owner call on hardware, 2026-08-09)
  *
- * The two cases are told apart by `useSegments()`, not by `router.canGoBack()`:
- * with `backBehavior="history"` a tab root can very often go back, so that test
- * would draw a chevron that walks you to a different tab. Route shape is the
- * honest signal — `(tabs)` leads the segments only when this file IS the tab.
- * The title stays "Nutrition" at both; the bar says EAT only because five
- * characters is its width budget (app/(tabs)/_layout.tsx).
+ * The tab root gets a plain serif title; the pushed route keeps StackHeader and
+ * its back chevron. Which one is rendering arrives as the `asTab` PROP, set by
+ * app/(tabs)/eat.tsx — the only caller that knows.
+ *
+ * It used to be inferred with `useSegments()[0] === '(tabs)'`, and that was
+ * wrong in a way nothing on screen explained: `useSegments()` is GLOBAL
+ * navigation state, so pushing /food-search off this very tab changed the
+ * segments under the still-mounted tab root, which then re-rendered itself as
+ * the pushed variant — a back chevron flashing into the header behind the
+ * screen you just opened, and again on the way back. A prop cannot drift,
+ * because it is a fact about the render, not about the app.
+ *
+ * `router.canGoBack()` remains the wrong test for the older reason: with
+ * `backBehavior="history"` a tab root very often CAN go back. The title stays
+ * "Nutrition" at both routes; the bar says EAT only because five characters is
+ * its width budget (app/(tabs)/_layout.tsx).
  *
  * ## Redrawn as a tab root (2026-08-11)
  *
@@ -113,26 +123,25 @@ const MACROS: { metric: DayMetric; label: string }[] = [
  */
 function MacroCell({ label, figure }: { label: string; figure: DayFigure }) {
   const remaining = figure.mode === 'remaining';
-  const value = remaining ? figure.remaining : figure.eaten;
-  const denominator =
-    figure.mode === 'remaining'
-      ? `of ${Math.round(figure.target)} g`
-      : figure.target !== null
-        ? `of ${Math.round(figure.target)} g`
-        : 'g';
+  // OVER is a different reading from LEFT, so the label says which. Carrying the
+  // sign only in an 11px word under the figure meant "PROTEIN LEFT / 12" over a
+  // day 12g past target — the label read as the opposite of the truth, and the
+  // hero above it was already saying "12 kcal over" in the same situation.
+  const over = remaining && figure.remaining < 0;
+  const value = remaining ? Math.abs(figure.remaining) : figure.eaten;
+  const mode = over ? `${label} over` : remaining ? `${label} left` : label;
+  const denominator = figure.target !== null ? `of ${Math.round(figure.target)} g` : 'g';
   return (
     <View className="flex-1 border border-hairline bg-paper-hi px-3 py-2.5">
       <Text
         numberOfLines={1}
         className="font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary">
-        {remaining ? `${label} left` : label}
+        {mode}
       </Text>
-      <Text className="mt-1 font-mono text-[20px] font-semibold text-ink">
-        {value < 0 ? `${Math.abs(value)}` : `${value}`}
-      </Text>
-      <Text className="mt-0.5 font-mono text-[11px] text-ink-secondary">
-        {value < 0 ? 'over' : denominator}
-      </Text>
+      <Text className="mt-1 font-mono text-[20px] font-semibold text-ink">{value}</Text>
+      {/* The target survives the over case: "12 / of 180 g" keeps the frame of
+          reference the cell exists to provide. */}
+      <Text className="mt-0.5 font-mono text-[11px] text-ink-secondary">{denominator}</Text>
     </View>
   );
 }
@@ -367,12 +376,12 @@ function overTimeNote(overTime: OverTime): string {
   return `${overTime.daysRecorded} of ${OVER_TIME_DAYS} days recorded`;
 }
 
-export default function NutritionScreen() {
+export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) {
   const router = useRouter();
-  // `(tabs)` leads the segments only when this file is rendering AS the Eat tab
-  // root; the pushed route is plain `/nutrition`. See the header note above.
-  const isTabRoot = useSegments()[0] === '(tabs)';
-  const { meals, itemCounts, targets, kitchen, overTime, reload } = useNutrition();
+  // Which of this file's two routes is rendering — passed in by the one that
+  // knows (app/(tabs)/eat.tsx), never inferred. See the header note above.
+  const isTabRoot = asTab;
+  const { meals, itemCounts, targets, partialMeals, kitchen, overTime, reload } = useNutrition();
   const [logOpen, setLogOpen] = useState(false);
 
   const targetFor = (metric: DayMetric): number | null => {
@@ -380,17 +389,21 @@ export default function NutritionScreen() {
     return targets[metric];
   };
 
-  const kcal = dayFigure(meals, 'kcal', targetFor('kcal'));
+  const kcal = dayFigure(meals, 'kcal', targetFor('kcal'), partialMeals);
   const macroFigures = MACROS.map((m) => ({
     ...m,
-    figure: dayFigure(meals, m.metric, targetFor(m.metric)),
+    figure: dayFigure(meals, m.metric, targetFor(m.metric), partialMeals),
   }));
-  const note = unguardedNote(meals, {
-    kcal: targetFor('kcal'),
-    protein_g: targetFor('protein_g'),
-    carbs_g: targetFor('carbs_g'),
-    fat_g: targetFor('fat_g'),
-  });
+  const note = unguardedNote(
+    meals,
+    {
+      kcal: targetFor('kcal'),
+      protein_g: targetFor('protein_g'),
+      carbs_g: targetFor('carbs_g'),
+      fat_g: targetFor('fat_g'),
+    },
+    partialMeals
+  );
   const corner = targetsCorner(targets, kcal.eaten);
   const recipes = recipeDetail(kitchen);
   const grocery = groceryDetail(kitchen);

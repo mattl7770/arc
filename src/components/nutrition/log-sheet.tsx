@@ -294,7 +294,8 @@ function LogRow({
 }
 
 /** The five rows that leave this sheet for a screen of their own. */
-type LogRoute = '/meal-estimate' | '/food-search' | '/barcode-scan' | '/meal-templates' | '/recipes';
+type LogRoute =
+  '/meal-estimate' | '/food-search' | '/barcode-scan' | '/meal-templates' | '/recipes';
 
 export function LogSheet({ visible, onClose, onSaved }: Props) {
   const router = useRouter();
@@ -358,7 +359,12 @@ export function LogSheet({ visible, onClose, onSaved }: Props) {
           <ScrollView
             className="flex-1"
             contentContainerClassName="grow px-5 pb-10"
-            keyboardShouldPersistTaps="handled">
+            keyboardShouldPersistTaps="handled"
+            // Without this the manual form's lower fields and Save sit under the
+            // keyboard: the sheet's content is short, so there is nothing to
+            // scroll and contentInset never grows. Same prop, same reason, as
+            // app/workout-log.tsx and app/appointment-form.tsx.
+            automaticallyAdjustKeyboardInsets>
             <View className="mt-5">
               <Block device="plate">
                 <LogRow

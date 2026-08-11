@@ -4,6 +4,7 @@
  * tables the capture screens use. Mirrors db/nutrition.test.mjs; op-sqlite and
  * the model client are never loaded. Run: npm run db:test.
  */
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { apiKeyStore } from '../src/lib/ai/api-key-store.ts';
@@ -1992,6 +1993,98 @@ console.log('31. recipes + grocery tools (docs/recipes-grocery.md §6)');
   )
     ? ok('all-excluded refused (nothing to add)')
     : bad('all excluded');
+}
+
+console.log('32. schema/parser drift: every key a tool reads is a key it declares');
+{
+  // WHY THIS EXISTS. On 2026-08-11 a description-trimming pass rewrote several
+  // tool schemas and renamed two of their properties — complete_grocery_items
+  // declared "item_ids" while both handlers read "ids", and
+  // add_recipe_to_grocery_list declared "exclude_ingredient_ids" while both read
+  // "exclude". The first threw on EVERY call; the second silently ignored every
+  // exclusion and re-added ingredients the user already had.
+  //
+  // Nothing caught it. tsc cannot: inputSchema is an untyped record, so a
+  // property NAME is just a string. This suite could not: every other test here
+  // calls handlers directly with hand-built objects, which is precisely the
+  // contract the model does NOT get — the schema is what reaches the model
+  // verbatim (toWireTools), with additionalProperties: false forbidding the key
+  // the code actually wanted.
+  //
+  // So this reads the SOURCE of each tool's object literal and asserts that
+  // every top-level input key it looks up is one the schema declares. Scope is
+  // deliberately the literal itself: keys parsed inside shared helpers are not
+  // scanned (a false negative we accept) rather than attributed to whichever
+  // tool happens to sit next to the helper (a false positive we do not).
+  const sources = [
+    readFileSync(new URL('../src/lib/ai/tools/read-tools.ts', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/lib/ai/tools/write-tools.ts', import.meta.url), 'utf8'),
+  ];
+
+  /** The tool object literal: `const xTool: CoachTool = {` … a lone `};`. */
+  function toolLiteral(name) {
+    for (const src of sources) {
+      const at = src.indexOf("  name: '" + name + "',");
+      if (at < 0) continue;
+      const open = src.lastIndexOf(': CoachTool = {', at);
+      const close = src.indexOf('\n};', at);
+      if (open < 0 || close < 0) continue;
+      return src.slice(open, close);
+    }
+    return null;
+  }
+
+  // Both shapes the codebase uses to pull a key out of the tool's own input:
+  // a helper call — reqString(args, 'x') — and a direct read — args.x.
+  const HELPER =
+    /\b(?:reqString|reqNumber|reqEnum|reqBoolean|optString|optNumber|optDate|optEnum|optBoolean|parseIdArray)\s*\(\s*(?:args|asRecord\(input\))\s*,\s*'([^']+)'/g;
+  const DIRECT = /\bargs\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+
+  let drift = 0;
+  let scanned = 0;
+  for (const tool of COACH_TOOLS) {
+    const body = toolLiteral(tool.name);
+    if (body === null) continue;
+    scanned += 1;
+    const declared = new Set(Object.keys(tool.inputSchema?.properties ?? {}));
+    const read = new Set();
+    for (const re of [HELPER, DIRECT]) {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(body)) !== null) read.add(m[1]);
+    }
+    for (const key of read) {
+      if (!declared.has(key)) {
+        drift += 1;
+        bad(
+          tool.name + ' reads "' + key + '"',
+          'schema declares {' + [...declared].join(', ') + '}'
+        );
+      }
+    }
+  }
+
+  scanned === COACH_TOOLS.length
+    ? ok('every registered tool literal was located and scanned (' + scanned + ')')
+    : bad('tool literals not found', scanned + ' of ' + COACH_TOOLS.length);
+  drift === 0
+    ? ok('no schema/parser key drift across ' + COACH_TOOLS.length + ' tools')
+    : bad('schema/parser drift', drift + ' mismatched keys');
+
+  // The other half of the same contract.
+  let undeclaredRequired = 0;
+  for (const tool of COACH_TOOLS) {
+    const declared = new Set(Object.keys(tool.inputSchema?.properties ?? {}));
+    for (const key of tool.inputSchema?.required ?? []) {
+      if (!declared.has(key)) {
+        undeclaredRequired += 1;
+        bad(tool.name + ' requires "' + key + '"', 'which its properties do not declare');
+      }
+    }
+  }
+  undeclaredRequired === 0
+    ? ok('every required key is declared in properties')
+    : bad('required/properties drift', String(undeclaredRequired));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

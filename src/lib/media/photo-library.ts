@@ -72,6 +72,33 @@ export function isPhotoLibraryAvailable(): boolean {
   return loadImagePicker() !== null;
 }
 
+/**
+ * Re-encode any image URI to a downscaled JPEG in base64.
+ *
+ * Exported because the SHARE path needs it too: a screenshot arriving through
+ * the iOS share sheet was being read straight off disk and sent to the model
+ * labelled `image/jpeg` whatever it actually was — a PNG or HEIC screenshot
+ * mislabelled, at full resolution, with no cap. Same pass, same 1024px, same
+ * quality, so both entry points speak the format they claim.
+ *
+ * Null when the manipulator is absent (this binary) or the read fails; the
+ * caller then falls back to whatever it already had.
+ */
+export async function downscaleToJpegBase64(uri: string): Promise<string | null> {
+  const manipulator = loadManipulator();
+  if (!manipulator) return null;
+  try {
+    const shrunk = await manipulator.manipulateAsync(uri, [{ resize: { width: 1024 } }], {
+      compress: 0.6,
+      format: manipulator.SaveFormat.JPEG,
+      base64: true,
+    });
+    return shrunk.base64 ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export type PickedPhoto =
   | { kind: 'photo'; base64Jpeg: string }
   /** The user backed out of the picker — not an error, and not a message. */

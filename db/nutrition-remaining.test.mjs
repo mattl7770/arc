@@ -158,8 +158,10 @@ console.log('8. the authored line: what it names, and when it stays silent');
     : bad('meals missing', String(mealsMissingValues(dayWithDinner, TARGETS)));
 
   const note = unguardedNote(dayWithDinner, TARGETS);
-  note && note.startsWith('One meal has no energy, protein, carbs and fat recorded')
-    ? ok('the note names the metrics in display order and reads as a sentence')
+  note && note.startsWith('One meal is not fully counted for energy, protein, carbs or fat')
+    ? ok(
+        'the note names the metrics in display order, joined with OR — each meal is short on at least one, not on all four'
+      )
     : bad('note copy', String(note));
 
   note && note.includes('what is left of today is not known')
@@ -168,9 +170,19 @@ console.log('8. the authored line: what it names, and when it stays silent');
 
   const twoBlank = [...FULL_DAY, meal(null, 10, 10, 10), meal(null, 10, 10, 10)];
   const plural = unguardedNote(twoBlank, TARGETS);
-  plural && plural.startsWith('2 meals have no energy recorded')
+  plural && plural.startsWith('2 meals are not fully counted for energy')
     ? ok('two meals missing only kcal → plural subject, and only energy is named')
     : bad('plural copy', String(plural));
+
+  // AND the consequence is scoped: protein, carbs and fat are still counting
+  // down in the cells above, so the note must not claim the whole day is
+  // unknown. That generalisation was the defect.
+  plural && plural.includes('what has been logged rather than what is left')
+    ? ok('a partial fallback scopes its consequence to the metrics it names')
+    : bad('scoped consequence', String(plural));
+  plural && !plural.includes('what is left of today is not known')
+    ? ok('and does not claim the whole day is unknown while three cells count down')
+    : bad('over-broad consequence', String(plural));
 }
 
 console.log('9. an untargeted metric is never named as missing');
@@ -199,6 +211,42 @@ console.log('10. the labels the note is built from are product nouns');
   DAY_METRIC_LABELS.fat_g === 'fat'
     ? ok('"energy", not "kcal_g" — the user never reads a column name')
     : bad('labels', JSON.stringify(DAY_METRIC_LABELS));
+}
+
+console.log('11. a partially resolved recipe: the total is non-null AND knowingly short');
+{
+  // logRecipe writes the priced ingredients as items with snapshots and the
+  // rest as name-only items with NULL macros, so the MEAL total is a sum over
+  // the priced half. It is non-null, it looks complete, and it means "at least
+  // this much" — subtracting it from a target over-states what is left, on
+  // exactly the days the user cooked from the book.
+  const cooked = { id: 'm-cooked', kcal: 620, protein_g: 42, carbs_g: 68, fat_g: 20 };
+  const day = [meal(740, 46, 62, 33), cooked];
+  const partial = { 'm-cooked': { kcal: true, protein_g: true } };
+
+  const naive = dayFigure(day, 'kcal', 2400);
+  naive.mode === 'remaining'
+    ? ok('without the partial map the guard passes it — the columns are all non-null')
+    : bad('control', JSON.stringify(naive));
+
+  const guarded = dayFigure(day, 'kcal', 2400, partial);
+  guarded.mode === 'eaten' && guarded.target === 2400
+    ? ok('with it, kcal falls back to the eaten reading and keeps its denominator')
+    : bad('partial guard', JSON.stringify(guarded));
+
+  const fat = dayFigure(day, 'fat_g', 70, partial);
+  fat.mode === 'remaining' && fat.remaining === 17
+    ? ok('fat was fully priced in that meal, so it still counts down — per metric, not per meal')
+    : bad('per-metric partial', JSON.stringify(fat));
+
+  const note = unguardedNote(day, TARGETS, partial);
+  note && note.startsWith('One meal is not fully counted for energy or protein')
+    ? ok('and the note names exactly the two metrics that were short')
+    : bad('partial note', String(note));
+
+  mealsMissingValues(day, TARGETS, partial) === 1
+    ? ok('the meal count sees a short total the same way it sees a NULL')
+    : bad('partial meal count', String(mealsMissingValues(day, TARGETS, partial)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

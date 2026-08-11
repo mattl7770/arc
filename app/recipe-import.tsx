@@ -397,11 +397,11 @@ function ReviewDraft({ draft, onSaved }: { draft: RecipeDraft; onSaved: (id: str
   const [stepsText, setStepsText] = useState(draft.steps.join('\n'));
 
   const parsedServings = Number(servings);
-  const canSave =
-    title.trim() !== '' &&
-    Number.isFinite(parsedServings) &&
-    parsedServings > 0 &&
-    lines.some((l) => l.raw.trim() !== '');
+  // No ingredient-line requirement: the empty state says "add one, or save the
+  // recipe without them", createRecipe no-ops on an empty array, and
+  // app/recipe-edit.tsx has always allowed it. A button that refuses what the
+  // sentence above it offers is the contradiction, not the empty recipe.
+  const canSave = title.trim() !== '' && Number.isFinite(parsedServings) && parsedServings > 0;
 
   const save = () => {
     if (!canSave) return;

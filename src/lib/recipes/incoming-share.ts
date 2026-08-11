@@ -10,10 +10,11 @@
  * themselves are read here and CLEARED once consumed, so a share is imported
  * exactly once.
  */
+import { downscaleToJpegBase64 } from '@/lib/media/photo-library';
 import { recipeImportShareFromPayloads, type RecipeImportShare } from './share-payload';
 
 type SharingApi = {
-  getSharedPayloads(): { value: string; type?: string }[];
+  getSharedPayloads(): { value: string; shareType?: string }[];
   clearSharedPayloads(): void;
 };
 
@@ -71,11 +72,22 @@ export function consumeIncomingShare(): RecipeImportShare | null {
 type FileCtor = new (uri: string) => { base64(): Promise<string> };
 
 /**
- * Read a shared image file as base64 for the vision rung — expo-file-system's
- * File API (already in the build; the lab-PDF picker's pattern). Null when the
- * module is absent or the read fails; the caller falls back to paste.
+ * Read a shared image as base64 for the vision rung.
+ *
+ * **Downscale and RE-ENCODE first.** The extraction request labels its payload
+ * `image/jpeg` unconditionally, and iOS shares screenshots as PNG or HEIC — so
+ * reading the file straight off disk sent a mislabelled image, at full
+ * resolution, with no size cap, to a vision model. The share path now runs the
+ * same pass the library picker does (`downscaleToJpegBase64`, 1024px, q0.6), so
+ * what is claimed and what is sent are the same format.
+ *
+ * The raw read stays as the FALLBACK for a binary without the manipulator —
+ * mislabelled but present beats a dead rung, and the paste path is one tap away
+ * either way. Null when nothing could be read at all.
  */
 export async function readSharedImageBase64(uri: string): Promise<string | null> {
+  const jpeg = await downscaleToJpegBase64(uri);
+  if (jpeg !== null) return jpeg;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require('expo-file-system') as { File?: unknown };

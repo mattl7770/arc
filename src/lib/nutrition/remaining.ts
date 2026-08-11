@@ -20,7 +20,9 @@ import type { MealRow } from './types';
  * So a remainder is computed **per metric**, and only when
  *
  *   1. a target governs that metric (else there is nothing to subtract from), and
- *   2. every meal logged today carries a value for it.
+ *   2. every meal logged today carries a TRUSTWORTHY value for it — not NULL,
+ *      and not a sum over items one of which was never priced (see
+ *      metricIsComplete).
  *
  * Otherwise the metric falls back to the reading that shipped before this
  * redesign — eaten, with its denominator and its progress rule — and the screen
@@ -65,9 +67,35 @@ export function sumRounded(values: (number | null | undefined)[]): number {
   );
 }
 
-/** True when every meal on the day carries a value for this metric. */
-export function metricIsComplete(meals: MealRow[], metric: DayMetric): boolean {
-  return meals.every((meal) => meal[metric] != null);
+/**
+ * meal_id → the metrics whose total that meal is knowingly SHORT on, because an
+ * item inside it was never priced. Produced by `partialMealMetrics`
+ * (repositories/nutrition.ts). An empty map is the honest default for a caller
+ * with no itemized meals in play.
+ */
+export type PartialMealMetrics = Record<string, Partial<Record<DayMetric, boolean>>>;
+
+/**
+ * True when every meal on the day carries a TRUSTWORTHY value for this metric.
+ *
+ * Two different ways a meal fails, and the second is the subtle one:
+ *
+ *   1. The column is NULL — nothing was recorded. The row shows an em-dash.
+ *   2. The column is a SUM OVER ITEMS, one of which had no number. This is what
+ *      `logRecipe` writes for a partially resolved recipe: the priced lines land
+ *      with snapshots, the rest land as name-only items with NULL macros, and
+ *      the meal's own kcal is the sum of the priced half. The meal *looks*
+ *      complete — it shows 620 kcal — but it means "at least 620".
+ *
+ * Case 2 is honest as a ledger row and dishonest as a minuend, which is the
+ * whole reason this parameter exists.
+ */
+export function metricIsComplete(
+  meals: MealRow[],
+  metric: DayMetric,
+  partial: PartialMealMetrics = {}
+): boolean {
+  return meals.every((meal) => meal[metric] != null && partial[meal.id]?.[metric] !== true);
 }
 
 /**
@@ -75,11 +103,26 @@ export function metricIsComplete(meals: MealRow[], metric: DayMetric): boolean {
  * non-positive target is treated as no target (a "0 kcal" goal is not a frame of
  * reference, and dividing by it is how a progress rule reaches infinity).
  */
-export function dayFigure(meals: MealRow[], metric: DayMetric, target: number | null): DayFigure {
+export function dayFigure(
+  meals: MealRow[],
+  metric: DayMetric,
+  target: number | null,
+  partial: PartialMealMetrics = {}
+): DayFigure {
   const eaten = sumRounded(meals.map((meal) => meal[metric]));
   if (target == null || target <= 0) return { mode: 'eaten', eaten, target: null };
-  if (!metricIsComplete(meals, metric)) return { mode: 'eaten', eaten, target };
+  if (!metricIsComplete(meals, metric, partial)) return { mode: 'eaten', eaten, target };
   return { mode: 'remaining', eaten, target, remaining: Math.round(target - eaten) };
+}
+
+/** The targeted metrics — the only ones a note may name, because they are the
+ *  only ones the screen was counting down. */
+function trackedMetrics(targets: Partial<Record<DayMetric, number | null>>): DayMetric[] {
+  const order: DayMetric[] = ['kcal', 'protein_g', 'carbs_g', 'fat_g'];
+  return order.filter((metric) => {
+    const target = targets[metric];
+    return target != null && target > 0;
+  });
 }
 
 /**
@@ -89,29 +132,23 @@ export function dayFigure(meals: MealRow[], metric: DayMetric, target: number | 
  */
 export function unguardedMetrics(
   meals: MealRow[],
-  targets: Partial<Record<DayMetric, number | null>>
+  targets: Partial<Record<DayMetric, number | null>>,
+  partial: PartialMealMetrics = {}
 ): DayMetric[] {
-  const order: DayMetric[] = ['kcal', 'protein_g', 'carbs_g', 'fat_g'];
-  return order.filter((metric) => {
-    const target = targets[metric];
-    if (target == null || target <= 0) return false;
-    return !metricIsComplete(meals, metric);
-  });
+  return trackedMetrics(targets).filter((metric) => !metricIsComplete(meals, metric, partial));
 }
 
-/** How many of today's meals are missing at least one targeted metric. */
+/** How many of today's meals are missing or short on at least one targeted metric. */
 export function mealsMissingValues(
   meals: MealRow[],
-  targets: Partial<Record<DayMetric, number | null>>
+  targets: Partial<Record<DayMetric, number | null>>,
+  partial: PartialMealMetrics = {}
 ): number {
-  const tracked: DayMetric[] = (['kcal', 'protein_g', 'carbs_g', 'fat_g'] as DayMetric[]).filter(
-    (metric) => {
-      const target = targets[metric];
-      return target != null && target > 0;
-    }
-  );
+  const tracked = trackedMetrics(targets);
   if (tracked.length === 0) return 0;
-  return meals.filter((meal) => tracked.some((metric) => meal[metric] == null)).length;
+  return meals.filter((meal) =>
+    tracked.some((metric) => meal[metric] == null || partial[meal.id]?.[metric] === true)
+  ).length;
 }
 
 /**
@@ -122,16 +159,32 @@ export function mealsMissingValues(
  */
 export function unguardedNote(
   meals: MealRow[],
-  targets: Partial<Record<DayMetric, number | null>>
+  targets: Partial<Record<DayMetric, number | null>>,
+  partial: PartialMealMetrics = {}
 ): string | null {
-  const missing = unguardedMetrics(meals, targets);
+  const missing = unguardedMetrics(meals, targets, partial);
   if (missing.length === 0) return null;
-  const mealCount = mealsMissingValues(meals, targets);
+  const mealCount = mealsMissingValues(meals, targets, partial);
   const names = missing.map((metric) => DAY_METRIC_LABELS[metric]);
+  // "energy or protein", never "and": the claim distributes over the meals, and
+  // each counted meal is short on at LEAST one of the named metrics — not on
+  // every one of them. An earlier draft wrote "and", which asserted a
+  // conjunction no meal in the repro case satisfied.
   const list =
     names.length === 1
       ? names[0]
-      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-  const subject = mealCount === 1 ? 'One meal has' : `${mealCount} meals have`;
-  return `${subject} no ${list} recorded, so what is left of today is not known. This is what has been logged.`;
+      : `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`;
+  const subject = mealCount === 1 ? 'One meal is' : `${mealCount} meals are`;
+
+  // Scope the consequence to what actually failed. When only some of the
+  // targeted metrics are unguarded, the others ARE counting down in the cells
+  // right above this line — claiming "what is left of today is not known" over
+  // a grid that is visibly showing what is left of protein is a false whole-day
+  // generalisation of a per-metric fallback.
+  const tracked = trackedMetrics(targets);
+  if (missing.length === tracked.length) {
+    return `${subject} not fully counted for ${list}, so what is left of today is not known. This is what has been logged.`;
+  }
+  const those = missing.length === 1 ? 'that figure is' : 'those figures are';
+  return `${subject} not fully counted for ${list}, so ${those} what has been logged rather than what is left.`;
 }

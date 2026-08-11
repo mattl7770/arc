@@ -9,11 +9,13 @@ import {
   dayFiberTotal,
   listTodayMeals,
   mealItemCounts,
+  partialMealMetrics,
   todayTotals,
   type DayIntakePoint,
 } from '@/lib/db/repositories/nutrition';
 import { checkedGroceryCount, openGroceryLineCount } from '@/lib/db/repositories/grocery';
 import { recipeCount, recipesCookedSince } from '@/lib/db/repositories/recipes';
+import type { PartialMealMetrics } from '@/lib/nutrition/remaining';
 import type { DayTotals, MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 
 /** The window the Eat tab's "Over time" section reads. Matches the History
@@ -49,6 +51,9 @@ export type NutritionDay = {
   itemCounts: Record<string, number>;
   /** The target set governing today, or null until targets are first set. */
   targets: NutritionTargetsRow | null;
+  /** meal_id → metrics that meal is knowingly SHORT on (an item was never
+   *  priced). The countdown refuses these the way it refuses a NULL. */
+  partialMeals: PartialMealMetrics;
   /** The standing objects' live state — the Kitchen rows. */
   kitchen: KitchenCounts;
   /** The 14-day read the tab leads its "Over time" section with. */
@@ -118,6 +123,7 @@ function readToday(): Omit<NutritionDay, 'reload'> {
     fiberTotal: dayFiberTotal(db, date),
     itemCounts: mealItemCounts(db, date),
     targets: activeNutritionTargets(db, date) ?? null,
+    partialMeals: partialMealMetrics(db, date),
     kitchen: readKitchen(db, date),
     overTime: {
       kcal,
