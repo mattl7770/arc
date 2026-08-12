@@ -25,7 +25,8 @@ import type { PendingWrite } from '@/types/coach';
  *      stated outcome, which is the half of the decision the owner is actually
  *      being asked about. It now draws the outcome as a two-lane revision diff:
  *      what the record says NOW, and what it will say ON APPROVE. The lanes are
- *      set in type alone — no rules, no indent (see the note at the call site).
+ *      set in type alone — no rules, no indent (see {@link ConsequenceLanes}),
+ *      and they are drawn for every write but the self-evident ones (below).
  *   3. **The decision and its outcome are never drawn at once.** The ON APPROVE
  *      lane is a future, not a receipt: it is set apart by its label and its
  *      tense, and it disappears the instant the decision is made. The screen also
@@ -38,6 +39,117 @@ import type { PendingWrite } from '@/types/coach';
  * `PendingWrite` carries only a tool name and one human summary line, so the
  * lanes state the *fact* of the change and nothing more. Fabricating a
  * dimension string here would be exactly the estimate §5 forbids.
+ *
+ * ## …and the card is only as long as the decision is heavy
+ *
+ * All of the above shipped on every write, and on a small one it is absurd.
+ * Adding milk to the shopping list drew a title, a tool name, "Nothing has been
+ * written. The Coach is suspended until you answer." and "This is written to
+ * your on-device record, once, and the Coach carries on from there." — five
+ * blocks of type to say *milk* (owner, 2026-08-11: "very wordy and long, I think
+ * we can do better").
+ *
+ * The rule the lanes actually encode is narrower than "every write": **state the
+ * consequence the summary does not.** For a protocol revision that is most of
+ * the decision — "Revise Morning Routine" does not say that a version is
+ * superseded, that it happens once, or that nothing has happened yet. For
+ * "Add 1 item to the grocery list: Milk" the summary IS the consequence, already
+ * in the proposed tense, and the lanes restate it twice at greater length. §5
+ * throws out drafting chrome that does not pay rent, and a consequence statement
+ * that only paraphrases the line above it is not paying any.
+ *
+ * So the card has two forms, chosen by {@link isSelfEvidentWrite}, and the
+ * DEFAULT IS THE LONG ONE — the short form is an allowlist, so a tool this file
+ * has never heard of keeps its consequence statement. That direction is the
+ * whole safety argument: a needlessly wordy card on a trivial write is an
+ * irritation, a silently terse card on a destructive one is a write the owner
+ * approved without being told what it costs.
+ */
+
+/**
+ * The writes whose summary is already the whole consequence.
+ *
+ * The test is deliberately strict, and it is not "small": the write's entire
+ * effect must be one line item on a **working list** — a list the owner can see
+ * and edit by hand elsewhere in the app, and undo with a tap — rather than
+ * anything that enters the durable health record. The grocery list and a one-off
+ * reminder qualify. Logs, protocol revisions, modes, experiments, memory and
+ * recipes do not: they are the record, or they supersede something in it.
+ *
+ * Two neighbours are deliberately absent to show where the line falls.
+ * `set_reminder` also arms an OS notification, which the summary does not say.
+ * `dismiss_reminder` ends a recurring reminder **permanently** — its own tool
+ * description uses that word — and permanence is exactly the consequence a
+ * summary cannot carry on its own.
+ *
+ * ## This list should not live here, and here is the smallest fix
+ *
+ * A `PendingWrite` is `{ id, tool, summary }` (src/types/coach.ts), built in
+ * use-coach-chat from `WriteConfirmation` `{ tool, summary }`
+ * (src/lib/ai/coach-service.ts) — so the card genuinely cannot tell a grocery add
+ * from a protocol revision by anything but the tool's NAME, which is why this
+ * map exists. The registry is where the answer belongs: `CoachTool` already
+ * carries `readOnly` as its safety pivot (src/lib/ai/tools/types.ts), and the
+ * smallest honest change is one more optional field beside it —
+ * `selfEvident?: boolean`, set on the four tools below — threaded through
+ * `WriteConfirmation` and `PendingWrite` as one boolean. Each tool would then
+ * declare its own weight next to its `confirmSummary`, which is the only place
+ * that knows what that summary says. Until then the map is here, and it fails
+ * closed.
+ */
+const SELF_EVIDENT_WRITES = new Set([
+  'add_grocery_items',
+  'add_recipe_to_grocery_list',
+  'complete_grocery_items',
+  'complete_reminder',
+]);
+
+/** Is this write's summary the whole story? Unknown tools are never assumed to be. */
+function isSelfEvidentWrite(tool: string): boolean {
+  return SELF_EVIDENT_WRITES.has(tool);
+}
+
+/**
+ * The before/after lanes: what the record says NOW, and what it will say ON
+ * APPROVE. Drawn for every write except the self-evident ones — see
+ * {@link SELF_EVIDENT_WRITES}.
+ *
+ * **No lane rules.** Each lane used to carry a 2px left rule (neutral for Now,
+ * pine for On approve) with a 10px indent. That is the exact mark the `margin`
+ * device lost on 2026-08-09 for the exact reason: beside a paragraph it is not
+ * annotating, a lone vertical stroke reads as a rendering artefact rather than
+ * as structure, and the owner has now raised stray rules twice (2026-08-10).
+ * The tense and the two labels were always what told the lanes apart — "Now" in
+ * muted ink, "On approve" in pine — and they still do, inside a stamp that is
+ * already drawn. Nothing here needed a second enclosure.
+ */
+function ConsequenceLanes() {
+  return (
+    <View className="mt-3">
+      <View>
+        <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+          Now
+        </Text>
+        <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+          Nothing has been written. The Coach is suspended until you answer.
+        </Text>
+      </View>
+
+      <View className="mt-2.5">
+        <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
+          On approve
+        </Text>
+        <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink">
+          This is written to your on-device record, once, and the Coach carries on from there.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * The gate itself — the card the owner answers. See the notes at the head of
+ * this file for why it has two lengths.
  *
  * ## Conformed Set treatment
  *
@@ -66,6 +178,8 @@ export function PendingWriteCard({
   /** Carries the request's nonce so a tap can only answer what it was shown. */
   onResolve: (id: number, approved: boolean) => void;
 }) {
+  const brief = isSelfEvidentWrite(pending.tool);
+
   return (
     <View accessibilityLiveRegion="polite" className="bg-paper">
       {/* The pinned card's top edge — a drawn rule, not a `border-t`, which
@@ -82,39 +196,21 @@ export function PendingWriteCard({
             {pending.summary}
           </Text>
 
-          <Text className="mt-1 font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
-            {humanizeToolName(pending.tool)}
-          </Text>
+          {/* The tool name is transparency, and on a self-evident write it is
+            transparency about a fact the line above already states: "ADD GROCERY
+            ITEMS" under "Add 1 item to the grocery list: Milk" is the same
+            sentence twice, once in a voice that reads as machinery. It stays on
+            every other write, where the summary is prose and the tool is the
+            audit detail — and it is never actually lost, because the turn's tool
+            chips carry it in the thread once the write lands
+            (coach/message-bubble.tsx). */}
+          {brief ? null : (
+            <Text className="mt-1 font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
+              {humanizeToolName(pending.tool)}
+            </Text>
+          )}
 
-          {/* The revision diff — current state above, proposed state below.
-            **No lane rules.** Each lane used to carry a 2px left rule (neutral
-            for Now, pine for On approve) with a 10px indent. That is the exact
-            mark the `margin` device lost on 2026-08-09 for the exact reason:
-            beside a paragraph it is not annotating, a lone vertical stroke
-            reads as a rendering artefact rather than as structure, and the
-            owner has now raised stray rules twice (2026-08-10). The tense and
-            the two labels were always what told the lanes apart — "Now" in
-            muted ink, "On approve" in pine — and they still do, inside a stamp
-            that is already drawn. Nothing here needed a second enclosure. */}
-          <View className="mt-3">
-            <View>
-              <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
-                Now
-              </Text>
-              <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
-                Nothing has been written. The Coach is suspended until you answer.
-              </Text>
-            </View>
-
-            <View className="mt-2.5">
-              <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
-                On approve
-              </Text>
-              <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink">
-                This is written to your on-device record, once, and the Coach carries on from there.
-              </Text>
-            </View>
-          </View>
+          {brief ? null : <ConsequenceLanes />}
 
           {/* The sheet draws `.cf-btnrow--3`: Approve / Edit / Reject in
             `grid-template-columns: 1fr 1fr 1fr`. **Two of those three can ship

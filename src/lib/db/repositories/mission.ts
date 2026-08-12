@@ -13,9 +13,19 @@ import { newId } from '../id';
 import type { DailyLogRow, LogEntryRow, LogEntryStatus, LogEntryType } from '../types';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
-/** Presentation extras stashed in log_entries.value as JSON. */
+/**
+ * Presentation extras stashed in log_entries.value as JSON.
+ *
+ * `dose` and `why` are two fields because they are two facts — a quantity and a
+ * rationale — and the hero renders them in different type voices (mono measures,
+ * serif speaks). They were one field until 2026-08-12, flattened by the
+ * generator as `dose ?? notes`, which forced the hero to guess from the string
+ * shape which one it had. Rows written before that carry a dose in `why` and no
+ * `dose`; they render as prose until the mission regenerates, which is daily.
+ */
 type MissionExtras = {
   category?: string;
+  dose?: string;
   why?: string;
   estimatedMinutes?: number;
   protocol?: string;
@@ -53,6 +63,7 @@ export function toMissionItem(row: LogEntryRow): MissionItem {
     scheduledTime: row.scheduled_time ?? undefined,
     status: row.status as MissionStatus,
     category: extras.category ?? CATEGORY_BY_TYPE[row.type],
+    dose: extras.dose,
     why: extras.why,
     estimatedMinutes: extras.estimatedMinutes,
     protocol: extras.protocol,
@@ -152,6 +163,7 @@ export function insertMissionItem(
 ): void {
   const extras: MissionExtras = {
     category: item.category,
+    dose: item.dose,
     why: item.why,
     estimatedMinutes: item.estimatedMinutes,
     protocol: item.protocol,

@@ -12,6 +12,17 @@
  *
  * When a dependency lands: implement execute, move the tool into COACH_TOOLS
  * (src/lib/ai/tools/index.ts), and strike the flag from the spec.
+ *
+ * ## What does NOT belong here (2026-08-11)
+ *
+ * "Awaiting a dependency" is not the same category as "withheld on purpose",
+ * and the coverage census made the difference matter. Booking an appointment,
+ * creating a protocol or a screening from scratch, editing a logged meal — all
+ * of those have shipped tables and shipped screens, so a stub would be a lie
+ * about why the tool is missing. They are declared instead in
+ * UNCOVERED_DOMAINS (index.ts), which tells the model the feature EXISTS and it
+ * cannot see it, and names the screen where the user does it. Add a capability
+ * withheld by judgment there, never as a stub that throws "has not shipped yet".
  */
 import type { CoachTool } from './types';
 

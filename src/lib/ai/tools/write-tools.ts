@@ -30,7 +30,16 @@ import { todayISODate } from '@/lib/db/date';
 import { logCapture, logMetric, logNote } from '@/lib/db/repositories/logs';
 import { logWorkout } from '@/lib/db/repositories/exercise';
 import { listExercises } from '@/lib/db/repositories/exercise-catalog';
-import { logMeal } from '@/lib/db/repositories/nutrition';
+import {
+  activeNutritionTargets,
+  logMeal,
+  setNutritionTargets,
+} from '@/lib/db/repositories/nutrition';
+import {
+  addMonthsClamped,
+  getScreening,
+  markScreeningDone,
+} from '@/lib/db/repositories/screenings';
 import { addVersion, getCurrentVersion, getProtocolBySlug } from '@/lib/db/repositories/protocols';
 import {
   completeReminder,
@@ -579,17 +588,14 @@ function reminderDaySuffix(date: string | null, repeat: string, now: Date): stri
 const setReminderTool: CoachTool = {
   name: 'set_reminder',
   description:
-    // Compressed from main's longer text (2026-08-10, token budget) without
-    // dropping a fact: both the one-off pinning rule and the notification
-    // reporting rule are load-bearing runtime semantics the model gets wrong
-    // without them. Everything cut was restatement.
+    // Compressed 2026-08-10 (token budget), then again 2026-08-11. The one-off
+    // pinning rule and the notification-reporting rule are still load-bearing —
+    // they have MOVED, into the system prompt's Reminders bullet, which is
+    // cached once for the whole registry rather than restated per tool. Only
+    // the shape of this call stays here.
     'Create a reminder: title, optional "HH:MM" time, optional "YYYY-MM-DD" date, repeat ' +
-    'once/daily/weekly. Use when asked, or propose one when a logging gap warrants a nudge. ' +
-    'Check list_reminders first to avoid duplicates. A one-off with a time but no date is ' +
-    "pinned as it saves — today if that hour is still ahead, else tomorrow — and the result's " +
-    '"date" reports which; say that day back. Never promise a phone alert: the result\'s ' +
-    '"notification" field says whether one was ACTUALLY scheduled, and its "note" says why ' +
-    'not. Relay both.',
+    'once/daily/weekly (weekly needs a date to anchor its weekday). Use when asked, or propose ' +
+    'one when a logging gap warrants a nudge. Check list_reminders first to avoid duplicates.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -754,10 +760,12 @@ function requireProtocol(db: Database, slug: string) {
 const updateProtocolTool: CoachTool = {
   name: 'update_protocol',
   description:
+    // The COMPLETE-SET rule and its "anything omitted is dropped" consequence
+    // now live once, in the system prompt's VERSIONED SETS bullet, which governs
+    // this tool and set_nutrition_targets together (2026-08-11 trim).
     'Save a new version of a protocol (stack, routine, training block) by its slug from ' +
-    'get_protocols. "items" must be the COMPLETE new list — call get_protocols first and include ' +
-    'every item you are keeping; anything omitted is dropped. Takes effect TOMORROW unless ' +
-    'apply_today is true; say which you did.',
+    'get_protocols. "items" is the COMPLETE new list. Takes effect TOMORROW unless apply_today ' +
+    'is true; say which you did.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -845,11 +853,10 @@ const MEMORY_CATEGORIES = ['preference', 'constraint', 'context', 'goal'] as con
 const rememberTool: CoachTool = {
   name: 'remember',
   description:
+    // The what-not-to-remember rail lives in the system prompt's Memory bullet.
     'Store ONE durable fact so you still know it next conversation: a preference, a constraint ' +
     'or adverse reaction ("magnesium citrate upsets his stomach"), stable context, or a goal. ' +
-    'Use it the moment the user says something still true next month — do not wait to be asked. ' +
-    'NOT for data you can already read (weights, meals, workouts, labs), passing state, or your ' +
-    'own inferences. One sentence per call; the user sees and can delete every memory.',
+    'One sentence per call; the user sees and can delete every memory.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -979,9 +986,8 @@ const adjustTodayTool: CoachTool = {
   name: 'adjust_today',
   description:
     "Restructure TODAY's mission in one batch: complete / skip / move / remove items by their id " +
-    'from get_today_snapshot, and add new ones. The whole batch is ONE confirmation, so send the ' +
-    'complete adjustment rather than several calls. Today only — edit the protocol to change ' +
-    'what future days generate.',
+    'from get_today_snapshot, and add new ones. The whole batch is ONE confirmation, so send it ' +
+    'as one call. Today only — edit the protocol to change future days.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1272,9 +1278,8 @@ const createExperimentTool: CoachTool = {
   name: 'create_experiment',
   description:
     'Design an n-of-1 experiment: title, hypothesis, the ONE intervention being changed, metrics ' +
-    'to watch, duration in days, optional success criteria. Starts TODAY; later read those ' +
-    'metrics and close it with complete_experiment. Keep it to ONE change so the readout is ' +
-    'attributable.',
+    'to watch, duration in days, optional success criteria. Starts TODAY. Keep it to ONE change ' +
+    'so the readout is attributable.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1287,10 +1292,13 @@ const createExperimentTool: CoachTool = {
       metrics: {
         type: 'array',
         items: { type: 'string' },
+        // The readable-name list is not repeated here: the result WARNS, by
+        // name, about any metric get_metric_series cannot return (see
+        // `unreadableMetrics` below), which is the same information delivered
+        // only in the case where it matters.
         description:
-          'Metrics to watch. Prefer names get_metric_series can actually read back — ' +
-          'weight, body_fat, waist, hrv, rhr, water, sleep, sleep_deep, steps, active_energy — ' +
-          'so the readout has numbers. Anything else is watched qualitatively.',
+          'Metrics to watch. Prefer names get_metric_series can read back, so the readout has ' +
+          'numbers; anything else is watched qualitatively.',
       },
       duration_days: { type: 'integer', minimum: 3 },
       success_criteria: { type: 'string', description: 'What would confirm the hypothesis.' },
@@ -1776,6 +1784,210 @@ const saveRecipeTool: CoachTool = {
   },
 };
 
+// --- set_nutrition_targets (0015: the versioned daily target set) ------------
+//
+// THE OWNER-REPORTED HOLE. The Coach told the owner *"nothing in your profile or
+// protocols defines a kcal/protein/carb target"* about a feature they use, and
+// then offered — in the same breath — "tell me a target and I'll track
+// adherence", which it had no way to honour. The read half is fixed in
+// read-tools.ts (get_today_snapshot.nutritionTargets); this is the offer.
+//
+// Targets are APPEND-ONLY versions, exactly like protocol_versions: saving
+// inserts a row effective today and never mutates the past, so "was I under in
+// March?" is still judged against March's numbers. That is also why this is a
+// COMPLETE SET, not a patch — the same rule update_protocol enforces, for the
+// same reason: a version means the whole thing, and a metric omitted from the
+// new version has no target from today on. Approving that has to be legible, so
+// the card names every drop by name.
+//
+// created_by is 'ai' by construction, which is what the targets screen renders
+// as "set by Coach". A user reading Eat › Daily targets must be able to see
+// whose numbers those are.
+
+/** The five target columns, in the order the editor screen lays them out. */
+const TARGET_FIELDS = ['kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g'] as const;
+type TargetField = (typeof TARGET_FIELDS)[number];
+
+const TARGET_LABELS: Record<TargetField, string> = {
+  kcal: 'kcal',
+  protein_g: 'g protein',
+  carbs_g: 'g carbs',
+  fat_g: 'g fat',
+  fiber_g: 'g fiber',
+};
+
+/** "2400 kcal", "180 g protein" — integers stay integers, no Intl. */
+function targetPart(field: TargetField, value: number): string {
+  const n = Math.round(value * 10) / 10;
+  return field === 'kcal' ? `${n} kcal` : `${n} ${TARGET_LABELS[field]}`;
+}
+
+function renderTargetSet(values: Partial<Record<TargetField, number | null>>): string {
+  const parts = TARGET_FIELDS.filter((f) => values[f] != null && values[f]! > 0).map((f) =>
+    targetPart(f, values[f]!)
+  );
+  return parts.length > 0 ? parts.join(' · ') : 'nothing';
+}
+
+/**
+ * Validated target set, shared by summary and execute.
+ *
+ * Every value must be POSITIVE, not merely non-negative, even though the schema
+ * CHECK allows 0 on the macros. That is the targets screen's own rule and it is
+ * load-bearing: `dayFigure` (src/lib/nutrition/remaining.ts) treats a
+ * non-positive target as NO target — it is what a progress rule divides by — so
+ * a stored 0 would be user intent that every reader silently discards. Omitting
+ * the field is the same intent, stated the way the app already reads.
+ */
+function parseTargets(input: Record<string, unknown>): Partial<Record<TargetField, number>> {
+  const args = asRecord(input);
+  const out: Partial<Record<TargetField, number>> = {};
+  for (const field of TARGET_FIELDS) {
+    const value = optNumber(args, field);
+    if (value === undefined) continue;
+    if (value <= 0) {
+      throw new Error(
+        `"${field}" must be greater than 0 — omit it to drop that target, never send 0.`
+      );
+    }
+    out[field] = value;
+  }
+  if (Object.keys(out).length === 0) {
+    throw new Error(
+      'Set at least one of kcal, protein_g, carbs_g, fat_g, fiber_g. This is the COMPLETE new ' +
+        'target set, so an empty call would mean "no targets at all".'
+    );
+  }
+  return out;
+}
+
+const setNutritionTargetsTool: CoachTool = {
+  name: 'set_nutrition_targets',
+  description:
+    "The user's daily nutrition targets — kcal, protein_g, carbs_g, fat_g, fiber_g — as the " +
+    'COMPLETE new set (see VERSIONED SETS). Use when the user states a goal ("I want 180 g of ' +
+    'protein a day") or agrees to one you proposed. Omit a value to have no target for it.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      kcal: { type: 'number', exclusiveMinimum: 0 },
+      protein_g: { type: 'number', exclusiveMinimum: 0 },
+      carbs_g: { type: 'number', exclusiveMinimum: 0 },
+      fat_g: { type: 'number', exclusiveMinimum: 0 },
+      fiber_g: { type: 'number', exclusiveMinimum: 0 },
+      notes: { type: 'string', description: 'One line: why these numbers.' },
+    },
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db, context) => {
+    const args = asRecord(input);
+    const next = parseTargets(args);
+    const current = activeNutritionTargets(db, todayISODate(context.now));
+    const parts = [`Set daily targets: ${renderTargetSet(next)}`];
+    if (current) {
+      const before = renderTargetSet(current);
+      const after = renderTargetSet(next);
+      if (before !== after) parts.push(`was ${before}`);
+      // A DROP is the one consequence approving this can hide: the user says
+      // "make it 180 g protein", the model sends protein alone, and the kcal
+      // target they have been eating to for months is gone. Name it.
+      const dropped = TARGET_FIELDS.filter(
+        (f) => current[f] != null && current[f]! > 0 && next[f] === undefined
+      );
+      if (dropped.length > 0) {
+        parts.push(
+          `drops the ${dropped.map((f) => (f === 'kcal' ? 'kcal' : TARGET_LABELS[f].slice(2))).join(' and ')} target${dropped.length === 1 ? '' : 's'}`
+        );
+      }
+    }
+    return parts.join(' — ');
+  },
+  execute: (db, input, context) => {
+    const args = asRecord(input);
+    const next = parseTargets(args);
+    const today = todayISODate(context.now);
+    const id = setNutritionTargets(db, {
+      effective_date: today,
+      kcal: next.kcal ?? null,
+      protein_g: next.protein_g ?? null,
+      carbs_g: next.carbs_g ?? null,
+      fat_g: next.fat_g ?? null,
+      fiber_g: next.fiber_g ?? null,
+      created_by: 'ai',
+      notes: optString(args, 'notes') ?? null,
+    });
+    return json({ set: true, id, effectiveFrom: today, targets: next });
+  },
+};
+
+// --- log_screening_done (0007) ----------------------------------------------
+//
+// The write half of get_screenings, and deliberately the ONLY one. Recording
+// that a screening HAPPENED is a fact the user reports in conversation ("had my
+// DEXA last Thursday"), and leaving it unwritable is what makes the ledger drift
+// out of date. Choosing a screening's cadence is a different act — "colonoscopy
+// every five years or ten" is a clinical decision, and CLAUDE.md §6 puts those
+// with a physician, not with this tool. So the Coach can close a cycle it is
+// told about; it cannot invent one. Adding or re-scheduling a screening stays on
+// app/screening-form.tsx.
+
+/** Resolve a screening id → its row, with a message pointing at the fix. */
+function requireScreening(db: Database, id: string) {
+  const row = getScreening(db, id);
+  if (!row) throw new Error(`No screening with id ${id}. Call get_screenings first.`);
+  return row;
+}
+
+const logScreeningDoneTool: CoachTool = {
+  name: 'log_screening_done',
+  description:
+    'Record that a tracked screening was completed, which rolls its cadence forward (next due ' +
+    '= that date + its interval). Get the id from get_screenings. Pass "date" when it happened ' +
+    'on an earlier day — the cadence is computed from the date you give, so a wrong one skews ' +
+    'every future due date. Use when the user says they had a scan, exam or panel done.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'From get_screenings.' },
+      ...DATE_PROPERTY,
+    },
+    required: ['id'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db, context) => {
+    const args = asRecord(input);
+    const screening = requireScreening(db, reqString(args, 'id'));
+    const on = logDate(args, context.now);
+    // Show the CONSEQUENCE, not just the act: rolling a decennial screening a
+    // month early moves the next one by a month, and the user has to see the
+    // date they are agreeing to. Derived through the repository's own
+    // addMonthsClamped so the card cannot disagree with the row.
+    const nextDue = screening.interval_months
+      ? addMonthsClamped(on, screening.interval_months)
+      : null;
+    return (
+      `Mark "${screening.name}" done ${on}` +
+      (nextDue ? ` — next due ${nextDue}` : ' — one-off, nothing scheduled after it')
+    );
+  },
+  execute: (db, input, context) => {
+    const args = asRecord(input);
+    const screening = requireScreening(db, reqString(args, 'id'));
+    const on = logDate(args, context.now);
+    markScreeningDone(db, screening.id, on);
+    const updated = requireScreening(db, screening.id);
+    return json({
+      logged: true,
+      id: screening.id,
+      name: screening.name,
+      lastCompleted: updated.last_completed,
+      nextDue: updated.next_due,
+    });
+  },
+};
+
 export const WRITE_TOOLS: CoachTool[] = [
   logMetricTool,
   logMealTool,
@@ -1783,6 +1995,8 @@ export const WRITE_TOOLS: CoachTool[] = [
   logSymptomTool,
   logCaptureTool,
   logNoteTool,
+  setNutritionTargetsTool,
+  logScreeningDoneTool,
   rememberTool,
   forgetTool,
   adjustTodayTool,

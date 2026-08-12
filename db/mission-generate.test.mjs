@@ -110,10 +110,18 @@ console.log('0. generateMissionForDay expands active protocols into the day');
     ? ok('supplement item → type supplement, time + protocol_id set')
     : bad('supplement entry', JSON.stringify(mag));
   const magExtras = JSON.parse(mag.value);
+  // CHANGED 2026-08-12, and the assertion it replaces is the reason it changed.
+  // It read `magExtras.why === '400 mg'` under the name "dose as why" — i.e. it
+  // pinned the FLATTENING as the contract. A dose is not a rationale: the two
+  // are set in different type voices, and collapsing them forced the hero card
+  // to guess from the string's shape which one it had been handed.
+  // `why === undefined` is the half that proves the flattening is gone, so it
+  // is asserted rather than left implied.
   magExtras.generated === true &&
   magExtras.protocol === 'Evening Stack' &&
-  magExtras.why === '400 mg'
-    ? ok('value carries generated:true, protocol name, and dose as why')
+  magExtras.dose === '400 mg' &&
+  magExtras.why === undefined
+    ? ok('value carries generated:true, the protocol name, and the dose as dose — never as why')
     : bad('supplement extras', mag.value);
   const walk = entries.find((e) => e.title === 'Sunlight + walk');
   walk && walk.type === 'habit' && JSON.parse(walk.value).why === '10 min'

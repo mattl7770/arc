@@ -62,6 +62,14 @@ const LOG_TYPE_BY_PROTOCOL: Record<ProtocolType, LogEntryType> = {
 type GeneratedExtras = {
   protocol?: string;
   category?: string;
+  /**
+   * The quantity — `5g`, `400 mg`. Mono, and it joins the hero's dimension
+   * figure beside the time. Kept apart from `why` because they are different
+   * facts in different type voices; see the note on `MissionExtras` in
+   * ./mission.ts for what went wrong while they shared one field.
+   */
+  dose?: string;
+  /** Rationale prose. Serif italic. Never a quantity — that is `dose`. */
   why?: string;
   generated: true;
   /** Present on mode-injected items, absent on protocol items. */
@@ -125,13 +133,22 @@ function planForDay(db: Database, date: string): PlannedEntry[] {
     if (def.dropTypes.includes(type)) continue;
     const items = parseProtocolContent(getCurrentVersion(db, protocol.id)?.content ?? null).items;
     for (const item of items) {
-      const why = item.dose ?? item.notes ?? undefined;
+      // Carried apart, not flattened. `dose ?? notes` threw away which one this
+      // was one line before the hero had to know, and the hero guessed it back
+      // from the string's shape.
+      const dose = item.dose ?? undefined;
+      const why = item.notes ?? undefined;
       plan.push({
         type,
         protocolId: protocol.id,
         title: item.title,
         scheduledTime: item.scheduled_time ?? null,
-        extras: { protocol: protocol.name, ...(why ? { why } : {}), generated: true },
+        extras: {
+          protocol: protocol.name,
+          ...(dose ? { dose } : {}),
+          ...(why ? { why } : {}),
+          generated: true,
+        },
       });
     }
   }

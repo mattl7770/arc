@@ -23,7 +23,25 @@ export type MissionItem = {
   scheduledTime?: string;
   /** Nutrition, Training, Supplements, ... — a label on the row, not a group. */
   category: string;
-  /** One line on why this matters. Promoted to the hero card when it is next. */
+  /**
+   * The quantity — `5g`, `400 mg`, `2 caps`. A MEASURED value, so it is set in
+   * mono and joins the hero's dimension figure beside the time and the duration
+   * (src/components/home/hero-card.tsx).
+   *
+   * Separate from {@link why} on purpose, and the separation is the fix for a
+   * real defect: the generator holds a protocol item's `dose` and `notes` as
+   * distinct columns, flattened them into `why` with `dose ?? notes`, and the
+   * hero then sniffed the string — leading digit, at most fourteen characters —
+   * to guess which it had been handed. Carrying the fact makes the guess
+   * unnecessary. `400 mg magnesium` is fifteen characters and would have come
+   * back as prose.
+   */
+  dose?: string;
+  /**
+   * One line on why this matters — rationale PROSE, set in serif italic and
+   * promoted to the hero card when this item is next. Never a quantity; that is
+   * {@link dose}.
+   */
   why?: string;
   /** Source protocol, if this item came from one. */
   protocol?: string;

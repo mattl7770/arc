@@ -22,7 +22,7 @@ import { generateMissionForDay } from '../src/lib/db/repositories/mission-genera
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { computeInsights } from '../src/lib/ai/insights.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
-import { passDirective, PASS_SKIP } from '../src/lib/ai/coach-pass.ts';
+import { isPassSkip, passDirective, PASS_SKIP } from '../src/lib/ai/coach-pass.ts';
 import {
   currentSignals,
   duePass,
@@ -174,6 +174,64 @@ console.log('3. the directive: open-ended, names no scenario, allows silence');
   passDirective({ kind: 'checkin', part: 'evening' }, TODAY).includes('actually happened')
     ? ok('the evening check-in asks for plan vs actuals')
     : bad('evening directive');
+  /do not narrate/i.test(daily)
+    ? ok('…and it asks for no preamble (the SECOND line of defence — isPassSkip is the first)')
+    : bad('no anti-preamble directive', daily);
+}
+
+// ---------------------------------------------------------------------------
+// The sentinel parser. This is the defect the owner saw on their phone
+// (2026-08-11): the model narrated ("I'll read the current state and check for
+// anything worth flagging."), called its tools, then said SKIP — and the old
+// whole-string test `/^skip[.!]?$/i` did not match, so the preamble AND the
+// sentinel shipped to Home's "Coach noticed" card as a proactive observation.
+//
+// Both directions matter and only one of them is visible when it goes wrong:
+// a leaked sentinel is embarrassing, a wrongly-silenced note is never seen at
+// all (silence consumes the day — see R9 below). So the false-positive cases
+// are as load-bearing as the true ones.
+// ---------------------------------------------------------------------------
+console.log('3b. isPassSkip: the sentinel survives a preamble, a real note survives the word');
+{
+  const silent = (label, text) =>
+    isPassSkip(text) ? ok(label) : bad(label, JSON.stringify(text));
+  const spoken = (label, text) =>
+    !isPassSkip(text) ? ok(label) : bad(label, JSON.stringify(text));
+
+  silent('a bare SKIP is silence', PASS_SKIP);
+  silent('…punctuated', 'SKIP.');
+  silent('…exclaimed', 'SKIP!');
+  silent('…lower-cased', 'skip');
+  silent('…emphasised', '**SKIP**');
+  silent('…with trailing whitespace and newlines', 'SKIP   \n\n  \n');
+  silent('…with leading whitespace', '   SKIP');
+  silent(
+    'a preamble followed by the sentinel is STILL silence (the shipped defect)',
+    "I'll read the current state and check for anything worth flagging.\n\nSKIP"
+  );
+  silent(
+    '…including a manufactured observation above it — the verdict governs the reply',
+    'Nothing much stands out today.\n\nSKIP.'
+  );
+  silent('an empty reply is silence', '');
+  silent('…as is whitespace only', '   \n  \n');
+
+  spoken(
+    'a real note is NOT silenced',
+    'Protein landed at 96 g against a 150 g target four days running. Move one serving to breakfast.'
+  );
+  spoken(
+    '…even when it contains the word "skip" mid-sentence',
+    'Four sessions logged this week — it is fine to skip today’s and hold the pattern.'
+  );
+  spoken(
+    '…even when the word ENDS the note, with other words on the line',
+    'You are two days into a deficit; do not skip'
+  );
+  spoken(
+    '…and a note that merely mentions the sentinel on the way to a real point',
+    'SKIP is what I would normally say here, but your sleep debt is 6 h and worth naming.'
+  );
 }
 
 console.log('4. runCoachPass: read-only, honest silence, never surfaces a failure');
@@ -250,6 +308,18 @@ console.log('4. runCoachPass: read-only, honest silence, never surfaces a failur
     fetchImpl: fetchFor(sse('Skip.')),
   });
   punctuated.message === null ? ok('…however the model punctuates it') : bad('skip variant');
+
+  // End to end, on the wire, for the exact string the owner's phone rendered.
+  const preambled = await runCoachPass(db, {
+    trigger: { kind: 'daily' },
+    now: NOW,
+    fetchImpl: fetchFor(
+      sse("I'll read the current state and check for anything worth flagging.\n\nSKIP")
+    ),
+  });
+  preambled.message === null && preambled.status === 'silent'
+    ? ok('…and a preamble ahead of the sentinel never reaches Home as an observation')
+    : bad('preamble shipped', JSON.stringify(preambled));
 
   const failed = await runCoachPass(db, {
     trigger: { kind: 'daily' },

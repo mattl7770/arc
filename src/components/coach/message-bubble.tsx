@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { palette } from '@/constants/theme';
-import { clockFromISO } from '@/lib/db/date';
+import { clockFromISO, todayISODate } from '@/lib/db/date';
 import type { AiTurnOutcome } from '@/lib/db/types';
 import { isRetryableOutcome, type CoachChatView } from '@/hooks/use-coach-chat';
 
@@ -48,6 +48,117 @@ function turnClock(createdAt: number): string | null {
 }
 
 /**
+ * Abbreviated months for the gutter, spelled-out months for speech — the same
+ * split, and the same two tables, as home/date-eyebrow.tsx's folio line. That
+ * file is the app's reference hand-rolled date format and this matches it rather
+ * than inventing a second one: Hermes ships without `Intl`, so
+ * `toLocaleDateString` silently ignores its options object on device and returns
+ * a different string than it does in the web preview.
+ *
+ * The weekday is dropped. `date-eyebrow` prints "TUE 28 JUL" on a full-width
+ * line; this has 36pt (see {@link Turn}), so it takes the day-and-month part of
+ * that same format and nothing more.
+ */
+const MONTHS = [
+  'JAN',
+  'FEB',
+  'MAR',
+  'APR',
+  'MAY',
+  'JUN',
+  'JUL',
+  'AUG',
+  'SEP',
+  'OCT',
+  'NOV',
+  'DEC',
+] as const;
+
+const MONTHS_SPOKEN = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+] as const;
+
+/** The gutter's date lines, plus the form the speaker's label says aloud. */
+type TurnDate = {
+  /** "28 JUL" — the printed day and month. */
+  printed: string;
+  /** "2025", or null when the turn is from the current calendar year. */
+  year: string | null;
+  /** "28 July 2025" — months spelled out, because "JUL" is read inconsistently. */
+  spoken: string;
+};
+
+/**
+ * The turn's calendar date, or **null when the turn happened today**.
+ *
+ * ## Why the date is on the turn and not on a separator row
+ *
+ * The obvious drawing is a "TUE 28 JUL" row inserted between the last turn of
+ * one day and the first of the next, and in a thread that is read top to bottom
+ * in one sitting that is the better drawing — it states each day once instead of
+ * on every line. It is not what shipped, for two reasons.
+ *
+ * The first is structural. A separator is a fact about a PAIR of turns, so only
+ * the thread renderer can decide to draw one; this component is handed one
+ * message and has no idea what precedes it. That is a change to app/(tabs)/coach.tsx,
+ * which is outside this change's boundary — and a `previousCreatedAt` prop added
+ * here in advance would be a prop nothing passes, which is the drafting chrome
+ * 00-design-spec.md §5 throws out.
+ *
+ * The second is that the noise argument the separator answers is already
+ * answered, and more cheaply: **today's turns carry no date at all.** A thread is
+ * overwhelmingly read on the day it is written, so the common case prints exactly
+ * what it printed before — a bare "10:21" — and a stamp only appears on a turn
+ * that genuinely needs disambiguating. That also keeps the date attached to the
+ * turn it stamps rather than to a row above it, so scrolling into the middle of
+ * an old conversation, or screenshotting one bubble, still tells the owner when
+ * it was said. A separator scrolled off the top does not.
+ *
+ * The residual cost is honest and small: a long thread read a week later repeats
+ * "3 AUG" down several consecutive turns. That is the case the separator wins,
+ * and it is the rarer one.
+ *
+ * ## The year
+ *
+ * Printed only when it is not the current one. "10 AUG" on a turn from last year
+ * is not terse, it is wrong — it reads as this year — and this app is meant to
+ * run for decades. Within the current year the year would be noise, so it is
+ * absent (§5: no number that isn't carrying information).
+ *
+ * `todayISODate` on both sides is deliberate: it is the app's single definition
+ * of a LOCAL calendar day, the same one `daily_logs.date` is keyed by, so a turn
+ * at 23:40 belongs to the day the wall clock says it does.
+ */
+function turnDate(createdAt: number, now: Date = new Date()): TurnDate | null {
+  // Same guard as turnClock, same reason: a malformed stamp renders as no date
+  // rather than as a plausible-looking wrong one (§5).
+  if (!Number.isFinite(createdAt)) return null;
+  const at = new Date(createdAt);
+  if (todayISODate(at) === todayISODate(now)) return null;
+
+  const day = at.getDate();
+  const month = MONTHS[at.getMonth()] ?? '';
+  const monthSpoken = MONTHS_SPOKEN[at.getMonth()] ?? '';
+  const sameYear = at.getFullYear() === now.getFullYear();
+  return {
+    printed: `${day} ${month}`,
+    year: sameYear ? null : String(at.getFullYear()),
+    spoken: sameYear ? `${day} ${monthSpoken}` : `${day} ${monthSpoken} ${at.getFullYear()}`,
+  };
+}
+
+/**
  * One turn in the thread.
  *
  * ## Conformed Set treatment
@@ -88,6 +199,13 @@ function turnClock(createdAt: number): string | null {
  * left saying only who spoke. {@link Turn} draws it, and the gutter is rendered
  * whether or not there is a time to put in it — an unreadable timestamp still
  * must not shift the turn beside it sideways.
+ *
+ * The gutter carries the turn's DATE too, on a second line under the clock, and
+ * only on turns that are not today's — "10:21" and "10:29" read identically
+ * whether they were yesterday or this morning, which is what the owner reported
+ * (2026-08-11). The column keeps its 36pt exactly; {@link turnDate} records why
+ * this is a per-turn stamp rather than a date separator between days, and
+ * {@link Turn} why the line goes below the clock rather than above it.
  *
  * **Drawn first, spoken last** — the gutter leads in child order, which is also
  * accessibility order, so moving the clock out here made every turn announce a
@@ -135,12 +253,14 @@ function turnClock(createdAt: number): string | null {
  */
 export function MessageBubble({ message, onRetry }: Props) {
   const clock = turnClock(message.createdAt);
+  // Null on today's turns, which is nearly all of them — see turnDate.
+  const date = turnDate(message.createdAt);
 
   if (message.role === 'user') {
     return (
-      <Turn clock={clock}>
+      <Turn clock={clock} date={date}>
         <View className="max-w-[85%] self-end">
-          <Speaker who="You" clock={clock} tone="accent" align="right" />
+          <Speaker who="You" clock={clock} date={date} tone="accent" align="right" />
           <View className="bg-pine px-3.5 py-2.5">
             <Text className="font-serif text-[15px] leading-6 text-pine-on">{message.content}</Text>
           </View>
@@ -152,9 +272,9 @@ export function MessageBubble({ message, onRetry }: Props) {
   // Assistant, mid-stream, nothing yet → the thinking indicator.
   if (message.streaming && message.content.length === 0) {
     return (
-      <Turn clock={clock}>
+      <Turn clock={clock} date={date}>
         <View className="max-w-[88%] self-start">
-          <Speaker who="Coach" clock={clock} tone="muted" align="left" />
+          <Speaker who="Coach" clock={clock} date={date} tone="muted" align="left" />
           <View className="border border-hairline bg-paper-hi px-3.5 py-3">
             <TypingIndicator />
           </View>
@@ -172,9 +292,9 @@ export function MessageBubble({ message, onRetry }: Props) {
   const canRetry = !message.streaming && !message.superseded && isRetryableOutcome(outcome);
 
   return (
-    <Turn clock={clock}>
+    <Turn clock={clock} date={date}>
       <View className="max-w-[88%] self-start">
-        <Speaker who="Coach" clock={clock} tone="muted" align="left" />
+        <Speaker who="Coach" clock={clock} date={date} tone="muted" align="left" />
 
         {/*
           Announce the reply to screen readers as it streams in — it is the most
@@ -320,24 +440,71 @@ export function MessageBubble({ message, onRetry }: Props) {
  *     along ("COACH 07:41"). The gutter keeps the drawing; the label keeps the
  *     reading order.
  *
- * Spoken and visible stay in agreement: the same `clock` string feeds both, and
- * a turn with no usable time prints nothing and says nothing.
+ * Spoken and visible stay in agreement: the same `clock` and `date` values feed
+ * both, and a turn with no usable time prints nothing and says nothing.
+ *
+ * ## The date hangs BELOW the clock, and only on turns that are not today's
+ *
+ * The owner asked for dates on the thread: "10:21" and "10:29" read identically
+ * whether they were yesterday or this morning (2026-08-11). The date is a second
+ * mono line in this same gutter — see {@link turnDate} for why it is not a
+ * separator row between days, and why today's turns still carry no date at all.
+ *
+ * **Below, never above.** Put the date first and a dated turn's clock sits a line
+ * lower than an undated turn's, so the one column in the thread that exists to
+ * line up with itself stops doing that, and the clock stops sitting level with
+ * the speaker eyebrow beside it. Below, the clock keeps its baseline on every
+ * turn in the thread and the date hangs off it as the qualifier it is.
+ *
+ * **The column does not get wider.** 36pt is the sheet's `.cf-turn` geometry and
+ * is fixed. Menlo's advance is 0.6021 em, so at the clock's 10px a six-character
+ * "10 AUG" measures 36.1pt and would wrap mid-date; at 9px it measures 32.5pt and
+ * fits with room to spare. The step down is not only a fitting trick — the clock
+ * is the stamp and the date qualifies it — but the fit is why 9px and not 10.
+ * `numberOfLines={1}` is the backstop: a stamp must never reflow the gutter.
  */
-function Turn({ clock, children }: { clock: string | null; children: ReactNode }) {
+function Turn({
+  clock,
+  date,
+  children,
+}: {
+  clock: string | null;
+  date: TurnDate | null;
+  children: ReactNode;
+}) {
   return (
     <View className="flex-row gap-2.5">
       <View className="w-9 pt-0.5">
-        {clock ? (
-          <Text
-            accessibilityElementsHidden
-            importantForAccessibility="no"
-            className="font-mono text-[10px] text-ink-muted">
-            {clock}
-          </Text>
-        ) : null}
+        {clock ? <GutterStamp text={clock} size="clock" /> : null}
+        {date ? <GutterStamp text={date.printed} size="date" /> : null}
+        {date?.year ? <GutterStamp text={date.year} size="date" /> : null}
       </View>
       <View className="flex-1">{children}</View>
     </View>
+  );
+}
+
+/** Whole literals, never a built fragment — Tailwind only scans source text. */
+const GUTTER_SIZE = {
+  clock: 'font-mono text-[10px] text-ink-muted',
+  date: 'font-mono text-[9px] text-ink-muted',
+} as const;
+
+/**
+ * One line of the clock gutter. Hidden from assistive tech, every one of them:
+ * the gutter is drawn first and therefore READ first, so an unhidden stamp
+ * announces a bare "10:21" — or now "10:21, 3 AUG" — ahead of its own speaker.
+ * {@link Speaker} re-says the whole thing as part of the speaker's label.
+ */
+function GutterStamp({ text, size }: { text: string; size: keyof typeof GUTTER_SIZE }) {
+  return (
+    <Text
+      accessibilityElementsHidden
+      importantForAccessibility="no"
+      numberOfLines={1}
+      className={GUTTER_SIZE[size]}>
+      {text}
+    </Text>
   );
 }
 
@@ -348,12 +515,19 @@ function Turn({ clock, children }: { clock: string | null; children: ReactNode }
  * mono measures" split still holds across the turn; it is now drawn across two
  * columns instead of crammed into one line.
  *
- * **`clock` is spoken here and printed nowhere here.** The eyebrow renders the
- * name alone, exactly as drawn; the label it hands assistive tech is "You,
- * 07:41", which is the first thing a listener reaches in the turn and now says
- * who before it says when. The gutter's copy is hidden to keep the time from
- * being announced twice — the reasoning, and the two alternatives that were
- * rejected, are on {@link Turn}.
+ * **`clock` and `date` are spoken here and printed nowhere here.** The eyebrow
+ * renders the name alone, exactly as drawn; the label it hands assistive tech is
+ * "You, 07:41" — or "Coach, 3 August, 07:41" on a turn that is not today's,
+ * which is exactly when the gutter grows its second line. That is the first
+ * thing a listener reaches in the turn, and it now says who before it says when.
+ * The gutter's copies are hidden to keep the stamp from being announced twice —
+ * the reasoning, and the two alternatives that were rejected, are on
+ * {@link Turn}.
+ *
+ * Spoken and printed agree on WHICH day and disagree only on how a month is
+ * spelled: the gutter prints "3 AUG" and the label says "3 August", because
+ * "AUG" is read aloud inconsistently. Same split home/date-eyebrow.tsx makes on
+ * the folio line, and the same one ./../home/signal.tsx makes on the em-dash.
  *
  * Both tone and alignment are whole class strings picked from a map, never a
  * built prefix: Tailwind's scanner only sees literal class names.
@@ -371,24 +545,37 @@ const SPEAKER_ALIGN = {
 function Speaker({
   who,
   clock,
+  date,
   tone,
   align,
 }: {
   who: string;
   /** The turn's time, spoken with the name. Drawn in the gutter, not here. */
   clock: string | null;
+  /** The turn's day, when it is not today's. Also drawn in the gutter, not here. */
+  date: TurnDate | null;
   tone: keyof typeof SPEAKER_TONE;
   align: keyof typeof SPEAKER_ALIGN;
 }) {
   return (
     <View className={SPEAKER_ALIGN[align]}>
       <Text
-        accessibilityLabel={clock ? `${who}, ${clock}` : who}
+        accessibilityLabel={speakerLabel(who, clock, date)}
         className={`font-label text-[10px] font-semibold uppercase tracking-[1.2px] ${SPEAKER_TONE[tone]}`}>
         {who}
       </Text>
     </View>
   );
+}
+
+/**
+ * "Coach", "Coach, 07:41", or "Coach, 3 August, 07:41" — day before time, the
+ * order the gutter reads in and the order the parts were added in. Anything the
+ * gutter does not draw is not said, so an unparseable stamp announces the name
+ * alone rather than a plausible-looking wrong one.
+ */
+function speakerLabel(who: string, clock: string | null, date: TurnDate | null): string {
+  return [who, date?.spoken, clock].filter(Boolean).join(', ');
 }
 
 /**

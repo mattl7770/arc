@@ -19,7 +19,10 @@
  *   IT MAY SAY NOTHING. The directive tells the model to reply with exactly
  *   SKIP when the day doesn't warrant a word. A coach that produces a
  *   paragraph every single morning trains the user to ignore it; silence on an
- *   unremarkable day is what makes the other days land.
+ *   unremarkable day is what makes the other days land. Recognising that
+ *   sentinel is {@link isPassSkip}'s job, and it is a parser rather than a
+ *   prompt on purpose — the prompt is the second line of defence, because a
+ *   sentinel that leaks reaches the owner as the Coach's own words.
  *
  * The judgment itself is entirely the model's. Nothing here decides what a low
  * readiness morning, a stalled lift, or a missed week should mean — the
@@ -39,6 +42,80 @@ import type { CoachToolCall } from './types';
 
 /** The model replies with exactly this when the day needs nothing said. */
 export const PASS_SKIP = 'SKIP';
+
+/**
+ * One line that is the sentinel and nothing else. Tolerates surrounding
+ * whitespace, terminal punctuation the model adds unbidden ("SKIP."), and
+ * markdown emphasis ("**SKIP**") — none of which are content, and any of which
+ * shipped verbatim is the same defect.
+ */
+const SKIP_LINE = /^[*_\s]*skip[.!]*[*_\s]*$/i;
+
+/**
+ * Did the pass decide to say nothing?
+ *
+ * **The rule: the LAST non-empty line is the sentinel, alone.** (An empty reply
+ * counts too — nothing said is nothing said.)
+ *
+ * ## What the old rule got wrong
+ *
+ * It was `/^skip[.!]?$/i` against the whole trimmed reply, which requires the
+ * ENTIRE response to be the sentinel. The owner's phone showed what that costs
+ * (2026-08-11): the model narrated first — "I'll read the current state and
+ * check for anything worth flagging." — called its tools, then said SKIP. The
+ * whole-string test failed, so the pass concluded the Coach had spoken and
+ * published the narration *and the sentinel* to Home's "Coach noticed" card and
+ * into the thread. A sentinel is an internal token; the owner should never see
+ * one, and a card whose entire content is the Coach announcing it is about to
+ * look at something is worse than no card.
+ *
+ * ## Why the last line, and not the alternatives
+ *
+ * *Sentinel anywhere on its own line* is more permissive in the one direction
+ * that cannot be recovered from. Silence is invisible: a genuine observation
+ * wrongly swallowed is never seen, never retried, and consumes the day
+ * (pass-store.ts treats silence as a judgment). A note that quotes the
+ * instruction back, or lists options one per line, must not be able to silence
+ * itself from the middle.
+ *
+ * *Stripping known preamble shapes* was rejected outright — the set of ways a
+ * model can clear its throat is unbounded, so every phrasing the regexes miss
+ * ships a sentinel. A rule that fails open on an unenumerated case is not a
+ * parser.
+ *
+ * *Last line* fits the actual grammar of the failure. Whatever the model says
+ * on the way there, its verdict is the last thing it writes, and a verdict of
+ * SKIP is a decision about the whole reply — including any observation it
+ * manufactured above it, which is precisely what the directive tells it not to
+ * produce. So text above a trailing sentinel is discarded on purpose, not
+ * missed.
+ *
+ * ## The false-positive direction
+ *
+ * A real note that merely contains the word must not be silenced, and cannot
+ * be: "Four sessions logged this week — it is fine to skip today's" ends in a
+ * line with eleven other words on it, so {@link SKIP_LINE} does not match.
+ * Only a line whose entire content is the sentinel counts. The narrow residual
+ * case — a genuine note whose final line is the bare word "Skip." as advice to
+ * the owner — is accepted as the cost of the rule: it needs the Coach to end a
+ * paragraph on one word that happens to be the sentinel, and the alternative is
+ * shipping "SKIP" to the owner on every model that clears its throat.
+ *
+ * This is the FIRST line of defence and the one that has to hold. The directive
+ * also asks for no preamble and the model client now settles a turn on its
+ * post-tool text only (src/lib/ai/model-client.ts settledText), so in practice
+ * this should see a bare "SKIP" — but a prompt is a request and a parser is a
+ * guarantee, and only one of the two is allowed to be the guarantee.
+ */
+export function isPassSkip(text: string): boolean {
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (line.trim().length === 0) continue; // trailing blank lines / whitespace
+    return SKIP_LINE.test(line);
+  }
+  return true; // nothing but whitespace — the Coach said nothing at all
+}
 
 /** Why the pass ran — shapes the directive and the dedupe key. */
 export type PassTrigger =
@@ -80,12 +157,17 @@ export function passDirective(trigger: PassTrigger, today: string): string {
     'Read what you need — the state block above, get_insights, the snapshot, and anything they point to.',
     'Then decide, as their coach, whether anything genuinely warrants a word right now.',
     '',
+    'Do not narrate. Call the tools you need without announcing them first — no "let me look at",',
+    'no "I will check". Nothing you write before you have the results is shown to anyone, so write',
+    'nothing until you have them. Your reply is one thing only: the observation, or the sentinel.',
+    '',
     'If it does: two or three sentences at most. Lead with the thing itself, numbers attached.',
     'Say plainly what you would change and why — you cannot change anything in this pass, so make',
     'it something they can act on or reply to.',
     '',
-    `If the day is unremarkable, reply with exactly ${PASS_SKIP} and nothing else. Silence on a`,
-    'quiet day is what makes the other days matter — do not manufacture an observation.',
+    `If the day is unremarkable, reply with exactly ${PASS_SKIP} and nothing else — bare, on its own,`,
+    'with no sentence before or after it. Silence on a quiet day is what makes the other days',
+    'matter, so do not manufacture an observation to avoid saying it.',
   ].join('\n');
 }
 
@@ -178,8 +260,9 @@ export async function runCoachPass(
     );
 
     const text = result.text.trim();
-    // A SKIP (however the model punctuates it) means silence.
-    const skipped = text.length === 0 || /^skip[.!]?$/i.test(text);
+    // A SKIP means silence, however the model punctuates it and whatever it
+    // wrote above it — see isPassSkip for the rule and why it is that rule.
+    const skipped = isPassSkip(text);
     return {
       message: skipped ? null : text,
       status: skipped ? 'silent' : 'spoke',

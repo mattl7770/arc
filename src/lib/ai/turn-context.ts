@@ -22,6 +22,7 @@ import { todayISODate } from '@/lib/db/date';
 import { recentDeclines } from '@/lib/db/repositories/ai-chat';
 import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
+import { consolidatedOpenList } from '@/lib/db/repositories/grocery';
 import { activeExperiments } from '@/lib/db/repositories/experiments';
 import { listMission } from '@/lib/db/repositories/mission';
 import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
@@ -32,6 +33,14 @@ import { getModeDefinition } from '@/lib/modes/registry';
 import { generateDailyBrief } from './insights';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/**
+ * How many open grocery lines the block will name before it gives up and points
+ * at the tool. Self-limiting on purpose: this line is UNCACHED, so it is billed
+ * at full rate on every request of every turn, and a 200-item shop must never
+ * become a permanent tax on questions about sleep.
+ */
+const GROCERY_PROMPT_LIMIT = 30;
 
 /** The weekday name of a YYYY-MM-DD, parsed componentwise (never UTC-shifted). */
 function weekdayOf(date: string): string {
@@ -156,6 +165,42 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
 
   // --- The deterministic brief — trends, gaps, reminders due today.
   lines.push(`Signals: ${generateDailyBrief(db, now)}`);
+
+  // --- The standing grocery list, names only.
+  //
+  // Same round-trip economics as "Today so far" above, measured the same way
+  // (db/measure-coach-request.mjs). "We need milk" cost the owner two tool
+  // calls — get_grocery_list, then add_grocery_items — because the ONLY way to
+  // honour the "never re-add an open duplicate" rail was to read the list
+  // first. n tool calls means n+1 requests, and every request re-sends the
+  // whole 14.6k-token prefix, so that read cost ~$0.008 to learn that milk was
+  // not already listed.
+  //
+  // Names are all the duplicate check needs, so ids and quantities stay out
+  // (a v4 UUID costs more tokens than the item it labels). Anything needing an
+  // id — checking items off, changing a quantity — still reads the tool, and
+  // the label says so rather than letting the model assume this is the whole
+  // record.
+  //
+  // Past GROCERY_PROMPT_LIMIT the block reports the COUNT and sends the model
+  // to the tool. A truncated list is worse than no list: the model cannot tell
+  // "not shown" from "not on the list", and would confidently re-add a
+  // duplicate. Honest about what it does not show, exactly like the memory
+  // block below.
+  const grocery = consolidatedOpenList(db);
+  if (grocery.length === 0) {
+    lines.push('Grocery list: empty');
+  } else if (grocery.length <= GROCERY_PROMPT_LIMIT) {
+    lines.push(
+      `Grocery list (${grocery.length} open, names only — get_grocery_list for ids and ` +
+        `quantities): ${grocery.map((line) => line.name).join(' · ')}`
+    );
+  } else {
+    lines.push(
+      `Grocery list: ${grocery.length} open items, too many to name here — ` +
+        `call get_grocery_list before adding or checking off.`
+    );
+  }
 
   const sections = [
     `Current state (precomputed on-device from the user's data — trust it for ` +
