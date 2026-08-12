@@ -19,6 +19,10 @@
  * the assistant turn and a `tool_result` user turn, and continue — until the
  * model answers in plain text (`end_turn`) or a guard trips.
  *
+ * A turn's SETTLED text is what the model said after the last tool result, not
+ * every text block it emitted along the way — see {@link settledText}. The live
+ * `onToken` stream is unchanged and still carries everything, in order.
+ *
  * Model notes (claude-opus-5, the default): thinking is on by default and its
  * blocks stream with empty text; they are accumulated verbatim and echoed back
  * unchanged on tool continuations (required by the API). Sampling params
@@ -582,11 +586,64 @@ const textOf = (blocks: WireContentBlock[]): string =>
     .join('');
 
 /**
+ * What the turn SETTLES on: the text the model produced after the last tool
+ * result, falling back to everything it said earlier when that is empty.
+ *
+ * ## Why the earlier text is dropped (fixed 2026-08-11)
+ *
+ * This function used to not exist: the loop concatenated every text block from
+ * every round-trip into one string, so a turn that used tools returned the
+ * model's *narration of its intent* glued to its actual answer —
+ * "I'll read the current state and check for anything worth flagging.\n\nYour
+ * protein has been under target all week." That went into the bubble, into
+ * `ai_messages.content`, into the rolling thread summary, and back into the
+ * next turn's history window. Every tool-using turn in normal chat carried it;
+ * it was merely most visible on the unattended pass (src/lib/ai/coach-pass.ts),
+ * where the whole reply is two lines and the narration was half of them.
+ *
+ * The pre-tool text is narration BY CONSTRUCTION, not by heuristic: it was
+ * written before the tool results existed, so it cannot contain a conclusion
+ * drawn from them. On these models the actual reasoning rides in `thinking`
+ * blocks, which never reach `text` at all — what is left in a pre-tool text
+ * block is the "let me check X" the model says out loud. The answer is what it
+ * says once it has the data.
+ *
+ * **The fallback is load-bearing.** A turn can legitimately end with no
+ * post-tool text: the round-trip cap trips (`tool_use_limit`), or `max_tokens`
+ * lands inside a tool call, or the model simply stops after a tool result. In
+ * those cases the earlier text is all there is, and returning '' would persist
+ * an empty assistant row over a turn that genuinely spoke. So the rule is
+ * "prefer the answer", not "discard the narration".
+ *
+ * The narration is not thrown away in the failure path either — a turn that
+ * dies mid-flight carries the whole {@link transcript} out on `CoachTurnError`,
+ * because the audit record of a broken turn should be lossless.
+ *
+ * Nothing legitimately depends on the concatenation: `text` has exactly three
+ * consumers (use-coach-chat's bubble/persistence, coach-service's empty-refusal
+ * check, coach-pass's sentinel check), and all three want the answer.
+ */
+function settledText(narration: string, answer: string): string {
+  return answer.trim().length > 0 ? answer : narration;
+}
+
+/**
+ * Everything the model said this turn, in order — the lossless audit fragment
+ * carried out on {@link CoachTurnError}. `narration` already carries the seam
+ * the loop appended when it parked each round, so this is a plain join and is
+ * byte-identical to the single `text` accumulator this pair replaced.
+ */
+function transcript(narration: string, answer: string): string {
+  return narration + answer;
+}
+
+/**
  * Run one full Coach turn: stream the model's reply, execute any tool calls it
  * makes (via `handlers.executeTool` — where the caller's confirmation gate
  * lives), feed the results back, and repeat until it answers in text.
  *
- * Returns the final text (identical to what `onToken` streamed), the complete
+ * Returns the settled text ({@link settledText} — the post-tool answer, which
+ * is a SUFFIX of what `onToken` streamed rather than all of it), the complete
  * tool-call record for persistence, and why the turn stopped.
  */
 export async function runCoachTurn(
@@ -596,7 +653,11 @@ export async function runCoachTurn(
 ): Promise<CoachTurnResult> {
   const messages: WireMessage[] = [...request.messages];
   const toolCalls: CoachToolCall[] = [];
-  let text = '';
+  // The reply text, split at the last tool boundary: `answer` is what the model
+  // has said SINCE the most recent tool result, `narration` everything it said
+  // before that. Only `answer` settles — see settledText.
+  let answer = '';
+  let narration = '';
   // Summed across every round-trip of the turn — one "how am I doing" can be
   // three calls, and only the total is meaningful to the user.
   let usage: Usage = { ...ZERO_USAGE };
@@ -606,7 +667,9 @@ export async function runCoachTurn(
       // Preserve the audit trail if writes already executed this turn — mirror
       // the streamOnce catch below so an unmount mid-turn still persists the
       // tool-call record (use-coach-chat drops a bare AbortError without saving).
-      throw toolCalls.length > 0 ? new CoachTurnError(abortError(), text, toolCalls) : abortError();
+      throw toolCalls.length > 0
+        ? new CoachTurnError(abortError(), transcript(narration, answer), toolCalls)
+        : abortError();
     }
 
     let reply: AccumulatedMessage;
@@ -615,11 +678,13 @@ export async function runCoachTurn(
     } catch (error) {
       // Tool calls already executed against the database — carry their record
       // out with the failure so the caller can persist the audit trail.
-      if (toolCalls.length > 0) throw new CoachTurnError(error, text, toolCalls);
+      if (toolCalls.length > 0) {
+        throw new CoachTurnError(error, transcript(narration, answer), toolCalls);
+      }
       throw error;
     }
     usage = addUsage(usage, reply.usage);
-    text += textOf(reply.blocks);
+    answer += textOf(reply.blocks);
 
     // A tool_use stop with no tool_use blocks would send an empty tool_result
     // turn (a 400) — treat that malformed shape as a normal end of turn too.
@@ -634,7 +699,7 @@ export async function runCoachTurn(
               reply.stopReason === 'model_context_window_exceeded'
             ? 'max_tokens'
             : 'end_turn';
-      return { text, toolCalls, stopReason, usage };
+      return { text: settledText(narration, answer), toolCalls, stopReason, usage };
     }
 
     // Tool round: echo the assistant turn verbatim (thinking blocks included),
@@ -650,7 +715,7 @@ export async function runCoachTurn(
         // the streamOnce catch below so an unmount mid-turn still persists the
         // tool-call record (use-coach-chat drops a bare AbortError without saving).
         throw toolCalls.length > 0
-          ? new CoachTurnError(abortError(), text, toolCalls)
+          ? new CoachTurnError(abortError(), transcript(narration, answer), toolCalls)
           : abortError();
       }
       handlers.onToolCall?.({ name: toolUse.name, input: toolUse.input });
@@ -681,12 +746,21 @@ export async function runCoachTurn(
     }
     messages.push({ role: 'user', content: results });
 
-    // Visual seam between a spoken preamble and the post-tool continuation.
-    if (text.length > 0 && !text.endsWith('\n')) {
-      handlers.onToken('\n\n');
-      text += '\n\n';
+    // Everything said this round was written before these results arrived, so
+    // it is narration: park it and start the answer clean. The LIVE stream is
+    // untouched — the reader still watches "checking your training…" arrive and
+    // still gets a seam before the continuation — but the text the turn settles
+    // on, persists and replays is only what the model says with the data in
+    // hand (see settledText).
+    if (answer.length > 0) {
+      if (!answer.endsWith('\n')) {
+        handlers.onToken('\n\n');
+        answer += '\n\n';
+      }
+      narration += answer;
+      answer = '';
     }
   }
 
-  return { text, toolCalls, stopReason: 'tool_use_limit', usage };
+  return { text: settledText(narration, answer), toolCalls, stopReason: 'tool_use_limit', usage };
 }

@@ -2087,5 +2087,247 @@ console.log('32. schema/parser drift: every key a tool reads is a key it declare
     : bad('required/properties drift', String(undeclaredRequired));
 }
 
+console.log('33. nutrition targets: the shipped feature the Coach told the owner it lacked');
+{
+  // THE REPORT (2026-08-11). Asked "what do you think of my nutrition goals for
+  // today?", the Coach answered: "I don't actually have a 'nutrition goals'
+  // setting to check against — nothing in your profile or protocols defines a
+  // kcal/protein/carb target." nutrition_targets shipped in 0015, the owner
+  // edits it at app/nutrition-targets.tsx, and app/nutrition.tsx draws its macro
+  // grid from it. No tool read the table, so the model reported its own
+  // blindness as a fact about the product. These assertions are that reply,
+  // turned into a failing condition.
+  const { db, raw } = freshDb();
+  const summary = (name, input) => toolByName(name).confirmSummary(input, db, CTX);
+
+  const blank = run('get_today_snapshot', db).nutritionTargets;
+  blank.set === false &&
+  blank.note.includes('NOT set') &&
+  blank.note.includes('set_nutrition_targets')
+    ? ok('unset targets read as UNSET, and name the tool that sets them')
+    : bad('blank targets', JSON.stringify(blank));
+  const blankSummary = run('get_nutrition_summary', db);
+  blankSummary.targets === null && typeof blankSummary.targetsNote === 'string'
+    ? ok('get_nutrition_summary says targets are unset rather than staying silent')
+    : bad('summary targets', JSON.stringify(blankSummary.targets));
+
+  // The card carries every number being written — approving it writes all of it.
+  summary('set_nutrition_targets', { kcal: 2400, protein_g: 180 }) ===
+  'Set daily targets: 2400 kcal · 180 g protein'
+    ? ok('set_nutrition_targets card names each target')
+    : bad('targets card', summary('set_nutrition_targets', { kcal: 2400, protein_g: 180 }));
+
+  const set = run('set_nutrition_targets', db, {
+    kcal: 2400,
+    protein_g: 180,
+    notes: 'cut phase',
+  });
+  const row = raw.prepare('SELECT * FROM nutrition_targets').get();
+  set.set === true &&
+  set.effectiveFrom === TODAY &&
+  row.created_by === 'ai' &&
+  row.effective_date === TODAY &&
+  row.notes === 'cut phase' &&
+  row.carbs_g === null
+    ? ok("the version lands effective today, stamped 'ai', with omitted macros NULL")
+    : bad('targets row', JSON.stringify(row));
+
+  // The day now counts DOWN, through the same functions the Eat tab uses.
+  run('log_meal', db, { name: 'Eggs and oats', kcal: 600, protein_g: 40 });
+  const counting = run('get_today_snapshot', db).nutritionTargets;
+  counting.set === true &&
+  counting.since === TODAY &&
+  counting.setBy === 'you (the Coach)' &&
+  counting.progress.kcal.remaining === 1800 &&
+  counting.progress.protein_g.remaining === 140 &&
+  counting.progress.carbs_g === undefined
+    ? ok('the snapshot counts down each targeted macro, and only the targeted ones')
+    : bad('countdown', JSON.stringify(counting.progress));
+
+  // A meal logged with NO numbers must block the subtraction, not inflate it —
+  // the Eat tab's own guard (src/lib/nutrition/remaining.ts), reused here so the
+  // two surfaces cannot disagree about what is knowable.
+  run('log_meal', db, { name: 'Handful of nuts' });
+  const guarded = run('get_today_snapshot', db).nutritionTargets;
+  guarded.progress.kcal.remaining === null &&
+  guarded.progress.kcal.eaten === 600 &&
+  typeof guarded.note === 'string'
+    ? ok('an unpriced meal withholds the remainder and says why, never a false figure')
+    : bad('guard', JSON.stringify(guarded));
+
+  // Replacement is a version, not a patch: a DROP is the consequence approving
+  // this can hide, so the card has to name it.
+  const dropCard = summary('set_nutrition_targets', { protein_g: 200 });
+  dropCard ===
+  'Set daily targets: 200 g protein — was 2400 kcal · 180 g protein — drops the kcal target'
+    ? ok('the card names what the new version DROPS')
+    : bad('drop card', dropCard);
+
+  throws(() => summary('set_nutrition_targets', {}))
+    ? ok('an empty target set is refused before the card')
+    : bad('empty set accepted');
+  throws(() => summary('set_nutrition_targets', { kcal: 0 }))
+    ? ok('0 is refused — every reader treats a non-positive target as no target')
+    : bad('zero accepted');
+  throws(() => summary('set_nutrition_targets', { protein_g: -5 }))
+    ? ok('a negative target is refused')
+    : bad('negative accepted');
+  raw.prepare('SELECT count(*) c FROM nutrition_targets').get().c === 1
+    ? ok('no rejected call wrote a row')
+    : bad('rejected call wrote');
+
+  const withTargets = run('get_nutrition_summary', db);
+  withTargets.targets.kcal === 2400 &&
+  withTargets.targets.protein_g === 180 &&
+  withTargets.targets.setBy === 'you (the Coach)' &&
+  withTargets.targetsNote === undefined &&
+  // Reported ONCE. A per-day copy of an unchanged set is pure payload cost.
+  withTargets.perDay.every((d) => d.target === undefined)
+    ? ok('get_nutrition_summary carries the governing targets, once')
+    : bad('summary targets', JSON.stringify(withTargets.targets));
+}
+
+console.log('34. screenings + appointments: the second domain no tool could see');
+{
+  const { db } = freshDb();
+  const summary = (name, input) => toolByName(name).confirmSummary(input, db, CTX);
+  const dayFrom = (offset) =>
+    todayISODate(new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() + offset));
+
+  const empty = run('get_screenings', db);
+  empty.screenings.length === 0 && typeof empty.emptyNote === 'string'
+    ? ok('an empty ledger reads as "none tracked", not as an absent feature')
+    : bad('empty screenings', JSON.stringify(empty));
+
+  const { addScreening, addAppointment, getScreening } =
+    await import('../src/lib/db/repositories/screenings.ts');
+  const colonoscopy = addScreening(db, {
+    name: 'Colonoscopy',
+    category: 'imaging',
+    intervalMonths: 120,
+    lastCompleted: '2016-01-01',
+  });
+  addScreening(db, {
+    name: 'Skin check',
+    category: 'derm',
+    intervalMonths: 12,
+    nextDue: dayFrom(10),
+  });
+  addScreening(db, {
+    name: 'Dental cleaning',
+    category: 'dental',
+    intervalMonths: 6,
+    nextDue: dayFrom(200),
+  });
+  const oneOff = addScreening(db, { name: 'Baseline echo', category: 'cardio' });
+  addAppointment(db, {
+    title: 'Annual physical',
+    provider: 'Dr Reyes',
+    scheduledAt: new Date(NOW.getTime() + 86400000).toISOString(),
+  });
+  addAppointment(db, {
+    title: 'Derm follow-up',
+    scheduledAt: new Date(NOW.getTime() - 86400000).toISOString(),
+  });
+
+  const ledger = run('get_screenings', db);
+  const byName = Object.fromEntries(ledger.screenings.map((s) => [s.name, s]));
+  byName['Colonoscopy'].status === 'overdue' &&
+  byName['Skin check'].status === 'due' &&
+  byName['Dental cleaning'].status === 'scheduled' &&
+  // 'untracked' is its own state: a one-off with nothing after it. Calling that
+  // "not due" would imply a cadence that is not there.
+  byName['Baseline echo'].status === 'untracked'
+    ? ok('overdue / due / scheduled / untracked are all distinguished')
+    : bad('statuses', JSON.stringify(ledger.screenings));
+  ledger.upcomingAppointments.length === 1 &&
+  ledger.upcomingAppointments[0].title === 'Annual physical' &&
+  /^[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}, \d{2}:\d{2}$/.test(ledger.upcomingAppointments[0].when)
+    ? ok('upcoming appointments come back with a readable local when')
+    : bad('appointments', JSON.stringify(ledger.upcomingAppointments));
+  ledger.pastBookingsStillOpen.length === 1 &&
+  ledger.pastBookingsStillOpen[0].title === 'Derm follow-up' &&
+  ledger.note.includes('log_screening_done')
+    ? ok('a booking whose day passed unclosed is surfaced with the fix named')
+    : bad('stale bookings', JSON.stringify(ledger.pastBookingsStillOpen));
+  ledger.emptyNote === undefined ? ok('the empty note drops once data exists') : bad('emptyNote');
+
+  // The card names the CONSEQUENCE — rolling a decennial screening moves the
+  // next one by the same amount, and the user approves that date, not just the act.
+  summary('log_screening_done', { id: colonoscopy, date: '2026-08-01' }) ===
+  'Mark "Colonoscopy" done 2026-08-01 — next due 2036-08-01'
+    ? ok('log_screening_done card names the date and the rolled next-due')
+    : bad('screening card', summary('log_screening_done', { id: colonoscopy, date: '2026-08-01' }));
+  summary('log_screening_done', { id: oneOff }).endsWith('— one-off, nothing scheduled after it')
+    ? ok('a one-off card says nothing is scheduled after it')
+    : bad('one-off card', summary('log_screening_done', { id: oneOff }));
+
+  const done = run('log_screening_done', db, { id: colonoscopy, date: '2026-08-01' });
+  const rolled = getScreening(db, colonoscopy);
+  done.logged === true && rolled.last_completed === '2026-08-01' && rolled.next_due === '2036-08-01'
+    ? ok('the cadence rolls from the date given, not the day of the tap')
+    : bad('rolled screening', JSON.stringify(rolled));
+  run('get_screenings', db).screenings.find((s) => s.name === 'Colonoscopy').status === 'scheduled'
+    ? ok('the rolled screening leaves the overdue set')
+    : bad('still overdue');
+
+  throws(() => summary('log_screening_done', { id: 'nope' }))
+    ? ok('an unknown screening id is refused before the card')
+    : bad('unknown id accepted');
+  throws(() => summary('log_screening_done', { id: colonoscopy, date: dayFrom(3) }))
+    ? ok('a future completion date is refused — logs record what already happened')
+    : bad('future date accepted');
+  throws(() => run('log_screening_done', db, { id: colonoscopy, date: 'yesterday' }))
+    ? ok('a non-ISO date is refused')
+    : bad('bad date accepted');
+}
+
+console.log('35. the coverage manifest: the model is told what it CANNOT see');
+{
+  // WHY. The nutrition-targets reply was not a nutrition bug. From inside the
+  // model's view — the tool schemas and nothing else — "no tool reads X" and
+  // "ARC has no X" produce identical evidence, so the false answer and the true
+  // one are indistinguishable at the point of speaking. No prompt instruction
+  // fixes that: there is no observation to be careful with. The manifest is the
+  // missing observation, and these assertions are what keep it true.
+  const { buildCoverageManifest, coverageProblems, COACH_DOMAINS, UNCOVERED_DOMAINS } =
+    await import('../src/lib/ai/tools/index.ts');
+  const { buildCoachSystemPrompt } = await import('../src/lib/ai/system-prompt.ts');
+
+  const problems = coverageProblems();
+  problems.length === 0
+    ? ok(`every registered tool is classified into a domain (${COACH_DOMAINS.length} domains)`)
+    : bad('coverage drift', problems.join('; '));
+
+  const manifest = buildCoverageManifest();
+  const prompt = buildCoachSystemPrompt();
+  prompt.includes(manifest)
+    ? ok('the manifest reaches the system prompt verbatim')
+    : bad('manifest not in prompt');
+  manifest === buildCoverageManifest()
+    ? ok('the manifest is byte-identical per call, so the cached prefix still hits')
+    : bad('manifest not stable');
+  UNCOVERED_DOMAINS.length > 0 && UNCOVERED_DOMAINS.every((d) => manifest.includes(d))
+    ? ok(`all ${UNCOVERED_DOMAINS.length} blind spots are named to the model`)
+    : bad('blind spots missing');
+  manifest.includes('meals and nutrition targets') && manifest.includes('screenings')
+    ? ok('the domains closed on this branch read as covered')
+    : bad('new domains not in manifest');
+  /BLIND to, never proof the user lacks the feature/.test(manifest)
+    ? ok('the rule is stated as a fact about evidence, not as an exhortation')
+    : bad('rule missing');
+
+  // The guard has to actually guard. Add a domain naming a tool that was never
+  // registered and confirm the check fails — otherwise "0 problems" proves
+  // nothing about a manifest that has drifted from the registry.
+  COACH_DOMAINS.push({ label: 'a domain that does not exist', tools: ['no_such_tool'] });
+  const caught = coverageProblems();
+  COACH_DOMAINS.pop();
+  caught.length === 1 && caught[0].includes('no_such_tool')
+    ? ok('a manifest entry naming an unregistered tool fails the check')
+    : bad('guard does not guard', JSON.stringify(caught));
+  coverageProblems().length === 0 ? ok('and the registry is clean again') : bad('cleanup');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

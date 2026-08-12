@@ -13,6 +13,7 @@ import { getOrCreateDailyLog, insertMissionItem } from '../src/lib/db/repositori
 import { setMode } from '../src/lib/db/repositories/day-modes.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { updateProfile } from '../src/lib/db/repositories/user.ts';
+import { addGroceryItems } from '../src/lib/db/repositories/grocery.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import { ageOn, buildTurnContext } from '../src/lib/ai/turn-context.ts';
 
@@ -247,6 +248,75 @@ console.log("R. today's numbers ride in the block, so trivial questions cost no 
   !/Today so far/.test(buildTurnContext(quiet, NOW))
     ? ok('no wearable data → no line at all (never a fabricated zero)')
     : bad('empty day still emits the line');
+}
+
+console.log('G. the standing grocery list rides in the block, so an add costs no pre-read');
+{
+  // "We need milk" cost the owner TWO tool calls (get_grocery_list, then
+  // add_grocery_items) and therefore THREE requests, each re-sending the whole
+  // 14.6k-token cached prefix. The read existed only to honour "never re-add an
+  // open duplicate" — a question the block can answer for a few tokens.
+  const groceryLine = (db) =>
+    buildTurnContext(db, NOW)
+      .split('\n')
+      .find((l) => l.startsWith('Grocery list'));
+
+  const { db: empty } = freshDb();
+  groceryLine(empty) === 'Grocery list: empty'
+    ? ok('empty list says so — the strongest possible "milk is not on it" signal')
+    : bad('empty grocery line', String(groceryLine(empty)));
+
+  const { db } = freshDb();
+  addGroceryItems(db, [
+    { name: 'eggs', qty_text: '18' },
+    { name: 'olive oil', qty_text: '1 L' },
+    { name: 'Eggs', qty_text: '6' },
+  ]);
+  const line = groceryLine(db);
+  /eggs/i.test(line) && /olive oil/.test(line)
+    ? ok('open items are named, so a duplicate check needs no round-trip')
+    : bad('names missing from grocery line', String(line));
+  // Consolidated by normalized name — "eggs" and "Eggs" are one line, exactly
+  // as the Log screen draws them, so the model cannot think it has two.
+  (line.match(/eggs/gi) ?? []).length === 1
+    ? ok('duplicate names consolidate to one entry')
+    : bad('grocery line double-counts a name', String(line));
+  !/18|1 L/.test(line)
+    ? ok('quantities stay out — the duplicate check does not need them')
+    : bad('quantities leaked into the uncached block', String(line));
+  !/[0-9a-f]{8}-[0-9a-f]{4}/.test(line)
+    ? ok('no ids — a v4 UUID costs more tokens than the item it labels')
+    : bad('ids leaked into the uncached block', String(line));
+  /get_grocery_list/.test(line)
+    ? ok('names-only is declared, so the model still reads the tool for ids')
+    : bad('grocery line does not point at the tool', String(line));
+
+  // Past the cap the block reports the COUNT and stops. A TRUNCATED list is
+  // worse than none: the model cannot tell "not shown" from "not listed", and
+  // would re-add a duplicate with full confidence.
+  const { db: big } = freshDb();
+  addGroceryItems(
+    big,
+    Array.from({ length: 45 }, (_, i) => ({ name: `item ${i}` }))
+  );
+  const bigLine = groceryLine(big);
+  /45 open items/.test(bigLine) && !/item 7/.test(bigLine)
+    ? ok('past the cap: the count and a pointer at the tool, never a partial list')
+    : bad('long grocery list not capped honestly', String(bigLine));
+
+  // It is in the UNCACHED block, so every character is billed at full rate on
+  // every request of every turn — a shopping list must never tax sleep questions.
+  const { db: typical } = freshDb();
+  addGroceryItems(
+    typical,
+    'milk eggs spinach yogurt salmon olive-oil almonds berries coffee kefir'
+      .split(' ')
+      .map((name) => ({ name }))
+  );
+  const typicalLine = groceryLine(typical);
+  typicalLine.length < 220
+    ? ok(`a 10-item list costs ~${Math.round(typicalLine.length / 3.6)} uncached tokens`)
+    : bad('grocery line too long for an uncached block', String(typicalLine.length));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

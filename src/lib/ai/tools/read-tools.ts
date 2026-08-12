@@ -15,9 +15,22 @@ import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/experiments';
 import { weekSummary } from '@/lib/db/repositories/exercise';
-import { listTodayMeals, todayTotals } from '@/lib/db/repositories/nutrition';
+import {
+  activeNutritionTargets,
+  dayFiberTotal,
+  listTodayMeals,
+  nutritionHistory,
+  partialMealMetrics,
+  todayTotals,
+} from '@/lib/db/repositories/nutrition';
 import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocols';
 import { isDueOn, listActiveReminders } from '@/lib/db/repositories/reminders';
+import {
+  dueScreenings,
+  listScreenings,
+  pastScheduledAppointments,
+  upcomingAppointments,
+} from '@/lib/db/repositories/screenings';
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
 import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { deviceLabel, pickDailyMetric } from '@/lib/db/repositories/wearables';
@@ -27,6 +40,13 @@ import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
 import { getModeDefinition } from '@/lib/modes/registry';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import type { BiomarkerRow } from '@/lib/db/types';
+import {
+  DAY_METRIC_LABELS,
+  dayFigure,
+  unguardedNote,
+  type DayMetric,
+} from '@/lib/nutrition/remaining';
+import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 import type { UnitPreferences } from '@/lib/user/types';
 
 import { computeInsights, dueRemindersFor, generateDailyBrief } from '../insights';
@@ -34,7 +54,6 @@ import {
   bodyDailySeries,
   endOfLocalDayUtc,
   isoDaysAgo,
-  nutritionDailyTotals,
   round1,
   seriesStats,
   trainingDailyTotals,
@@ -369,6 +388,111 @@ const CORE_WEARABLES: readonly string[] = [
   'active_energy_kcal',
 ];
 
+// --- Daily nutrition targets (0015) ------------------------------------------
+//
+// THE BUG THIS EXISTS FOR (owner report, 2026-08-11). Asked "what do you think
+// of my nutrition goals for today?", the Coach answered: *"I don't actually have
+// a 'nutrition goals' setting to check against — nothing in your profile or
+// protocols defines a kcal/protein/carb target."* Every word of that is false.
+// `nutrition_targets` has shipped since 0015, the owner edits it at
+// app/nutrition-targets.tsx, and app/nutrition.tsx draws its whole macro grid
+// from it. The Coach simply had no tool that read the table, and turned its own
+// blindness into a claim about the product.
+//
+// Targets are therefore NOT a tool of their own: they are a field of the day.
+// "What's left?" is a today question, so the answer belongs in the payload the
+// model already fetches for today rather than behind a second round-trip that
+// only gets made once the model already suspects targets exist — which is
+// exactly the thing it did not suspect. The absent case is stated in words for
+// the same reason: "no targets are set" and "ARC has no targets feature" have to
+// be impossible to confuse.
+//
+// The arithmetic is not re-derived here. dayFigure/unguardedNote are the SAME
+// functions the Eat tab counts down with (src/lib/nutrition/remaining.ts), so
+// the Coach and the screen can never disagree about what is left — including
+// their refusal to subtract when a meal was logged without numbers.
+
+/** The macros a remainder can be computed from, in display order. */
+const TARGET_METRICS: readonly DayMetric[] = ['kcal', 'protein_g', 'carbs_g', 'fat_g'];
+
+/**
+ * Today's targets and what is left of each, or an explicit "not set".
+ *
+ * `remaining: null` on a metric that HAS a target means the day cannot support
+ * a subtraction (a meal was logged with no value for it, or with a total known
+ * to be short), and `note` says which meals and why. That is the screen's own
+ * fallback, carried through rather than papered over with a confident number.
+ */
+function todayTargetsPayload(
+  db: Database,
+  date: string,
+  meals: MealRow[]
+): Record<string, unknown> {
+  const targets = activeNutritionTargets(db, date);
+  if (!targets) {
+    return {
+      set: false,
+      note:
+        'The user has NOT set daily targets. This is an unset setting, not a missing feature: ' +
+        'ARC ships nutrition targets (Eat › Daily targets), and you can set them yourself with ' +
+        'set_nutrition_targets. Say they are not set — never that ARC has no target to check ' +
+        'against.',
+    };
+  }
+  const partial = partialMealMetrics(db, date);
+  const progress: Record<string, unknown> = {};
+  for (const metric of TARGET_METRICS) {
+    const target = targets[metric];
+    if (target == null || target <= 0) continue;
+    const figure = dayFigure(meals, metric, target, partial);
+    progress[metric] = {
+      label: DAY_METRIC_LABELS[metric],
+      target,
+      eaten: figure.eaten,
+      remaining: figure.mode === 'remaining' ? figure.remaining : null,
+    };
+  }
+  // Fiber is deliberately outside the countdown model (see remaining.ts): it is
+  // summed from meal ITEMS, so a hand-typed meal contributes none by
+  // construction and every mixed day would under-report. Reported as eaten-vs-
+  // target with that stated, never as a remainder.
+  const fiberTarget = targets.fiber_g;
+  const fiber =
+    fiberTarget != null && fiberTarget > 0
+      ? {
+          label: 'fiber',
+          target: fiberTarget,
+          eaten: round1(dayFiberTotal(db, date)),
+          remaining: null,
+          note: 'Fiber counts only itemized meals, so this total is a floor, not a full day.',
+        }
+      : undefined;
+  const unguarded = unguardedNote(meals, targets, partial);
+  return {
+    set: true,
+    since: targets.effective_date,
+    setBy: targets.created_by === 'ai' ? 'you (the Coach)' : 'the user',
+    ...(targets.notes ? { targetNotes: targets.notes } : {}),
+    progress,
+    ...(fiber ? { fiber } : {}),
+    ...(unguarded ? { note: unguarded } : {}),
+  };
+}
+
+/** The identity of a target set, for "did the targets change in this window?". */
+function targetKey(t: NutritionTargetsRow | NutritionHistoryTarget | null | undefined): string {
+  if (!t) return 'none';
+  return [t.kcal, t.protein_g, t.carbs_g, t.fat_g, t.fiber_g].join('/');
+}
+
+type NutritionHistoryTarget = {
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  fiber_g: number | null;
+};
+
 /** Today's value for one wearable metric under its own aggregation rule. */
 function wearableToday(
   db: Database,
@@ -389,25 +513,21 @@ function wearableToday(
 const getTodaySnapshot: CoachTool = {
   name: 'get_today_snapshot',
   description:
-    "Today's full picture: mission items with status, meals eaten with macro totals, " +
-    'workouts, symptoms, ad-hoc captures, reminders due today, TODAY’S WEARABLE DATA ' +
-    '(steps, sleep with hours/minutes, HRV, resting HR, active/resting energy — whatever ' +
-    'Apple Health has synced) and the derived `readiness` verdict + pillars, which is the ' +
-    'exact same derivation the Home screen shows. Call this before answering anything ' +
-    "about today ('how am I doing', 'what's left', 'what did I eat', 'how many steps', " +
-    "'how did I sleep'). " +
-    // The general "absence is not zero" rail lives in the system prompt, which
-    // is cached once and applies to every tool. What stays here is what is
-    // TRUE OF THIS TOOL'S SHAPE and cannot be inferred from the field names.
-    '`wearables.neverRecorded` is the subset of `noDataToday` this device has no sensor for ' +
-    'at all (a phone with no watch has no HRV, ever) — a hardware fact, not a sync failure. ' +
-    'ANYTHING PRESENT IN `wearables.today` HAS SYNCED: never tell the user a metric has not ' +
-    'synced while it carries a value there, whatever any other field says. ' +
-    '`readiness.detail` describes the RECOVERY verdict only; `readiness.level: unknown` ' +
-    'means recovery inputs are missing, never that Apple Health is off. ' +
-    'In `remindersDueToday` items are ranked today’s-own first, each with its pinned `date` ' +
-    'and `daysOverdue`; anything with daysOverdue > 0 is a carried-over obligation — say so, ' +
-    'never present it as part of today’s plan.',
+    // TRIMMED 2026-08-11 (db/coach-eval.test.mjs §6: "the next addition trims").
+    // Everything cut was either restated by the system prompt's cached rails
+    // (absence is not zero, quote the returned units) or stated AT RUNTIME by
+    // the payload itself — `wearables.note` now affirms a working sync in words,
+    // and `readiness.detail` is rewritten in the execute below. What stays is
+    // only what the field names cannot carry.
+    "Today's full picture: mission items with ids and status, meals with macro totals, the " +
+    "day's NUTRITION TARGETS and what is left of each, workouts, symptoms, captures, " +
+    "reminders due, today's Apple Health numbers, and the `readiness` verdict + pillars Home " +
+    'is showing. Call this before answering anything about today. ANYTHING PRESENT IN ' +
+    '`wearables.today` HAS SYNCED, whatever another field says; `wearables.neverRecorded` is ' +
+    'the subset this device has no sensor for at all — hardware, not a sync failure. ' +
+    '`readiness` is about RECOVERY only. A reminder with `daysOverdue` > 0 is carried over, ' +
+    "not part of today's plan. `nutritionTargets.set: false` means the user has not set " +
+    'targets — an unset setting, never a missing feature.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   readOnly: true,
   execute: (db, _input, context) => {
@@ -530,6 +650,11 @@ const getTodaySnapshot: CoachTool = {
         protein_g: m.protein_g,
       })),
       nutritionTotals: totals,
+      // What the day is being judged AGAINST — the field whose absence made the
+      // Coach deny the feature existed. Always present: either the live target
+      // set with what is left of each, or an explicit `set: false` that says
+      // unset, not unsupported. See todayTargetsPayload.
+      nutritionTargets: todayTargetsPayload(db, date, meals),
       workouts,
       symptoms: listTodaySymptoms(db, date).map((s) => ({
         time: s.time,
@@ -614,35 +739,29 @@ const getTodaySnapshot: CoachTool = {
 const getMetricSeries: CoachTool = {
   name: 'get_metric_series',
   description:
+    // Trimmed twice. 2026-08-10 cut the 17-name metric enumeration (discoverable
+    // at runtime via `wearables.availableMetrics`, and an unknown name already
+    // errors WITH the valid set). 2026-08-11 cut the accumulation doctrine, for
+    // the same reason and with better cover: the PAYLOAD states it at runtime,
+    // in the exact case it applies, through `statsBasis`, `statsExcludesToday`,
+    // `todaySoFar.note` and a `note` that spells out how to cite both figures.
+    // Repeating all of it here billed ~350 tokens on every request — including
+    // every request about a level metric, where none of it is even true.
     'Daily history for ONE metric over the last N days, in the user’s display units, with ' +
-    'min/avg/max. Call this whenever the user asks about a trend, a change, or "how has X ' +
-    'been" — answer from these numbers only. ' +
-    // Trimmed 2026-08-10: the 17-name metric enumeration that used to sit here
-    // is discoverable at runtime (`wearables.availableMetrics`) and an unknown
-    // name already errors WITH the valid set, so listing them cost ~200 tokens
-    // on every request to duplicate something the tool tells you when you need
-    // it. Every SEMANTIC rule below is kept — those the model cannot infer.
-    'Accepts body metrics (weight, body_fat, waist) and every wearable metric_type on the ' +
-    'device; friendly aliases work ("sleep", "vo2max"). get_today_snapshot’s ' +
-    '`wearables.availableMetrics` lists them, and an unknown name errors with the valid set. ' +
-    'Duration metrics carry an `hm` field ("7h 11m") — quote that, not raw minutes. ' +
-    'ACCUMULATING metrics (steps, energy, water, workout minutes) build through the day, so ' +
-    'TODAY is a running total. For those `stats` covers COMPLETE days only and today comes ' +
-    'back separately as `todaySoFar` (`partial: true` in `points`); `statsBasis` and ' +
-    '`statsExcludesToday` say which convention is in force. Give both figures ("about 8,000 ' +
-    'a day over the last week, 900 so far today"); NEVER average today into the daily ' +
-    'figure. Level metrics (HRV, sleep, weight, VO2max) are whole facts when written, so ' +
-    'today counts normally. `hasData: false` means no data, NEVER zero; `stats` can be null ' +
-    'while `hasData` is true when the only day in the window is a still-accumulating today.',
+    'min/avg/max. Call this for any trend, change, or "how has X been". Takes body metrics ' +
+    '(weight, body_fat, waist) and any wearable metric_type on the device, plus friendly ' +
+    'aliases ("sleep", "vo2max"); an unknown name errors WITH the valid set. Quote the `hm` ' +
+    'field ("7h 11m"), never raw minutes. READ THE PAYLOAD’S OWN `note`, `statsBasis` and ' +
+    '`todaySoFar` before quoting: for a metric that accumulates through the day, `stats` is ' +
+    'COMPLETE days only and today is reported apart — cite both, never average today in.',
   inputSchema: {
     type: 'object',
     properties: {
       metric: {
         type: 'string',
         description:
-          'A body metric (weight, body_fat, waist) or a wearable metric_type ' +
-          '(steps, sleep_duration_min, hrv, vo2max, …). See ' +
-          'get_today_snapshot.wearables.availableMetrics for this device’s set.',
+          'A body metric or a wearable metric_type; ' +
+          'get_today_snapshot.wearables.availableMetrics lists this device’s set.',
       },
       days: { type: 'integer', minimum: 1, maximum: 365, description: 'Window, default 30.' },
     },
@@ -896,12 +1015,11 @@ function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
 const getTrainingSummary: CoachTool = {
   name: 'get_training_summary',
   description:
+    // The "this week" ≠ "last N days" rule lives in the system prompt, cached
+    // once for the whole registry (2026-08-11 trim).
     'Training over the last N days (default 28): per-day sessions/minutes, average weekly ' +
-    'cardio-minute and strength-session RATES over that rolling window, and the most recent ' +
-    'sessions. Also returns `thisWeek` — the CURRENT Monday-start calendar week (cardio ' +
-    'minutes + strength sessions), which matches the Data tab\'s "this week" exactly. Use ' +
-    '`thisWeek` for "this week" questions; the rolling `totals`/`weeklyRates` are "the last ' +
-    'N days", never "this week". Call this for anything about workouts, training load, ' +
+    'rates over that rolling window, the most recent sessions, and `thisWeek` — the current ' +
+    'Monday-start calendar week. Call this for anything about workouts, training load, ' +
     'consistency, or recovery context.',
   inputSchema: {
     type: 'object',
@@ -972,9 +1090,11 @@ const getTrainingSummary: CoachTool = {
 const getNutritionSummary: CoachTool = {
   name: 'get_nutrition_summary',
   description:
-    'Nutrition over the last N days (default 14): per-day kcal/protein/carbs/fat totals ' +
-    'and averages across logged days. Call this for anything about diet, protein, ' +
-    'calories, or eating patterns.',
+    'Nutrition over the last N days (default 14): per-day kcal/protein/carbs/fat/fiber ' +
+    'totals, averages across logged days, and the DAILY TARGETS those days were judged ' +
+    'against. Call this for anything about diet, protein, calories, eating patterns, or ' +
+    'target adherence. `targets: null` means the user has not set targets — an unset ' +
+    'setting, not a missing feature; offer set_nutrition_targets.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -985,15 +1105,57 @@ const getNutritionSummary: CoachTool = {
   readOnly: true,
   execute: (db, input, context) => {
     const days = daysWindow(asRecord(input), 14);
-    const daily = nutritionDailyTotals(db, isoDaysAgo(context.now, days - 1));
-    const loggedDays = daily.length;
-    const avg = (pick: (d: (typeof daily)[number]) => number) =>
-      loggedDays === 0 ? null : round1(daily.reduce((a, d) => a + pick(d), 0) / loggedDays);
+    const today = todayISODate(context.now);
+    // nutritionHistory over the hand-rolled aggregate: it is the SAME read the
+    // Nutrition history screen renders, so it carries fiber (summed from item
+    // snapshots) and resolves each day's own governing target — "was I under in
+    // March?" is answered against March's numbers, not today's. It zero-fills
+    // every day in the window, so logged days are filtered back out here to
+    // keep `perDay`/`loggedDays` meaning exactly what they meant before.
+    const history = nutritionHistory(db, days, today);
+    const logged = history.filter((d) => d.mealCount > 0);
+    const loggedDays = logged.length;
+    const avg = (pick: (d: (typeof logged)[number]) => number) =>
+      loggedDays === 0 ? null : round1(logged.reduce((a, d) => a + pick(d), 0) / loggedDays);
 
+    const current = activeNutritionTargets(db, today);
+    const currentKey = targetKey(current);
     return json({
       days,
       loggedDays,
-      perDay: daily,
+      // Reported ONCE, not on all 14 rows — a per-day copy of an unchanged
+      // target set is pure payload cost. A day governed by a DIFFERENT set
+      // carries its own `target`, so a mid-window change is never hidden.
+      targets: current
+        ? {
+            since: current.effective_date,
+            setBy: current.created_by === 'ai' ? 'you (the Coach)' : 'the user',
+            kcal: current.kcal,
+            protein_g: current.protein_g,
+            carbs_g: current.carbs_g,
+            fat_g: current.fat_g,
+            fiber_g: current.fiber_g,
+          }
+        : null,
+      ...(current
+        ? {}
+        : {
+            targetsNote:
+              'The user has not set daily targets. ARC supports them (Eat › Daily targets) ' +
+              'and you can set them with set_nutrition_targets — say they are unset, never ' +
+              'that there is nothing to judge against.',
+          }),
+      perDay: logged.map((d) => ({
+        date: d.date,
+        kcal: d.kcal,
+        protein_g: d.protein_g,
+        carbs_g: d.carbs_g,
+        fat_g: d.fat_g,
+        // Item-sourced, so a hand-typed meal contributes none — a floor, not a
+        // total. Only worth reporting when something recorded it.
+        ...(d.fiber_g > 0 ? { fiber_g: round1(d.fiber_g) } : {}),
+        ...(targetKey(d.target) === currentKey ? {} : { target: d.target }),
+      })),
       averagesAcrossLoggedDays: {
         kcal: avg((d) => d.kcal),
         protein_g: avg((d) => d.protein_g),
@@ -1063,9 +1225,9 @@ const getBiomarkers: CoachTool = {
   name: 'get_biomarkers',
   description:
     'Lab results: the latest value per biomarker (optionally one category) with units, ' +
-    'longevity-oriented optimal ranges, standard ranges, and measurement dates. Call this ' +
-    'for anything about labs, bloodwork, ApoB, lipids, hormones, etc. If empty, say no ' +
-    'labs are imported yet — never estimate a lab value.',
+    'longevity-oriented optimal ranges, standard ranges, and measurement dates. Call this for ' +
+    'anything about labs, bloodwork, ApoB, lipids or hormones. Empty means no labs are ' +
+    'imported yet.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1506,10 +1668,9 @@ const searchHistory: CoachTool = {
   description:
     "Keyword search over the user's own written history — past turns, day-log notes, protocol " +
     "change notes, experiment hypotheses and verdicts, your memories — AND ARC's curated " +
-    'longevity reference. Use it to recall something specific ("have we tried magnesium?") and ' +
-    'to ground an explanation in ARC doctrine rather than general knowledge ("why does ApoB ' +
-    'matter?"). Literal matching, not semantic — try the user\'s own wording. Cite the source ' +
-    'and date on every hit.',
+    'longevity reference. Use it to recall something specific ("have we tried magnesium?") or ' +
+    'to ground an explanation in ARC doctrine ("why does ApoB matter?"). Literal matching, not ' +
+    "semantic: try the user's own wording. Cite the source and date on every hit.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -1701,6 +1862,125 @@ const getGroceryListTool: CoachTool = {
   },
 };
 
+// --- get_screenings (0007: preventive ledger + medical calendar) -------------
+//
+// The second domain the 2026-08-11 coverage census found the Coach blind to,
+// and the one where blindness is most expensive. `screenings` and
+// `appointments` have shipped since 0007, with three screens behind them
+// (app/screenings.tsx, screening-form, appointment-form), and NO tool read
+// either. Asked "am I due for anything?" the Coach had exactly the material it
+// had for nutrition targets: nothing, and no way to know that nothing was its
+// own gap. Preventive cadence is the highest-leverage thing in a longevity
+// system to be wrong about by omission.
+//
+// One tool, not three: the ledger, what is due, and the calendar are one answer
+// to one question, and three narrow tools would cost three schemas for it.
+
+/** "Sat 8 Aug, 09:30" for an ISO instant, in LOCAL time. Hand-formatted:
+ *  Hermes ships no Intl, so toLocaleString is unavailable on device. */
+function humanInstant(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const day = `${WEEKDAY_SHORT[d.getDay()]} ${d.getDate()} ${MONTH_SHORT[d.getMonth()]}`;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${day}, ${hh}:${mm}`;
+}
+
+const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+const MONTH_SHORT = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+/** Bookings whose day passed with nobody closing them out — capped, because an
+ * ignored one stays 'scheduled' forever and the tail is unbounded. */
+const STALE_APPOINTMENT_LIMIT = 5;
+
+const getScreeningsTool: CoachTool = {
+  name: 'get_screenings',
+  description:
+    'The preventive-health ledger and medical calendar: every tracked screening with its ' +
+    'cadence, when it was last done and when it is next due (`status` overdue/due/scheduled/' +
+    'untracked), plus upcoming appointments and any booking whose date passed without being ' +
+    'closed out. Call this for "am I due for anything", "when was my last colonoscopy", ' +
+    'bloodwork timing, or any question about check-ups, scans and doctor visits. An empty ' +
+    'ledger means the user has tracked none — ARC does track them (Data › Screenings); never ' +
+    'report the feature as missing.',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  readOnly: true,
+  execute: (db, _input, context) => {
+    const today = todayISODate(context.now);
+    const nowIso = context.now.toISOString();
+    // dueScreenings owns the overdue/due boundary (its default 30-day horizon is
+    // what the Screenings screen groups by) — reused, not reimplemented, so the
+    // Coach and the ledger can never disagree about what "due" means.
+    const dueById = new Map(dueScreenings(db, today).map((s) => [s.id, s.dueStatus]));
+    const screenings = listScreenings(db).map((s) => ({
+      id: s.id,
+      name: s.name,
+      category: s.category,
+      intervalMonths: s.interval_months,
+      lastCompleted: s.last_completed,
+      nextDue: s.next_due,
+      // 'untracked' is a real, distinct state: a one-off with nothing scheduled
+      // after it. Reporting it as "not due" would imply a cadence that is not
+      // there, which is how a colonoscopy quietly stops being tracked.
+      status: dueById.get(s.id) ?? (s.next_due === null ? 'untracked' : 'scheduled'),
+      ...(s.notes ? { notes: s.notes } : {}),
+    }));
+    const upcoming = upcomingAppointments(db, nowIso).map((a) => ({
+      id: a.id,
+      title: a.title,
+      when: humanInstant(a.scheduled_at),
+      scheduledAt: a.scheduled_at,
+      provider: a.provider,
+      forScreening: a.screening_name,
+    }));
+    const stale = pastScheduledAppointments(db, nowIso)
+      .slice(0, STALE_APPOINTMENT_LIMIT)
+      .map((a) => ({
+        id: a.id,
+        title: a.title,
+        when: humanInstant(a.scheduled_at),
+        forScreening: a.screening_name,
+      }));
+    return json({
+      screenings,
+      upcomingAppointments: upcoming,
+      // Worth raising unasked: a booking that came and went unclosed is either a
+      // visit the ledger never learned about (log_screening_done fixes it) or an
+      // appointment that was missed.
+      ...(stale.length > 0
+        ? {
+            pastBookingsStillOpen: stale,
+            note:
+              'These bookings are still marked scheduled although their date has passed. Ask ' +
+              'whether the visit happened; if it did, log_screening_done stamps the linked ' +
+              'screening and rolls its cadence.',
+          }
+        : {}),
+      ...(screenings.length === 0 && upcoming.length === 0
+        ? {
+            emptyNote:
+              'The user has not tracked any screenings or appointments yet. ARC supports both ' +
+              '(Data › Screenings) — say none are recorded, never that ARC does not track them.',
+          }
+        : {}),
+    });
+  },
+};
+
 /**
  * search_knowledge is deliberately NOT here. It needs the on-device embedder
  * (Phase 6 #25), which has no native build yet, so every call returns
@@ -1725,6 +2005,7 @@ export const READ_TOOLS: CoachTool[] = [
   getExperiments,
   getTrainingRecommendation,
   getBiomarkerHistory,
+  getScreeningsTool,
   getMemories,
   searchHistory,
   getRecipesTool,

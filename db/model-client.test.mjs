@@ -343,12 +343,42 @@ console.log('4. runCoachTurn: full tool loop — execute, echo, continue');
   result.toolCalls[0].isError === undefined
     ? ok('turn record captured name/input/result')
     : bad('tool record', JSON.stringify(result.toolCalls));
-  result.text === 'Checking.\n\nTraining is trending up 12%.'
-    ? ok('preamble + separator + final answer')
+  // THE TURN SETTLES ON ITS POST-TOOL TEXT (fixed 2026-08-11). This used to
+  // assert `'Checking.\n\nTraining is trending up 12%.'` — every text block from
+  // every round-trip concatenated — which meant the model's narration of its own
+  // intent was glued onto the front of the answer on EVERY tool-using turn, then
+  // shown in the bubble, persisted to ai_messages, folded into the rolling
+  // summary and replayed to the next turn. "Checking." was written before the
+  // tool result existed, so it cannot be part of the answer.
+  result.text === 'Training is trending up 12%.'
+    ? ok('the settled text is the post-tool answer, not the preamble glued to it')
     : bad('text', JSON.stringify(result.text));
-  tokens.join('') === result.text
-    ? ok('streamed tokens equal the final text')
-    : bad('token parity');
+  // The LIVE stream is deliberately unchanged: the reader still watches the
+  // narration arrive, and still gets a seam before the continuation. Only the
+  // text the turn settles on — the one that is persisted and replayed — drops it.
+  tokens.join('') === 'Checking.\n\nTraining is trending up 12%.'
+    ? ok('…while onToken still streamed narration + separator + answer, in order')
+    : bad('token stream', JSON.stringify(tokens.join('')));
+}
+
+console.log('4b. …but narration is kept when nothing follows it');
+{
+  // The round-trip guard trips with the model still mid-tool-loop: the text it
+  // managed to say is all there is, and settling on '' would persist an empty
+  // assistant row over a turn that genuinely spoke.
+  const fetchImpl = scriptedFetch(
+    Array.from({ length: 8 }, () => streamResponse([sseText(toolUseReplyEvents({}))]))
+  );
+  const result = await runCoachTurn(CONFIG(fetchImpl), REQUEST, {
+    onToken: () => {},
+    executeTool: async () => ({ content: '{"ok":true}' }),
+  });
+  result.stopReason === 'tool_use_limit'
+    ? ok('the round-trip guard trips')
+    : bad('stop reason', result.stopReason);
+  result.text.startsWith('Checking.')
+    ? ok('…and the turn falls back to what it did say rather than settling on nothing')
+    : bad('lost narration', JSON.stringify(result.text));
 }
 
 console.log('5. tool failures and declines round-trip honestly');
