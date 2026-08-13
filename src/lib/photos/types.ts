@@ -1,13 +1,13 @@
 /**
  * Types for the progress-photo gallery, mirroring
- * db/migrations/0035_progress_photos.sql — see docs/progress-photos-subapp.md.
+ * db/migrations/0036_progress_photos.sql — see docs/progress-photos-subapp.md.
  * Kept beside the feature (the nutrition/recipes-types pattern): hand-authored,
  * lockstep with the schema.
  */
 import type { DateString, SqliteBool, Timestamp } from '@/lib/db/types';
 
 /**
- * Where a STORED photo's day came from (0035's `date_origin`).
+ * Where a STORED photo's day came from (0036's `date_origin`).
  *
  * Deliberately not the same type as the importer's `PhotoDateOrigin`, which has
  * a `none` case for "nothing readable in the file". `none` is a fact about a
@@ -18,7 +18,7 @@ import type { DateString, SqliteBool, Timestamp } from '@/lib/db/types';
 export type PhotoDateSource = 'exif' | 'asset' | 'manual';
 
 /**
- * The four poses, a genuinely closed set (0035's CHECK). `other` plus the notes
+ * The four poses, a genuinely closed set (0036's CHECK). `other` plus the notes
  * field is what covers everything the four do not — deliberately, because
  * widening the CHECK later is a parent-table rebuild with a child to shuttle.
  */
@@ -36,7 +36,7 @@ export type ProgressPhotoRow = {
   /** The instant, when a real one could be formed. No data, no number. */
   taken_at: Timestamp | null;
   /** Where {@link taken_on} came from. Persisted rather than inferred — see the
-   *  0035 header; guessing it from `taken_at` is wrong in both directions. */
+   *  0036 header; guessing it from `taken_at` is wrong in both directions. */
   date_origin: PhotoDateSource;
   pose: PhotoPose;
   source: PhotoSource;

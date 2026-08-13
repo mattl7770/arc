@@ -82,7 +82,7 @@ export default function RootLayout() {
     // NO expiry pass: a recipe photo is part of a document the owner keeps for
     // years, not evidence for one day's estimate.
     runRecipePhotoSweep(getDb());
-    // And the progress-photo directory (0035). Same reconciliation, and the one
+    // And the progress-photo directory (0036). Same reconciliation, and the one
     // that goes furthest: no expiry pass AND no dangling-row deletion. A
     // progress photo's ROW is the record — its date, pose, notes and saved AI
     // readings — so a missing JPEG is reported and drawn as an authored empty,
@@ -154,6 +154,10 @@ export default function RootLayout() {
           <Stack.Screen name="recipe-detail" />
           <Stack.Screen name="recipe-edit" />
           <Stack.Screen name="recipe-import" />
+          {/* Plain-text AI recipe editing + the book's folders (0036), both
+              2026-08-12 owner requests — docs/recipes-grocery.md. */}
+          <Stack.Screen name="recipe-revise" />
+          <Stack.Screen name="recipe-folders" />
           <Stack.Screen name="grocery" />
           <Stack.Screen name="exercise" />
           <Stack.Screen name="workout-log" />
@@ -189,6 +193,10 @@ export default function RootLayout() {
           <Stack.Screen name="settings-health" />
           <Stack.Screen name="wearables" />
           {/* Pushed from the Data tab. */}
+          {/* The execution record, behind Data's Mission trend row. That row
+              used to navigate to Home, which is today's plan and therefore not
+              an answer to a question about the days behind you. */}
+          <Stack.Screen name="mission-history" />
           <Stack.Screen name="protocols" />
           <Stack.Screen name="protocol-edit" />
           {/* Pushed from the protocol editor: the version timeline. */}
@@ -200,7 +208,7 @@ export default function RootLayout() {
           <Stack.Screen name="experiments" />
           <Stack.Screen name="experiment-detail" />
           {/* INTEGRATOR-MERGE: progress photos (docs/progress-photos-subapp.md,
-              migration 0035). Pushed from the Data tab's "Progress photos" row;
+              migration 0036). Pushed from the Data tab's "Progress photos" row;
               the other three are pushed from the gallery. */}
           <Stack.Screen name="progress-photos" />
           <Stack.Screen name="progress-photo-add" />

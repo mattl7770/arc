@@ -53,7 +53,7 @@ import type { PhotoDateSource, PhotoPose } from '@/lib/photos/types';
 
 const POSES: PhotoPose[] = ['front', 'side', 'back', 'other'];
 
-/** What `date_origin` (0035) means, in the owner's words rather than the
+/** What `date_origin` (0036) means, in the owner's words rather than the
  *  schema's. `manual` covers both "no date was in the file" and "you corrected
  *  it", because from the record's point of view they are the same fact. */
 const DATE_ORIGIN_LABEL: Record<PhotoDateSource, string> = {
@@ -207,7 +207,7 @@ export default function ProgressPhotoDetailScreen() {
               here. It also used to be inferred from `taken_at IS NOT NULL`,
               which was wrong in both directions — a picker-epoch date has an
               instant and is not EXIF; a real DateTimeOriginal with no offset tag
-              has no instant and is. `date_origin` (0035) is the persisted fact. */}
+              has no instant and is. `date_origin` (0036) is the persisted fact. */}
           <SectionLabel label="Details" />
 
           <View className="mt-3">

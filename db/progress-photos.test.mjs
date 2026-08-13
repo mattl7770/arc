@@ -1,6 +1,6 @@
 /**
  * Headless test of the progress-photo gallery — `progress_photos` +
- * `progress_photo_analyses` (0035), the repository, the file store over an
+ * `progress_photo_analyses` (0036), the repository, the file store over an
  * in-memory fake, the pure formatters, the picker wire-shape parsers, and the AI
  * reading's prompt/parse — against real SQLite via node:sqlite. Mirrors
  * db/nutrition-v2.test.mjs's photo section; op-sqlite is never loaded.
@@ -168,11 +168,11 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
 
 // ---------------------------------------------------------------------------
 {
-  console.log('1. 0035 applies over the current head, and stamps its version');
+  console.log('1. 0036 applies over the current head, and stamps its version');
   const { raw } = freshDb();
   const version = raw.prepare('PRAGMA user_version').get().user_version;
   version >= 35
-    ? ok(`user_version is ${version} (0035 ran, forward-only)`)
+    ? ok(`user_version is ${version} (0036 ran, forward-only)`)
     : bad('user_version after migrate', String(version));
 
   const tables = raw
@@ -1101,7 +1101,7 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   console.log('11. The local-day rendering of a stored UTC instant');
   // `created_at` is UTC. Slicing its first ten characters prints TOMORROW for
   // anything saved after 5pm on the US west coast — the body_metrics trap the
-  // 0035 header cites, and the reason SavedReading does not slice.
+  // 0036 header cites, and the reason SavedReading does not slice.
   const instant = '2026-08-10T03:30:00.000Z';
   const expected = (() => {
     const d = new Date(Date.parse(instant));

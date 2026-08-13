@@ -13,12 +13,14 @@
  *     session wins, stages summed by category value, attributed to the WAKE day;
  *   - deterministic `source_raw_id`s so re-syncs UPDATE instead of duplicate.
  *
- * The OUTBOUND half is much smaller and lives at the bottom: the three
- * `body_metrics` columns ARC publishes to Apple Health, the unit conversion each
- * needs, and the scope lists for both directions. It sits here rather than in
- * `publish.ts` so the read and write scopes are declared side by side — the
- * invariant that keeps the echo loop shut ({@link readWriteScopeOverlap}) is
- * only checkable when both lists are in one place.
+ * The BODY half lives at the bottom and runs BOTH ways over the same three
+ * columns: `weight_kg`, `body_fat_pct`, `waist_cm` are published outward to
+ * Apple Health and ingested back from it, so a smart scale that writes to Health
+ * reaches ARC and a number typed into ARC reaches the rest of the phone. Both
+ * directions are declared side by side on purpose — the conversions are exact
+ * inverses, and the invariant that keeps the echo loop shut
+ * ({@link unsuppressedEchoIdentifiers}) is only checkable when both lists sit in
+ * one place.
  */
 import type { BodyColumn } from '@/lib/db/repositories/body';
 import type { WearableUpsert } from '@/lib/db/repositories/wearables';
@@ -58,14 +60,15 @@ export const ARC_BUNDLE_ID = 'com.arcresilience.app';
  * manual entry. Unknown vendors land in 'other' with the raw identity preserved
  * in row metadata, so extending the table above is never a data migration.
  *
- * **ARC's own writes map to 'manual' — the second half of echo suppression.**
- * The first half is the query filter (`healthkit.ts`), which excludes ARC's
- * samples before they ever reach this function. This is what happens if that
- * filter is ever defeated. Without a case here ARC's bundle falls through to
- * 'other', which sits at index 7 in `SOURCE_PRIORITY` — ABOVE 'apple_health' (8)
- * and 'manual' (9) — so ARC would rank its own reflection over both the merged
- * Apple total and the user's own keypad entry. That is the classic write-back
- * feedback loop, and it would be silent.
+ * **ARC's own writes map to 'manual' — the last line of echo suppression.**
+ * The earlier lines are the query filter (`healthkit.ts`), which excludes ARC's
+ * samples before they ever reach this function, and {@link isIngestableSample},
+ * which drops them per-sample on the body path. This is what happens if both are
+ * defeated. Without a case here ARC's bundle falls through to 'other', which
+ * sits at index 7 in `SOURCE_PRIORITY` — ABOVE 'apple_health' (8) and 'manual'
+ * (9) — so ARC would rank its own reflection over both the merged Apple total
+ * and the user's own keypad entry. That is the classic write-back feedback loop,
+ * and it would be silent.
  *
  * Two other fixes were considered and rejected:
  *
@@ -86,7 +89,9 @@ export const ARC_BUNDLE_ID = 'com.arcresilience.app';
  */
 export function sourceDeviceFor(provenance: HealthProvenance): WearableDevice {
   const bundle = provenance.bundleId ?? '';
-  if (bundle === ARC_BUNDLE_ID) return 'manual';
+  // Either kind of evidence is enough: the metadata tag catches an ARC sample
+  // whose sourceRevision this seam could not parse.
+  if (provenance.arcWritten || bundle === ARC_BUNDLE_ID) return 'manual';
   for (const vendor of VENDOR_BUNDLES) {
     if (bundle.startsWith(vendor.prefix)) return vendor.device;
   }
@@ -571,13 +576,14 @@ export function workoutRows(workouts: HealthWorkoutSample[]): WearableUpsert[] {
     }));
 }
 
-// --- Outbound: what ARC publishes to Apple Health (§10) -------------------------------
+// --- The body channel: BOTH directions over the same three columns (§10–11) ----------
 //
-// ARC stays AUTHORITATIVE and PUBLISHES; this is not bidirectional sync. No
-// value is ever owned in two places: the three columns below are owned by
-// `body_metrics`, and Apple Health receives a copy so other apps can see it.
-// Nothing flows back — none of these identifiers is in the read set, and
-// `readWriteScopeOverlap()` exists to keep it that way.
+// `body_metrics` owns `weight_kg`, `body_fat_pct` and `waist_cm`. ARC publishes
+// them outward so the rest of the phone can see what the user logs, and ingests
+// them inward so a smart scale (or the Health app's own keypad) reaches ARC.
+// That two-way arrangement is only safe because a sample can be attributed:
+// `isIngestableSample` refuses anything ARC wrote, and anything it cannot prove
+// ARC did not write.
 
 /**
  * Metadata key stamped on every sample ARC writes. It carries the originating
@@ -644,12 +650,171 @@ export const BODY_PUBLISH_METRICS: readonly BodyPublishSpec[] = [
   },
 ];
 
+// --- Inbound: the same three columns, coming back ------------------------------------
+
+/** How one HealthKit quantity type becomes a `body_metrics` column. */
+export type BodyIngestSpec = {
+  /** The owning `body_metrics` column this lands in. */
+  column: BodyColumn;
+  hkIdentifier: string;
+  /** HKUnit string the reader requests — identical to the publish spec's. */
+  hkUnit: string;
+  /** HealthKit's number in `hkUnit` → ARC's canonical column value. */
+  fromHealthKit: (value: number) => number;
+  decimals: number;
+  /**
+   * The `body_metrics` CHECK bounds for this column (0001_init.sql), inclusive
+   * of `min` only when the DDL is `>=`. Enforced HERE because a value outside
+   * them makes the INSERT throw, and one bad sample must not sink the pass.
+   */
+  min: number;
+  minExclusive: boolean;
+  max: number;
+  maxExclusive: boolean;
+  /** Human label for Settings — shared with the publish spec. */
+  label: string;
+};
+
+/**
+ * The inbound half of the body channel. Every entry is the exact inverse of its
+ * {@link BODY_PUBLISH_METRICS} twin — same identifier, same HKUnit, inverse
+ * conversion — and db/health-mapping.test.mjs pins that as a ROUND-TRIP
+ * property, so the pair cannot drift apart one edit at a time.
+ */
+export const BODY_INGEST_METRICS: readonly BodyIngestSpec[] = [
+  {
+    column: 'weight_kg',
+    hkIdentifier: 'HKQuantityTypeIdentifierBodyMass',
+    hkUnit: 'kg',
+    fromHealthKit: (v) => v,
+    decimals: 3,
+    min: 0,
+    minExclusive: true,
+    max: 1000,
+    maxExclusive: true,
+    label: 'Weight',
+  },
+  {
+    column: 'body_fat_pct',
+    hkIdentifier: 'HKQuantityTypeIdentifierBodyFatPercentage',
+    // ⚠️ The percent trap, inbound. HKUnit.percent() is a FRACTION 0.0–1.0, so
+    // a real 18.5 % arrives as 0.185 and must be multiplied by 100 to reach the
+    // 0–100 `body_fat_pct` column. Storing it unconverted would read as 0.185 %
+    // body fat — silently plausible enough to survive the CHECK and poison every
+    // trend and Coach correlation downstream. (Same fact the SpO2 read handles;
+    // the publish side runs it the other way.)
+    hkUnit: '%',
+    fromHealthKit: (v) => v * 100,
+    decimals: 2,
+    min: 0,
+    minExclusive: false,
+    max: 100,
+    maxExclusive: false,
+    label: 'Body fat',
+  },
+  {
+    column: 'waist_cm',
+    hkIdentifier: 'HKQuantityTypeIdentifierWaistCircumference',
+    hkUnit: 'cm',
+    fromHealthKit: (v) => v,
+    decimals: 2,
+    min: 0,
+    minExclusive: true,
+    max: 10000,
+    maxExclusive: true,
+    label: 'Waist circumference',
+  },
+];
+
+/**
+ * **Echo suppression, per sample.** Whether a sample of a type ARC also WRITES
+ * may be ingested.
+ *
+ * Two rejections, and the second is the one that matters:
+ *
+ *   - *Known to be ARC's* — the `ARCPublishedFrom` metadata tag, or ARC's own
+ *     bundle id. This is the ordinary case, and the query filter in
+ *     `healthkit.ts` should already have removed it before we get here.
+ *   - *Not known to be anyone's* — no bundle id at all. **Unknown source is NOT
+ *     safe** for a type ARC writes. `SourceRevision.source.bundleIdentifier` is
+ *     a non-optional string in the library's own types, so a null here means the
+ *     shape drifted, and the whole point of a fallback is that it must hold when
+ *     the primary evidence is unreadable. Ingesting an unattributable BodyMass
+ *     sample is precisely how a round-trip starts: it lands as a new
+ *     `body_metrics` row, and — but for the source guard on the publish walk —
+ *     would be published straight back out. Refusing costs, at worst, a
+ *     measurement the user can still see in the Health app; accepting costs a
+ *     duplicate no one can delete.
+ *
+ * Non-body reads do not call this: ARC writes none of those types, and an ARC
+ * sample that somehow reached one still buckets to 'manual' (the priority
+ * floor), so refusing unknown sources there would discard real vendor data —
+ * the exact mistake the `SOURCE_PRIORITY` note warns about.
+ */
+export function isIngestableSample(provenance: HealthProvenance): boolean {
+  if (provenance.arcWritten) return false;
+  const bundle = provenance.bundleId;
+  if (bundle === null || bundle.length === 0) return false;
+  return bundle !== ARC_BUNDLE_ID;
+}
+
+/** One `body_metrics` row to ingest: an instant plus the columns measured at it. */
+export type BodyIngestRow = {
+  /** The sample's own instant, ISO — becomes `body_metrics.measured_at`. */
+  measuredAt: string;
+  values: Partial<Record<BodyColumn, number>>;
+};
+
+/**
+ * HealthKit body samples → `body_metrics` rows — PURE, so the percent
+ * conversion and every rejection rule are pinned headlessly.
+ *
+ * **Rows are keyed on the measurement INSTANT, not the day.** That is what makes
+ * a re-sync idempotent without a schema change: `measured_at` plus
+ * `source='apple_health'` is the natural key the repository upserts on
+ * (`upsertHealthBodyRows`), and HealthKit start dates carry millisecond
+ * resolution, so two distinct readings colliding is not a real case. It also
+ * merges correctly: a smart scale reporting weight and body fat from one
+ * weigh-in stamps both samples at the same instant, and they belong in one row —
+ * exactly the shape ARC's own keypad produces.
+ *
+ * Rejections, all silent by design (one bad sample must never sink a pass):
+ * ARC's own or unattributable samples ({@link isIngestableSample}), non-finite
+ * values, and anything outside the column's `body_metrics` CHECK bounds — that
+ * last one because the INSERT would throw and take the whole batch with it.
+ */
+export function bodyIngestRows(
+  input: readonly { spec: BodyIngestSpec; samples: readonly HealthQuantitySample[] }[]
+): BodyIngestRow[] {
+  const byInstant = new Map<string, Partial<Record<BodyColumn, number>>>();
+  for (const { spec, samples } of input) {
+    for (const sample of samples) {
+      if (!Number.isFinite(sample.value)) continue;
+      if (!isIngestableSample(sample.provenance)) continue;
+      const converted = round(spec.fromHealthKit(sample.value), spec.decimals);
+      if (!Number.isFinite(converted)) continue;
+      if (spec.minExclusive ? converted <= spec.min : converted < spec.min) continue;
+      if (spec.maxExclusive ? converted >= spec.max : converted > spec.max) continue;
+      let values = byInstant.get(sample.startISO);
+      if (!values) {
+        values = {};
+        byInstant.set(sample.startISO, values);
+      }
+      values[spec.column] = converted;
+    }
+  }
+  return [...byInstant.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([measuredAt, values]) => ({ measuredAt, values }));
+}
+
 // --- Scopes ---------------------------------------------------------------------------
 
 /** Every HealthKit type ARC asks to read (docs/wearables-subapp.md §2). */
 export const HEALTH_READ_IDENTIFIERS: readonly string[] = [
   ...SAMPLE_METRICS.map((m) => m.hkIdentifier),
   ...STATISTIC_METRICS.map((m) => m.hkIdentifier),
+  ...BODY_INGEST_METRICS.map((m) => m.hkIdentifier),
   'HKCategoryTypeIdentifierSleepAnalysis',
   'HKWorkoutTypeIdentifier',
 ];
@@ -660,21 +825,50 @@ export const HEALTH_WRITE_IDENTIFIERS: readonly string[] = BODY_PUBLISH_METRICS.
 );
 
 /**
- * Identifiers that appear in BOTH scope lists — the echo-loop tripwire, asserted
- * empty by db/health-mapping.test.mjs.
+ * Identifiers ARC reads through the ECHO-SUPPRESSED path — the body channel.
+ * Every reader of one of these passes `failClosed` (no unfiltered retry) and
+ * every sample is screened by {@link isIngestableSample}, and the rows they
+ * produce are excluded from the publish walk by source (`publishableBodyAfter`).
  *
- * Nothing echoes today because ARC does not read BodyMass, BodyFatPercentage or
- * WaistCircumference, and that is the ONLY reason the loop is shut. It is a
- * property of these two lists, not of anything structural, so it needs a guard
- * that fails in CI the moment someone adds weight to the read set. Should that
- * day come, the query-level exclusion in `healthkit.ts` becomes load-bearing
- * rather than prophylactic and its unfiltered fallback must be reconsidered
- * before the overlap is allowed.
+ * Derived from {@link BODY_INGEST_METRICS} rather than written out, so the list
+ * cannot claim coverage that the ingest path does not actually implement.
+ */
+export const ECHO_SUPPRESSED_IDENTIFIERS: readonly string[] = BODY_INGEST_METRICS.map(
+  (m) => m.hkIdentifier
+);
+
+/**
+ * Identifiers that appear in BOTH scope lists. Since 2026-08-12 this is no
+ * longer expected to be empty — the body channel is deliberately two-way — so it
+ * is a description, not the guard. {@link unsuppressedEchoIdentifiers} is the
+ * guard.
+ */
+export function readWriteScopeOverlap(): string[] {
+  return HEALTH_WRITE_IDENTIFIERS.filter((id) => HEALTH_READ_IDENTIFIERS.includes(id));
+}
+
+/**
+ * **THE echo-loop tripwire**, asserted empty by db/health-mapping.test.mjs.
+ *
+ * A type ARC both reads and writes is an echo loop unless something breaks the
+ * circuit. This returns every such type that has NO suppression behind it, and
+ * it must always be empty.
+ *
+ * It replaces an earlier, blunter tripwire that asserted the two scope lists
+ * were DISJOINT. That guard was correct for a one-way channel and became wrong
+ * the moment reading weight became the point: keeping it would have forced the
+ * feature to be deleted or the guard to be. What it was really protecting is
+ * preserved exactly — *no type may be read and written without suppression* —
+ * and this version still fires in CI for the case that actually matters now:
+ * someone adding a new WRITE scope for a type already read on the ordinary,
+ * unsuppressed path (`SAMPLE_METRICS` / `STATISTIC_METRICS` / sleep / workouts),
+ * where the reader retries unfiltered on a bad predicate and would happily
+ * re-ingest ARC's own writes.
  *
  * A pure function rather than a module-scope assertion on purpose: Expo Router
  * eagerly requires everything reachable from `app/`, so a throw at import time
  * is an app-STARTUP crash, not a test failure.
  */
-export function readWriteScopeOverlap(): string[] {
-  return HEALTH_WRITE_IDENTIFIERS.filter((id) => HEALTH_READ_IDENTIFIERS.includes(id));
+export function unsuppressedEchoIdentifiers(): string[] {
+  return readWriteScopeOverlap().filter((id) => !ECHO_SUPPRESSED_IDENTIFIERS.includes(id));
 }

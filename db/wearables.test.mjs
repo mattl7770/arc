@@ -3,9 +3,11 @@
  * and migration 0021 against real SQLite via node:sqlite: the wearable_data
  * rebuild preserves rows, the upsert dedups on (source_device, source_raw_id),
  * source-priority day picking, series/latest reads, and the sync-state KV —
- * plus the OUTBOUND publish channel: its cursor KV (no migration, key
- * 'apple_health_publish'), the (created_at, id) keyset walk over body_metrics,
- * and the no-backfill arming rule.
+ * plus BOTH halves of the body channel: the OUTBOUND publish cursor KV (no
+ * migration, key 'apple_health_publish'), its (created_at, id) keyset walk over
+ * body_metrics and the no-backfill arming rule; and the INBOUND ingest, keyed on
+ * the natural (source, measured_at) pair — also no migration — with the proof
+ * that an ingested row is never published back out.
  * Run: npm run db:test.
  */
 import { DatabaseSync } from 'node:sqlite';
@@ -26,10 +28,18 @@ import {
   SOURCE_PRIORITY,
   upsertWearableRows,
 } from '../src/lib/db/repositories/wearables.ts';
-import { newestBodyCursor, publishableBodyAfter } from '../src/lib/db/repositories/body.ts';
+import {
+  HEALTH_INGEST_SOURCE,
+  newestBodyCursor,
+  publishableBodyAfter,
+  upsertHealthBodyRows,
+} from '../src/lib/db/repositories/body.ts';
 import { isHealthSyncEnabled, setHealthSyncEnabled } from '../src/lib/db/repositories/user.ts';
 import {
+  ARC_BUNDLE_ID,
   ARC_WRITE_METADATA_KEY,
+  BODY_INGEST_METRICS,
+  bodyIngestRows,
   quantityDailyRows,
   SAMPLE_METRICS,
   sleepDailyRows,
@@ -876,6 +886,179 @@ console.log('14. source priority still ranks an ARC echo below everything real')
   won && won.value === 8000 && won.sourceDevice === 'apple_health'
     ? ok('an ARC-labelled echo loses to the real merged value')
     : bad('echo arbitration', JSON.stringify(won));
+}
+
+console.log('15. inbound body ingest — no migration, natural key (source, measured_at)');
+{
+  const { db } = freshDb();
+  const spec = (c) => BODY_INGEST_METRICS.find((m) => m.column === c);
+  const scale = { sourceName: 'Withings', bundleId: 'com.withings.wiScaleNG', productType: null };
+  const sample = (value, iso) => ({
+    value,
+    startISO: iso,
+    endISO: iso,
+    provenance: { ...scale, arcWritten: false },
+  });
+
+  // The headline gap this closes: weight from a scale reaching body_metrics —
+  // the same table a keypad entry lands in, so the same trend, tools and export.
+  const first = upsertHealthBodyRows(
+    db,
+    bodyIngestRows([
+      {
+        spec: spec('weight_kg'),
+        samples: [
+          sample(82.4, '2026-08-11T07:00:00.000Z'),
+          sample(82.1, '2026-08-12T07:00:00.000Z'),
+        ],
+      },
+      { spec: spec('body_fat_pct'), samples: [sample(0.185, '2026-08-12T07:00:00.000Z')] },
+    ])
+  );
+  first === 2 ? ok('two instants → two rows') : bad('first ingest', first);
+  const rows = db.all(`SELECT * FROM body_metrics ORDER BY measured_at`);
+  rows.length === 2 &&
+  rows[0].weight_kg === 82.4 &&
+  rows[1].weight_kg === 82.1 &&
+  rows[1].body_fat_pct === 18.5 &&
+  rows.every((r) => r.source === HEALTH_INGEST_SOURCE)
+    ? ok("weight and body fat from one weigh-in share a row, stamped source='apple_health'")
+    : bad('ingested rows', JSON.stringify(rows));
+
+  // Re-syncing the trailing window must UPDATE, never duplicate — this is what
+  // the natural key buys in place of a source_raw_id column and a migration.
+  const again = upsertHealthBodyRows(
+    db,
+    bodyIngestRows([
+      {
+        spec: spec('weight_kg'),
+        samples: [
+          sample(82.4, '2026-08-11T07:00:00.000Z'),
+          sample(82.1, '2026-08-12T07:00:00.000Z'),
+        ],
+      },
+    ])
+  );
+  again === 0 && db.all(`SELECT id FROM body_metrics`).length === 2
+    ? ok('an unchanged re-sync writes nothing and duplicates nothing')
+    : bad('re-sync', again);
+
+  // A corrected value at the same instant updates in place…
+  upsertHealthBodyRows(db, [{ measuredAt: '2026-08-11T07:00:00.000Z', values: { weight_kg: 83 } }]);
+  const corrected = db.all(`SELECT * FROM body_metrics ORDER BY measured_at`);
+  corrected.length === 2 && corrected[0].weight_kg === 83
+    ? ok('a changed value updates its row rather than adding one')
+    : bad('correction', JSON.stringify(corrected));
+  // …and a column arriving later fills in beside it without clearing the rest.
+  upsertHealthBodyRows(db, [{ measuredAt: '2026-08-11T07:00:00.000Z', values: { waist_cm: 81 } }]);
+  const filled = db.get(
+    `SELECT * FROM body_metrics WHERE measured_at = '2026-08-11T07:00:00.000Z'`
+  );
+  filled.waist_cm === 81 && filled.weight_kg === 83
+    ? ok('a late-arriving column merges in; the others are untouched')
+    : bad('merge', JSON.stringify(filled));
+
+  // A manual row at the same instant is a DIFFERENT row and is never touched —
+  // the key is scoped to the ingest source precisely so ARC's own record of a
+  // measurement can never be overwritten by a sync.
+  addBody(db, {
+    id: 'manual-same-instant',
+    createdAt: '2026-08-12T07:00:00.000Z',
+    measuredAt: '2026-08-12T07:00:00.000Z',
+    weightKg: 99,
+  });
+  upsertHealthBodyRows(db, [
+    { measuredAt: '2026-08-12T07:00:00.000Z', values: { weight_kg: 82.9 } },
+  ]);
+  const manual = db.get(`SELECT * FROM body_metrics WHERE id = 'manual-same-instant'`);
+  const ingested = db.get(
+    `SELECT * FROM body_metrics WHERE measured_at = '2026-08-12T07:00:00.000Z' AND source = '${HEALTH_INGEST_SOURCE}'`
+  );
+  manual.weight_kg === 99 && ingested.weight_kg === 82.9
+    ? ok('a manual row at the same instant is never matched, merged or overwritten')
+    : bad('manual collision', JSON.stringify([manual, ingested]));
+
+  // Rows with nothing in them do nothing, and the CHECK bounds hold for real —
+  // the mapper drops out-of-range values so this INSERT never has to throw.
+  upsertHealthBodyRows(db, [{ measuredAt: '2026-08-13T07:00:00.000Z', values: {} }]).valueOf() === 0
+    ? ok('an empty values bag writes no row')
+    : bad('empty values');
+  let threw = false;
+  try {
+    upsertHealthBodyRows(db, [
+      { measuredAt: '2026-08-14T07:00:00.000Z', values: { weight_kg: 0 } },
+    ]);
+  } catch {
+    threw = true;
+  }
+  threw
+    ? ok('body_metrics still refuses weight ≤ 0 at the DB layer — the mapper filters first')
+    : bad('CHECK gone');
+}
+
+console.log('16. the echo loop is shut structurally — an ingested row is never published');
+{
+  const { db } = freshDb();
+  setHealthSyncEnabled(db, true);
+
+  // A real scale reading, ingested.
+  upsertHealthBodyRows(db, [
+    { measuredAt: '2026-08-12T07:00:00.000Z', values: { weight_kg: 82.4 } },
+  ]);
+  // And a keypad entry ARC owns.
+  addBody(db, {
+    id: 'body-typed',
+    createdAt: '2026-08-12T08:00:00.000Z',
+    measuredAt: '2026-08-12T08:00:00.000Z',
+    weightKg: 82.5,
+  });
+
+  const walk = publishableBodyAfter(db, null, 50);
+  walk.length === 1 && walk[0].id === 'body-typed'
+    ? ok('the publish walk sees only rows ARC originated')
+    : bad('walk', JSON.stringify(walk.map((r) => r.id)));
+
+  // End-to-end: with the cursor armed at the very beginning, a pass publishes
+  // the typed row and NOTHING that came in from Apple Health. This is the guard
+  // that holds even if every provenance check upstream fails at once — the row
+  // is not publishable, whatever it looks like.
+  setHealthPublishState(db, {
+    armedAt: '2026-08-12T06:00:00.000Z',
+    cursorCreatedAt: null,
+    cursorId: null,
+    lastPublishedAt: null,
+  });
+  const pub = recorder();
+  const result = await publishBodyMetrics(db, new Date('2026-08-12T09:00:00.000Z'), pub.deps);
+  result.samplesWritten === 1 && pub.calls.length === 1 && pub.calls[0].value === 82.5
+    ? ok('only the typed reading goes out — an ingested one is never round-tripped')
+    : bad('echo published', JSON.stringify(pub.calls));
+
+  // The same proof one layer up: even a sample carrying ARC's own bundle id,
+  // fed straight at the mapper, produces no row at all to publish.
+  upsertHealthBodyRows(
+    db,
+    bodyIngestRows([
+      {
+        spec: BODY_INGEST_METRICS.find((m) => m.column === 'weight_kg'),
+        samples: [
+          {
+            value: 82.5,
+            startISO: '2026-08-12T08:00:00.000Z',
+            endISO: '2026-08-12T08:00:00.000Z',
+            provenance: {
+              sourceName: 'ARC',
+              bundleId: ARC_BUNDLE_ID,
+              productType: null,
+              arcWritten: true,
+            },
+          },
+        ],
+      },
+    ])
+  ) === 0
+    ? ok("ARC's own published weight, read back, ingests to nothing")
+    : bad('echo ingested');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

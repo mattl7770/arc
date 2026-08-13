@@ -1,5 +1,5 @@
 /**
- * The progress-photo gallery's data layer (0035_progress_photos.sql).
+ * The progress-photo gallery's data layer (0036_progress_photos.sql).
  * Spec: docs/progress-photos-subapp.md.
  *
  * Three disciplines, load-bearing:

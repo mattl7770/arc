@@ -9,6 +9,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
+import { normalizeFoodName } from '@/lib/db/repositories/foods';
 import {
   addGroceryItems,
   cartSections,
@@ -17,9 +18,11 @@ import {
   consolidatedOpenList,
   listStaples,
   removeGroceryItem,
+  removeGroceryLine,
   searchGroceryHistory,
   uncheckGroceryItem,
   updateGroceryItem,
+  updateGroceryLine,
 } from '@/lib/db/repositories/grocery';
 import { getRecipe } from '@/lib/db/repositories/recipes';
 import { CATEGORY_LABELS, GROCERY_CATEGORIES } from '@/lib/grocery/categories';
@@ -69,6 +72,21 @@ import type {
  * independently: emptying today's cart can never take last month's history with
  * it.
  *
+ * ## Two more from the owner, later the same day
+ *
+ * **The line itself is editable.** *"Make grocery list items editable."* There
+ * was already an editor here and it edited the wrong thing: the line's MEMBERS,
+ * not the rolled-up row the owner reads and taps. Name, quantity and aisle now
+ * belong to the line ({@link GroceryLineEditor}); the entries appear beneath it
+ * only when there is more than one, because otherwise the line IS the entry.
+ * Provenance is never touched by an edit — see that component's note.
+ *
+ * **The aisles sit closer together.** *"Reduce the gap size between categories
+ * on the grocery list."* The page had four different gaps doing three jobs; it
+ * now has three, named — {@link RUN_GAP}, {@link SECTION_GAP}, {@link BAND_GAP}
+ * — and consecutive categories take the smallest, so eight plates read as one
+ * list walked in store order rather than eight separate documents.
+ *
  * ## Conformed Set surface system (00-design-spec.md §1)
  *
  *   Add an item  → **well**. A capture surface is exactly what the well device
@@ -116,6 +134,38 @@ import type {
  * look up from the phone; ten would leave half a shop pending.
  */
 const CHECK_OFF_UNDO_MS = 4000;
+
+/**
+ * The sheet's vertical rhythm, named once (owner, 2026-08-12: *"Reduce the gap
+ * size between categories on the grocery list"*).
+ *
+ * The categories were separated by `mt-7` — 28pt, the same air this app puts
+ * between a section and a different KIND of section. Eight aisles at that
+ * spacing read as eight separate documents that happen to be stacked, when
+ * they are one list walked in store order. Worse, the page had three different
+ * gaps doing the same job (`mt-4`, `mt-5`, `mt-7`, `mt-8` all appeared), so
+ * there was no rhythm to read the structure off at all.
+ *
+ * Three steps now, and each means one thing:
+ *
+ *   {@link RUN_GAP}     16pt — the next run of the same list. Between two
+ *                       category plates, and under the field for the matches
+ *                       that belong to it. With the plate's own 12pt padding
+ *                       either side, a category label sits ~24pt below the
+ *                       last row above it and ~20pt above its own first row —
+ *                       so it groups DOWNWARD, with its section, which is what
+ *                       makes eight plates read as one list.
+ *   {@link SECTION_GAP} 24pt — a different kind of thing begins (staples, the
+ *                       first category after them).
+ *   {@link BAND_GAP}    32pt — a cart band, which is the only thing on this
+ *                       sheet with a title of its own and a rule under it.
+ *
+ * Whole class literals, as everywhere: Tailwind's scanner never sees a built
+ * fragment.
+ */
+const RUN_GAP = 'mt-4';
+const SECTION_GAP = 'mt-6';
+const BAND_GAP = 'mt-8';
 
 type Loaded = {
   lines: ConsolidatedGroceryLine[];
@@ -343,7 +393,7 @@ export default function GroceryScreen() {
       {/* MATCHES — autocomplete over the user's own history. A record list, so
           a plate; its label sits on the sheet like every other label here. */}
       {suggestions.length > 0 ? (
-        <View className="mt-4">
+        <View className={RUN_GAP}>
           <SectionLabel label="Matches" />
           <View className="mt-2">
             <Block device="plate">
@@ -373,7 +423,7 @@ export default function GroceryScreen() {
       {/* STAPLES — the master list of always-buys, one tap to re-add. Controls,
           not content: chips on the bare sheet, no device. */}
       {data.staples.length > 0 ? (
-        <View className="mt-7">
+        <View className={SECTION_GAP}>
           <SectionLabel label="Staples" />
           <View className="mt-2 flex-row flex-wrap gap-2">
             {data.staples.map((s) => (
@@ -396,7 +446,7 @@ export default function GroceryScreen() {
       {/* THE LIST, in store-walking order. Empty is authored and unplated: with
           nothing on the list there is no record to close, only a sentence. */}
       {data.lines.length === 0 ? (
-        <View className="mt-7">
+        <View className={SECTION_GAP}>
           <SectionLabel label="To buy" />
           <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
             The list is clear.
@@ -410,8 +460,11 @@ export default function GroceryScreen() {
         [
           ...sections,
           ...(unknown.length > 0 ? [{ key: 'zz', label: 'Other', lines: unknown }] : []),
-        ].map((section) => (
-          <View key={section.key} className="mt-7">
+        ].map((section, sectionIndex) => (
+          // The first aisle opens the list (a new KIND of thing after the
+          // staples/field above it); every one after it is the next run of the
+          // same list, and reads that way.
+          <View key={section.key} className={sectionIndex === 0 ? SECTION_GAP : RUN_GAP}>
             <SectionLabel label={section.label} />
             <View className="mt-2">
               <Block device="plate">
@@ -429,6 +482,14 @@ export default function GroceryScreen() {
                       setExpandedLine(expandedLine === line.name_norm ? null : line.name_norm)
                     }
                     onChanged={reload}
+                    // A rename re-derives name_norm, which is this row's key —
+                    // so the open row would remount and collapse mid-edit.
+                    // Following the new key keeps the editor open on the thing
+                    // that was just renamed.
+                    onRenamed={(nameNorm) => {
+                      setExpandedLine(nameNorm);
+                      reload();
+                    }}
                   />
                 ))}
               </Block>
@@ -539,7 +600,7 @@ function CartSection({
   onReturn: (id: string) => void;
 }) {
   return (
-    <View className="mt-8">
+    <View className={BAND_GAP}>
       <CartHeading title={heading} count={items.length} open={open} onToggle={onToggle} />
       {open ? (
         <View className="mt-3">
@@ -594,8 +655,9 @@ function CartSection({
   );
 }
 
-/** One consolidated line: check box · name · merged qty; expands to its
- * member entries (qty edit, category re-file, remove).
+/** One consolidated line: check box · name · merged qty; expands to its own
+ * editor (name, quantity, category) and — only when the line has more than one
+ * entry behind it — those entries.
  *
  * While `pending`, the row is struck through and its trailing slot is an
  * **Undo** — the row does not move, because the whole point of the window is
@@ -610,6 +672,7 @@ function GroceryLine({
   onUndo,
   onToggle,
   onChanged,
+  onRenamed,
 }: {
   line: ConsolidatedGroceryLine;
   first: boolean;
@@ -620,6 +683,7 @@ function GroceryLine({
   onUndo: () => void;
   onToggle: () => void;
   onChanged: () => void;
+  onRenamed: (nameNorm: string) => void;
 }) {
   const forRecipes = [
     ...new Set(
@@ -694,21 +758,220 @@ function GroceryLine({
       {expanded && !pending ? (
         <View>
           <Divider />
-          <View className="py-1">
-            {line.items.map((item) => (
-              <GroceryItemEditor key={item.id} item={item} onChanged={onChanged} />
-            ))}
-          </View>
+          <GroceryLineEditor
+            line={line}
+            recipeTitles={recipeTitles}
+            onChanged={onChanged}
+            onRenamed={onRenamed}
+          />
         </View>
       ) : null}
     </View>
   );
 }
 
-/** One member entry's inline editor: qty text, category re-file (learns), remove.
- *  A form is controls, not content, so it takes no device of its own — the
- *  fields wear the well's tokens directly (block.tsx, form (b)). */
-function GroceryItemEditor({ item, onChanged }: { item: GroceryItemRow; onChanged: () => void }) {
+/**
+ * The LINE's own editor — name, quantity, aisle, remove (owner, 2026-08-12:
+ * *"Make grocery list items editable"*).
+ *
+ * ## What was actually missing
+ *
+ * There was already an editor here, but it edited the line's MEMBERS: the row
+ * the owner reads and taps — the rolled-up name and its merged quantity — had
+ * no editor at all. So fixing a typo meant opening the line and editing an
+ * entry inside it, and a line built from two recipes had no single place to
+ * say how much is actually needed. This screen now edits the thing it draws.
+ *
+ * ## The category moved UP here, and that fixed a quiet lie
+ *
+ * Category chips used to sit on every member. But `consolidatedOpenList` takes
+ * the LINE's category from its first member, so re-filing the second entry of a
+ * two-entry line changed a value the screen then ignored — a control that
+ * appeared to work and did nothing. A line has one aisle because a line is what
+ * gets walked past, so the chips belong to the line and write every member.
+ *
+ * ## Provenance survives an edit
+ *
+ * `updateGroceryLine` writes name / name_norm / qty_text / category and nothing
+ * else, so `source`, `recipe_id` and `food_id` come through untouched: a
+ * Coach-added item stays Coach-added, and the "for Chicken Adobo" descriptor
+ * survives its own line being renamed. Renaming onto a name already on the list
+ * merges the two lines, which is what the consolidated view means — nothing is
+ * destroyed to do it.
+ *
+ * A form is controls, not content, so it takes no device of its own — the
+ * fields wear the well's tokens directly (block.tsx, form (b)).
+ */
+function GroceryLineEditor({
+  line,
+  recipeTitles,
+  onChanged,
+  onRenamed,
+}: {
+  line: ConsolidatedGroceryLine;
+  recipeTitles: Record<string, string>;
+  onChanged: () => void;
+  onRenamed: (nameNorm: string) => void;
+}) {
+  const [name, setName] = useState(line.name);
+  const [qty, setQty] = useState(line.qtyDisplay ?? '');
+
+  /**
+   * **Resync both fields when the LINE underneath them changes.** React's
+   * documented adjust-state-during-render pattern, and it is fixing a real way
+   * to lose data rather than a cosmetic staleness.
+   *
+   * These two `useState` seeds run once, and this component is NOT remounted
+   * when an entry below it is edited — the row's key is `line.name_norm`, which
+   * a quantity edit does not touch. So editing an entry's quantity moved
+   * `line.qtyDisplay` while `qty` still held the OLD merged string, and the
+   * next blur of the line field compared stale-against-fresh, found them
+   * different, and wrote the old merged text back over the entry that had just
+   * been edited — nulling every other entry's quantity on the way past.
+   *
+   * The seed is tracked separately from the value so the user's own in-flight
+   * typing is never clobbered: only a change in what the DATABASE says
+   * re-seeds the field.
+   */
+  const [seed, setSeed] = useState({ name: line.name, qty: line.qtyDisplay ?? '' });
+  if (seed.name !== line.name || seed.qty !== (line.qtyDisplay ?? '')) {
+    setSeed({ name: line.name, qty: line.qtyDisplay ?? '' });
+    setName(line.name);
+    setQty(line.qtyDisplay ?? '');
+  }
+
+  const ids = line.items.map((item) => item.id);
+  const multi = line.items.length > 1;
+
+  const saveName = () => {
+    const trimmed = name.trim();
+    if (trimmed === '') {
+      // An empty field cannot erase a name — the repository would fall back
+      // anyway, so the input is put back rather than left lying.
+      setName(line.name);
+      return;
+    }
+    if (trimmed === line.name) return;
+    updateGroceryLine(getDb(), ids, { name: trimmed });
+    onRenamed(normalizeFoodName(trimmed));
+  };
+
+  const saveQty = () => {
+    const trimmed = qty.trim();
+    if ((trimmed || null) === line.qtyDisplay) return;
+    updateGroceryLine(getDb(), ids, { qty_text: trimmed === '' ? null : trimmed });
+    onChanged();
+  };
+
+  return (
+    <View className="pb-3 pt-2">
+      <View className="flex-row items-center gap-2">
+        <TextInput
+          accessibilityLabel={`Name for ${line.name}`}
+          value={name}
+          onChangeText={setName}
+          onBlur={saveName}
+          onSubmitEditing={saveName}
+          autoCapitalize="none"
+          autoCorrect={false}
+          className="min-h-[44px] flex-1 border border-paper-deep bg-paper-dim px-2.5 py-2 font-serif text-[15px] text-ink"
+        />
+        <TextInput
+          accessibilityLabel={`Quantity for ${line.name}`}
+          value={qty}
+          onChangeText={setQty}
+          onBlur={saveQty}
+          onSubmitEditing={saveQty}
+          placeholder="qty"
+          placeholderTextColor={palette.inkMuted}
+          className="min-h-[44px] w-24 border border-paper-deep bg-paper-dim px-2.5 py-2 text-right font-mono text-[13px] text-ink"
+        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${line.name} from the list`}
+          onPress={() => {
+            removeGroceryLine(getDb(), ids);
+            onChanged();
+          }}
+          hitSlop={8}
+          className="h-11 w-11 items-center justify-center active:opacity-60">
+          <Ionicons name="close-circle-outline" size={20} color={palette.inkSecondary} />
+        </Pressable>
+      </View>
+
+      {/* Only said when it is true, and said before the field is used rather
+          than after: with several entries behind one line, one typed quantity
+          is the line's, and the entries' own quantities go. */}
+      {multi ? (
+        <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+          {line.items.length} entries make up this line. One quantity here replaces theirs.
+        </Text>
+      ) : null}
+
+      {/* Re-filing teaches the list — the learned category wins forever after.
+          The chosen chip is marked in ink, never in the accent. */}
+      <View className="mt-2 flex-row flex-wrap gap-1.5">
+        {GROCERY_CATEGORIES.map((c) => (
+          <Pressable
+            key={c.key}
+            accessibilityRole="button"
+            accessibilityLabel={`File ${line.name} under ${c.label}`}
+            accessibilityState={{ selected: line.category === c.key }}
+            onPress={() => {
+              if (c.key !== line.category) {
+                updateGroceryLine(getDb(), ids, { category: c.key });
+                onChanged();
+              }
+            }}
+            className={
+              line.category === c.key
+                ? 'min-h-[44px] justify-center rounded-btn border border-ink bg-paper-dim px-2.5 py-1.5'
+                : 'min-h-[44px] justify-center rounded-btn border border-hairline px-2.5 py-1.5 active:bg-paper-dim'
+            }>
+            <Text
+              className={
+                line.category === c.key
+                  ? 'font-label text-[11px] font-semibold uppercase tracking-[1.2px] text-ink'
+                  : 'font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary'
+              }>
+              {c.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {/* THE ENTRIES, only when there is more than one — otherwise the line IS
+          the entry and drawing it twice would ask which of two identical
+          fields is the real one. Each keeps its own provenance and its own
+          quantity, and can be removed on its own. */}
+      {multi ? (
+        <View className="mt-3">
+          <SectionLabel label="Entries" note={String(line.items.length)} />
+          {line.items.map((item) => (
+            <GroceryEntryRow
+              key={item.id}
+              item={item}
+              recipeTitles={recipeTitles}
+              onChanged={onChanged}
+            />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** One entry behind a multi-entry line: its own quantity, where it came from,
+ *  and its own removal. Drawn only when a line has several — see above. */
+function GroceryEntryRow({
+  item,
+  recipeTitles,
+  onChanged,
+}: {
+  item: GroceryItemRow;
+  recipeTitles: Record<string, string>;
+  onChanged: () => void;
+}) {
   const [qty, setQty] = useState(item.qty_text ?? '');
 
   const saveQty = () => {
@@ -719,66 +982,40 @@ function GroceryItemEditor({ item, onChanged }: { item: GroceryItemRow; onChange
     }
   };
 
+  const recipeTitle = item.recipe_id ? recipeTitles[item.recipe_id] : null;
   const source =
-    item.source === 'coach' ? 'added by Coach' : item.source === 'recipe' ? 'from a recipe' : '';
+    item.source === 'coach'
+      ? 'added by Coach'
+      : recipeTitle
+        ? `for ${recipeTitle}`
+        : item.source === 'recipe'
+          ? 'from a recipe'
+          : 'added by you';
 
   return (
-    <View className="py-2">
-      <View className="flex-row items-center gap-2">
-        <TextInput
-          accessibilityLabel={`Quantity for ${item.name}`}
-          value={qty}
-          onChangeText={setQty}
-          onBlur={saveQty}
-          onSubmitEditing={saveQty}
-          placeholder="qty"
-          placeholderTextColor={palette.inkMuted}
-          className="min-h-[44px] w-24 border border-paper-deep bg-paper-dim px-2.5 py-2 text-right font-mono text-[13px] text-ink"
-        />
-        <Text className="flex-1 font-serif text-[13px] text-ink-secondary">{source}</Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Remove ${item.name}`}
-          onPress={() => {
-            removeGroceryItem(getDb(), item.id);
-            onChanged();
-          }}
-          hitSlop={8}
-          className="h-11 w-11 items-center justify-center active:opacity-60">
-          <Ionicons name="close-circle-outline" size={20} color={palette.inkSecondary} />
-        </Pressable>
-      </View>
-      {/* Re-filing teaches the list — the learned category wins forever after.
-          The chosen chip is marked in ink, never in the accent. */}
-      <View className="mt-1 flex-row flex-wrap gap-1.5">
-        {GROCERY_CATEGORIES.map((c) => (
-          <Pressable
-            key={c.key}
-            accessibilityRole="button"
-            accessibilityLabel={`File ${item.name} under ${c.label}`}
-            accessibilityState={{ selected: item.category === c.key }}
-            onPress={() => {
-              if (c.key !== item.category) {
-                updateGroceryItem(getDb(), item.id, { category: c.key });
-                onChanged();
-              }
-            }}
-            className={
-              item.category === c.key
-                ? 'min-h-[44px] justify-center rounded-btn border border-ink bg-paper-dim px-2.5 py-1.5'
-                : 'min-h-[44px] justify-center rounded-btn border border-hairline px-2.5 py-1.5 active:bg-paper-dim'
-            }>
-            <Text
-              className={
-                item.category === c.key
-                  ? 'font-label text-[11px] font-semibold uppercase tracking-[1.2px] text-ink'
-                  : 'font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary'
-              }>
-              {c.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+    <View className="mt-2 flex-row items-center gap-2">
+      <TextInput
+        accessibilityLabel={`Quantity for this ${item.name} entry`}
+        value={qty}
+        onChangeText={setQty}
+        onBlur={saveQty}
+        onSubmitEditing={saveQty}
+        placeholder="qty"
+        placeholderTextColor={palette.inkMuted}
+        className="min-h-[44px] w-24 border border-paper-deep bg-paper-dim px-2.5 py-2 text-right font-mono text-[13px] text-ink"
+      />
+      <Text className="flex-1 font-serif text-[13px] text-ink-secondary">{source}</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Remove this ${item.name} entry`}
+        onPress={() => {
+          removeGroceryItem(getDb(), item.id);
+          onChanged();
+        }}
+        hitSlop={8}
+        className="h-11 w-11 items-center justify-center active:opacity-60">
+        <Ionicons name="close-circle-outline" size={20} color={palette.inkSecondary} />
+      </Pressable>
     </View>
   );
 }

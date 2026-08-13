@@ -479,7 +479,7 @@ console.log('12. GUARD: no REAL table may collide with the vec0 shadow-name rule
 }
 
 // ---------------------------------------------------------------------------
-// The images the JSON cannot carry (0035, docs/progress-photos-subapp.md §8).
+// The images the JSON cannot carry (0036, docs/progress-photos-subapp.md §8).
 // `omittedTables` exists so nothing is dropped silently; media files deserve
 // the same treatment, and for a stronger reason — the rows survive perfectly,
 // so a restored gallery with no pictures looks like data loss unless the file

@@ -1,5 +1,5 @@
 -- ============================================================================
--- ARC 0035 — progress photos: the body-progress gallery and its AI readings
+-- ARC 0036 — progress photos: the body-progress gallery and its AI readings
 --
 -- Spec: docs/progress-photos-subapp.md (§2 is this table; the six owner calls
 -- were answered 2026-08-12 and are recorded in that file's "Decided" block).
@@ -65,11 +65,15 @@
 -- guarded by json_valid; FK actions rely on PRAGMA foreign_keys = ON, set per
 -- connection.
 --
--- Numbered 0035: the next free number above 0034_recipe_photo_autoresolve,
--- main's max when this branched. The runner is forward-only and silently SKIPS
--- any file at or below a device's user_version, so a lower number (or a fill of
--- a dead gap — 0005/6/10/19/22/23) would never run on the owner's phone. The
--- runner stamps PRAGMA user_version = 35 after applying this file.
+-- Numbered 0036: the next free number above 0035_recipe_folders, main's max at
+-- MERGE time. This file was written as 0035 against main's then-head of 0034 and
+-- renumbered when the folders round landed first — the 0031/0032 precedent, and
+-- the reason the rule is "measure at branch AND re-measure at merge". The runner
+-- is forward-only and silently SKIPS any file at or below a device's
+-- user_version, so a stale lower number (or a fill of a dead gap —
+-- 0005/6/10/19/22/23) would never run on the owner's phone: no error, just
+-- missing tables and a "no such table" at first use. The runner stamps PRAGMA
+-- user_version = 36 after applying this file.
 -- ============================================================================
 CREATE TABLE progress_photos (
   id text PRIMARY KEY NOT NULL,

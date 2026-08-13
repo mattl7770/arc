@@ -27,11 +27,13 @@ import {
   openGroceryCount,
   openGroceryLineCount,
   removeGroceryItem,
+  removeGroceryLine,
   searchGroceryHistory,
   setStaple,
   splitCart,
   uncheckGroceryItem,
   updateGroceryItem,
+  updateGroceryLine,
 } from '../src/lib/db/repositories/grocery.ts';
 import {
   createRecipe,
@@ -459,6 +461,98 @@ console.log('\n14. cartSections + clearCartSection: each scope clears only itsel
   clearedCart === 1 && checkedGroceryCount(db) === 0
     ? ok('clearing the cart takes the last one')
     : bad('cart clear', String(clearedCart));
+}
+
+console.log('\n15. updateGroceryLine — editing the LINE, without corrupting what it is made of');
+{
+  const { db } = freshDb();
+  const recipeId = createRecipe(db, {
+    title: 'Chicken Adobo',
+    servings: 2,
+    ingredients: [{ raw_text: '250 ml milk' }],
+  });
+  // Three entries under one name, from three different origins — the exact
+  // case where the line and its members disagree about what "the quantity" is.
+  addGroceryItems(db, [{ name: 'Milk', qty_text: '1 bottle' }]);
+  addGroceryItems(db, [{ name: 'milk', qty_text: '2', source: 'coach' }]);
+  addRecipeToGroceryList(db, recipeId, [listIngredients(db, recipeId)[0].id]);
+
+  let line = consolidatedOpenList(db).find((l) => l.name_norm === 'milk');
+  line.items.length === 3
+    ? ok('three entries roll up into one line')
+    : bad('rollup', JSON.stringify(line.items.map((i) => i.name)));
+  const ids = line.items.map((i) => i.id);
+
+  // RENAME — every member moves, so the line stays one line.
+  updateGroceryLine(db, ids, { name: 'Oat milk' });
+  line = consolidatedOpenList(db).find((l) => l.name_norm === 'oat milk');
+  line && line.items.length === 3
+    ? ok('a rename applies to every member, so the line does not split')
+    : bad('rename split the line', JSON.stringify(consolidatedOpenList(db).map((l) => l.name)));
+  line.items.every((i) => i.name === 'Oat milk')
+    ? ok('and every member takes the new display name')
+    : bad('member names', JSON.stringify(line.items.map((i) => i.name)));
+
+  // PROVENANCE — the whole point.
+  const bySource = Object.fromEntries(line.items.map((i) => [i.source, i]));
+  bySource.coach && bySource.recipe && bySource.user
+    ? ok('SOURCE SURVIVES the edit — coach, recipe and user entries all intact')
+    : bad('source clobbered', JSON.stringify(line.items.map((i) => i.source)));
+  bySource.recipe.recipe_id === recipeId
+    ? ok('and the recipe backlink survives, so “for Chicken Adobo” still reads')
+    : bad('recipe_id clobbered', String(bySource.recipe.recipe_id));
+
+  // QUANTITY — one line, one quantity, and the merged display reads it back.
+  updateGroceryLine(db, ids, { qty_text: '2 L' });
+  line = consolidatedOpenList(db).find((l) => l.name_norm === 'oat milk');
+  line.qtyDisplay === '2 L'
+    ? ok('a line quantity reads back exactly as typed — never summed into the old ones')
+    : bad('qtyDisplay', String(line.qtyDisplay));
+  line.items.filter((i) => i.qty_text !== null).length === 1
+    ? ok('it lands on the first entry and the others are cleared')
+    : bad('member quantities', JSON.stringify(line.items.map((i) => i.qty_text)));
+
+  // CATEGORY — a line has one aisle, and re-filing it teaches the memory once.
+  updateGroceryLine(db, ids, { category: 'frozen' });
+  line = consolidatedOpenList(db).find((l) => l.name_norm === 'oat milk');
+  line.category === 'frozen' && line.items.every((i) => i.category === 'frozen')
+    ? ok('re-filing a line moves every entry, so the drawn category is the stored one')
+    : bad('category', JSON.stringify(line.items.map((i) => i.category)));
+  getNamePref(db, 'oat milk')?.category === 'frozen'
+    ? ok('and the learned pref is written, so the next “oat milk” lands there')
+    : bad('pref not learned', JSON.stringify(getNamePref(db, 'oat milk')));
+
+  // A rename onto an existing name MERGES the lines — the view's own meaning.
+  addGroceryItems(db, [{ name: 'Spinach' }]);
+  const spinach = consolidatedOpenList(db).find((l) => l.name_norm === 'spinach');
+  updateGroceryLine(
+    db,
+    spinach.items.map((i) => i.id),
+    { name: 'Oat milk' }
+  );
+  const merged = consolidatedOpenList(db).find((l) => l.name_norm === 'oat milk');
+  merged.items.length === 4 && !consolidatedOpenList(db).some((l) => l.name_norm === 'spinach')
+    ? ok('renaming onto an existing name merges the two lines, destroying nothing')
+    : bad('merge', JSON.stringify(consolidatedOpenList(db).map((l) => [l.name, l.items.length])));
+
+  // An empty name cannot erase one.
+  updateGroceryLine(db, ids, { name: '   ' });
+  getGroceryItem(db, ids[0]).name === 'Oat milk'
+    ? ok('a blank name falls back to the stored one rather than erasing it')
+    : bad('blank name', getGroceryItem(db, ids[0]).name);
+
+  updateGroceryLine(db, ['no-such-id'], { name: 'X' });
+  ok('an unknown id is a no-op, not a throw');
+
+  // REMOVE THE LINE — every member, and the memory is kept.
+  removeGroceryLine(db, ids);
+  const left = consolidatedOpenList(db).find((l) => l.name_norm === 'oat milk');
+  left && left.items.length === 1
+    ? ok('removing a line takes exactly its own entries')
+    : bad('line removal', JSON.stringify(left && left.items.length));
+  getNamePref(db, 'oat milk') !== undefined
+    ? ok('and the prefs memory is untouched — taking milk off the list is not forgetting it')
+    : bad('prefs deleted with the line');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

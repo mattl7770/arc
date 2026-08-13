@@ -1,5 +1,5 @@
 /**
- * Progress photos on disk — the other half of `progress_photos` (0035).
+ * Progress photos on disk — the other half of `progress_photos` (0036).
  *
  * The **third consumer** of the photo substrate that landed on 2026-08-12
  * (src/lib/media/photo-file-store.ts, extracted from meals when recipes became
@@ -237,7 +237,7 @@ export function deleteProgressPhotoWithFiles(
   try {
     names = progressPhotoFileNames(db, id);
   } catch (error) {
-    // A database that predates 0035 has no such table. The delete is still the
+    // A database that predates 0036 has no such table. The delete is still the
     // right outcome; files it cannot name are the sweep's problem.
     console.warn('[progress-photo] could not read file names', error);
   }
