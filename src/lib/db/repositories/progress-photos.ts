@@ -55,13 +55,14 @@ export function insertProgressPhoto(db: Database, photo: NewProgressPhoto): stri
   const id = newId(db);
   db.run(
     `INSERT INTO progress_photos
-       (id, taken_on, taken_at, pose, source, asset_id, working_file_name,
+       (id, taken_on, taken_at, date_origin, pose, source, asset_id, working_file_name,
         original_file_name, is_important, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       photo.taken_on,
       photo.taken_at ?? null,
+      photo.date_origin ?? 'manual',
       photo.pose,
       photo.source ?? 'library',
       photo.asset_id ?? null,
@@ -95,10 +96,32 @@ export function listProgressPhotos(db: Database, pose?: PhotoPose): ProgressPhot
   );
 }
 
-/** How many photos exist, for the gallery's tally and the Data-tab row. */
+/**
+ * How many photos exist **regardless of the pose filter** — the gallery's header
+ * reads "3 of 24", and the 24 has to come from somewhere other than the filtered
+ * list it is being compared against.
+ */
 export function progressPhotoCount(db: Database): number {
   return db.get<{ n: number }>('SELECT COUNT(*) AS n FROM progress_photos')?.n ?? 0;
 }
+
+/**
+ * Which poses exist at all, in the canonical order, so the filter row offers
+ * only choices that would return something.
+ *
+ * Its own query rather than a scan of the filtered list: the whole point of the
+ * filter row is to be correct about photos that are NOT currently displayed.
+ */
+export function distinctPoses(db: Database): PhotoPose[] {
+  const present = new Set(
+    db.all<{ pose: PhotoPose }>('SELECT DISTINCT pose FROM progress_photos').map((row) => row.pose)
+  );
+  return POSE_ORDER.filter((pose) => present.has(pose));
+}
+
+/** Canonical pose order — front, side, back, then the catch-all. Not
+ *  alphabetical: it is the order the photos are usually taken in. */
+export const POSE_ORDER: PhotoPose[] = ['front', 'side', 'back', 'other'];
 
 /** How many distinct poses are represented among `rows` — the month plate's
  *  second figure, derived from exactly the rows it heads. */
@@ -110,12 +133,20 @@ export function poseCount(rows: { pose: PhotoPose }[]): number {
  * Apply the detail screen's edits. A no-op call writes nothing (and so does not
  * bump `updated_at`), which keeps "I opened the screen" from looking like "I
  * changed the record".
+ *
+ * **Editing the day rewrites its provenance, and this is not optional.** A row
+ * whose `taken_on` the user has corrected is no longer an EXIF fact, and the
+ * `taken_at` instant that came with the old day now contradicts the new one.
+ * Both are fixed here rather than at the call site, because there is no caller
+ * for whom the other behaviour is right: a screen that forgets leaves a
+ * hand-typed date labelled "from the photo" and an instant a year away from its
+ * own date. Found by adversarial review, 2026-08-12.
  */
 export function updateProgressPhoto(db: Database, id: string, edit: ProgressPhotoEdit): void {
   const sets: string[] = [];
   const params: Scalar[] = [];
   if (edit.taken_on !== undefined) {
-    sets.push('taken_on = ?');
+    sets.push('taken_on = ?', "date_origin = 'manual'", 'taken_at = NULL');
     params.push(edit.taken_on);
   }
   if (edit.pose !== undefined) {

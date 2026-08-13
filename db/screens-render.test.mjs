@@ -480,8 +480,31 @@ const db = getDb();
       'Delete photo',
       // The honest retro-flag caveat is on the row that could mislead.
       'at import time',
+      // Provenance is the PERSISTED fact, not a guess from `taken_at`.
+      'Set by you.',
     ]
   );
+
+  // THE HONESTY CASE THE SWEEP IS BUILT TO PRODUCE: a row that claims a
+  // full-size original whose file did not come across. The screen must not say
+  // "a full-size original is kept inside ARC" directly beneath "Image not on
+  // this phone". Under node there is no file system at all, so every row is in
+  // exactly this state — which makes it the cheapest possible assertion and the
+  // one whose absence let the bug ship.
+  db.run('UPDATE progress_photos SET original_file_name = ?, is_important = 1 WHERE id = ?', [
+    'orphaned-original.jpg',
+    photoIds[0],
+  ]);
+  const orphaned = render('progress photo detail (no files)', ProgressPhotoDetailScreen, {
+    id: photoIds[0],
+  });
+  expect('progress photo detail (no files)', orphaned, [
+    'Image not on this phone.',
+    'isn’t on this phone either',
+  ]);
+  refute('progress photo detail (no files)', orphaned, [
+    'A full-size original is kept inside ARC for this one.',
+  ]);
   expect(
     'progress photo detail (missing id)',
     render('progress photo detail (missing)', ProgressPhotoDetailScreen, { id: 'nope' }),

@@ -24,13 +24,14 @@ import {
   WORKING_COPY_QUALITY,
   type CapturedProgressPhoto,
 } from '@/lib/media/progress-photo-store';
+import { isRealCalendarDate, poseLabel } from '@/lib/photos/format';
 import {
   assetLocalId,
   assetPhotoDate,
+  defaultPoseFor,
   workingCopyResize,
   type PhotoDateOrigin,
 } from '@/lib/photos/import';
-import { poseLabel } from '@/lib/photos/format';
 import type { PhotoPose } from '@/lib/photos/types';
 
 /**
@@ -72,7 +73,6 @@ import type { PhotoPose } from '@/lib/photos/types';
  */
 
 const POSES: PhotoPose[] = ['front', 'side', 'back', 'other'];
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const BATCH_LIMIT = 30;
 
 /** One picked photo, as the review edits it. Nothing is on disk yet. */
@@ -84,6 +84,10 @@ type Draft = {
   workingBase64Jpeg: string;
   assetId: string | null;
   dateText: string;
+  /** The date as READ from the file — `''` when there was none. Kept so a later
+   *  edit is detectable, which is what decides whether the instant and the
+   *  provenance still describe this row. */
+  readDate: string;
   takenAt: string | null;
   dateOrigin: PhotoDateOrigin;
   pose: PhotoPose;
@@ -154,8 +158,14 @@ export default function ProgressPhotoAddScreen() {
     setDrafts((prev) => prev.map((d) => (d.key === key ? { ...d, ...change } : d)));
 
   const included = drafts.filter((d) => d.include);
-  const undated = included.filter((d) => !ISO_DATE.test(d.dateText.trim()));
-  const canSave = included.length > 0 && undated.length === 0;
+  // A REAL day, not merely the right shape — see isRealCalendarDate.
+  const undated = included.filter((d) => !isRealCalendarDate(d.dateText));
+  // A re-ticked duplicate is a save that CANNOT succeed: the partial unique on
+  // asset_id rejects it and the whole batch rolls back. Blocking it here, by
+  // name, beats a generic "try again" for something retrying can never fix.
+  // Found by adversarial review, 2026-08-12.
+  const reIncludedDuplicates = included.filter((d) => d.duplicate);
+  const canSave = included.length > 0 && undated.length === 0 && reIncludedDuplicates.length === 0;
 
   const save = async () => {
     if (!canSave) return;
@@ -171,9 +181,15 @@ export default function ProgressPhotoAddScreen() {
         const originalBase64Jpeg = draft.important
           ? await encodeJpeg(draft.uri, ORIGINAL_COPY_QUALITY)
           : null;
+        // If the user changed the date, the file's own instant and provenance no
+        // longer describe it — so both are dropped rather than filed beside a
+        // day they contradict. `updateProgressPhoto` does the same for a later
+        // edit; this is the import-time half of the same rule.
+        const edited = draft.dateText.trim() !== draft.readDate;
         photos.push({
           taken_on: draft.dateText.trim(),
-          taken_at: draft.takenAt,
+          taken_at: edited ? null : draft.takenAt,
+          date_origin: edited || draft.dateOrigin === 'none' ? 'manual' : draft.dateOrigin,
           pose: draft.pose,
           source: 'library',
           asset_id: draft.assetId,
@@ -400,11 +416,13 @@ export default function ProgressPhotoAddScreen() {
 
           {/* The decision, in future tense, above the control that performs it. */}
           <Text className="mt-5 font-serif text-[13px] leading-5 text-ink-muted">
-            {undated.length > 0
-              ? `${undated.length} ${undated.length === 1 ? 'photo has' : 'photos have'} no date yet. Set each one to the day it was taken — a photo filed under the wrong day is worse than one not filed.`
-              : included.length === 0
-                ? 'Nothing selected. Tick at least one photo to import.'
-                : `On save: ${included.length} ${included.length === 1 ? 'photo is' : 'photos are'} copied into ARC at their own dates. Your originals stay in Photos.`}
+            {reIncludedDuplicates.length > 0
+              ? `${reIncludedDuplicates.length === 1 ? 'One photo is' : `${reIncludedDuplicates.length} photos are`} already in the gallery. ARC keeps one copy of each, so untick ${reIncludedDuplicates.length === 1 ? 'it' : 'them'} to save the rest.`
+              : undated.length > 0
+                ? `${undated.length} ${undated.length === 1 ? 'photo has' : 'photos have'} no usable date yet. Set each one to the day it was taken — a photo filed under the wrong day is worse than one not filed.`
+                : included.length === 0
+                  ? 'Nothing selected. Tick at least one photo to import.'
+                  : `On save: ${included.length} ${included.length === 1 ? 'photo is' : 'photos are'} copied into ARC at their own dates. Your originals stay in Photos.`}
           </Text>
           <Pressable
             accessibilityRole="button"
@@ -466,12 +484,14 @@ async function toDraft(
     workingBase64Jpeg: working.base64Jpeg,
     assetId,
     dateText: date.takenOn ?? '',
+    readDate: date.takenOn ?? '',
     takenAt: date.takenAt,
     dateOrigin: date.origin,
     // A batch is usually one session — front, side, back — so the previous
     // photo's pose carries forward. Never an AI guess: a wrong silent pose
-    // corrupts the same-pose compare filter, which is the core query.
-    pose: previousPose ?? 'front',
+    // corrupts the same-pose compare filter, which is the core query. The rule
+    // lives in one tested function rather than inlined here.
+    pose: defaultPoseFor(previousPose ? { pose: previousPose } : undefined) as PhotoPose,
     important: false,
     duplicate,
     include: !duplicate,

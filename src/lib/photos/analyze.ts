@@ -377,5 +377,15 @@ export async function readPhotos(
   if (result.stopReason === 'refusal') {
     throw new Error('The model declined to read these photos.');
   }
+  // A truncated reply is NOT a connection problem, and saying so sends the user
+  // to retry a working connection forever. `max_tokens` covers both the token
+  // cap and a context-window overrun (model-client.ts), and both produce JSON
+  // that stops mid-object — which the parser would otherwise report as "not
+  // valid JSON". Found by adversarial review, 2026-08-12.
+  if (result.stopReason === 'max_tokens') {
+    throw new Error(
+      'The reading was cut off before it finished. Try again, or read one photo at a time.'
+    );
+  }
   return { reading: parsePhotoReading(text.length > 0 ? text : result.text), model };
 }

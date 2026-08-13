@@ -190,6 +190,16 @@ export function importProgressPhotos(
     for (const name of written) store.remove(name);
     throw error;
   }
+  // Success, and one more sweep of our own: remove any file we wrote that no
+  // committed row claims. Unreachable with today's plain BEGIN/COMMIT wrapper —
+  // but `ids` is already reset per attempt on the hypothesis that
+  // `db.transaction` might one day retry, and under that hypothesis the FIRST
+  // attempt's files are exactly what this collects. Cheap, and it keeps the two
+  // defences consistent instead of guarding the rows and forgetting the bytes.
+  const kept = new Set(ids.flatMap((id) => progressPhotoFileNames(db, id)));
+  for (const name of written) {
+    if (!kept.has(name)) store.remove(name);
+  }
   return ids;
 }
 
@@ -279,12 +289,21 @@ export function sweepProgressPhotos(
   try {
     const claimed = new Set<string>();
     for (const row of allProgressPhotoFileNames(db)) {
-      if (store.exists(row.working_file_name)) claimed.add(row.working_file_name);
-      else result.dangling++;
-      // An original is claimed whether or not the working copy survived: the
-      // row still points at it, and reclaiming it would turn a recoverable gap
-      // into a permanent one.
+      // EVERY name a row holds is claimed, unconditionally. `exists` is used
+      // ONLY to count the gap, never to decide what may be deleted.
+      //
+      // This is not defensive style, it is a correctness fix. The claimed set
+      // and the delete set come from two independent file-system probes —
+      // `exists()` per name and `list()` over the directory — and both swallow
+      // their exceptions and return a falsy answer (photo-file-store.ts). The
+      // moment they disagree in the direction "exists said no, list said yes",
+      // the pass below deletes a file a row still points at. For a meal photo
+      // that costs a thumbnail; here it destroys a photograph ARC cannot
+      // re-fetch, which is the whole premise of the storage design. Found by
+      // adversarial review, 2026-08-12.
+      claimed.add(row.working_file_name);
       if (row.original_file_name) claimed.add(row.original_file_name);
+      if (!store.exists(row.working_file_name)) result.dangling++;
     }
     for (const name of store.list()) {
       if (claimed.has(name)) continue;

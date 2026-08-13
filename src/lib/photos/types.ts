@@ -7,6 +7,17 @@
 import type { DateString, SqliteBool, Timestamp } from '@/lib/db/types';
 
 /**
+ * Where a STORED photo's day came from (0035's `date_origin`).
+ *
+ * Deliberately not the same type as the importer's `PhotoDateOrigin`, which has
+ * a `none` case for "nothing readable in the file". `none` is a fact about a
+ * parse, not about a record: by the time a row exists someone has supplied a
+ * date, and if it was not the file then it was the owner. So the importer's
+ * `none` becomes `manual` at the moment of writing, and so does any later edit.
+ */
+export type PhotoDateSource = 'exif' | 'asset' | 'manual';
+
+/**
  * The four poses, a genuinely closed set (0035's CHECK). `other` plus the notes
  * field is what covers everything the four do not — deliberately, because
  * widening the CHECK later is a parent-table rebuild with a child to shuttle.
@@ -22,8 +33,11 @@ export type ProgressPhotoRow = {
   id: string;
   /** The LOCAL day of the shutter, never of the import. */
   taken_on: DateString;
-  /** The instant, when EXIF supplied one. No data, no number. */
+  /** The instant, when a real one could be formed. No data, no number. */
   taken_at: Timestamp | null;
+  /** Where {@link taken_on} came from. Persisted rather than inferred — see the
+   *  0035 header; guessing it from `taken_at` is wrong in both directions. */
+  date_origin: PhotoDateSource;
   pose: PhotoPose;
   source: PhotoSource;
   /** PhotoKit localIdentifier. Dormant provenance — written, never read for
@@ -43,6 +57,9 @@ export type ProgressPhotoRow = {
 export type NewProgressPhoto = {
   taken_on: DateString;
   taken_at?: Timestamp | null;
+  /** Defaults to `manual` — the honest answer for a row whose caller did not
+   *  say, since only the importer ever knows better. */
+  date_origin?: PhotoDateSource;
   pose: PhotoPose;
   source?: PhotoSource;
   asset_id?: string | null;

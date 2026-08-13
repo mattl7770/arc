@@ -41,6 +41,8 @@ import {
 } from '../src/lib/media/progress-photo-store.ts';
 import {
   formatPhotoDate,
+  isRealCalendarDate,
+  localDayOf,
   NO_WEIGH_IN,
   photoDayNumber,
   poseLetter,
@@ -222,6 +224,33 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   rejects('a short taken_on is rejected', () =>
     insertRaw(['taken_on', 'pose', 'working_file_name'], ['2026-1-2', 'front', 'b2.jpg'])
   );
+  // The shape passes; the calendar does not. This is the day/month slip a bare
+  // YYYY-MM-DD field invites, and it would head a month plate "31 2026".
+  rejects('a date-shaped NON-date is rejected (2026-31-12)', () =>
+    insertRaw(['taken_on', 'pose', 'working_file_name'], ['2026-31-12', 'front', 'b3.jpg'])
+  );
+  insertProgressPhoto(db, { taken_on: '2028-02-29', pose: 'front', working_file_name: 'leap.jpg' });
+  ok('...while a real leap day is admitted');
+  // WHERE THE SCHEMA STOPS, stated rather than assumed: SQLite's julianday()
+  // NORMALISES an overflowing day (2026-02-30 → 2 March) instead of returning
+  // NULL, so the CHECK cannot catch that one. `isRealCalendarDate` can, and
+  // does, by round-tripping the three fields — which is why both layers exist
+  // and why the screens validate before they write.
+  insertProgressPhoto(db, { taken_on: '2026-02-30', pose: 'front', working_file_name: 'norm.jpg' });
+  ok('the CHECK admits 30 February (julianday normalises it) — a stated limit');
+  !isRealCalendarDate('2026-02-30') &&
+  !isRealCalendarDate('2026-31-12') &&
+  !isRealCalendarDate('2025-02-29') &&
+  isRealCalendarDate('2028-02-29') &&
+  isRealCalendarDate('2026-01-12')
+    ? ok('...and the screens refuse it before it can be written')
+    : bad('isRealCalendarDate');
+  rejects('an unknown date_origin is rejected', () =>
+    insertRaw(
+      ['taken_on', 'pose', 'working_file_name', 'date_origin'],
+      ['2026-01-12', 'front', 'b5.jpg', 'guessed']
+    )
+  );
   rejects('a garbage taken_at is rejected', () =>
     insertRaw(
       ['taken_on', 'pose', 'working_file_name', 'taken_at'],
@@ -276,7 +305,7 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   // ...and a NULL original is not a claim, so many rows may have none.
   insertProgressPhoto(db, { ...good, working_file_name: 'j.jpg' });
   insertProgressPhoto(db, { ...good, working_file_name: 'k.jpg' });
-  progressPhotoCount(db) === 3
+  progressPhotoCount(db) === 5
     ? ok('many rows may share "no original" (UNIQUE admits NULLs)')
     : bad('null originals', String(progressPhotoCount(db)));
 
@@ -451,6 +480,32 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   getProgressPhoto(db, target).updated_at === before
     ? ok('an empty edit writes nothing (updated_at unmoved)')
     : bad('empty edit bumped updated_at');
+  console.log('   ...and editing the DAY rewrites its provenance');
+  {
+    const { db: db2 } = freshDb();
+    const withExif = insertProgressPhoto(db2, {
+      taken_on: '2026-01-12',
+      taken_at: '2026-01-12T07:31:04.000Z',
+      date_origin: 'exif',
+      pose: 'front',
+      working_file_name: 'exif.jpg',
+    });
+    const before = getProgressPhoto(db2, withExif);
+    before.date_origin === 'exif' && before.taken_at !== null
+      ? ok('an imported row carries its EXIF provenance and instant')
+      : bad('exif row', JSON.stringify(before));
+    updateProgressPhoto(db2, withExif, { taken_on: '2025-01-12' });
+    const after = getProgressPhoto(db2, withExif);
+    after.taken_on === '2025-01-12' && after.date_origin === 'manual' && after.taken_at === null
+      ? ok('correcting the day clears the instant AND relabels the provenance')
+      : bad('date edit provenance', JSON.stringify(after));
+    // An edit that is NOT to the day leaves both alone.
+    updateProgressPhoto(db2, withExif, { pose: 'side' });
+    getProgressPhoto(db2, withExif).date_origin === 'manual'
+      ? ok('...and an unrelated edit does not touch them again')
+      : bad('unrelated edit');
+  }
+
   updateProgressPhoto(db, target, { pose: 'back', notes: 'morning, fasted', is_important: true });
   const edited = getProgressPhoto(db, target);
   edited.pose === 'back' && edited.notes === 'morning, fasted' && edited.is_important === 1
@@ -724,6 +779,21 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   again.orphans === 0 && again.dangling === 1
     ? ok('a second sweep reclaims nothing and still reports the gap')
     : bad('second sweep', JSON.stringify(again));
+
+  // THE ONE THAT COULD HAVE COST A PHOTOGRAPH. `exists()` and `list()` are two
+  // independent file-system probes and both swallow their exceptions, so they
+  // can disagree. If the claimed set were built from `exists()`, a store whose
+  // stat lies would let the orphan pass delete a file a row still points at —
+  // a photo ARC cannot re-fetch. Claiming is driven by the ROWS alone.
+  const lyingStore = { ...store, exists: () => false };
+  const beforeLie = [...fs.files(PROGRESS_PHOTO_DIR).keys()].sort().join(',');
+  const lied = sweepProgressPhotos(db, lyingStore);
+  [...fs.files(PROGRESS_PHOTO_DIR).keys()].sort().join(',') === beforeLie
+    ? ok('a store whose exists() lies cannot make the sweep delete a claimed file')
+    : bad('claimed file deleted on a lying exists()', beforeLie);
+  lied.dangling === 2
+    ? ok('...it is reported as a gap instead, which is recoverable')
+    : bad('lying sweep dangling', JSON.stringify(lied));
   sweepProgressPhotos(db, null).dangling === 0 && progressPhotoCount(db) === 2
     ? ok('with no store the sweep is inert')
     : bad('null-store sweep');
@@ -801,6 +871,22 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
     }
   }
   ok('twelve unreadable shapes all yield "no date" — and NEVER today');
+
+  // The offset must come from the key PAIRED with the date key that won. A scan
+  // with a digitisation clock and a surviving shutter-zone tag must not combine
+  // the two into one wrong instant.
+  date = assetPhotoDate({
+    exif: { DateTimeDigitized: '2024:06:01 10:00:00', OffsetTimeOriginal: '+05:00' },
+  });
+  date.takenOn === '2024-06-01' && date.takenAt === null
+    ? ok('an offset belonging to a DIFFERENT date key is not applied')
+    : bad('offset mispairing', JSON.stringify(date));
+  date = assetPhotoDate({
+    exif: { DateTimeDigitized: '2024:06:01 10:00:00', OffsetTimeDigitized: '+05:00' },
+  });
+  date.takenAt === '2024-06-01T05:00:00.000Z'
+    ? ok('...and its OWN offset key is')
+    : bad('offset pairing', String(date.takenAt));
 
   assetLocalId({ assetId: 'PK/L0/001' }) === 'PK/L0/001' &&
   assetLocalId({ assetId: null }) === null &&
@@ -1002,6 +1088,32 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   PHOTO_ANALYSIS_PRIVACY_LINE.includes('your key')
     ? ok('the privacy line names what leaves and under whose key')
     : bad('privacy line', PHOTO_ANALYSIS_PRIVACY_LINE);
+  // Verbatim against the spec: this string is a promise about where data goes,
+  // so a drift in it is a drift in the promise.
+  PHOTO_ANALYSIS_PRIVACY_LINE ===
+  'These photos leave your phone for this one reading — sent to your model provider under your key. Nothing is stored anywhere but here.'
+    ? ok('...and it is the spec’s sentence character for character')
+    : bad('privacy line drifted from the spec', PHOTO_ANALYSIS_PRIVACY_LINE);
+}
+
+// ---------------------------------------------------------------------------
+{
+  console.log('11. The local-day rendering of a stored UTC instant');
+  // `created_at` is UTC. Slicing its first ten characters prints TOMORROW for
+  // anything saved after 5pm on the US west coast — the body_metrics trap the
+  // 0035 header cites, and the reason SavedReading does not slice.
+  const instant = '2026-08-10T03:30:00.000Z';
+  const expected = (() => {
+    const d = new Date(Date.parse(instant));
+    const p = (n) => (n < 10 ? `0${n}` : String(n));
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  })();
+  localDayOf(instant) === expected
+    ? ok(`a UTC instant renders as its LOCAL day (${expected} in this timezone)`)
+    : bad('localDayOf', `${localDayOf(instant)} vs ${expected}`);
+  localDayOf('not a date') === 'not a date'
+    ? ok('...and an unparseable one is not faked')
+    : bad('localDayOf fallback');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

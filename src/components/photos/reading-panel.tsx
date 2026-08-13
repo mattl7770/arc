@@ -13,6 +13,7 @@ import {
   readPhotos,
   type PhotoReadingInput,
 } from '@/lib/photos/analyze';
+import { localDayOf } from '@/lib/photos/format';
 import type { PhotoReading } from '@/lib/photos/types';
 
 /**
@@ -105,10 +106,20 @@ export function PhotoReadingPanel({
       setPhase({ kind: 'review', reading, model });
     } catch (error) {
       if (controller.signal.aborted) return;
+      // The model's OWN explanations are passed through verbatim — a refusal, a
+      // reading with no caveats, a reply cut off at max_tokens. Only a genuinely
+      // unexplained failure gets the connection line, because telling someone to
+      // check their connection when the problem is a token cap sends them to
+      // retry something that cannot succeed.
+      const explained =
+        error instanceof Error &&
+        (error.message.includes('caveats') ||
+          error.message.includes('cut off') ||
+          error.message.includes('declined'));
       const message =
         error instanceof PhotoReadingUnavailableError
           ? error.message
-          : error instanceof Error && error.message.includes('caveats')
+          : explained && error instanceof Error
             ? error.message
             : 'Couldn’t read the photos. Check your connection and try again.';
       setPhase({ kind: 'error', message });
@@ -228,7 +239,11 @@ export function PhotoReadingPanel({
                     {'  '}
                     {change.note}
                   </Text>
-                  <Text className="font-mono text-[10px] text-ink-muted">{change.direction}</Text>
+                  {/* Label voice: `leaner` is a word, not a measured value, and
+                      mono is reserved for things that were measured. */}
+                  <Text className="font-label text-[10px] uppercase tracking-[0.6px] text-ink-muted">
+                    {change.direction}
+                  </Text>
                 </View>
               </View>
             ))}
@@ -302,7 +317,17 @@ export function PhotoReadingPanel({
   );
 }
 
-/** A saved reading, rendered read-only on the detail and compare screens. */
+/**
+ * A saved reading, rendered read-only on the detail and compare screens.
+ *
+ * **`pairLabel` must name the counterpart, not merely say there is one.** A pair
+ * reading appears on BOTH photos' detail screens (`listPhotoAnalyses` returns
+ * either side deliberately), so on the January photo it draws "↓ waist — leaner"
+ * about the AUGUST photo. Without a date and a direction the reader cannot tell
+ * which way the arrow points — and "a comparison that gets the direction
+ * backwards is worse than no comparison" is the rule this whole feature is built
+ * on. Found by adversarial review, 2026-08-12.
+ */
 export function SavedReading({
   summary,
   caveats,
@@ -312,17 +337,22 @@ export function SavedReading({
   changes,
   pairLabel,
   first,
+  onDelete,
 }: {
   summary: string;
   caveats: string;
   model: string;
+  /** The stored UTC instant. Rendered as its LOCAL day — see `localDayOf`. */
   createdAt: string;
   observations: { area: string; note: string }[];
   changes: { area: string; direction: string; note: string }[];
-  /** "vs 12 Jan 2026" when this is a pair reading; omitted for a single. */
+  /** "compared with 12 Jan 2026, the earlier photo" — omitted for a single. */
   pairLabel?: string;
   first: boolean;
+  /** Arm-and-confirm delete, when the surface offers one. */
+  onDelete?: () => void;
 }) {
+  const [armed, setArmed] = useState(false);
   return (
     <View>
       <Divider first={first} />
@@ -333,6 +363,11 @@ export function SavedReading({
             est · AI
           </Text>
         </View>
+        {pairLabel ? (
+          <Text className="mt-1 font-serif text-[12px] leading-5 text-ink-secondary">
+            {pairLabel}
+          </Text>
+        ) : null}
         {changes.map((change, index) => (
           <Text
             key={`${change.area}-${index}`}
@@ -359,10 +394,30 @@ export function SavedReading({
           </Text>
         ))}
         <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">{caveats}</Text>
-        <Text className="mt-1.5 font-mono text-[10px] text-ink-muted">
-          {createdAt.slice(0, 10)} · {model}
-          {pairLabel ? ` · ${pairLabel}` : ''}
-        </Text>
+        <View className="mt-1.5 flex-row items-center gap-3">
+          <Text className="flex-1 font-mono text-[10px] text-ink-muted">
+            {localDayOf(createdAt)} · {model}
+          </Text>
+          {onDelete ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={
+                armed ? 'Tap again to delete this reading' : 'Delete this reading'
+              }
+              hitSlop={8}
+              onPress={() => (armed ? onDelete() : setArmed(true))}
+              className="min-h-[28px] justify-center active:opacity-60">
+              <Text
+                className={
+                  armed
+                    ? 'font-label text-[10px] uppercase tracking-[1px] text-ink'
+                    : 'font-label text-[10px] uppercase tracking-[1px] text-ink-muted'
+                }>
+                {armed ? 'Confirm' : 'Delete'}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
     </View>
   );

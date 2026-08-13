@@ -11,14 +11,15 @@ import { palette } from '@/constants/theme';
 import { useProgressPhoto } from '@/hooks/use-progress-photos';
 import { getDb } from '@/lib/db/client';
 import {
+  deleteProgressPhotoAnalysis,
   insertProgressPhotoAnalysis,
   updateProgressPhoto,
 } from '@/lib/db/repositories/progress-photos';
 import { downscaleToJpegBase64 } from '@/lib/media/photo-library';
 import { deleteProgressPhotoWithFiles } from '@/lib/media/progress-photo-store';
 import { parseSavedChanges, parseSavedObservations } from '@/lib/photos/analyze';
-import { formatPhotoDate, poseLabel } from '@/lib/photos/format';
-import type { PhotoPose } from '@/lib/photos/types';
+import { formatPhotoDate, isRealCalendarDate, poseLabel } from '@/lib/photos/format';
+import type { PhotoDateSource, PhotoPose } from '@/lib/photos/types';
 
 /**
  * One progress photo, full size — pushed from the gallery
@@ -52,15 +53,27 @@ import type { PhotoPose } from '@/lib/photos/types';
 
 const POSES: PhotoPose[] = ['front', 'side', 'back', 'other'];
 
-/** The shape `taken_on` must hold — the same GLOB the schema enforces, so a bad
- *  edit is refused on the screen instead of throwing out of the repository. */
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+/** What `date_origin` (0035) means, in the owner's words rather than the
+ *  schema's. `manual` covers both "no date was in the file" and "you corrected
+ *  it", because from the record's point of view they are the same fact. */
+const DATE_ORIGIN_LABEL: Record<PhotoDateSource, string> = {
+  exif: 'Read from the photo itself.',
+  asset: 'Read from the photo file’s own date.',
+  manual: 'Set by you.',
+};
 
 export default function ProgressPhotoDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string }>();
   const id = typeof params.id === 'string' ? params.id : undefined;
-  const { photo, originalUri, weighInCaption: weighIn, analyses, reload } = useProgressPhoto(id);
+  const {
+    photo,
+    originalUri,
+    counterparts,
+    weighInCaption: weighIn,
+    analyses,
+    reload,
+  } = useProgressPhoto(id);
 
   const [dateText, setDateText] = useState<string | null>(null);
   const [noteText, setNoteText] = useState<string | null>(null);
@@ -89,8 +102,10 @@ export default function ProgressPhotoDetailScreen() {
 
   const commitDate = () => {
     const trimmed = date.trim();
-    if (!ISO_DATE.test(trimmed)) {
-      setMessage('A date reads YYYY-MM-DD. Nothing was changed.');
+    // A REAL day, not merely the right shape — `2026-31-12` passes a regex and
+    // is not a date (see isRealCalendarDate).
+    if (!isRealCalendarDate(trimmed)) {
+      setMessage('That isn’t a day on the calendar. A date reads YYYY-MM-DD. Nothing was changed.');
       setDateText(photo.taken_on);
       return;
     }
@@ -187,7 +202,13 @@ export default function ProgressPhotoDetailScreen() {
       {/* b. The record. */}
       <View className="mt-6">
         <Block device="plate">
-          <SectionLabel label="Details" note={photo.taken_at ? 'exif' : undefined} />
+          {/* The note slot is for a MEASUREMENT (section-label.tsx), so the
+              provenance word goes under the date field where it belongs, not
+              here. It also used to be inferred from `taken_at IS NOT NULL`,
+              which was wrong in both directions — a picker-epoch date has an
+              instant and is not EXIF; a real DateTimeOriginal with no offset tag
+              has no instant and is. `date_origin` (0035) is the persisted fact. */}
+          <SectionLabel label="Details" />
 
           <View className="mt-3">
             <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
@@ -206,6 +227,13 @@ export default function ProgressPhotoDetailScreen() {
               placeholderTextColor={palette.inkMuted}
               className="mt-1.5 border border-paper-deep bg-paper-dim px-3 py-2 font-mono text-[14px] text-ink"
             />
+            {/* The real provenance, from the persisted column — and editing the
+                day rewrites it to "you set this", because a hand-typed date
+                labelled "from the photo" is the exact lie this feature is about
+                not telling. */}
+            <Text className="mt-1 font-serif text-[12px] leading-5 text-ink-muted">
+              {DATE_ORIGIN_LABEL[photo.date_origin]}
+            </Text>
           </View>
 
           <View className="mt-4">
@@ -272,14 +300,21 @@ export default function ProgressPhotoDetailScreen() {
             />
             <Text className="flex-1 font-serif text-[14px] text-ink">Important</Text>
           </Pressable>
-          {/* The honest retro-flag caveat. It is stated on the row that can
-              mislead, not in a help screen nobody opens. */}
+          {/* The honest retro-flag caveat, stated on the row that can mislead.
+              It branches on `originalUri`, NOT on `original_file_name`: the name
+              survives a restore that did not carry the media, and testing the
+              name would print "a full-size original is kept inside ARC" directly
+              beneath the authored "Image not on this phone" — two contradictory
+              claims in one viewport, in exactly the scenario the sweep exists to
+              produce. Found by adversarial review, 2026-08-12. */}
           <Text className="font-serif text-[12px] leading-5 text-ink-muted">
-            {photo.original_file_name
+            {originalUri
               ? 'A full-size original is kept inside ARC for this one.'
-              : originalUri === null && photo.is_important === 1
-                ? 'Flagged — but only the working copy is kept. ARC can only take a full-size copy at the moment a photo is imported; it can’t fetch one back out of Photos.'
-                : 'Marks the photo. A full-size copy can only be kept at import time, so flagging one later keeps the working copy alone.'}
+              : photo.original_file_name
+                ? 'A full-size original was kept for this one, but that file isn’t on this phone either.'
+                : photo.is_important === 1
+                  ? 'Flagged — but only the working copy is kept. ARC can only take a full-size copy at the moment a photo is imported; it can’t fetch one back out of Photos.'
+                  : 'Marks the photo. A full-size copy can only be kept at import time, so flagging one later keeps the working copy alone.'}
           </Text>
         </Block>
       </View>
@@ -316,19 +351,39 @@ export default function ProgressPhotoDetailScreen() {
               note={`${analyses.length} ${analyses.length === 1 ? 'reading' : 'readings'}`}
             />
             <View className="mt-1">
-              {analyses.map((analysis, index) => (
-                <SavedReading
-                  key={analysis.id}
-                  first={index === 0}
-                  summary={analysis.summary}
-                  caveats={analysis.caveats}
-                  model={analysis.model}
-                  createdAt={analysis.created_at}
-                  observations={parseSavedObservations(analysis.observations)}
-                  changes={parseSavedChanges(analysis.changes)}
-                  pairLabel={analysis.compare_photo_id ? 'a comparison' : undefined}
-                />
-              ))}
+              {analyses.map((analysis, index) => {
+                // Which half of a pair THIS photo is, and what the other one
+                // was. A reading shown on the January photo describes a change
+                // measured against August; saying only "a comparison" leaves the
+                // arrow pointing nowhere the reader can see.
+                const otherId =
+                  analysis.photo_id === photo.id ? analysis.compare_photo_id : analysis.photo_id;
+                const other = otherId ? counterparts[otherId] : undefined;
+                const pairLabel = otherId
+                  ? other
+                    ? analysis.photo_id === photo.id
+                      ? `Compared with ${formatPhotoDate(other.taken_on)} — this photo is the earlier one.`
+                      : `Compared with ${formatPhotoDate(other.taken_on)} — this photo is the later one.`
+                    : 'A comparison; the other photo has since been deleted.'
+                  : undefined;
+                return (
+                  <SavedReading
+                    key={analysis.id}
+                    first={index === 0}
+                    summary={analysis.summary}
+                    caveats={analysis.caveats}
+                    model={analysis.model}
+                    createdAt={analysis.created_at}
+                    observations={parseSavedObservations(analysis.observations)}
+                    changes={parseSavedChanges(analysis.changes)}
+                    pairLabel={pairLabel}
+                    onDelete={() => {
+                      deleteProgressPhotoAnalysis(getDb(), analysis.id);
+                      reload();
+                    }}
+                  />
+                );
+              })}
             </View>
           </Block>
         </View>

@@ -37,6 +37,9 @@ type PickerModule = {
       base64?: string | null;
       assetId?: string | null;
       exif?: Record<string, unknown> | null;
+      /** Epoch milliseconds, on the picker versions that expose it. UNVERIFIED
+       *  like the two above; the parser treats its absence as normal. */
+      creationTime?: number | null;
       width?: number;
       height?: number;
     }[];
@@ -199,6 +202,17 @@ export type PickedLibraryAsset = {
   uri: string;
   assetId: string | null;
   exif: Record<string, unknown> | null;
+  /**
+   * Epoch milliseconds, when the picker supplies one — the fallback date source
+   * for a photo with no EXIF (a screenshot, a re-saved or AirDropped copy).
+   *
+   * It must be carried through explicitly: this object is built field by field,
+   * so anything not named here is dropped, and dropping it silently made
+   * `assetPhotoDate`'s documented second source unreachable in production while
+   * its unit test kept passing against a hand-built object. Found by adversarial
+   * review, 2026-08-12.
+   */
+  creationTime: number | null;
   width: number | null;
   height: number | null;
 };
@@ -249,6 +263,7 @@ export async function pickPhotoLibraryAssets(
         uri: asset.uri,
         assetId: typeof asset.assetId === 'string' ? asset.assetId : null,
         exif: asset.exif ?? null,
+        creationTime: typeof asset.creationTime === 'number' ? asset.creationTime : null,
         width: typeof asset.width === 'number' ? asset.width : null,
         height: typeof asset.height === 'number' ? asset.height : null,
       });

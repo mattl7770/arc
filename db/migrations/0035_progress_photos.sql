@@ -76,12 +76,38 @@ CREATE TABLE progress_photos (
   -- The LOCAL day the photo was taken (EXIF/asset date, user-editable at
   -- import). Never silently stamped with today — the import flow leaves the
   -- field empty and makes the user fill it when EXIF gives nothing.
-  taken_on text NOT NULL CHECK (taken_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  -- The instant, when EXIF supplied one. Nullable: no data, no number. The
-  -- shape CHECK is deliberately loose past the date — it exists to reject
-  -- garbage, not to re-implement an ISO parser in SQL.
+  --
+  -- TWO CHECKS, because the GLOB alone is only a SHAPE. `2026-31-12` — the
+  -- day/month slip a bare YYYY-MM-DD text field invites — passes the character
+  -- classes and is not a date: it would head a month plate "31 2026", sort
+  -- between September and April, and render "NaN days apart" on the compare
+  -- screen. `julianday()` returns NULL for anything the calendar does not have,
+  -- and it is deterministic over a column (only `julianday('now')` is not), so
+  -- it is legal in a CHECK. Verified against node:sqlite.
+  taken_on text NOT NULL CHECK (
+    taken_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+    AND julianday(taken_on) IS NOT NULL
+  ),
+  -- The instant, when a REAL one could be formed — EXIF's wall clock plus its
+  -- offset tag, or an epoch. Nullable and usually null: no data, no number.
+  -- Cleared whenever `taken_on` is edited, because an instant that contradicts
+  -- its own day is worse than no instant. The shape CHECK is deliberately loose
+  -- past the date — it exists to reject garbage, not to re-implement an ISO
+  -- parser in SQL.
   taken_at text CHECK (
     taken_at IS NULL OR taken_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'
+  ),
+  -- WHERE THE DATE CAME FROM, persisted rather than recomputed.
+  --
+  -- Added after an adversarial review: without it the detail screen has no way
+  -- to state provenance and was inferring it from `taken_at IS NOT NULL`, which
+  -- is wrong in both directions — a picker-epoch date has an instant and is not
+  -- EXIF, and a genuine `DateTimeOriginal` with no `OffsetTimeOriginal` has no
+  -- instant and IS. On the one axis this feature declares load-bearing, a
+  -- guessed provenance is exactly the wrong thing to print. 'manual' is set the
+  -- moment the user edits the day, so the label can never outlive its fact.
+  date_origin text NOT NULL DEFAULT 'manual' CHECK (
+    date_origin IN ('exif', 'asset', 'manual')
   ),
   pose text NOT NULL DEFAULT 'front' CHECK (pose IN ('front', 'side', 'back', 'other')),
   -- 'camera' is unreachable in v1 (library-pick only, owner call 2026-08-12) and
@@ -105,6 +131,11 @@ CREATE TABLE progress_photos (
   -- PICK TIME. Deliberately NOT coupled to is_important by a CHECK: v1 cannot
   -- retro-fetch an original, so flipping the flag later legitimately leaves this
   -- NULL, and the detail screen says so in words.
+  --
+  -- UNIQUE for the same reason the working copy is, and it is not a
+  -- copy-forward: this column names a file too, so two rows claiming one file
+  -- would let a delete of either take the other's picture. SQLite's UNIQUE
+  -- admits unlimited NULLs, so the common case (no original) is unconstrained.
   original_file_name text UNIQUE CHECK (
     original_file_name IS NULL
     OR (

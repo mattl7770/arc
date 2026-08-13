@@ -29,6 +29,42 @@ const MONTHS_SHORT = [
   'Dec',
 ];
 
+/**
+ * Is this a real day on the calendar — not merely ten characters shaped like
+ * one?
+ *
+ * **The shape check is not enough, and this is the trap a bare `YYYY-MM-DD` text
+ * field sets.** `2026-31-12` is the day/month slip anyone typing a date makes
+ * eventually. It matches `/^\d{4}-\d{2}-\d{2}$/` and it matches the schema's
+ * GLOB character classes, and it is not a date: it would head a month plate
+ * "31 2026", sort between September and April on the one axis the gallery is
+ * ordered by, find no weigh-in ever, and render "NaN days apart" on the compare
+ * screen. Found by adversarial review, 2026-08-12.
+ *
+ * Checked by round-trip rather than by a table of month lengths, so February in
+ * a leap year needs no special case: build the date in UTC and confirm it comes
+ * back with the same three fields. `Date.UTC(2026, 1, 30)` silently rolls into
+ * March, and the round trip is what catches that.
+ *
+ * The schema carries the same rule independently (`julianday(taken_on) IS NOT
+ * NULL`), because a screen is a courtesy and a CHECK is a guarantee.
+ */
+export function isRealCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return false;
+  const [, y, m, d] = match;
+  const year = Number(y);
+  const month = Number(m);
+  const day = Number(d);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const built = new Date(Date.UTC(year, month - 1, day));
+  return (
+    built.getUTCFullYear() === year &&
+    built.getUTCMonth() === month - 1 &&
+    built.getUTCDate() === day
+  );
+}
+
 /** `2026-01-12` → `12 Jan 2026`. An unparseable date comes back verbatim rather
  *  than as a plausible wrong one. */
 export function formatPhotoDate(isoDate: string): string {
@@ -83,6 +119,22 @@ export function weighInDistanceLabel(deltaDays: number): string {
 /** The authored empty. A photo with no weigh-in near it says so; it never
  *  prints a stand-in number or leaves the slot blank. */
 export const NO_WEIGH_IN = 'no weigh-in near this date';
+
+/**
+ * The LOCAL day of a stored UTC instant, as `YYYY-MM-DD`.
+ *
+ * `created_at` is `strftime('%Y-%m-%dT%H:%M:%fZ','now')` — UTC — so slicing the
+ * first ten characters prints tomorrow's date for anything saved after 5pm on
+ * the US west coast. That is the `body_metrics` trap the 0035 header cites, and
+ * printing it on a saved AI reading would be the same bug at a smaller scale.
+ */
+export function localDayOf(instant: string): string {
+  const ms = Date.parse(instant);
+  if (!Number.isFinite(ms)) return instant.slice(0, 10);
+  const local = new Date(ms);
+  const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
+  return `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}`;
+}
 
 /**
  * The full caption under a photo: the weight as the user's units render it,

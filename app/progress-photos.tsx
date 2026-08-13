@@ -11,6 +11,7 @@ import { palette } from '@/constants/theme';
 import { useProgressGallery, type GalleryPhoto } from '@/hooks/use-progress-photos';
 import { poseCount } from '@/lib/db/repositories/progress-photos';
 import { isPhotoLibraryAvailable } from '@/lib/media/photo-library';
+import { WORKING_COPY_EDGE } from '@/lib/media/progress-photo-store';
 import { photoDayNumber, poseLabel, poseLetter } from '@/lib/photos/format';
 import type { PhotoPose } from '@/lib/photos/types';
 
@@ -87,10 +88,14 @@ function PhotoCell({
           </View>
         )}
         {/* The selection mark is a FILLED view, not a border — the one way a
-            mark is ever drawn in this app (src/components/ui/block.tsx). */}
+            mark is ever drawn in this app (src/components/ui/block.tsx).
+            INK, not accent: the screen's one accent is the Add-photos stamp, and
+            a selection badge is none of the six things 00-design-spec.md §2
+            licenses the accent for. It drew in pine until an adversarial review
+            counted two `bg-pine` on one screen. */}
         {selectedIndex ? (
-          <View className="absolute left-0 top-0 h-5 w-5 items-center justify-center bg-pine">
-            <Text className="font-mono text-[11px] text-pine-on">{selectedIndex}</Text>
+          <View className="absolute left-0 top-0 h-5 w-5 items-center justify-center bg-ink">
+            <Text className="font-mono text-[11px] text-paper-hi">{selectedIndex}</Text>
           </View>
         ) : null}
       </View>
@@ -141,6 +146,19 @@ export default function ProgressPhotosScreen() {
   const { photos, months, total, posesPresent } = useProgressGallery(pose);
   const pickerReady = isPhotoLibraryAvailable();
 
+  /**
+   * Changing the filter clears any half-made comparison.
+   *
+   * Not tidiness: the selection is resolved against the FILTERED list, so a pair
+   * picked in Front and then filtered to Side used to leave an enabled "Compare
+   * these two" button that silently did nothing, under a banner still claiming
+   * two were picked. Found by adversarial review, 2026-08-12.
+   */
+  const changePose = (next: PhotoPose | null) => {
+    setPose(next);
+    setSelected([]);
+  };
+
   const tapCell = (photo: GalleryPhoto) => {
     if (!selecting) {
       router.push({ pathname: '/progress-photo-detail', params: { id: photo.id } });
@@ -160,6 +178,21 @@ export default function ProgressPhotosScreen() {
     setSelected([]);
   };
 
+  /**
+   * The badge numbers, in DATE order rather than tap order.
+   *
+   * The banner promises "oldest first" and `openCompare` sorts by `taken_on`, so
+   * numbering the cells by the order they were tapped puts a **1** on the photo
+   * that will appear on the right. Two claims, one of them wrong, about the one
+   * thing a comparison has to get right. Found by adversarial review.
+   */
+  const selectionRank = new Map<string, number>();
+  selected
+    .map((id) => photos.find((p) => p.id === id))
+    .filter((p): p is GalleryPhoto => p != null)
+    .sort((x, y) => (x.taken_on < y.taken_on ? -1 : x.taken_on > y.taken_on ? 1 : 0))
+    .forEach((photo, index) => selectionRank.set(photo.id, index + 1));
+
   const openCompare = () => {
     // Ordered by DATE, never by tap order: the compare screen captions them
     // "earlier" and "later", and the model prompt states that direction.
@@ -175,7 +208,11 @@ export default function ProgressPhotosScreen() {
     });
   };
 
-  const filterNote = pose ? `${photos.length} of ${total}` : `${total}`;
+  // A bare integer is not a measurement anyone can read. Both forms name what
+  // they count, and the unfiltered form is the one that used to say just "24".
+  const filterNote = pose
+    ? `${photos.length} of ${total} photos`
+    : `${total} ${total === 1 ? 'photo' : 'photos'}`;
 
   return (
     <Screen scroll>
@@ -193,9 +230,14 @@ export default function ProgressPhotosScreen() {
           <Text className="mt-2 font-serif text-[19px] font-semibold leading-6 text-ink">
             Bring in your progress photos
           </Text>
+          {/* The stamp's own line, true on every visit. The spec's authored
+              first-run sentence lives in the EMPTY STATE below, addressed to
+              someone who has no photos yet — printing "photograph yourself,
+              then bring them in here" above a gallery of two hundred would be
+              instructions for a thing already done. */}
           <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-            Photograph yourself in the iOS Camera app — front, side, back — then bring them in here.
-            ARC keeps a working copy; your originals stay in Photos.
+            ARC keeps a working copy at {WORKING_COPY_EDGE} px; your originals stay in Photos,
+            untouched.
           </Text>
           {pickerReady ? (
             <Pressable
@@ -229,9 +271,14 @@ export default function ProgressPhotosScreen() {
       {total === 0 ? (
         <View className="mt-7">
           <Block device="margin">
+            {/* The spec's authored empty, §4, verbatim in substance. */}
             <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
-              No photos yet. Three poses on the same morning, in the same light, is the set that
-              compares well months later.
+              No photos yet. Photograph yourself in the iOS Camera app — front, side, back — then
+              bring them in here. ARC keeps a working copy; your originals stay in Photos.
+            </Text>
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
+              Three poses on the same morning, in the same light, is the set that compares well
+              months later.
             </Text>
           </Block>
         </View>
@@ -239,13 +286,13 @@ export default function ProgressPhotosScreen() {
         <>
           {/* b. Filter and compare — both neutral chrome, on one line. */}
           <View className="mt-6 flex-row flex-wrap items-center gap-2">
-            <FilterChip label="All" active={pose === null} onPress={() => setPose(null)} />
+            <FilterChip label="All" active={pose === null} onPress={() => changePose(null)} />
             {posesPresent.map((p) => (
               <FilterChip
                 key={p}
                 label={poseLabel(p)}
                 active={pose === p}
-                onPress={() => setPose(p)}
+                onPress={() => changePose(p)}
               />
             ))}
           </View>
@@ -322,11 +369,7 @@ export default function ProgressPhotosScreen() {
                       <PhotoCell
                         key={photo.id}
                         photo={photo}
-                        selectedIndex={
-                          selecting && selected.includes(photo.id)
-                            ? selected.indexOf(photo.id) + 1
-                            : null
-                        }
+                        selectedIndex={selecting ? (selectionRank.get(photo.id) ?? null) : null}
                         onPress={() => tapCell(photo)}
                       />
                     ))}

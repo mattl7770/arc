@@ -153,24 +153,35 @@ export function assetPhotoDate(asset: unknown): PhotoDate {
   if (!isRecord(asset)) return NO_DATE;
 
   const dicts = exifDictionaries(asset.exif);
-  const raw = firstString(dicts, EXIF_DATE_KEYS);
-  if (raw) {
+  for (let index = 0; index < EXIF_DATE_KEYS.length; index++) {
+    const raw = firstString(dicts, [EXIF_DATE_KEYS[index]!]);
+    if (!raw) continue;
     const parsed = parseExifDateTime(raw);
-    if (parsed) {
-      const rawOffset = firstString(dicts, EXIF_OFFSET_KEYS);
-      const offset = rawOffset ? normalizeExifOffset(rawOffset) : null;
-      let takenAt: string | null = null;
-      if (offset) {
-        const ms = Date.parse(`${parsed.date}T${parsed.time}${offset}`);
-        takenAt = Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-      }
-      return { takenOn: parsed.date, takenAt, origin: 'exif' };
+    if (!parsed) continue;
+    // The offset is read from the key PAIRED with the date key that won, not
+    // from whichever offset tag happens to exist. A scan carrying
+    // DateTimeDigitized (its digitisation clock) alongside a surviving
+    // OffsetTimeOriginal (the shutter's zone) would otherwise combine two
+    // different moments into one wrong instant.
+    const rawOffset = firstString(dicts, [EXIF_OFFSET_KEYS[index]!]);
+    const offset = rawOffset ? normalizeExifOffset(rawOffset) : null;
+    let takenAt: string | null = null;
+    if (offset) {
+      const ms = Date.parse(`${parsed.date}T${parsed.time}${offset}`);
+      takenAt = Number.isFinite(ms) ? new Date(ms).toISOString() : null;
     }
+    return { takenOn: parsed.date, takenAt, origin: 'exif' };
   }
 
   // Some picker versions carry a creation epoch beside the asset. It is a true
   // instant, so both fields can be filled from it — but the LOCAL day is the one
   // the gallery orders on, so it comes off a local Date, not off the ISO string.
+  //
+  // This path is only reachable because `PickedLibraryAsset` carries the field
+  // through explicitly (src/lib/media/photo-library.ts). It did not, once, and
+  // this branch was dead in production while its test passed against a
+  // hand-built object — the shape of bug worth remembering: a pure function's
+  // test proves nothing about whether the caller supplies the input.
   const epoch = typeof asset.creationTime === 'number' ? asset.creationTime : null;
   if (epoch !== null) {
     const instant = instantFromEpochMs(epoch);
