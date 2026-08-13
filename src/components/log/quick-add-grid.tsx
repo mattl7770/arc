@@ -7,25 +7,36 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 
 /**
- * The six quick-add tiles (direction A). Two kinds, per
- * docs/information-architecture.md:
- *   - Gateway tiles push a full sub-app screen: Nutrition, Workout → Exercise.
- *   - Quick-capture tiles open a focused sheet or the metric keypad: Supplement,
- *     Water, Weight, Therapy. (Water/Weight are numbers, so they go to the
- *     keypad; Supplement/Therapy open the capture sheet, app/capture.tsx.)
+ * The four quick-add tiles: Supplement, Water, Weight, Therapy. Every one opens
+ * a focused sheet or the metric keypad and comes straight back — Water and
+ * Weight are numbers so they go to the keypad, Supplement and Therapy open the
+ * capture sheet (app/capture.tsx).
  *
- * Layout (3 cols × 2 rows): the two gateway tiles sit together in the right
- * column; the quick captures fill the left and middle.
+ * ## The two gateway tiles are gone (owner, 2026-08-12)
  *
- * **Every tile lands somewhere that writes.** All six destinations are built and
- * persist to the on-device database — the capture sheet was a stub when this
- * grid was drawn and no longer is. That matters more here than anywhere else on
- * the screen: this block is the answer the empty feed below points at, and a
- * tile that opens a screen which cannot finish the job would make that answer a
- * lie (00-design-spec.md §5).
+ * *"We don't need the nutrition and workout buttons in the quick log anymore."*
+ * They were a different kind of thing wearing the same tile: not a capture, a
+ * DOOR — each pushed a whole sub-app and left you there. That distinction had to
+ * be drawn with a chevron precisely because nothing else about the tile said it.
  *
- * Conformed Set treatment — a **plate** holding six boxed tiles, which is what
- * the sheet draws and, as of 2026-08-11, what the app draws again.
+ * The reason they can go is that the doors moved. Eat and Train are tab roots on
+ * the bottom bar as of 2026-08-09, one tap from anywhere, so this block was
+ * offering a second, worse route to two screens the tab bar already reaches —
+ * and spending a third of the busiest block on the Log tab to do it.
+ *
+ * What is left is one kind of tile with one behaviour, which is why the chevron
+ * went with them: nothing here pushes a sub-app any more, so there is no longer
+ * a distinction for a mark to carry. Four tiles in a 2 × 2 — see the layout note
+ * on TILE for why not three across.
+ *
+ * **Every tile lands somewhere that writes.** All four destinations are built
+ * and persist to the on-device database. That matters more here than anywhere
+ * else on the screen: this block is the answer the empty feed below points at,
+ * and a tile that opens a screen which cannot finish the job would make that
+ * answer a lie (00-design-spec.md §5).
+ *
+ * Conformed Set treatment — a **plate** holding boxed tiles, which is what the
+ * sheet draws and, as of 2026-08-11, what the app draws again.
  *
  * ## This block was never the grid device (and that is why it lost its boxes)
  *
@@ -56,11 +67,6 @@ import { palette } from '@/constants/theme';
  * air cannot produce a half-drawn anything, and each box is uniform on all four
  * sides so it takes React Native's fast border path the way a plate does.
  *
- * Gateway tiles carry a chevron, quick captures do not — the sheet marks
- * exactly Nutrition and Workout, and it is the one thing distinguishing "this
- * opens a whole sub-app" from "this opens a sheet you will be back from in ten
- * seconds".
- *
  * Class strings are whole literals, never built from a prefix: Tailwind's
  * scanner only sees names that appear literally in source.
  */
@@ -69,35 +75,34 @@ type Tile = {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   href: Href;
-  /** True for the two tiles that push a whole sub-app; they take the chevron. */
-  gateway?: boolean;
 };
 
 /**
  * One tile: a closed hairline box on plate stock, uniform on all four sides.
  *
- * The width is `w-[31.5%]` rather than `w-1/3` because the gap is real geometry
- * now — three thirds plus two gutters overflows the row and wraps the third
- * tile. 31.5% × 3 = 94.5%, and the row's `justify-between` distributes the
- * remaining 5.5% as the two gutters, so the outer tiles stay flush with the
- * plate's padding at any width.
+ * **2 × 2, not 3 + 1.** With six tiles this was three columns; at four, a
+ * three-wide row leaves a single orphan on the second row with two tile-widths
+ * of empty plate beside it, which reads as a tile that failed to load rather
+ * than as a grid that ended. Two columns of two is the only arrangement of four
+ * that is regular in both directions.
  *
- * **The tile itself must NOT be `justify-between`, and was for one commit.**
- * Only the two gateway tiles carry a chevron, so four of the six have just two
- * children — and `justify-between` hands all the slack to the single gap
- * between the icon and the label, pinning the caption against the right border.
- * With six tiles in a 3×2 field that put the captions at four different offsets
- * (Water has ~39pt of slack, Supplement ~13, Nutrition ~3) and four of them
- * touching the box edge. The layout wanted is "icon left, chevron right, label
- * beside the icon", which is `grow` on the label — it eats the slack itself and
- * pushes only the chevron away, so every caption starts at the same x whether
- * its tile has a chevron or not.
+ * `w-[48.5%]` rather than `w-1/2` because the gutter is real geometry: two
+ * halves plus a gap overflows the row and wraps the second tile. 48.5 × 2 = 97%,
+ * and the row's `justify-between` spends the remaining 3% as the single gutter,
+ * so the outer edges stay flush with the plate's padding at any width. The
+ * wider tile also ends the truncation risk the three-wide layout carried —
+ * "Supplement" had about 41pt to render in and now has roughly twice that.
+ *
+ * **The tile itself must NOT be `justify-between`.** It was for one commit, and
+ * with the label as the only flexible child that hands all the slack to the gap
+ * after the icon, pinning the caption against the right border. `grow` on the
+ * label is the fix: it absorbs the slack itself so every caption starts hard
+ * against its icon.
  */
 const TILE =
-  'w-[31.5%] min-h-[52px] flex-row items-center gap-1.5 border border-hairline bg-paper-hi px-2.5 py-3 active:bg-paper-dim';
+  'w-[48.5%] min-h-[52px] flex-row items-center gap-1.5 border border-hairline bg-paper-hi px-2.5 py-3 active:bg-paper-dim';
 
 const TILES: Tile[] = [
-  // Row 1: Supplement · Water · Nutrition
   {
     key: 'supplement',
     label: 'Supplement',
@@ -111,14 +116,6 @@ const TILES: Tile[] = [
     href: { pathname: '/metric-entry', params: { metric: 'water' } },
   },
   {
-    key: 'nutrition',
-    label: 'Nutrition',
-    icon: 'restaurant-outline',
-    href: '/nutrition',
-    gateway: true,
-  },
-  // Row 2: Weight · Therapy · Workout
-  {
     key: 'weight',
     label: 'Weight',
     icon: 'scale-outline',
@@ -130,7 +127,6 @@ const TILES: Tile[] = [
     icon: 'thermometer-outline',
     href: { pathname: '/capture', params: { type: 'therapy' } },
   },
-  { key: 'workout', label: 'Workout', icon: 'barbell-outline', href: '/exercise', gateway: true },
 ];
 
 export function QuickAddGrid() {
@@ -152,18 +148,15 @@ export function QuickAddGrid() {
             className={TILE}>
             <Ionicons name={tile.icon} size={15} color={palette.inkSecondary} />
             {/* A tile label is a button label — the label voice. `grow` takes
-                the tile's slack so every caption starts hard against the icon
-                rather than floating (see TILE above); `shrink` lets the longest
-                one — "Supplement" — ellipsise instead of shoving the chevron
-                out of the box. */}
+                the tile's slack so every caption starts hard against its icon
+                rather than floating (see TILE above); `shrink` + `numberOfLines`
+                stay as the backstop, though at half-width no label is close to
+                needing them. */}
             <Text
               numberOfLines={1}
               className="shrink grow font-label text-[10px] font-bold text-ink">
               {tile.label}
             </Text>
-            {tile.gateway ? (
-              <Ionicons name="chevron-forward" size={11} color={palette.inkMuted} />
-            ) : null}
           </Pressable>
         ))}
       </View>

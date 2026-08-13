@@ -84,12 +84,16 @@ export function isPhotoLibraryAvailable(): boolean {
  * Null when the manipulator is absent (this binary) or the read fails; the
  * caller then falls back to whatever it already had.
  */
-export async function downscaleToJpegBase64(uri: string): Promise<string | null> {
+export async function downscaleToJpegBase64(
+  uri: string,
+  opts: DownscaleOptions = {}
+): Promise<string | null> {
   const manipulator = loadManipulator();
   if (!manipulator) return null;
+  const { width = DEFAULT_WIDTH, quality = DEFAULT_QUALITY } = opts;
   try {
-    const shrunk = await manipulator.manipulateAsync(uri, [{ resize: { width: 1024 } }], {
-      compress: 0.6,
+    const shrunk = await manipulator.manipulateAsync(uri, [{ resize: { width } }], {
+      compress: quality,
       format: manipulator.SaveFormat.JPEG,
       base64: true,
     });
@@ -98,6 +102,24 @@ export async function downscaleToJpegBase64(uri: string): Promise<string | null>
     return null;
   }
 }
+
+/**
+ * How hard to shrink. The defaults are the plate/ingredient-list figure: 1024px
+ * at 0.6 is more than a vision model needs to read a meal.
+ *
+ * It is a dial rather than a constant because the WORKOUT importer legitimately
+ * needs more. It reads a screenshot of another app's set table — small type, and
+ * a grid of numbers that has to survive the round trip — so it runs 1280 at 0.7.
+ * It used to get that by shipping its own copy of the whole pick-and-shrink,
+ * including `import * as ImagePicker from 'expo-image-picker'` at module scope,
+ * which is what broke app startup (see the guarded-require note at the top of
+ * this file). One seam with a dial beats two call sites where only one is
+ * guarded.
+ */
+export type DownscaleOptions = { width?: number; quality?: number };
+
+const DEFAULT_WIDTH = 1024;
+const DEFAULT_QUALITY = 0.6;
 
 export type PickedPhoto =
   | { kind: 'photo'; base64Jpeg: string }
@@ -112,7 +134,7 @@ export type PickedPhoto =
  * base64 — the shape both vision paths already speak. Never throws: every
  * failure is a variant the caller can render.
  */
-export async function pickPhotoBase64(): Promise<PickedPhoto> {
+export async function pickPhotoBase64(opts: DownscaleOptions = {}): Promise<PickedPhoto> {
   const picker = loadImagePicker();
   if (!picker) return { kind: 'unavailable' };
   try {
@@ -127,14 +149,9 @@ export async function pickPhotoBase64(): Promise<PickedPhoto> {
     if (result.canceled) return { kind: 'canceled' };
     const asset = result.assets?.[0];
     if (!asset) return { kind: 'canceled' };
-    const manipulator = loadManipulator();
-    if (asset.uri && manipulator) {
-      const shrunk = await manipulator.manipulateAsync(asset.uri, [{ resize: { width: 1024 } }], {
-        compress: 0.6,
-        format: manipulator.SaveFormat.JPEG,
-        base64: true,
-      });
-      if (shrunk.base64) return { kind: 'photo', base64Jpeg: shrunk.base64 };
+    if (asset.uri) {
+      const shrunk = await downscaleToJpegBase64(asset.uri, opts);
+      if (shrunk) return { kind: 'photo', base64Jpeg: shrunk };
     }
     if (asset.base64) return { kind: 'photo', base64Jpeg: asset.base64 };
     return { kind: 'failed' };

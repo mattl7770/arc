@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useKeepAwake } from 'expo-keep-awake';
+
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
@@ -28,6 +28,7 @@ import {
   unresolveIngredient,
 } from '@/lib/db/repositories/recipes';
 import { fmtInt, fmtQty } from '@/lib/nutrition/format';
+import { useKeepScreenAwake } from '@/lib/media/keep-awake';
 import { formatQty } from '@/lib/recipes/ingredients';
 import type { FoodRow } from '@/lib/nutrition/types';
 import type { RecipeIngredientRow, RecipeNutrition, RecipeRow } from '@/lib/recipes/types';
@@ -88,7 +89,10 @@ function load(id: string): Loaded | null {
 }
 
 export default function RecipeDetailScreen() {
-  useKeepAwake(); // cook mode: the screen stays on while a recipe is open
+  // Cook mode: the screen stays on while a recipe is open. Guarded — the module
+  // is not in this binary, and a static import here was a startup error for the
+  // WHOLE app, not just this screen (src/lib/media/keep-awake.ts).
+  useKeepScreenAwake('recipe-detail');
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const recipeId = typeof id === 'string' ? id : '';

@@ -1,6 +1,4 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
-import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import {
@@ -22,6 +20,7 @@ import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { logWorkout } from '@/lib/db/repositories/exercise';
 import { lbToKg } from '@/lib/exercise/format';
+import { pickPhotoBase64 } from '@/lib/media/photo-library';
 import {
   groundWorkoutImport,
   importWorkoutFromPhoto,
@@ -49,10 +48,33 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  *
  * The one accent is the phase's primary action (Parse, then Save).
  *
- * FLAG (native, pending rebuild): expo-image-picker joins the already-pending
- * EAS batch. Until that build ships the picker module is present in JS but its
- * native call fails — caught, with an honest message. The AI parse itself also
- * needs a configured model key (offline-except-AI).
+ * ## This screen broke app STARTUP, and the fix is where the picker is loaded
+ *
+ * It opened with `import * as ImagePicker from 'expo-image-picker'` at module
+ * scope. `expo-image-picker` is in package.json and in app.json's plugin list
+ * but is NOT in the current binary — it rides the next EAS build — so that
+ * import throws the moment the module is evaluated. Two symptoms, one cause:
+ *
+ *   - Opening this screen gave *"cannot read property 'ErrorBoundary' of
+ *     undefined"*. That is Expo Router reporting that a route module failed to
+ *     load: the throw left the module `undefined`, and the router then asked the
+ *     undefined thing for its `ErrorBoundary` export.
+ *   - **Launching the app** gave *"cannot find native module
+ *     'ExponentImagePicker'"*, because the router eagerly requires every file in
+ *     `app/` to build its route manifest. One unguarded import in one unopened
+ *     screen is a startup error for the whole app.
+ *
+ * The project already had the answer: `src/lib/media/photo-library.ts` wraps the
+ * picker in a `require` inside a try/catch and returns `{ kind: 'unavailable' }`
+ * on a binary that predates it — the same seam `src/lib/health/healthkit.ts`
+ * uses. `app/recipe-import.tsx` was built on it correctly. This screen shipped
+ * its own copy instead, which is why it also carried its own 1280/0.7 downscale;
+ * that is now a parameter on the seam.
+ *
+ * **The rule: a route file NEVER statically imports a native module.** Not the
+ * screen that uses it, and not a screen that merely might.
+ *
+ * The AI parse itself still needs a configured model key (offline-except-AI).
  */
 
 type Phase =
@@ -133,43 +155,34 @@ export default function WorkoutImportScreen() {
   };
 
   const pickAndParse = async () => {
-    try {
-      // Native call — fails before the pending EAS rebuild lands; caught below.
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
-        setPhase({
-          kind: 'error',
-          message: 'ARC needs photo access to read the screenshot. Allow it in iOS Settings.',
-        });
-        return;
-      }
-      const picked = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        quality: 1,
-        allowsMultipleSelection: false,
-      });
-      if (picked.canceled || !picked.assets[0]?.uri) return;
+    // 1280 at 0.7, wider than the meal flow's 1024 — this is a screenshot of
+    // another app's set table and the type is small.
+    const picked = await pickPhotoBase64({ width: 1280, quality: 0.7 });
 
-      setPhase({ kind: 'parsing' });
-      // Downscale + recompress so only a small JPEG leaves the device. 1280 wide
-      // (vs the meal flow's 1024) — screenshots carry small text.
-      const shrunk = await manipulateAsync(picked.assets[0].uri, [{ resize: { width: 1280 } }], {
-        compress: 0.7,
-        format: SaveFormat.JPEG,
-        base64: true,
+    if (picked.kind === 'canceled') return;
+    if (picked.kind === 'unavailable') {
+      setPhase({
+        kind: 'error',
+        message:
+          'Reading a screenshot needs the next app build (expo-image-picker isn’t in this one ' +
+          'yet). Log the session by hand in the meantime.',
       });
-      if (!shrunk.base64) {
-        setPhase({ kind: 'error', message: 'Couldn’t process that image.' });
-        return;
-      }
-      const imported = await importWorkoutFromPhoto(shrunk.base64, note.trim() || undefined);
+      return;
+    }
+    if (picked.kind === 'failed') {
+      setPhase({ kind: 'error', message: 'Couldn’t process that image. Try another screenshot.' });
+      return;
+    }
+
+    setPhase({ kind: 'parsing' });
+    try {
+      const imported = await importWorkoutFromPhoto(picked.base64Jpeg, note.trim() || undefined);
       toReview(groundWorkoutImport(getDb(), imported));
     } catch (error) {
       const message =
         error instanceof WorkoutImportUnavailableError
           ? error.message
-          : 'Couldn’t read that photo. It may need the next dev build (photo access is native), ' +
-            'or try a clearer screenshot.';
+          : 'Couldn’t read that photo. Try a clearer screenshot.';
       setPhase({ kind: 'error', message });
     }
   };
