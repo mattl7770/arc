@@ -9,6 +9,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
 import { palette } from '@/constants/theme';
 import { useDataOverview, type TrendKey } from '@/hooks/use-data-overview';
+import { useReportsHistory } from '@/hooks/use-reports';
 
 /**
  * Data — the standing record (docs/information-architecture.md).
@@ -117,12 +118,20 @@ import { useDataOverview, type TrendKey } from '@/hooks/use-data-overview';
 const WEEKDAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
-/** One row of "The full file" index. Non-tappable rows omit `onPress`. */
+/**
+ * One row of "The full file" index. Non-tappable rows omit `onPress`.
+ *
+ * `state` is the row's LIVE reading — "2 reports · last 12 Aug 2026" — and it
+ * is what answers this tab's standing critique that nothing on it is a reading.
+ * Optional and absent by default: a row with nothing true to say says nothing,
+ * rather than announcing a count of zero.
+ */
 type FileRow = {
   key: string;
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   chip: 'setup' | 'later';
+  state?: string;
   onPress?: () => void;
 };
 
@@ -176,6 +185,10 @@ function FoldSection({
 export default function DataScreen() {
   const router = useRouter();
   const { trends } = useDataOverview();
+  // The Reports row's live state (0036). Read here rather than folded into
+  // useDataOverview: it belongs to one index row, not to the trend strip, and
+  // the reports screen needs the same hook anyway.
+  const reports = useReportsHistory();
 
   // Session-scoped, not persisted — see the header comment. Both sections open:
   // the only one that ever started folded was Biomarkers, and it now lives on
@@ -265,7 +278,21 @@ export default function DataScreen() {
     },
     { key: 'photos', label: 'Progress photos', icon: 'images-outline', chip: 'later' },
     { key: 'knowledge', label: 'Knowledge base', icon: 'library-outline', chip: 'later' },
-    { key: 'export', label: 'Reports & export', icon: 'download-outline', chip: 'later' },
+    {
+      // "Reports", not "Reports & export" (⚑ MATT #4, decided 2026-08-12 —
+      // docs/reports-subapp.md §6). The compound label promised two things and
+      // could only deliver one honestly: the IA places the raw JSON export in
+      // Settings › Security & data, where it has shipped since 2026-07-29, so a
+      // row here offering both would either duplicate the action or lie about
+      // where it lives. The reports screen carries a margin annotation pointing
+      // at export's real home instead — a pointer, not a second button.
+      key: 'reports',
+      label: 'Reports',
+      icon: 'document-text-outline',
+      chip: 'setup',
+      state: reports.summaryLine,
+      onPress: () => router.push('/reports'),
+    },
   ];
 
   // Both tallies. Each counts the very array its section renders, so a folded
@@ -426,14 +453,23 @@ export default function DataScreen() {
                 const inner = (
                   <>
                     <Ionicons name={row.icon} size={18} color={iconColor} />
-                    <Text
-                      className={
-                        tappable
-                          ? 'flex-1 font-serif text-[15px] text-ink'
-                          : 'flex-1 font-serif text-[15px] text-ink-muted'
-                      }>
-                      {row.label}
-                    </Text>
+                    <View className="flex-1">
+                      <Text
+                        className={
+                          tappable
+                            ? 'font-serif text-[15px] text-ink'
+                            : 'font-serif text-[15px] text-ink-muted'
+                        }>
+                        {row.label}
+                      </Text>
+                      {/* The live reading, in the measuring voice. Mono because
+                          it is a count and a date, not speech. */}
+                      {row.state ? (
+                        <Text className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
+                          {row.state}
+                        </Text>
+                      ) : null}
+                    </View>
                     {chip}
                     {tappable ? (
                       <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
@@ -447,7 +483,7 @@ export default function DataScreen() {
                     {tappable ? (
                       <Pressable
                         accessibilityRole="button"
-                        accessibilityLabel={row.label}
+                        accessibilityLabel={row.state ? `${row.label}. ${row.state}` : row.label}
                         onPress={row.onPress}
                         className={`${rowClass} active:opacity-60`}>
                         {inner}

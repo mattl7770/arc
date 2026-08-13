@@ -194,7 +194,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `/docs/recipes-grocery.md` — **the recipe book, grocery list, AI recipe import (Instagram/TikTok/YouTube/websites), and the Coach's recipe/grocery tools** (migrations 0031/0032 — the numbers here read 0030/0031 until 2026-08-12, a leftover from the pre-merge renumbering; the import ADR)
 - `/docs/progress-photos-subapp.md` — **spec, unbuilt (2026-08-12):** the body-progress gallery — working-copy storage (amending the PhotoKit-reference letter, and why), library-pick import, compare, on-demand AI reading
 - `/docs/knowledge-subapp.md` — **spec, unbuilt (2026-08-12):** the browsable/writable knowledge base over the 0025 RAG substrate — entries table, article import, the `save_knowledge_entry` Coach tool
-- `/docs/reports-subapp.md` — **spec, unbuilt (2026-08-12):** the periodic self-review + doctor-visit pack — deterministic assembly, HTML + native preview, the reports ledger
+- `/docs/reports-subapp.md` — **BUILT 2026-08-12:** the periodic self-review + doctor-visit pack (migration 0036). Read it before touching anything under `src/lib/reports/`: the load-bearing rule is that **the renderers compute nothing** — both the HTML file and the native preview consume one typed `ReportData` and every figure is a field, which is what makes them incapable of disagreeing — and **no model prose ever enters the doctor pack**
 - `/docs/decisions.md` — Architecture Decision Records
 - `/docs/architecture-migration.md` — **The local-first migration plan** (cloud → on-device), phased. Read before touching the data layer.
 - `/docs/folder-structure.md` — Where code goes

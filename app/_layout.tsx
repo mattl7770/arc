@@ -192,6 +192,11 @@ export default function RootLayout() {
           {/* INTEGRATOR-MERGE: n-of-1 experiments surface (docs/ai-coach.md §6, migration 0027). */}
           <Stack.Screen name="experiments" />
           <Stack.Screen name="experiment-detail" />
+          {/* INTEGRATOR-MERGE: Reports (docs/reports-subapp.md, migration 0036).
+              Pushed from the Data tab's `Reports` row. `report-view` is both the
+              draft preview and the persisted one — same renderer, two sources. */}
+          <Stack.Screen name="reports" />
+          <Stack.Screen name="report-view" />
         </Stack>
         <StatusBar style="dark" />
         {/* Re-lock / privacy cover. A NATIVE full-screen Modal, not an

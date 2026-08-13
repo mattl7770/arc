@@ -17,6 +17,22 @@ export interface BiomarkerRange {
   unit: string;
   optimalLow: number | null;
   optimalHigh: number | null;
+  /**
+   * The LAB's own reference interval, as distinct from ARC's optimal one above.
+   *
+   * Added 2026-08-12 for the doctor-visit pack, which must print both side by
+   * side and label which is which (docs/reports-subapp.md §3b, ⚑ MATT #2):
+   * "outside the standard range" is a clinical statement a physician acts on,
+   * and "outside optimal" is a personal target ARC chose. Conflating them in a
+   * document a doctor reads is the highest-cost confusion this feature can
+   * cause, and it is only avoidable if both numbers travel together from the
+   * one read that already knows them.
+   *
+   * Purely additive — two more columns on the same SELECT. Existing callers
+   * (the Labs screen's reference rows) are unaffected.
+   */
+  standardLow: number | null;
+  standardHigh: number | null;
   higherIsBetter: 0 | 1 | null;
   latestValue: number | null;
   latestAt: string | null;
@@ -44,6 +60,8 @@ export function listBiomarkerRanges(db: Database): BiomarkerRange[] {
        coalesce(b.unit, '') AS unit,
        b.optimal_range_low AS optimalLow,
        b.optimal_range_high AS optimalHigh,
+       b.standard_range_low AS standardLow,
+       b.standard_range_high AS standardHigh,
        b.higher_is_better AS higherIsBetter,
        lr.value AS latestValue,
        lr.collected_at AS latestAt

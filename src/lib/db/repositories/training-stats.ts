@@ -226,14 +226,26 @@ export function attributedInstant(date: string, createdAtIso: string): string {
 }
 
 /**
- * Fractional weekly set count per muscle (primary 1.0, secondary 0.5) for the
- * current Monday-start week — the volume side of the ledger. Empty-safe.
+ * Fractional set count per muscle (primary 1.0, secondary 0.5) over an
+ * arbitrary inclusive `[start, end]` day range. Empty-safe.
+ *
+ * The range form exists because {@link weeklyMuscleSets} could only ever answer
+ * for the Monday-week containing a given instant, and the self-review needs the
+ * same number over a calendar month, a custom range, and the equal-length
+ * window BEFORE any of those (src/lib/reports/assemble-self-review.ts). The
+ * alternative — a second copy of this SQL in the reports module — is exactly
+ * the "compose, never re-derive" rule's failure mode: two definitions of
+ * "sets worked" that agree until one of them learns about a new set type.
+ *
+ * So the query moved here and `weeklyMuscleSets` became its one-line caller.
+ * Behaviour for existing callers is unchanged, which db/training-volume.test.mjs
+ * still proves.
  */
-export function weeklyMuscleSets(
+export function muscleSetsInRange(
   db: Database,
-  now: Date = new Date()
+  start: DateString,
+  end: DateString
 ): { muscle: Muscle; sets: number }[] {
-  const { start, end } = localWeekRange(now);
   const rows = db.all<{ muscle: Muscle; sets: number }>(
     `SELECT m.muscle AS muscle,
             sum(CASE WHEN m.role = 'primary' THEN 1.0 ELSE 0.5 END) AS sets
@@ -246,4 +258,16 @@ export function weeklyMuscleSets(
     [start, end]
   );
   return rows.map((r) => ({ muscle: r.muscle, sets: Math.round(r.sets * 10) / 10 }));
+}
+
+/**
+ * Fractional weekly set count per muscle for the current Monday-start week —
+ * the volume side of the freshness ledger. Empty-safe.
+ */
+export function weeklyMuscleSets(
+  db: Database,
+  now: Date = new Date()
+): { muscle: Muscle; sets: number }[] {
+  const { start, end } = localWeekRange(now);
+  return muscleSetsInRange(db, start, end);
 }

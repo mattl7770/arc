@@ -430,6 +430,23 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // **There is nothing cheap left.** The next addition either finds a
   // genuinely new duplication or trims the VOICE section, and both ceilings
   // should be treated as full.
+  //
+  // ⚠️ 2026-08-12 (later the same day) — REPORTS took that ~1 token of headroom
+  // and the rule held again: the ceiling did NOT move, and the room came out of
+  // the coverage manifest itself (src/lib/ai/tools/index.ts). Reports must be an
+  // UNCOVERED_DOMAINS entry — a model that denies a shipped feature exists is
+  // the exact failure that list prevents (docs/reports-subapp.md §8) — and it
+  // cost ~16 tok. Three trims paid for it, each a correction rather than a
+  // squeeze:
+  //   · the manifest's heading was the only SENTENCE among four label headings
+  //     ("Character:", "Using your tools:", "Safety and boundaries:") and said
+  //     what the line beneath it already said → "Coverage:" (−29 chars);
+  //   · two UNCOVERED entries repeated "(Eat)" for one domain → merged;
+  //   · "saved workouts, routines and programs (Train)" was STALE — programs
+  //     were retired 2026-08-11 and routines re-branded Saved workouts, so it
+  //     named one live thing twice and one dead thing once → "saved workouts".
+  // Headroom is ~3 tok. Both ceilings remain full; the manifest has now been
+  // mined too, so the next addition really is the VOICE section.
   allToolTokens < 9000
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(
