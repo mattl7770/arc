@@ -225,51 +225,121 @@ export function clearCartSection(
   return row?.n ?? 0;
 }
 
+/** What an edit can change about an item or a line. Every other column —
+ *  `source`, `recipe_id`, `food_id`, `checked_at` — is PROVENANCE or state and
+ *  is never touched by an edit. */
+export type GroceryEdit = { name?: string; qty_text?: string | null; category?: string };
+
 /**
- * Edit an item. A name change re-derives name_norm; a CATEGORY change is the
+ * The edit itself, WITHOUT a transaction — the caller holds one.
+ *
+ * Split out so {@link updateGroceryLine} can apply the same change to several
+ * member rows atomically. `db.transaction` is a literal BEGIN/COMMIT on both
+ * op-sqlite and node:sqlite (src/lib/db/client.ts), so nesting one inside
+ * another is a SQLite error, not a no-op — which is why this is a private
+ * helper rather than a loop over the public function.
+ */
+function applyItemEdit(db: Database, item: GroceryItemRow, changes: GroceryEdit): void {
+  const name = changes.name?.trim() || item.name;
+  const nameNorm = normalizeFoodName(name);
+  db.run(
+    'UPDATE grocery_items SET name = ?, name_norm = ?, qty_text = ?, category = ? WHERE id = ?',
+    [
+      name,
+      nameNorm,
+      changes.qty_text !== undefined ? changes.qty_text : item.qty_text,
+      changes.category ?? item.category,
+      item.id,
+    ]
+  );
+  if (changes.category && changes.category !== item.category) {
+    const pref = getNamePref(db, nameNorm);
+    if (pref) {
+      db.run('UPDATE grocery_name_prefs SET category = ? WHERE name_norm = ?', [
+        changes.category,
+        nameNorm,
+      ]);
+    } else {
+      db.run(
+        `INSERT INTO grocery_name_prefs (id, name_norm, display_name, category)
+         VALUES (?, ?, ?, ?)`,
+        [newId(db), nameNorm, name, changes.category]
+      );
+    }
+  }
+}
+
+/**
+ * Edit one item. A name change re-derives name_norm; a CATEGORY change is the
  * user re-filing — it writes the learned pref (upserting the row if the item
  * predates the memory), which beats the static table on every future add.
  */
-export function updateGroceryItem(
-  db: Database,
-  id: string,
-  changes: { name?: string; qty_text?: string | null; category?: string }
-): void {
+export function updateGroceryItem(db: Database, id: string, changes: GroceryEdit): void {
   const item = getGroceryItem(db, id);
   if (!item) return;
-  const name = changes.name?.trim() || item.name;
-  const nameNorm = normalizeFoodName(name);
   db.transaction(() => {
-    db.run(
-      'UPDATE grocery_items SET name = ?, name_norm = ?, qty_text = ?, category = ? WHERE id = ?',
-      [
-        name,
-        nameNorm,
-        changes.qty_text !== undefined ? changes.qty_text : item.qty_text,
-        changes.category ?? item.category,
-        id,
-      ]
-    );
-    if (changes.category && changes.category !== item.category) {
-      const pref = getNamePref(db, nameNorm);
-      if (pref) {
-        db.run('UPDATE grocery_name_prefs SET category = ? WHERE name_norm = ?', [
-          changes.category,
-          nameNorm,
-        ]);
-      } else {
-        db.run(
-          `INSERT INTO grocery_name_prefs (id, name_norm, display_name, category)
-           VALUES (?, ?, ?, ?)`,
-          [newId(db), nameNorm, name, changes.category]
-        );
-      }
-    }
+    applyItemEdit(db, item, changes);
+  });
+}
+
+/**
+ * Edit a consolidated LINE — the thing the list actually draws (owner,
+ * 2026-08-12: *"Make grocery list items editable"*).
+ *
+ * A line is one or more `grocery_items` sharing a `name_norm`
+ * ({@link consolidatedOpenList}), and until now only its MEMBERS were editable:
+ * the row you tap and read had no editor of its own, so renaming "mlk" meant
+ * opening the line and editing an entry inside it, and a line built from two
+ * recipes had no single place to say how much you actually need.
+ *
+ * Three rules make editing a line safe:
+ *
+ *  - **A rename applies to every member**, because members are the same name by
+ *    definition — that is what made them one line. They all take the new name
+ *    and the same re-derived `name_norm`, so the line stays one line. (Renaming
+ *    onto an existing name MERGES the two lines, which is correct: the
+ *    consolidated view groups by name and nothing was destroyed to do it.)
+ *  - **A quantity is one line's quantity.** It lands on the first member and
+ *    the others are cleared, so `mergeQtyTexts` reads back exactly what was
+ *    typed rather than summing the typed figure into what was there before —
+ *    the ledger rule: a line shows its own total. With one member (the common
+ *    case) that is simply an edit.
+ *  - **Provenance is untouched.** `source`, `recipe_id` and `food_id` are not
+ *    in the edit's column list at all, so a Coach-added item stays Coach-added
+ *    and a recipe-derived one keeps saying which recipe wanted it — the
+ *    descriptor under the row survives its own rename.
+ *
+ * `ids` is the line's member ids in display order (the first is the one a
+ * quantity lands on). Unknown ids are skipped.
+ */
+export function updateGroceryLine(db: Database, ids: string[], changes: GroceryEdit): void {
+  const items = ids
+    .map((id) => getGroceryItem(db, id))
+    .filter((item): item is GroceryItemRow => item !== undefined);
+  if (items.length === 0) return;
+  db.transaction(() => {
+    items.forEach((item, index) => {
+      applyItemEdit(db, item, {
+        ...changes,
+        // The typed quantity is the LINE's, so only the first member carries
+        // it; the rest are cleared rather than left to be summed back in.
+        ...(changes.qty_text !== undefined && index > 0 ? { qty_text: null } : {}),
+      });
+    });
   });
 }
 
 export function removeGroceryItem(db: Database, id: string): void {
   db.run('DELETE FROM grocery_items WHERE id = ?', [id]);
+}
+
+/** Remove a whole consolidated line — every member, in one transaction. The
+ *  prefs memory is untouched: taking milk off this week's list is not
+ *  forgetting that you buy milk (the column-ownership rules above). */
+export function removeGroceryLine(db: Database, ids: string[]): void {
+  db.transaction(() => {
+    for (const id of ids) db.run('DELETE FROM grocery_items WHERE id = ?', [id]);
+  });
 }
 
 /**
