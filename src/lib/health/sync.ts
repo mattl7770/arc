@@ -1,10 +1,13 @@
 /**
- * Apple Health sync orchestration (docs/wearables-subapp.md §4–5, §10).
+ * Apple Health sync orchestration (docs/wearables-subapp.md §4–5, §10–11).
  *
- * A "sync" is both directions as of 2026-08-12: ARC ingests the wearable metrics
- * it does not own, and PUBLISHES the three body measurements it does
- * (`publish.ts`). They share the enable flag and this entry point and nothing
- * else — separate cursors, separate windows, separate failure handling.
+ * A "sync" is genuinely both directions as of 2026-08-12. Inbound: the wearable
+ * metrics ARC does not own (→ `wearable_data`) plus the three body measurements
+ * it does (→ `body_metrics`, so a smart scale reaches the same trend a keypad
+ * entry does). Outbound: those same three body measurements, published from
+ * `body_metrics` (`publish.ts`). Ingest and publish share the enable flag and
+ * this entry point and nothing else — separate cursors, separate windows,
+ * separate failure handling.
  *
  * Strategy: trailing-window re-aggregation. Each sync recomputes the last
  * {@link SYNC_WINDOW_DAYS} days (first sync: {@link FIRST_SYNC_DAYS}) and
@@ -20,6 +23,7 @@
  * reader → pure mapping → wearables repo together.
  */
 import type { Database } from '@/lib/db/database';
+import type { HealthQuantitySample } from './types';
 import {
   getHealthSyncState,
   setHealthSyncState,
@@ -28,7 +32,11 @@ import {
 } from '@/lib/db/repositories/wearables';
 import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
 
+import { upsertHealthBodyRows } from '@/lib/db/repositories/body';
+
 import {
+  BODY_INGEST_METRICS,
+  bodyIngestRows,
   quantityDailyRows,
   SAMPLE_METRICS,
   sleepDailyRows,
@@ -150,6 +158,7 @@ export function shouldAutoSync(lastSyncedAt: string | null, now: Date): boolean 
 
 export type HealthSyncResult = {
   status: 'synced' | 'disabled' | 'unavailable';
+  /** Rows landed INBOUND this pass — `wearable_data` plus `body_metrics`. */
   rowsWritten: number;
   /** Samples PUBLISHED outward this pass (weight / body fat / waist). */
   samplesPublished: number;
@@ -209,7 +218,33 @@ export async function syncHealthData(
   rows.push(...sleepDailyRows(await readSleepSamples(span.start, span.end)));
   rows.push(...workoutRows(await readWorkouts(span.start, span.end)));
 
-  const written = upsertWearableRows(db, clampRowsToWindow(rows, days));
+  // The body channel's INBOUND half (docs §11). It lands in `body_metrics`, not
+  // `wearable_data`, because that is the table that owns weight / body fat /
+  // waist — a scale reading has to reach the same trend, the same Coach tools
+  // and the same export as a number typed into ARC, or the two-way link would
+  // only be two-way on paper.
+  //
+  // `failClosed` is what makes reading a PUBLISHED type safe: no unfiltered
+  // retry, so a rejected exclusion predicate yields nothing instead of yielding
+  // ARC's own samples back. Rows are NOT clamped by `clampRowsToWindow` — that
+  // clamp exists for day AGGREGATES rebuilt from a truncated tail, and these are
+  // individual measurements at their own instants, so a sample from the span's
+  // half-day lead-in is simply a real measurement, complete and correctly dated.
+  const bodyInput: {
+    spec: (typeof BODY_INGEST_METRICS)[number];
+    samples: HealthQuantitySample[];
+  }[] = [];
+  for (const spec of BODY_INGEST_METRICS) {
+    bodyInput.push({
+      spec,
+      samples: await readQuantitySamples(spec.hkIdentifier, spec.hkUnit, span.start, span.end, {
+        failClosed: true,
+      }),
+    });
+  }
+  const bodyWritten = upsertHealthBodyRows(db, bodyIngestRows(bodyInput));
+
+  const written = upsertWearableRows(db, clampRowsToWindow(rows, days)) + bodyWritten;
 
   const syncedAt = now.toISOString();
   setHealthSyncState(db, {

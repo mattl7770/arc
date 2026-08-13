@@ -7,10 +7,14 @@
 import {
   ARC_BUNDLE_ID,
   ARC_WRITE_METADATA_KEY,
+  BODY_INGEST_METRICS,
   BODY_PUBLISH_METRICS,
+  bodyIngestRows,
   dayRawId,
+  ECHO_SUPPRESSED_IDENTIFIERS,
   HEALTH_READ_IDENTIFIERS,
   HEALTH_WRITE_IDENTIFIERS,
+  isIngestableSample,
   localDayOf,
   quantityDailyRows,
   readWriteScopeOverlap,
@@ -19,6 +23,7 @@ import {
   sourceDeviceFor,
   STATISTIC_METRICS,
   statisticDailyRows,
+  unsuppressedEchoIdentifiers,
   workoutActivityName,
   workoutRows,
 } from '../src/lib/health/mapping.ts';
@@ -57,10 +62,11 @@ const bad = (n, e) => {
   console.log(`  FAIL ${n}${e ? ' — ' + e : ''}`);
 };
 
-const prov = (bundleId, productType = null, sourceName = null) => ({
+const prov = (bundleId, productType = null, sourceName = null, arcWritten = false) => ({
   sourceName,
   bundleId,
   productType,
+  arcWritten,
 });
 
 /** Local wall-clock ISO instant builder (tests run in the machine timezone —
@@ -81,12 +87,16 @@ console.log('0. source bucketing (spec §4)');
     [prov('com.apple.Health'), 'manual'],
     [prov('com.somebody.new'), 'other'],
     [prov(null), 'other'],
-    // ECHO SUPPRESSION, second line of defence: ARC's own published samples must
+    // ECHO SUPPRESSION, last line of defence: ARC's own published samples must
     // never bucket as 'other' (priority 7 — above apple_health and manual), or
     // ARC would rank its own reflection over the merged Apple total and over the
     // user's keypad entry. 'manual' is both truthful and the priority floor.
     [prov(ARC_BUNDLE_ID), 'manual'],
     [prov(ARC_BUNDLE_ID, 'iPhone16,2', 'ARC'), 'manual'],
+    // …and the metadata tag alone is enough, for the case the bundle id is the
+    // thing that didn't survive parsing.
+    [prov(null, null, null, true), 'manual'],
+    [prov('com.somebody.new', null, null, true), 'manual'],
   ];
   for (const [p, want] of cases) {
     const got = sourceDeviceFor(p);
@@ -676,10 +686,35 @@ console.log('7. read scopes cover the spec');
     'HKQuantityTypeIdentifierVO2Max',
     'HKCategoryTypeIdentifierSleepAnalysis',
     'HKWorkoutTypeIdentifier',
+    // The body channel's inbound half (2026-08-12) — weight was ZERO-way until
+    // this landed: published outward, never read back, so a smart scale syncing
+    // to Health never reached ARC at all.
+    'HKQuantityTypeIdentifierBodyMass',
+    'HKQuantityTypeIdentifierBodyFatPercentage',
+    'HKQuantityTypeIdentifierWaistCircumference',
   ];
   const missing = want.filter((id) => !HEALTH_READ_IDENTIFIERS.includes(id));
-  missing.length === 0 ? ok('all 12 scopes present') : bad('scopes', missing.join(','));
+  missing.length === 0 ? ok('all 15 scopes present') : bad('scopes', missing.join(','));
   dayRawId('hrv', '2026-07-29') === 'hk:hrv:2026-07-29' ? ok('dayRawId shape') : bad('dayRawId');
+
+  // A scope ARC ASKS for but never ingests is a permission prompt with nothing
+  // behind it — the user grants access to data that then silently never lands.
+  // Every declared read identifier must be claimed by exactly one ingest path.
+  const ingestPaths = [
+    ...SAMPLE_METRICS.map((m) => m.hkIdentifier),
+    ...STATISTIC_METRICS.map((m) => m.hkIdentifier),
+    ...BODY_INGEST_METRICS.map((m) => m.hkIdentifier),
+    'HKCategoryTypeIdentifierSleepAnalysis', // sleepDailyRows
+    'HKWorkoutTypeIdentifier', // workoutRows
+  ];
+  const orphaned = HEALTH_READ_IDENTIFIERS.filter((id) => !ingestPaths.includes(id));
+  orphaned.length === 0
+    ? ok('every read scope has an ingest path — nothing is requested but dropped')
+    : bad('READ SCOPE WITH NO INGEST PATH', orphaned.join(','));
+  const duplicated = ingestPaths.filter((id, i) => ingestPaths.indexOf(id) !== i);
+  duplicated.length === 0
+    ? ok('no identifier is ingested by two paths')
+    : bad('duplicate ingest', duplicated.join(','));
 }
 
 console.log('8. write scopes + the echo-loop tripwire (spec §10)');
@@ -694,14 +729,41 @@ console.log('8. write scopes + the echo-loop tripwire (spec §10)');
     ? ok('write scopes are exactly weight / body fat / waist')
     : bad('write scopes', HEALTH_WRITE_IDENTIFIERS.join(','));
 
-  // THE tripwire. Nothing echoes today only because none of what ARC writes is
-  // in the read set. That is a property of two lists, not of anything
-  // structural, so it gets asserted rather than assumed — this is the test that
-  // must fail the day someone adds BodyMass to the read scopes.
-  const overlap = readWriteScopeOverlap();
-  overlap.length === 0
-    ? ok('read and write scopes are disjoint — no echo loop')
-    : bad('READ/WRITE SCOPE OVERLAP', overlap.join(','));
+  // THE tripwire, in its second form.
+  //
+  // It used to assert the two scope lists were DISJOINT, on the reasoning that
+  // nothing could echo while ARC read none of what it wrote. That was true and
+  // is now obsolete: reading BodyMass back is the entire point of the two-way
+  // link (weight was zero-way inbound), so the old assertion would have had to
+  // fail or be deleted. Neither — what it was protecting is kept exactly: NO
+  // TYPE MAY BE BOTH READ AND WRITTEN WITHOUT ECHO SUPPRESSION BEHIND IT.
+  //
+  // The overlap is therefore expected, and expected to be precisely the body
+  // channel; what must be empty is the overlap NOT covered by suppression. This
+  // still fires in CI for the case that matters now — a new write scope for a
+  // type already read on the ordinary path, where the reader retries unfiltered
+  // on a bad predicate and would re-ingest ARC's own samples.
+  const overlap = readWriteScopeOverlap().slice().sort();
+  overlap.length === 3 && overlap.join(',') === want.slice().sort().join(',')
+    ? ok('the read/write overlap is exactly the body channel — deliberate, not accidental')
+    : bad('unexpected overlap', overlap.join(','));
+
+  const unsuppressed = unsuppressedEchoIdentifiers();
+  unsuppressed.length === 0
+    ? ok('every read+write type has echo suppression behind it')
+    : bad('UNSUPPRESSED ECHO PATH', unsuppressed.join(','));
+
+  // Non-circularity: the suppressed set is derived from BODY_INGEST_METRICS, so
+  // it can only claim coverage the ingest path actually implements. Prove no
+  // published type sneaks in through the UNsuppressed readers.
+  const unsuppressedReaders = [
+    ...SAMPLE_METRICS.map((m) => m.hkIdentifier),
+    ...STATISTIC_METRICS.map((m) => m.hkIdentifier),
+  ];
+  const leaked = HEALTH_WRITE_IDENTIFIERS.filter((id) => unsuppressedReaders.includes(id));
+  leaked.length === 0
+    ? ok('no published type is read through the unfiltered-retry path')
+    : bad('PUBLISHED TYPE ON THE UNSUPPRESSED READER', leaked.join(','));
 
   // Workouts and nutrition are explicitly out of scope: neither can be deleted
   // once written (no column stores a HealthKit UUID).
@@ -805,6 +867,188 @@ console.log('10. the write half of the guarded seam no-ops without the module');
   saved === false
     ? ok('saveHealthQuantity resolves false — a refused write is never claimed')
     : bad('save', saved);
+}
+
+console.log('11. echo suppression — who may be ingested on a type ARC also writes');
+{
+  // The ordinary case: a real device, attributable, not ARC.
+  isIngestableSample(prov('com.withings.wiScaleNG', null, 'Withings'))
+    ? ok('a real scale is ingestable')
+    : bad('withings rejected');
+
+  // ARC's own, by either kind of evidence.
+  !isIngestableSample(prov(ARC_BUNDLE_ID))
+    ? ok("ARC's own bundle is never re-ingested")
+    : bad('arc bundle ingested');
+  !isIngestableSample(prov('com.withings.wiScaleNG', null, null, true))
+    ? ok('the ARCPublishedFrom tag is decisive even under a foreign bundle id')
+    : bad('metadata tag ignored');
+
+  // THE rule that is easy to get backwards: unknown source is NOT safe for a
+  // type ARC writes. An unattributable BodyMass sample cannot be shown not to be
+  // ARC's own reflection, and ingesting it is how the round-trip starts.
+  !isIngestableSample(prov(null))
+    ? ok('unknown source is REFUSED — unattributable ≠ safe on a published type')
+    : bad('null bundle ingested');
+  !isIngestableSample(prov(''))
+    ? ok('an empty bundle id is refused too')
+    : bad('empty bundle ingested');
+
+  // The parser is where `arcWritten` comes from, so pin the wire shape: the key
+  // ARC stamps is a plain metadata key on the sample, not part of sourceRevision.
+  const echoed = parseQuantitySample({
+    quantity: 82.4,
+    startDate: new Date('2026-08-12T09:00:00.000Z'),
+    endDate: new Date('2026-08-12T09:00:00.000Z'),
+    sourceRevision: { source: { name: 'ARC', bundleIdentifier: ARC_BUNDLE_ID } },
+    metadata: { [ARC_WRITE_METADATA_KEY]: 'body-1' },
+  });
+  echoed && echoed.provenance.arcWritten === true
+    ? ok('parseQuantitySample lifts the ARC write tag off sample metadata')
+    : bad('metadata parse', JSON.stringify(echoed));
+  const foreign = parseQuantitySample({
+    quantity: 82.4,
+    startDate: new Date('2026-08-12T09:00:00.000Z'),
+    endDate: new Date('2026-08-12T09:00:00.000Z'),
+    sourceRevision: { source: { name: 'Withings', bundleIdentifier: 'com.withings.wiScaleNG' } },
+    metadata: { HKWasUserEntered: false },
+  });
+  foreign && foreign.provenance.arcWritten === false
+    ? ok('an unrelated metadata bag does not read as an ARC write')
+    : bad('false positive', JSON.stringify(foreign));
+  // A sample with no metadata at all must not throw or read as ARC's.
+  const bare = parseQuantitySample({
+    quantity: 80,
+    startDate: new Date('2026-08-12T09:00:00.000Z'),
+    endDate: new Date('2026-08-12T09:00:00.000Z'),
+    sourceRevision: { source: { name: 'Oura', bundleIdentifier: 'com.ouraring.oura' } },
+  });
+  bare && bare.provenance.arcWritten === false
+    ? ok('a sample with no metadata parses, tagged not-ours')
+    : bad('bare sample', JSON.stringify(bare));
+
+  ECHO_SUPPRESSED_IDENTIFIERS.length === 3 &&
+  ECHO_SUPPRESSED_IDENTIFIERS.every((id) => HEALTH_WRITE_IDENTIFIERS.includes(id))
+    ? ok('the suppressed set is exactly the published set')
+    : bad('suppressed set', ECHO_SUPPRESSED_IDENTIFIERS.join(','));
+}
+
+console.log('12. inbound body mapping — the percent trap, in reverse');
+{
+  const bySpec = (c) => BODY_INGEST_METRICS.find((m) => m.column === c);
+  const scale = prov('com.withings.wiScaleNG', null, 'Withings');
+  const at = (iso) => ({ startISO: iso, endISO: iso, provenance: scale });
+
+  // Inbound and outbound must stay exact inverses. Asserted as a ROUND-TRIP
+  // property rather than two separate constants, so the pair cannot drift apart
+  // one edit at a time — which is the only way a unit bug gets into a medical
+  // record after review.
+  let roundTrips = true;
+  for (const out of BODY_PUBLISH_METRICS) {
+    const back = BODY_INGEST_METRICS.find((m) => m.hkIdentifier === out.hkIdentifier);
+    if (!back || back.column !== out.column || back.hkUnit !== out.hkUnit) {
+      roundTrips = false;
+      break;
+    }
+    for (const value of [0.1, 18.5, 82.4, 100]) {
+      if (Math.abs(back.fromHealthKit(out.toHealthKit(value)) - value) > 1e-9) roundTrips = false;
+    }
+  }
+  roundTrips
+    ? ok('every published type round-trips: fromHealthKit(toHealthKit(v)) === v')
+    : bad('round trip broken');
+
+  // The trap itself, stated inbound: HKUnit.percent() is a 0.0–1.0 FRACTION, so
+  // a real 18.5 % arrives as 0.185 and must be scaled UP. Storing it raw would
+  // record 0.185 % body fat — small enough to pass the 0–100 CHECK and poison
+  // every trend silently.
+  const fat = bySpec('body_fat_pct');
+  Math.abs(fat.fromHealthKit(0.185) - 18.5) < 1e-9
+    ? ok('body fat 0.185 → 18.5 % on the way IN')
+    : bad('inbound body fat', fat.fromHealthKit(0.185));
+  bySpec('weight_kg').fromHealthKit(82.4) === 82.4 && bySpec('waist_cm').fromHealthKit(81) === 81
+    ? ok('weight and waist arrive canonical — kg and cm, unconverted')
+    : bad('inbound identity conversions');
+
+  // One weigh-in reporting several columns is ONE row: HealthKit stamps them at
+  // the same instant and body_metrics is a wide row, exactly like the keypad's.
+  const merged = bodyIngestRows([
+    { spec: bySpec('weight_kg'), samples: [{ value: 82.4, ...at('2026-08-12T07:00:00.000Z') }] },
+    {
+      spec: bySpec('body_fat_pct'),
+      samples: [{ value: 0.185, ...at('2026-08-12T07:00:00.000Z') }],
+    },
+    { spec: bySpec('waist_cm'), samples: [{ value: 81, ...at('2026-08-12T08:00:00.000Z') }] },
+  ]);
+  merged.length === 2 &&
+  merged[0].measuredAt === '2026-08-12T07:00:00.000Z' &&
+  merged[0].values.weight_kg === 82.4 &&
+  merged[0].values.body_fat_pct === 18.5 &&
+  merged[1].values.waist_cm === 81
+    ? ok('samples sharing an instant merge into one row; a later instant is its own row')
+    : bad('instant grouping', JSON.stringify(merged));
+  merged[0].measuredAt < merged[1].measuredAt
+    ? ok('rows come back oldest-first')
+    : bad('row order');
+
+  // Echo: ARC's own weight coming back must produce NOTHING.
+  bodyIngestRows([
+    {
+      spec: bySpec('weight_kg'),
+      samples: [
+        {
+          value: 82.4,
+          startISO: '2026-08-12T07:00:00.000Z',
+          endISO: '2026-08-12T07:00:00.000Z',
+          provenance: prov(ARC_BUNDLE_ID),
+        },
+        {
+          value: 82.4,
+          startISO: '2026-08-12T08:00:00.000Z',
+          endISO: '2026-08-12T08:00:00.000Z',
+          provenance: prov('com.withings.wiScaleNG', null, null, true),
+        },
+        {
+          value: 82.4,
+          startISO: '2026-08-12T09:00:00.000Z',
+          endISO: '2026-08-12T09:00:00.000Z',
+          provenance: prov(null),
+        },
+      ],
+    },
+  ]).length === 0
+    ? ok("ARC's own, tagged, and unattributable samples all ingest to nothing")
+    : bad('echo leaked in');
+
+  // Out-of-CHECK values are dropped HERE, because body_metrics would throw on
+  // the INSERT and take the whole batch with it.
+  const outOfRange = bodyIngestRows([
+    {
+      spec: bySpec('weight_kg'),
+      samples: [
+        { value: 0, ...at('2026-08-12T01:00:00.000Z') }, // CHECK is weight > 0
+        { value: 1000, ...at('2026-08-12T02:00:00.000Z') }, // …and < 1000
+        { value: Number.NaN, ...at('2026-08-12T03:00:00.000Z') },
+        { value: 82.4, ...at('2026-08-12T04:00:00.000Z') },
+      ],
+    },
+    {
+      spec: bySpec('body_fat_pct'),
+      // 1.5 as a FRACTION is 150 % — above the CHECK ceiling. The bound is
+      // applied to the CONVERTED value, which is the only correct place for it.
+      samples: [
+        { value: 1.5, ...at('2026-08-12T05:00:00.000Z') },
+        { value: 1, ...at('2026-08-12T06:00:00.000Z') }, // 100 % — inclusive, kept
+      ],
+    },
+  ]);
+  outOfRange.length === 2 &&
+  outOfRange[0].values.weight_kg === 82.4 &&
+  outOfRange[1].values.body_fat_pct === 100
+    ? ok('values outside the body_metrics CHECK bounds are dropped, not thrown')
+    : bad('bounds', JSON.stringify(outOfRange));
+
+  bodyIngestRows([]).length === 0 ? ok('no input → no rows') : bad('empty input');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
