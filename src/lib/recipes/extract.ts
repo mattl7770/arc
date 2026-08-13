@@ -10,6 +10,12 @@
  * never executed, and the callers cap sizes before anything reaches a model
  * prompt.
  */
+import {
+  decodeHtmlEntities,
+  metaContent,
+  pageTextForModel,
+  stripTags,
+} from '@/lib/html/readable';
 
 /** What deterministic extraction yields (JSON-LD path) — review-ready. */
 export type ExtractedRecipe = {
@@ -25,53 +31,18 @@ export type ExtractedRecipe = {
 
 // --- Shared helpers -----------------------------------------------------------
 
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '"',
-  apos: "'",
-  nbsp: ' ',
-  frac12: '½',
-  frac14: '¼',
-  frac34: '¾',
-};
-
-/** Decode the HTML entities that actually appear in og/meta content. */
-export function decodeHtmlEntities(text: string): string {
-  return text
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => {
-      const code = parseInt(hex, 16);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
-    })
-    .replace(/&#(\d+);/g, (_, dec: string) => {
-      const code = parseInt(dec, 10);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
-    })
-    .replace(/&([a-zA-Z0-9]+);/g, (whole, name: string) => NAMED_ENTITIES[name] ?? whole);
-}
-
-/** `<meta property="og:description" content="…">` — attribute order tolerant. */
-export function metaContent(html: string, property: string): string | null {
-  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // The value must be captured up to the SAME quote that opened it — a raw
-  // apostrophe inside a double-quoted attribute is legal, common HTML, and a
-  // mixed [^"']* class would truncate the caption at the first one.
-  const attr = `(?:property|name)=["']${escaped}["']`;
-  const value = `content=(?:"([^"]*)"|'([^']*)')`;
-  const patterns = [
-    new RegExp(`<meta[^>]*${attr}[^>]*${value}`, 'i'),
-    new RegExp(`<meta[^>]*${value}[^>]*${attr}`, 'i'),
-  ];
-  for (const re of patterns) {
-    const m = re.exec(html);
-    if (m) {
-      const raw = m[1] ?? m[2];
-      if (raw !== undefined) return decodeHtmlEntities(raw);
-    }
-  }
-  return null;
-}
+/**
+ * The page-generic half of extraction now lives in `src/lib/html/readable.ts` —
+ * decoding entities, reading an og/meta tag, stripping tags and capping page
+ * text are what ANY import rung needs, not recipe work. Knowledge-base article
+ * import (docs/knowledge-subapp.md §5) is the second consumer, and a second copy
+ * is how two extractors start disagreeing about what "readable text" means.
+ *
+ * Re-exported here so every existing call site — and db/recipe-import.test.mjs,
+ * which pins these against fixture payloads — imports exactly what it always
+ * did.
+ */
+export { decodeHtmlEntities, metaContent, pageTextForModel, stripTags };
 
 /** ISO-8601 duration ("PT1H15M", "PT30M") → whole minutes, or null. */
 export function isoDurationToMinutes(value: unknown): number | null {
@@ -105,19 +76,6 @@ export function parseYield(value: unknown): number | null {
     }
   }
   return null;
-}
-
-/** Strip tags from an HTML fragment into readable text (<br> → newline). */
-function stripTags(fragment: string): string {
-  return decodeHtmlEntities(
-    fragment
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(?:p|div|li|h[1-6])>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-  )
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 // --- schema.org Recipe JSON-LD (rung 1 — deterministic, no AI) ---------------
@@ -347,20 +305,5 @@ export function extractYouTubeDescription(html: string): string | null {
   }
 }
 
-// --- Generic page text (rung 2 → the model) -----------------------------------
-
-/**
- * Strip a page down to readable text for the model turn: scripts/styles/nav
- * furniture out, tags off, whitespace collapsed, size-capped (tool results are
- * re-sent every model round-trip — a 600 KB page must never reach a prompt).
- */
-export function pageTextForModel(html: string, cap: number = 20000): string {
-  const withoutBlocks = html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<(?:nav|header|footer|aside)[\s\S]*?<\/(?:nav|header|footer|aside)>/gi, ' ');
-  const text = stripTags(withoutBlocks)
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-  return text.length > cap ? text.slice(0, cap) : text;
-}
+// (Generic page text for the model turn — `pageTextForModel` — is re-exported
+// from src/lib/html/readable.ts at the top of this file.)

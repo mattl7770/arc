@@ -125,7 +125,15 @@ export const COACH_DOMAINS: CoachDomain[] = [
   },
   { label: 'the training engine', tools: ['get_training_recommendation'] },
   { label: 'insights and trends', tools: ['get_insights'] },
-  { label: 'past conversations and the ARC reference', tools: ['search_history'] },
+  // Acquired a WRITE tool with 0035 (save_knowledge_entry), so
+  // `buildCoverageManifest` moves this domain to the read-and-write list on its
+  // own — the manifest is derived, never hand-labelled. The label widened with
+  // it: "the ARC reference" named only the shipped pack, and the user's own
+  // entries are now the half that outranks it.
+  {
+    label: 'the knowledge base and past conversations',
+    tools: ['search_history', 'save_knowledge_entry'],
+  },
   { label: 'appointments', tools: ['get_screenings'] },
 ];
 
@@ -144,7 +152,10 @@ export const UNCOVERED_DOMAINS: string[] = [
   'lab report files and the PDF import (Data, Labs)',
   'booking, moving or cancelling an appointment (Data, Screenings)',
   'creating a protocol or a screening from scratch',
-  'editing or deleting anything already logged, including your own writes',
+  // Widened 2026-08-12 (0035) rather than given its own line: a knowledge entry
+  // the Coach saved is "your own writes", and editing one is the same act on
+  // the same list. Naming the screen is what makes the answer useful.
+  'editing or deleting anything already logged, incl. your own writes and knowledge entries (Data, Knowledge base)',
   'Settings: profile, units, Health sync, app lock, API key',
 ];
 
@@ -155,7 +166,7 @@ const WRITE_NAMES = new Set(WRITE_TOOLS.map((tool) => tool.name));
  * are module constants), so it stays inside the cached system prefix.
  *
  * Tool NAMES are deliberately not printed: the schemas are already on the wire,
- * and repeating 42 of them here would pay twice for the same information. The
+ * and repeating 43 of them here would pay twice for the same information. The
  * model needs the domain vocabulary, not a second copy of its own toolbox.
  */
 export function buildCoverageManifest(): string {

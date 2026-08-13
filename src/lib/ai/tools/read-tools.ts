@@ -1666,11 +1666,16 @@ const MEMORY_READ_LIMIT = 200;
 const searchHistory: CoachTool = {
   name: 'search_history',
   description:
-    "Keyword search over the user's own written history — past turns, day-log notes, protocol " +
-    "change notes, experiment hypotheses and verdicts, your memories — AND ARC's curated " +
-    'longevity reference. Use it to recall something specific ("have we tried magnesium?") or ' +
-    'to ground an explanation in ARC doctrine ("why does ApoB matter?"). Literal matching, not ' +
-    "semantic: try the user's own wording. Cite the source and date on every hit.",
+    // Corrected AND trimmed 2026-08-12 (0035). "ARC's curated longevity
+    // reference" named only the shipped pack; the knowledge base now has two
+    // owners and the user's own entries rank ABOVE it. How to read a conflict
+    // between them lives once in the system prompt's cached
+    // Memory-and-knowledge bullet, so it is not restated here.
+    "Keyword search over everything the user has written — past turns, day-log notes, " +
+    'protocol change notes, experiments, your memories — AND the knowledge base: their own ' +
+    'entries plus ARC’s shipped reference. Use it to recall something specific ("have we ' +
+    'tried magnesium?") or to ground an explanation. Literal matching, not semantic: try ' +
+    'their own wording. Cite the source on every hit.',
   inputSchema: {
     type: 'object',
     properties: {

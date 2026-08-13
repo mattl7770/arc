@@ -45,7 +45,9 @@ Everything runs on-device except the model call itself (local-first, offline-exc
 
 Every tool the model can call. **Read tools run freely; every write suspends the loop until the user approves it in the UI** (see §5). Inputs are validated at the tool layer — bad input becomes an `is_error` tool result the model can correct, and never reaches a repository.
 
-> **The registry today: 42 tools — 18 read + 24 write.** `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the ones added since are in **§2c** (modes, experiments, knowledge) and **§2f** (recipes + grocery, 3 read + 5 write), and the deliberately withheld ones are in **§2d**. ⚠️ **The newest trio is not yet tabled in this doc:** `set_nutrition_targets`, `get_screenings` and `log_screening_done` closed the two blind domains the 2026-08-12 owner pass exposed (the census is recorded in `docs/project-status.md` §AI Coach) — fold them into §2c when this doc is next touched. Counted 2026-08-12 by importing the registry, not by adding up this document.
+> **The registry today: 43 tools — 18 read + 25 write.** `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the ones added since are in **§2c** (modes, experiments, knowledge, nutrition targets, screenings) and **§2f** (recipes + grocery, 3 read + 5 write), and the deliberately withheld ones are in **§2d**. Counted 2026-08-12 by importing the registry, not by adding up this document.
+>
+> ⚠️ **Both prompt-token ceilings are at their limit and were raised once, at 43** (`db/coach-eval.test.mjs` §6: schema 9,000 → 9,250, prompt 3,500 → 3,700). The standing rule holds and is stricter than it looks: **the next tool added must trim duplication before it may raise anything again**, and the accounting for any raise goes in that file. The measured place to find that trim is the four schema-heavy tools — `log_workout`, `update_protocol`, `adjust_today`, `create_experiment` — carrying ~1,000 tok of per-property prose that has never been swept.
 
 ### 2a. Shipped — read (execute immediately)
 
@@ -115,17 +117,22 @@ That last rule covers a day the tool **derives** as well as one the user passes.
 
 **Protocol edits are versioned, not patched.** `update_protocol` never mutates the live version: the model reads the current items with `get_protocols`, submits the COMPLETE new item list (kept items + the change), and the tool writes a new immutable `protocol_versions` row via `addVersion(…, 'ai')`, bumping `current_version_id`. The confirmation line shows the item-count delta (`3 items (was 2)`) so a destructive replace can't be approved as an innocent add; the old version is preserved. This is the concrete form of "add magnesium to my evening stack → the stack actually updates."
 
-### 2c. Shipped since — modes, experiments, knowledge (registered)
+### 2c. Shipped since — modes, experiments, knowledge, nutrition targets, screenings
 
-Earlier revisions of this doc listed `set_mode` and `create_experiment` as unregistered stubs and `search_knowledge` as "not yet designed". **All five tools below are registered**, counted in the 24 above.
+Earlier revisions of this doc listed `set_mode` and `create_experiment` as unregistered stubs. **Every tool below is registered.**
 
 | Tool | Kind | Notes |
 | --- | --- | --- |
 | `set_mode` | write | Sets today's mode (Normal/Travel/Sick/Deload/Social/Custom) so plan, priorities, tone and adherence adapt. Shipped with `day_modes` (**0026**); mid-day changes re-derive the mission as a diff that preserves completed work. The active mode also appears in `get_today_snapshot`. |
 | `create_experiment` | write | n-of-1: hypothesis, intervention, watched metrics, duration, success criteria. Shipped with `experiments` (**0027**). Rejects empty metrics and durations under 3 days. |
 | `complete_experiment` | write | Concludes a running experiment with a verdict. Refuses an unknown id, and refuses to re-conclude one that already has a verdict. |
+| `abandon_experiment` | write | Drops a running experiment without a verdict. |
 | `get_experiments` | read | Running (ready-to-read-out first), concluded, abandoned. |
-| `search_knowledge` | read | RAG over the curated longevity corpus via `sqlite-vec`. Registered and wired (**0025**); it degrades to an honest "not available yet" until the on-device embedder model lands — see §9. |
+| `set_nutrition_targets` | write | Versioned kcal/protein/carb/fat targets — takes the **COMPLETE** new set, never a delta. Added 2026-08-12 after the owner pass found the Coach reporting a shipped feature (0015) as absent, which is also what produced the coverage manifest. |
+| `get_screenings` | read | The preventive-screening ledger and the medical calendar (**0007**) — what is due, overdue, and booked. Added 2026-08-12, same census. |
+| `log_screening_done` | write | Marks a screening completed on a day and rolls its next-due date forward. |
+| `save_knowledge_entry` | write | **Added 2026-08-12 with the knowledge base (0035).** Writes ONE reference entry — how something works, or a stance the user commits to — through the same repository path the editor and the import review screen use, so it is chunked and citable the moment it lands. `source='coach'`. Card: `Save knowledge entry "<title>" · <topic> · <N> words`. **The card is compact on purpose and is only safe because of the doctrine beside it:** the model must present the drafted body verbatim in its message *before* calling, so what the user approves is on screen and not just a title. Reach for it only on the user's request or clear invitation — never to file away your own output. See `docs/knowledge-subapp.md` §6. |
+| `search_knowledge` | read | ⚠️ **WRITTEN BUT DELIBERATELY NOT REGISTERED** — `read-tools.ts` says so in as many words, and this doc claimed the opposite for weeks. Semantic RAG over the corpus via `sqlite-vec` (**0025**), which cannot return a passage until the on-device embedder model ships (§9): a registered tool that always fails teaches the model not to call it. `search_history` covers the same ground by keyword today, over the user's own writing, ARC's pack **and** their own knowledge entries. Re-register it the day the embedder ships — **batched** with whatever else is pending, per the token-ceiling note above. |
 
 **Why the Coach owns experiments.** The browse screens (`app/experiments.tsx`, `app/experiment-detail.tsx`) are deliberately **read-only with zero pine**: the Coach designs and concludes experiments because it reads the watched metrics first. A "Conclude" button on a screen with no numbers behind it would invite a verdict with no evidence.
 
@@ -383,7 +390,7 @@ Neither `isDueOn` nor the notification path changed; only ranking, labelling and
 - Home reads `generateDailyBrief` ✅. Mission-id exposure for `complete_mission_item` is still undecided — that tool remains withheld (§2d).
 - Row types remain slice-local per convention (`src/lib/ai/types.ts`, `src/lib/reminders/types.ts`).
 
-**Feature deps — status:** Protocols ✅ (`update_protocol` live) · Modes ✅ (`set_mode` live, 0026) · `experiments` ✅ (0027, three tools live) · sqlite-vec + chunking ✅ (0025; `search_knowledge` registered) — **but the on-device embedder model is still missing**, so knowledge retrieval degrades to an honest "not available yet"; `explain_metric` and a populated corpus wait on it. Navigation seam ✗ → `navigate_to` still withheld. `propose_today_adjustment` and `generate_grocery_list` are unblocked but unbuilt.
+**Feature deps — status:** Protocols ✅ (`update_protocol` live) · Modes ✅ (`set_mode` live, 0026) · `experiments` ✅ (0027, four tools live) · sqlite-vec + chunking ✅ (0025; `search_knowledge` written but **deliberately unregistered** — see §2c) — **the on-device embedder model is still missing**, so *semantic* retrieval degrades to an honest "not available yet" and `explain_metric` waits on it. The **corpus is no longer empty and no longer read-only**: the knowledge base shipped 2026-08-12 (0035), so the user writes entries and `search_history` retrieves them by keyword today. Navigation seam ✗ → `navigate_to` still withheld. `propose_today_adjustment` and `generate_grocery_list` are unblocked but unbuilt.
 **Feature deps (updated 2026-08-08):** ~~Protocols → `update_protocol`~~, ~~Modes → `set_mode`~~, ~~experiments migration → `create_experiment`~~ — all shipped. Still dependent: mission write access → `adjust_today` (design in coach-intelligence-review.md §4 Phase 2) · protocol-derived targets → target-adherence signals (Phase 5) · knowledge base + on-device embedder → working RAG + `explain_metric` (Phase 6) · navigation seam → `navigate_to`.
 
 **Known approximations (reviewed 2026-07-26, accepted for now):**
@@ -404,6 +411,6 @@ Neither `isDueOn` nor the notification path changed; only ranking, labelling and
 
 **v2 — SHIPPED:** protocol tools + versioning ✅ · modes tool ✅ · model-voiced brief ✗ (the brief is still the deterministic skeleton) · Coach notes memory ~ (`memory_chunks` + `ingestMemory` exist at 0025, gated on the embedder) · evening accountability ✗.
 
-**v3 — PARTLY SHIPPED:** experiment engine ✅ (0027) · photo meal logging ✅ · RAG ~ (schema, chunker, retrieval and `search_knowledge` all shipped at 0025; **the embedder model is the missing piece**) · predictive alerts ✗ · correlations at scale ✗ · voice-first ✗ · navigation ✗.
+**v3 — PARTLY SHIPPED:** experiment engine ✅ (0027) · photo meal logging ✅ · **writable knowledge base ✅ (0035** — browse, author, article import, `save_knowledge_entry`) · RAG ~ (schema, chunker, retrieval and `search_knowledge` all *written* at 0025, the tool held back until **the embedder model**, which is the missing piece) · predictive alerts ✗ · correlations at scale ✗ · voice-first ✗ · navigation ✗.
 
 **Current tool total: 24 registered (11 read + 13 write)**, plus 2 written-but-withheld (§2d).

@@ -192,6 +192,13 @@ export default function RootLayout() {
           {/* INTEGRATOR-MERGE: n-of-1 experiments surface (docs/ai-coach.md §6, migration 0027). */}
           <Stack.Screen name="experiments" />
           <Stack.Screen name="experiment-detail" />
+          {/* INTEGRATOR-MERGE: the knowledge base (docs/knowledge-subapp.md,
+              migration 0035) — the browsable/writable reference over the 0025
+              RAG substrate. Pushed from the Data tab's "Knowledge base" row. */}
+          <Stack.Screen name="knowledge" />
+          <Stack.Screen name="knowledge-entry" />
+          <Stack.Screen name="knowledge-entry-edit" />
+          <Stack.Screen name="knowledge-import" />
         </Stack>
         <StatusBar style="dark" />
         {/* Re-lock / privacy cover. A NATIVE full-screen Modal, not an

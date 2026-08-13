@@ -41,6 +41,7 @@ import {
   markScreeningDone,
 } from '@/lib/db/repositories/screenings';
 import { addVersion, getCurrentVersion, getProtocolBySlug } from '@/lib/db/repositories/protocols';
+import { saveKnowledgeEntry } from '@/lib/db/repositories/knowledge';
 import {
   completeReminder,
   createReminder,
@@ -2007,6 +2008,91 @@ const logScreeningDoneTool: CoachTool = {
   },
 };
 
+// --- save_knowledge_entry (the knowledge base, 0035) -------------------------
+
+/**
+ * The Coach's one write path into the knowledge base
+ * (docs/knowledge-subapp.md §6).
+ *
+ * ## Why the card can be this compact
+ *
+ * `Save knowledge entry "<title>" · <topic> · <N> words` names WHAT and HOW
+ * MUCH, and nothing else — which would be a poor confirmation for a multi-
+ * paragraph document if the card were the only thing on screen. It isn't: the
+ * doctrine (system-prompt.ts TOOL_DOCTRINE) requires the model to present the
+ * drafted entry VERBATIM in its message before calling, so the body the user
+ * approves sits directly above the card. The card names the commitment; the
+ * message is the content. Putting the whole body in `confirmSummary` instead
+ * would be a wall of text in a one-line slot, and the user would stop reading
+ * it — which is the failure mode a confirmation gate exists to prevent.
+ *
+ * ## What it deliberately cannot do
+ *
+ * There is no `get_knowledge_entry` and no Coach edit/archive path. Reading is
+ * covered by `search_history`, which already returns knowledge excerpts with
+ * citations; editing is the user's act in the UI, consistent with "editing or
+ * deleting anything already logged" living in UNCOVERED_DOMAINS. Both are
+ * recorded as deliberately-out in the spec, with the revisit trigger: if real
+ * transcripts show truncated-doctrine answers, add the read tool BATCHED with
+ * the next registry change.
+ */
+const saveKnowledgeEntryTool: CoachTool = {
+  name: 'save_knowledge_entry',
+  // TRIMMED BEFORE IT SHIPPED (db/coach-eval.test.mjs §6: "the next addition
+  // trims"). The first draft restated three rails the system prompt's cached
+  // Memory-and-knowledge bullet now carries — invitation-only, present the body
+  // before calling, and the memory/knowledge line — which is the exact
+  // eight-descriptions-say-it-eight-times duplication that comment was written
+  // about. What stays is only what the doctrine does NOT say: what the tool
+  // writes, and the topic vocabulary, which is data the prompt has no business
+  // carrying.
+  description:
+    'Save ONE reference entry to the user’s knowledge base — how something works, or a ' +
+    'stance they commit to. Only on their request or invitation, and present the entry in ' +
+    'your message first.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'One line: what the entry commits to.' },
+      topic: {
+        type: 'string',
+        description:
+          'cardiovascular, recovery, training, sleep, metabolic, method, supplements, ' +
+          'lifestyle, or a new lowercase word.',
+      },
+      body: {
+        type: 'string',
+        description:
+          'The entry in paragraphs, citable. Blank lines separate paragraphs and are kept.',
+      },
+    },
+    required: ['title', 'topic', 'body'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input) => {
+    const args = asRecord(input);
+    const title = reqString(args, 'title');
+    const topic = reqString(args, 'topic');
+    const body = reqString(args, 'body');
+    const words = body.trim().split(/\s+/).length;
+    return `Save knowledge entry "${title}" · ${topic} · ${words} words`;
+  },
+  execute: (db, input) => {
+    const args = asRecord(input);
+    // The SAME repository path the editor and the import review screen use —
+    // chunking included — so a Coach-saved entry is indistinguishable from a
+    // hand-written one downstream, and is retrievable the moment it lands.
+    const id = saveKnowledgeEntry(db, {
+      title: reqString(args, 'title'),
+      topic: reqString(args, 'topic'),
+      body: reqString(args, 'body'),
+      source: 'coach',
+    });
+    return json({ saved: true, id });
+  },
+};
+
 export const WRITE_TOOLS: CoachTool[] = [
   logMetricTool,
   logMealTool,
@@ -2032,4 +2118,5 @@ export const WRITE_TOOLS: CoachTool[] = [
   addRecipeToGroceryListTool,
   logRecipeTool,
   saveRecipeTool,
+  saveKnowledgeEntryTool,
 ];

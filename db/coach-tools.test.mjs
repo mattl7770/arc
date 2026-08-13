@@ -2283,6 +2283,90 @@ console.log('34. screenings + appointments: the second domain no tool could see'
 }
 
 console.log('35. the coverage manifest: the model is told what it CANNOT see');
+console.log('33. save_knowledge_entry (docs/knowledge-subapp.md §6, migration 0035)');
+{
+  const { db } = freshDb();
+  const summary = (name, input) => toolByName(name).confirmSummary(input, db, CTX);
+
+  const tool = toolByName('save_knowledge_entry');
+  tool ? ok('save_knowledge_entry is registered') : bad('save_knowledge_entry not registered');
+  tool.readOnly === false
+    ? ok('it is a WRITE tool, so every call goes through the confirmation gate')
+    : bad('registered read-only');
+  tool.inputSchema.additionalProperties === false
+    ? ok('additionalProperties: false')
+    : bad('schema is open');
+  ['title', 'topic', 'body'].every((k) => tool.inputSchema.required.includes(k))
+    ? ok('title, topic and body are all required')
+    : bad('required keys', JSON.stringify(tool.inputSchema.required));
+
+  // The DOCTRINE that makes the compact card safe: the model must present the
+  // body before calling. If that ever disappears, the card becomes a one-line
+  // approval for a document the user never saw.
+  //
+  // It is pinned in TWO places with a deliberate split of labour, per the
+  // prompt-budget rule in db/coach-eval.test.mjs §6 — the description carries
+  // the TERSE form (it is what the model reads when deciding to call, and it is
+  // billed per tool), the system prompt carries the full rail once (it is
+  // cached, and the reasoning belongs where the other rails live). Both are
+  // asserted, neither is allowed to carry the other's copy.
+  /present the entry in your message first/i.test(tool.description)
+    ? ok('the description tells the model to present the entry before calling')
+    : bad('present-before-calling missing from the description');
+  /only on their request or invitation/i.test(tool.description)
+    ? ok('the description forbids proactive self-archiving')
+    : bad('invitation-only rule missing');
+
+  const entry = {
+    title: 'Magnesium forms differ in absorption',
+    topic: 'supplements',
+    body:
+      'Glycinate is generally better tolerated than citrate, which is notably laxative at ' +
+      'the doses people actually take. Elemental magnesium per gram differs by form, so a ' +
+      'dose stated in milligrams of compound is not a dose of magnesium.',
+  };
+  const card = summary('save_knowledge_entry', entry);
+  card === 'Save knowledge entry "Magnesium forms differ in absorption" · supplements · 38 words'
+    ? ok('the card is title · topic · word count')
+    : bad('card wording', card);
+
+  const result = run('save_knowledge_entry', db, entry);
+  result.saved === true && typeof result.id === 'string'
+    ? ok('execute reports the save with the new id')
+    : bad('execute result', JSON.stringify(result));
+
+  const row = db.get('SELECT * FROM knowledge_entries WHERE id = ?', [result.id]);
+  row && row.source === 'coach'
+    ? ok("the row lands with source='coach' — provenance the user can see in the reader")
+    : bad('row source', JSON.stringify(row));
+  row.body === entry.body ? ok('the body round-trips verbatim') : bad('body altered');
+
+  // It goes through the SHARED repository path, so it is chunked and therefore
+  // retrievable the moment it lands — a Coach-saved entry is indistinguishable
+  // from a hand-written one downstream.
+  const chunks = db.all('SELECT * FROM knowledge_chunks WHERE entry_id = ?', [result.id]);
+  chunks.length > 0 && chunks.every((c) => c.source === 'user-knowledge' && c.pack_version === null)
+    ? ok('chunks were written under the reserved source (the pack-protection invariant holds)')
+    : bad('chunking did not happen through the shared path', JSON.stringify(chunks));
+
+  throws(() => summary('save_knowledge_entry', { ...entry, title: '  ' }))
+    ? ok('a blank title fails at the card, before costing an Approve tap')
+    : bad('blank title accepted');
+  throws(() => summary('save_knowledge_entry', { ...entry, body: '' }))
+    ? ok('a blank body fails at the card')
+    : bad('blank body accepted');
+
+  // Deliberately OUT of v1 (spec §6) — recorded here so removing them is a
+  // decision someone has to make on purpose rather than a drift nobody noticed.
+  !toolByName('get_knowledge_entry')
+    ? ok('no get_knowledge_entry — search_history already returns knowledge excerpts')
+    : bad('a read tool was added without the batched registry change');
+  !toolByName('edit_knowledge_entry') && !toolByName('archive_knowledge_entry')
+    ? ok('no Coach edit/archive path — editing is the user’s act in the UI')
+    : bad('a Coach edit path appeared');
+}
+
+console.log('34. coverage manifest');
 {
   // WHY. The nutrition-targets reply was not a nutrition bug. From inside the
   // model's view — the tool schemas and nothing else — "no tool reads X" and
@@ -2313,6 +2397,28 @@ console.log('35. the coverage manifest: the model is told what it CANNOT see');
   manifest.includes('meals and nutrition targets') && manifest.includes('screenings')
     ? ok('the domains closed on this branch read as covered')
     : bad('new domains not in manifest');
+  // The knowledge domain acquired a write tool with 0035, so the DERIVED
+  // read/write split must have moved it on its own — nothing here is
+  // hand-labelled, which is the whole point of generating the manifest.
+  /Read and write:[^\n]*the knowledge base and past conversations/.test(manifest)
+    ? ok('the knowledge domain moved to read-and-write when it gained save_knowledge_entry')
+    : bad('knowledge domain not derived as writable', manifest);
+
+  // The conflict doctrine and the memory/knowledge line are prompt text, not
+  // schema, so nothing else would catch their removal.
+  const promptText = buildCoachSystemPrompt();
+  /cite BOTH, name the difference/.test(promptText)
+    ? ok('the conflict doctrine (cite both, name the difference) is in the prompt')
+    : bad('conflict doctrine missing from the prompt');
+  /follow THEIR committed stance/.test(promptText)
+    ? ok('…and the hierarchy: the user’s stance wins for personal coaching')
+    : bad('conflict hierarchy missing');
+  /present the drafted entry in full BEFORE calling/.test(promptText)
+    ? ok('the present-before-calling rail is stated in full in the cached prompt')
+    : bad('present-before-calling missing from the prompt');
+  promptText.includes('"Magnesium citrate upsets his stomach" is a memory.')
+    ? ok('the memory-vs-knowledge litmus is in the prompt verbatim')
+    : bad('memory/knowledge litmus missing');
   /BLIND to, never proof the user lacks the feature/.test(manifest)
     ? ok('the rule is stated as a fact about evidence, not as an exhortation')
     : bad('rule missing');
