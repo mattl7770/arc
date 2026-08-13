@@ -45,7 +45,7 @@ Everything runs on-device except the model call itself (local-first, offline-exc
 
 Every tool the model can call. **Read tools run freely; every write suspends the loop until the user approves it in the UI** (see §5). Inputs are validated at the tool layer — bad input becomes an `is_error` tool result the model can correct, and never reaches a repository.
 
-> **The registry today: 39 tools — 17 read + 22 write.** `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the ones added since are in **§2c** (modes, experiments, knowledge) and **§2f** (recipes + grocery, 3 read + 5 write), and the deliberately withheld ones are in **§2d**. Counted 2026-08-11 by importing the registry, not by adding up this document.
+> **The registry today: 42 tools — 18 read + 24 write.** `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the ones added since are in **§2c** (modes, experiments, knowledge) and **§2f** (recipes + grocery, 3 read + 5 write), and the deliberately withheld ones are in **§2d**. ⚠️ **The newest trio is not yet tabled in this doc:** `set_nutrition_targets`, `get_screenings` and `log_screening_done` closed the two blind domains the 2026-08-12 owner pass exposed (the census is recorded in `docs/project-status.md` §AI Coach) — fold them into §2c when this doc is next touched. Counted 2026-08-12 by importing the registry, not by adding up this document.
 
 ### 2a. Shipped — read (execute immediately)
 
