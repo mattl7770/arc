@@ -15,9 +15,14 @@ import {
   getOrCreateDailyLog,
   insertMissionItem,
   missionAdherence,
+  missionBySource,
   missionDailySeries,
+  missionRecordStart,
   removeMissionItem,
+  setMissionStatus,
 } from '../src/lib/db/repositories/mission.ts';
+import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+import { createProtocolWithVersion, deleteProtocol } from '../src/lib/db/repositories/protocols.ts';
 import { logSymptom, symptomDailySeries } from '../src/lib/db/repositories/symptoms.ts';
 
 let pass = 0;
@@ -427,6 +432,191 @@ console.log('\n13c. missionAdherence: rate over PLANNED days only, null when non
   near(rate, 6 / 10)
     ? ok('6 of 10 planned = 60%, the empty day ignored')
     : bad('rate', String(rate));
+}
+
+// ============================================================================
+// missionRecordStart / missionBySource (mission.ts) — the execution record
+// behind app/mission-history.tsx. Two things must hold: the record must begin
+// where the PLAN began (not where any log_entry began), and every judgement
+// must be attributable to the thing that generated it, including after that
+// thing is deleted.
+// ============================================================================
+
+/** Every planned row on a date, keyed by title — the tests set statuses by hand. */
+function entryIds(db, date) {
+  const rows = db.all(
+    `SELECT e.id, e.title FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ?`,
+    [date]
+  );
+  return new Map(rows.map((r) => [r.title, r.id]));
+}
+
+console.log('\n14. missionRecordStart: where the PLAN began, not where any row did');
+{
+  const { db } = freshDb();
+  missionRecordStart(db) === null
+    ? ok('an empty database has no record start (null, never a date)')
+    : bad('empty record start', String(missionRecordStart(db)));
+
+  const early = getOrCreateDailyLog(db, '2026-07-20');
+  insertMissionItem(db, early.id, 'habit', { id: '', title: 'Creatine', status: 'completed' });
+  const later = getOrCreateDailyLog(db, '2026-07-24');
+  insertMissionItem(db, later.id, 'habit', { id: '', title: 'Zone 2', status: 'skipped' });
+  missionRecordStart(db) === '2026-07-20'
+    ? ok('the record starts on the earliest PLANNED day')
+    : bad('record start', String(missionRecordStart(db)));
+
+  // An ad-hoc Log-tab capture on a much earlier day is not a plan, so it must
+  // not drag the record back — a note typed in June is not evidence that a
+  // mission existed in June.
+  const ancient = getOrCreateDailyLog(db, '2026-06-01');
+  db.run(
+    `INSERT INTO log_entries (id, daily_log_id, type, title, status, value, source)
+     VALUES ('adhoc-early', ?, 'note', 'Slept badly', 'completed', '{"adhoc":true}', 'manual')`,
+    [ancient.id]
+  );
+  missionRecordStart(db) === '2026-07-20'
+    ? ok('an ad-hoc capture on an earlier day does not move the record start')
+    : bad('adhoc moved the start', String(missionRecordStart(db)));
+
+  // A removed (tombstoned) row is likewise not a day the plan asked anything.
+  const tomb = getOrCreateDailyLog(db, '2026-07-01');
+  insertMissionItem(db, tomb.id, 'habit', { id: '', title: 'Sauna', status: 'pending' });
+  removeMissionItem(db, tomb.id, entryIds(db, '2026-07-01').get('Sauna'));
+  missionRecordStart(db) === '2026-07-20'
+    ? ok('a day whose only row was removed does not move the record start')
+    : bad('tombstone moved the start', String(missionRecordStart(db)));
+}
+
+console.log('\n14b. missionBySource: one protocol, four-way counts, worst item first');
+{
+  const { db } = freshDb();
+  const stack = createProtocolWithVersion(
+    db,
+    { name: 'Evening stack', type: 'supplement_stack' },
+    {
+      items: [
+        { title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null },
+        { title: 'Creatine', scheduled_time: '21:00', dose: '5 g', notes: null },
+      ],
+    }
+  );
+  const DAYS = ['2026-07-22', '2026-07-23', '2026-07-24'];
+  for (const date of DAYS) generateMissionForDay(db, date);
+
+  // Creatine done all three days. Magnesium: done once, skipped once, and left
+  // untouched once — three DIFFERENT outcomes, which is the whole point of
+  // counting four ways rather than scoring one.
+  for (const date of DAYS) setMissionStatus(db, entryIds(db, date).get('Creatine'), 'completed');
+  setMissionStatus(db, entryIds(db, DAYS[0]).get('Magnesium'), 'completed');
+  setMissionStatus(db, entryIds(db, DAYS[1]).get('Magnesium'), 'skipped');
+
+  const sources = missionBySource(db, DAYS[0], DAYS[2]);
+  sources.length === 1
+    ? ok('two items from one protocol roll up to ONE source')
+    : bad('source count', JSON.stringify(sources.map((s) => s.name)));
+  const source = sources[0];
+  source.name === 'Evening stack' && source.kind === 'protocol' && source.protocolId === stack
+    ? ok('named from the LIVE protocol row, and carries the id that routes back')
+    : bad('attribution', JSON.stringify({ name: source.name, kind: source.kind }));
+  source.planned === 6 && source.completed === 4 && source.skipped === 1 && source.partial === 0
+    ? ok('6 planned, 4 done, 1 skipped, 0 partial')
+    : bad('source totals', JSON.stringify(source));
+  source.planned - source.completed - source.skipped - source.partial === 1
+    ? ok('the remainder is 1 untouched — the ledger sums to planned')
+    : bad('ledger does not sum', JSON.stringify(source));
+  source.items.length === 2 && source.items[0].title === 'Magnesium'
+    ? ok('items are worst-missed first (Magnesium 2 missed before Creatine 0)')
+    : bad('item order', JSON.stringify(source.items.map((i) => i.title)));
+  source.items[0].planned === 3 && source.items[0].completed === 1 && source.items[0].skipped === 1
+    ? ok('the worst item carries its own three-day record')
+    : bad('worst item', JSON.stringify(source.items[0]));
+
+  console.log('\n14c. missionBySource: the range is inclusive at both ends and does not leak');
+  const outside = '2026-07-25';
+  generateMissionForDay(db, outside);
+  setMissionStatus(db, entryIds(db, outside).get('Magnesium'), 'completed');
+  const clipped = missionBySource(db, DAYS[0], DAYS[2]);
+  clipped[0].planned === 6
+    ? ok('a day after `to` does not leak into the window')
+    : bad('upper-bound leak', JSON.stringify(clipped[0]));
+  const narrow = missionBySource(db, DAYS[1], DAYS[1]);
+  narrow[0].planned === 2
+    ? ok('a single-day range returns exactly that day')
+    : bad('single-day range', JSON.stringify(narrow[0]));
+  missionBySource(db, DAYS[2], DAYS[0]).length === 0
+    ? ok('an inverted range (`to` before `from`) is empty, not an error')
+    : bad('inverted range', 'expected []');
+
+  console.log('\n14d. missionBySource and missionDailySeries agree, by construction');
+  // app/mission-history.tsx prints the rate from missionAdherence(series) and
+  // the ledger beneath it from the source totals. If those two ever counted
+  // different rows the screen would contradict itself on one line.
+  const series = missionDailySeries(db, 14, outside).filter((p) => p.date < outside);
+  const seriesPlanned = series.reduce((n, p) => n + p.planned, 0);
+  const seriesCompleted = series.reduce((n, p) => n + p.completed, 0);
+  const sourcePlanned = clipped.reduce((n, s) => n + s.planned, 0);
+  const sourceCompleted = clipped.reduce((n, s) => n + s.completed, 0);
+  seriesPlanned === sourcePlanned && seriesCompleted === sourceCompleted
+    ? ok(`both count ${seriesPlanned} planned / ${seriesCompleted} done over the same days`)
+    : bad(
+        'series vs sources',
+        `${seriesPlanned}/${seriesCompleted} vs ${sourcePlanned}/${sourceCompleted}`
+      );
+  near(missionAdherence(series), sourceCompleted / sourcePlanned)
+    ? ok('the rate the screen prints is the ratio of the ledger beneath it')
+    : bad('rate vs ledger', String(missionAdherence(series)));
+
+  console.log('\n14e. a deleted protocol keeps its name and loses its route');
+  deleteProtocol(db, stack);
+  const orphaned = missionBySource(db, DAYS[0], DAYS[2]);
+  orphaned.length === 1 &&
+  orphaned[0].name === 'Evening stack' &&
+  orphaned[0].kind === 'protocol_gone' &&
+  orphaned[0].protocolId === null
+    ? ok('history survives the delete, still named, no longer navigable')
+    : bad('orphaned source', JSON.stringify(orphaned));
+  orphaned[0].planned === 6 && orphaned[0].completed === 4
+    ? ok('and its counts are unchanged — ON DELETE SET NULL, never CASCADE')
+    : bad('orphaned counts', JSON.stringify(orphaned[0]));
+}
+
+console.log('\n14f. missionBySource: modes/experiments attribute by category; noise excluded');
+{
+  const { db } = freshDb();
+  const day = getOrCreateDailyLog(db, '2026-07-24');
+  // A mode item: `category`, never `protocol` (the exclusivity rule in
+  // mission-generate.ts). It has no protocol to route to and must say so.
+  insertMissionItem(db, day.id, 'habit', {
+    id: '',
+    title: 'Rest — no training today',
+    status: 'skipped',
+    category: 'Sick',
+  });
+  // A hand-added row with no attribution at all.
+  insertMissionItem(db, day.id, 'habit', { id: '', title: 'Stretch', status: 'pending' });
+  // Neither of these is a plan item.
+  db.run(
+    `INSERT INTO log_entries (id, daily_log_id, type, title, status, value, source)
+     VALUES ('adhoc-2', ?, 'note', 'Felt rough', 'completed', '{"adhoc":true}', 'manual')`,
+    [day.id]
+  );
+  insertMissionItem(db, day.id, 'habit', { id: '', title: 'Sauna', status: 'pending' });
+  removeMissionItem(db, day.id, entryIds(db, '2026-07-24').get('Sauna'));
+
+  const sources = missionBySource(db, '2026-07-24', '2026-07-24');
+  const names = sources.map((s) => s.name).sort();
+  JSON.stringify(names) === JSON.stringify(['Sick', 'Unattributed'])
+    ? ok('the mode item files under its label; the unattributed one says so')
+    : bad('attribution names', JSON.stringify(names));
+  sources.every((s) => s.kind === 'other' && s.protocolId === null)
+    ? ok('neither is navigable — there is no protocol behind either')
+    : bad('navigability', JSON.stringify(sources.map((s) => s.kind)));
+  sources.reduce((n, s) => n + s.planned, 0) === 2
+    ? ok('the ad-hoc note and the tombstoned row are both excluded')
+    : bad('exclusions', JSON.stringify(sources));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

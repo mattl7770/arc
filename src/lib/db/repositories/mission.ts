@@ -351,3 +351,214 @@ export function missionAdherence(points: MissionDayPoint[]): number | null {
   }
   return planned === 0 ? null : completed / planned;
 }
+
+/**
+ * The earliest date that ever carried a planned mission row — the day the
+ * execution record BEGINS. `null` when nothing has ever been planned.
+ *
+ * This exists because {@link missionDailySeries} zero-fills, and zero-fill
+ * renders two completely different facts identically:
+ *
+ *   - **a day inside the record with no plan** — real, and worth seeing: no
+ *     protocol was active, or none of them applied to that day;
+ *   - **a day before the record existed at all** — not a fact about execution.
+ *     A 14-day window over a three-day-old install is eleven days of this, and
+ *     drawing them is the "fortnight of failure" lie `missionDailySeries`' own
+ *     header warns about, one level up.
+ *
+ * app/mission-history.tsx clips its window at this date, so a young install
+ * shows four rows and says "4 days on record" rather than fourteen rows of
+ * nothing that read as fourteen days of not bothering.
+ *
+ * Same two shared predicates as everything else here, so "the record" means
+ * exactly the rows Home draws.
+ */
+export function missionRecordStart(db: Database): string | null {
+  const row = db.get<{ date: string | null }>(
+    `SELECT min(d.date) AS date
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`
+  );
+  return row?.date ?? null;
+}
+
+/**
+ * Where a mission row came from, and therefore whether there is a route back to
+ * it. `protocol` is navigable (the protocol still exists); `protocol_gone` is a
+ * protocol that has since been deleted — `log_entries.protocol_id` is
+ * ON DELETE SET NULL, so the row survives and the *name* survives in its
+ * extras, but there is nothing left to open; `other` is a mode item, an
+ * experiment's intervention, the mock seed, or a hand-added row.
+ */
+export type MissionSourceKind = 'protocol' | 'protocol_gone' | 'other';
+
+/** One repeated mission item's record across a window — a title, not a row. */
+export interface MissionItemRecord {
+  title: string;
+  /** Days in the window this item stood on the plan. */
+  planned: number;
+  completed: number;
+  /** Explicitly marked skipped. */
+  skipped: number;
+  /** Marked partial — real progress, so it is neither a completion nor a miss. */
+  partial: number;
+}
+
+/**
+ * Everything one SOURCE put on the plan across a window, and how much of it got
+ * done. The unit of the "where am I failing" question: an individual missed
+ * item is evidence, but the thing the user can actually *change* is the
+ * protocol that keeps generating it.
+ */
+export interface MissionSourceRecord {
+  /** Stable list key. Not the protocol id — a deleted protocol has none. */
+  key: string;
+  /** Set only when the protocol still exists, i.e. only when it is navigable. */
+  protocolId: string | null;
+  name: string;
+  kind: MissionSourceKind;
+  planned: number;
+  completed: number;
+  skipped: number;
+  partial: number;
+  /** This source's items, worst (most missed) first. */
+  items: MissionItemRecord[];
+}
+
+/** One grouped row of the {@link missionBySource} query, before attribution. */
+type SourceQueryRow = {
+  protocolId: string | null;
+  title: string;
+  /** The protocol's name TODAY, via the join — null once it is deleted. */
+  liveName: string | null;
+  /** The protocol's name when the row was generated (extras.protocol). */
+  storedProtocol: string | null;
+  /** A mode label or `Experiment · …` (extras.category). */
+  storedCategory: string | null;
+  planned: number;
+  completed: number;
+  skipped: number;
+  /** Aliased away from `partial` — SQL-standard `MATCH PARTIAL` makes the bare
+   *  word a parser hazard not worth taking for a column alias. */
+  partialCount: number;
+};
+
+/** How many of a record's planned days ended without a completion. */
+const missedOf = (r: { planned: number; completed: number }): number => r.planned - r.completed;
+
+/** Worst first, then the larger sample, then alphabetical — fully deterministic. */
+function byMissedDesc<T extends { planned: number; completed: number }>(
+  label: (r: T) => string
+): (a: T, b: T) => number {
+  return (a, b) => {
+    const missed = missedOf(b) - missedOf(a);
+    if (missed !== 0) return missed;
+    const size = b.planned - a.planned;
+    if (size !== 0) return size;
+    return label(a) < label(b) ? -1 : label(a) > label(b) ? 1 : 0;
+  };
+}
+
+/** Which source a grouped row belongs to, and what to call it. */
+function attribute(
+  row: SourceQueryRow
+): Pick<MissionSourceRecord, 'key' | 'protocolId' | 'name' | 'kind'> {
+  if (row.protocolId !== null && row.liveName !== null) {
+    return {
+      key: row.protocolId,
+      protocolId: row.protocolId,
+      name: row.liveName,
+      kind: 'protocol',
+    };
+  }
+  // The protocol was deleted (protocol_id SET NULL) but the row still remembers
+  // its name. Saying "Evening stack" and offering no chevron is more honest than
+  // filing a year of history under "Unattributed".
+  if (row.storedProtocol) {
+    return {
+      key: `gone:${row.storedProtocol}`,
+      protocolId: null,
+      name: row.storedProtocol,
+      kind: 'protocol_gone',
+    };
+  }
+  // A mode item or an experiment's intervention: `category` is the one
+  // attribution those rows carry, by the exclusivity rule in mission-generate.ts.
+  if (row.storedCategory) {
+    return {
+      key: `other:${row.storedCategory}`,
+      protocolId: null,
+      name: row.storedCategory,
+      kind: 'other',
+    };
+  }
+  return { key: 'other:unattributed', protocolId: null, name: 'Unattributed', kind: 'other' };
+}
+
+/**
+ * Execution grouped by the thing that generated it, over the INCLUSIVE date
+ * range `from … to`. Empty when `to < from`, which is the honest answer for a
+ * record that starts today: there is nothing finished to judge.
+ *
+ * **Give it settled days only.** The caller passes a range that ends *before*
+ * today, because a pending item at 09:00 is not a miss — it is a morning. Every
+ * status here is read as final, and that is only true of a day that is over.
+ *
+ * The two shared predicates go in verbatim as everywhere else in this file.
+ * They name `value` unqualified; that is unambiguous here for the same reason
+ * it is in {@link missionDailySeries} — `daily_logs` has no `value` column, and
+ * neither does `protocols`, which is the only column this query adds to the
+ * scope.
+ */
+export function missionBySource(db: Database, from: string, to: string): MissionSourceRecord[] {
+  if (to < from) return [];
+  const rows = db.all<SourceQueryRow>(
+    `SELECT e.protocol_id AS protocolId,
+            e.title AS title,
+            max(p.name) AS liveName,
+            max(json_extract(e.value, '$.protocol')) AS storedProtocol,
+            max(json_extract(e.value, '$.category')) AS storedCategory,
+            count(*) AS planned,
+            sum(CASE WHEN e.status = 'completed' THEN 1 ELSE 0 END) AS completed,
+            sum(CASE WHEN e.status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
+            sum(CASE WHEN e.status = 'partial' THEN 1 ELSE 0 END) AS partialCount
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+       LEFT JOIN protocols p ON p.id = e.protocol_id
+      WHERE d.date >= ? AND d.date <= ?
+        AND ${PLANNED_ROW_SQL}
+        AND ${NOT_REMOVED_SQL}
+      -- By (protocol, title), NOT by the display names: a protocol renamed
+      -- mid-window is one protocol, and grouping on its name would split its
+      -- record in two at the moment it was renamed.
+      GROUP BY e.protocol_id, e.title`,
+    [from, to]
+  );
+
+  const byKey = new Map<string, MissionSourceRecord>();
+  for (const row of rows) {
+    const source = attribute(row);
+    let record = byKey.get(source.key);
+    if (!record) {
+      record = { ...source, planned: 0, completed: 0, skipped: 0, partial: 0, items: [] };
+      byKey.set(source.key, record);
+    }
+    record.planned += row.planned;
+    record.completed += row.completed;
+    record.skipped += row.skipped;
+    record.partial += row.partialCount;
+    record.items.push({
+      title: row.title,
+      planned: row.planned,
+      completed: row.completed,
+      skipped: row.skipped,
+      partial: row.partialCount,
+    });
+  }
+
+  const sources = [...byKey.values()];
+  for (const record of sources) record.items.sort(byMissedDesc((i) => i.title));
+  sources.sort(byMissedDesc((s) => s.name));
+  return sources;
+}
