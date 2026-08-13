@@ -170,9 +170,7 @@ export default function ProgressPhotoDetailScreen() {
             style={{ width: '100%', aspectRatio: 3 / 4 }}
           />
         ) : (
-          <View
-            className="w-full items-center justify-center px-6"
-            style={{ aspectRatio: 3 / 4 }}>
+          <View className="w-full items-center justify-center px-6" style={{ aspectRatio: 3 / 4 }}>
             <Text className="text-center font-serif text-[14px] leading-6 text-ink-secondary">
               Image not on this phone.
             </Text>

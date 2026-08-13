@@ -75,7 +75,9 @@ export function weighInDistanceLabel(deltaDays: number): string {
   if (deltaDays === 0) return 'weighed same day';
   const magnitude = Math.abs(deltaDays);
   const unit = magnitude === 1 ? 'day' : 'days';
-  return deltaDays > 0 ? `weighed ${magnitude} ${unit} later` : `weighed ${magnitude} ${unit} earlier`;
+  return deltaDays > 0
+    ? `weighed ${magnitude} ${unit} later`
+    : `weighed ${magnitude} ${unit} earlier`;
 }
 
 /** The authored empty. A photo with no weigh-in near it says so; it never

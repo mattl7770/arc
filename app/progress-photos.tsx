@@ -194,8 +194,8 @@ export default function ProgressPhotosScreen() {
             Bring in your progress photos
           </Text>
           <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-            Photograph yourself in the iOS Camera app — front, side, back — then bring them in
-            here. ARC keeps a working copy; your originals stay in Photos.
+            Photograph yourself in the iOS Camera app — front, side, back — then bring them in here.
+            ARC keeps a working copy; your originals stay in Photos.
           </Text>
           {pickerReady ? (
             <Pressable

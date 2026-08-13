@@ -208,7 +208,9 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
 
   const insertRaw = (cols, vals) =>
     raw
-      .prepare(`INSERT INTO progress_photos (id, ${cols.join(', ')}) VALUES (?, ${cols.map(() => '?').join(', ')})`)
+      .prepare(
+        `INSERT INTO progress_photos (id, ${cols.join(', ')}) VALUES (?, ${cols.map(() => '?').join(', ')})`
+      )
       .run(`x-${Math.random()}`, ...vals);
 
   rejects('an unknown pose is rejected', () =>
@@ -438,7 +440,9 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   poseCount(months[0].photos) === 2 && poseCount(months[2].photos) === 1
     ? ok('the month tally counts the poses of exactly the rows it heads')
     : bad('poseCount');
-  groupPhotosByMonth([]).length === 0 ? ok('an empty gallery groups to nothing') : bad('empty group');
+  groupPhotosByMonth([]).length === 0
+    ? ok('an empty gallery groups to nothing')
+    : bad('empty group');
 
   console.log('   ...and edits, which only write what changed');
   const target = all[4].id;
@@ -585,7 +589,9 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   progressPhotoFileNames(db, ids[2]).length === 2
     ? ok('the delete path reads BOTH names')
     : bad('file names');
-  progressPhotoUri(flagged.working_file_name, store)?.startsWith('file:///documents/progress-photos/')
+  progressPhotoUri(flagged.working_file_name, store)?.startsWith(
+    'file:///documents/progress-photos/'
+  )
     ? ok('a name resolves to a file:// URI at read time (never a stored path)')
     : bad('uri');
   progressPhotoUri('gone.jpg', store) === null
@@ -622,7 +628,9 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   fs.files(PROGRESS_PHOTO_DIR).size === afterFirst
     ? ok('...and every file it had written is gone (explicit rollback)')
     : bad('leaked files', String(fs.files(PROGRESS_PHOTO_DIR).size - afterFirst));
-  before < afterFirst ? ok('the sequence really did write files in between') : bad('no-op sequence');
+  before < afterFirst
+    ? ok('the sequence really did write files in between')
+    : bad('no-op sequence');
 
   console.log('   ...a failed write never leaves a half-kept promise');
   const failingStore = {
@@ -985,9 +993,8 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
     : bad('confidence fallback');
 
   // Owner call, 2026-08-12: qualitative only.
-  parsePhotoReading(
-    JSON.stringify({ summary: 'S', caveats: 'C', body_fat_pct: 14 })
-  ).summary === 'S'
+  parsePhotoReading(JSON.stringify({ summary: 'S', caveats: 'C', body_fat_pct: 14 })).summary ===
+  'S'
     ? ok('a numeric body-composition field the model volunteers is simply dropped')
     : bad('bf% leaked into the parse');
 

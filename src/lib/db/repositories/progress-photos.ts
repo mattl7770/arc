@@ -153,7 +153,9 @@ export function deleteProgressPhoto(db: Database, id: string): void {
 export function progressPhotoFileNames(db: Database, id: string): string[] {
   const row = getProgressPhoto(db, id);
   if (!row) return [];
-  return row.original_file_name ? [row.working_file_name, row.original_file_name] : [row.working_file_name];
+  return row.original_file_name
+    ? [row.working_file_name, row.original_file_name]
+    : [row.working_file_name];
 }
 
 /** Every (id, names) pair, for the sweep's dangling and orphan passes. */
@@ -261,14 +263,7 @@ export function nearestWeighIn(
        AND substr(measured_at, 1, 10) BETWEEN date(?, ?) AND date(?, ?)
      ORDER BY abs(julianday(substr(measured_at, 1, 10)) - julianday(?)) ASC, measured_at DESC
      LIMIT 1`,
-    [
-      takenOn,
-      takenOn,
-      `-${windowDays} days`,
-      takenOn,
-      `+${windowDays} days`,
-      takenOn,
-    ]
+    [takenOn, takenOn, `-${windowDays} days`, takenOn, `+${windowDays} days`, takenOn]
   );
   if (!row || row.weight_kg == null) return null;
   return { weight_kg: row.weight_kg, measured_on: row.measured_on, delta_days: row.delta_days };

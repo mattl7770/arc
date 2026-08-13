@@ -50,7 +50,32 @@ export interface ArcExport {
    * on device. Their content is derived and rebuildable — see the file header.
    */
   omittedTables: string[];
+  /**
+   * Media directories this file references but cannot contain — the
+   * {@link omittedTables} philosophy applied to FILES.
+   *
+   * A photo lives on disk and the row holds a bare name (the 0033 convention),
+   * so a JSON export carries a perfect record of every photo and not one pixel
+   * of any of them. That is the correct trade — base64 in the envelope would
+   * make a whole-database export hundreds of megabytes — but it must be STATED.
+   * Someone restoring from this file and finding an empty gallery should learn
+   * why from the file itself, not by guessing.
+   *
+   * Empty when nothing references a file, so a photo-less database does not
+   * announce photos it never had.
+   */
+  omittedMedia: MediaOmission[];
   tables: Record<string, Record<string, Scalar>[]>;
+}
+
+/** One media directory the export names but does not carry. */
+export interface MediaOmission {
+  /** Directory name under the app's Documents folder — `progress-photos`. */
+  directory: string;
+  /** How many file names the exported rows reference. */
+  files: number;
+  /** What is missing and what survives, in a sentence, for a human reader. */
+  note: string;
 }
 
 /** The candidate set: every table except SQLite's own `sqlite_*` internals. */
@@ -205,6 +230,73 @@ export function readAllRows(db: Database, table: string): Record<string, Scalar>
   return rows;
 }
 
+/**
+ * Where the app's images live, and which columns claim them.
+ *
+ * A hand-kept list, unlike {@link partitionTables}'s enumeration of
+ * `sqlite_master` — because there is nothing in the schema that marks a text
+ * column as "this is a file name". The cost of that is a line here whenever a
+ * fourth media directory appears; the cost of NOT having it is an export that
+ * silently omits a decade of photographs. `db/export.test.mjs` asserts the
+ * counts, so a column renamed out from under this list fails a suite rather
+ * than quietly reporting zero.
+ */
+const MEDIA_DIRECTORIES: { directory: string; sources: [string, string][]; note: string }[] = [
+  {
+    directory: 'progress-photos',
+    sources: [
+      ['progress_photos', 'working_file_name'],
+      ['progress_photos', 'original_file_name'],
+    ],
+    note:
+      'Body-progress photographs. Every row is here — dates, poses, notes and saved AI ' +
+      'readings — but the JPEGs are files on the phone and are not in this file. Your ' +
+      'originals are in the iOS Photos app.',
+  },
+  {
+    directory: 'recipe-photos',
+    sources: [['recipes', 'photo_file_name']],
+    note: 'Recipe photographs. The recipes are here in full; their pictures are files on the phone.',
+  },
+  {
+    directory: 'meal-photos',
+    sources: [['meal_photos', 'file_name']],
+    note:
+      'Meal photographs, kept for a week as evidence for an estimate. The meals and their ' +
+      'numbers are here; the pictures are files on the phone and expire anyway.',
+  },
+];
+
+/**
+ * Which media directories this export references, and how many files each.
+ *
+ * Total by construction: a table that does not exist (a database that predates
+ * the migration adding it) contributes zero rather than throwing. An export
+ * must never fail because it could not count something it was only going to
+ * mention.
+ */
+export function mediaOmissions(db: Database, exportedTables: string[]): MediaOmission[] {
+  const present = new Set(exportedTables);
+  const out: MediaOmission[] = [];
+  for (const entry of MEDIA_DIRECTORIES) {
+    let files = 0;
+    for (const [table, column] of entry.sources) {
+      if (!present.has(table)) continue;
+      try {
+        const row = db.get<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM ${table} WHERE ${column} IS NOT NULL`
+        );
+        files += Number(row?.n ?? 0);
+      } catch {
+        // A column this build expects and the database does not have. Counting
+        // zero is the honest answer; failing the whole export is not.
+      }
+    }
+    if (files > 0) out.push({ directory: entry.directory, files, note: entry.note });
+  }
+  return out;
+}
+
 /** The DB's PRAGMA user_version (0 on a virgin database). */
 export function schemaVersion(db: Database): number {
   const row = db.get<{ user_version: number }>('PRAGMA user_version');
@@ -228,6 +320,13 @@ export function buildExport(
     appVersion: meta.appVersion ?? null,
     schemaVersion: schemaVersion(db),
     omittedTables: omitted,
+    // formatVersion stays 1 deliberately. It exists so a future importer can
+    // BRANCH, and `omittedMedia` gives it nothing to branch on: the field is
+    // purely additive, a reader that ignores it reads exactly what it read
+    // before, and no importer exists yet (restore is Phase 4). Bumping the
+    // version for an added field would spend the one signal an importer has on
+    // a change that needs no handling.
+    omittedMedia: mediaOmissions(db, exported),
     tables,
   };
 }

@@ -71,7 +71,9 @@ function pickDefaultPair(photos: GalleryPhoto[]): [GalleryPhoto, GalleryPhoto] |
 function Half({ photo, caption }: { photo: GalleryPhoto; caption: string }) {
   return (
     <View className="w-1/2 px-1">
-      <View className="w-full overflow-hidden border border-hairline bg-paper-dim" style={{ aspectRatio: 3 / 4 }}>
+      <View
+        className="w-full overflow-hidden border border-hairline bg-paper-dim"
+        style={{ aspectRatio: 3 / 4 }}>
         {photo.uri ? (
           <Image
             source={{ uri: photo.uri }}
@@ -89,7 +91,9 @@ function Half({ photo, caption }: { photo: GalleryPhoto; caption: string }) {
           </View>
         )}
       </View>
-      <Text className="mt-2 font-serif text-[13px] text-ink">{formatPhotoDate(photo.taken_on)}</Text>
+      <Text className="mt-2 font-serif text-[13px] text-ink">
+        {formatPhotoDate(photo.taken_on)}
+      </Text>
       <Text className="mt-0.5 font-mono text-[10px] leading-4 text-ink-muted">{caption}</Text>
     </View>
   );

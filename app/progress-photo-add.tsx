@@ -280,8 +280,14 @@ export default function ProgressPhotoAddScreen() {
                     <Divider first={index === 0} />
                     <View className="py-3">
                       <View className="flex-row gap-3">
+                        {/* The WORKING COPY, not `draft.uri`. The picker's URI
+                            points at the untouched original — a 12-megapixel
+                            HEIC — and thirty of those decoded for thirty 56×74
+                            thumbnails is how an import screen runs a phone out
+                            of memory. The downscale has already happened; this
+                            just uses it. */}
                         <Image
-                          source={{ uri: draft.uri }}
+                          source={{ uri: `data:image/jpeg;base64,${draft.workingBase64Jpeg}` }}
                           resizeMode="cover"
                           accessibilityLabel={`Photo ${index + 1}`}
                           style={{ width: 56, height: 74 }}

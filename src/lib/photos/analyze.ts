@@ -39,7 +39,13 @@ import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
 
 import { formatPhotoDate, poseLabel } from './format';
-import type { ChangeDirection, PhotoChange, PhotoObservation, PhotoPose, PhotoReading } from './types';
+import type {
+  ChangeDirection,
+  PhotoChange,
+  PhotoObservation,
+  PhotoPose,
+  PhotoReading,
+} from './types';
 
 /**
  * The line shown above the Send control **every time**, verbatim.
