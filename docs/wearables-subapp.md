@@ -1,7 +1,8 @@
 # Wearables sub-app — Apple Health
 
 **Spec date:** 2026-07-29 · **Status:** Phase 1 spec → built in the same window
-**Amended:** 2026-08-12 — ARC now also PUBLISHES three body measurements outward (**§10**).
+**Amended:** 2026-08-12 — the link is **two-way**: ARC publishes three body measurements
+outward (**§10**) and reads the same three back in (**§11**).
 **Read first:** CLAUDE.md §8 (wearables strategy) and §9 (DB conventions), `docs/project-status.md`.
 
 Apple Health is the decided ingestion hub (2026-07-24 ADR): it is on-device, every vendor's
@@ -9,8 +10,9 @@ own app does the cloud sync, so ARC stays offline/no-server. Terra is dropped. D
 stays open — nothing below depends on which ring/strap Matt ends up wearing; every source
 normalises into `wearable_data`, which shipped in 0001 precisely for this.
 
-§§1–9 describe **ingestion**, which is the bulk of the integration. §10 describes the much
-smaller outbound channel and the rules that keep the two from feeding each other.
+§§1–9 describe **ingestion into `wearable_data`**, which is the bulk of the integration.
+§10 describes the outbound channel, §11 the inbound half of the same three body measurements,
+and both hang on the echo suppression written up in §10.
 
 ---
 
@@ -32,7 +34,7 @@ no background-delivery entitlement:
 
 ```json
 ["@kingstinct/react-native-healthkit", {
-  "NSHealthShareUsageDescription": "ARC reads sleep, heart, activity and workout data from Apple Health to power readiness and recovery.",
+  "NSHealthShareUsageDescription": "ARC reads sleep, heart, activity and workout data from Apple Health to power readiness and recovery, and reads the weight, body-fat percentage and waist measurements stored there so a smart scale keeps your ARC record up to date.",
   "NSHealthUpdateUsageDescription": "ARC writes the weight, body-fat percentage and waist measurements you record in ARC to Apple Health, so other apps on your iPhone can see them. Nothing else is written.",
   "background": false
 }]
@@ -73,6 +75,14 @@ Requested lazily — only when the user flips Settings › Apple Health on, neve
 | `HKQuantityTypeIdentifierAppleSleepingWristTemperature` | Nightly temp trend (read-only type) |
 | `HKQuantityTypeIdentifierVO2Max` | Fitness marker (project-status "Exercise as measured data") |
 | `HKWorkoutTypeIdentifier` | Sessions from other apps/devices |
+| `HKQuantityTypeIdentifierBodyMass` | **Body — two-way (§11).** A smart scale's weight |
+| `HKQuantityTypeIdentifierBodyFatPercentage` | **Body — two-way (§11).** Scale body-fat estimate |
+| `HKQuantityTypeIdentifierWaistCircumference` | **Body — two-way (§11).** Tape measure, from anywhere |
+
+The last three are the only types ARC both reads and writes, and they land in `body_metrics`
+rather than `wearable_data` (§11). Everything above them is read-only, and every declared
+scope has an ingest path — a test asserts that, because a requested scope with nothing behind
+it is a permission prompt for data that then silently never arrives.
 
 Permission truth (Apple's design, not a bug): **read grants are invisible.** A denied type
 returns empty results indistinguishable from "no data"; `getRequestStatusForAuthorization`
@@ -278,6 +288,11 @@ instead of wiring HealthKit straight into screens.
   first 90-day sync with progress; then last-synced line, per-domain latest values, the
   read-permission caveat, Sync now, and the toggle off (which stops syncing; rows keep —
   they're the user's data).
+- **Settings › Apple Health** (`/settings-health`): since 2026-08-12 the two scope lists
+  ("What ARC reads" / "What ARC writes") are ONE record — **What syncs** — with a direction
+  per row (In · Out · Both). A two-list layout could only have shown the three two-way
+  measurements by printing them twice, and the user's real question about a health integration
+  is not what it touches but who is writing their record.
 - **Data › Wearables & recovery** (`/wearables`): 30-day sparklines + latest per metric
   (Recovery / Sleep / Activity groups), a recent-workouts list, per-row source chips,
   last-synced footer. Honest empties before the first sync.
@@ -291,14 +306,22 @@ instead of wiring HealthKit straight into screens.
   stage rows only when stages exist, wake-day attribution across midnight), deterministic
   raw ids, workout rows (duration-not-span, uuid raw id); window sizing (backfill armed
   until rows land, gap coverage, 365-day cap) and clamping; and the wire-shape parser
-  fixtures (Quantity-vs-number, `toJSON()` proxies, unit awareness).
+  fixtures (Quantity-vs-number, `toJSON()` proxies, unit awareness). Plus the two-way guards
+  (§10–11): the `unsuppressedEchoIdentifiers()` tripwire, the overlap being *exactly* the body
+  channel, no published type on the unfiltered-retry path, every read scope having an ingest
+  path, `isIngestableSample` (ARC's bundle / the metadata tag / **unknown source**), the
+  `ARCPublishedFrom` wire shape, instant-merging, CHECK-bound dropping, and the
+  publish↔ingest **round-trip property** on units.
 - `db/wearables.test.mjs` — repo against real SQLite: upsert-not-duplicate on re-sync,
   cross-source non-collision, series/latest reads, source-priority day picker, sync-state
   round-trip, 0021 rebuild preserves pre-existing rows (manual water/hrv), and the
   **two-pass ingest** proof that a day aging out of the window keeps its full-day values.
   Plus the whole publish channel (§10): cursor KV, keyset walk over backdated and
   same-millisecond rows, arming-without-backfill over 40 rows of history, unit conversion on
-  the wire, stop-on-refusal, and the toggle governing both directions.
+  the wire, stop-on-refusal, and the toggle governing both directions. Plus the inbound body
+  ingest (§11): the natural-key upsert (idempotent re-sync, in-place correction, late column
+  merging in, a manual row at the same instant left alone), the real CHECK still refusing
+  weight ≤ 0, and the end-to-end proof that an ingested row is never published back.
 - `db/readiness.test.mjs` — baselines, all four pillar gradings, RHR degradation, the
   ≥5-day evidence gate, honest unknowns, metrics-strip formatting.
 
@@ -313,10 +336,14 @@ instead of wiring HealthKit straight into screens.
 
 ## 10. Publishing outward (2026-08-12)
 
-Write-back moved from "deferred, assess first" (§9) to shipped, in one narrow form. **ARC
-stays authoritative and PUBLISHES; this is not two-way sync.** No value is ever owned in two
-places: `body_metrics` owns the three columns below, Apple Health gets a copy so the rest of
-the phone can see it, and nothing flows back.
+Write-back moved from "deferred, assess first" (§9) to shipped. `body_metrics` owns the three
+columns below and Apple Health gets a copy so the rest of the phone can see it.
+
+**No single VALUE is ever owned in two places** — that is what makes the two-way link (§11)
+safe. Each `body_metrics` row records where it came from, and this pass publishes only rows
+ARC originated: `publishableBodyAfter` filters `source <> 'apple_health'` in SQL. A number
+typed into ARC goes out; a number that came in from a scale stays put, because Health already
+has it.
 
 | `body_metrics` column | HealthKit type | Unit on the wire |
 | --- | --- | --- |
@@ -352,33 +379,64 @@ it and it would never be published. The `id` half breaks millisecond ties. The c
 advances only over rows published in FULL — the first refusal stops the pass, so a revoked
 share permission publishes nothing and loses nothing.
 
-**Echo suppression, in the same build.** Nothing echoes *today* only because ARC does not
-read `BodyMass`, `BodyFatPercentage` or `WaistCircumference`. That safety is accidental and
-expires the moment someone adds weight to the read set, so it is now guarded three ways:
+### Echo suppression
 
-1. `readWriteScopeOverlap()` — a pure function asserted empty by the test suite. It is the
-   tripwire: adding a published type to the read scopes fails CI. (A function, not a
-   module-scope assertion — Expo Router eagerly requires everything under `app/`, so a throw
-   at import time is an app-**startup** crash.)
-2. **Query-level exclusion.** Every sample reader passes
+This is the whole hazard of a two-way link, and it is worth being exact about. ARC publishes a
+weight; HealthKit stores it; ARC's next read sees it; ARC files it as a new measurement; the
+publish walk sees a new row and posts it back. Each pass duplicates, in a medical record, with
+no undo from inside ARC. Five independent guards, listed in the order a sample meets them:
+
+1. **Query-level exclusion.** Every sample reader passes
    `filter.NOT = [{ sources: [currentAppSource()] }]`, falling back to the metadata predicate
    `[{ metadata: { withMetadataKey: 'ARCPublishedFrom' } }]` when that API is unavailable —
    the key ARC stamps on every sample it writes, carrying the originating `body_metrics.id`.
    Statistics queries get no exclusion on purpose: they return Apple's own merged cumulative
-   totals, computed before any predicate, and ARC writes none of those types. If the native
-   layer rejects the predicate the reader retries **unfiltered** rather than returning
-   nothing — a bad filter must not silently empty the whole Data tab. That fallback is only
-   safe while guard 1 holds; if the scopes ever overlap it must be changed to fail closed.
-3. **Source bucketing.** `com.arcresilience.app` maps to `manual`, so even a defeated filter
-   cannot let an echo outrank its own origin. Without a case, ARC's bundle would fall through
-   to `other` — index 7 in `SOURCE_PRIORITY`, *above* `apple_health` (8) and `manual` (9) —
-   and ARC would prefer its own reflection to both the merged Apple total and the user's
-   keypad entry. `'other'` was deliberately **not** demoted: no wearable is chosen yet
-   (CLAUDE.md §8), so an unrecognised ring landing in `other` is the expected state, and
-   demoting it would make a real measuring device lose to a stale manual entry. A distinct
-   `'arc'` device value was rejected because `source_device` is a CHECK-constrained enum —
-   that is a migration, and numbering is forward-only. `manual` is also simply true:
-   everything ARC publishes started as a number the user typed into ARC.
+   totals, computed before any predicate, and ARC writes none of those types.
+2. **Two failure postures for that filter, and the difference is the point.** On a type ARC
+   only READS, a predicate the native layer rejects falls back to an **unfiltered** query —
+   losing the filter is harmless there and losing the data is not (readers swallow errors to
+   `[]`, so a bad filter would silently empty the whole Data tab). On a type ARC also WRITES,
+   the reader passes `failClosed` and returns **nothing** instead: there the unfiltered read
+   *is* the echo loop, and a weight missing for one pass is recoverable where a duplicate is
+   not.
+3. **Per-sample rejection** (`isIngestableSample`, pure and tested). A body sample is dropped
+   if it carries the `ARCPublishedFrom` tag, or ARC's bundle id, **or no bundle id at all**.
+   That last clause is the one that is easy to get backwards: *unknown source is not safe* on
+   a type ARC writes. `SourceRevision.source.bundleIdentifier` is a non-optional string in the
+   library's own types, so a null means the shape drifted — precisely the case a fallback
+   exists for. An unattributable `BodyMass` sample cannot be shown *not* to be ARC's own
+   reflection, and refusing it costs at worst a measurement still visible in the Health app.
+   (Scoped to the body types only. Applying it to wearable reads would discard real vendor
+   data, which is the mistake guard 5 warns about.)
+4. **The structural guard: `source <> 'apple_health'` on the publish walk.** Every other guard
+   decides whether a sample *looks* like ARC's. This one decides that a value which came FROM
+   Apple Health is never sent back TO Apple Health, whatever it looks like — so even if guards
+   1–3 failed simultaneously and an echo landed as a row, the circuit still cannot close. It
+   is also simply true: Health already has that number.
+5. **Source bucketing** (`wearable_data` only). `com.arcresilience.app`, or the metadata tag
+   alone, maps to `manual`. Without a case, ARC's bundle would fall through to `other` — index
+   7 in `SOURCE_PRIORITY`, *above* `apple_health` (8) and `manual` (9) — and ARC would prefer
+   its own reflection to both the merged Apple total and the user's keypad entry. `'other'`
+   was deliberately **not** demoted: no wearable is chosen yet (CLAUDE.md §8), so an
+   unrecognised ring landing in `other` is the expected state, and demoting it would make a
+   real measuring device lose to a stale manual entry. A distinct `'arc'` device value was
+   rejected because `source_device` is a CHECK-constrained enum — that is a migration, and
+   numbering is forward-only. `manual` is also simply true: everything ARC publishes started
+   as a number the user typed into ARC.
+
+**The tripwire, and why it changed shape.** It used to be `readWriteScopeOverlap()`, asserted
+EMPTY: nothing could echo while ARC read none of what it wrote. That was correct for a one-way
+channel and became obsolete the moment reading weight back was the point — so the assertion
+had to fail or be deleted, and neither is acceptable for a guard. What it was actually
+protecting is kept exactly, in `unsuppressedEchoIdentifiers()`: **no type may be both read and
+written without echo suppression behind it.** The overlap is now expected (and asserted to be
+*precisely* the body channel, so an unnoticed fourth type fails CI too); what must be empty is
+the overlap not covered by suppression. It still fires for the case that matters now — a new
+write scope for a type already read on the ordinary, unfiltered-retry path. The suppressed set
+is derived from `BODY_INGEST_METRICS` rather than written out, so it cannot claim coverage the
+ingest path does not implement. Still a pure function, not a module-scope assertion: Expo
+Router eagerly requires everything under `app/`, so a throw at import time is an app-**startup**
+crash.
 
 **When it runs.** Inside the same pass as ingestion (`syncHealthData`) — boot, foreground
 (throttled 15 min), and Settings › Apple Health → *Sync now*. Same enable flag both
@@ -398,7 +456,67 @@ re-present a sheet the user has already answered).
 > binary at all (§1), so the first build containing it will also contain the key — but a
 > build cut from `main` before this branch merges would create exactly that binary.
 
-**Still out of scope** — workouts and nutrition. Both hit the same wall: no column stores a
-HealthKit UUID, so a written workout or meal could never be deleted, and both are edited
-constantly. That needs a migration and its own slice. **Reading** `BodyMass` is also out of
-scope; it is the thing that would open the echo loop.
+**Still out of scope, and why each one stays out** — every candidate was re-checked when the
+link went two-way:
+
+- **Workouts and nutrition.** No column stores a HealthKit UUID, so a written workout or meal
+  could never be deleted — and both are edited constantly. Needs a migration and its own
+  slice.
+- **Water** (`wearable_data.water_ml`). The row is a running daily TOTAL that the quick-add
+  updates all day. Publishing an update appends another sample (there is no delete), and
+  HealthKit would sum them — 500 ml logged three times would read as 3 000 ml. Wrong in a way
+  the user cannot see, so: no.
+- **Muscle mass** → `LeanBodyMass`. Not the same quantity: lean body mass includes bone,
+  organs and water; a BIA muscle-mass estimate does not. Publishing one as the other puts a
+  wrong number in a medical record under a correct-looking label.
+- **Hip** — HealthKit has no hip-circumference type. **BMI/Height** — ARC stores no height, so
+  BMI would have to be invented rather than owned.
+
+## 11. Reading the body measurements back (2026-08-12)
+
+The other half of the same three types, and the answer to "do we have full two-way sync?" —
+which, before this, was **no, and weight was zero-way**: `BodyMass` appeared in neither
+`SAMPLE_METRICS` nor `STATISTIC_METRICS`, so a smart scale syncing to Health had never reached
+ARC at all.
+
+| HealthKit type | → `body_metrics` column | Unit on the wire |
+| --- | --- | --- |
+| `HKQuantityTypeIdentifierBodyMass` | `weight_kg` | `kg` — canonical, no conversion |
+| `HKQuantityTypeIdentifierBodyFatPercentage` | `body_fat_pct` | `%` — **×100**, see below |
+| `HKQuantityTypeIdentifierWaistCircumference` | `waist_cm` | `cm` — canonical |
+
+**Into `body_metrics`, not `wearable_data`.** That table owns these three columns, so a scale
+reading has to reach the same trend, the same Coach tools and the same export as a number
+typed into ARC. Landing it in `wearable_data` would have been easier and would have produced a
+weight the Weight trend cannot see — two-way on paper only.
+
+**The percent trap, in reverse.** `HKUnit.percent()` is a FRACTION, so a real 18.5 % arrives
+as `0.185` and is multiplied by 100 on the way in. Stored raw it would read as 0.185 % body
+fat — small enough to pass the 0–100 CHECK and poison every trend and correlation silently.
+Inbound and outbound are asserted to be exact inverses as a **round-trip property**
+(`fromHealthKit(toHealthKit(v)) === v`), not as two separate constants, so the pair cannot
+drift apart one edit at a time.
+
+**No migration.** `body_metrics.source` has admitted `'apple_health'` since 0001 — which also
+means there is no `source_raw_id` column to key on, so the natural key does the job:
+`(source = 'apple_health', measured_at)`. HealthKit start dates carry millisecond resolution,
+so two distinct readings colliding is not a real case, and re-reading the trailing window
+UPDATEs instead of duplicating. Scoping the key to the ingest source is what makes it safe: a
+manual row is never matched, never merged into and never overwritten by a sync, whatever
+instant it carries. Merging by instant is a feature — a scale reporting weight and body fat
+from one weigh-in stamps both samples identically, and they belong in one row, exactly the
+shape the keypad produces.
+
+**Bounds are enforced in the mapper, before the INSERT.** `body_metrics` CHECKs weight `> 0
+AND < 1000`, body fat `0–100`, waist `> 0 AND < 10000`. An out-of-range sample would throw and
+take the whole batch with it, so the pure mapper drops it (after conversion — 1.5 as a
+fraction is 150 %, and the bound belongs on the converted value).
+
+**Window.** The same trailing span as ingestion (14 days steady state, 90 on first sync,
+capped at 365). Rows are NOT run through `clampRowsToWindow`: that clamp exists for day
+AGGREGATES rebuilt from a truncated tail, and these are individual measurements at their own
+instants, so a sample from the span's half-day lead-in is a complete, correctly dated reading.
+
+**Backfill is fine here, unlike outbound.** Ingest is reversible — the rows are ARC's own
+database and the user can delete them — so the 90-day first sync applies. The asymmetry with
+§10's no-backfill rule is the asymmetry between "data I can delete" and "data I cannot".

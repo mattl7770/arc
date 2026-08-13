@@ -18,12 +18,18 @@
  * visible in Settings › Apple Health rather than fatal).
  *
  * As of 2026-08-12 the seam is no longer read-only: {@link saveHealthQuantity}
- * publishes ARC-owned body measurements outward (docs/wearables-subapp.md §10).
+ * publishes ARC-owned body measurements outward, and the same three types are
+ * read back in, making the link two-way (docs/wearables-subapp.md §10–11).
  * Writes get the opposite failure posture to reads — a refused save reports
  * false so the caller can decline to advance its cursor, because a silently
- * dropped write means a number missing from a medical record. Reads are
- * additionally filtered to exclude ARC's own samples, so the publish channel can
- * never feed itself.
+ * dropped write means a number missing from a medical record.
+ *
+ * Reads exclude ARC's own samples, so the publish channel can never feed itself,
+ * and the two directions get DIFFERENT failure postures for that exclusion: on a
+ * type ARC only reads, a rejected filter falls back to an unfiltered query
+ * (losing the filter is harmless; losing the data is not); on a type ARC also
+ * writes, `failClosed` returns nothing instead, because there the unfiltered
+ * read is the echo loop.
  */
 import type {
   HealthCategorySample,
@@ -274,11 +280,15 @@ function ownWriteExclusion(mod: HealthKitModule): SampleExclusion[] {
  * The retry is the difference between a bad predicate costing nothing and it
  * costing the entire wearables pipeline: the readers swallow errors to `[]`, so
  * a filter iOS won't accept would make every metric silently vanish — invisible
- * until someone noticed an empty Data tab. Falling back to the unfiltered query
- * restores exactly today's behaviour, which is correct *today* because no
- * published type is in the read set. If that ever stops being true
- * (`readWriteScopeOverlap()` guards it), this fallback must go — an unfiltered
- * read would then be an echo loop, and failing closed would be the right choice.
+ * until someone noticed an empty Data tab.
+ *
+ * ⚠️ Only for types ARC does NOT write — sleep, workouts, and every
+ * `SAMPLE_METRICS`/`STATISTIC_METRICS` entry. For those an unfiltered read is
+ * exactly today's behaviour and cannot echo. The body types ARC publishes go
+ * through {@link readQuantitySamples} with `failClosed`, which does not retry:
+ * there, an unfiltered read IS the echo loop, so returning nothing is the
+ * correct failure. `unsuppressedEchoIdentifiers()` is what keeps a written type
+ * from reaching this path by mistake.
  */
 async function withOwnWritesExcluded<T>(
   mod: HealthKitModule,
@@ -346,14 +356,23 @@ function durationSeconds(value: unknown): number | null {
   }
 }
 
-/** Pull provenance off a sample's sourceRevision, tolerating shape drift. */
+/**
+ * Pull provenance off a sample's sourceRevision, tolerating shape drift.
+ *
+ * `arcWritten` is read from the sample's own metadata rather than its source,
+ * which is the point: it is the one piece of identity ARC controls end-to-end
+ * (publish.ts stamps it on every write), so it still answers "did we write
+ * this?" when `sourceRevision` arrives in a shape this parser cannot read.
+ */
 function provenanceOf(sample: Record<string, unknown>): HealthProvenance {
   const revision = asRecord(sample.sourceRevision);
   const source = asRecord(revision.source);
   const name = typeof source.name === 'string' ? source.name : null;
   const bundleId = typeof source.bundleIdentifier === 'string' ? source.bundleIdentifier : null;
   const productType = typeof revision.productType === 'string' ? revision.productType : null;
-  return { sourceName: name, bundleId, productType };
+  const metadata = asRecord(sample.metadata);
+  const arcWritten = metadata[ARC_WRITE_METADATA_KEY] !== undefined;
+  return { sourceName: name, bundleId, productType, arcWritten };
 }
 
 // --- Pure sample parsers ------------------------------------------------------------
@@ -422,33 +441,52 @@ export function parseStatisticSum(raw: unknown): number | null {
 
 // --- Readers ------------------------------------------------------------------------
 
+/** Per-read policy. */
+export type QuantityReadOptions = {
+  /**
+   * Set for identifiers ARC also WRITES (the body channel). If the own-write
+   * exclusion cannot be applied, return NOTHING rather than falling back to an
+   * unfiltered read — for a published type the unfiltered read is the echo loop
+   * itself, and a missing weight for one pass is recoverable where a duplicate
+   * posted into a medical record is not.
+   */
+  failClosed?: boolean;
+};
+
 /** Quantity samples for one identifier over [start, end), in `unit`. */
 export async function readQuantitySamples(
   identifier: string,
   unit: string,
   start: Date,
-  end: Date
+  end: Date,
+  options: QuantityReadOptions = {}
 ): Promise<HealthQuantitySample[]> {
   const mod = hk;
   if (!mod) return [];
+  const query = (NOT: SampleExclusion[] | undefined) =>
+    mod.queryQuantitySamples(identifier, {
+      limit: 0, // <= 0 fetches all matches
+      ascending: true,
+      unit,
+      filter: { date: { startDate: start, endDate: end }, NOT },
+    });
+  let raw: unknown[];
   try {
-    const raw = await withOwnWritesExcluded(mod, (NOT) =>
-      mod.queryQuantitySamples(identifier, {
-        limit: 0, // <= 0 fetches all matches
-        ascending: true,
-        unit,
-        filter: { date: { startDate: start, endDate: end }, NOT },
-      })
-    );
-    const samples: HealthQuantitySample[] = [];
-    for (const item of raw) {
-      const parsed = parseQuantitySample(item);
-      if (parsed) samples.push(parsed);
-    }
-    return samples;
+    raw = await query(ownWriteExclusion(mod));
   } catch {
-    return [];
+    if (options.failClosed) return [];
+    try {
+      raw = await query(undefined);
+    } catch {
+      return [];
+    }
   }
+  const samples: HealthQuantitySample[] = [];
+  for (const item of raw) {
+    const parsed = parseQuantitySample(item);
+    if (parsed) samples.push(parsed);
+  }
+  return samples;
 }
 
 /** Sleep-analysis category samples over [start, end). */

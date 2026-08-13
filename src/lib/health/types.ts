@@ -15,6 +15,14 @@ export type HealthProvenance = {
   bundleId: string | null;
   /** Device model string, e.g. "Watch7,1", "iPhone16,2". */
   productType: string | null;
+  /**
+   * The sample carries ARC's own write-metadata key (`ARCPublishedFrom`) — so
+   * ARC published it, whatever the bundle id says. Independent evidence from
+   * `bundleId`: the metadata survives even if `sourceRevision` arrives in a
+   * shape this seam cannot read, which is exactly the case where bundle-based
+   * echo detection would fail open. See `isIngestableSample` in mapping.ts.
+   */
+  arcWritten: boolean;
 };
 
 /** One HKQuantitySample, value already in the unit the reader requested. */
