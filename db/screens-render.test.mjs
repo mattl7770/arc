@@ -41,6 +41,7 @@ import {
 } from '../src/lib/db/repositories/grocery.ts';
 
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import { importProgressPhotos } from '../src/lib/media/progress-photo-store.ts';
 
 import ExerciseScreen from '../app/exercise.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
@@ -51,6 +52,10 @@ import RecipeImportScreen from '../app/recipe-import.tsx';
 import GroceryScreen from '../app/grocery.tsx';
 import NutritionScreen from '../app/nutrition.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
+import ProgressPhotosScreen from '../app/progress-photos.tsx';
+import ProgressPhotoAddScreen from '../app/progress-photo-add.tsx';
+import ProgressPhotoDetailScreen from '../app/progress-photo-detail.tsx';
+import ProgressPhotoCompareScreen from '../app/progress-photo-compare.tsx';
 
 let pass = 0;
 let fail = 0;
@@ -389,6 +394,140 @@ const db = getDb();
       'Chest',
     ]);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Progress photos (0035, docs/progress-photos-subapp.md). The point of walking
+// these four through a real render is the degradation ledger: under node there
+// is no expo-image-picker, no expo-file-system and no model key, which is
+// EXACTLY the state of the owner's current binary. Every one of those absences
+// has to be a sentence on the screen rather than a crash or a dead control.
+{
+  console.log('10. Progress photos — empty, populated, and honestly degraded');
+
+  expect('progress photos (empty)', render('progress photos (empty)', ProgressPhotosScreen), [
+    'Progress photos',
+    'Bring in your progress photos',
+    'No photos yet',
+    // The picker is not in this binary: the control is disabled and says why.
+    'rides the next app build',
+  ]);
+  refute('progress photos (empty)', render('progress photos (empty)', ProgressPhotosScreen), [
+    // Nothing may claim a tally before there is anything to tally.
+    'photos · ',
+  ]);
+
+  expect('progress photo add', render('progress photo add', ProgressPhotoAddScreen), [
+    'Add photos',
+    'From your library',
+    'Choose photos',
+    'not today',
+  ]);
+
+  // Fixtures through the REAL store seam, with an in-memory file system.
+  const photoFiles = new Map();
+  const fakeStore = {
+    list: () => [...photoFiles.keys()],
+    exists: (name) => photoFiles.has(name),
+    remove: (name) => {
+      photoFiles.delete(name);
+      return true;
+    },
+    write: (name, bytes) => {
+      photoFiles.set(name, bytes);
+      return true;
+    },
+    uri: (name) => (photoFiles.has(name) ? `file:///documents/progress-photos/${name}` : null),
+  };
+  const photoIds = importProgressPhotos(
+    db,
+    [
+      { taken_on: '2026-01-12', pose: 'front', workingBase64Jpeg: '/9j/jan' },
+      { taken_on: '2026-08-09', pose: 'front', workingBase64Jpeg: '/9j/aug' },
+      { taken_on: '2026-08-09', pose: 'side', workingBase64Jpeg: '/9j/augside' },
+    ],
+    fakeStore
+  );
+  ok('progress photo fixtures seeded through the real store');
+
+  const gallery = render('progress photos (populated)', ProgressPhotosScreen);
+  expect('progress photos (populated)', gallery, [
+    'August 2026',
+    'January 2026',
+    '2 photos · 2 poses',
+    '1 photo · 1 pose',
+    'Compare',
+    'Front',
+    'Side',
+    // No expo-file-system under node, so every cell resolves to no URI — and
+    // draws the authored state rather than a broken frame.
+    'Not on this phone',
+  ]);
+
+  expect(
+    'progress photo detail',
+    render('progress photo detail', ProgressPhotoDetailScreen, { id: photoIds[1] }),
+    [
+      '9 Aug 2026',
+      'Details',
+      'Taken on',
+      'Pose',
+      'Important',
+      // No weigh-in exists near that date in this fixture DB.
+      'no weigh-in near this date',
+      // No model key under node: the reading affordance is a sentence, not a button.
+      'needs a model key',
+      'Delete photo',
+      // The honest retro-flag caveat is on the row that could mislead.
+      'at import time',
+    ]
+  );
+  expect(
+    'progress photo detail (missing id)',
+    render('progress photo detail (missing)', ProgressPhotoDetailScreen, { id: 'nope' }),
+    ['This photo is gone.']
+  );
+
+  expect(
+    'progress photo compare',
+    render('progress photo compare', ProgressPhotoCompareScreen, {
+      a: photoIds[0],
+      b: photoIds[1],
+    }),
+    [
+      'Compare',
+      '12 Jan 2026',
+      '9 Aug 2026',
+      'days apart',
+      'both front',
+      'Compare against',
+      'no weigh-in near this date',
+    ]
+  );
+
+  // The weigh-in caption, with its distance — the claim the whole compare
+  // surface rests on. A weigh-in two days after the January photo must print
+  // that distance, not just a number.
+  //
+  // 84.2 kg renders as **185.6 lb** because DEFAULT_UNIT_PREFERENCES.weight is
+  // 'lb' and this surface goes through the same resolveDisplay/formatMeasured
+  // pair as every other measured value in the app. Asserting the converted
+  // figure is the point: a photo caption that hard-coded "kg" would be the one
+  // number on the phone that ignored the owner's unit choice.
+  db.run('INSERT INTO body_metrics (id, measured_at, weight_kg, source) VALUES (?, ?, ?, ?)', [
+    'render-weigh-1',
+    '2026-01-14T07:00:00.000Z',
+    84.2,
+    'manual',
+  ]);
+  expect(
+    'progress photo compare (with a weigh-in)',
+    render('progress photo compare (weighed)', ProgressPhotoCompareScreen, {
+      a: photoIds[0],
+      b: photoIds[1],
+    }),
+    ['185.6 lb', 'weighed 2 days later']
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

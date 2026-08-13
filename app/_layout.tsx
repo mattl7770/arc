@@ -14,6 +14,7 @@ import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { getDb } from '@/lib/db/client';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
 import { runMealPhotoSweep } from '@/lib/media/meal-photo-store';
+import { runProgressPhotoSweep } from '@/lib/media/progress-photo-store';
 import { runRecipePhotoSweep } from '@/lib/media/recipe-photo-store';
 import {
   configureNotificationPresentation,
@@ -81,6 +82,12 @@ export default function RootLayout() {
     // NO expiry pass: a recipe photo is part of a document the owner keeps for
     // years, not evidence for one day's estimate.
     runRecipePhotoSweep(getDb());
+    // And the progress-photo directory (0035). Same reconciliation, and the one
+    // that goes furthest: no expiry pass AND no dangling-row deletion. A
+    // progress photo's ROW is the record — its date, pose, notes and saved AI
+    // readings — so a missing JPEG is reported and drawn as an authored empty,
+    // never allowed to erase the history. See the sweep's own header.
+    runProgressPhotoSweep(getDb());
     // Show notifications that fire while ARC is open (iOS drops them silently
     // otherwise) and route a tapped one where it belongs, instead of dumping
     // the user on Home with no idea why the phone buzzed.
@@ -192,6 +199,13 @@ export default function RootLayout() {
           {/* INTEGRATOR-MERGE: n-of-1 experiments surface (docs/ai-coach.md §6, migration 0027). */}
           <Stack.Screen name="experiments" />
           <Stack.Screen name="experiment-detail" />
+          {/* INTEGRATOR-MERGE: progress photos (docs/progress-photos-subapp.md,
+              migration 0035). Pushed from the Data tab's "Progress photos" row;
+              the other three are pushed from the gallery. */}
+          <Stack.Screen name="progress-photos" />
+          <Stack.Screen name="progress-photo-add" />
+          <Stack.Screen name="progress-photo-detail" />
+          <Stack.Screen name="progress-photo-compare" />
         </Stack>
         <StatusBar style="dark" />
         {/* Re-lock / privacy cover. A NATIVE full-screen Modal, not an

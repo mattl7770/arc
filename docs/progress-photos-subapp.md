@@ -225,14 +225,14 @@ Why no tool: the catalog is ~66–72% of the cached prompt prefix and every addi
 
 **Integrator merge points:** `app/_layout.tsx` (four `Stack.Screen` entries) · `app/(tabs)/data.tsx` (the `photos` row gains `onPress`, chip retires, tally self-updates) · the migration + `npm run db:bundle` · `src/lib/db/types.ts` row types · `UNCOVERED_DOMAINS` in `src/lib/ai/tools/index.ts` · `package.json` `db:test` chain · `docs/project-status.md` schema inventory re-measured in the same change.
 
-**⚑ MATT — owner calls this spec carries, not decisions it has made:**
+**Decided — owner calls, 2026-08-12** (all six answered in one round at the top of the build session; every one landed on the spec's recommendation, so the body above stands unamended):
 
-1. **The working-copy amendment (§1):** 1600 px copies (~0.5 GB/decade) as the always-stored artifact, superseding the 2026-07-24 "thumbnail only" letter — or hold the letter (512 px thumbnails, ~60 MB/decade) and accept that a restore degrades the whole history to thumbnails?
-2. **May analyses output ≈-labelled numeric estimates** (body-fat %), meal-estimate style — or qualitative-only as specced?
-3. **Library-pick-only v1** (guided in-app capture deferred to a MediaLibrary build) — agreed?
-4. **Do the photo files ride the Phase 4 encrypted snapshot?** (Recommended yes — it is the only restore path that keeps images.)
-5. **Coach stays blind in v1** (declared in the manifest, no tool) — agreed, or is "when did I last take photos" worth a read tool now?
-6. **Cadence:** should "photo day" exist as a protocol item / reminder nudge, or stay out of scope? (Out as specced; it composes naturally with the protocol model rework whenever that lands.)
+1. **The working-copy amendment (§1) is ACCEPTED.** 1600 px JPEG q0.7 working copies (~0.5 GB/decade) are the always-stored artifact, superseding the 2026-07-24 "PhotoKit reference + thumbnail" letter. `docs/architecture-migration.md` §Phase 4 is amended by this decision, not contradicted by it: iCloud Photos still owns the original, ARC's copy is a working record.
+2. **Qualitative only — no numeric body-composition estimates.** No body-fat percentages, ≈-labelled or otherwise. The asymmetry with meal-estimate's ≈-numbers is deliberate and owner-confirmed: a visual BF% is ±5 points on a good day and a plausible wrong number filed near a trend surface is the exact hazard the labs mapper exists to prevent.
+3. **Library-pick-only v1 confirmed.** No in-app camera until a MediaLibrary-era build can write captures back to the camera roll. `source` keeps its `'camera'` CHECK value so v2 needs no rebuild.
+4. **The photo files ride the Phase 4 encrypted snapshot.** Working copies and the `is_important` full-res originals both. Camera-roll originals never ride — iCloud Photos owns those.
+5. **Coach stays blind in v1.** `UNCOVERED_DOMAINS` entry only, no tool registered. A `get_progress_photo_log` read tool stays gated on demonstrated conversational need.
+6. **Cadence nudge is out of scope.** "Photo day" composes with the protocol model rework whenever that lands; ARC will not grow a second scheduling mechanism for it now.
 
 ---
 
