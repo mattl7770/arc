@@ -1,6 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
@@ -23,7 +22,12 @@ import {
   MealEstimationUnavailableError,
 } from '@/lib/nutrition/estimate';
 import { fmtInt } from '@/lib/nutrition/format';
-import { pickPhotoBase64 } from '@/lib/media/photo-library';
+import {
+  attachMealPhoto,
+  MEAL_PHOTO_RETENTION_DAYS,
+  type CapturedPhoto,
+} from '@/lib/media/meal-photo-store';
+import { downscaleJpeg, pickPhotoBase64 } from '@/lib/media/photo-library';
 import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
 
@@ -37,6 +41,17 @@ import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
  * ONLINE-EXCEPT-AI: the model call is the exception; grounding, editing and
  * logging are offline. Photo capture is NATIVE (expo-camera + image-manipulator)
  * → needs the EAS rebuild; describe-in-words works as soon as a key is set.
+ *
+ * ## The photo is kept now (owner, 2026-08-12)
+ *
+ * This screen used to downscale the shot, post it to the model and drop it. It
+ * now rides through the review in state and is written to disk when — and only
+ * when — the meal is saved, so a discarded estimate leaves no file behind. Both
+ * capture paths hand back the same {@link CapturedPhoto} from the same
+ * downscale (`downscaleJpeg`), and both are attached by the same single call in
+ * {@link save}: there is exactly one place a meal photo is written, which is why
+ * the camera and the library cannot drift apart. Storage, retention and the
+ * row/file invariant live in src/lib/media/meal-photo-store.ts.
  *
  * ## Conformed Set surface system
  *
@@ -125,6 +140,10 @@ export default function MealEstimateScreen() {
   const [phase, setPhase] = useState<Phase>({ kind: 'input' });
   const [description, setDescription] = useState('');
   const [rows, setRows] = useState<ReviewItem[]>([]);
+  // The image behind the current estimate, held until Save writes it to disk.
+  // Nothing is on the file system until then: a discarded review must leave no
+  // trace, and the same shot re-estimated must not leave two.
+  const [photo, setPhoto] = useState<CapturedPhoto | null>(null);
   // The model call is a live stream. Leaving mid-estimate must stop it, or it
   // runs to completion and is billed in full while its results land on an
   // unmounted screen. app/recipe-import.tsx does exactly this.
@@ -167,10 +186,17 @@ export default function MealEstimateScreen() {
     setPhase({ kind: 'review', title: estimate.title, notes: estimate.notes });
   };
 
-  const run = async (input: EstimateInput) => {
+  /**
+   * Run one estimate. `captured` is the image it was made from, or null for the
+   * describe-in-words path — passed in rather than set by each caller so that
+   * re-estimating from text always CLEARS a stale photo instead of attaching
+   * the last picture to a meal that was typed.
+   */
+  const run = async (input: EstimateInput, captured: CapturedPhoto | null = null) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    setPhoto(captured);
     setPhase({ kind: 'estimating' });
     try {
       const grounded = groundMealEstimate(getDb(), await estimateMeal(input, controller.signal));
@@ -208,32 +234,36 @@ export default function MealEstimateScreen() {
     if (picked.kind === 'failed') {
       return setPhase({ kind: 'error', message: 'Couldn’t read that photo. Try another one.' });
     }
-    await run({
-      kind: 'photo',
-      base64Jpeg: picked.base64Jpeg,
-      mediaType: 'image/jpeg',
-      description: description.trim() || undefined,
-    });
+    await estimateFromPhoto({ ...picked, source: 'library' });
+  };
+
+  /**
+   * The join point. Both capture paths converge here, so the bytes the model
+   * sees and the bytes stored on the meal are the same object by construction —
+   * not by two call sites agreeing to downscale the same way.
+   */
+  const estimateFromPhoto = async (captured: CapturedPhoto) => {
+    await run(
+      {
+        kind: 'photo',
+        base64Jpeg: captured.base64Jpeg,
+        mediaType: 'image/jpeg',
+        description: description.trim() || undefined,
+      },
+      captured
+    );
   };
 
   const capturePhoto = async () => {
     try {
-      const photo = await cameraRef.current?.takePictureAsync({ quality: 0.7 });
-      if (!photo?.uri) return setPhase({ kind: 'input' });
-      // Downscale + recompress so only a small JPEG leaves the device.
-      const shrunk = await manipulateAsync(photo.uri, [{ resize: { width: 1024 } }], {
-        compress: 0.6,
-        format: SaveFormat.JPEG,
-        base64: true,
-      });
-      if (!shrunk.base64)
-        return setPhase({ kind: 'error', message: 'Couldn’t process the photo.' });
-      await run({
-        kind: 'photo',
-        base64Jpeg: shrunk.base64,
-        mediaType: 'image/jpeg',
-        description: description.trim() || undefined,
-      });
+      const shot = await cameraRef.current?.takePictureAsync({ quality: 0.7 });
+      if (!shot?.uri) return setPhase({ kind: 'input' });
+      // Downscale + recompress so only a small JPEG leaves the device — through
+      // the shared pass in src/lib/media/photo-library.ts, which is also what
+      // pulls `expo-image-manipulator` out of this ROUTE file's static imports.
+      const shrunk = await downscaleJpeg(shot.uri);
+      if (!shrunk) return setPhase({ kind: 'error', message: 'Couldn’t process the photo.' });
+      await estimateFromPhoto({ ...shrunk, source: 'camera' });
     } catch {
       setPhase({
         kind: 'error',
@@ -270,7 +300,7 @@ export default function MealEstimateScreen() {
     const now = new Date();
     const title = phase.kind === 'review' ? phase.title : 'Meal';
     try {
-      logMealWithItems(getDb(), {
+      const { mealId } = logMealWithItems(getDb(), {
         date: todayISODate(),
         time: clockFromISO(now.toISOString()),
         name: title,
@@ -278,6 +308,11 @@ export default function MealEstimateScreen() {
         source: 'ai_suggested',
         items,
       });
+      // The ONE place a meal photo is written. It cannot throw and it cannot
+      // fail the meal: an unattachable picture (no file system module, a full
+      // disk) leaves a saved meal with no photo, which is a state the meal
+      // screen already draws — nothing.
+      if (photo) attachMealPhoto(getDb(), mealId, photo);
       router.back();
     } catch (error) {
       console.warn('[meal-estimate] save failed', error);
@@ -554,10 +589,16 @@ export default function MealEstimateScreen() {
           </View>
 
           {/* The decision, in future tense, immediately above the control that
-              makes it — and nothing after it but its other branch. */}
+              makes it — and nothing after it but its other branch. The photo
+              clause appears only when there IS one, and it states the retention
+              out loud: a picture that vanishes in a week without warning is a
+              surprise, and the window is policy, not an accident. */}
           <Text className="mt-5 font-serif text-[13px] leading-5 text-ink-muted">
-            On save: logged onto today at the current time, labelled as an AI estimate. Discarding
-            writes nothing.
+            On save: logged onto today at the current time, labelled as an AI estimate.
+            {photo
+              ? ` The photo is kept with the meal for ${MEAL_PHOTO_RETENTION_DAYS} days, then cleared.`
+              : ''}{' '}
+            Discarding writes nothing.
           </Text>
 
           <Pressable

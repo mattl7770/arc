@@ -22,8 +22,10 @@ import {
 } from '../src/lib/db/repositories/meal-templates.ts';
 import {
   addMealItem,
+  allMealPhotos,
   dayMicroTotals,
   getMeal,
+  latestMealPhoto,
   listMealItems,
   logMeal,
   logMealWithItems,
@@ -31,7 +33,15 @@ import {
   setNutritionTargets,
   todayTotals,
   updateMealItemPortion,
+  updateMealTime,
 } from '../src/lib/db/repositories/nutrition.ts';
+import {
+  attachMealPhoto,
+  deleteMealWithPhotos,
+  MEAL_PHOTO_RETENTION_DAYS,
+  mealPhotoView,
+  sweepMealPhotos,
+} from '../src/lib/media/meal-photo-store.ts';
 import {
   buildMealEstimationRequest,
   groundMealEstimate,
@@ -583,6 +593,287 @@ console.log('13b. grounding is conservative — generic single words never mis-g
   partial.items[0].foodId === null && near(partial.items[0].kcal, 250)
     ? ok('a catalog food missing macros is not grounded to (no mixed item)')
     : bad('partial grounded', JSON.stringify(partial.items[0]));
+}
+
+// === Meal photos (0033) ======================================================
+//
+// The file half of this feature is behind the `PhotoFileStore` seam precisely
+// so it can be driven here: a Map stands in for the Documents directory while
+// the REAL database runs the REAL migrations underneath. That is what makes the
+// retention sweep — three passes, two stores, an ordering that matters — a
+// tested thing rather than a hoped-for one.
+
+/** An in-memory stand-in for the app's photo directory. */
+function fakeStore(initial = {}) {
+  const files = new Map(Object.entries(initial));
+  return {
+    files,
+    list: () => [...files.keys()],
+    exists: (name) => files.has(name),
+    remove: (name) => {
+      files.delete(name);
+      return true;
+    },
+    write: (name, base64) => {
+      files.set(name, base64);
+      return true;
+    },
+    uri: (name) => (files.has(name) ? `file:///documents/meal-photos/${name}` : null),
+  };
+}
+
+const JPEG = { base64Jpeg: '/9j/fake', width: 1024, height: 768, source: 'camera' };
+
+/** Backdate a photo row so the sweep can see it as expired without waiting. */
+function agePhoto(raw, id, days) {
+  const at = new Date(Date.now() - days * 86_400_000).toISOString();
+  raw.prepare('UPDATE meal_photos SET created_at = ? WHERE id = ?').run(at, id);
+}
+
+console.log('14. 0033 schema: a name (never a path), unique, and CASCADE off the meal');
+{
+  const { db, raw } = freshDb();
+  const mealId = logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 700 });
+  raw
+    .prepare('INSERT INTO meal_photos (id, meal_id, file_name, source) VALUES (?, ?, ?, ?)')
+    .run('p1', mealId, 'abc.jpg', 'camera');
+  raw.prepare('SELECT count(*) c FROM meal_photos').get().c === 1
+    ? ok('a plain base name inserts')
+    : bad('base name rejected');
+
+  // The column stores a NAME. A path would survive an install and then dangle,
+  // which is the whole reason the CHECK is there.
+  throws(() =>
+    db.run('INSERT INTO meal_photos (id, meal_id, file_name, source) VALUES (?, ?, ?, ?)', [
+      'p2',
+      mealId,
+      'sub/dir.jpg',
+      'camera',
+    ])
+  )
+    ? ok('a name containing a separator is rejected')
+    : bad('path accepted');
+  throws(() =>
+    db.run('INSERT INTO meal_photos (id, meal_id, file_name, source) VALUES (?, ?, ?, ?)', [
+      'p3',
+      mealId,
+      'abc.png',
+      'camera',
+    ])
+  )
+    ? ok('a non-.jpg name is rejected')
+    : bad('non-jpg accepted');
+  throws(() =>
+    db.run('INSERT INTO meal_photos (id, meal_id, file_name, source) VALUES (?, ?, ?, ?)', [
+      'p4',
+      mealId,
+      'abc.jpg',
+      'camera',
+    ])
+  )
+    ? ok('two rows cannot claim one file (UNIQUE file_name)')
+    : bad('duplicate file_name accepted');
+  throws(() =>
+    db.run('INSERT INTO meal_photos (id, meal_id, file_name, source) VALUES (?, ?, ?, ?)', [
+      'p5',
+      mealId,
+      'd.jpg',
+      'scanner',
+    ])
+  )
+    ? ok('an unknown source is rejected by the enum CHECK')
+    : bad('unknown source accepted');
+  throws(() =>
+    db.run('INSERT INTO meal_photos (id, meal_id, file_name, source) VALUES (?, ?, ?, ?)', [
+      'p6',
+      'no-such-meal',
+      'e.jpg',
+      'camera',
+    ])
+  )
+    ? ok('a photo cannot hang off a meal that does not exist (FK)')
+    : bad('orphan FK accepted');
+
+  db.run('DELETE FROM meals WHERE id = ?', [mealId]);
+  raw.prepare('SELECT count(*) c FROM meal_photos').get().c === 0
+    ? ok('deleting the meal CASCADEs its photo rows away')
+    : bad('cascade');
+}
+
+console.log('15. attachMealPhoto writes the file first, then the row — and undoes itself');
+{
+  const { db } = freshDb();
+  const store = fakeStore();
+  const mealId = logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 700 });
+  const photoId = attachMealPhoto(db, mealId, JPEG, store);
+  const row = latestMealPhoto(db, mealId);
+  photoId && row && store.files.has(row.file_name)
+    ? ok('the row and the file land together')
+    : bad('attach', JSON.stringify(row));
+  row && row.width === 1024 && row.height === 768 && row.source === 'camera'
+    ? ok('dimensions and provenance are recorded (the frame is the photo’s own)')
+    : bad('attach metadata', JSON.stringify(row));
+  store.files.get(row.file_name) === '/9j/fake'
+    ? ok('the bytes written are the bytes handed in')
+    : bad('written bytes');
+
+  // A rejected row must not leave the file behind — that is the leak this
+  // module exists to prevent. This case logs a FOREIGN KEY warning on the way
+  // through; that line in the run output is the rollback working, not a fault.
+  const bogus = attachMealPhoto(db, 'no-such-meal', JPEG, store);
+  bogus === null && store.files.size === 1
+    ? ok('a rejected row removes the file it had just written')
+    : bad('rollback', `${bogus} / ${store.files.size} file(s)`);
+
+  attachMealPhoto(db, mealId, { ...JPEG, source: 'library' }, store) && store.files.size === 2
+    ? ok('a second photo gets its own file (names never collide)')
+    : bad('second photo');
+  latestMealPhoto(db, mealId).source === 'library'
+    ? ok('the newest photo is the one the meal shows — a re-shoot is a correction')
+    : bad('latest photo');
+
+  // No file system at all (the web preview, a headless render): no row, no lie.
+  const before = allMealPhotos(db).length;
+  attachMealPhoto(db, mealId, JPEG, null) === null && allMealPhotos(db).length === before
+    ? ok('with no store there is no row — never a pointer to a file nobody wrote')
+    : bad('null store attach');
+}
+
+console.log('16. mealPhotoView: what the meal screen draws, and when it draws nothing');
+{
+  const { db, raw } = freshDb();
+  const store = fakeStore();
+  const mealId = logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 700 });
+  mealPhotoView(db, mealId, new Date(), store) === null
+    ? ok('a meal with no photo yields null (the screen draws no frame at all)')
+    : bad('empty view');
+
+  const photoId = attachMealPhoto(db, mealId, JPEG, store);
+  const view = mealPhotoView(db, mealId, new Date(), store);
+  view && view.uri.endsWith('.jpg') && view.width === 1024 && view.height === 768
+    ? ok('a fresh photo yields a uri and its true dimensions')
+    : bad('view', JSON.stringify(view));
+  view && view.clearsInDays === MEAL_PHOTO_RETENTION_DAYS
+    ? ok(`a photo taken now clears in ${MEAL_PHOTO_RETENTION_DAYS} days`)
+    : bad('clearsInDays fresh', view && view.clearsInDays);
+
+  agePhoto(raw, photoId, MEAL_PHOTO_RETENTION_DAYS - 1);
+  mealPhotoView(db, mealId, new Date(), store).clearsInDays === 1
+    ? ok('a photo one day short of the window says so — rounded up, never "0 days"')
+    : bad('clearsInDays near', mealPhotoView(db, mealId, new Date(), store).clearsInDays);
+
+  // Clock skew, which a flaky run of this very suite surfaced: SQLite's 'now'
+  // reads a finer clock than Date.now() does on Windows, so a just-written row
+  // can parse a few ms AHEAD of the JS clock. Unclamped that reported 8 days
+  // left on a 7-day window. Simulated here by reading against an earlier `now`.
+  agePhoto(raw, photoId, -1);
+  mealPhotoView(db, mealId, new Date(), store).clearsInDays === MEAL_PHOTO_RETENTION_DAYS
+    ? ok('a created_at ahead of the clock never reports more than the whole window')
+    : bad('future created_at', mealPhotoView(db, mealId, new Date(), store).clearsInDays);
+
+  // The file vanishes under us (an OS purge, a restore that carried the
+  // database but not the media). A broken frame is worse than no frame.
+  store.files.clear();
+  mealPhotoView(db, mealId, new Date(), store) === null
+    ? ok('a row whose file has gone yields null, not a broken image')
+    : bad('dangling view');
+}
+
+console.log('17. deleteMealWithPhotos clears the bytes the CASCADE leaves behind');
+{
+  const { db, raw } = freshDb();
+  const store = fakeStore();
+  const mealId = logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 700 });
+  attachMealPhoto(db, mealId, JPEG, store);
+  attachMealPhoto(db, mealId, JPEG, store);
+  const keeper = logMeal(db, { date: TODAY, time: '08:00', name: 'Breakfast', kcal: 300 });
+  attachMealPhoto(db, keeper, JPEG, store);
+  store.files.size === 3 ? ok('three files on disk') : bad('setup', store.files.size);
+
+  deleteMealWithPhotos(db, mealId, store);
+  getMeal(db, mealId) === undefined &&
+  raw.prepare('SELECT count(*) c FROM meal_photos').get().c === 1
+    ? ok('the meal and both its rows are gone')
+    : bad('delete rows');
+  store.files.size === 1
+    ? ok('both its FILES are gone too — the CASCADE alone would have leaked them')
+    : bad('delete files', store.files.size);
+  store.files.has(latestMealPhoto(db, keeper).file_name)
+    ? ok('the other meal’s photo is untouched')
+    : bad('collateral file deletion');
+}
+
+console.log('18. the retention sweep: expire, then reconcile both directions');
+{
+  const { db, raw } = freshDb();
+  const store = fakeStore();
+  const mealId = logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 700 });
+
+  const fresh = attachMealPhoto(db, mealId, JPEG, store);
+  const old = attachMealPhoto(db, mealId, JPEG, store);
+  agePhoto(raw, old, MEAL_PHOTO_RETENTION_DAYS + 1);
+  const oldName = raw.prepare('SELECT file_name FROM meal_photos WHERE id = ?').get(old).file_name;
+
+  // A row whose file went missing, and a file no row claims.
+  const dangling = attachMealPhoto(db, mealId, JPEG, store);
+  const danglingName = raw
+    .prepare('SELECT file_name FROM meal_photos WHERE id = ?')
+    .get(dangling).file_name;
+  store.files.delete(danglingName);
+  store.files.set('orphan.jpg', '/9j/nobodys');
+
+  const result = sweepMealPhotos(db, store, new Date());
+  result.expired === 1 && result.dangling === 1 && result.orphans === 1
+    ? ok('one expired, one dangling row, one orphan file — all three passes fire')
+    : bad('sweep counts', JSON.stringify(result));
+  !store.files.has(oldName)
+    ? ok('the expired photo’s file is off disk')
+    : bad('expired file survived');
+  allMealPhotos(db).length === 1 && allMealPhotos(db)[0].id === fresh
+    ? ok('only the fresh photo’s row survives')
+    : bad('surviving rows', JSON.stringify(allMealPhotos(db).map((p) => p.id)));
+  !store.files.has('orphan.jpg') && store.files.size === 1
+    ? ok('the orphan file is reclaimed and the claimed one is not')
+    : bad('orphan pass', [...store.files.keys()].join(','));
+
+  // Idempotent: a second sweep on a reconciled store does nothing at all.
+  const again = sweepMealPhotos(db, store, new Date());
+  again.expired === 0 && again.dangling === 0 && again.orphans === 0 && store.files.size === 1
+    ? ok('a second sweep is a no-op')
+    : bad('second sweep', JSON.stringify(again));
+
+  // And with no file system module there is nothing to sweep and nothing to
+  // break — the boot path must survive a runtime without expo-file-system.
+  const none = sweepMealPhotos(db, null, new Date());
+  none.expired === 0 && allMealPhotos(db).length === 1
+    ? ok('with no store the sweep is inert — rows are never dropped blind')
+    : bad('null-store sweep', JSON.stringify(none));
+}
+
+console.log('19. retention is keyed on the PHOTO’s age, not on the meal’s date');
+{
+  const { db, raw } = freshDb();
+  const store = fakeStore();
+  const mealId = logMeal(db, { date: TODAY, time: '00:40', name: 'Late plate', kcal: 500 });
+  const photoId = attachMealPhoto(db, mealId, JPEG, store);
+
+  // The owner corrects the meal onto a day well outside the retention window.
+  // Nothing about the photo may move: it was taken today.
+  updateMealTime(db, mealId, { date: '2026-01-01', time: '23:40' });
+  const swept = sweepMealPhotos(db, store, new Date());
+  swept.expired === 0 && latestMealPhoto(db, mealId) && store.files.size === 1
+    ? ok('re-dating a meal to January does not expire the photo taken today')
+    : bad('re-date expired the photo', JSON.stringify(swept));
+
+  // And the converse: an old photo on a meal re-dated to today still expires.
+  agePhoto(raw, photoId, MEAL_PHOTO_RETENTION_DAYS + 1);
+  updateMealTime(db, mealId, { date: TODAY, time: '12:00' });
+  sweepMealPhotos(db, store, new Date()).expired === 1 && store.files.size === 0
+    ? ok('re-dating a meal to today does not resurrect a photo past its window')
+    : bad('re-date resurrected the photo');
+  getMeal(db, mealId)
+    ? ok('and the meal itself is untouched by either sweep')
+    : bad('sweep deleted a meal');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

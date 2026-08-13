@@ -14,13 +14,17 @@
 import type { Database } from '../database';
 import { localDaysList, todayISODate } from '../date';
 import { newId } from '../id';
+import type { DateString, TimeString } from '../types';
+import { isValidClock } from '@/lib/nutrition/meal-time';
 import { type Micros, parseMicros, sumMicros } from '@/lib/nutrition/micros';
 import type {
   DayTotals,
   MealItemWithServing,
+  MealPhotoRow,
   MealRow,
   NewMeal,
   NewMealItem,
+  NewMealPhoto,
   NewMealWithItems,
   NewNutritionTargets,
   NutritionHistoryDay,
@@ -391,6 +395,47 @@ export function getMeal(db: Database, id: string): MealRow | undefined {
   return db.get<MealRow>('SELECT * FROM meals WHERE id = ?', [id]);
 }
 
+/**
+ * Move a logged meal to a different day and/or wall-clock time — the owner's
+ * "change the time of a meal" (2026-08-12).
+ *
+ * **Why the date moves with the time.** The case that motivated it is a meal
+ * eaten at 00:40 that belongs to the evening before, and re-timing it to 23:40
+ * without also moving the day writes a *worse* lie than the one being fixed. So
+ * this takes both, and the day boundary is a supported crossing.
+ *
+ * **Why one UPDATE is the whole implementation, and how that was established.**
+ * Nothing in this schema denormalises a day's nutrition: `todayTotals`,
+ * `dailyIntakeSeries` and `nutritionHistory` all group `meals` by the `date`
+ * column at read time, `meal_items` carry no date of their own (they hang off
+ * the meal), and a meal touches neither `daily_logs` nor `log_entries` — which
+ * db/nutrition.test.mjs §8 asserts directly. So re-dating a meal moves its
+ * energy off one day's totals and onto another's by construction, on both days
+ * at once, with nothing to recompute. That is verified rather than assumed:
+ * db/nutrition.test.mjs walks the totals of both days across a move.
+ *
+ * **Separate from {@link updateMealMeta}** rather than folded into it: that one
+ * rewrites name and notes too, so a time editor calling it would have to
+ * re-send the name it never asked about — the exact shape that turns a typo fix
+ * into silent destruction elsewhere in this codebase (see the note in
+ * repositories/recipes.ts).
+ *
+ * Throws on an impossible clock. The schema's GLOB CHECK only tests the SHAPE
+ * `[0-9][0-9]:[0-9][0-9]`, which `99:99` passes, so this is the layer where
+ * hours are hours. The editor gates its Save on the same predicate; this is the
+ * backstop that makes the guarantee true for every future caller.
+ */
+export function updateMealTime(
+  db: Database,
+  id: string,
+  when: { date: DateString; time: TimeString | null }
+): void {
+  if (!isValidClock(when.time)) {
+    throw new Error(`updateMealTime: "${when.time}" is not a valid HH:MM clock time.`);
+  }
+  db.run('UPDATE meals SET date = ?, time = ? WHERE id = ?', [when.date, when.time, id]);
+}
+
 /** Edit a meal's descriptive fields; totals belong to items/logMeal, not here. */
 export function updateMealMeta(
   db: Database,
@@ -583,6 +628,75 @@ export function nutritionHistory(
         : null,
     };
   });
+}
+
+// === Meal photos (0033: meal_photos) =========================================
+//
+// The ROW half of meal photos; the file half and the retention sweep that pairs
+// them live in src/lib/media/meal-photo-store.ts, which is the only module that
+// touches both. Nothing here knows what a directory is — these functions run
+// unchanged against node:sqlite in db/nutrition-v2.test.mjs, which is what lets
+// the sweep be tested for real without a device.
+//
+// `file_name` is a base name, never a path (0033 CHECKs it), because iOS
+// re-issues the app container's UUID on every install.
+
+/** Record a photo already written to disk; returns its id. The caller writes
+ *  the file FIRST and removes it if this throws — see attachMealPhoto. */
+export function insertMealPhoto(db: Database, photo: NewMealPhoto): string {
+  const id = newId(db);
+  db.run(
+    `INSERT INTO meal_photos (id, meal_id, file_name, width, height, source)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, photo.meal_id, photo.file_name, photo.width ?? null, photo.height ?? null, photo.source]
+  );
+  return id;
+}
+
+/**
+ * The photo to show on a meal: the most recent one it carries, or undefined.
+ *
+ * Newest-first rather than oldest so that a second shot of the same meal reads
+ * as a correction of the first, which is the only reason anyone takes one.
+ */
+export function latestMealPhoto(db: Database, mealId: string): MealPhotoRow | undefined {
+  return db.get<MealPhotoRow>(
+    'SELECT * FROM meal_photos WHERE meal_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+    [mealId]
+  );
+}
+
+/** Every file name one meal holds — read BEFORE deleting the meal, because the
+ *  0033 CASCADE takes the rows and leaves the files. */
+export function mealPhotoFileNames(db: Database, mealId: string): string[] {
+  return db
+    .all<{ file_name: string }>('SELECT file_name FROM meal_photos WHERE meal_id = ?', [mealId])
+    .map((r) => r.file_name);
+}
+
+/** Every photo the database still claims — the sweep's reconcile set. Small by
+ *  construction: retention keeps it to roughly a week of meals. */
+export function allMealPhotos(db: Database): MealPhotoRow[] {
+  return db.all<MealPhotoRow>('SELECT * FROM meal_photos ORDER BY created_at');
+}
+
+/**
+ * Photos taken before `cutoff` (an ISO-8601 instant) — what the retention sweep
+ * clears. Compared against the PHOTO's own created_at, never the meal's date:
+ * the meal's date is user-editable now, and a corrected meal time must not
+ * expire or resurrect an image.
+ */
+export function expiredMealPhotos(db: Database, cutoff: string): MealPhotoRow[] {
+  return db.all<MealPhotoRow>(
+    'SELECT * FROM meal_photos WHERE created_at < ? ORDER BY created_at',
+    [cutoff]
+  );
+}
+
+/** Drop one photo row. The file is the caller's to remove — and if it fails to,
+ *  the sweep's orphan pass gets it on the next app open. */
+export function deleteMealPhoto(db: Database, id: string): void {
+  db.run('DELETE FROM meal_photos WHERE id = ?', [id]);
 }
 
 // === Daily targets (0009: nutrition_targets) =================================
