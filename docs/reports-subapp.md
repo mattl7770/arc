@@ -1,7 +1,14 @@
 # Reports — the self-review and the doctor-visit pack
 
-**Status:** Spec — designed 2026-08-12 in a docs-only round. **Nothing here is built**; no migration has shipped, and the Data tab's "Reports & export" row (`app/(tabs)/data.tsx`, the `export` entry) stays a disabled "Later" chip until v1 lands.
-**Owner decisions already taken (2026-08-12):** **both report types ship from day one** — the periodic self-review and the doctor-visit pack — behind one screen, over one assembly layer.
+**Status: BUILT — 2026-08-12.** Both report types ship, behind one screen, over one assembly layer, on migration **0039** (authored as 0036, renumbered at merge). The Data tab's row is now `Reports` with live state and a route; the "Later" chip is gone.
+
+**What shipped:** `src/lib/reports/` (types · period · sections · two assemblers · `render-html` · `report-file` · `coach-read`) · `src/lib/db/repositories/reports.ts` · `src/components/reports/` (the native preview) · `app/reports.tsx` + `app/report-view.tsx` · `src/lib/files/share-file.ts` (the outcome ledger, now shared with export) · `db/migrations/0039_reports.sql`.
+
+**Gate:** `db/reports.test.mjs` **136 assertions**, `db/screens-render.test.mjs` grew to **156** (the reports screens joined it), `npm run db:test` **2,430 assertions / 47 suites, 0 failed**, `db:validate` 20/20, `tsc` 0, `eslint app src` 0 errors, `npx expo export --platform ios` clean.
+
+⚠️ **Headless-verified only — none of this has been seen on a device.** Two things ride the pending EAS build: the **share sheet** (`expo-sharing`; until then the file is written and the outcome is `saved` with its full path) and **PDF** (`expo-print`, added to `package.json` on the owner's call — ⚑ #1 below). The manual path is stated in the UI: open the HTML in Safari → Print → Save as PDF.
+
+**Owner decisions (2026-08-12):** all six ⚑ questions in §11 were asked in one round at the start of the build and answered — every recommendation taken, plus `expo-print` on the next build. The table in §11 records each one and where it landed in the code.
 **What this is NOT:** the whole-database JSON **export**, which already ships (2026-07-29, Settings › Security & data, `src/lib/export/serializer.ts`, 42 headless tests). A report is a *document assembled for a reader*; the export is *the data, all of it, for a machine or a migration*. They stay on different screens (§7).
 **Read first:** `docs/labs-subapp.md` (spec-depth model) · `src/lib/export/serializer.ts` + `export-file.ts` (the file-outcome pattern reports clone) · `src/lib/ai/insights.ts` + `series.ts` + `stats.ts` (the deterministic seams the assembly composes).
 
@@ -13,6 +20,8 @@ ARC's standing rule — *deterministic code detects and grounds; the model decid
 
 The honesty rules print too: **no data, no number** (an absent metric is an em-dash or an authored sentence, never a plausible figure); **empty is authored** (a section with nothing to say says why, or is absent by rule); **ledgers must sum** (the adherence table reconciles visibly and is asserted in tests).
 
+**As built, the "fields in, marks out" rule is what carries all of this**, and it is worth stating as a rule you can check a diff against: the assembly layer is the ONLY arithmetic in the feature. Both renderers — `render-html.ts` and the native `src/components/reports/` — consume the same `ReportData` and neither contains an arithmetic operator, a `toFixed`, a `Math.`, or a date split. `null` is the only absence, and both renderers draw it as an em-dash. That is what makes "the preview and the file cannot disagree" structural rather than a promise two implementations both have to keep.
+
 ---
 
 ## 2. Formats — HTML file, native preview, PDF as a rider
@@ -21,7 +30,7 @@ The honesty rules print too: **no data, no number** (an absent metric is an em-d
 
 **The in-app preview is NOT a WebView — it is a native render of the same typed `ReportData`, drawn in Conformed Set blocks.** This is the load-bearing architectural move:
 
-- No new native dep for v1. `react-native-webview` never enters the build ledger (verified 2026-08-12: not installed; neither is `expo-print`).
+- `react-native-webview` never enters the build ledger — the preview is native. The one new native dep is **`expo-print`**, added on the owner's explicit call (⚑ #1, decided 2026-08-12) and recorded in the Known-caveats build ledger; it ships no config plugin, so it is deliberately absent from `app.json`. *(An earlier revision of this line claimed expo-print was not installed while §11 recorded adding it — the 2026-08-13 review caught the contradiction.)*
 - The preview is first-class UI — folds, accessibility, the paper — not a browser embed.
 - **The honesty guarantee "preview and file cannot disagree" is enforced structurally:** both renderers consume the same `ReportData` object, and **neither computes a number**. The HTML template contains formatting only; every figure is a field. ("Fields in, marks out" — the rule to check any render diff against.)
 
@@ -42,7 +51,9 @@ Every section has a specified absent-data state; a section with nothing to say p
 | # | Section | Content · seams · absence behavior |
 | --- | --- | --- |
 | 1 | Header | Period, generated date, app version, and the coverage preamble: *"N of M days in this period carry at least one log."* |
-| 2 | **Adherence ledger** | Per protocol active in the period (via `log_entries.protocol_id`): planned / completed / partial / skipped / **excused** — excusal per-day via `accountForDay` against that day's `day_modes` row. **The ledger must sum** (`completed + partial + skipped + excused = planned`), asserted in tests and visibly reconciled in the table; completion % over *accountable* items (planned − excused). Mode days named beneath: *"3 Travel days, 1 Sick day — skips on those days are excused, not missed."* Empty: "No protocol was active this period." |
+| 2 | **Adherence ledger** | Per protocol active in the period (via `log_entries.protocol_id`): planned / completed / partial / skipped / **excused** / **unmarked** — excusal per-day via `accountForDay` against that day's `day_modes` row. **The ledger must sum** (`completed + partial + skipped + excused + unmarked = planned`), asserted in tests and visibly reconciled in the table; completion % over *accountable* items (planned − excused). Mode days named beneath: *"3 Travel days, 1 Sick day — skips on those days are excused, not missed."* Empty: "No protocol was active this period." |
+| | ↳ **`unmarked` is a sixth column the spec's first draft did not have, and the schema forced it (built 2026-08-12).** `log_entries.status` is `pending \| completed \| skipped \| partial` (0001_init.sql), so a generated mission item the user never touched sits at `pending` forever, and the four-way split had nowhere to put it. Both ways of forcing it into four are fabrications: folding it into `completed` invents adherence, and folding it into `skipped` invents a decision the user never made — which would then be silently **excused** on a Travel day, inventing an excuse for it too. So it is its own column, it is in the denominator, and the report says what it is. Deciding not to record something is not the same as deciding not to do it. |
+| | ↳ **The ledger clips to complete days.** Adherence ACCUMULATES through a day — items start `pending` and are answered as the day runs — so a custom range reaching today excludes today, exactly as training minutes and food logged do. Otherwise today's untouched 21:00 magnesium scores as an unmarked miss at 10am, worst on the range someone is most likely to generate. `todayNote` states the exclusion. |
 | 3 | Training | Sessions, minutes, sets (`trainingDailyTotals`, `weekSummary` bounds); weekly muscle-group set volume vs the prior equal-length window (`weeklyMuscleSets`); e1RM per movement with ≥2 sessions in-period (`e1rmSeries`); PRs set in-period (`personalRecords`). Empty: "No sessions logged." |
 | 4 | Nutrition vs targets | Days-logged vs days-in-period stated **first**; averages (kcal, protein) over *fully-logged days only* (the `remaining.ts` guard transplanted — a day with unpriced meals is excluded and the exclusion counted in prose); compared against `activeNutritionTargets` **of that era** — your target then, not today's. No targets → intake stated without judgment; no meals → authored empty. |
 | 5 | Sleep & recovery | HRV, RHR, sleep, steps: period average vs prior equal-length window (`wearableArbitratedSeries` + `compareWindows`). A delta prints with a direction word **only when it clears the same significance bar `insights.ts` uses**; otherwise "within your normal variation." The report must not manufacture trends the Coach's own engine wouldn't fire. |
@@ -74,27 +85,43 @@ Every section has a specified absent-data state; a section with nothing to say p
 
 ## 4. Architecture
 
+**As built:**
+
 ```
 src/lib/reports/
-  types.ts                  ReportMeta, SelfReviewData, DoctorPackData,
+  types.ts                  ReportMeta, SelfReviewData, DoctorPackData, Figure,
                             SectionProvenance — the single typed contract both
                             renderers and the persistence row consume
   period.ts                 pure period math: lastCompleteWeek (Mon-start),
-                            lastCalendarMonth, custom-range validation,
-                            prior-equal-window derivation
-  assemble-self-review.ts   assembleSelfReview(db, period, now): SelfReviewData
-  assemble-doctor-pack.ts   assembleDoctorPack(db, now): DoctorPackData
-  render-html.ts            renderReportHtml(data): string — template literals,
-                            inline CSS + @media print, Hermes-safe formatting
-                            (no Intl), ZERO computation
+                            lastCalendarMonth, custom-range validation + the
+                            366-day cap, prior-equal-window, periodFromBounds
+                            (route params → Period), accumulatingEnd, todayNote
+  format.ts                 the ONLY formatting layer — em-dash, signed deltas,
+                            one-sided ranges, minutes, thousands. Total by
+                            construction: NaN/null/Infinity all read em-dash
+  sections.ts               body composition + the symptom log, shared by both
+                            reports over different windows, plus the disclaimer
+  assemble-self-review.ts   assembleSelfReview(db, period, opts): SelfReviewData
+  assemble-doctor-pack.ts   assembleDoctorPack(db, opts): DoctorPackData
+  render-html.ts            renderReportHtml(data, read?): string — template
+                            literals, inline CSS + @media print, Hermes-safe
+                            (no Intl), ZERO computation, everything escaped
   report-file.ts            writeReportFile(...) → shared | saved | unavailable
-                            | failed — the export-file.ts outcome ledger
-src/components/reports/     native preview renderers (Block devices) per section
-app/reports.tsx             the screen (generate + history)
-app/report-view.tsx         draft/persisted preview
-db/migrations/00NN_reports.sql   (§5 — number assigned at build time)
-db/reports.test.mjs
+                            | failed, into a reports/ subdirectory
+  coach-read.ts             the one model surface: prompt, one no-tools turn,
+                            the attribution rubric, and a doctor-pack refusal
+src/lib/files/share-file.ts the outcome ledger, lifted out of export-file.ts
+                            and now consumed by export AND reports
+src/lib/db/repositories/reports.ts   insert · list · snapshot · narrative · delete
+src/components/reports/     blocks.tsx (the drawing vocabulary) + preview.tsx
+src/hooks/use-reports.ts    history + stored-report view models
+app/reports.tsx             the screen (generate + history + the export pointer)
+app/report-view.tsx         draft/persisted preview, the one accent, the footer
+db/migrations/0039_reports.sql
+db/reports.test.mjs         136 assertions
 ```
+
+Three seams were **generalised in place** rather than copied into this module, which is what "composes, never re-derives" costs in practice: `weeklyMuscleSets` gained a range form (`muscleSetsInRange`) and now calls it; `listBiomarkerRanges` gained `standardLow`/`standardHigh` so the doctor pack can print the clinical range beside the personal one; and `insights.ts` exported `TREND_GATES`, which its own specs now read, so the report's significance bar IS the Coach's rather than a copy of it.
 
 - **Assembly is pure over the `Database` interface** — headless-testable exactly like `db/export.test.mjs`. Every number traces to a seam that already has its own suite (`series.ts`, `stats.ts`, `weekSummary`, `training-stats.ts`, `dailyIntakeSeries` / `activeNutritionTargets`, `labs.ts`, `screenings.ts`, `protocols.ts`, `accountForDay`, `experiments.ts`); the assembly layer **composes, never re-derives**.
 - **Named refactor, small:** lift `export-file.ts`'s guarded-require + write + share-attempt body into a shared `src/lib/files/share-file.ts`, consumed by export and reports both, so the outcome-ledger semantics are defined once. Export's public API and its 42 tests unchanged.
@@ -106,7 +133,7 @@ db/reports.test.mjs
 
 A doctor pack you handed over is a record: *"what did the doctor see"* must be answerable forever, and deterministic regeneration drifts the moment a data correction lands (a re-imported lab, an edited meal). Reports follow the `lab_reports` precedent — **file + row**.
 
-> ⚠️ Migration number assigned at build time (head `0032` as of 2026-08-12 → **0033+, re-measured against `main` at branch time**; the silent-skip rule applies). `npm run db:bundle` after.
+> ✅ **Shipped as `db/migrations/0039_reports.sql` — the file's third number.** Written as 0035 (main's head was 0034 at branch time), re-measured mid-build to 0036 when `0035_recipe_folders.sql` landed — and main outran that too, taking 0036 (progress photos), 0037 (freshness anchors) and 0038 (knowledge) before this merged, so it moved again at the 2026-08-13 integration. The lesson sharpened by repetition: the re-measure belongs at **merge** time, every time — a migration numbered at or below a device's `PRAGMA user_version` is skipped **silently**. `npm run db:bundle` after.
 
 ```sql
 CREATE TABLE reports (
@@ -133,7 +160,7 @@ CREATE INDEX reports_generated_idx ON reports (generated_at DESC);
 
 - History rows re-render preview **from `data_json`** — the stored report shows what was shared; "Share again" re-renders the HTML from the snapshot, re-creating the file even if the Documents copy is gone.
 - All columns are scalars → the table **rides the existing whole-DB export automatically** (sqlite_master enumeration; `assertScalar` satisfied). Reports are themselves owned data.
-- Delete removes the row + best-effort file delete. No history cap — rows are tens of KB.
+- Delete removes the **row** (arm/confirm on the persisted report view). The file is deliberately left: `deleteReport`'s header argues it — a leftover HTML is a few regenerable kilobytes referenced by nothing, while touching disk would cost the repository its headless testability. *(This sentence promised a "best-effort file delete" no code implemented; re-trued 2026-08-13 when the delete UI landed.)* No history cap — rows are tens of KB.
 
 ---
 
@@ -187,18 +214,22 @@ Opt-in per report (⚑ MATT #5), self-review only. One **no-tools, key-gated** m
 
 ## 10. Tests — `db/reports.test.mjs`
 
-Migration applies over head; CHECKs (bad type, invalid JSON) reject. `period.ts`: Monday-start last-complete-week, calendar-month, prior-equal-window, custom validation. Assembly fixtures (full / sparse / empty database): the adherence ledger **sums**; excused counts match the day's mode; nutrition averages exclude unpriced days and count the exclusion; significance gate parity with `insights.ts`; labs section absent when no in-period draw; doctor pack shows only measured markers + the coverage line; no-BP/no-BMI absence. Render: key figures verbatim; authored empties present; no `undefined` / `NaN` / `[object`; same input → identical bytes. Persistence: re-render from `data_json` matches the original render; `narrative_text` never enters `data_json`. The screens join `db/screens-render.test.mjs`.
+**Built: 136 assertions in eight sections, all green.** Migration applies over head; four CHECKs reject (unknown type, invalid JSON, half a period, a doctor pack carrying a period). `period.ts`: Monday-start last-complete-week — including on a Monday, where the naive answer is the two-hours-old one — calendar month across a leap February and a year boundary, prior-equal-window, and every custom-range rejection (reversed, future, past the cap, a date that does not exist), plus the range that ends *today* being allowed and MARKED. Assembly over full / sparse / empty databases: the adherence ledger **sums** on every row and in the totals; excused counts match the day's own mode, and Deload does not excuse; **today's `pending` items are not counted as unmarked**; nutrition averages exclude un-priced days per metric and count the exclusion; significance-gate parity asserted against `TREND_GATES` itself, with a flat window silent, a real move firing, and a halved average below the minimum staying silent; the labs section absent when no in-period draw and back when there is one; the self-review never carrying `full_name`; the doctor pack showing only measured markers plus the coverage line, and stating the no-BP/no-BMI absence. Render: key figures verbatim, authored empties present, no `undefined` / `NaN` / `[object` across all three fixtures, same input → identical bytes, and **markup in a protocol name escaped rather than injected**. Two independent assertions that no model prose reaches the doctor pack — one that a read passed in is *still* not rendered. Persistence: re-render from `data_json` is byte-identical to the original; `narrative_text` never appears in the blob; the table rides the whole-DB export with no new code. The screens joined `db/screens-render.test.mjs` (now 156), which renders both of them against the real migrations — including the Data tab, to pin the relabel.
 
 ---
 
-## 11. ⚑ MATT — owner calls this spec carries
+## 11. ⚑ MATT — owner calls, all six DECIDED 2026-08-12
 
-1. **`expo-print` on the next build?** The difference between "an HTML the doctor opens in a browser" and "a PDF" one build sooner. Small, mature dep — still a build-ledger entry.
-2. **Optimal ranges in the doctor pack:** include beside clinical reference ranges, explicitly labeled "personal target" (recommended) — or clinical-reference-only, so the document never argues with the physician?
-3. **The self-review and your name:** the doctor pack must carry the patient header; should the self-review omit `full_name` by default, as the report most casually shared?
-4. **The Data-row relabel to "Reports"** with export staying Settings-only (recommended) — or duplicate the export action here despite the duplication critique?
-5. **Coach's read: opt-in per report** (recommended) vs on-by-default when a key exists?
-6. **Custom range: cap at ~1 year** so prior-equal-window comparisons stay meaningful — or allow arbitrary ranges?
+Asked as one batched round at the start of the build session; every recommendation was taken, and #1 was answered yes.
+
+| # | The call | **Decided** | Where it lands in the code |
+| --- | --- | --- | --- |
+| 1 | `expo-print` on the next build? | **Yes — joins the next EAS build.** v1 still ships HTML either way; PDF becomes the one-function rider. | `package.json` (`expo-print ~57.0.1`) + the two-build ledger in `docs/project-status.md` Known caveats. **No `app.json` plugin entry** — `expo-print` ships no config plugin and needs no purpose string; naming it in `plugins` would fail prebuild. |
+| 2 | Optimal ranges in the doctor pack? | **Include**, beside the clinical reference range, explicitly labeled *"personal target — longevity-oriented, not a clinical range"*. | `assemble-doctor-pack.ts` → `LabMarkerRow.optimalLow/High`; the label is authored once in `render-html.ts` and the native row. |
+| 3 | The self-review and your name? | **Omit `full_name` by default.** The self-review is the report most casually shared; the doctor pack is unaffected and always carries the patient header. | `assembleSelfReview` never reads `users.full_name`. Asserted in `db/reports.test.mjs`. |
+| 4 | The Data-row relabel? | **Relabel to "Reports"; export stays Settings-only**, with a margin footer pointing at its real home. | `app/(tabs)/data.tsx` (`reports` key, live state in the row body) + the footer on `app/reports.tsx`. |
+| 5 | Coach's read: opt-in or default-on? | **Opt-in per report.** A report must be complete and shareable with no key and no network. | `app/report-view.tsx` draft footer; `narrative_text` stays NULL until asked for. |
+| 6 | Custom range cap? | **Cap at ~1 year (366 days)**, so the prior-equal-window comparison stays meaningful. | `period.ts` → `validateCustomRange`, `MAX_CUSTOM_RANGE_DAYS`. |
 
 ---
 

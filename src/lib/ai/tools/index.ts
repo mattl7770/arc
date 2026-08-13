@@ -146,9 +146,17 @@ export const COACH_DOMAINS: CoachDomain[] = [
  * merely honest. Keep it to real, user-facing features — not internals.
  */
 export const UNCOVERED_DOMAINS: string[] = [
-  'the food catalog and per-item micronutrients (Eat)',
-  'saved meal templates (Eat)',
-  'saved workouts, routines and programs (Train)',
+  // Two Eat entries merged and the Train entry re-trued, 2026-08-12, to pay for
+  // the Reports line below rather than raising a budget db/coach-eval.test.mjs
+  // says to treat as full. Neither edit loses a blind spot:
+  //   - the food catalog, micronutrients and meal templates were two entries
+  //     repeating "(Eat)" for one domain the model is equally blind to;
+  //   - "routines and programs" is STALE. Programs were retired 2026-08-11
+  //     (app/program-edit.tsx and the repository deleted) and routines were
+  //     re-branded "Saved workouts" in the same round, so the old phrasing named
+  //     one live thing twice and one dead thing once.
+  'the food catalog, per-item micronutrients and saved meal templates (Eat)',
+  'saved workouts (Train)',
   'lab report files and the PDF import (Data, Labs)',
   // 0035. Deliberately a blind spot rather than a tool (owner call, 2026-08-12):
   // the catalog is ~66-72% of the cached prompt prefix and every addition
@@ -158,10 +166,17 @@ export const UNCOVERED_DOMAINS: string[] = [
   'progress photos and their AI readings (Data › Progress photos)',
   'booking, moving or cancelling an appointment (Data, Screenings)',
   'creating a protocol or a screening from scratch',
-  // Widened 2026-08-12 (0035) rather than given its own line: a knowledge entry
+  // Widened 2026-08-12 (0038) rather than given its own line: a knowledge entry
   // the Coach saved is "your own writes", and editing one is the same act on
   // the same list. Naming the screen is what makes the answer useful.
   'editing or deleting anything already logged, incl. your own writes and knowledge entries (Data, Knowledge base)',
+  // Reports (0039, docs/reports-subapp.md §8). Named rather than tooled, on
+  // purpose: the registry is billed on every turn, generation ends in a share
+  // sheet the model cannot drive and a preview the doctrine requires anyway,
+  // and every number a report contains is already reachable through the read
+  // tools. What the model must NOT do is deny the feature exists — hence the
+  // entry. Revisit only if transcripts show the user asking about past reports.
+  'generated reports and doctor packs (Data › Reports)',
   'Settings: profile, units, Health sync, app lock, API key',
 ];
 
@@ -202,7 +217,14 @@ export function buildCoverageManifest(): string {
     (domain.tools.some((name) => WRITE_NAMES.has(name)) ? writable : readOnly).push(domain.label);
   }
   return (
-    `What you can see, and what you cannot.\n` +
+    // A LABEL, not a sentence — "Coverage:", matching "Character:", "Using your
+    // tools:" and "Safety and boundaries:", the prompt's other three headings.
+    // It was "What you can see, and what you cannot.", which is a full sentence
+    // saying exactly what the sentence directly beneath it says, in a slot every
+    // other section fills with two words. Trimmed 2026-08-12 to pay for the
+    // Reports blind spot below: db/coach-eval.test.mjs says the fix when the
+    // ceiling trips is to delete duplication, never to raise it.
+    `Coverage:\n` +
     `ARC holds more than your tools reach. A domain missing from your tools is one you are ` +
     `BLIND to, never proof the user lacks the feature. Say you cannot see it, name where ` +
     `it lives, and ask the user for the number.\n` +

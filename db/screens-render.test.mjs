@@ -72,6 +72,13 @@ import KnowledgeScreen from '../app/knowledge.tsx';
 import KnowledgeEntryScreen from '../app/knowledge-entry.tsx';
 import KnowledgeEntryEditScreen from '../app/knowledge-entry-edit.tsx';
 import KnowledgeImportScreen from '../app/knowledge-import.tsx';
+import ReportsScreen from '../app/reports.tsx';
+import ReportViewScreen from '../app/report-view.tsx';
+import DataScreen from '../app/(tabs)/data.tsx';
+
+import { insertReport } from '../src/lib/db/repositories/reports.ts';
+import { assembleSelfReview } from '../src/lib/reports/assemble-self-review.ts';
+import { periodFromBounds } from '../src/lib/reports/period.ts';
 
 let pass = 0;
 let fail = 0;
@@ -870,6 +877,103 @@ const db = getDb();
     'Reading an article needs a model key',
     'Write it yourself',
   ]);
+}
+
+{
+  console.log('13. Reports (docs/reports-subapp.md, migration 0039');
+
+  // a. The index, before anything has been generated.
+  const emptyReports = render('reports (empty)', ReportsScreen);
+  expect('reports (empty)', emptyReports, [
+    'Reports',
+    'Self-review',
+    'Doctor visit pack',
+    // Empty is AUTHORED — it says what a report IS, not "no data".
+    'Nothing generated yet. A report is a document',
+    // The pointer to export's real home, not a second export button.
+    'lives in Settings › Security &amp; data',
+  ]);
+  // ⚑ MATT #4: the export ACTION does not live here.
+  refute('reports (empty)', emptyReports, ['Export data', 'Reports & export']);
+
+  // b. A draft self-review over a real period, assembled for real.
+  const period = { kind: 'self_review', periodKind: 'custom', start: '2026-08-01', end: '2026-08-07' };
+  const draft = render('report-view (draft self-review)', ReportViewScreen, period);
+  expect('report-view (draft self-review)', draft, [
+    'Draft report',
+    'Custom range',
+    '1 – 7 Aug 2026',
+    'Adherence',
+    'Sleep &amp; recovery',
+    'What changed',
+    // The one accent in the flow.
+    'Save &amp; share',
+    // The honesty rules, printed.
+    'days in this period carry at least one logged entry',
+    'not a medical record',
+  ]);
+  // The tripwires the HTML renderer is held to apply to the native one too.
+  refute('report-view (draft self-review)', draft, ['undefined', 'NaN', '[object']);
+
+  // c. The doctor pack, on a database with no profile: authored blanks and a
+  //    warning BEFORE the document, never a guess.
+  const pack = render('report-view (doctor pack)', ReportViewScreen, { kind: 'doctor_pack' });
+  expect('report-view (doctor pack)', pack, [
+    'Doctor visit pack',
+    'Missing from your profile',
+    'Current regimen',
+    'Laboratory results',
+    'tracked markers measured',
+    // The two absences a clinician looks for, stated rather than left blank.
+    'does not record blood pressure',
+    'no BMI',
+  ]);
+  // NO MODEL SURFACE on the clinical document, ever.
+  refute('report-view (doctor pack)', pack, ["Add Coach's read", 'undefined', 'NaN', '[object']);
+
+  // d. A malformed range is a dead end with an authored explanation, not a crash.
+  expect(
+    'report-view (bad range)',
+    render('report-view (bad range)', ReportViewScreen, {
+      kind: 'self_review',
+      periodKind: 'custom',
+      start: 'nonsense',
+      end: '2026-08-07',
+    }),
+    ['the range it was asked for is not a real one']
+  );
+
+  // e. A PERSISTED report re-renders from its snapshot, not from a re-assembly.
+  const stored = assembleSelfReview(db, periodFromBounds('last_week', '2026-08-03', '2026-08-09'), {
+    appVersion: '0.2.0',
+  });
+  const storedId = insertReport(db, {
+    data: stored,
+    read: null,
+    fileName: 'arc-report-self-review-20260812-143308.html',
+    filePath: 'reports/arc-report-self-review-20260812-143308.html',
+  });
+  expect('report-view (persisted)', render('report-view (persisted)', ReportViewScreen, { id: storedId }), [
+    'Last week',
+    '3 – 9 Aug 2026',
+    // A saved report offers the file again rather than a second save.
+    'Share again',
+  ]);
+
+  // f. The history now has a row, and the Data tab's index row carries it.
+  expect('reports (with history)', render('reports (with history)', ReportsScreen), [
+    'Self-review',
+    '3 – 9 Aug 2026',
+  ]);
+
+  const dataTab = render('data tab', DataScreen);
+  expect('data tab', dataTab, [
+    'The full file',
+    // The relabel (⚑ MATT #4) and the row's LIVE state — the thing that makes
+    // this row a reading rather than another index entry.
+    '1 report · last ',
+  ]);
+  refute('data tab', dataTab, ['Reports &amp; export', 'Reports & export']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

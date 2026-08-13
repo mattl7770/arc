@@ -480,6 +480,27 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // update_protocol (263), adjust_today (253) and create_experiment (229) carry
   // per-property prose that in several cases restates the tool description
   // above it. That is ~1,000 tok in four tools and it has never been swept.
+  // ⚠️ 2026-08-12 (later still) — REPORTS arrived and the trim-first rule held
+  // a third time: reports itself moved NO ceiling (the raise above belongs to
+  // the knowledge base alone), and its room came out of the coverage manifest
+  // itself (src/lib/ai/tools/index.ts). Reports must be an
+  // UNCOVERED_DOMAINS entry — a model that denies a shipped feature exists is
+  // the exact failure that list prevents (docs/reports-subapp.md §8) — and it
+  // cost ~16 tok. Three trims paid for it, each a correction rather than a
+  // squeeze:
+  //   · the manifest's heading was the only SENTENCE among four label headings
+  //     ("Character:", "Using your tools:", "Safety and boundaries:") and said
+  //     what the line beneath it already said → "Coverage:" (−29 chars);
+  //   · two UNCOVERED entries repeated "(Eat)" for one domain → merged;
+  //   · "saved workouts, routines and programs (Train)" was STALE — programs
+  //     were retired 2026-08-11 and routines re-branded Saved workouts, so it
+  //     named one live thing twice and one dead thing once → "saved workouts".
+  // INTEGRATOR NOTE (2026-08-13, the three-way merge): knowledge raised the
+  // ceilings to 9,250 / 3,700 and reports' three manifest trims still apply on
+  // top — so the merged tree banks reports' recovered tokens as headroom under
+  // the raised ceilings, and the assertions below measure the merged truth.
+  // The manifest has been mined twice now; the next addition digs in the four
+  // fat SCHEMAS named above, not here.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

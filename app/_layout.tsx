@@ -221,6 +221,11 @@ export default function RootLayout() {
           <Stack.Screen name="knowledge-entry" />
           <Stack.Screen name="knowledge-entry-edit" />
           <Stack.Screen name="knowledge-import" />
+          {/* INTEGRATOR-MERGE: Reports (docs/reports-subapp.md, migration 0039, authored as 0036 and renumbered at merge).
+              Pushed from the Data tab's `Reports` row. `report-view` is both the
+              draft preview and the persisted one — same renderer, two sources. */}
+          <Stack.Screen name="reports" />
+          <Stack.Screen name="report-view" />
         </Stack>
         <StatusBar style="dark" />
         {/* Re-lock / privacy cover. A NATIVE full-screen Modal, not an

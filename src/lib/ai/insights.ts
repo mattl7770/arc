@@ -79,6 +79,47 @@ const RECENT_DAYS = 7;
 const BASELINE_DAYS = 21;
 const MIN_POINTS_PER_WINDOW = 3;
 
+/**
+ * The two bars each metric must clear before a difference is worth a sentence:
+ * the PRACTICAL one (`thresholdPct`) and the minimum observations per window
+ * that {@link compareWindows} needs to estimate variance at all.
+ *
+ * Exported, and every spec below reads from it, because a SECOND surface now
+ * fires on these gates: the periodic self-review's "Sleep & recovery" section
+ * (src/lib/reports/assemble-self-review.ts) prints a direction word only when
+ * the comparison would have fired here. That parity is the whole point — a
+ * report saying "HRV down" over a week this engine considered ordinary is the
+ * report manufacturing a trend, which is exactly what the two-bar gate exists
+ * to prevent. Copying the numbers into the reports module would have made the
+ * parity a coincidence maintained by hand; one object makes it structural, and
+ * db/reports.test.mjs asserts the reports layer reads THIS object.
+ *
+ * Keyed by `TrendSpec.metric` (the domain slug), not by `wearable_data.metric_type`.
+ * Declared here — above the specs — because they consume it at module
+ * evaluation, and a `const` referenced before its declaration is a TDZ throw at
+ * import time, not a hoist.
+ */
+export const TREND_GATES = {
+  // HRV is the noisiest thing ARC measures — day-to-day CV is commonly 5–15%,
+  // so three readings a side is not a window, it's a coin flip.
+  hrv: { thresholdPct: 5, minPerWindow: 5 },
+  // RHR is far steadier than HRV (CV ~3–5%), and a rising resting heart rate is
+  // an early illness/overreaching signal — holding it back for a fifth reading
+  // delays something worth hearing. The t-test still guards it; this is only
+  // the floor for estimating variance at all.
+  rhr: { thresholdPct: 3, minPerWindow: 4 },
+  weight: { thresholdPct: 1, minPerWindow: MIN_POINTS_PER_WINDOW },
+  // Step counts are noisy day to day; a weekly average has to move a long way
+  // before it means anything about behaviour rather than weather.
+  steps: { thresholdPct: 15, minPerWindow: MIN_POINTS_PER_WINDOW },
+  active_energy: { thresholdPct: 15, minPerWindow: MIN_POINTS_PER_WINDOW },
+  // HealthKit estimates resting energy from body size and age, so it barely
+  // moves — a real shift is worth noting but is never an instruction, hence a
+  // higher bar than the metrics the user actually controls.
+  resting_energy: { thresholdPct: 10, minPerWindow: MIN_POINTS_PER_WINDOW },
+  sleep: { thresholdPct: 10, minPerWindow: MIN_POINTS_PER_WINDOW },
+} as const satisfies Record<string, { thresholdPct: number; minPerWindow: number }>;
+
 type TrendSpec = {
   metric: string;
   label: string;
@@ -148,9 +189,7 @@ const WEARABLE_TRENDS: readonly WearableTrend[] = [
     spec: {
       metric: 'steps',
       label: 'Daily steps',
-      // Step counts are noisy day to day; a weekly average has to move a long
-      // way before it means anything about behaviour rather than weather.
-      thresholdPct: 15,
+      ...TREND_GATES.steps,
       toneUp: 'good',
       toneDown: 'watch',
       format: fmtCount('steps'),
@@ -162,7 +201,7 @@ const WEARABLE_TRENDS: readonly WearableTrend[] = [
     spec: {
       metric: 'active_energy',
       label: 'Active energy',
-      thresholdPct: 15,
+      ...TREND_GATES.active_energy,
       toneUp: 'good',
       toneDown: 'watch',
       format: fmtCount('kcal'),
@@ -173,11 +212,10 @@ const WEARABLE_TRENDS: readonly WearableTrend[] = [
     accumulating: true,
     spec: {
       metric: 'resting_energy',
-      // HealthKit estimates this from body size and age, so it barely moves.
-      // A real shift is worth noting but is never an instruction: info, not
-      // watch, and a higher bar than the metrics the user actually controls.
+      // Info, not watch: this is an estimate the user does not control (see the
+      // bar in TREND_GATES.resting_energy).
       label: 'Resting energy',
-      thresholdPct: 10,
+      ...TREND_GATES.resting_energy,
       toneUp: 'info',
       toneDown: 'info',
       format: fmtCount('kcal'),
@@ -191,7 +229,7 @@ const WEARABLE_TRENDS: readonly WearableTrend[] = [
     spec: {
       metric: 'sleep',
       label: 'Sleep',
-      thresholdPct: 10,
+      ...TREND_GATES.sleep,
       toneUp: 'good',
       toneDown: 'watch',
       format: formatMinutes,
@@ -323,13 +361,10 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
       {
         metric: 'hrv',
         label: 'HRV',
-        thresholdPct: 5,
+        ...TREND_GATES.hrv,
         toneUp: 'good',
         toneDown: 'watch',
         format: fmtVia('hrv', units),
-        // HRV is the noisiest thing ARC measures — day-to-day CV is commonly
-        // 5–15%, so three readings a side is not a window, it's a coin flip.
-        minPerWindow: 5,
       },
       hrv,
     ],
@@ -337,15 +372,10 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
       {
         metric: 'rhr',
         label: 'Resting HR',
-        thresholdPct: 3,
+        ...TREND_GATES.rhr,
         toneUp: 'watch',
         toneDown: 'good',
         format: fmtVia('rhr', units),
-        // RHR is far steadier than HRV (CV ~3–5%), and a rising resting heart
-        // rate is an early illness/overreaching signal — holding it back for a
-        // fifth reading delays something worth hearing. The t-test still
-        // guards it; this is only the floor for estimating variance at all.
-        minPerWindow: 4,
       },
       rhr,
     ],
@@ -353,7 +383,7 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
       {
         metric: 'weight',
         label: 'Weight',
-        thresholdPct: 1,
+        ...TREND_GATES.weight,
         toneUp: 'info',
         toneDown: 'info',
         format: fmtVia('weight', units),
