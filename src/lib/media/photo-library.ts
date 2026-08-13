@@ -31,9 +31,24 @@ type ManipulatorModule = {
     uri: string,
     actions: { resize: { width: number } }[],
     options: { compress: number; format: string; base64: boolean }
-  ) => Promise<{ base64?: string | null }>;
+  ) => Promise<{ base64?: string | null; width?: number; height?: number }>;
   SaveFormat: { JPEG: string };
 };
+
+/** The one downscale, so every path speaks the same JPEG. */
+const RESIZE_WIDTH = 1024;
+const COMPRESS = 0.6;
+
+/**
+ * A downscaled JPEG plus the dimensions it actually came out at.
+ *
+ * The dimensions are new with 0033. The image used to be a model payload and
+ * nothing else, so its shape did not matter; it is now also stored and shown on
+ * the meal, and the meal screen draws it at its own aspect rather than cropping
+ * it to a guessed square. Null when the manipulator did not report them — no
+ * data, no number, and the reader falls back to a fixed frame.
+ */
+export type DownscaledJpeg = { base64Jpeg: string; width: number | null; height: number | null };
 
 /**
  * The downscaler, loaded the same lazy way as the picker.
@@ -73,56 +88,71 @@ export function isPhotoLibraryAvailable(): boolean {
 }
 
 /**
- * Re-encode any image URI to a downscaled JPEG in base64.
+ * Re-encode any image URI to a downscaled JPEG — **the single downscale in the
+ * app**, and the one place the 1024/0.6 numbers appear.
  *
- * Exported because the SHARE path needs it too: a screenshot arriving through
- * the iOS share sheet was being read straight off disk and sent to the model
- * labelled `image/jpeg` whatever it actually was — a PNG or HEIC screenshot
- * mislabelled, at full resolution, with no cap. Same pass, same 1024px, same
- * quality, so both entry points speak the format they claim.
+ * Three paths reach it, and before 0033 two of them had their own copy of this
+ * call: the library picker below, the iOS share sheet
+ * (`src/lib/recipes/incoming-share.ts` — where a PNG or HEIC screenshot was
+ * being read straight off disk and posted labelled `image/jpeg` at full
+ * resolution), and the meal estimator's CAMERA button, which inlined its own
+ * `manipulateAsync` in the screen. They are now one function, which is what
+ * makes "the photo stored on the meal is byte-identical to the one the model
+ * was shown" true of every entry point rather than of two out of three.
  *
- * Null when the manipulator is absent (this binary) or the read fails; the
- * caller then falls back to whatever it already had.
+ * Null when the manipulator is absent (never in this binary — it ships) or the
+ * read fails; the caller falls back to whatever it already had.
  */
-export async function downscaleToJpegBase64(
+export async function downscaleJpeg(
   uri: string,
   opts: DownscaleOptions = {}
-): Promise<string | null> {
+): Promise<DownscaledJpeg | null> {
   const manipulator = loadManipulator();
   if (!manipulator) return null;
-  const { width = DEFAULT_WIDTH, quality = DEFAULT_QUALITY } = opts;
+  const { width = RESIZE_WIDTH, quality = COMPRESS } = opts;
   try {
     const shrunk = await manipulator.manipulateAsync(uri, [{ resize: { width } }], {
       compress: quality,
       format: manipulator.SaveFormat.JPEG,
       base64: true,
     });
-    return shrunk.base64 ?? null;
+    if (!shrunk.base64) return null;
+    return {
+      base64Jpeg: shrunk.base64,
+      width: shrunk.width ?? null,
+      height: shrunk.height ?? null,
+    };
   } catch {
     return null;
   }
 }
 
 /**
- * How hard to shrink. The defaults are the plate/ingredient-list figure: 1024px
- * at 0.6 is more than a vision model needs to read a meal.
+ * How hard to shrink. The defaults above (1024 at 0.6) are the plate and
+ * ingredient-list figure — more than a vision model needs to read a meal — and
+ * they remain the only numbers most callers ever see.
  *
  * It is a dial rather than a constant because the WORKOUT importer legitimately
- * needs more. It reads a screenshot of another app's set table — small type, and
- * a grid of numbers that has to survive the round trip — so it runs 1280 at 0.7.
- * It used to get that by shipping its own copy of the whole pick-and-shrink,
- * including `import * as ImagePicker from 'expo-image-picker'` at module scope,
- * which is what broke app startup (see the guarded-require note at the top of
- * this file). One seam with a dial beats two call sites where only one is
- * guarded.
+ * needs more: it reads a screenshot of another app's set table, where the type
+ * is small and a grid of numbers has to survive the round trip, so it runs 1280
+ * at 0.7. It used to get that by shipping its own copy of the whole
+ * pick-and-shrink — including `import * as ImagePicker from 'expo-image-picker'`
+ * at module scope, which is what broke app startup. One seam with a dial beats
+ * two call sites where only one is guarded.
  */
 export type DownscaleOptions = { width?: number; quality?: number };
 
-const DEFAULT_WIDTH = 1024;
-const DEFAULT_QUALITY = 0.6;
+/** {@link downscaleJpeg} for the share path, which only ever wanted the bytes.
+ *  Kept as its own export so that caller reads as what it is. */
+export async function downscaleToJpegBase64(
+  uri: string,
+  opts: DownscaleOptions = {}
+): Promise<string | null> {
+  return (await downscaleJpeg(uri, opts))?.base64Jpeg ?? null;
+}
 
 export type PickedPhoto =
-  | { kind: 'photo'; base64Jpeg: string }
+  | ({ kind: 'photo' } & DownscaledJpeg)
   /** The user backed out of the picker — not an error, and not a message. */
   | { kind: 'canceled' }
   /** No picker in this binary; the caller says so and offers its fallback. */
@@ -150,10 +180,14 @@ export async function pickPhotoBase64(opts: DownscaleOptions = {}): Promise<Pick
     const asset = result.assets?.[0];
     if (!asset) return { kind: 'canceled' };
     if (asset.uri) {
-      const shrunk = await downscaleToJpegBase64(asset.uri, opts);
-      if (shrunk) return { kind: 'photo', base64Jpeg: shrunk };
+      const shrunk = await downscaleJpeg(asset.uri, opts);
+      if (shrunk) return { kind: 'photo', ...shrunk };
     }
-    if (asset.base64) return { kind: 'photo', base64Jpeg: asset.base64 };
+    // The fallback carries no dimensions, so a meal photo stored from it draws
+    // in the fixed frame rather than at a fabricated aspect.
+    if (asset.base64) {
+      return { kind: 'photo', base64Jpeg: asset.base64, width: null, height: null };
+    }
     return { kind: 'failed' };
   } catch {
     return { kind: 'failed' };

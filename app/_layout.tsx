@@ -13,6 +13,7 @@ import { useAppLock } from '@/hooks/use-app-lock';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { getDb } from '@/lib/db/client';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
+import { runMealPhotoSweep } from '@/lib/media/meal-photo-store';
 import {
   configureNotificationPresentation,
   registerNotificationRouting,
@@ -64,9 +65,17 @@ export default function RootLayout() {
   //    isn't granted, and the in-app reminders list stands on its own either way;
   //  - pull fresh Apple Health data (throttled), and again whenever the app
   //    returns to the foreground — wearables written while ARC was closed are
-  //    waiting in HealthKit. No-ops until enabled + the native module ships.
+  //    waiting in HealthKit. No-ops until enabled + the native module ships;
+  //  - sweep expired meal photos off disk and reconcile the rows against the
+  //    files (0033). Once per app open is the right cadence for a disk-space
+  //    policy — a session left in the foreground for days defers its sweep to
+  //    the next launch, which costs a few hundred kilobytes and saves running a
+  //    timer against the file system for the life of the process. Synchronous
+  //    (the expo-file-system File API is) and total: it swallows everything,
+  //    including a database that has not reached 0033.
   useEffect(() => {
     void apiKeyStore.hydrate();
+    runMealPhotoSweep(getDb());
     // Show notifications that fire while ARC is open (iOS drops them silently
     // otherwise) and route a tapped one where it belongs, instead of dumping
     // the user on Home with no idea why the phone buzzed.

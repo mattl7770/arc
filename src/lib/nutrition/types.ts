@@ -190,6 +190,43 @@ export type NewMealWithItems = {
   items: NewMealItem[];
 };
 
+// --- Meal photos (0033) -------------------------------------------------------
+
+/** Which capture path produced a photo. Provenance only — nothing branches on
+ *  it — recorded because every other logged row in this schema records where it
+ *  came from. */
+export type MealPhotoSource = 'camera' | 'library';
+
+/**
+ * A `meal_photos` row. `file_name` is a BASE NAME inside the app's photo
+ * directory, never a path: iOS re-issues the container UUID on every install,
+ * so an absolute `file://` URI stored today dangles after the next build. The
+ * directory is resolved at read time (src/lib/media/meal-photo-store.ts).
+ *
+ * `created_at` is the retention clock — when the photo was TAKEN — deliberately
+ * independent of `meals.date`, which the user can now edit.
+ */
+export type MealPhotoRow = {
+  id: string;
+  meal_id: string;
+  file_name: string;
+  width: number | null;
+  height: number | null;
+  source: MealPhotoSource;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
+/** What the media layer supplies when attaching a photo; the id and timestamps
+ *  are filled in by the repository / DB defaults. */
+export type NewMealPhoto = {
+  meal_id: string;
+  file_name: string;
+  width?: number | null;
+  height?: number | null;
+  source: MealPhotoSource;
+};
+
 // --- Daily targets (0015) -----------------------------------------------------
 
 /** A `nutrition_targets` row — append-only and immutable (no updated_at). */

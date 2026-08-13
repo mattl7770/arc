@@ -9,7 +9,20 @@ import { DatabaseSync } from 'node:sqlite';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { listTodayMeals, logMeal, todayTotals } from '../src/lib/db/repositories/nutrition.ts';
+import {
+  getMeal,
+  listTodayMeals,
+  logMeal,
+  todayTotals,
+  updateMealTime,
+} from '../src/lib/db/repositories/nutrition.ts';
+import {
+  isValidClock,
+  mealDayLabel,
+  parseClockParts,
+  partsFromClock,
+  shiftDay,
+} from '../src/lib/nutrition/meal-time.ts';
 
 let pass = 0;
 let fail = 0;
@@ -227,6 +240,139 @@ console.log('8. meals stay out of the mission/log tables — no daily_log side e
   dailyLogs === 0 && logEntries === 0
     ? ok('logging a meal touches only the meals table')
     : bad('side effects', `daily_logs=${dailyLogs} log_entries=${logEntries}`);
+}
+
+// === Re-timing a logged meal (owner request, 2026-08-12) =====================
+
+const YESTERDAY = shiftDay(TODAY, -1);
+
+console.log('9. updateMealTime rewrites the clock time in place');
+{
+  const { db, raw } = freshDb();
+  const id = logMeal(db, { date: TODAY, time: '00:40', name: 'Late plate', kcal: 500 });
+  raw.prepare('UPDATE meals SET updated_at = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', id);
+  updateMealTime(db, id, { date: TODAY, time: '23:40' });
+  const row = getMeal(db, id);
+  row && row.time === '23:40' && row.date === TODAY
+    ? ok('the time moves and the date is left alone')
+    : bad('same-day retime', JSON.stringify(row));
+  row && row.name === 'Late plate' && near(row.kcal, 500)
+    ? ok('name and macros are untouched (this write owns when, nothing else)')
+    : bad('collateral damage', JSON.stringify(row));
+  row && row.updated_at !== '2000-01-01T00:00:00.000Z'
+    ? ok('the updated_at trigger restamps the edited meal')
+    : bad('updated_at after retime', JSON.stringify(row));
+}
+
+console.log('10. moving a meal across the day boundary moves BOTH days’ totals');
+{
+  const { db } = freshDb();
+  // The motivating case: eaten at 00:40, belongs to the evening before.
+  const late = logMeal(db, { date: TODAY, time: '00:40', name: 'Late plate', kcal: 500 });
+  logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 700, protein_g: 40 });
+  logMeal(db, { date: YESTERDAY, time: '08:00', name: 'Breakfast', kcal: 300, protein_g: 20 });
+
+  const beforeToday = todayTotals(db, TODAY);
+  const beforeYesterday = todayTotals(db, YESTERDAY);
+  near(beforeToday.kcal, 1200) && near(beforeYesterday.kcal, 300)
+    ? ok('before: today 1200 kcal over 2 meals, yesterday 300 over 1')
+    : bad('pre-move totals', JSON.stringify([beforeToday, beforeYesterday]));
+
+  updateMealTime(db, late, { date: YESTERDAY, time: '23:40' });
+
+  const afterToday = todayTotals(db, TODAY);
+  const afterYesterday = todayTotals(db, YESTERDAY);
+  near(afterToday.kcal, 700) && afterToday.mealCount === 1
+    ? ok('the source day loses the meal and its energy')
+    : bad('source day after move', JSON.stringify(afterToday));
+  near(afterYesterday.kcal, 800) && afterYesterday.mealCount === 2
+    ? ok('the destination day gains them — no recompute, the reads group by date')
+    : bad('destination day after move', JSON.stringify(afterYesterday));
+  near(afterToday.kcal + afterYesterday.kcal, beforeToday.kcal + beforeYesterday.kcal)
+    ? ok('nothing is created or destroyed across the boundary')
+    : bad('energy conservation', `${afterToday.kcal} + ${afterYesterday.kcal}`);
+
+  // And the day lists follow, which is what the Eaten-today plate renders.
+  listTodayMeals(db, TODAY).length === 1 &&
+  JSON.stringify(listTodayMeals(db, YESTERDAY).map((m) => m.name)) ===
+    JSON.stringify(['Breakfast', 'Late plate'])
+    ? ok('both day lists follow, the moved meal sorted by its new time')
+    : bad('day lists after move', JSON.stringify(listTodayMeals(db, YESTERDAY).map((m) => m.name)));
+}
+
+console.log('11. a meal’s time can be cleared, and an impossible clock is refused');
+{
+  const { db } = freshDb();
+  const id = logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 700 });
+  updateMealTime(db, id, { date: TODAY, time: null });
+  getMeal(db, id).time === null
+    ? ok('clearing the time stores NULL (an untimed meal is a real state)')
+    : bad('clear time', JSON.stringify(getMeal(db, id)));
+  logMeal(db, { date: TODAY, time: '08:00', name: 'Breakfast', kcal: 200 });
+  JSON.stringify(listTodayMeals(db, TODAY).map((m) => m.name)) ===
+  JSON.stringify(['Breakfast', 'Lunch'])
+    ? ok('the now-untimed meal sorts last in the day')
+    : bad('untimed ordering', JSON.stringify(listTodayMeals(db, TODAY).map((m) => m.name)));
+
+  // The schema's GLOB CHECK only tests the SHAPE — '99:99' passes it. The
+  // repository is the layer where hours are hours.
+  throws(() => updateMealTime(db, id, { date: TODAY, time: '99:99' }))
+    ? ok('99:99 is refused even though the GLOB CHECK would accept it')
+    : bad('99:99 accepted');
+  throws(() => updateMealTime(db, id, { date: TODAY, time: '8:05' }))
+    ? ok('an unpadded 8:05 is refused (the editor pads before it gets here)')
+    : bad('unpadded time accepted');
+  getMeal(db, id).time === null
+    ? ok('a refused write changes nothing')
+    : bad('refused write leaked', JSON.stringify(getMeal(db, id)));
+}
+
+console.log('12. the pure when-editor helpers (src/lib/nutrition/meal-time.ts)');
+{
+  shiftDay('2026-08-12', -1) === '2026-08-11' && shiftDay('2026-08-12', 1) === '2026-08-13'
+    ? ok('shiftDay steps a day either way')
+    : bad('shiftDay', shiftDay('2026-08-12', -1));
+  shiftDay('2026-03-01', -1) === '2026-02-28' && shiftDay('2026-01-01', -1) === '2025-12-31'
+    ? ok('shiftDay crosses month and year ends (2026 is not a leap year)')
+    : bad('shiftDay boundaries', `${shiftDay('2026-03-01', -1)} / ${shiftDay('2026-01-01', -1)}`);
+  shiftDay('2024-03-01', -1) === '2024-02-29'
+    ? ok('shiftDay knows 2024-02-29 exists')
+    : bad('shiftDay leap day', shiftDay('2024-03-01', -1));
+
+  mealDayLabel('2026-08-12', '2026-08-12') === 'Today' &&
+  mealDayLabel('2026-08-11', '2026-08-12') === 'Yesterday'
+    ? ok('mealDayLabel names today and yesterday')
+    : bad('mealDayLabel near', mealDayLabel('2026-08-11', '2026-08-12'));
+  mealDayLabel('2026-08-01', '2026-08-12') === 'Sat 1 Aug'
+    ? ok('an older day in this year is an unambiguous weekday + date')
+    : bad('mealDayLabel far', mealDayLabel('2026-08-01', '2026-08-12'));
+  mealDayLabel('2025-08-01', '2026-08-12') === 'Fri 1 Aug 2025'
+    ? ok('a day in another year carries the year — a stepper can reach one')
+    : bad('mealDayLabel year', mealDayLabel('2025-08-01', '2026-08-12'));
+
+  parseClockParts('8', '5').kind === 'time' && parseClockParts('8', '5').value === '08:05'
+    ? ok('parseClockParts pads what a number pad actually produces')
+    : bad('parseClockParts pad', JSON.stringify(parseClockParts('8', '5')));
+  parseClockParts('23', '').value === '23:00'
+    ? ok('a blank minute field reads as :00')
+    : bad('blank minute', JSON.stringify(parseClockParts('23', '')));
+  parseClockParts('', '').kind === 'none'
+    ? ok('both fields blank is "none" — a clearable time, not a failure')
+    : bad('blank clock', JSON.stringify(parseClockParts('', '')));
+  parseClockParts('24', '00').kind === 'invalid' &&
+  parseClockParts('12', '60').kind === 'invalid' &&
+  parseClockParts('x', '00').kind === 'invalid'
+    ? ok('24:00, 12:60 and non-digits are "invalid" — Save goes inert')
+    : bad('invalid clocks accepted');
+
+  isValidClock(null) && isValidClock('23:59') && !isValidClock('99:99') && !isValidClock('8:05')
+    ? ok('isValidClock accepts NULL and real clocks, rejects the GLOB-shaped lies')
+    : bad('isValidClock');
+
+  JSON.stringify(partsFromClock('08:05')) === JSON.stringify({ hour: '08', minute: '05' }) &&
+  JSON.stringify(partsFromClock(null)) === JSON.stringify({ hour: '', minute: '' })
+    ? ok('partsFromClock round-trips, and an untimed meal opens the editor empty')
+    : bad('partsFromClock', JSON.stringify(partsFromClock('08:05')));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
