@@ -32,9 +32,18 @@ export type HistoryHit = {
 /** Cap on one returned excerpt — the model needs the gist, not the essay. */
 const EXCERPT_CHARS = 300;
 
-function excerpt(text: string, terms: string[]): string {
+/**
+ * Knowledge passages get a longer window (0038). A chat line truncated at 300
+ * characters loses a sentence; a doctrine gist truncated at 300 loses the
+ * qualification that made it doctrine rather than a slogan — and the Coach is
+ * expected to CITE these, so a half-carried caveat is the failure mode that
+ * matters. Both stores are still capped; only the cap differs.
+ */
+const KNOWLEDGE_EXCERPT_CHARS = 500;
+
+function excerpt(text: string, terms: string[], cap: number = EXCERPT_CHARS): string {
   const flat = text.replace(/\s+/g, ' ').trim();
-  if (flat.length <= EXCERPT_CHARS) return flat;
+  if (flat.length <= cap) return flat;
   // Window the excerpt around the first matching term so the hit is visible,
   // not truncated away.
   const lower = flat.toLowerCase();
@@ -44,7 +53,7 @@ function excerpt(text: string, terms: string[]): string {
       .filter((i) => i >= 0)
       .sort((a, b) => a - b)[0] ?? 0;
   const start = Math.max(0, at - 80);
-  return `${start > 0 ? '…' : ''}${flat.slice(start, start + EXCERPT_CHARS)}…`;
+  return `${start > 0 ? '…' : ''}${flat.slice(start, start + cap)}…`;
 }
 
 /** Split a query into meaningful lowercase terms (drops 1-char noise). */
@@ -73,7 +82,14 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
   const params = terms.map((t) => `%${t}%`);
   const clause = (column: string) => where.split('%COL%').join(column);
 
-  const rows: HistoryHit[] = [];
+  /**
+   * A hit plus two things the ranker needs and the caller must never see: how
+   * long its excerpt may run, and whether it is the user's OWN reference (0038)
+   * rather than the shipped pack. Both optional so the five sources that want
+   * the defaults push a plain {@link HistoryHit}.
+   */
+  type RankedHit = HistoryHit & { cap?: number; userKnowledge?: boolean };
+  const rows: RankedHit[] = [];
 
   // 1) Conversation turns — what was actually said, both sides.
   for (const row of db.all<{ role: string; content: string; created_at: string }>(
@@ -137,22 +153,81 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
     });
   }
 
-  // 5) The curated longevity corpus (src/lib/rag/corpus.ts) — ARC's own
-  // doctrine, so an explanation can be grounded in what ARC actually commits
-  // to rather than the model's general recall. Searchable by keyword now;
-  // the same rows gain vectors when the embedder ships.
-  for (const row of db.all<{ title: string | null; topic: string | null; body: string }>(
-    `SELECT title, topic, body FROM knowledge_chunks
-     WHERE (${clause('body')}) OR (${clause('title')})
-     ORDER BY chunk_index LIMIT 20`,
-    [...params, ...params]
-  )) {
-    rows.push({
-      source: `ARC reference${row.topic ? ` · ${row.topic}` : ''}`,
+  // 5) The knowledge base — BOTH owners of `knowledge_chunks` (0038):
+  //
+  //    · the curated longevity pack (src/lib/rag/corpus.ts), so an explanation
+  //      is grounded in what ARC actually commits to rather than the model's
+  //      general recall — cited "ARC reference · <topic>";
+  //    · the user's OWN entries, written, imported or saved from a Coach turn —
+  //      cited "your knowledge · <topic>".
+  //
+  // The label is derived from `entry_id`, which is the column that owns that
+  // distinction (pack rows are null there by construction). Archived entries
+  // have no chunks at all, so retracted doctrine is unreachable from here with
+  // no `archived_at` join to remember — see the repository's archive semantics.
+  //
+  // Both keep the `date: 'reference'` sentinel. A user's ENTRY is still
+  // reference-shaped doctrine — a claim about how something works — not an event
+  // that happened on a day, so the own-history-outranks-reference tie-break
+  // below stays exactly as it was. What separates the two is the second-order
+  // tie-break: among references, the user's committed stance outranks the
+  // shipped one.
+  //
+  // ONE QUERY PER OWNER, each with its own window — NOT one query over the
+  // table. This is the whole subtlety of the block and it is easy to get wrong:
+  // the per-entry dedupe below runs in JS, i.e. AFTER SQL has already applied
+  // its LIMIT, so a single shared window does not protect the pack at all. With
+  // one `LIMIT 40` over both owners, a user with a dozen multi-passage entries
+  // fills the window with their own chunks, the dedupe collapses them to a
+  // dozen hits, and the ARC reference contributes NOTHING — silently, and worse
+  // the more the user writes. Separate windows make the split structural: the
+  // pack's 20 rows are the 20 it always had, and no amount of user content can
+  // reach them.
+  {
+    type ChunkHit = {
+      entry_id: string | null;
+      title: string | null;
+      topic: string | null;
+      body: string;
+    };
+    const asHit = (row: ChunkHit): RankedHit => ({
+      source: `${row.entry_id !== null ? 'your knowledge' : 'ARC reference'}${
+        row.topic ? ` · ${row.topic}` : ''
+      }`,
       // Reference material is not dated like a log entry; it is current doctrine.
       date: 'reference',
       text: row.title ? `${row.title} — ${row.body}` : row.body,
+      cap: KNOWLEDGE_EXCERPT_CHARS,
+      userKnowledge: row.entry_id !== null,
     });
+
+    // The pack: one row per entry by construction (corpus.ts does not chunk),
+    // so there is nothing to dedupe and the window is unchanged from before.
+    for (const row of db.all<ChunkHit>(
+      `SELECT entry_id, title, topic, body FROM knowledge_chunks
+       WHERE entry_id IS NULL AND ((${clause('body')}) OR (${clause('title')}))
+       ORDER BY chunk_index LIMIT 20`,
+      [...params, ...params]
+    )) {
+      rows.push(asHit(row));
+    }
+
+    // The user's entries: a wider window because one entry is several passages,
+    // then deduped to the best-scoring passage per entry so one long document
+    // cannot spend the hit budget saying the same thing five ways.
+    const bestByEntry = new Map<string, { score: number; hit: ChunkHit }>();
+    for (const row of db.all<ChunkHit>(
+      `SELECT entry_id, title, topic, body FROM knowledge_chunks
+       WHERE entry_id IS NOT NULL AND ((${clause('body')}) OR (${clause('title')}))
+       ORDER BY chunk_index LIMIT 60`,
+      [...params, ...params]
+    )) {
+      const haystack = `${row.title ?? ''} ${row.body}`.toLowerCase();
+      const score = terms.filter((t) => haystack.includes(t)).length;
+      const prior = bestByEntry.get(row.entry_id!);
+      if (!prior || score > prior.score) bestByEntry.set(row.entry_id!, { score, hit: row });
+    }
+    for (const { hit } of bestByEntry.values()) rows.push(asHit(hit));
   }
 
   // 6) Durable memories — things explicitly remembered about the user.
@@ -182,8 +257,21 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
       const aRef = a.date === 'reference';
       const bRef = b.date === 'reference';
       if (aRef !== bRef) return aRef ? 1 : -1;
+      // Among references, the user's OWN entry outranks the shipped pack (0038):
+      // where both have something to say on a topic, what the user has committed
+      // to is the more binding of the two. They are never silently merged — both
+      // are returned, labelled by provenance, and the Coach's doctrine is to cite
+      // both and name the difference rather than resolve it.
+      if (aRef && bRef && a.userKnowledge !== b.userKnowledge) {
+        return a.userKnowledge ? -1 : 1;
+      }
       return a.date < b.date ? 1 : a.date > b.date ? -1 : 0;
     })
     .slice(0, limit)
-    .map((hit) => ({ ...hit, text: excerpt(hit.text, terms) }));
+    // `cap`/`userKnowledge` are ranking inputs, not part of the contract — the
+    // returned object is a plain HistoryHit.
+    .map(({ cap, userKnowledge: _userKnowledge, ...hit }) => ({
+      ...hit,
+      text: excerpt(hit.text, terms, cap),
+    }));
 }

@@ -97,7 +97,7 @@ export function useReportsHistory(): ReportsHistory {
  * A PERSISTED report, re-rendered from its stored snapshot.
  *
  * `data` comes from `data_json`, never from a fresh assembly — that is the
- * whole point of persisting it (migration 0036's header). A corrected lab value
+ * whole point of persisting it (migration 0039's header). A corrected lab value
  * landing tomorrow must not silently change what the report you handed over
  * last week says.
  */

@@ -125,7 +125,15 @@ export const COACH_DOMAINS: CoachDomain[] = [
   },
   { label: 'the training engine', tools: ['get_training_recommendation'] },
   { label: 'insights and trends', tools: ['get_insights'] },
-  { label: 'past conversations and the ARC reference', tools: ['search_history'] },
+  // Acquired a WRITE tool with 0035 (save_knowledge_entry), so
+  // `buildCoverageManifest` moves this domain to the read-and-write list on its
+  // own — the manifest is derived, never hand-labelled. The label widened with
+  // it: "the ARC reference" named only the shipped pack, and the user's own
+  // entries are now the half that outranks it.
+  {
+    label: 'the knowledge base and past conversations',
+    tools: ['search_history', 'save_knowledge_entry'],
+  },
   { label: 'appointments', tools: ['get_screenings'] },
 ];
 
@@ -150,10 +158,19 @@ export const UNCOVERED_DOMAINS: string[] = [
   'the food catalog, per-item micronutrients and saved meal templates (Eat)',
   'saved workouts (Train)',
   'lab report files and the PDF import (Data, Labs)',
+  // 0035. Deliberately a blind spot rather than a tool (owner call, 2026-08-12):
+  // the catalog is ~66-72% of the cached prompt prefix and every addition
+  // invalidates it, while photo METADATA — counts, dates, poses — gives the model
+  // almost nothing actionable. The pixels are the value, and those flow through
+  // the user-triggered reading on the screen itself.
+  'progress photos and their AI readings (Data › Progress photos)',
   'booking, moving or cancelling an appointment (Data, Screenings)',
   'creating a protocol or a screening from scratch',
-  'editing or deleting anything already logged, including your own writes',
-  // Reports (0036, docs/reports-subapp.md §8). Named rather than tooled, on
+  // Widened 2026-08-12 (0038) rather than given its own line: a knowledge entry
+  // the Coach saved is "your own writes", and editing one is the same act on
+  // the same list. Naming the screen is what makes the answer useful.
+  'editing or deleting anything already logged, incl. your own writes and knowledge entries (Data, Knowledge base)',
+  // Reports (0039, docs/reports-subapp.md §8). Named rather than tooled, on
   // purpose: the registry is billed on every turn, generation ends in a share
   // sheet the model cannot drive and a preview the doctrine requires anyway,
   // and every number a report contains is already reachable through the read
@@ -170,8 +187,28 @@ const WRITE_NAMES = new Set(WRITE_TOOLS.map((tool) => tool.name));
  * are module constants), so it stays inside the cached system prefix.
  *
  * Tool NAMES are deliberately not printed: the schemas are already on the wire,
- * and repeating 42 of them here would pay twice for the same information. The
+ * and repeating 43 of them here would pay twice for the same information. The
  * model needs the domain vocabulary, not a second copy of its own toolbox.
+ *
+ * ## The preamble lost a sentence, 2026-08-12
+ *
+ * Adding the progress-photos blind spot cost ~18 tokens against ~1 token of
+ * headroom on the system-prompt ceiling (db/coach-eval.test.mjs §6), whose
+ * standing rule is that the next addition finds duplication rather than raising
+ * the ceiling a third time. The duplication was here. The preamble ran
+ * fact → prohibition-restating-the-fact → instruction:
+ *
+ *   1. "A domain missing from your tools is one you are BLIND to, never proof
+ *      the user lacks the feature."
+ *   2. "So never report a setting, a screen or a feature as absent because you
+ *      have no tool for it."
+ *   3. "Say you cannot see it, name where it lives, and ask the user for the
+ *      number."
+ *
+ * (2) is (1) in the imperative — the same sentence from the other side, which
+ * is exactly the pattern the 2026-08-12 trim of the two state-block bullets
+ * already established as the right thing to delete. The fact and the
+ * instruction both stand; only the restatement went.
  */
 export function buildCoverageManifest(): string {
   const writable: string[] = [];
@@ -189,8 +226,7 @@ export function buildCoverageManifest(): string {
     // ceiling trips is to delete duplication, never to raise it.
     `Coverage:\n` +
     `ARC holds more than your tools reach. A domain missing from your tools is one you are ` +
-    `BLIND to, never proof the user lacks the feature. So never report a setting, a screen or ` +
-    `a feature as absent because you have no tool for it. Say you cannot see it, name where ` +
+    `BLIND to, never proof the user lacks the feature. Say you cannot see it, name where ` +
     `it lives, and ask the user for the number.\n` +
     `Read and write: ${writable.join('; ')}.\n` +
     `Read only: ${readOnly.join('; ')}.\n` +

@@ -1,5 +1,5 @@
 -- ============================================================================
--- ARC 0036 — reports: the self-review and the doctor-visit pack, as records
+-- ARC 0039 — reports: the self-review and the doctor-visit pack, as records
 --
 -- docs/reports-subapp.md §5. A report is a DOCUMENT ASSEMBLED FOR A READER,
 -- which is what separates it from the whole-database export (Settings ›
@@ -46,7 +46,11 @@
 -- they export without a line of new code is a property of the generic
 -- serializer, and db/reports.test.mjs pins it.
 --
--- Numbered 0036, and it was 0035 for most of the build. Main's head was 0034
+-- Numbered 0039 — the file's THIRD number. It was 0035 for most of the build
+-- (main's head was 0034 at branch time), re-measured mid-build to 0036 when the
+-- folders round took 0035, and main then took 0036 (progress photos) and 0037
+-- (freshness anchors) too, with 0038 (knowledge) merging just ahead of this —
+-- so it landed as 0039 at merge. The original note said main's head was 0034
 -- when this branch was cut; `0035_recipe_folders.sql` landed on main while
 -- Reports was being written, so this file was RE-MEASURED at merge time and
 -- moved up — which is the whole discipline, not an accident.

@@ -138,7 +138,13 @@ export function priorEqualWindow(start: string, end: string): { start: string; e
 }
 
 /** Assemble the {@link Period} from bare bounds — the one place `prior` is derived. */
-function buildPeriod(kind: PeriodKind, start: string, end: string, label: string, today: string): Period {
+function buildPeriod(
+  kind: PeriodKind,
+  start: string,
+  end: string,
+  label: string,
+  today: string
+): Period {
   const prior = priorEqualWindow(start, end);
   return {
     kind,
@@ -244,6 +250,14 @@ export function periodFromBounds(
   now: Date = new Date()
 ): Period | null {
   if (!isValidISODate(start) || !isValidISODate(end) || start > end) return null;
+  // 2026-08-13 review fix: a hand-typed /report-view deep link must not
+  // assemble what validateCustomRange would refuse — a future end dilutes
+  // every average with empty days, and an uncapped range breaks the
+  // prior-equal-window comparison. Same rules, same numbers, one gate.
+  if (kind === 'custom') {
+    const today = todayISODate(now);
+    if (end > today || periodDays(start, end) > MAX_CUSTOM_RANGE_DAYS) return null;
+  }
   const label =
     kind === 'last_week'
       ? 'Last week'

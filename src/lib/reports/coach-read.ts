@@ -12,7 +12,7 @@
  *      string), so it cannot reach a number ARC did not compute. It reads the
  *      report and writes about the report.
  *   2. **Its output never enters `data_json`.** It travels as a separate value
- *      to a separate column (0036's `narrative_text`), and both renderers take
+ *      to a separate column (0039's `narrative_text`), and both renderers take
  *      it as a separate parameter. There is no field on `ReportData` it could
  *      be written into.
  *   3. **The doctor pack cannot have one.** `renderDoctorPack` takes no

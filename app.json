@@ -71,7 +71,7 @@
       [
         "@kingstinct/react-native-healthkit",
         {
-          "NSHealthShareUsageDescription": "ARC reads sleep, heart, activity and workout data from Apple Health to power readiness and recovery.",
+          "NSHealthShareUsageDescription": "ARC reads sleep, heart, activity and workout data from Apple Health to power readiness and recovery, and reads the weight, body-fat percentage and waist measurements stored there so a smart scale keeps your ARC record up to date.",
           "NSHealthUpdateUsageDescription": "ARC writes the weight, body-fat percentage and waist measurements you record in ARC to Apple Health, so other apps on your iPhone can see them. Nothing else is written.",
           "background": false
         }

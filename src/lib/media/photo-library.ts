@@ -22,14 +22,36 @@
 type PickerModule = {
   launchImageLibraryAsync: (opts: Record<string, unknown>) => Promise<{
     canceled: boolean;
-    assets?: { uri?: string; base64?: string | null }[];
+    /**
+     * `uri`/`base64` are the two fields this seam has always used. `assetId`
+     * and `exif` were added for progress photos (2026-08-12) and are typed as
+     * loosely as they are UNVERIFIED: neither has ever been exercised in this
+     * codebase, and every read of them goes through the pure parsers in
+     * src/lib/photos/import.ts rather than being destructured at a call site.
+     * That is the wearables lesson applied — a wire shape nobody has seen on
+     * device is parsed defensively, with fixtures, or it crashes a screen the
+     * first time the real payload disagrees.
+     */
+    assets?: {
+      uri?: string;
+      base64?: string | null;
+      assetId?: string | null;
+      exif?: Record<string, unknown> | null;
+      /** Epoch milliseconds, on the picker versions that expose it. UNVERIFIED
+       *  like the two above; the parser treats its absence as normal. */
+      creationTime?: number | null;
+      width?: number;
+      height?: number;
+    }[];
   }>;
 };
 
 type ManipulatorModule = {
   manipulateAsync: (
     uri: string,
-    actions: { resize: { width: number } }[],
+    /** One dimension only — the manipulator preserves the aspect from whichever
+     *  is given, and giving both would stretch the image. */
+    actions: { resize: { width?: number; height?: number } }[],
     options: { compress: number; format: string; base64: boolean }
   ) => Promise<{ base64?: string | null; width?: number; height?: number }>;
   SaveFormat: { JPEG: string };
@@ -109,9 +131,15 @@ export async function downscaleJpeg(
 ): Promise<DownscaledJpeg | null> {
   const manipulator = loadManipulator();
   if (!manipulator) return null;
-  const { width = RESIZE_WIDTH, quality = COMPRESS } = opts;
+  const { quality = COMPRESS } = opts;
+  // Height wins only when it is the one that was asked for. Every existing
+  // caller passes a width or nothing, so the default path is unchanged.
+  const resize =
+    opts.height != null && opts.width == null
+      ? { height: opts.height }
+      : { width: opts.width ?? RESIZE_WIDTH };
   try {
-    const shrunk = await manipulator.manipulateAsync(uri, [{ resize: { width } }], {
+    const shrunk = await manipulator.manipulateAsync(uri, [{ resize }], {
       compress: quality,
       format: manipulator.SaveFormat.JPEG,
       base64: true,
@@ -140,7 +168,18 @@ export async function downscaleJpeg(
  * at module scope, which is what broke app startup. One seam with a dial beats
  * two call sites where only one is guarded.
  */
-export type DownscaleOptions = { width?: number; quality?: number };
+export type DownscaleOptions = {
+  width?: number;
+  /**
+   * Resize by HEIGHT instead — used only where the constraint is the LONGEST
+   * edge rather than the width, which for a standing body photo is the height
+   * (src/lib/photos/import.ts::workingCopyResize). Ignored when `width` is also
+   * given: the manipulator preserves the aspect from one dimension, and passing
+   * both would stretch the image.
+   */
+  height?: number;
+  quality?: number;
+};
 
 /** {@link downscaleJpeg} for the share path, which only ever wanted the bytes.
  *  Kept as its own export so that caller reads as what it is. */
@@ -149,6 +188,117 @@ export async function downscaleToJpegBase64(
   opts: DownscaleOptions = {}
 ): Promise<string | null> {
   return (await downscaleJpeg(uri, opts))?.base64Jpeg ?? null;
+}
+
+/**
+ * One asset as the picker handed it over, before anything has been decoded.
+ *
+ * Deliberately raw: the fields whose shapes are unverified (`assetId`, `exif`)
+ * ride out of here as-is and are read only by the pure parsers in
+ * src/lib/photos/import.ts. Nothing between the picker and those parsers makes
+ * an assumption about them.
+ */
+export type PickedLibraryAsset = {
+  uri: string;
+  assetId: string | null;
+  exif: Record<string, unknown> | null;
+  /**
+   * Epoch milliseconds, when the picker supplies one — the fallback date source
+   * for a photo with no EXIF (a screenshot, a re-saved or AirDropped copy).
+   *
+   * It must be carried through explicitly: this object is built field by field,
+   * so anything not named here is dropped, and dropping it silently made
+   * `assetPhotoDate`'s documented second source unreachable in production while
+   * its unit test kept passing against a hand-built object. Found by adversarial
+   * review, 2026-08-12.
+   */
+  creationTime: number | null;
+  width: number | null;
+  height: number | null;
+};
+
+export type PickedLibraryAssets =
+  | { kind: 'assets'; assets: PickedLibraryAsset[] }
+  | { kind: 'canceled' }
+  | { kind: 'unavailable' }
+  | { kind: 'failed' };
+
+/**
+ * Open the library for a MULTI-select and hand back the raw assets — no
+ * decoding, no downscale, no base64.
+ *
+ * Progress photos backfill years at a time, so the batch is the first-run flow
+ * rather than an afterthought; and the caller needs each asset's URI to survive
+ * past the pick so it can make a working copy AND, for a flagged photo, a
+ * full-resolution copy from the same source. Asking the picker for base64 here
+ * would decode thirty full-size images into memory to throw twenty-nine of them
+ * away.
+ *
+ * `quality: 1` matters: a lower quality makes the picker hand back a
+ * re-compressed cache copy, and the full-resolution "important" copy would then
+ * be a copy of a copy.
+ *
+ * Never throws — every failure is a variant the caller renders in words.
+ */
+export async function pickPhotoLibraryAssets(
+  opts: { limit?: number } = {}
+): Promise<PickedLibraryAssets> {
+  const picker = loadImagePicker();
+  if (!picker) return { kind: 'unavailable' };
+  try {
+    const result = await picker.launchImageLibraryAsync({
+      mediaTypes: 'images',
+      quality: 1,
+      base64: false,
+      exif: true,
+      allowsMultipleSelection: true,
+      orderedSelection: true,
+      selectionLimit: opts.limit ?? 30,
+    });
+    if (result.canceled) return { kind: 'canceled' };
+    const assets: PickedLibraryAsset[] = [];
+    for (const asset of result.assets ?? []) {
+      if (!asset?.uri) continue;
+      assets.push({
+        uri: asset.uri,
+        assetId: typeof asset.assetId === 'string' ? asset.assetId : null,
+        exif: asset.exif ?? null,
+        creationTime: typeof asset.creationTime === 'number' ? asset.creationTime : null,
+        width: typeof asset.width === 'number' ? asset.width : null,
+        height: typeof asset.height === 'number' ? asset.height : null,
+      });
+    }
+    if (assets.length === 0) return { kind: 'canceled' };
+    return { kind: 'assets', assets };
+  } catch {
+    return { kind: 'failed' };
+  }
+}
+
+/**
+ * Re-encode an image URI as a JPEG at its NATIVE size — the same manipulator
+ * pass as {@link downscaleJpeg} with the resize step omitted.
+ *
+ * Exists for exactly one caller: the full-resolution copy a progress photo keeps
+ * when it is flagged important at pick time. Everything else in the app wants
+ * the downscale, and should keep using it.
+ *
+ * The re-encode is not a no-op even at quality 1 — a HEIC off the camera roll
+ * becomes a JPEG, which is what the store and every reader expect.
+ */
+export async function encodeJpeg(uri: string, quality = 0.9): Promise<string | null> {
+  const manipulator = loadManipulator();
+  if (!manipulator) return null;
+  try {
+    const encoded = await manipulator.manipulateAsync(uri, [], {
+      compress: quality,
+      format: manipulator.SaveFormat.JPEG,
+      base64: true,
+    });
+    return encoded.base64 ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export type PickedPhoto =

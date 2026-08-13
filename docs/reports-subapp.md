@@ -1,8 +1,8 @@
 # Reports — the self-review and the doctor-visit pack
 
-**Status: BUILT — 2026-08-12.** Both report types ship, behind one screen, over one assembly layer, on migration **0036**. The Data tab's row is now `Reports` with live state and a route; the "Later" chip is gone.
+**Status: BUILT — 2026-08-12.** Both report types ship, behind one screen, over one assembly layer, on migration **0039** (authored as 0036, renumbered at merge). The Data tab's row is now `Reports` with live state and a route; the "Later" chip is gone.
 
-**What shipped:** `src/lib/reports/` (types · period · sections · two assemblers · `render-html` · `report-file` · `coach-read`) · `src/lib/db/repositories/reports.ts` · `src/components/reports/` (the native preview) · `app/reports.tsx` + `app/report-view.tsx` · `src/lib/files/share-file.ts` (the outcome ledger, now shared with export) · `db/migrations/0036_reports.sql`.
+**What shipped:** `src/lib/reports/` (types · period · sections · two assemblers · `render-html` · `report-file` · `coach-read`) · `src/lib/db/repositories/reports.ts` · `src/components/reports/` (the native preview) · `app/reports.tsx` + `app/report-view.tsx` · `src/lib/files/share-file.ts` (the outcome ledger, now shared with export) · `db/migrations/0039_reports.sql`.
 
 **Gate:** `db/reports.test.mjs` **136 assertions**, `db/screens-render.test.mjs` grew to **156** (the reports screens joined it), `npm run db:test` **2,430 assertions / 47 suites, 0 failed**, `db:validate` 20/20, `tsc` 0, `eslint app src` 0 errors, `npx expo export --platform ios` clean.
 
@@ -30,7 +30,7 @@ The honesty rules print too: **no data, no number** (an absent metric is an em-d
 
 **The in-app preview is NOT a WebView — it is a native render of the same typed `ReportData`, drawn in Conformed Set blocks.** This is the load-bearing architectural move:
 
-- No new native dep for v1. `react-native-webview` never enters the build ledger (verified 2026-08-12: not installed; neither is `expo-print`).
+- `react-native-webview` never enters the build ledger — the preview is native. The one new native dep is **`expo-print`**, added on the owner's explicit call (⚑ #1, decided 2026-08-12) and recorded in the Known-caveats build ledger; it ships no config plugin, so it is deliberately absent from `app.json`. *(An earlier revision of this line claimed expo-print was not installed while §11 recorded adding it — the 2026-08-13 review caught the contradiction.)*
 - The preview is first-class UI — folds, accessibility, the paper — not a browser embed.
 - **The honesty guarantee "preview and file cannot disagree" is enforced structurally:** both renderers consume the same `ReportData` object, and **neither computes a number**. The HTML template contains formatting only; every figure is a field. ("Fields in, marks out" — the rule to check any render diff against.)
 
@@ -117,7 +117,7 @@ src/components/reports/     blocks.tsx (the drawing vocabulary) + preview.tsx
 src/hooks/use-reports.ts    history + stored-report view models
 app/reports.tsx             the screen (generate + history + the export pointer)
 app/report-view.tsx         draft/persisted preview, the one accent, the footer
-db/migrations/0036_reports.sql
+db/migrations/0039_reports.sql
 db/reports.test.mjs         136 assertions
 ```
 
@@ -133,7 +133,7 @@ Three seams were **generalised in place** rather than copied into this module, w
 
 A doctor pack you handed over is a record: *"what did the doctor see"* must be answerable forever, and deterministic regeneration drifts the moment a data correction lands (a re-imported lab, an edited meal). Reports follow the `lab_reports` precedent — **file + row**.
 
-> ✅ **Shipped as `db/migrations/0036_reports.sql`.** It was written as 0035 (main's head was 0034 at branch time) and re-measured at merge: `0035_recipe_folders.sql` landed on main mid-build, so this moved up. That re-measure is the discipline, not an accident — a migration numbered at or below a device's `PRAGMA user_version` is skipped **silently**. `npm run db:bundle` after.
+> ✅ **Shipped as `db/migrations/0039_reports.sql` — the file's third number.** Written as 0035 (main's head was 0034 at branch time), re-measured mid-build to 0036 when `0035_recipe_folders.sql` landed — and main outran that too, taking 0036 (progress photos), 0037 (freshness anchors) and 0038 (knowledge) before this merged, so it moved again at the 2026-08-13 integration. The lesson sharpened by repetition: the re-measure belongs at **merge** time, every time — a migration numbered at or below a device's `PRAGMA user_version` is skipped **silently**. `npm run db:bundle` after.
 
 ```sql
 CREATE TABLE reports (
@@ -160,7 +160,7 @@ CREATE INDEX reports_generated_idx ON reports (generated_at DESC);
 
 - History rows re-render preview **from `data_json`** — the stored report shows what was shared; "Share again" re-renders the HTML from the snapshot, re-creating the file even if the Documents copy is gone.
 - All columns are scalars → the table **rides the existing whole-DB export automatically** (sqlite_master enumeration; `assertScalar` satisfied). Reports are themselves owned data.
-- Delete removes the row + best-effort file delete. No history cap — rows are tens of KB.
+- Delete removes the **row** (arm/confirm on the persisted report view). The file is deliberately left: `deleteReport`'s header argues it — a leftover HTML is a few regenerable kilobytes referenced by nothing, while touching disk would cost the repository its headless testability. *(This sentence promised a "best-effort file delete" no code implemented; re-trued 2026-08-13 when the delete UI landed.)* No history cap — rows are tens of KB.
 
 ---
 

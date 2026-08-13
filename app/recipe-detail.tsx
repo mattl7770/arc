@@ -15,10 +15,13 @@ import { searchFoods } from '@/lib/db/repositories/foods';
 import { addRecipeToGroceryList } from '@/lib/db/repositories/grocery';
 import {
   deleteRecipe,
+  getFolder,
   getRecipe,
   isResolved,
+  listFolders,
   listIngredients,
   logRecipe,
+  moveRecipeToFolder,
   parseSteps,
   portionFactorOrNull,
   recipeCookStats,
@@ -44,6 +47,7 @@ import {
 import { formatQty } from '@/lib/recipes/ingredients';
 import type { FoodRow } from '@/lib/nutrition/types';
 import type {
+  RecipeFolderSummary,
   RecipeIngredientRow,
   RecipeNutrition,
   RecipePortion,
@@ -92,6 +96,20 @@ import type {
  * cookbook that deletes its own pictures is broken
  * (src/lib/media/recipe-photo-store.ts).
  *
+ * ## Two more owner requests, 2026-08-12
+ *
+ * **Edit in words** (*"Add a button to edit a recipe with plain-text input to
+ * the coach"*) sits beside `Edit` so the two ways to change a recipe read as a
+ * pair. It pushes app/recipe-revise.tsx, which proposes a diff and writes
+ * nothing until it is accepted — a recipe may hold lines the owner priced by
+ * hand, and those must never be replaced by a model without being shown first.
+ *
+ * **A folder** (0035) is drawn with the provenance at the top, not with the
+ * actions: where a document lives is a fact about the document. Tapping it
+ * opens a picker that writes on tap and takes no accent — filing is instant and
+ * reversible. `Unfiled` is a place, because the book's default view is every
+ * recipe, and deleting a folder unfiles its recipes rather than deleting them.
+ *
  * ## Conformed Set surface system (00-design-spec.md §1)
  *
  *   Ingredients   → **ruled plate**: a list of lines with their state is a
@@ -127,6 +145,11 @@ type Loaded = {
   /** A `file://` URI, or null — which is both "no photo" and "the file is
    *  gone", because a broken frame is worse than no frame. */
   photoUri: string | null;
+  /** Where this recipe is filed (0035), or null for Unfiled — which is a
+   *  place, not a failure. */
+  folderName: string | null;
+  /** Every drawer, for the move picker. A dozen at most for one cook. */
+  folders: RecipeFolderSummary[];
   timesCooked: number;
   lastCooked: string | null;
 };
@@ -154,6 +177,8 @@ function load(id: string): Loaded | null {
     // web logic-check preview, the headless render suite) this is null and the
     // screen simply has no photo.
     photoUri: recipePhotoUri(db, id),
+    folderName: recipe.folder_id === null ? null : (getFolder(db, recipe.folder_id)?.name ?? null),
+    folders: listFolders(db),
     ...recipeCookStats(db, id),
   };
 }
@@ -171,6 +196,7 @@ export default function RecipeDetailScreen() {
   const [linkingId, setLinkingId] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [folderOpen, setFolderOpen] = useState(false);
   const [addedNote, setAddedNote] = useState<number | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(false);
@@ -200,20 +226,29 @@ export default function RecipeDetailScreen() {
    * rather than from render state, so it depends on nothing that changes while
    * it runs. Its cleanup aborts the call on blur.
    *
-   * **Once per recipe, and only when there is something to price.**
-   * `askedRef` holds the recipe id it already asked about, which is what stops
-   * a paid round trip on every single focus for a recipe holding a line nothing
-   * can price ("a handful of parsley"). Opening a different recipe, or coming
-   * back after the screen unmounts, asks again.
+   * **Once per SET OF UNPRICED LINES, and only when there is something to
+   * price.** `askedRef` holds the recipe id plus the ids of the lines it
+   * already asked about, which is what stops a paid round trip on every single
+   * focus for a recipe holding a line nothing can price ("a handful of
+   * parsley") — while still asking again the moment that set CHANGES.
+   *
+   * Keying on the set rather than on the recipe id alone is what makes
+   * app/recipe-revise.tsx work: this screen stays mounted underneath a pushed
+   * one, so a revision that introduces new unpriced lines returns to a screen
+   * whose `askedRef` still matched, and the new lines would have sat unpriced
+   * until the recipe was closed and reopened. Favouriting or editing a note
+   * leaves the set alone and still costs nothing.
    */
   const askedRef = useRef('');
   const priceRemaining = useCallback(() => {
     const title = getRecipe(getDb(), recipeId)?.title;
     if (!title) return undefined;
-    if (askedRef.current === recipeId) return undefined;
-    if (unpricedLines(getDb(), recipeId).length === 0) return undefined;
+    const pending = unpricedLines(getDb(), recipeId);
+    if (pending.length === 0) return undefined;
+    const key = `${recipeId}|${pending.map((line) => line.id).join(',')}`;
+    if (askedRef.current === key) return undefined;
     if (!isRecipePricingAvailable()) return undefined;
-    askedRef.current = recipeId;
+    askedRef.current = key;
     const controller = new AbortController();
     abortRef.current = controller;
     setPricing(true);
@@ -352,6 +387,84 @@ export default function RecipeDetailScreen() {
         <Text className="mt-1 font-serif text-[13px] text-ink-secondary">
           {[recipe.source_author, recipe.source_platform].filter(Boolean).join(' · ')}
         </Text>
+      ) : null}
+
+      {/* WHERE IT IS FILED (0035). Up here with the provenance rather than down
+          with the actions, because a folder is a FACT ABOUT THE DOCUMENT — where
+          it lives — and moving it is a correction to that fact, not one of the
+          things you came to the recipe to do. Unfiled reads as a place, because
+          it is one: the book's default view holds every recipe.
+
+          Neutral ink, and the picker below writes on tap with no confirm —
+          filing is instant and reversible, unlike logging, so it earns no
+          accent and no armed state. */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Filed in ${data.folderName ?? 'no folder'}. Move it.`}
+        accessibilityState={{ expanded: folderOpen }}
+        onPress={() => setFolderOpen(!folderOpen)}
+        className="mt-2 min-h-[44px] flex-row items-center gap-2 self-start rounded-btn border border-hairline px-3 active:bg-paper-dim">
+        <Ionicons name="folder-outline" size={14} color={palette.inkSecondary} />
+        <Text className="font-label text-[11px] font-semibold uppercase tracking-[1.2px] text-ink">
+          {data.folderName ?? 'Unfiled'}
+        </Text>
+        <Ionicons
+          name={folderOpen ? 'chevron-up' : 'chevron-down'}
+          size={12}
+          color={palette.inkMuted}
+        />
+      </Pressable>
+      {folderOpen ? (
+        <View className="mt-2">
+          <Block device="plate">
+            {[
+              { id: null as string | null, name: 'Unfiled' },
+              ...data.folders.map((f) => f.folder),
+            ].map((folder, index) => {
+              const here = (recipe.folder_id ?? null) === folder.id;
+              return (
+                <View key={folder.id ?? 'unfiled'}>
+                  <Divider first={index === 0} />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`File under ${folder.name}`}
+                    accessibilityState={{ selected: here }}
+                    onPress={() => {
+                      if (!here) moveRecipeToFolder(getDb(), recipe.id, folder.id);
+                      setFolderOpen(false);
+                      reload();
+                    }}
+                    className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
+                    <View className="w-5">
+                      {here ? <Ionicons name="checkmark" size={15} color={palette.ink} /> : null}
+                    </View>
+                    <Text
+                      className={
+                        here
+                          ? 'flex-1 font-serif text-[16px] font-semibold text-ink'
+                          : 'flex-1 font-serif text-[16px] text-ink'
+                      }>
+                      {folder.name}
+                    </Text>
+                  </Pressable>
+                </View>
+              );
+            })}
+            <Divider />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Manage folders"
+              onPress={() => {
+                setFolderOpen(false);
+                router.push('/recipe-folders');
+              }}
+              className="min-h-[46px] items-center justify-center py-3 active:opacity-60">
+              <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+                Manage folders
+              </Text>
+            </Pressable>
+          </Block>
+        </View>
       ) : null}
 
       {/* THE PHOTO (0034). Drawn at a 4:3 frame — the stored JPEG is 1024px
@@ -592,14 +705,20 @@ export default function RecipeDetailScreen() {
             className="min-h-[52px] items-center justify-center rounded-btn bg-pine active:opacity-80">
             <Text className="font-label text-[15px] font-semibold text-pine-on">Log it</Text>
           </Pressable>
+          {/* The two ways to change a recipe, side by side so the difference is
+              legible: describe the change, or open the fields. "Edit in words"
+              is outlined and not pine — `Log it` above is this screen's one
+              accent, and the screen it opens writes nothing until its own
+              review is confirmed (app/recipe-revise.tsx). */}
           <View className="mt-3 flex-row gap-2">
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Add to grocery list"
-              onPress={() => setPickerOpen(true)}
-              className="min-h-[46px] flex-1 items-center justify-center rounded-btn border border-hairline px-3 active:bg-paper-dim">
+              accessibilityLabel="Edit this recipe by describing the change"
+              onPress={() => router.push({ pathname: '/recipe-revise', params: { id: recipe.id } })}
+              className="min-h-[46px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline px-3 active:bg-paper-dim">
+              <Ionicons name="sparkles-outline" size={16} color={palette.inkSecondary} />
               <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
-                Add to grocery list
+                Edit in words
               </Text>
             </Pressable>
             <Pressable
@@ -609,6 +728,17 @@ export default function RecipeDetailScreen() {
               className="min-h-[46px] items-center justify-center rounded-btn border border-hairline px-4 active:bg-paper-dim">
               <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
                 Edit
+              </Text>
+            </Pressable>
+          </View>
+          <View className="mt-2 flex-row gap-2">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Add to grocery list"
+              onPress={() => setPickerOpen(true)}
+              className="min-h-[46px] flex-1 items-center justify-center rounded-btn border border-hairline px-3 active:bg-paper-dim">
+              <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
+                Add to grocery list
               </Text>
             </Pressable>
           </View>

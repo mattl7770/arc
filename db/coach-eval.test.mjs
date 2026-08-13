@@ -431,9 +431,59 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // genuinely new duplication or trims the VOICE section, and both ceilings
   // should be treated as full.
   //
-  // ⚠️ 2026-08-12 (later the same day) — REPORTS took that ~1 token of headroom
-  // and the rule held again: the ceiling did NOT move, and the room came out of
-  // the coverage manifest itself (src/lib/ai/tools/index.ts). Reports must be an
+  // ── 2026-08-12: BOTH CEILINGS RAISED, 9,000 → 9,250 and 3,500 → 3,700, for
+  // the knowledge base (registry 42 → 43, docs/knowledge-subapp.md §6). The
+  // rule above says raising is the wrong reflex, so here is the accounting it
+  // demands, measured rather than asserted.
+  //
+  // WHAT IT COST, BEFORE ANY TRIMMING: +365 tok of schema, +308 of prompt. The
+  // ceilings were at 8,973 / 3,499 — i.e. 27 and 1 token of headroom, exactly
+  // as the ⚠️ above warned. Any addition at all would have tripped both.
+  //
+  // WHAT WAS TRIMMED FIRST, and it was real duplication, not shaving:
+  //   · The new tool's own description, cut from ~143 tok to 66. Its first
+  //     draft restated three rails that its system-prompt bullet also carries
+  //     (invitation-only, present-the-body-before-calling, the memory/knowledge
+  //     line) — the precise eight-descriptions-say-it-eight-times pattern this
+  //     comment was written about, caught before it shipped rather than after.
+  //   · search_history's description, ~153 → ~110, WHILE fixing it: it said
+  //     "ARC's curated longevity reference", which named only the shipped pack
+  //     and became false the moment user entries could outrank it.
+  //   · The knowledge doctrine was MERGED INTO the Memory bullet rather than
+  //     added beside it. The two stores are one distinction, and stating it
+  //     once beats stating "what memory is" twice. ~308 → ~185.
+  //   · Two genuine prompt duplications, both pre-existing: "never answer from
+  //     memory or by guessing" and "NEVER invent a value, a trend, or a lab
+  //     result" were the same rule in two bullets (now one, folded into the
+  //     state-block bullet with the read-tool bullet it also overlapped); and
+  //     WEARABLES' "you can read the whole Apple Health plane, so never say you
+  //     don't have it" is what the COVERAGE manifest below now asserts
+  //     systematically, for every domain, which is why the manifest was built.
+  //   · The "you cannot fetch a pasted URL" rail was recipe-specific and now
+  //     applies to two import screens, so it is stated once, generally.
+  //
+  // NET: 9,206 / 3,641. Trimming recovered 132 tok of schema and 167 of prompt
+  // — i.e. it paid for roughly half the feature, which is as much as honest
+  // dedup could reach.
+  //
+  // WHY THE REMAINDER IS A DEFENSIBLE TRADE, in the terms the 2026-08-10 entry
+  // set. save_knowledge_entry is 250 tok against a registry mean of 214, and
+  // 161 of that is schema (three string properties; the topic vocabulary is
+  // data the prompt has no business carrying). It is not a fat tool. And the
+  // prompt half buys a rail that has no cheaper form: when the user's own entry
+  // and ARC's shipped reference disagree, the Coach must cite both and follow
+  // the user's stance. Without it the model silently picks one, and the user
+  // cannot tell which — the failure this whole prefix exists to prevent.
+  //
+  // WHERE THE NEXT TRIM IS, measured so nobody re-derives it: the fat is no
+  // longer in descriptions, it is in SCHEMAS. log_workout (277 tok of schema),
+  // update_protocol (263), adjust_today (253) and create_experiment (229) carry
+  // per-property prose that in several cases restates the tool description
+  // above it. That is ~1,000 tok in four tools and it has never been swept.
+  // ⚠️ 2026-08-12 (later still) — REPORTS arrived and the trim-first rule held
+  // a third time: reports itself moved NO ceiling (the raise above belongs to
+  // the knowledge base alone), and its room came out of the coverage manifest
+  // itself (src/lib/ai/tools/index.ts). Reports must be an
   // UNCOVERED_DOMAINS entry — a model that denies a shipped feature exists is
   // the exact failure that list prevents (docs/reports-subapp.md §8) — and it
   // cost ~16 tok. Three trims paid for it, each a correction rather than a
@@ -445,15 +495,19 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   //   · "saved workouts, routines and programs (Train)" was STALE — programs
   //     were retired 2026-08-11 and routines re-branded Saved workouts, so it
   //     named one live thing twice and one dead thing once → "saved workouts".
-  // Headroom is ~3 tok. Both ceilings remain full; the manifest has now been
-  // mined too, so the next addition really is the VOICE section.
-  allToolTokens < 9000
+  // INTEGRATOR NOTE (2026-08-13, the three-way merge): knowledge raised the
+  // ceilings to 9,250 / 3,700 and reports' three manifest trims still apply on
+  // top — so the merged tree banks reports' recovered tokens as headroom under
+  // the raised ceilings, and the assertions below measure the merged truth.
+  // The manifest has been mined twice now; the next addition digs in the four
+  // fat SCHEMAS named above, not here.
+  allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(
         'tool schemas over budget',
         `${allToolTokens} tok — trim descriptions before adding more`
       );
-  systemTokens < 3500
+  systemTokens < 3700
     ? ok(`the static system prompt fits its budget (~${systemTokens} tok)`)
     : bad('system prompt over budget', String(systemTokens));
 

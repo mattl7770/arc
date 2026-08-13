@@ -1,5 +1,5 @@
 /**
- * The reports ledger's data layer (0036) — docs/reports-subapp.md §5.
+ * The reports ledger's data layer (0039) — docs/reports-subapp.md §5.
  *
  * A generated report is a RECORD, not a cache: "what did the doctor actually
  * see" has to stay answerable after the data behind it is corrected. So every

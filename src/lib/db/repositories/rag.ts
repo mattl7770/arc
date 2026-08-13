@@ -35,6 +35,14 @@ export type NewKnowledgeChunk = {
   body: string;
   chunkIndex?: number;
   tokenEstimate?: number | null;
+  /**
+   * The `knowledge_entries` row this passage was derived from (0035), for chunks
+   * the USER owns. Pack chunks leave it null and carry `packVersion` instead —
+   * the two-owner split that makes `ingestCorpus`'s DELETE-by-source
+   * structurally unable to eat user content. See 0035's header; pinned by
+   * db/knowledge.test.mjs.
+   */
+  entryId?: string | null;
 };
 
 /** Insert one knowledge passage; returns its id (also the vec0 join key). */
@@ -42,8 +50,8 @@ export function insertKnowledgeChunk(db: Database, chunk: NewKnowledgeChunk): st
   const id = newId(db);
   db.run(
     `INSERT INTO knowledge_chunks
-       (id, source, pack_version, title, topic, body, chunk_index, token_estimate)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, source, pack_version, title, topic, body, chunk_index, token_estimate, entry_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       chunk.source,
@@ -53,6 +61,7 @@ export function insertKnowledgeChunk(db: Database, chunk: NewKnowledgeChunk): st
       chunk.body,
       chunk.chunkIndex ?? 0,
       chunk.tokenEstimate ?? null,
+      chunk.entryId ?? null,
     ]
   );
   return id;

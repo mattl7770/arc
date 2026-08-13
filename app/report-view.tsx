@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
@@ -15,7 +15,7 @@ import { useStoredReport } from '@/hooks/use-reports';
 // and this screen needs one boolean. Same answer, a fraction of the graph.
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { getDb } from '@/lib/db/client';
-import { insertReport } from '@/lib/db/repositories/reports';
+import { deleteReport, insertReport } from '@/lib/db/repositories/reports';
 import { assembleDoctorPack } from '@/lib/reports/assemble-doctor-pack';
 import { assembleSelfReview } from '@/lib/reports/assemble-self-review';
 import { CoachReadUnavailableError, generateCoachRead } from '@/lib/reports/coach-read';
@@ -70,6 +70,7 @@ export default function ReportViewScreen() {
 
   const stored = useStoredReport(params.id);
   const isDraft = params.id == null;
+  const router = useRouter();
 
   // The draft, assembled once. In the `useState` initializer rather than an
   // effect: op-sqlite is synchronous, so there is no spinner state to model,
@@ -218,7 +219,9 @@ export default function ReportViewScreen() {
       <View className="mt-8">
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={alreadySaved ? 'Share this report again' : 'Save and share this report'}
+          accessibilityLabel={
+            alreadySaved ? 'Share this report again' : 'Save and share this report'
+          }
           accessibilityState={{ disabled: !canWrite || busy != null }}
           disabled={!canWrite || busy != null}
           onPress={() => void share()}
@@ -280,6 +283,39 @@ export default function ReportViewScreen() {
           </Text>
         ) : null}
         {note ? <Text className="mt-3 font-mono text-[11px] text-ink-muted">{note}</Text> : null}
+
+        {/* Persisted reports only. Arm/confirm (the coach-memory idiom), muted
+            never-accent. Removes the ROW — the record of what was shared; the
+            HTML file is deliberately left, per deleteReport's header.
+            (2026-08-13 review fix: the spec promised this and no code called
+            deleteReport.) */}
+        {!isDraft && params.id != null ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Delete this report"
+            onPress={() =>
+              Alert.alert(
+                'Delete this report?',
+                'The record of what was generated and shared is removed for good. Any copy you already shared is unaffected.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: () => {
+                      deleteReport(getDb(), String(params.id));
+                      router.back();
+                    },
+                  },
+                ]
+              )
+            }
+            className="mt-6 min-h-[44px] items-center justify-center active:opacity-60">
+            <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+              Delete report
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
     </Screen>
   );

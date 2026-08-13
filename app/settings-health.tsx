@@ -19,7 +19,7 @@ import {
   requestHealthPermissions,
   type HealthWriteAccess,
 } from '@/lib/health/healthkit';
-import { BODY_PUBLISH_METRICS } from '@/lib/health/mapping';
+import { BODY_INGEST_METRICS } from '@/lib/health/mapping';
 import { syncHealthData } from '@/lib/health/sync';
 
 /**
@@ -38,14 +38,16 @@ import { syncHealthData } from '@/lib/health/sync';
  *
  * The read-only claim this screen used to make ("ARC never writes to Apple
  * Health") became false on 2026-08-12, when ARC started PUBLISHING the three
- * body measurements it owns (docs/wearables-subapp.md §10). It is replaced, not
- * deleted — the replacement has to be at least as specific as the promise it
- * retires, so "What ARC writes" names all three types, says publishing starts
- * from the moment you connect, and says plainly that corrections don't follow.
+ * body measurements it owns, and the same day those three started coming back
+ * INBOUND too (docs/wearables-subapp.md §10–11). Both replacements are at least
+ * as specific as the promise they retire: every scope is named with its
+ * direction, publishing is said to start from the moment you connect, and it is
+ * said plainly that corrections don't follow and that ingested measurements are
+ * never sent back.
  *
  * Conformed Set treatment: the connection state is a **ruled plate** carrying
- * its own action, the read and write scopes are **ruled plates** (a list of
- * things is a record), and the explanatory passages are **margin annotations**.
+ * its own action, the scope list is a **ruled plate** (a list of things is a
+ * record), and the explanatory passages are **margin annotations**.
  *
  * **Zero accent.** This is a Settings screen, and Settings carries no accent at
  * all (00-design-spec.md §2) — so Enable is a solid *ink* action, not pine, and
@@ -60,24 +62,51 @@ function fmtSyncedAt(iso: string): string {
   return `${MONTHS[d.getMonth()] ?? ''} ${d.getDate()} · ${clockFromISO(iso)}`;
 }
 
-/** What ARC asks to read, in human words (mirrors HEALTH_READ_IDENTIFIERS). */
-const READ_SCOPES = [
-  'Sleep (duration and stages)',
-  'Heart-rate variability and resting heart rate',
-  'Steps and active / resting energy',
-  'Respiratory rate and blood oxygen',
-  'Body and sleeping-wrist temperature',
-  'VO₂max and workouts',
-];
+/**
+ * Which way each thing moves. The user's actual question about a health
+ * integration is not "what does it touch" but "who is writing my record", so the
+ * two old lists (What ARC reads / What ARC writes) are one record with a
+ * direction per row — the three body measurements are now genuinely both ways,
+ * and a two-list layout could only have shown that by printing them twice.
+ */
+type SyncDirection = 'both' | 'in' | 'out';
 
-/** What ARC publishes, in human words (mirrors BODY_PUBLISH_METRICS). */
-const WRITE_SCOPES = BODY_PUBLISH_METRICS.map((m) => m.label);
+const DIRECTION_LABEL: Record<SyncDirection, string> = {
+  both: 'Both',
+  in: 'In',
+  out: 'Out',
+};
+
+const DIRECTION_ICON: Record<
+  SyncDirection,
+  'swap-vertical-outline' | 'arrow-down-outline' | 'arrow-up-outline'
+> = {
+  both: 'swap-vertical-outline',
+  in: 'arrow-down-outline',
+  out: 'arrow-up-outline',
+};
+
+/**
+ * Every scope, in human words, with its direction. The two-way rows come from
+ * {@link BODY_INGEST_METRICS} so their labels cannot drift from the types
+ * actually wired; the read-only rows are grouped by hand because twelve
+ * identifiers read as six ideas.
+ */
+const SYNC_SCOPES: readonly { label: string; direction: SyncDirection }[] = [
+  ...BODY_INGEST_METRICS.map((m) => ({ label: m.label, direction: 'both' as const })),
+  { label: 'Sleep (duration and stages)', direction: 'in' },
+  { label: 'Heart-rate variability and resting heart rate', direction: 'in' },
+  { label: 'Steps and active / resting energy', direction: 'in' },
+  { label: 'Respiratory rate and blood oxygen', direction: 'in' },
+  { label: 'Body and sleeping-wrist temperature', direction: 'in' },
+  { label: 'VO₂max and workouts', direction: 'in' },
+];
 
 /**
  * The one line to show about write access, or null when there is nothing
  * honest and useful to say (unsupported / unknown / granted — in the granted
- * case the "What ARC writes" plate below already covers it, and repeating it
- * here would be noise).
+ * case the "What syncs" plate below already covers it, and repeating it here
+ * would be noise).
  */
 function writeAccessNote(access: HealthWriteAccess): string | null {
   switch (access) {
@@ -339,19 +368,39 @@ export default function SettingsHealthScreen() {
         </Block>
       </View>
 
-      {/* What ARC reads — a list of things, so a ruled plate. */}
+      {/* What syncs, and which way — a list of things, so a ruled plate. */}
       <View className="mt-8">
-        <SectionLabel label="What ARC reads" />
+        <SectionLabel label="What syncs" />
         <View className="mt-3">
           <Block device="plate">
-            {READ_SCOPES.map((scope, index) => (
-              <View key={scope}>
+            {SYNC_SCOPES.map((scope, index) => (
+              <View key={scope.label}>
                 <Divider first={index === 0} />
-                <View className="min-h-[44px] flex-row items-center gap-3 py-3">
-                  <Ionicons name="pulse-outline" size={16} color={palette.inkMuted} />
+                <View
+                  accessible
+                  accessibilityLabel={`${scope.label}. ${
+                    scope.direction === 'both'
+                      ? 'Reads and writes.'
+                      : scope.direction === 'in'
+                        ? 'Reads only.'
+                        : 'Writes only.'
+                  }`}
+                  className="min-h-[44px] flex-row items-center gap-3 py-3">
+                  <Ionicons
+                    name={DIRECTION_ICON[scope.direction]}
+                    size={16}
+                    color={palette.inkMuted}
+                  />
                   <Text className="flex-1 font-serif text-[13.5px] text-ink-secondary">
-                    {scope}
+                    {scope.label}
                   </Text>
+                  {/* A filled tag, never a bordered one — a one-sided border
+                      beside a border colour paints a full rectangle in RN. */}
+                  <View className="rounded bg-paper-dim px-1.5 py-0.5">
+                    <Text className="font-label text-[10px] text-ink-muted">
+                      {DIRECTION_LABEL[scope.direction]}
+                    </Text>
+                  </View>
                 </View>
               </View>
             ))}
@@ -361,39 +410,16 @@ export default function SettingsHealthScreen() {
         <View className="mt-4">
           <Block device="margin">
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-              Data lands in the on-device database and shows up in Data → Wearables and Home&rsquo;s
+              In — Apple Health to ARC. Out — ARC to Apple Health. Incoming data lands in the
+              on-device database and shows up in Data → Wearables, the weight trend and Home&rsquo;s
               readiness.
             </Text>
-          </Block>
-        </View>
-      </View>
-
-      {/* What ARC writes — the counterpart record. Three items, named exactly. */}
-      <View className="mt-8">
-        <SectionLabel label="What ARC writes" />
-        <View className="mt-3">
-          <Block device="plate">
-            {WRITE_SCOPES.map((scope, index) => (
-              <View key={scope}>
-                <Divider first={index === 0} />
-                <View className="min-h-[44px] flex-row items-center gap-3 py-3">
-                  <Ionicons name="arrow-up-outline" size={16} color={palette.inkMuted} />
-                  <Text className="flex-1 font-serif text-[13.5px] text-ink-secondary">
-                    {scope}
-                  </Text>
-                </View>
-              </View>
-            ))}
-          </Block>
-        </View>
-
-        <View className="mt-4">
-          <Block device="margin">
-            <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-              Nothing else is written — no workouts, no meals, no sleep. ARC publishes these three
-              from the moment you connect; measurements recorded before that stay in ARC only.
-              Editing or deleting one here does not change the copy already in Apple Health — remove
-              that in the Health app.
+            <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
+              Nothing else is written — no workouts, no meals, no sleep. ARC publishes weight, body
+              fat and waist from the moment you connect; measurements recorded before that stay in
+              ARC only. Editing or deleting one here does not change the copy already in Apple
+              Health — remove that in the Health app. A measurement that arrived from Apple Health
+              is marked as such and is never sent back.
             </Text>
           </Block>
         </View>

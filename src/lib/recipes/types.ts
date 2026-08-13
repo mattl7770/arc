@@ -34,8 +34,36 @@ export type RecipeRow = {
    *  path (iOS re-issues the container UUID on every install). Resolved to a
    *  URI at read time by src/lib/media/recipe-photo-store.ts. */
   photo_file_name: string | null;
+  /** 0035: where the recipe is filed. NULL = Unfiled, which is a place and not
+   *  a failure — every recipe arrives here and stays reachable from the book's
+   *  default view. Deleting a folder SET NULLs this; it never deletes a
+   *  recipe. */
+  folder_id: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
+};
+
+/**
+ * A `recipe_folders` row (0035) — one drawer of the recipe book.
+ *
+ * Flat and single-membership by design: a recipe carries one `folder_id`, so a
+ * folder is a PLACE rather than a label. The reasoning, and what tags are for
+ * instead, is in the 0035 migration header.
+ */
+export type RecipeFolderRow = {
+  id: string;
+  name: string;
+  /** Lowercased, whitespace-collapsed; UNIQUE (two drawers labelled "Dinners"
+   *  is a filing error). Written by the repository, never by SQL. */
+  name_norm: string;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
+/** A folder as the book lists it: the row plus how many recipes it holds. */
+export type RecipeFolderSummary = {
+  folder: RecipeFolderRow;
+  recipeCount: number;
 };
 
 /**

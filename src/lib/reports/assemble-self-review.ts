@@ -140,7 +140,13 @@ type StatusRow = {
 };
 
 /** An accumulator with the same five buckets the ledger prints. */
-type Tally = { completed: number; partial: number; skipped: number; excused: number; unmarked: number };
+type Tally = {
+  completed: number;
+  partial: number;
+  skipped: number;
+  excused: number;
+  unmarked: number;
+};
 
 const emptyTally = (): Tally => ({ completed: 0, partial: 0, skipped: 0, excused: 0, unmarked: 0 });
 
@@ -201,7 +207,13 @@ function assembleAdherence(
   if (rows.length === 0) {
     return {
       title: 'Adherence',
-      empty: 'No protocol was active this period — nothing was scheduled, so nothing is being scored.',
+      // 2026-08-13 review fix: when the whole period clips away (a range of
+      // just today), "no protocol was active" would be false the moment the
+      // user has pending items on today's mission. Name the clip instead.
+      empty:
+        accEnd < period.start
+          ? 'This period holds only today, and adherence is scored on complete days — a two-hour-old day is not a day. Check back tomorrow.'
+          : 'No protocol was active this period — nothing was scheduled, so nothing is being scored.',
       provenance,
       rows: [],
       totals: null,
@@ -311,7 +323,12 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
   }
 
   const headline: Figure[] = [
-    { label: 'Sessions', value: count(sessions), unit: null, note: `${plural(days.length, 'day')} trained` },
+    {
+      label: 'Sessions',
+      value: count(sessions),
+      unit: null,
+      note: `${plural(days.length, 'day')} trained`,
+    },
     { label: 'Time', value: fmtMinutes(totalMinutes), unit: null, note: null },
     { label: 'Working sets', value: count(sets), unit: null, note: 'warm-ups excluded' },
   ];
@@ -436,7 +453,12 @@ function assembleNutrition(db: Database, period: Period, accEnd: string): Nutrit
   // items one of which was never priced, cannot. Reusing `metricIsComplete`
   // means the report and the Eat tab disqualify exactly the same days.
   const METRICS: DayMetric[] = ['kcal', 'protein_g'];
-  const completeValues: Record<DayMetric, number[]> = { kcal: [], protein_g: [], carbs_g: [], fat_g: [] };
+  const completeValues: Record<DayMetric, number[]> = {
+    kcal: [],
+    protein_g: [],
+    carbs_g: [],
+    fat_g: [],
+  };
   const excludedDays = new Set<string>();
   for (const day of logged) {
     const meals = listTodayMeals(db, day.date);
@@ -488,8 +510,9 @@ function assembleNutrition(db: Database, period: Period, accEnd: string): Nutrit
     excludedDays.size === 0
       ? null
       : `${plural(excludedDays.size, 'logged day')} carried a meal that was never fully ` +
-        'priced, so they are excluded from the averages above rather than dragging them ' +
-        'down. The days are still logged; their totals are known-partial.';
+        'priced; each is excluded from the average of any metric that meal left unpriced ' +
+        '(a day still counts toward the metrics it did price — the exclusion is per ' +
+        'metric, not per day). The days are still logged; their totals are known-partial.';
 
   return {
     title: 'Nutrition',
@@ -800,7 +823,12 @@ function assembleWhatChanged(
     });
   }
 
-  const targets = db.all<{ effectiveDate: string; kcal: number | null; protein: number | null; notes: string | null }>(
+  const targets = db.all<{
+    effectiveDate: string;
+    kcal: number | null;
+    protein: number | null;
+    notes: string | null;
+  }>(
     `SELECT effective_date AS effectiveDate, kcal AS kcal, protein_g AS protein, notes AS notes
      FROM nutrition_targets
      WHERE effective_date >= ? AND effective_date <= ?
@@ -826,7 +854,10 @@ function assembleWhatChanged(
     rows.push({
       kind: 'Mode',
       what: `${def.label} — ${plural(run.days, 'day')}`,
-      when: run.start === run.end ? formatDate(run.start) : `${formatDate(run.start)} – ${formatDate(run.end)}`,
+      when:
+        run.start === run.end
+          ? formatDate(run.start)
+          : `${formatDate(run.start)} – ${formatDate(run.end)}`,
       note: def.excusesSkips ? 'Skips on these days are excused.' : null,
     });
   }
@@ -837,7 +868,10 @@ function assembleWhatChanged(
       rows.length === 0
         ? 'No protocol revision, target change or mode this period — the plan you started with is the plan you finished with.'
         : null,
-    provenance: { sources: 'protocol_versions · nutrition_targets · day_modes', range: period.rangeLabel },
+    provenance: {
+      sources: 'protocol_versions · nutrition_targets · day_modes',
+      range: period.rangeLabel,
+    },
     rows,
   };
 }

@@ -14,6 +14,7 @@
  */
 import type { Database } from '../database';
 import { getExercise, listExercises } from './exercise-catalog';
+import { listMuscleAnchors } from './muscle-anchors';
 import { getRoutine, listRoutines } from './routines';
 import { exerciseSessionTops, recentMuscleLoads, weeklyMuscleSets } from './training-stats';
 import {
@@ -149,7 +150,14 @@ export function buildRecommendation(
   now: Date = new Date(),
   options: RecommendationOptions = {}
 ): TrainingRecommendation {
-  const ledger = muscleFreshness(recentMuscleLoads(db, FRESHNESS_LOOKBACK_DAYS, now), now);
+  // Hand-set anchors ride along (0037): a correction made on the freshness
+  // screen has to reach what the app RECOMMENDS, or the figure and the session
+  // it proposes are reading two different bodies.
+  const ledger = muscleFreshness(
+    recentMuscleLoads(db, FRESHNESS_LOOKBACK_DAYS, now),
+    now,
+    listMuscleAnchors(db)
+  );
   const volume = volumeLedger(weeklyMuscleSets(db, now));
 
   const routines = listRoutines(db);

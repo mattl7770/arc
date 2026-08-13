@@ -478,5 +478,56 @@ console.log('12. GUARD: no REAL table may collide with the vec0 shadow-name rule
   }
 }
 
+// ---------------------------------------------------------------------------
+// The images the JSON cannot carry (0036, docs/progress-photos-subapp.md §8).
+// `omittedTables` exists so nothing is dropped silently; media files deserve
+// the same treatment, and for a stronger reason — the rows survive perfectly,
+// so a restored gallery with no pictures looks like data loss unless the file
+// says otherwise.
+console.log('12. omittedMedia: the export names the files it does not contain');
+{
+  const { db, raw } = freshDb();
+
+  buildExport(db, { exportedAt: '2026-08-12T10:00:00.000Z' }).omittedMedia.length === 0
+    ? ok('a database with no photos announces no missing photos')
+    : bad('false media omission on an empty DB');
+
+  raw
+    .prepare(
+      `INSERT INTO progress_photos (id, taken_on, pose, working_file_name, original_file_name)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run('pp-1', '2026-08-09', 'front', 'a.jpg', 'a-full.jpg');
+  raw
+    .prepare(
+      'INSERT INTO progress_photos (id, taken_on, pose, working_file_name) VALUES (?, ?, ?, ?)'
+    )
+    .run('pp-2', '2026-08-09', 'side', 'b.jpg');
+
+  const doc = buildExport(db, { exportedAt: '2026-08-12T10:00:00.000Z' });
+  const progress = doc.omittedMedia.find((m) => m.directory === 'progress-photos');
+  progress ? ok('the progress-photos directory is named') : bad('progress-photos not named');
+  // Three FILES across two rows: two working copies and one full-size original.
+  progress?.files === 3
+    ? ok('both name columns are counted (3 files across 2 rows)')
+    : bad('media file count', String(progress?.files));
+  progress?.note.includes('iOS Photos app')
+    ? ok('...and the note says where the originals still are')
+    : bad('note unhelpful', progress?.note);
+
+  // The rows themselves are untouched: this is a NOTE about files, never an
+  // excuse to drop data.
+  doc.tables.progress_photos?.length === 2
+    ? ok('every photo ROW still rides the export in full')
+    : bad('rows dropped', String(doc.tables.progress_photos?.length));
+  doc.tables.progress_photos?.[0]?.working_file_name === 'a.jpg'
+    ? ok('...including the file names, so a future restore can re-link them')
+    : bad('names dropped');
+
+  // And it survives serialization, which is what actually reaches disk.
+  JSON.parse(serializeExport(doc)).omittedMedia[0].files === 3
+    ? ok('omittedMedia survives the round trip to JSON')
+    : bad('omittedMedia lost in serialization');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);

@@ -19,13 +19,19 @@ import {
 } from '../src/lib/db/repositories/nutrition.ts';
 import {
   addIngredient,
+  applyRecipeRevision,
+  createFolder,
   createRecipe,
+  deleteFolder,
   deleteRecipe,
+  getFolder,
   getRecipe,
   isResolved,
+  listFolders,
   listIngredients,
   listRecipes,
   logRecipe,
+  moveRecipeToFolder,
   parseSteps,
   portionFactor,
   portionFactorOrNull,
@@ -34,6 +40,7 @@ import {
   recipeNutrition,
   recipesCookedSince,
   removeIngredient,
+  renameFolder,
   reorderIngredients,
   resolveIngredient,
   resolveIngredientByModel,
@@ -42,16 +49,21 @@ import {
   scaleRecipeLines,
   setIngredientNegligible,
   setRecipeFavorite,
+  unfiledRecipeCount,
   unresolveIngredient,
   updateIngredientLine,
   updateRecipe,
 } from '../src/lib/db/repositories/recipes.ts';
 import {
   buildRecipePricingRequest,
+  buildRecipeRevisionRequest,
   catalogResolveRecipe,
+  diffRecipeLines,
+  droppedRecipeLines,
   isConfidentFoodMatch,
   lineGrams,
   parseRecipePricing,
+  parseRecipeRevision,
 } from '../src/lib/recipes/estimate.ts';
 import {
   formatQty,
@@ -938,6 +950,377 @@ console.log('\n17c. the pricing prompt and its parser');
   throws(() => parseRecipePricing('sorry, I cannot help with that'))
     ? ok('and prose with no JSON object throws')
     : bad('prose accepted');
+}
+
+console.log('\n18. Folders (0035) — a filing system, and deleting one keeps the recipes');
+{
+  const { db } = freshDb();
+  const dinners = createFolder(db, ' Dinners ');
+  const quick = createFolder(db, 'Quick');
+  getFolder(db, dinners)?.name === 'Dinners'
+    ? ok('a folder name is stored trimmed, in the user’s own casing')
+    : bad('folder name', JSON.stringify(getFolder(db, dinners)));
+
+  throws(() => createFolder(db, 'dinners'))
+    ? ok('a duplicate name is refused case- and whitespace-insensitively')
+    : bad('duplicate folder accepted');
+  throws(() => createFolder(db, '   '))
+    ? ok('and a blank name is refused')
+    : bad('blank folder name accepted');
+
+  const adobo = createRecipe(db, {
+    title: 'Chicken Adobo',
+    servings: 2,
+    ingredients: [{ raw_text: '400 g chicken thighs' }],
+  });
+  const soup = createRecipe(db, {
+    title: 'Lentil soup',
+    servings: 4,
+    ingredients: [{ raw_text: '200 g lentils' }],
+  });
+  getRecipe(db, adobo).folder_id === null
+    ? ok('a new recipe lands UNFILED — a place, not a failure')
+    : bad('folder_id default', String(getRecipe(db, adobo).folder_id));
+  unfiledRecipeCount(db) === 2 ? ok('both are unfiled') : bad('unfiled count');
+
+  moveRecipeToFolder(db, adobo, dinners);
+  moveRecipeToFolder(db, soup, dinners);
+  const filed = listFolders(db);
+  filed.length === 2 && filed[0].folder.name === 'Dinners' && filed[0].recipeCount === 2
+    ? ok('listFolders counts what is in each drawer, alphabetically')
+    : bad('listFolders', JSON.stringify(filed.map((f) => [f.folder.name, f.recipeCount])));
+  filed[1].recipeCount === 0 ? ok('an empty drawer counts 0') : bad('empty drawer count');
+  unfiledRecipeCount(db) === 0 ? ok('and nothing is unfiled now') : bad('unfiled after move');
+
+  // The three states of listRecipes' filter.
+  listRecipes(db, '', { folder: dinners }).length === 2
+    ? ok('listRecipes scoped to a folder returns only that drawer')
+    : bad('scoped list');
+  listRecipes(db, '', { folder: null }).length === 0
+    ? ok('scoped to null returns only the unfiled')
+    : bad('unfiled list');
+  listRecipes(db, '').length === 2
+    ? ok('and unscoped returns everything, so a filed recipe is never hidden')
+    : bad('unscoped list');
+  listRecipes(db, 'adobo', { folder: dinners }).length === 1
+    ? ok('search composes with the scope')
+    : bad('scoped search');
+
+  // ALL THREE optional terms at once. listRecipes binds positionally across
+  // the WHERE tokens, the ORDER BY prefix-rank `?` and LIMIT, and the folder
+  // term was inserted between the first two — a misordered push would not
+  // throw, it would silently filter on the wrong string. So the combination
+  // that exercises every `?` is pinned rather than reasoned about.
+  setRecipeFavorite(db, adobo, true);
+  {
+    const three = listRecipes(db, 'chicken', { favoriteOnly: true, folder: dinners });
+    three.length === 1 && three[0].recipe.id === adobo
+      ? ok('query + favoriteOnly + folder bind in the right order together')
+      : bad('three-term bind', JSON.stringify(three.map((r) => r.recipe.title)));
+    listRecipes(db, 'chicken', { favoriteOnly: true, folder: null }).length === 0
+      ? ok('and the same three with an UNFILED scope — which contributes no param — still line up')
+      : bad('three-term bind, unfiled scope');
+  }
+  setRecipeFavorite(db, adobo, false);
+
+  moveRecipeToFolder(db, soup, null);
+  getRecipe(db, soup).folder_id === null && unfiledRecipeCount(db) === 1
+    ? ok('a recipe can be taken back out of every folder')
+    : bad('move out');
+
+  renameFolder(db, dinners, 'Weeknights');
+  getFolder(db, dinners)?.name === 'Weeknights'
+    ? ok('a folder renames')
+    : bad('rename', JSON.stringify(getFolder(db, dinners)));
+  throws(() => renameFolder(db, dinners, 'Quick'))
+    ? ok('but not onto another drawer’s name')
+    : bad('rename collision accepted');
+  renameFolder(db, dinners, 'weeknights');
+  getFolder(db, dinners)?.name === 'weeknights'
+    ? ok('and renaming a folder to its own name (a casing fix) is allowed')
+    : bad('self-rename refused');
+
+  // THE LOAD-BEARING ONE.
+  deleteFolder(db, dinners);
+  const survivor = getRecipe(db, adobo);
+  survivor !== undefined && survivor.folder_id === null
+    ? ok('DELETING A FOLDER UNFILES ITS RECIPES — it never deletes one')
+    : bad('folder delete destroyed a recipe', JSON.stringify(survivor));
+  listIngredients(db, adobo).length === 1
+    ? ok('and the recipe keeps its ingredient lines')
+    : bad('lines lost on folder delete');
+  recipeCount(db) === 2 ? ok('the book still holds both recipes') : bad('recipeCount after delete');
+
+  // A recipe's own deletion must not take its folder with it.
+  deleteRecipe(db, adobo);
+  listFolders(db).length === 1
+    ? ok('and deleting a recipe leaves the drawers alone')
+    : bad('drawers');
+}
+
+console.log('\n19. applyRecipeRevision — matched lines keep their price AND their provenance');
+{
+  const { db } = freshDb();
+  const chicken = fixtureFood(db, { name: 'Revision chicken', kcal_100g: 200 });
+  const recipeId = createRecipe(db, {
+    title: 'Sweet milk oats',
+    servings: 2,
+    steps: ['Warm the milk.', 'Stir in the oats.'],
+    notes: 'Matt’s own note',
+    tags: ['breakfast'],
+    ingredients: [
+      { raw_text: '200 g rolled oats' },
+      { raw_text: '300 ml whole milk' },
+      { raw_text: 'pinch of salt' },
+    ],
+  });
+  const before = listIngredients(db, recipeId);
+  resolveIngredient(db, before[0].id, chicken, 200, 'user'); // a HAND pick
+  setIngredientNegligible(db, before[2].id, true);
+  const oatsId = before[0].id;
+
+  const applied = applyRecipeRevision(db, recipeId, {
+    title: 'Sweet almond oats',
+    servings: 2,
+    ingredients: ['200 g rolled oats', '300 ml unsweetened almond milk', '2 tsp maple syrup'],
+    steps: ['Warm the almond milk.', 'Stir in the oats.'],
+  });
+  applied.kept === 1 && applied.added === 2 && applied.removed === 2
+    ? ok('one line survives verbatim; the reworded and the new are added; two go')
+    : bad('counts', JSON.stringify(applied));
+
+  const after = listIngredients(db, recipeId);
+  after.length === 3 ? ok('the recipe holds the revised lines') : bad('line count', after.length);
+  const oats = after.find((l) => l.id === oatsId);
+  oats && oats.resolved_by === 'user' && near(oats.grams, 200) && oats.food_id === chicken
+    ? ok('THE HAND PICK SURVIVES — same row, same snapshot, same provenance')
+    : bad('hand pick lost', JSON.stringify(oats));
+  oats.position === 0 ? ok('and only its position was rewritten') : bad('position', oats.position);
+
+  const almond = after.find((l) => l.raw_text.includes('almond'));
+  almond && almond.resolved_by === null && almond.grams === null
+    ? ok('a reworded line lands UNRESOLVED — it never inherits the milk’s numbers')
+    : bad('reworded line inherited numbers', JSON.stringify(almond));
+  almond.qty === 300 && almond.unit === 'ml'
+    ? ok('and its overlay is parsed deterministically from the raw line, not by the model')
+    : bad('overlay', JSON.stringify([almond.qty, almond.unit]));
+
+  const recipe = getRecipe(db, recipeId);
+  recipe.title === 'Sweet almond oats' && recipe.title_norm === 'sweet almond oats'
+    ? ok('the title and its search key move together')
+    : bad('title', recipe.title_norm);
+  parseSteps(recipe.steps).length === 2 && parseSteps(recipe.steps)[0].includes('almond')
+    ? ok('the steps are rewritten')
+    : bad('steps', recipe.steps);
+  recipe.notes === 'Matt’s own note' && recipe.tags === '["breakfast"]'
+    ? ok('and notes and tags are NOT touched — a revision writes only what it owns')
+    : bad('notes/tags clobbered', JSON.stringify([recipe.notes, recipe.tags]));
+
+  throws(() =>
+    applyRecipeRevision(db, recipeId, { title: 'x', servings: 2, ingredients: [], steps: [] })
+  )
+    ? ok('a revision cannot leave a recipe with no ingredients')
+    : bad('empty revision accepted');
+  throws(() =>
+    applyRecipeRevision(db, recipeId, { title: 'x', servings: 0, ingredients: ['a'], steps: [] })
+  )
+    ? ok('nor a non-positive yield')
+    : bad('zero servings accepted');
+  applyRecipeRevision(db, 'nope', { title: 'x', servings: 1, ingredients: ['a'], steps: [] }) ===
+  null
+    ? ok('and a missing recipe returns null rather than throwing')
+    : bad('missing recipe');
+
+  // Duplicate lines pair off one for one rather than collapsing.
+  const dupes = createRecipe(db, {
+    title: 'Oil twice',
+    servings: 1,
+    ingredients: [{ raw_text: '1 tbsp olive oil' }, { raw_text: '1 tbsp olive oil' }],
+  });
+  const dupeResult = applyRecipeRevision(db, dupes, {
+    title: 'Oil twice',
+    servings: 1,
+    ingredients: ['1 tbsp olive oil'],
+    steps: [],
+  });
+  dupeResult.kept === 1 && dupeResult.removed === 1 && listIngredients(db, dupes).length === 1
+    ? ok('two identical lines match one for one — one kept, one dropped')
+    : bad('duplicate matching', JSON.stringify(dupeResult));
+}
+
+console.log('\n19b. The revision diff, and its agreement with the write');
+{
+  const rows = diffRecipeLines(
+    ['200 g oats', '300 ml whole milk', 'pinch of salt'],
+    ['200 g oats', '300 ml almond milk', '2 tsp maple syrup']
+  );
+  rows.map((r) => r.state).join(',') === 'same,added,added,removed,removed'
+    ? ok('the revised list comes back in order, then what left')
+    : bad('diff states', JSON.stringify(rows));
+  rows[3].text === '300 ml whole milk' && rows[4].text === 'pinch of salt'
+    ? ok('and the dropped lines keep their original order')
+    : bad('dropped order', JSON.stringify(rows.slice(3)));
+  diffRecipeLines(['a', 'a'], ['a']).filter((r) => r.state === 'removed').length === 1
+    ? ok('duplicates pair off one for one here too')
+    : bad('diff duplicates');
+  diffRecipeLines(['a'], ['a', 'a']).filter((r) => r.state === 'added').length === 1
+    ? ok('and in the other direction')
+    : bad('diff duplicates reversed');
+
+  const dropped = droppedRecipeLines(
+    [{ raw_text: 'a' }, { raw_text: 'b' }, { raw_text: 'a' }],
+    ['a', 'c']
+  );
+  dropped.length === 2 && dropped[0].raw_text === 'b' && dropped[1].raw_text === 'a'
+    ? ok('droppedRecipeLines returns the ROWS that go, first-come — same rule')
+    : bad('dropped rows', JSON.stringify(dropped));
+
+  // The screen must not describe a different write than the one that lands.
+  const { db } = freshDb();
+  const id = createRecipe(db, {
+    title: 'Agreement',
+    servings: 1,
+    ingredients: [{ raw_text: 'a' }, { raw_text: 'b' }, { raw_text: 'a' }],
+  });
+  const revised = ['a', 'c'];
+  const predicted = diffRecipeLines(['a', 'b', 'a'], revised);
+  const result = applyRecipeRevision(db, id, {
+    title: 'Agreement',
+    servings: 1,
+    ingredients: revised,
+    steps: [],
+  });
+  result.kept === predicted.filter((r) => r.state === 'same').length &&
+  result.added === predicted.filter((r) => r.state === 'added').length &&
+  result.removed === predicted.filter((r) => r.state === 'removed').length
+    ? ok('THE REVIEW AND THE WRITE AGREE — one matching rule, two callers')
+    : bad('review/write disagree', JSON.stringify([predicted, result]));
+}
+
+console.log('\n19c. The revision prompt and its parser');
+{
+  const req = buildRecipeRevisionRequest(
+    { title: 'Oats', servings: 2, ingredients: ['200 g oats', '300 ml milk'], steps: ['Warm it.'] },
+    'change the milk for almond milk and keep the sweetness'
+  );
+  const body = req.messages[0].content;
+  body.includes('- 200 g oats') && body.includes('1. Warm it.') && body.includes('Servings: 2')
+    ? ok('the recipe goes up as words — lines, steps and yield')
+    : bad('request body', body);
+  body.includes('almond milk')
+    ? ok('and the instruction rides with it')
+    : bad('instruction missing');
+  !body.includes('kcal') && !body.includes('grams')
+    ? ok('no macros, no snapshots — the model rewrites, the pricing passes price')
+    : bad('macros leaked into the prompt');
+  req.system ===
+  buildRecipeRevisionRequest(
+    { title: 'Other', servings: 1, ingredients: ['x'], steps: [] },
+    'anything'
+  ).system
+    ? ok('the system prompt is a CONSTANT, so it rides the cached prefix')
+    : bad('system prompt varies per call');
+  req.system.includes('COMPLETE revised recipe') && req.system.includes('SMALLEST set of changes')
+    ? ok('and it demands a whole recipe plus minimal change for a goal-shaped instruction')
+    : bad('system prompt rules');
+
+  const current = { servings: 2, steps: ['Warm the milk.', 'Stir in the oats.'] };
+  const parsed = parseRecipeRevision(
+    '```json\n{"title":" Almond oats ","servings":2,' +
+      '"ingredients":["200 g oats","",300,"300 ml almond milk"],' +
+      '"steps":["Warm it."],"notes":" swapped the milk "}\n```',
+    current
+  );
+  parsed.title === 'Almond oats' && parsed.notes === 'swapped the milk'
+    ? ok('fenced JSON parses and trims')
+    : bad('parse', JSON.stringify(parsed));
+  parsed.ingredients.length === 2
+    ? ok('a blank line and a non-string are dropped — the shape is never trusted')
+    : bad('ingredients', JSON.stringify(parsed.ingredients));
+
+  parseRecipeRevision('{"ingredients":["a"],"servings":-3}', { servings: 6, steps: [] })
+    .servings === 6
+    ? ok('a nonsense yield falls back to the recipe’s own, never to a made-up 1')
+    : bad('servings fallback');
+  parseRecipeRevision('{"ingredients":["a"]}', { servings: 4, steps: [] }).title === ''
+    ? ok('a missing title comes back empty for the caller to keep the current one')
+    : bad('title fallback');
+  // A model that drops the "steps" key must not erase the method as a side
+  // effect of "swap the milk" — an omitted field is an omission, not an order.
+  {
+    const noSteps = parseRecipeRevision('{"ingredients":["a"]}', current);
+    noSteps.steps.join('|') === current.steps.join('|')
+      ? ok('a reply carrying no steps KEEPS the recipe’s method rather than wiping it')
+      : bad('steps wiped', JSON.stringify(noSteps.steps));
+    parseRecipeRevision('{"ingredients":["a"],"steps":["Only this."]}', current).steps.length === 1
+      ? ok('and a reply that does carry steps replaces them')
+      : bad('steps not replaced');
+  }
+  throws(() => parseRecipeRevision('{"ingredients":[]}', current))
+    ? ok('a reply with no usable ingredient line throws rather than offering an empty recipe')
+    : bad('empty revision accepted');
+  throws(() => parseRecipeRevision('sorry, I cannot help with that', current))
+    ? ok('and prose with no JSON object throws')
+    : bad('prose accepted');
+}
+
+console.log('\n19d. The review-pass regressions');
+{
+  // WHITESPACE. A stored raw_text is never trimmed on insert (import and the
+  // Coach write what they were given), and every line the model returns is
+  // trimmed on the way in. An untrimmed match would therefore delete a line
+  // NOBODY asked to change — taking its hand pick and its snapshots with it.
+  const { db } = freshDb();
+  const food = fixtureFood(db, { name: 'Whitespace chicken', kcal_100g: 200 });
+  const id = createRecipe(db, {
+    title: 'Padded',
+    servings: 1,
+    ingredients: [{ raw_text: '  400 g chicken thighs  ' }, { raw_text: '1 tbsp soy sauce' }],
+  });
+  const padded = listIngredients(db, id)[0];
+  resolveIngredient(db, padded.id, food, 400, 'user');
+
+  const result = applyRecipeRevision(db, id, {
+    title: 'Padded',
+    servings: 1,
+    ingredients: ['400 g chicken thighs', '2 tbsp soy sauce'],
+    steps: [],
+  });
+  const survivor = listIngredients(db, id).find((l) => l.id === padded.id);
+  survivor && survivor.resolved_by === 'user' && result.kept === 1
+    ? ok('a padded stored line matches its own trimmed echo — the hand pick survives')
+    : bad('whitespace destroyed a hand pick', JSON.stringify([result, survivor]));
+  diffRecipeLines(['  a  ', 'b'], ['a']).filter((r) => r.state === 'same').length === 1
+    ? ok('and the review marks it kept by the same trimmed rule, so the two still agree')
+    : bad('diff disagrees on whitespace', JSON.stringify(diffRecipeLines(['  a  ', 'b'], ['a'])));
+
+  // A duplicate folder name reaching the UNIQUE index must not print the
+  // driver's own sentence at the user.
+  createFolder(db, 'Dinners');
+  let raised;
+  try {
+    db.run('INSERT INTO recipe_folders (id, name, name_norm) VALUES (?, ?, ?)', [
+      'x',
+      'Dinners',
+      'dinners',
+    ]);
+  } catch (e) {
+    raised = e;
+  }
+  raised && /UNIQUE constraint failed/i.test(raised.message)
+    ? ok('the UNIQUE index is the real guarantee (raw driver message confirmed)')
+    : bad('no UNIQUE index on recipe_folders.name_norm');
+  let friendly;
+  try {
+    createFolder(db, '  DINNERS ');
+  } catch (e) {
+    friendly = e;
+  }
+  friendly &&
+  !/UNIQUE constraint/i.test(friendly.message) &&
+  /already a folder/.test(friendly.message)
+    ? ok('and createFolder answers in a sentence, never in SQLite’s')
+    : bad('raw driver message escaped', friendly && friendly.message);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

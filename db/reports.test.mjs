@@ -667,7 +667,7 @@ console.log('7. Render — verbatim figures, authored empties, tripwires, determ
 console.log('8. Persistence — the migration, the CHECKs, and re-render from the snapshot');
 {
   const { db, raw } = freshDb();
-  is('the migration applied', raw.prepare('PRAGMA user_version').get().user_version >= 36, true);
+  is('the migration applied', raw.prepare('PRAGMA user_version').get().user_version >= 39, true);
   const cols = raw.prepare('PRAGMA table_info(reports)').all().map((c) => c.name);
   yes(
     'the table has the specified shape',

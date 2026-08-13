@@ -1,5 +1,9 @@
 /**
- * Pricing a recipe's ingredient lines **without asking the user to** (0034).
+ * The recipe sub-app's **one model seam**: pricing a recipe's ingredient lines
+ * without asking the user to (0034), and revising a recipe from a plain-English
+ * instruction (2026-08-12 — see the section at the foot of this file). One
+ * module owns the key check, the guarded streaming fetch and the JSON
+ * contracts, exactly as src/lib/nutrition/estimate.ts owns them for meals.
  *
  * Owner call, 2026-08-12, off a Coach-written stir-fry showing five "Not counted
  * yet" rows and five LINK buttons: *"…removing this whole 'linking' behavior in
@@ -339,6 +343,342 @@ export async function resolveRecipeWithModel(
     }
   }
   return { resolved, remaining: unpricedLines(db, recipeId).length, notes };
+}
+
+// --- Revising a recipe in plain English (owner, 2026-08-12) -------------------
+//
+// *"Add a button to edit a recipe with plain-text input to the coach. (i.e.
+//  'change the milk for almond milk and add something to keep the sweetness the
+//  same' or 'make it higher protein and lower calorie')"*
+//
+// Those two examples are the spec, and they are two different jobs:
+//   1. A SUBSTITUTION that requires a compensating change the user did not
+//      name. Swapping the milk is the easy half; noticing that the sweetness
+//      went with it is the request.
+//   2. A GOAL, not an edit. "Higher protein, lower calorie" says nothing about
+//      which line to touch — deciding that IS the work, and it is exactly the
+//      kind of judgment that belongs in the model rather than in a rule table
+//      (the coach-judgment-not-rules memory).
+//
+// It lives beside the pricing passes for the same reason `reviseMeal` lives
+// beside `estimateMeal`: one module per sub-app owns the model seam, the
+// guarded streaming fetch, and the availability check. A second HTTP stack for
+// a second kind of turn is how two paths drift.
+//
+// ## Cost discipline (owner flagged a ~10¢ Coach turn, 2026-08-12)
+//
+//   - **No tools.** `tools: []`, so the Coach's ~8k-token tool catalog — the
+//     expensive, invariant bulk of a real Coach turn — is never uploaded. A
+//     rewrite has nothing to call.
+//   - **The system prompt is a module constant**, so it is byte-identical on
+//     every revision and rides the cache breakpoint `buildMessagesRequest`
+//     already puts on the static system block (src/lib/ai/model-client.ts).
+//     Building it per call from the recipe would have made it uncacheable.
+//   - **The recipe goes up once, as words.** No macros, no snapshots, no
+//     micros, no ids: the model is rewriting a document, and the numbers are
+//     the pricing passes' job, which already ran.
+//   - **The reply is raw lines and steps**, not a per-line object carrying
+//     qty/unit/name. `parseIngredientLine` derives that overlay deterministically
+//     and for free — asking the model for it would cost output tokens on every
+//     line to get a worse answer.
+//
+// ## It is a PROPOSAL
+//
+// Nothing here writes. `reviseRecipe` returns a draft, the screen shows it
+// against what the recipe says now ({@link diffRecipeLines}), and
+// `applyRecipeRevision` runs only if the user accepts — which matters more here
+// than for a new recipe, because this REPLACES a document that already exists
+// and may already have hand-resolved lines in it.
+
+/** Thrown when no model key is configured (the UI points the user at Settings). */
+export class RecipeRevisionUnavailableError extends Error {
+  constructor() {
+    super('Editing a recipe in words needs a model key — set one in Settings › Coach.');
+    this.name = 'RecipeRevisionUnavailableError';
+  }
+}
+
+/** Whether the revision path can run — the same key the Coach uses. */
+export function isRecipeRevisionAvailable(): boolean {
+  return apiKeyStore.has();
+}
+
+/** The recipe as it stands, the way the model is shown it. */
+export type RecipeRevisionSubject = {
+  title: string;
+  servings: number;
+  /** Raw ingredient lines, in order — the source of truth, never the overlay. */
+  ingredients: string[];
+  steps: string[];
+};
+
+/** The revised recipe as the model proposes it. Nothing is written until the
+ *  user accepts it. */
+export type RecipeRevision = {
+  title: string;
+  servings: number;
+  ingredients: string[];
+  steps: string[];
+  /** The model's own one-or-two-sentence account of what it changed and why.
+   *  Shown on the review; never written to `recipes.notes`, which is the
+   *  user's own column. */
+  notes: string | null;
+};
+
+/**
+ * The revision system prompt.
+ *
+ * Its job is restraint plus one licence. The restraint is the same one
+ * `MEAL_REVISION_SYSTEM_PROMPT` needs — a model asked about the milk will
+ * happily rewrite the whole recipe — so "leave everything else byte-identical"
+ * is stated first and is the reason the reply is a FULL list rather than a
+ * patch: a full list that must round-trip unchanged is checkable on screen
+ * next to the original, and a patch is not.
+ *
+ * The licence is the second example's whole point. "Make it higher protein and
+ * lower calorie" names no line, so the model must choose; being told to choose
+ * the SMALLEST set of changes that achieves the goal, and to say what it chose
+ * and why, is what keeps that from becoming a rewrite wearing the same title.
+ */
+export const RECIPE_REVISION_SYSTEM_PROMPT = [
+  'You revise a saved recipe for a longevity-focused cook, following one plain-English',
+  'instruction from the user. Be precise and conservative.',
+  '',
+  'Rules:',
+  '- Return the COMPLETE revised recipe, not a patch.',
+  '- Change ONLY what the instruction implies. Every ingredient line and step it does not',
+  '  touch must come back with exactly the same wording it went in with — do not tidy,',
+  '  reword, reorder or re-unit anything you were not asked about.',
+  '- A substitution often needs a compensating change the user did not name (swapping',
+  '  sweetened milk for an unsweetened one loses sweetness). Make it, keep it minimal, and',
+  '  say so in "notes".',
+  '- An instruction can be a GOAL rather than an edit ("higher protein, lower calorie"). Then',
+  '  you choose what to change: make the SMALLEST set of changes that genuinely achieves it,',
+  '  and say in "notes" what you changed and why.',
+  '- Every ingredient line keeps the "quantity unit name" shape it had ("200 g chicken',
+  '  thighs"). Give an amount for anything you add; never leave a new line amountless.',
+  '- Update any step that names an ingredient you changed. Leave the others alone.',
+  '- Keep "servings" as it was unless the instruction is about yield.',
+  '- Never invent nutrition numbers — you are rewriting the recipe, not pricing it.',
+  '',
+  'Respond with ONLY a JSON object, no prose, matching:',
+  '{"title": string, "servings": number, "ingredients": [string], "steps": [string],',
+  ' "notes": string|null}',
+].join('\n');
+
+/** Build the revision request: the recipe as it stands, then the instruction. */
+export function buildRecipeRevisionRequest(
+  recipe: RecipeRevisionSubject,
+  instruction: string
+): { system: string; messages: { role: 'user'; content: string }[] } {
+  const body = [
+    `Recipe: ${recipe.title}`,
+    `Servings: ${recipe.servings}`,
+    'Ingredients:',
+    ...recipe.ingredients.map((line) => `- ${line}`),
+    ...(recipe.steps.length > 0
+      ? ['Steps:', ...recipe.steps.map((step, i) => `${i + 1}. ${step}`)]
+      : ['Steps: none recorded.']),
+    '',
+    `Instruction from the user: ${instruction}`,
+  ].join('\n');
+  return {
+    system: RECIPE_REVISION_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: body }],
+  };
+}
+
+/** Non-empty trimmed strings out of an unknown array — the model's shape is
+ *  never trusted, and a blank line is not an ingredient. */
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (trimmed !== '') out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Parse and validate the model's reply. Defensive throughout: a reply with no
+ * usable ingredient lines throws, because a recipe with no ingredients is not
+ * a revision of anything — better to say the pass failed than to offer the user
+ * an empty document to accept.
+ *
+ * **Two fields fall back to what the recipe already says rather than to a
+ * default, and both for the same reason: a field the model omitted is an
+ * omission, not an instruction to delete something.**
+ *
+ * - `servings` → the current yield, never a made-up 1. A silent reset to one
+ *   serving would rescale every future log of the recipe.
+ * - `steps` → the current method whenever the reply carries none. The prompt
+ *   asks for the COMPLETE recipe, so a missing `steps` key is a model that
+ *   dropped a field; writing `'[]'` over it would erase the method as a side
+ *   effect of "swap the milk". Deleting the steps deliberately is not a thing
+ *   anyone asks a rewriter for, and the manual editor does it in two taps.
+ */
+export function parseRecipeRevision(
+  replyText: string,
+  current: { servings: number; steps: string[] }
+): RecipeRevision {
+  const start = replyText.indexOf('{');
+  const end = replyText.lastIndexOf('}');
+  if (start === -1 || end <= start) {
+    throw new Error('Revision reply contained no JSON object.');
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(replyText.slice(start, end + 1));
+  } catch {
+    throw new Error('Revision reply was not valid JSON.');
+  }
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('Revision reply was not a JSON object.');
+  }
+  const obj = raw as Record<string, unknown>;
+  const ingredients = stringList(obj.ingredients);
+  if (ingredients.length === 0) {
+    throw new Error('Revision reply had no usable ingredient lines.');
+  }
+  const servings =
+    typeof obj.servings === 'number' && Number.isFinite(obj.servings) && obj.servings > 0
+      ? obj.servings
+      : current.servings;
+  const steps = stringList(obj.steps);
+  return {
+    title: typeof obj.title === 'string' && obj.title.trim() !== '' ? obj.title.trim() : '',
+    servings,
+    ingredients,
+    steps: steps.length === 0 ? current.steps : steps,
+    notes: typeof obj.notes === 'string' && obj.notes.trim() !== '' ? obj.notes.trim() : null,
+  };
+}
+
+/**
+ * Apply a plain-English instruction to a recipe — one turn through the Coach's
+ * model client, no tools. Throws {@link RecipeRevisionUnavailableError} when no
+ * key is set or the streaming fetch is absent.
+ *
+ * The result is NOT written: the caller shows it as a proposal and only
+ * `applyRecipeRevision` (src/lib/db/repositories/recipes.ts) lands it.
+ */
+export async function reviseRecipe(
+  recipe: RecipeRevisionSubject,
+  instruction: string,
+  signal?: AbortSignal
+): Promise<RecipeRevision> {
+  const apiKey = apiKeyStore.get();
+  const fetchImpl = loadStreamingFetch();
+  if (!apiKey || !fetchImpl) throw new RecipeRevisionUnavailableError();
+
+  const req = buildRecipeRevisionRequest(recipe, instruction);
+  let text = '';
+  const result = await runCoachTurn(
+    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
+    { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
+    {
+      onToken: (chunk) => {
+        text += chunk;
+      },
+      signal,
+      executeTool: async () => ({ content: '' }),
+    }
+  );
+  if (result.stopReason === 'refusal') {
+    throw new Error('The model declined to revise this recipe.');
+  }
+  return parseRecipeRevision(text.length > 0 ? text : result.text, {
+    servings: recipe.servings,
+    steps: recipe.steps,
+  });
+}
+
+/** One row of the review: a line of the revised recipe, or one the revision
+ *  dropped, with what happened to it. */
+export type RevisionDiffRow = {
+  text: string;
+  /** `same` survived verbatim (and so keeps its price and provenance),
+   *  `added` is new or reworded, `removed` is gone. */
+  state: 'same' | 'added' | 'removed';
+};
+
+/**
+ * **The one matching rule**, and the reason there is only one.
+ *
+ * A line SURVIVES a revision iff the other list still contains its exact
+ * wording, matched first-come so two identical lines pair off one for one
+ * rather than collapsing. `applyRecipeRevision` decides what to keep by this
+ * rule, {@link diffRecipeLines} marks the review by it, and
+ * {@link droppedRecipeLines} tells the screen which priced rows are about to
+ * go. If those three ever disagreed the review would be describing a different
+ * write than the one that lands, so they read one function.
+ *
+ * Returns a flag per entry of `list`, positionally.
+ */
+function survivorFlags(list: string[], other: string[]): boolean[] {
+  // Compared TRIMMED, which is the same key `applyRecipeRevision` matches on.
+  // The stored line goes up to the model untrimmed and every line comes back
+  // trimmed, so an untrimmed comparison would mark a line nobody touched as
+  // dropped-and-re-added — and the write would then really destroy its price
+  // and its provenance, for a leading space.
+  const pool = new Map<string, number>();
+  for (const line of other) {
+    const key = line.trim();
+    pool.set(key, (pool.get(key) ?? 0) + 1);
+  }
+  return list.map((text) => {
+    const key = text.trim();
+    const left = pool.get(key) ?? 0;
+    if (left === 0) return false;
+    pool.set(key, left - 1);
+    return true;
+  });
+}
+
+/**
+ * What changed, as rows the review can draw — the thing that turns a rewritten
+ * recipe into a decision the user can actually make.
+ *
+ * The revised list comes back in order, each row marked `same` or `added`, and
+ * the dropped lines follow as `removed` in their original order. That ordering
+ * is the point: the user reads the recipe they would END UP WITH, top to
+ * bottom, with the new words marked in place, and then sees what left. A
+ * two-column before/after would hand them the alignment work.
+ */
+export function diffRecipeLines(before: string[], after: string[]): RevisionDiffRow[] {
+  const keptAfter = survivorFlags(after, before);
+  const rows: RevisionDiffRow[] = after.map((text, i) => ({
+    text,
+    state: keptAfter[i] ? ('same' as const) : ('added' as const),
+  }));
+  const keptBefore = survivorFlags(before, after);
+  before.forEach((text, i) => {
+    if (!keptBefore[i]) rows.push({ text, state: 'removed' });
+  });
+  return rows;
+}
+
+/**
+ * The CURRENT rows a revision would not keep — precisely the rows
+ * `applyRecipeRevision` deletes, by the same rule.
+ *
+ * The screen needs these as rows and not as strings because the honest
+ * disclosure is about what they CARRY: a line the user priced by hand is the
+ * strongest provenance in the book, and rewording it hands it back to the
+ * automatic passes. Saying so before the user accepts is the difference
+ * between a proposal and a surprise.
+ */
+export function droppedRecipeLines<T extends { raw_text: string }>(
+  before: T[],
+  after: string[]
+): T[] {
+  const kept = survivorFlags(
+    before.map((row) => row.raw_text),
+    after
+  );
+  return before.filter((_, i) => !kept[i]);
 }
 
 /**
