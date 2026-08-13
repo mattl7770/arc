@@ -19,6 +19,7 @@ import {
   volumeStatus,
 } from '../src/lib/exercise/volume.ts';
 import { VOLUME_LANDMARKS } from '../src/lib/exercise/constants.ts';
+import { muscleFreshness } from '../src/lib/exercise/freshness.ts';
 import { buildRestAlert } from '../src/lib/notifications/rest-timer.ts';
 
 let pass = 0;
@@ -175,6 +176,51 @@ console.log('6. buildRestAlert (pure) clamps + shapes the request');
   a.content.title === 'Rest complete' && a.content.data.kind === 'rest-timer'
     ? ok('content carries a title + a rest-timer data tag')
     : bad('content', JSON.stringify(a.content));
+}
+
+// ============================================================================
+// muscleFreshness and the clock — the guard that discards a "future" set has to
+// tell a PLAN apart from ordinary sub-millisecond skew. Found 2026-08-12 by a
+// flaky render test that reported "16 of 16 fresh" right after a session.
+// ============================================================================
+
+console.log('\nX. muscleFreshness: skew is clamped, a real future set is still ignored');
+{
+  const now = new Date('2026-08-12T18:00:00.000Z');
+  const load = (whenIso) => ({
+    muscle: 'chest',
+    whenIso,
+    roleWeight: 1,
+    rpe: 9,
+    setType: 'working',
+  });
+  const chest = (loads) => muscleFreshness(loads, now).find((m) => m.muscle === 'chest');
+
+  // The bug: `created_at` is stamped by SQLite's own clock, which on Windows
+  // reads finer than Date.now(), so a set written microseconds ago can parse a
+  // few MILLISECONDS ahead. The old `dh < 0` guard threw it away.
+  const skewed = chest([load('2026-08-12T18:00:00.003Z')]);
+  const exact = chest([load('2026-08-12T18:00:00.000Z')]);
+  // Counted AT ALL is the assertion — the old guard dropped it, which read as
+  // a perfectly fresh muscle. That it lands identically to the same set
+  // stamped on the dot is what makes 3 ms of skew a non-event.
+  skewed.freshness === exact.freshness && skewed.freshness < 100
+    ? ok('a set 3 ms "ahead" of now counts as just-now, not as the future')
+    : bad('skew discarded', JSON.stringify(skewed));
+  skewed.hoursSinceLast === 0
+    ? ok('and it reports zero hours since, never a negative one')
+    : bad('hoursSinceLast', String(skewed.hoursSinceLast));
+
+  // The guard is still doing its job: tomorrow's planned session is a plan, and
+  // must not deplete anything today.
+  const planned = chest([load('2026-08-13T18:00:00.000Z')]);
+  planned.freshness === 100 && planned.state === 'fresh' && planned.hoursSinceLast === null
+    ? ok('a set dated tomorrow is still ignored entirely')
+    : bad('future set counted', JSON.stringify(planned));
+  // Five minutes ahead is past the tolerance — beyond any skew, so it is a plan.
+  chest([load('2026-08-12T18:05:00.000Z')]).freshness === 100
+    ? ok('five minutes ahead is a plan, not skew')
+    : bad('tolerance too wide');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

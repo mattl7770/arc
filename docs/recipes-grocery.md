@@ -5,7 +5,7 @@
 
 > ### Owner requests off the device, 2026-08-12 — migration **0034**, and **LINKING IS GONE**
 >
-> All of it came out of one screen (a Coach-written stir-fry showing five "Not counted yet" rows and five LINK buttons) and one shopping trip. Built and headless-verified — **recipes 131 · grocery 65 · nutrition-v2 98 · screens-render 109**, `db:test` 46 suites / **2,197** assertions / 0 failures, `db:validate` 20/20, `tsc` 0, `eslint` 0 errors — and **none of it has been seen on a device.**
+> All of it came out of one screen (a Coach-written stir-fry showing five "Not counted yet" rows and five LINK buttons) and one shopping trip. Built and headless-verified — **recipes 131 · grocery 65 · nutrition-v2 98 · screens-render 109**, `db:test` 46 suites / **2,247** assertions / 0 failures, `db:validate` 20/20, `tsc` 0, `eslint` 0 errors — and **none of it has been seen on a device.**
 >
 > **1. §2a's explicit-resolution rule is REPEALED, and this supersedes it.** Owner: *"What is the link functionality there?"*, then *"…removing this whole 'linking' behavior in exchange for it being done automatically behind the scenes."*
 >   - **What the old rule was actually protecting was PROVENANCE, not the tapping.** The danger it guarded was a number of unknown origin entering the rollup, the logged meal and the day's totals wearing the same face as one the user asserted. So the tapping goes and the provenance stays, as `recipe_ingredients.resolved_by` — `user` · `catalog` · `ai`, NULL ⇔ unresolved, backfilled to `user` for every pre-0034 line because that is literally what happened to them.
