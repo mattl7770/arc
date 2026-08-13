@@ -9,6 +9,7 @@
  * reads both back out.
  */
 import type { Database } from '../database';
+import { localDaysList, todayISODate } from '../date';
 import { newId } from '../id';
 import type { DailyLogRow, LogEntryRow, LogEntryStatus, LogEntryType } from '../types';
 import type { MissionItem, MissionStatus } from '@/types/home';
@@ -262,4 +263,91 @@ export function countMissionEntries(db: Database, dailyLogId: string): number {
     [dailyLogId]
   );
   return row?.c ?? 0;
+}
+
+/** One day of mission history — what was planned, and what was actually done. */
+export interface MissionDayPoint {
+  date: string;
+  /** Planned items that stood on the day (tombstoned removals excluded). */
+  planned: number;
+  /** Of those, the ones marked completed. */
+  completed: number;
+  /** Marked skipped by hand. `planned - completed - skipped` is what was left
+   *  pending or partial — stated as three numbers rather than one score. */
+  skipped: number;
+}
+
+/**
+ * Mission completion history: the last `days` calendar days, oldest → `today`
+ * inclusive, zero-filled for days with no plan at all. The Data tab's Mission
+ * trend, and the only place the app looks back at adherence across days.
+ *
+ * **It counts exactly the rows Home draws** — `PLANNED_ROW_SQL` keeps ad-hoc
+ * Log-tab captures out (a note is not a plan item, and counting it would make
+ * every day the user typed into look less adherent), and `NOT_REMOVED_SQL`
+ * keeps tombstones out (a row the user removed from the day was never owed, so
+ * it is neither a completion nor a miss). Both predicates are the shared
+ * constants above, so this can never drift from {@link listMission}.
+ *
+ * **A day with no plan is planned: 0, not adherence: 0.** The distinction is
+ * the whole reason this returns three counts instead of a percentage: a rate
+ * over a day that asked nothing of you is undefined, and zero-filling it would
+ * drag every average down for days the user was owed nothing. Callers that want
+ * a rate compute it over days where `planned > 0` — see
+ * {@link missionAdherence}.
+ *
+ * `today` is injectable so the headless tests are deterministic.
+ */
+export function missionDailySeries(
+  db: Database,
+  days: number = 14,
+  today: string = todayISODate()
+): MissionDayPoint[] {
+  const dates = localDaysList(today, days);
+  const rows = db.all<{ date: string; planned: number; completed: number; skipped: number }>(
+    `SELECT d.date AS date,
+       count(*) AS planned,
+       sum(CASE WHEN e.status = 'completed' THEN 1 ELSE 0 END) AS completed,
+       sum(CASE WHEN e.status = 'skipped' THEN 1 ELSE 0 END) AS skipped
+     FROM log_entries e
+     JOIN daily_logs d ON d.id = e.daily_log_id
+     WHERE d.date >= ? AND d.date <= ?
+       -- The two shared predicates go in VERBATIM, unqualified "value" and all.
+       -- That is safe here and only here because daily_logs has no "value"
+       -- column, so the name resolves unambiguously to log_entries.value --
+       -- and interpolating them verbatim is the point: a rewritten copy would
+       -- be a fourth definition of "is this a mission row", which is exactly
+       -- what the constants exist to prevent.
+       AND ${PLANNED_ROW_SQL}
+       AND ${NOT_REMOVED_SQL}
+     GROUP BY d.date`,
+    [dates[0] ?? today, today]
+  );
+  const byDate = new Map(rows.map((r) => [r.date, r]));
+  return dates.map((date) => {
+    const row = byDate.get(date);
+    return {
+      date,
+      planned: row?.planned ?? 0,
+      completed: row?.completed ?? 0,
+      skipped: row?.skipped ?? 0,
+    };
+  });
+}
+
+/**
+ * Completed ÷ planned across a series, counting **only days that had a plan**.
+ * Returns null when no day in the window planned anything — there is no rate to
+ * state, and "0%" for a fortnight nobody was asked to do anything is a lie the
+ * §5 honesty rules exist to prevent.
+ */
+export function missionAdherence(points: MissionDayPoint[]): number | null {
+  let planned = 0;
+  let completed = 0;
+  for (const point of points) {
+    if (point.planned === 0) continue;
+    planned += point.planned;
+    completed += point.completed;
+  }
+  return planned === 0 ? null : completed / planned;
 }

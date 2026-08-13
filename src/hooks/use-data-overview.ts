@@ -5,6 +5,7 @@ import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { bodySeries, latestBody } from '@/lib/db/repositories/body';
 import { weeklyTrainingSeries, weekSummary } from '@/lib/db/repositories/exercise';
+import { missionAdherence, missionDailySeries } from '@/lib/db/repositories/mission';
 import { dailyIntakeSeries, todayTotals } from '@/lib/db/repositories/nutrition';
 import { listTodaySymptoms, symptomDailySeries } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
@@ -27,7 +28,7 @@ import { metricByBodyColumn, resolveDisplay, roundToSpec } from '@/lib/log/metri
  */
 
 /** Which sub-app a trend row drills into — the screen maps this to a route. */
-export type TrendKey = 'weight' | 'nutrition' | 'training' | 'symptoms';
+export type TrendKey = 'mission' | 'weight' | 'nutrition' | 'training' | 'symptoms';
 
 export interface DataTrend {
   key: TrendKey;
@@ -102,6 +103,45 @@ function read(): DataOverviewState {
   // Display-only unit preference (storage stays canonical kg); the weight
   // headline renders in the user's chosen unit via the resolved DisplaySpec.
   const units = getPreferences(db).units;
+
+  // Mission — how much of each day's plan actually got done. First row on the
+  // tab because it is the only trend measuring the app's own daily loop: every
+  // other row measures the body, this one measures the execution.
+  //
+  // **The sparkline is a COUNT, not a rate.** A rate needs a denominator, and a
+  // day that planned nothing has none — zero-filling it would draw a fortnight
+  // of 0% for someone who was never asked to do anything. Completed-per-day is
+  // honestly zero on such a day, so the bars stay truthful and zero-anchored
+  // like every other count series here.
+  //
+  // The headline is today's `done of planned`, and the qualifier carries the
+  // window's adherence — computed over days that HAD a plan (missionAdherence),
+  // so it is the same refusal one level up.
+  const missionPoints = missionDailySeries(db, 14, today);
+  const missionToday = missionPoints[missionPoints.length - 1] ?? {
+    date: today,
+    planned: 0,
+    completed: 0,
+    skipped: 0,
+  };
+  const adherence = missionAdherence(missionPoints);
+  const mission: DataTrend = {
+    key: 'mission',
+    name: 'Mission',
+    sub: 'Completed · last 14 days',
+    spark: missionPoints.map((p) => p.completed),
+    sparkBaseline: 'zero',
+    // No denominator, no fraction: on a day with no plan the headline is the
+    // bare count of what was done, never "0 of 0".
+    value: String(missionToday.completed),
+    unit: missionToday.planned > 0 ? `of ${missionToday.planned}` : '',
+    qualifier: adherence !== null ? `${Math.round(adherence * 100)}% · 14 d` : null,
+    // Keyed on whether ANY day in the window carried a plan — a fortnight with
+    // no protocols has no completion history to draw, and a flat row of zero
+    // bars would read as fourteen days of failure.
+    empty: missionPoints.every((p) => p.planned === 0),
+    emptyLabel: 'No plan yet — build a protocol',
+  };
 
   // Weight — latest reading is the headline; the 30-day series is the trend.
   const weightLatest = latestBody(db, 'weight_kg');
@@ -186,7 +226,7 @@ function read(): DataOverviewState {
   };
 
   return {
-    trends: [weight, nutrition, training, symptoms],
+    trends: [mission, weight, nutrition, training, symptoms],
   };
 }
 

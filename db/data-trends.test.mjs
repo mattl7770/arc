@@ -11,6 +11,13 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { dailyIntakeSeries, logMeal } from '../src/lib/db/repositories/nutrition.ts';
 import { logWorkout, weeklyTrainingSeries } from '../src/lib/db/repositories/exercise.ts';
+import {
+  getOrCreateDailyLog,
+  insertMissionItem,
+  missionAdherence,
+  missionDailySeries,
+  removeMissionItem,
+} from '../src/lib/db/repositories/mission.ts';
 import { logSymptom, symptomDailySeries } from '../src/lib/db/repositories/symptoms.ts';
 
 let pass = 0;
@@ -321,6 +328,105 @@ console.log('12b. symptomDailySeries: oldest-day inclusivity + all-NULL-severity
   day13 && day13.count === 2 && day13.maxSeverity === null
     ? ok('oldest day included; count=2 with all-NULL severity yields maxSeverity=null')
     : bad('lower bound / null-severity', JSON.stringify(day13));
+}
+
+// ============================================================================
+// missionDailySeries / missionAdherence (mission.ts) — the Data tab's Mission
+// trend. The two things that can go wrong here are both about WHAT COUNTS:
+// an ad-hoc Log-tab capture is not a plan item, and a removed item was never
+// owed. Both are excluded by the same shared predicates listMission uses.
+// ============================================================================
+
+console.log('\n13. missionDailySeries: counts exactly the rows Home draws');
+{
+  const { db } = freshDb();
+
+  // A day with a plan: 3 planned, 1 completed, 1 skipped, 1 pending.
+  const dayA = getOrCreateDailyLog(db, '2026-07-24');
+  for (const [title, status] of [
+    ['Creatine', 'completed'],
+    ['Zone 2', 'skipped'],
+    ['Magnesium', 'pending'],
+  ]) {
+    insertMissionItem(db, dayA.id, 'habit', { id: '', title, status, category: 'Routine' });
+  }
+
+  // Today: 2 planned, both completed.
+  const dayB = getOrCreateDailyLog(db, TODAY);
+  for (const title of ['Creatine', 'Walk']) {
+    insertMissionItem(db, dayB.id, 'habit', { id: '', title, status: 'completed' });
+  }
+
+  const series = missionDailySeries(db, 14, TODAY);
+  const a = series.find((p) => p.date === '2026-07-24');
+  const b = series.find((p) => p.date === TODAY);
+  series.length === 14 && series[13].date === TODAY
+    ? ok('14 points, ending today')
+    : bad('window', JSON.stringify(series.map((p) => p.date)));
+  a && a.planned === 3 && a.completed === 1 && a.skipped === 1
+    ? ok('a mixed day counts planned/completed/skipped separately')
+    : bad('mixed day', JSON.stringify(a));
+  b && b.planned === 2 && b.completed === 2
+    ? ok('today counts 2 of 2')
+    : bad('today', JSON.stringify(b));
+  const quiet = series.find((p) => p.date === '2026-07-25');
+  quiet && quiet.planned === 0 && quiet.completed === 0
+    ? ok('a day with no daily_log zero-fills as planned:0, not as a gap')
+    : bad('zero-fill', JSON.stringify(quiet));
+}
+
+console.log('\n13b. missionDailySeries: ad-hoc captures and removed items are NOT plan');
+{
+  const { db } = freshDb();
+  const day = getOrCreateDailyLog(db, TODAY);
+  insertMissionItem(db, day.id, 'habit', { id: '', title: 'Creatine', status: 'completed' });
+  const doomed = insertMissionItem(db, day.id, 'habit', {
+    id: '',
+    title: 'Sauna',
+    status: 'pending',
+  });
+
+  // An ad-hoc Log-tab capture — value.adhoc, written here as raw SQL so the
+  // test asserts against the SHAPE the log repository writes, not against a
+  // helper that could drift with it.
+  db.run(
+    `INSERT INTO log_entries (id, daily_log_id, type, title, status, value, source)
+     VALUES ('adhoc-1', ?, 'note', 'Slept badly', 'completed', '{"adhoc":true}', 'manual')`,
+    [day.id]
+  );
+  // A row the user removed from the day: tombstoned, settled as skipped.
+  const removedId = db.get(
+    `SELECT id FROM log_entries WHERE daily_log_id = ? AND title = 'Sauna'`,
+    [day.id]
+  ).id;
+  removeMissionItem(db, day.id, removedId);
+
+  const today = missionDailySeries(db, 7, TODAY).find((p) => p.date === TODAY);
+  today && today.planned === 1 && today.completed === 1 && today.skipped === 0
+    ? ok('the ad-hoc note and the tombstone are both excluded')
+    : bad('exclusions', JSON.stringify(today));
+  void doomed;
+}
+
+console.log('\n13c. missionAdherence: rate over PLANNED days only, null when none');
+{
+  const empty = missionAdherence([
+    { date: 'd1', planned: 0, completed: 0, skipped: 0 },
+    { date: 'd2', planned: 0, completed: 0, skipped: 0 },
+  ]);
+  empty === null
+    ? ok('a window that planned nothing has no rate (null, never 0%)')
+    : bad('empty window', String(empty));
+
+  const rate = missionAdherence([
+    { date: 'd1', planned: 4, completed: 3, skipped: 1 },
+    // A no-plan day must not drag the average down.
+    { date: 'd2', planned: 0, completed: 0, skipped: 0 },
+    { date: 'd3', planned: 6, completed: 3, skipped: 0 },
+  ]);
+  near(rate, 6 / 10)
+    ? ok('6 of 10 planned = 60%, the empty day ignored')
+    : bad('rate', String(rate));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

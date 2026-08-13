@@ -28,6 +28,7 @@ import {
   logRecipe,
   parseSteps,
   portionFactor,
+  portionFactorOrNull,
   recipeCookStats,
   recipeCount,
   recipeNutrition,
@@ -35,13 +36,23 @@ import {
   removeIngredient,
   reorderIngredients,
   resolveIngredient,
+  resolveIngredientByModel,
   saveMealAsRecipe,
+  scaledTotals,
+  scaleRecipeLines,
   setIngredientNegligible,
   setRecipeFavorite,
   unresolveIngredient,
   updateIngredientLine,
   updateRecipe,
 } from '../src/lib/db/repositories/recipes.ts';
+import {
+  buildRecipePricingRequest,
+  catalogResolveRecipe,
+  isConfidentFoodMatch,
+  lineGrams,
+  parseRecipePricing,
+} from '../src/lib/recipes/estimate.ts';
 import {
   formatQty,
   normalizeUnit,
@@ -617,6 +628,316 @@ console.log("20. the Eat tab's Kitchen counts");
   db.get('SELECT count(*) AS n FROM meals').n === 1
     ? ok('and the meal itself is still on the record')
     : bad('meal destroyed by recipe delete');
+}
+
+// ============================================================================
+// scaleRecipeLines / scaledTotals — the Log sheet's live preview, which is the
+// SAME derivation logRecipe writes through. The property that matters is that
+// they cannot disagree, so the tests drive both against one recipe.
+// ============================================================================
+
+console.log('\n15. scaleRecipeLines: three states, and the preview IS the write');
+{
+  const { db } = freshDb();
+  const chicken = fixtureFood(db);
+  const id = createRecipe(db, {
+    title: 'Preview test',
+    servings: 2,
+    ingredients: [
+      { raw_text: '200 g chicken' },
+      { raw_text: 'a splash of soy sauce' },
+      { raw_text: 'salt to taste' },
+    ],
+  });
+  const [meat, soy, salt] = listIngredients(db, id);
+  resolveIngredient(db, meat.id, chicken, 200);
+  setIngredientNegligible(db, salt.id, true);
+
+  // One serving of a two-serving batch = half of everything.
+  const scaled = scaleRecipeLines(listIngredients(db, id), 0.5);
+  scaled.map((l) => l.state).join(',') === 'counted,uncounted,negligible'
+    ? ok('each line reports which of the three things it is')
+    : bad('states', scaled.map((l) => l.state).join(','));
+  near(scaled[0].grams, 100) && near(scaled[0].kcal, 165)
+    ? ok('a counted line is scaled by pure multiplication (100 g, 165 kcal)')
+    : bad('counted scale', JSON.stringify(scaled[0]));
+  scaled[1].kcal === null && scaled[2].kcal === null
+    ? ok('uncounted and negligible lines carry no numbers at all')
+    : bad('non-counted carry numbers');
+  scaled[0].micros !== null && scaled[1].micros === null
+    ? ok('micros ride the counted line only')
+    : bad('micros');
+
+  const totals = scaledTotals(scaled);
+  near(totals.kcal, 165) && near(totals.protein_g, 31)
+    ? ok('totals sum the counted lines only — the uncounted one is NOT in them')
+    : bad('totals', JSON.stringify(totals));
+
+  // The reconciliation that matters: what the sheet shows is what gets written.
+  const logged = logRecipe(db, id, { servings: 1 }, { date: '2026-08-12', time: '19:00' });
+  const items = listMealItems(db, logged.mealId);
+  logged.uncountedCount === 1
+    ? ok('logRecipe reports the same one uncounted line the preview showed')
+    : bad('uncounted count', String(logged.uncountedCount));
+  items.length === 2
+    ? ok('the negligible line is skipped by the write, as the preview implies')
+    : bad('item count', String(items.length));
+  near(items.find((i) => i.kcal !== null).kcal, totals.kcal)
+    ? ok('and the written kcal is exactly the previewed total')
+    : bad('preview vs write', JSON.stringify(items.map((i) => i.kcal)));
+}
+
+console.log('\n15b. scaledTotals: per-macro honesty, and no vacuous total');
+{
+  const line = (over) => ({
+    id: 'x',
+    raw_text: 'x',
+    name: 'x',
+    food_id: null,
+    state: 'counted',
+    grams: 100,
+    kcal: 100,
+    protein_g: 10,
+    carbs_g: 5,
+    fat_g: 2,
+    fiber_g: 1,
+    micros: null,
+    ...over,
+  });
+  const mixed = scaledTotals([line({}), line({ fiber_g: null })]);
+  near(mixed.kcal, 200) && mixed.fiber_g === null
+    ? ok('one line missing fiber makes the FIBER total null, not a partial sum')
+    : bad('per-macro honesty', JSON.stringify(mixed));
+
+  const none = scaledTotals([line({ state: 'uncounted' }), line({ state: 'negligible' })]);
+  none.kcal === null
+    ? ok('with nothing counted every total is null, never a confident 0')
+    : bad('vacuous total', JSON.stringify(none));
+}
+
+console.log('\n15c. portionFactorOrNull: a half-typed number is null, not a throw');
+{
+  const { db } = freshDb();
+  const id = createRecipe(db, {
+    title: 'Factor',
+    servings: 4,
+    total_weight_g: 800,
+    ingredients: [{ raw_text: '1 thing' }],
+  });
+  const recipe = getRecipe(db, id);
+  near(portionFactorOrNull(recipe, { servings: 2 }), 0.5)
+    ? ok('2 of 4 servings = 0.5')
+    : bad('servings factor');
+  near(portionFactorOrNull(recipe, { grams: 200 }), 0.25)
+    ? ok('200 g of an 800 g batch = 0.25')
+    : bad('grams factor');
+  portionFactorOrNull(recipe, { grams: NaN }) === null &&
+  portionFactorOrNull(recipe, { servings: 0 }) === null
+    ? ok('NaN and zero are null rather than exceptions')
+    : bad('invalid portions');
+  const noWeight = getRecipe(
+    db,
+    createRecipe(db, { title: 'No weight', servings: 1, ingredients: [{ raw_text: 'x' }] })
+  );
+  portionFactorOrNull(noWeight, { grams: 100 }) === null
+    ? ok('grams on a recipe with no cooked weight is null (portionFactor still throws)')
+    : bad('grams without weight');
+  throws(() => portionFactor(noWeight, { grams: 100 }))
+    ? ok('and the write path keeps its corrective error')
+    : bad('portionFactor no longer throws');
+}
+
+// ============================================================================
+// 0034 — LINKING IS GONE. Lines are priced automatically, and the thing that
+// replaced the user's explicit act is a PROVENANCE column. Three properties
+// have to hold: the catalog pass never guesses, a hand pick is never
+// overwritten by it, and "complete" nutrition always states what it is made of.
+// ============================================================================
+
+console.log('\n16. lineGrams: mass converts, everything else is honestly null');
+{
+  const g = (qty, unit) => lineGrams({ qty, unit });
+  near(g(300, 'g'), 300) && near(g(1.5, 'kg'), 1500)
+    ? ok('g and kg')
+    : bad('metric mass', `${g(300, 'g')}/${g(1.5, 'kg')}`);
+  near(g(4, 'oz'), 113.398092) && near(g(1, 'lb'), 453.59237)
+    ? ok('oz and lb convert exactly, not to a rounded folk value')
+    : bad('imperial mass', `${g(4, 'oz')}/${g(1, 'lb')}`);
+  // The refusal that matters: a cup of flour and a cup of oil differ by
+  // density, and this module has no density data.
+  g(2, 'cup') === null && g(2, 'tbsp') === null && g(2, 'clove') === null
+    ? ok('volumetric and countable units yield NULL — no density is invented')
+    : bad('volume/count converted');
+  g(null, 'g') === null && g(300, null) === null && g(0, 'g') === null
+    ? ok('a missing qty, a missing unit and a zero all yield null')
+    : bad('degenerate inputs');
+}
+
+console.log('\n16b. isConfidentFoodMatch: exact or leading phrase, never a guess');
+{
+  isConfidentFoodMatch('chicken breast', 'chicken breast')
+    ? ok('an exact name matches')
+    : bad('exact');
+  isConfidentFoodMatch('chicken breast', 'chicken breast, cooked') &&
+  isConfidentFoodMatch('chicken breast', 'chicken breast fillet')
+    ? ok('a multi-token name that leads the food matches')
+    : bad('leading phrase');
+  // The whole reason this exists: the top substring hit for a generic single
+  // token is alphabetical noise, and pricing chicken as rice cakes silently
+  // would be worse than leaving the line to the model.
+  !isConfidentFoodMatch('rice', 'rice cakes') && !isConfidentFoodMatch('chicken', 'chicken stock')
+    ? ok('a GENERIC SINGLE TOKEN never matches, however close the hit looks')
+    : bad('single token matched');
+  !isConfidentFoodMatch('chicken breast', 'grilled chicken breast')
+    ? ok('and a name buried mid-string is not a leading phrase')
+    : bad('mid-string matched');
+}
+
+console.log('\n17. catalogResolveRecipe: prices what it can, provenance and all');
+{
+  const { db } = freshDb();
+  const chicken = fixtureFood(db, { name: 'Chicken breast' });
+  const id = createRecipe(db, {
+    title: 'Auto test',
+    servings: 2,
+    ingredients: [
+      // Mass + an exact catalog name: the catalog pass owns this one.
+      { raw_text: '200 g chicken breast' },
+      // A mass with no catalog food behind it — left for the model.
+      { raw_text: '150 g quinoa' },
+      // No mass at all — left for the model.
+      { raw_text: '2 tbsp butter' },
+      // Declared zero: never touched by any pass.
+      { raw_text: 'salt to taste' },
+    ],
+  });
+  const [, , , salt] = listIngredients(db, id);
+  setIngredientNegligible(db, salt.id, true);
+
+  const pass = catalogResolveRecipe(db, id);
+  const lines = listIngredients(db, id);
+  pass.resolved === 1 && pass.remaining === 2
+    ? ok('one line priced from the catalog, two left for the model')
+    : bad('pass counts', JSON.stringify(pass));
+  lines[0].resolved_by === 'catalog' &&
+  near(lines[0].grams, 200) &&
+  near(lines[0].kcal, 330) &&
+  lines[0].food_id === chicken
+    ? ok('the priced line carries the food, the grams, the macros AND its provenance')
+    : bad('catalog line', JSON.stringify(lines[0]));
+  lines[1].resolved_by === null && lines[2].resolved_by === null
+    ? ok('the two it could not reach are honestly untouched')
+    : bad('over-reach');
+  lines[3].resolved_by === null && lines[3].negligible === 1
+    ? ok('and the negligible line is left alone')
+    : bad('negligible touched');
+
+  // Idempotent: the whole reason it can run on every screen open.
+  catalogResolveRecipe(db, id).resolved === 0
+    ? ok('a second pass changes nothing')
+    : bad('not idempotent');
+
+  // And it NEVER overwrites a hand pick, which is what makes the correction
+  // path worth using.
+  const beans = fixtureFood(db, { name: 'Quinoa, cooked', kcal_100g: 120 });
+  resolveIngredient(db, lines[1].id, beans, 150, 'user');
+  catalogResolveRecipe(db, id);
+  listIngredients(db, id)[1].resolved_by === 'user'
+    ? ok('a user-resolved line survives every later automatic pass')
+    : bad('hand pick overwritten');
+}
+
+console.log('\n17b. resolveIngredientByModel + estimatedCount: the numbers say what they are');
+{
+  const { db } = freshDb();
+  const chicken = fixtureFood(db, { name: 'Chicken breast' });
+  const id = createRecipe(db, {
+    title: 'Provenance',
+    servings: 1,
+    ingredients: [{ raw_text: '200 g chicken breast' }, { raw_text: '2 tbsp butter' }],
+  });
+  catalogResolveRecipe(db, id);
+  const [, butter] = listIngredients(db, id);
+
+  recipeNutrition(db, id).complete === false
+    ? ok('the gate is still shut with one line unpriced')
+    : bad('gate open too early');
+
+  resolveIngredientByModel(db, butter.id, {
+    grams: 28,
+    kcal: 200,
+    protein_g: 0.2,
+    carbs_g: 0,
+    fat_g: 23,
+    fiber_g: null,
+  });
+  const line = listIngredients(db, id)[1];
+  line.resolved_by === 'ai' && line.food_id === null && line.micros === null
+    ? ok('a model-priced line points at NO catalog food and carries no micros')
+    : bad('model line', JSON.stringify(line));
+  line.fiber_g === null
+    ? ok('and a macro it could not reach stays null, never a confident zero')
+    : bad('fiber invented');
+
+  const nutrition = recipeNutrition(db, id);
+  nutrition.complete && nutrition.countedCount === 2 && nutrition.estimatedCount === 1
+    ? ok('the gate opens, and the rollup states that 1 of 2 lines is estimated')
+    : bad('nutrition', JSON.stringify(nutrition));
+  near(nutrition.perServing.kcal, 530)
+    ? ok('the figures are the sum of both, catalog and estimate alike')
+    : bad('per serving', String(nutrition.perServing.kcal));
+  void chicken;
+
+  // Un-pricing clears the provenance with the numbers — the pair the schema
+  // cannot enforce as a CHECK (0034 header) and this maintains.
+  unresolveIngredient(db, line.id);
+  const cleared = listIngredients(db, id)[1];
+  cleared.resolved_by === null && cleared.grams === null && cleared.kcal === null
+    ? ok('unresolving clears provenance and snapshots together')
+    : bad('partial unresolve', JSON.stringify(cleared));
+}
+
+console.log('\n17c. the pricing prompt and its parser');
+{
+  const req = buildRecipePricingRequest('Stir-fry', [
+    { index: 0, raw: '2 tbsp butter' },
+    { index: 1, raw: '2 cloves garlic' },
+  ]);
+  const body = req.messages[0].content;
+  body.includes('0. 2 tbsp butter') && body.includes('1. 2 cloves garlic')
+    ? ok('the lines go out NUMBERED — the index is the contract')
+    : bad('request body', body);
+  req.system.includes('WHOLE BATCH')
+    ? ok('and the prompt insists the quantities are per batch, not per serving')
+    : bad('system prompt');
+
+  const parsed = parseRecipePricing(
+    '```json\n{"lines":[{"index":0,"grams":28,"kcal":200,"protein_g":0.2,"carbs_g":0,' +
+      '"fat_g":23,"fiber_g":null,"note":" 2 tbsp assumed at 28 g "},' +
+      '{"index":1,"grams":null,"kcal":null,"note":null}]}\n```'
+  );
+  parsed.length === 2 && parsed[0].grams === 28 && parsed[0].fiber_g === null
+    ? ok('fenced JSON parses; a null macro stays null')
+    : bad('parse', JSON.stringify(parsed));
+  parsed[0].note === '2 tbsp assumed at 28 g'
+    ? ok('the assumption comes back trimmed, to be shown with the figures')
+    : bad('note', String(parsed[0].note));
+  parsed[1].grams === null
+    ? ok('a line the model declined to price returns null rather than a guess')
+    : bad('declined line', JSON.stringify(parsed[1]));
+
+  const junk = parseRecipePricing(
+    '{"lines":[{"index":"nope","grams":10,"kcal":10},{"index":0,"grams":-5,"kcal":10}]}'
+  );
+  junk.length === 1 && junk[0].grams === null
+    ? ok('a non-integer index is dropped and a negative gram is not coerced')
+    : bad('coercion', JSON.stringify(junk));
+  throws(() => parseRecipePricing('{"lines":[]}'))
+    ? ok('a reply with no usable line throws rather than reporting a silent success')
+    : bad('empty reply accepted');
+  throws(() => parseRecipePricing('sorry, I cannot help with that'))
+    ? ok('and prose with no JSON object throws')
+    : bad('prose accepted');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

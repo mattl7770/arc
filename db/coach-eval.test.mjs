@@ -413,6 +413,23 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // raise this a third time. The place to find that trim is the head of the
   // list above (get_metric_series ~600, get_today_snapshot ~476), whose
   // descriptions restate rails the system prompt already states.
+  //
+  // ⚠️ 2026-08-12 — THE RULE WAS FOLLOWED AND BOTH CEILINGS HELD, BUT THE
+  // HEADROOM IS NOW ~1 TOKEN ON THE PROMPT. Four owner-mandated behaviour
+  // fixes landed in the doctrine (a decline scopes to one write; pass grocery
+  // quantities; prefer add_recipe_to_grocery_list; catch a standing goal
+  // dropped in passing) and cost ~92 tok. Neither ceiling moved — the room
+  // came from deleting real duplication, which is exactly what this comment
+  // asks for, and it is worth recording WHERE so the next person does not go
+  // looking in the same places twice: the two state-block bullets said the
+  // same rule from both sides and are now one; the "cite the numbers" bullet
+  // restated the whole ABSENCE IS NOT ZERO bullet; the logging and
+  // past-event bullets were one topic split in two; the WEARABLES
+  // parenthetical glossed three snapshot fields the tool's own description
+  // already documents; and the pasted-URL bullet folded into Recipes.
+  // **There is nothing cheap left.** The next addition either finds a
+  // genuinely new duplication or trims the VOICE section, and both ceilings
+  // should be treated as full.
   allToolTokens < 9000
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

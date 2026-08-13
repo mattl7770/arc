@@ -19,7 +19,7 @@ import {
   setAppointmentStatus,
   updateAppointment,
 } from '@/lib/db/repositories/screenings';
-import { isValidDay } from '@/lib/screenings/format';
+import { dayTextLong, isValidDay } from '@/lib/screenings/format';
 import type { AppointmentInput } from '@/lib/screenings/types';
 
 /**
@@ -32,6 +32,25 @@ import type { AppointmentInput } from '@/lib/screenings/types';
  * Linking the appointment to a standing screening makes "Mark completed" stamp
  * that screening done and roll its cadence — attending the booked colonoscopy
  * IS completing the screening (completeAppointment, one transaction).
+ *
+ * ## Booking FOR a screening (owner, 2026-08-12)
+ *
+ * *"I can create 'dental check-up' for once a year, and then when I later make
+ * that appointment, I can put in the exact date."* The link existed; the path
+ * to it did not. Reaching this screen meant "Add appointment" at the foot of
+ * /screenings, typing the title again, then finding the right chip in a wall of
+ * every screening you own — so the cadence and the booking were two unrelated
+ * records that happened to share a word.
+ *
+ * A `screeningId` param now arrives from the screening's own form (its "Book an
+ * appointment" action). It **pre-selects the link and prefills the title with
+ * the screening's name**, so the only thing left to supply is the thing the
+ * owner named: the exact date. The chip stays live — a prefill is a default,
+ * not a lock, and unlinking is one tap.
+ *
+ * The param is only honoured when ADDING. On an edit, `initial.screening_id` is
+ * the truth and a stray param must never quietly re-point a saved booking at a
+ * different screening.
  *
  * Conformed Set treatment: every field is **recessed stock** (paper-dim on a
  * paper-deep edge, square); date and time are measured values and stay in mono;
@@ -49,22 +68,31 @@ const FIELD =
 
 export default function AppointmentFormScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id?: string }>();
+  const { id, screeningId: forScreening } = useLocalSearchParams<{
+    id?: string;
+    screeningId?: string;
+  }>();
   const editingId = typeof id === 'string' && id.length > 0 ? id : null;
+  // Only meaningful when adding — see the header note on why an edit ignores it.
+  const bookingFor =
+    !editingId && typeof forScreening === 'string' && forScreening.length > 0 ? forScreening : null;
 
   // Load once in the initializer (op-sqlite is synchronous) — the row can't
   // change underneath an open form in a single-user app.
   const [initial] = useState(() => (editingId ? getAppointment(getDb(), editingId) : undefined));
   const [screenings] = useState(() => listScreenings(getDb()));
+  const prefill = bookingFor ? screenings.find((s) => s.id === bookingFor) : undefined;
 
-  const [title, setTitle] = useState(initial?.title ?? '');
+  const [title, setTitle] = useState(initial?.title ?? prefill?.name ?? '');
   const [provider, setProvider] = useState(initial?.provider ?? '');
   const [location, setLocation] = useState(initial?.location ?? '');
   const [date, setDate] = useState(() =>
     initial ? todayISODate(new Date(initial.scheduled_at)) : ''
   );
   const [time, setTime] = useState(() => (initial ? clockFromISO(initial.scheduled_at) : ''));
-  const [screeningId, setScreeningId] = useState<string | null>(initial?.screening_id ?? null);
+  const [screeningId, setScreeningId] = useState<string | null>(
+    initial?.screening_id ?? prefill?.id ?? null
+  );
   const [notes, setNotes] = useState(initial?.notes ?? '');
 
   const dateOk = isValidDay(date.trim());
@@ -158,8 +186,38 @@ export default function AppointmentFormScreen() {
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets>
         <View className="pt-2">
-          <StackHeader title={editingId ? 'Edit Appointment' : 'Add Appointment'} />
+          {/* No `parent`: this screen is now pushed from TWO places — the
+              Calendar's own "Add appointment" and a screening's "Book an
+              appointment" — so naming one would put a confident lie on the back
+              control half the time (src/components/ui/stack-header.tsx). */}
+          <StackHeader
+            title={
+              editingId ? 'Edit Appointment' : prefill ? 'Book Appointment' : 'Add Appointment'
+            }
+          />
         </View>
+
+        {/* Booking for a standing screening: say so before the fields, and say
+            what it is due against. The margin is where an annotation goes. */}
+        {prefill ? (
+          <View className="mt-3">
+            <Block device="margin">
+              <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
+                Booking {prefill.name}
+                {prefill.next_due ? ' — ' : '.'}
+                {prefill.next_due ? (
+                  <Text className="font-mono text-[12px] text-ink-secondary">
+                    due {dayTextLong(prefill.next_due)}
+                  </Text>
+                ) : null}
+              </Text>
+              <Text className="mt-1 font-serif text-[11px] leading-4 text-ink-muted">
+                Put in the exact date below. Marking it completed afterwards stamps the screening
+                done and rolls its cadence.
+              </Text>
+            </Block>
+          </View>
+        ) : null}
 
         {/* Title */}
         <View className="mt-3">
@@ -292,7 +350,7 @@ export default function AppointmentFormScreen() {
             className={`font-label text-[15px] font-semibold ${
               canSave ? 'text-pine-on' : 'text-ink-muted'
             }`}>
-            {editingId ? 'Save appointment' : 'Add appointment'}
+            {editingId ? 'Save appointment' : prefill ? 'Book it' : 'Add appointment'}
           </Text>
         </Pressable>
 

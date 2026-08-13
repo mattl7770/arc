@@ -142,13 +142,86 @@ export function uncheckGroceryItem(db: Database, id: string): void {
   db.run('UPDATE grocery_items SET checked_at = NULL WHERE id = ?', [id]);
 }
 
-/** Empty the "in cart" section. Deletes only CHECKED rows; the prefs memory
- * (autocomplete/staples/learned categories) is untouched by design. */
-export function clearCheckedItems(db: Database): number {
+/**
+ * How long a checked item stays in the CURRENT cart before it ages into "Old
+ * carts" (owner call, 2026-08-12: *"move anything checked off in a cart that is
+ * over 1 day old into the old carts tab"*).
+ *
+ * A day, exactly as asked, and measured from the check-off — not from midnight.
+ * Midnight would age a 23:50 shop out of the cart ten minutes later, which is
+ * the one moment it is most likely to still be being unpacked.
+ */
+export const CART_AGE_HOURS = 24;
+
+/** The current cart, and the carts before it. */
+export type CartSplit = {
+  /** Checked within the last {@link CART_AGE_HOURS} — this shop. */
+  cart: GroceryItemRow[];
+  /** Checked before that — previous shops, kept for the re-add history. */
+  old: GroceryItemRow[];
+};
+
+/**
+ * The instant a checked item stops belonging to the current cart. Exported so
+ * the screen and the repository agree on one boundary instead of computing two.
+ */
+export function cartCutoff(now: Date = new Date()): string {
+  return new Date(now.getTime() - CART_AGE_HOURS * 3_600_000).toISOString();
+}
+
+/**
+ * Split checked items into the current cart and the older ones.
+ *
+ * Pure over the rows, so the partition is testable without a clock: `checked_at`
+ * is an ISO-8601 UTC string and the cutoff is one too, and that shape compares
+ * lexicographically in chronological order (the same property the reminder
+ * floor leans on). A row with a NULL `checked_at` cannot occur here — the
+ * callers select on `checked_at IS NOT NULL` — but it would sort into `old`
+ * rather than silently vanish.
+ */
+export function splitCart(items: GroceryItemRow[], cutoff: string): CartSplit {
+  const cart: GroceryItemRow[] = [];
+  const old: GroceryItemRow[] = [];
+  for (const item of items) {
+    if (item.checked_at !== null && item.checked_at >= cutoff) cart.push(item);
+    else old.push(item);
+  }
+  return { cart, old };
+}
+
+/** The two cart sections the grocery screen draws, newest check-off first in
+ *  each. One query, one boundary — see {@link splitCart}. */
+export function cartSections(db: Database, now: Date = new Date(), limit: number = 500): CartSplit {
+  return splitCart(listCheckedGroceryItems(db, limit), cartCutoff(now));
+}
+
+/**
+ * Empty ONE of the two cart sections. `scope: 'cart'` deletes what was checked
+ * since the cutoff, `'old'` deletes what was checked before it — never both, so
+ * clearing the current cart can't take last week's history with it and vice
+ * versa. Returns how many rows went.
+ *
+ * This replaced a single `clearCheckedItems` that took every checked row at
+ * once. With two sections on screen that function had no honest button to sit
+ * behind: a Clear under "In cart" that also emptied "Old carts" would be a
+ * control whose scope contradicts the heading directly above it.
+ *
+ * The prefs memory is untouched either way: purchase history powers
+ * autocomplete and staples, and emptying a cart is not forgetting that you buy
+ * milk (the column-ownership rules at the top of this file).
+ */
+export function clearCartSection(
+  db: Database,
+  scope: 'cart' | 'old',
+  now: Date = new Date()
+): number {
+  const cutoff = cartCutoff(now);
+  const op = scope === 'cart' ? '>=' : '<';
   const row = db.get<{ n: number }>(
-    'SELECT count(*) AS n FROM grocery_items WHERE checked_at IS NOT NULL'
+    `SELECT count(*) AS n FROM grocery_items WHERE checked_at IS NOT NULL AND checked_at ${op} ?`,
+    [cutoff]
   );
-  db.run('DELETE FROM grocery_items WHERE checked_at IS NOT NULL');
+  db.run(`DELETE FROM grocery_items WHERE checked_at IS NOT NULL AND checked_at ${op} ?`, [cutoff]);
   return row?.n ?? 0;
 }
 

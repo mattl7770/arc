@@ -177,7 +177,25 @@ export async function streamCoachReply(
             : false;
           if (!approved) {
             return {
-              content: 'The user declined this action. Do not retry it; acknowledge and move on.',
+              // THE SCOPE OF A DECLINE IS ONE TOOL CALL, NOT THE REQUEST.
+              //
+              // This used to read "…Do not retry it; acknowledge and move on."
+              // Owner report, 2026-08-12: asked to *"come up with a recipe AND
+              // add the stuff to my grocery list"*, the Coach proposed
+              // save_recipe, had it declined, said "Understood, I won't save
+              // it" — and never attempted the grocery half at all. It read
+              // "move on" as "move on from the request", which is the wrong
+              // scope and the only reading the old sentence supported.
+              //
+              // Declining one write is a statement about that write. Whatever
+              // else the user asked for is still owed, unless it depended on
+              // the thing they refused — and only the model can judge that, so
+              // the wording says the rule and leaves the judgement where it
+              // belongs (the JUDGMENT IS YOURS clause in the system prompt).
+              content:
+                'The user declined THIS action. Do not retry it and do not re-ask. ' +
+                'The decline is about this one write, NOT about their whole request: ' +
+                'carry on with any other part of it that does not depend on what they refused.',
               declined: true,
             };
           }

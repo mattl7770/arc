@@ -299,6 +299,42 @@ export function updateMealItemPortion(
   });
 }
 
+/**
+ * Replace a meal's ENTIRE item list in one transaction, then re-derive its
+ * totals. Returns the new item ids.
+ *
+ * Written for the plain-text AI revision (`app/meal-revise.tsx`, owner request
+ * 2026-08-12: *"Actually, that was cooked in olive oil not butter"*), where the
+ * model returns the whole corrected list rather than a patch. Wholesale
+ * replacement is the honest shape for that: an instruction like "that was olive
+ * oil, not butter" can remove one item, add another and re-price a third, and a
+ * diff applied item-by-item would have to guess which of those it was doing.
+ *
+ * **Nothing outside `meal_items` moves.** The meal's identity, date, time,
+ * name, notes, `source` and `recipe_id` are the user's, and a revision to what
+ * was in the bowl is not permission to restamp any of them. The totals follow
+ * because they are DERIVED from the items — `recomputeMealTotals` in the same
+ * transaction, so no reader can land on a half-summed meal.
+ *
+ * **An empty list is refused, not honoured.** Deleting every item silently
+ * returns the meal to free-form NULL totals, which looks identical to a meal
+ * nobody priced — so a revision that resolves to nothing throws and the caller
+ * keeps what it had. Emptying a meal is what `removeMealItem` and Delete are
+ * for, and both are deliberate acts on this screen.
+ */
+export function replaceMealItems(db: Database, mealId: string, items: NewMealItem[]): string[] {
+  if (items.length === 0) {
+    throw new Error('a revision must leave at least one item — delete the meal instead');
+  }
+  const itemIds: string[] = [];
+  db.transaction(() => {
+    db.run('DELETE FROM meal_items WHERE meal_id = ?', [mealId]);
+    for (const item of items) itemIds.push(insertMealItem(db, mealId, item));
+    recomputeMealTotals(db, mealId);
+  });
+  return itemIds;
+}
+
 /** Remove one item; the meal's totals follow (all-NULL once emptied). */
 export function removeMealItem(db: Database, itemId: string): void {
   const row = db.get<{ meal_id: string }>('SELECT meal_id FROM meal_items WHERE id = ?', [itemId]);

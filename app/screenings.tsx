@@ -195,9 +195,29 @@ function makeItem(
  * booking rather than at the NOW stake: it is handled, and the ledger below
  * still lists it under Overdue until the visit is closed out.
  */
+/**
+ * Soonest live booking per screening. `appointments` arrives sorted by date, so
+ * the first hit for an id is the next one.
+ *
+ * Lifted out of {@link buildHorizon} when the ledger rows started reading it
+ * too (owner, 2026-08-12: a screening you have booked should say so where you
+ * look at it, not only on the axis above). One derivation, two consumers — the
+ * row and the marker cannot disagree about which booking is next.
+ */
+function bookingsByScreening(
+  appointments: UpcomingAppointment[]
+): Map<string, UpcomingAppointment> {
+  const booking = new Map<string, UpcomingAppointment>();
+  for (const a of appointments) {
+    if (a.screening_id && !booking.has(a.screening_id)) booking.set(a.screening_id, a);
+  }
+  return booking;
+}
+
 function buildHorizon(
   groups: ScreeningGroups,
   appointments: UpcomingAppointment[],
+  booking: Map<string, UpcomingAppointment>,
   today: string
 ): Horizon {
   const screenings = [
@@ -206,15 +226,6 @@ function buildHorizon(
     ...groups.scheduled,
     ...groups.untracked,
   ];
-  const screeningIds = new Set(screenings.map((s) => s.id));
-
-  // Soonest booking per screening; `appointments` is already sorted by date.
-  const booking = new Map<string, UpcomingAppointment>();
-  for (const a of appointments) {
-    if (a.screening_id && screeningIds.has(a.screening_id) && !booking.has(a.screening_id)) {
-      booking.set(a.screening_id, a);
-    }
-  }
 
   const plotted: HorizonItem[] = [];
   let undated = 0;
@@ -501,12 +512,15 @@ function HorizonAxis({ horizon, today }: { horizon: Horizon; today: string }) {
 function ScreeningRowView({
   screening,
   group,
+  booking,
   today,
   first,
   onPress,
 }: {
   screening: ScreeningRow;
   group: GroupKey;
+  /** The soonest live appointment for this screening, if it has been booked. */
+  booking: UpcomingAppointment | undefined;
   today: string;
   first: boolean;
   onPress: () => void;
@@ -529,7 +543,11 @@ function ScreeningRowView({
       <Divider first={first} />
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${screening.name}. ${sub}. ${value ?? 'No date'}. Edit.`}
+        accessibilityLabel={
+          `${screening.name}. ${sub}. ${value ?? 'No date'}.` +
+          (booking ? ` Booked ${apptDateText(booking.scheduled_at, today)}.` : '') +
+          ' Edit.'
+        }
         onPress={onPress}
         className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
         <View className="flex-1">
@@ -537,6 +555,21 @@ function ScreeningRowView({
           <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
             {sub}
           </Text>
+          {/* Booked beats due: an overdue screening with a date in the diary is
+              HANDLED, and the row has to say so or it reads as a standing
+              failure. The word is the label voice (a state), the date is mono
+              (a measurement) — and it is only ever drawn when a booking really
+              exists, never as an empty "not booked" slot. */}
+          {booking ? (
+            <View className="mt-0.5 flex-row items-baseline gap-1.5">
+              <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-secondary">
+                Booked
+              </Text>
+              <Text className="font-mono text-[10px] text-ink-secondary">
+                {apptDateText(booking.scheduled_at, today)} · {apptTimeText(booking.scheduled_at)}
+              </Text>
+            </View>
+          ) : null}
         </View>
         {value != null ? (
           <View className="items-end">
@@ -622,7 +655,8 @@ export default function ScreeningsScreen() {
   const router = useRouter();
   const { today, groups, emptyLedger, appointments, pastAppointments } = useScreenings();
 
-  const horizon = buildHorizon(groups, appointments, today);
+  const bookings = bookingsByScreening(appointments);
+  const horizon = buildHorizon(groups, appointments, bookings, today);
   // On a genuinely empty screen the ledger's own invite speaks; a second
   // authored empty above it would just be the same sentence twice.
   const showHorizon = !emptyLedger || appointments.length > 0;
@@ -673,6 +707,7 @@ export default function ScreeningsScreen() {
                       key={s.id}
                       screening={s}
                       group={key}
+                      booking={bookings.get(s.id)}
                       today={today}
                       first={index === 0}
                       onPress={() =>
