@@ -40,6 +40,10 @@ import {
   setStaple,
 } from '../src/lib/db/repositories/grocery.ts';
 
+import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+
+import ExerciseScreen from '../app/exercise.tsx';
+import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
 import RecipeEditScreen from '../app/recipe-edit.tsx';
@@ -327,6 +331,55 @@ const db = getDb();
   const milk = db.get(`SELECT id FROM grocery_items WHERE name = 'Milk'`);
   checkGroceryItem(db, milk.id);
   expect('grocery (with cart)', render('grocery (with cart)', GroceryScreen), ['In cart']);
+
+  // -------------------------------------------------------------------------
+  // The body figure (reworked 2026-08-12 after the owner's "hard to tell what's
+  // what"). What a server render CAN prove about a drawing is narrow but it is
+  // exactly the part that was broken: the figure's ~90 positioned views cost
+  // nothing to VoiceOver, so the whole burden of saying WHICH muscle is in
+  // WHICH state falls on words — the key's rows and the section tally. Those
+  // are text, so they are assertable here. The drawing itself stays an
+  // on-device check (memory: verify on device, not web).
+  console.log('9. Muscle freshness — the figure key states its case in words');
+  {
+    const empty = render('exercise hub (never trained)', ExerciseScreen);
+    expect('exercise hub (never trained)', empty, [
+      'Muscle freshness',
+      '16 of 16 fresh',
+      // Empty is AUTHORED, never blank — and "nothing logged" is not the same
+      // fact as "nothing depleted", which the model renders identically.
+      'No sessions logged yet, so every muscle reads fresh.',
+    ]);
+
+    logWorkout(
+      db,
+      { date: today, name: 'Render push', kind: 'strength', notes: null },
+      Array.from({ length: 6 }, () => ({
+        exercise: 'Bench',
+        exerciseId: 'barbell-bench-press',
+        reps: 8,
+        weightKg: 80,
+      }))
+    );
+
+    const worked = render('exercise hub (after a session)', ExerciseScreen);
+    expect('exercise hub (after a session)', worked, [
+      'Fatigued', // the WORD is the primary carrier: the two fills are 1.03:1
+      'Chest', // ...and the muscle is NAMED, which the old figure never did
+    ]);
+    // The tally moved off 16/16, and the never-logged caveat retired with it.
+    refute('exercise hub (after a session)', worked, [
+      '16 of 16 fresh',
+      'No sessions logged yet, so every muscle reads fresh.',
+    ]);
+
+    expect('muscle-freshness (pushed)', render('muscle-freshness', MuscleFreshnessScreen), [
+      'Muscle freshness',
+      'Per muscle',
+      'Fatigued',
+      'Chest',
+    ]);
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -142,14 +142,25 @@ export default function ExerciseDetailScreen() {
                 source={photo}
                 resizeMode="contain"
                 accessibilityLabel={`How ${exercise.name} is performed`}
-                style={{ width: 148, height: 148 }}
+                style={{ width: 136, height: 136 }}
               />
             ) : null}
+            {/* The width budget, and MuscleFigure's OWN 10pt inner gap is part
+                of it: 136 photo + 12 row gap + (72 + 10 + 72) pair = 302,
+                inside the 311pt a 375pt iPhone SE leaves this device after the
+                Screen's 20pt gutters and the field's 12pt padding. Nothing
+                shrinks — `flexShrink` is 0 in React Native — so this is a hard
+                edge. Alone, the figure takes the component's 118pt default.
+
+                The photo gave up 12pt for it: at 62 the schematic's smallest
+                cell was 7.4pt, too tight to hold a hollow ring open, and hollow
+                versus solid is the whole thing that separates a primary mover
+                from an assist (src/components/exercise/muscle-figure.tsx). */}
             <MuscleFigure
               mode="muscles"
               primary={exercise.primaryMuscles}
               secondary={exercise.secondaryMuscles}
-              figureWidth={photo != null ? 62 : 96}
+              figureWidth={photo != null ? 72 : undefined}
             />
           </View>
           <View className="mt-2">
