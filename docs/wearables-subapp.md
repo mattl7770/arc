@@ -1,12 +1,16 @@
-# Wearables sub-app — Apple Health ingestion
+# Wearables sub-app — Apple Health
 
 **Spec date:** 2026-07-29 · **Status:** Phase 1 spec → built in the same window
+**Amended:** 2026-08-12 — ARC now also PUBLISHES three body measurements outward (**§10**).
 **Read first:** CLAUDE.md §8 (wearables strategy) and §9 (DB conventions), `docs/project-status.md`.
 
 Apple Health is the decided ingestion hub (2026-07-24 ADR): it is on-device, every vendor's
 own app does the cloud sync, so ARC stays offline/no-server. Terra is dropped. Device choice
 stays open — nothing below depends on which ring/strap Matt ends up wearing; every source
 normalises into `wearable_data`, which shipped in 0001 precisely for this.
+
+§§1–9 describe **ingestion**, which is the bulk of the integration. §10 describes the much
+smaller outbound channel and the rules that keep the two from feeding each other.
 
 ---
 
@@ -23,19 +27,25 @@ Evaluated July 2026:
 | @yzlin/expo-healthkit | ❌ Stale (2024-11), narrower API. |
 | @kayzmann/expo-healthkit | ❌ Alive but tiny/unproven; no statistics collections or anchored queries. |
 
-**Config plugin** (app.json): read-only and no background delivery — smallest surface, no
-AppDelegate patch, no background-delivery entitlement:
+**Config plugin** (app.json): no background delivery — smallest surface, no AppDelegate patch,
+no background-delivery entitlement:
 
 ```json
 ["@kingstinct/react-native-healthkit", {
   "NSHealthShareUsageDescription": "ARC reads sleep, heart, activity and workout data from Apple Health to power readiness and recovery.",
-  "NSHealthUpdateUsageDescription": false,
+  "NSHealthUpdateUsageDescription": "ARC writes the weight, body-fat percentage and waist measurements you record in ARC to Apple Health, so other apps on your iPhone can see them. Nothing else is written.",
   "background": false
 }]
 ```
 
-`NSHealthUpdateUsageDescription: false` omits the write-usage key entirely (ARC is a reader;
-write-back is a separately-gated future assessment — project-status "Write data back").
+`NSHealthUpdateUsageDescription` was `false` — the key omitted entirely — until 2026-08-12,
+when ARC started publishing three body measurements outward (**§10**). That string is the
+**only** part of publishing that needs a rebuild: `com.apple.developer.healthkit` is a single
+boolean covering read *and* write, and the plugin injects it unconditionally
+(`app.plugin.ts` → `withEntitlementsPlist`). So there is **no new Apple capability and no
+provisioning-profile regeneration** — and no entitlements block belongs in app.json.
+Everything else in §10 is JS and ships OTA, **with one hard exception noted in §10**: this JS
+must not reach a binary built before that key existed.
 
 **Native-dep reality:** the module is NOT in the current dev build. It rides the next
 `eas build` (batched with expo-secure-store & co., docs/dev-build.md). Until then the guarded
@@ -119,6 +129,7 @@ VO2max, workouts) carry real per-sample provenance, so they get true per-device 
 
 | Match | Bucket |
 | --- | --- |
+| bundle `com.arcresilience.app` (ARC's own published samples — §10) | `manual` |
 | bundle `com.ouraring.oura` | `oura` |
 | bundle `com.whoop.iphone` | `whoop` |
 | bundle `com.garmin.connect.mobile` | `garmin` |
@@ -285,6 +296,9 @@ instead of wiring HealthKit straight into screens.
   cross-source non-collision, series/latest reads, source-priority day picker, sync-state
   round-trip, 0021 rebuild preserves pre-existing rows (manual water/hrv), and the
   **two-pass ingest** proof that a day aging out of the window keeps its full-day values.
+  Plus the whole publish channel (§10): cursor KV, keyset walk over backdated and
+  same-millisecond rows, arming-without-backfill over 40 rows of history, unit conversion on
+  the wire, stop-on-refusal, and the toggle governing both directions.
 - `db/readiness.test.mjs` — baselines, all four pillar gradings, RHR degradation, the
   ≥5-day evidence gate, honest unknowns, metrics-strip formatting.
 
@@ -292,8 +306,99 @@ instead of wiring HealthKit straight into screens.
 
 - **Background delivery / anchored queries** — foreground windows are enough for a daily
   operating system; anchors documented above if deletion-fidelity ever matters.
-- **Write-back to Apple Health** — separate feasibility assessment first (owner call).
 - **DietaryWater ingest** (smart bottle), **heart_rate intraday**, full-history import
   (365-day paging) — all additive: new scope + mapping entry, no migration.
 - **Per-source attribution rows for merged cumulatives** (`separateBySource`) — only if the
   Coach ever needs "which device produced these steps".
+
+## 10. Publishing outward (2026-08-12)
+
+Write-back moved from "deferred, assess first" (§9) to shipped, in one narrow form. **ARC
+stays authoritative and PUBLISHES; this is not two-way sync.** No value is ever owned in two
+places: `body_metrics` owns the three columns below, Apple Health gets a copy so the rest of
+the phone can see it, and nothing flows back.
+
+| `body_metrics` column | HealthKit type | Unit on the wire |
+| --- | --- | --- |
+| `weight_kg` | `HKQuantityTypeIdentifierBodyMass` | `kg` — canonical already, no conversion |
+| `body_fat_pct` | `HKQuantityTypeIdentifierBodyFatPercentage` | `%` — **÷100**, see below |
+| `waist_cm` | `HKQuantityTypeIdentifierWaistCircumference` | `cm` — canonical already |
+
+**The body-fat unit is the trap.** `HKUnit.percent()` measures a FRACTION, 0.0–1.0, not
+0–100 — the same fact the read side already handles in reverse (`spo2_pct` multiplies by
+100 on the way in). `body_metrics.body_fat_pct` is CHECK-bounded 0–100, so publishing it
+unconverted would put "1850 %" body fat into a medical record, silently: HealthKit does not
+sanity-check magnitudes. Units were verified against the library's own generated map
+(`lib/typescript/generated/healthkit.generated.d.ts` → `QuantityUnitByIdentifierMap`, which
+types BodyMass as `MassUnit`, WaistCircumference as `LengthUnit`, BodyFatPercentage as `'%'`)
+and `types/Units.d.ts` (`'kg'`/`'cm'` are exact members).
+
+**No backfill, ever.** A publish is irreversible from inside ARC: nothing stores the
+HealthKit sample UUID `saveQuantitySample` returns, so ARC cannot delete what it wrote —
+only the user can, by hand, in the Health app. ARC may hold years of manual weight, and
+"publish everything" would post all of it in one burst with no undo. So the first pass
+**arms**: the cursor jumps to the newest existing `body_metrics` row and writes nothing.
+Everything logged afterwards publishes. A bounded backfill was considered and dropped —
+every bound is arbitrary, the irreversibility is identical at any size, and ARC already
+keeps and renders that history itself.
+
+**The cursor needs no migration.** It is a second key (`apple_health_publish`) in the 0021
+`health_sync_state` KV — `key` carries no CHECK and `value` is free JSON, which 0021 wrote
+down explicitly so a second cursor would not be a schema change. It holds
+`{armedAt, cursorCreatedAt, cursorId, lastPublishedAt}`. The walk is keyset pagination over
+`(created_at, id)`, **not** `measured_at`: a backdated reading (`logMetric` stamps local noon
+of the intended day) has a past `measured_at`, so a `measured_at` watermark would step over
+it and it would never be published. The `id` half breaks millisecond ties. The cursor
+advances only over rows published in FULL — the first refusal stops the pass, so a revoked
+share permission publishes nothing and loses nothing.
+
+**Echo suppression, in the same build.** Nothing echoes *today* only because ARC does not
+read `BodyMass`, `BodyFatPercentage` or `WaistCircumference`. That safety is accidental and
+expires the moment someone adds weight to the read set, so it is now guarded three ways:
+
+1. `readWriteScopeOverlap()` — a pure function asserted empty by the test suite. It is the
+   tripwire: adding a published type to the read scopes fails CI. (A function, not a
+   module-scope assertion — Expo Router eagerly requires everything under `app/`, so a throw
+   at import time is an app-**startup** crash.)
+2. **Query-level exclusion.** Every sample reader passes
+   `filter.NOT = [{ sources: [currentAppSource()] }]`, falling back to the metadata predicate
+   `[{ metadata: { withMetadataKey: 'ARCPublishedFrom' } }]` when that API is unavailable —
+   the key ARC stamps on every sample it writes, carrying the originating `body_metrics.id`.
+   Statistics queries get no exclusion on purpose: they return Apple's own merged cumulative
+   totals, computed before any predicate, and ARC writes none of those types. If the native
+   layer rejects the predicate the reader retries **unfiltered** rather than returning
+   nothing — a bad filter must not silently empty the whole Data tab. That fallback is only
+   safe while guard 1 holds; if the scopes ever overlap it must be changed to fail closed.
+3. **Source bucketing.** `com.arcresilience.app` maps to `manual`, so even a defeated filter
+   cannot let an echo outrank its own origin. Without a case, ARC's bundle would fall through
+   to `other` — index 7 in `SOURCE_PRIORITY`, *above* `apple_health` (8) and `manual` (9) —
+   and ARC would prefer its own reflection to both the merged Apple total and the user's
+   keypad entry. `'other'` was deliberately **not** demoted: no wearable is chosen yet
+   (CLAUDE.md §8), so an unrecognised ring landing in `other` is the expected state, and
+   demoting it would make a real measuring device lose to a stale manual entry. A distinct
+   `'arc'` device value was rejected because `source_device` is a CHECK-constrained enum —
+   that is a migration, and numbering is forward-only. `manual` is also simply true:
+   everything ARC publishes started as a number the user typed into ARC.
+
+**When it runs.** Inside the same pass as ingestion (`syncHealthData`) — boot, foreground
+(throttled 15 min), and Settings › Apple Health → *Sync now*. Same enable flag both
+directions: *Turn off* stops writing too.
+
+**Permission asymmetry.** Unlike reads, iOS reports share authorization truthfully
+(`authorizationStatus(for:)`), so `healthWriteAccess()` returns a state that can be believed
+and Settings says it out loud instead of assuming success. An already-connected user's read
+grants predate the write scopes, leaving sharing `undetermined` — so the connected plate
+grows an **Allow publishing** button in exactly that state, and only that state (iOS will not
+re-present a sheet the user has already answered).
+
+> ⚠️ **Ship the app.json string in the same binary.** iOS *terminates* an app that requests
+> share types without `NSHealthUpdateUsageDescription`, at the ObjC level, where no JS
+> try/catch can hold it. This JS must therefore never be delivered OTA to a build made before
+> that key existed. Today that is not reachable — the HealthKit module is in no shipped
+> binary at all (§1), so the first build containing it will also contain the key — but a
+> build cut from `main` before this branch merges would create exactly that binary.
+
+**Still out of scope** — workouts and nutrition. Both hit the same wall: no column stores a
+HealthKit UUID, so a written workout or meal could never be deleted, and both are edited
+constantly. That needs a migration and its own slice. **Reading** `BodyMass` is also out of
+scope; it is the thing that would open the echo loop.

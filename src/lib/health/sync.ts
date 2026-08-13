@@ -1,5 +1,10 @@
 /**
- * Apple Health sync orchestration (docs/wearables-subapp.md §4–5).
+ * Apple Health sync orchestration (docs/wearables-subapp.md §4–5, §10).
+ *
+ * A "sync" is both directions as of 2026-08-12: ARC ingests the wearable metrics
+ * it does not own, and PUBLISHES the three body measurements it does
+ * (`publish.ts`). They share the enable flag and this entry point and nothing
+ * else — separate cursors, separate windows, separate failure handling.
  *
  * Strategy: trailing-window re-aggregation. Each sync recomputes the last
  * {@link SYNC_WINDOW_DAYS} days (first sync: {@link FIRST_SYNC_DAYS}) and
@@ -38,6 +43,7 @@ import {
   readSleepSamples,
   readWorkouts,
 } from './healthkit';
+import { publishBodyMetrics } from './publish';
 
 /** Steady-state re-aggregation window (self-healing horizon). */
 export const SYNC_WINDOW_DAYS = 14;
@@ -145,6 +151,8 @@ export function shouldAutoSync(lastSyncedAt: string | null, now: Date): boolean 
 export type HealthSyncResult = {
   status: 'synced' | 'disabled' | 'unavailable';
   rowsWritten: number;
+  /** Samples PUBLISHED outward this pass (weight / body fat / waist). */
+  samplesPublished: number;
   syncedAt: string | null;
 };
 
@@ -176,8 +184,12 @@ export async function syncHealthData(
   db: Database,
   now: Date = new Date()
 ): Promise<HealthSyncResult> {
-  if (!isHealthSyncEnabled(db)) return { status: 'disabled', rowsWritten: 0, syncedAt: null };
-  if (!isHealthKitAvailable()) return { status: 'unavailable', rowsWritten: 0, syncedAt: null };
+  if (!isHealthSyncEnabled(db)) {
+    return { status: 'disabled', rowsWritten: 0, samplesPublished: 0, syncedAt: null };
+  }
+  if (!isHealthKitAvailable()) {
+    return { status: 'unavailable', rowsWritten: 0, samplesPublished: 0, syncedAt: null };
+  }
 
   const state = getHealthSyncState(db);
   const windowDays = syncWindowDays(state, now);
@@ -210,8 +222,22 @@ export async function syncHealthData(
     // steady-state window and days 15-90 of history would be unreachable.
     firstSyncedAt: state.firstSyncedAt ?? (written > 0 ? syncedAt : null),
   });
+
+  // The outbound half of the same pass (docs §10). It runs AFTER the ingest
+  // cursor is stamped so a publish problem can never cost the ingest its
+  // progress, and it carries its own cursor and its own failure posture — the
+  // two directions share only the enable flag. Degrades to zero on throw for
+  // the same reason every reader here does: Settings shows the honest counts,
+  // and the next pass retries from an unmoved cursor.
+  let samplesPublished = 0;
+  try {
+    samplesPublished = (await publishBodyMetrics(db, now)).samplesWritten;
+  } catch {
+    samplesPublished = 0;
+  }
+
   emitSynced();
-  return { status: 'synced', rowsWritten: written, syncedAt };
+  return { status: 'synced', rowsWritten: written, samplesPublished, syncedAt };
 }
 
 /**

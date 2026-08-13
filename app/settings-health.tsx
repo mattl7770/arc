@@ -13,10 +13,13 @@ import { clockFromISO } from '@/lib/db/date';
 import { isHealthSyncEnabled, setHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { getHealthSyncState } from '@/lib/db/repositories/wearables';
 import {
+  healthWriteAccess,
   isHealthKitAvailable,
   isHealthKitSupported,
   requestHealthPermissions,
+  type HealthWriteAccess,
 } from '@/lib/health/healthkit';
+import { BODY_PUBLISH_METRICS } from '@/lib/health/mapping';
 import { syncHealthData } from '@/lib/health/sync';
 
 /**
@@ -28,11 +31,21 @@ import { syncHealthData } from '@/lib/health/sync';
  *   - iOS never reveals whether READ access was granted — after enabling we say
  *     "connected" but point at Settings → Privacy → Health when data looks
  *     missing, and never render a granted/denied matrix (it's unknowable).
+ *   - WRITE access is the exception: iOS reports sharing authorization
+ *     truthfully, so this screen states it rather than assuming success. A
+ *     refused publish gets said out loud; an unanswered one gets a button.
  *   - Permission is requested LAZILY — only on enable, never at boot.
  *
+ * The read-only claim this screen used to make ("ARC never writes to Apple
+ * Health") became false on 2026-08-12, when ARC started PUBLISHING the three
+ * body measurements it owns (docs/wearables-subapp.md §10). It is replaced, not
+ * deleted — the replacement has to be at least as specific as the promise it
+ * retires, so "What ARC writes" names all three types, says publishing starts
+ * from the moment you connect, and says plainly that corrections don't follow.
+ *
  * Conformed Set treatment: the connection state is a **ruled plate** carrying
- * its own action, the read scopes are a **ruled plate** (a list of things is a
- * record), and the two explanatory passages are **margin annotations**.
+ * its own action, the read and write scopes are **ruled plates** (a list of
+ * things is a record), and the explanatory passages are **margin annotations**.
  *
  * **Zero accent.** This is a Settings screen, and Settings carries no accent at
  * all (00-design-spec.md §2) — so Enable is a solid *ink* action, not pine, and
@@ -57,19 +70,42 @@ const READ_SCOPES = [
   'VO₂max and workouts',
 ];
 
+/** What ARC publishes, in human words (mirrors BODY_PUBLISH_METRICS). */
+const WRITE_SCOPES = BODY_PUBLISH_METRICS.map((m) => m.label);
+
+/**
+ * The one line to show about write access, or null when there is nothing
+ * honest and useful to say (unsupported / unknown / granted — in the granted
+ * case the "What ARC writes" plate below already covers it, and repeating it
+ * here would be noise).
+ */
+function writeAccessNote(access: HealthWriteAccess): string | null {
+  switch (access) {
+    case 'denied':
+      return 'Apple Health is refusing writes from ARC, so nothing is being published. Turn Weight, Body Fat Percentage and Waist Circumference on under Settings → Privacy & Security → Health → ARC.';
+    case 'partial':
+      return 'Apple Health is accepting only some of what ARC publishes. Check Weight, Body Fat Percentage and Waist Circumference under Settings → Privacy & Security → Health → ARC.';
+    default:
+      return null;
+  }
+}
+
 export default function SettingsHealthScreen() {
   const router = useRouter();
   const supported = isHealthKitSupported();
 
   const [enabled, setEnabled] = useState(() => isHealthSyncEnabled(getDb()));
   const [lastSyncedAt, setLastSyncedAt] = useState(() => getHealthSyncState(getDb()).lastSyncedAt);
-  const [busy, setBusy] = useState<'enabling' | 'syncing' | null>(null);
+  const [busy, setBusy] = useState<'enabling' | 'syncing' | 'allowing' | null>(null);
   const [lastRows, setLastRows] = useState<number | null>(null);
+  const [lastPublished, setLastPublished] = useState<number | null>(null);
+  const [writeAccess, setWriteAccess] = useState<HealthWriteAccess>(() => healthWriteAccess());
 
   const refresh = useCallback(() => {
     const db = getDb();
     setEnabled(isHealthSyncEnabled(db));
     setLastSyncedAt(getHealthSyncState(db).lastSyncedAt);
+    setWriteAccess(healthWriteAccess());
   }, []);
 
   const enable = useCallback(async () => {
@@ -83,7 +119,34 @@ export default function SettingsHealthScreen() {
       // only for types the user hasn't answered yet, so repeats are no-ops.
       await requestHealthPermissions();
       const result = await syncHealthData(db);
-      if (result.status === 'synced') setLastRows(result.rowsWritten);
+      if (result.status === 'synced') {
+        setLastRows(result.rowsWritten);
+        setLastPublished(result.samplesPublished);
+      }
+    } finally {
+      setBusy(null);
+      refresh();
+    }
+  }, [busy, refresh]);
+
+  /**
+   * Ask for the WRITE scopes on their own. Needed because read access can
+   * predate them: anyone who connected Apple Health before publishing shipped
+   * has answered the read sheet and will never be asked again by `enable`,
+   * leaving sharing permanently undetermined and every publish refused. Only
+   * rendered while that is actually the state, so it can't be a no-op control —
+   * iOS won't re-present a sheet the user has already answered.
+   */
+  const allowPublishing = useCallback(async () => {
+    if (busy) return;
+    setBusy('allowing');
+    try {
+      await requestHealthPermissions();
+      const result = await syncHealthData(getDb());
+      if (result.status === 'synced') {
+        setLastRows(result.rowsWritten);
+        setLastPublished(result.samplesPublished);
+      }
     } finally {
       setBusy(null);
       refresh();
@@ -102,7 +165,10 @@ export default function SettingsHealthScreen() {
     setBusy('syncing');
     try {
       const result = await syncHealthData(getDb());
-      if (result.status === 'synced') setLastRows(result.rowsWritten);
+      if (result.status === 'synced') {
+        setLastRows(result.rowsWritten);
+        setLastPublished(result.samplesPublished);
+      }
     } finally {
       setBusy(null);
       refresh();
@@ -110,6 +176,7 @@ export default function SettingsHealthScreen() {
   }, [busy, refresh]);
 
   const available = supported && isHealthKitAvailable();
+  const writeNote = writeAccessNote(writeAccess);
 
   return (
     <Screen scroll>
@@ -199,13 +266,46 @@ export default function SettingsHealthScreen() {
               </View>
               <Text className="mt-2 font-mono text-[11px] text-ink-muted">
                 {lastSyncedAt
-                  ? `Last synced ${fmtSyncedAt(lastSyncedAt)}${lastRows !== null ? ` · ${lastRows} rows` : ''}`
+                  ? `Last synced ${fmtSyncedAt(lastSyncedAt)}${lastRows !== null ? ` · ${lastRows} rows in` : ''}${
+                      lastPublished !== null ? ` · ${lastPublished} published` : ''
+                    }`
                   : 'Not synced yet'}
               </Text>
               <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
                 iOS doesn&rsquo;t tell apps whether read access was granted — if data looks missing,
                 check Settings → Privacy &amp; Security → Health → ARC.
               </Text>
+              {/* Writing IS knowable, so it gets stated rather than guessed. */}
+              {writeNote ? (
+                <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
+                  {writeNote}
+                </Text>
+              ) : null}
+
+              {writeAccess === 'undetermined' ? (
+                <>
+                  <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
+                    ARC hasn&rsquo;t been given permission to publish your weight, body fat and
+                    waist to Apple Health yet.
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Allow ARC to publish to Apple Health"
+                    accessibilityState={{ disabled: busy !== null }}
+                    disabled={busy !== null}
+                    onPress={() => void allowPublishing()}
+                    className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+                    {busy === 'allowing' ? (
+                      <ActivityIndicator size="small" color={palette.ink} />
+                    ) : (
+                      <Ionicons name="arrow-up-circle-outline" size={16} color={palette.ink} />
+                    )}
+                    <Text className="font-label text-[14px] font-medium text-ink">
+                      {busy === 'allowing' ? 'Asking…' : 'Allow publishing'}
+                    </Text>
+                  </Pressable>
+                </>
+              ) : null}
 
               <View className="mt-4 flex-row gap-2">
                 <Pressable
@@ -261,8 +361,39 @@ export default function SettingsHealthScreen() {
         <View className="mt-4">
           <Block device="margin">
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-              Read-only — ARC never writes to Apple Health. Data lands in the on-device database and
-              shows up in Data → Wearables and Home&rsquo;s readiness.
+              Data lands in the on-device database and shows up in Data → Wearables and Home&rsquo;s
+              readiness.
+            </Text>
+          </Block>
+        </View>
+      </View>
+
+      {/* What ARC writes — the counterpart record. Three items, named exactly. */}
+      <View className="mt-8">
+        <SectionLabel label="What ARC writes" />
+        <View className="mt-3">
+          <Block device="plate">
+            {WRITE_SCOPES.map((scope, index) => (
+              <View key={scope}>
+                <Divider first={index === 0} />
+                <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+                  <Ionicons name="arrow-up-outline" size={16} color={palette.inkMuted} />
+                  <Text className="flex-1 font-serif text-[13.5px] text-ink-secondary">
+                    {scope}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </Block>
+        </View>
+
+        <View className="mt-4">
+          <Block device="margin">
+            <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+              Nothing else is written — no workouts, no meals, no sleep. ARC publishes these three
+              from the moment you connect; measurements recorded before that stay in ARC only.
+              Editing or deleting one here does not change the copy already in Apple Health — remove
+              that in the Health app.
             </Text>
           </Block>
         </View>
