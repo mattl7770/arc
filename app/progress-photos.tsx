@@ -199,7 +199,17 @@ export default function ProgressPhotosScreen() {
     const chosen = selected
       .map((id) => photos.find((p) => p.id === id))
       .filter((p): p is GalleryPhoto => p != null)
-      .sort((x, y) => (x.taken_on < y.taken_on ? -1 : x.taken_on > y.taken_on ? 1 : 0));
+      .sort((x, y) =>
+        x.taken_on < y.taken_on
+          ? -1
+          : x.taken_on > y.taken_on
+            ? 1
+            : x.id < y.id
+              ? -1
+              : x.id > y.id
+                ? 1
+                : 0
+      );
     if (chosen.length !== 2) return;
     leaveSelection();
     router.push({

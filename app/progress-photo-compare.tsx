@@ -116,10 +116,13 @@ export default function ProgressPhotoCompareScreen() {
     const first = photos.find((p) => p.id === wanted.a);
     const second = photos.find((p) => p.id === wanted.b);
     if (first && second && first.id !== second.id) {
-      // Order by date, not by which param they arrived in.
-      return first.taken_on <= second.taken_on
-        ? ([first, second] as const)
-        : ([second, first] as const);
+      // Order by date, not by which param they arrived in — and by id when
+      // the dates TIE (two same-day photos), so "earlier"/"later" is stable
+      // regardless of tap order and a saved reading's pair stays findable.
+      const firstGoesFirst =
+        first.taken_on < second.taken_on ||
+        (first.taken_on === second.taken_on && first.id <= second.id);
+      return firstGoesFirst ? ([first, second] as const) : ([second, first] as const);
     }
     const fallback = pickDefaultPair(photos);
     return fallback ? ([fallback[0], fallback[1]] as const) : null;

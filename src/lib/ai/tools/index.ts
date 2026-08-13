@@ -125,7 +125,7 @@ export const COACH_DOMAINS: CoachDomain[] = [
   },
   { label: 'the training engine', tools: ['get_training_recommendation'] },
   { label: 'insights and trends', tools: ['get_insights'] },
-  // Acquired a WRITE tool with 0035 (save_knowledge_entry), so
+  // Acquired a WRITE tool with 0038 (save_knowledge_entry), so
   // `buildCoverageManifest` moves this domain to the read-and-write list on its
   // own — the manifest is derived, never hand-labelled. The label widened with
   // it: "the ARC reference" named only the shipped pack, and the user's own
@@ -158,7 +158,7 @@ export const UNCOVERED_DOMAINS: string[] = [
   'the food catalog, per-item micronutrients and saved meal templates (Eat)',
   'saved workouts (Train)',
   'lab report files and the PDF import (Data, Labs)',
-  // 0035. Deliberately a blind spot rather than a tool (owner call, 2026-08-12):
+  // 0036. Deliberately a blind spot rather than a tool (owner call, 2026-08-12):
   // the catalog is ~66-72% of the cached prompt prefix and every addition
   // invalidates it, while photo METADATA — counts, dates, poses — gives the model
   // almost nothing actionable. The pixels are the value, and those flow through

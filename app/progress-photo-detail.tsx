@@ -364,7 +364,7 @@ export default function ProgressPhotoDetailScreen() {
                     ? analysis.photo_id === photo.id
                       ? `Compared with ${formatPhotoDate(other.taken_on)} — this photo is the earlier one.`
                       : `Compared with ${formatPhotoDate(other.taken_on)} — this photo is the later one.`
-                    : 'A comparison; the other photo has since been deleted.'
+                    : 'A comparison; the other photo could not be loaded.'
                   : undefined;
                 return (
                   <SavedReading

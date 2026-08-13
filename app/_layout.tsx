@@ -154,7 +154,7 @@ export default function RootLayout() {
           <Stack.Screen name="recipe-detail" />
           <Stack.Screen name="recipe-edit" />
           <Stack.Screen name="recipe-import" />
-          {/* Plain-text AI recipe editing + the book's folders (0036), both
+          {/* Plain-text AI recipe editing + the book's folders (0035), both
               2026-08-12 owner requests — docs/recipes-grocery.md. */}
           <Stack.Screen name="recipe-revise" />
           <Stack.Screen name="recipe-folders" />

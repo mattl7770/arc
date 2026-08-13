@@ -621,7 +621,7 @@ const db = getDb();
 }
 
 // ---------------------------------------------------------------------------
-// Progress photos (0035, docs/progress-photos-subapp.md). The point of walking
+// Progress photos (0036, docs/progress-photos-subapp.md). The point of walking
 // these four through a real render is the degradation ledger: under node there
 // is no expo-image-picker, no expo-file-system and no model key, which is
 // EXACTLY the state of the owner's current binary. Every one of those absences

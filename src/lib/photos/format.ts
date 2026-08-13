@@ -125,7 +125,7 @@ export const NO_WEIGH_IN = 'no weigh-in near this date';
  *
  * `created_at` is `strftime('%Y-%m-%dT%H:%M:%fZ','now')` — UTC — so slicing the
  * first ten characters prints tomorrow's date for anything saved after 5pm on
- * the US west coast. That is the `body_metrics` trap the 0035 header cites, and
+ * the US west coast. That is the `body_metrics` trap the 0036 header cites, and
  * printing it on a saved AI reading would be the same bug at a smaller scale.
  */
 export function localDayOf(instant: string): string {

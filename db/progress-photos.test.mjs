@@ -171,7 +171,7 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   console.log('1. 0036 applies over the current head, and stamps its version');
   const { raw } = freshDb();
   const version = raw.prepare('PRAGMA user_version').get().user_version;
-  version >= 35
+  version >= 36
     ? ok(`user_version is ${version} (0036 ran, forward-only)`)
     : bad('user_version after migrate', String(version));
 
