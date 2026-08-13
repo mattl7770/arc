@@ -41,8 +41,12 @@ import {
 } from '../src/lib/db/repositories/grocery.ts';
 
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
+import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
 
 import ExerciseScreen from '../app/exercise.tsx';
+import MissionHistoryScreen from '../app/mission-history.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
@@ -121,6 +125,27 @@ const db = getDb();
     'From a link',
     'Paste text',
     'No model key is set', // honest no-key state under node
+  ]);
+
+  // The execution record on a database that has never planned a day. This
+  // render has to happen HERE, before any fixture touches log_entries: the
+  // never-planned state is the one this screen most has to get right, and it
+  // only exists once.
+  const virgin = render('mission-history (never planned)', MissionHistoryScreen);
+  expect('mission-history (never planned)', virgin, [
+    'Mission',
+    'No mission has been planned yet',
+    'Set up a protocol', // the accent moves to the one action when there are no bars
+  ]);
+  // Nothing may imply a record that does not exist: no rate, no denominators,
+  // no day rows, and above all no "nothing was missed" — which is a claim about
+  // a plan, and there has never been one.
+  refute('mission-history (never planned)', virgin, [
+    '0 of 0',
+    '0%',
+    'Nothing was missed',
+    'on record',
+    'By day',
   ]);
 }
 
@@ -387,6 +412,96 @@ const db = getDb();
       'Per muscle',
       'Fatigued',
       'Chest',
+    ]);
+  }
+
+  // -------------------------------------------------------------------------
+  // The execution record with a real, YOUNG record behind it — the state a
+  // brand-new install is actually in, and the one the standing rule is about:
+  // three days of history must SAY three days, not draw a fortnight of nothing.
+  //
+  // The fixture is deliberately lopsided: one protocol item done every day, one
+  // never done. That is the shape the screen exists to name — a protocol whose
+  // items are not getting done is a protocol to change.
+  console.log('10. Mission — the execution record behind Data’s Mission row');
+  {
+    const day = (n) => {
+      const d = new Date();
+      d.setDate(d.getDate() - n);
+      return todayISODate(d);
+    };
+    const settledDays = [day(3), day(2), day(1)];
+
+    createProtocolWithVersion(
+      db,
+      { name: 'Morning stack', type: 'supplement_stack' },
+      {
+        items: [
+          { title: 'Creatine', scheduled_time: '07:00', dose: '5 g', notes: null },
+          { title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null },
+        ],
+      }
+    );
+    for (const date of [...settledDays, today]) generateMissionForDay(db, date);
+
+    const idsOn = (date) =>
+      new Map(
+        db
+          .all(
+            `SELECT e.id, e.title FROM log_entries e
+               JOIN daily_logs d ON d.id = e.daily_log_id
+              WHERE d.date = ?`,
+            [date]
+          )
+          .map((r) => [r.title, r.id])
+      );
+    // Creatine every day, Magnesium never — including today, which is still
+    // open and must therefore not be judged.
+    for (const date of [...settledDays, today]) {
+      setMissionStatus(db, idsOn(date).get('Creatine'), 'completed');
+    }
+
+    const young = render('mission-history (4-day record)', MissionHistoryScreen);
+    expect('mission-history (4-day record)', young, [
+      '50%', // 3 of 6 over the three days that are OVER
+      'of 6 planned',
+      '3 done', // the ledger sums to the denominator beside the rate
+      '0 skipped',
+      '3 untouched',
+      '4 days on record', // the record's true extent, stated
+      'too little to read as a trend', // ...and disclaimed, because it is 3 days
+      'Judged ', // the window the rate is over, stated
+      '3 finished days', // ...and the section that shares it
+      'Morning stack', // the source, worst first
+      '3 missed', // every figure on that plate is framed as a miss
+      'of 6 planned',
+      'Magnesium', // its worst item, named
+      '3 of 3 missed',
+      'today, still open', // today is on the record but is not judged
+    ]);
+    // Today has 2 planned and 1 done. If today were folded into the rate it
+    // would read 4 of 8 = 50%… identical here by coincidence, which is exactly
+    // why the DENOMINATOR is the assertion: 6, never 8.
+    refute('mission-history (4-day record)', young, [
+      'of 8 planned',
+      'Nothing was missed',
+      '0 of 0',
+    ]);
+
+    // Now do the missing item on every settled day. "Nothing was missed" and
+    // "nothing was ever planned" are different facts and must not render
+    // alike — this is the same pair the codebase has confused twice before.
+    for (const date of settledDays) {
+      setMissionStatus(db, idsOn(date).get('Magnesium'), 'completed');
+    }
+    const clean = render('mission-history (all done)', MissionHistoryScreen);
+    expect('mission-history (all done)', clean, [
+      '100%',
+      'Nothing was missed. All 6 planned items were completed.',
+    ]);
+    refute('mission-history (all done)', clean, [
+      '3 missed',
+      'No mission has been planned yet', // the never-planned sentence, which is a different fact
     ]);
   }
 }

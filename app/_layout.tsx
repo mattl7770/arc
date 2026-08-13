@@ -182,6 +182,10 @@ export default function RootLayout() {
           <Stack.Screen name="settings-health" />
           <Stack.Screen name="wearables" />
           {/* Pushed from the Data tab. */}
+          {/* The execution record, behind Data's Mission trend row. That row
+              used to navigate to Home, which is today's plan and therefore not
+              an answer to a question about the days behind you. */}
+          <Stack.Screen name="mission-history" />
           <Stack.Screen name="protocols" />
           <Stack.Screen name="protocol-edit" />
           {/* Pushed from the protocol editor: the version timeline. */}
