@@ -63,6 +63,7 @@ import {
   portionFactor,
   recipeNutrition,
 } from '@/lib/db/repositories/recipes';
+import { catalogResolveRecipe } from '@/lib/recipes/estimate';
 import type { RecipePortion } from '@/lib/recipes/types';
 import {
   abandonExperiment,
@@ -1485,7 +1486,9 @@ function parseGroceryItems(input: Record<string, unknown>): GroceryToolItem[] {
 
 const addGroceryItemsTool: CoachTool = {
   name: 'add_grocery_items',
-  description: 'Add items to the standing grocery list. BATCH every item into ONE call.',
+  description:
+    'Add items to the standing grocery list. BATCH into ONE call and pass "qty" whenever you ' +
+    'know it. For an existing recipe use add_recipe_to_grocery_list instead.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1496,7 +1499,12 @@ const addGroceryItemsTool: CoachTool = {
           type: 'object',
           properties: {
             name: { type: 'string' },
-            qty: { type: 'string', description: 'Free text, e.g. "2 L".' },
+            // Owner report, 2026-08-12: the Coach specified a dinner down to
+            // "300 g ribeye steak" and then added a quantity-less "ribeye
+            // steak" to the list. It knew the number and dropped it, which
+            // sends the user to the shop to re-decide something already
+            // decided. The schema now names an amount rather than "free text".
+            qty: { type: 'string', description: 'Amount, e.g. "2 L", "300 g", "1 bag".' },
           },
           required: ['name'],
           additionalProperties: false,
@@ -1725,8 +1733,8 @@ function parseStepsArray(input: Record<string, unknown>): string[] {
 const saveRecipeTool: CoachTool = {
   name: 'save_recipe',
   description:
-    'Save a new recipe to the book. Its lines land UNRESOLVED, so its nutrition reads ' +
-    '"not computed" until the user links foods in the app.',
+    'Save a new recipe. Lines are priced automatically (catalog now, estimate on open) — ' +
+    'never tell the user to link anything.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1780,7 +1788,18 @@ const saveRecipeTool: CoachTool = {
         name: i.name ?? undefined,
       })),
     });
-    return json({ saved: true, id });
+    // The deterministic pricing pass, immediately (0034). Offline, free, and
+    // the reason this tool no longer has to warn about "not computed": every
+    // line stating a weight that matches a catalog food exactly is priced
+    // before the confirmation message is even written. The rest are priced by
+    // the model pass when the recipe is opened.
+    const priced = catalogResolveRecipe(db, id);
+    return json({
+      saved: true,
+      id,
+      pricedFromCatalog: priced.resolved,
+      awaitingEstimate: priced.remaining,
+    });
   },
 };
 

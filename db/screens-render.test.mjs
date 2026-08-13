@@ -181,7 +181,9 @@ const db = getDb();
     'kcal/serving', // the complete recipe's honest headline
     'ingredient',
   ]);
-  // Complete recipe: per-serving numbers + steps + resolved sub-lines.
+  // Complete recipe: per-serving numbers + steps + the per-line PROVENANCE
+  // that replaced the Link chore (0034). `your pick` is the fixture's
+  // hand-resolved line; the negligible one still says so in words.
   expect(
     'recipe-detail (complete)',
     render('recipe-detail (complete)', RecipeDetailScreen, { id: adobo }),
@@ -194,15 +196,22 @@ const db = getDb();
       'Log it',
       'Add to grocery list',
       'counts as 0, on purpose', // the negligible salt line
-      'Unlink',
+      'your pick', // provenance, not an affordance
+      'priced', // the Ingredients tally
     ]
   );
-  // Incomplete recipe: the honesty gate's copy + the Link affordance.
-  expect(
-    'recipe-detail (incomplete)',
-    render('recipe-detail (incomplete)', RecipeDetailScreen, { id: draft }),
-    ['Mystery stew', 'Nutrition not computed', 'Link']
-  );
+  // Incomplete recipe. The headless runtime has no model key, so the model pass
+  // never fires and the screen must say WHY the lines are unpriced rather than
+  // handing the user a chore — which is the whole point of the 0034 change.
+  const incomplete = render('recipe-detail (incomplete)', RecipeDetailScreen, { id: draft });
+  expect('recipe-detail (incomplete)', incomplete, [
+    'Mystery stew',
+    'not priced yet',
+    'aren’t in your food catalog',
+  ]);
+  !incomplete.includes('Link each line') && !incomplete.includes('Nutrition not computed')
+    ? ok('recipe-detail no longer asks the user to link anything')
+    : bad('the Link chore is still on the screen');
   expect(
     'recipe-edit (existing)',
     render('recipe-edit (existing)', RecipeEditScreen, { id: adobo }),

@@ -30,12 +30,15 @@ import type { NewMealItem } from '@/lib/nutrition/types';
 import type {
   NewRecipe,
   NewRecipeIngredient,
+  IngredientResolvedBy,
   RecipeIngredientRow,
   RecipeLogTarget,
   RecipeNutrition,
   RecipePortion,
   RecipeRow,
   RecipeSummary,
+  ScaledRecipeLine,
+  ScaledRecipeTotals,
 } from '@/lib/recipes/types';
 
 /** A line is resolved ⇔ it has per-batch grams + kcal snapshots (the schema
@@ -331,14 +334,23 @@ export function reorderIngredients(db: Database, recipeId: string, orderedIds: s
  * micros at this moment (the stamp). REFUSES a food with no kcal_100g — a food
  * that can't price energy can't resolve a line (the labs refusal posture);
  * the schema's grams⇔kcal coupling makes that structural.
+ *
+ * `by` records WHO priced it (0034). `'user'` is a hand-pick in the food
+ * search; `'catalog'` is the automatic pass finding an EXACT name match at a
+ * mass quantity read off the line. Same data either way — the distinction is
+ * provenance, and it is the whole reason the manual Link chore could be
+ * retired without the numbers losing their origin.
  */
 export function resolveIngredient(
   db: Database,
   ingredientId: string,
   foodId: string,
-  grams: number
+  grams: number,
+  by: IngredientResolvedBy = 'user'
 ): void {
   if (!(grams > 0)) throw new Error('grams must be > 0');
+  if (by === 'ai')
+    throw new Error('a catalog resolution is never "ai" — use resolveIngredientByModel');
   const food = getFood(db, foodId);
   if (!food) throw new Error('food not found');
   if (food.kcal_100g === null) {
@@ -347,7 +359,7 @@ export function resolveIngredient(
   const macros = macrosForGrams(food as FoodMacros, grams);
   db.run(
     `UPDATE recipe_ingredients SET food_id = ?, grams = ?, kcal = ?, protein_g = ?,
-       carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?
+       carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?, resolved_by = ?
      WHERE id = ?`,
     [
       foodId,
@@ -358,16 +370,64 @@ export function resolveIngredient(
       macros.fat_g ?? null,
       macros.fiber_g ?? null,
       serializeMicros(microsForGrams(food.micros, grams)),
+      by,
       ingredientId,
     ]
   );
 }
 
-/** Clear a line's resolution (food link + every snapshot) atomically. */
+/**
+ * Price a line from a MODEL's estimate rather than from the catalog (0034).
+ *
+ * `food_id` stays NULL — there is no catalog food behind these numbers, and
+ * pointing at one would claim a provenance the line does not have. `micros`
+ * stays NULL for the same reason: the model is asked for macros only, and a
+ * micronutrient it was never asked for must not appear as a zero. What makes
+ * this honest is `resolved_by = 'ai'`, which every surface that draws the line
+ * reads and states.
+ *
+ * kcal is required because the schema couples it to grams; the other macros
+ * are individually nullable, so a model that could not reach fiber yields no
+ * fiber rather than a confident zero.
+ */
+export function resolveIngredientByModel(
+  db: Database,
+  ingredientId: string,
+  priced: {
+    grams: number;
+    kcal: number;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+    fiber_g: number | null;
+  }
+): void {
+  if (!(priced.grams > 0)) throw new Error('grams must be > 0');
+  if (!(priced.kcal >= 0)) throw new Error('kcal must be >= 0');
+  db.run(
+    `UPDATE recipe_ingredients SET food_id = NULL, grams = ?, kcal = ?, protein_g = ?,
+       carbs_g = ?, fat_g = ?, fiber_g = ?, micros = NULL, resolved_by = 'ai'
+     WHERE id = ?`,
+    [
+      priced.grams,
+      priced.kcal,
+      priced.protein_g,
+      priced.carbs_g,
+      priced.fat_g,
+      priced.fiber_g,
+      ingredientId,
+    ]
+  );
+}
+
+/** Clear a line's resolution (food link, every snapshot, and its provenance)
+ *  atomically — the NULL-resolved_by ⇔ NULL-grams pair the schema cannot
+ *  enforce is maintained here (see the 0034 header). */
 export function unresolveIngredient(db: Database, id: string): void {
   db.run(
     `UPDATE recipe_ingredients SET food_id = NULL, grams = NULL, kcal = NULL,
-       protein_g = NULL, carbs_g = NULL, fat_g = NULL, fiber_g = NULL, micros = NULL
+       protein_g = NULL, carbs_g = NULL, fat_g = NULL, fiber_g = NULL, micros = NULL,
+       resolved_by = NULL
      WHERE id = ?`,
     [id]
   );
@@ -408,6 +468,11 @@ export function recipeNutrition(db: Database, recipeId: string): RecipeNutrition
     complete,
     unresolvedCount,
     countedCount: counted.length,
+    // How many of the counted lines a MODEL priced rather than the catalog
+    // (0034). The gate says the numbers are complete; this says what they are
+    // made of, and every screen that prints the figures prints this beside
+    // them. Without it "complete" would quietly mean two different things.
+    estimatedCount: counted.filter((l) => l.resolved_by === 'ai').length,
     perServing: {
       kcal: per('kcal'),
       protein_g: per('protein_g'),
@@ -436,6 +501,117 @@ export function portionFactor(recipe: RecipeRow, portion: RecipePortion): number
 }
 
 /**
+ * Every ingredient line scaled by `factor` — the ONE derivation behind both the
+ * Log sheet's live preview and what {@link logRecipe} writes.
+ *
+ * It exists because those two were about to be two implementations of the same
+ * arithmetic (the owner asked for the sheet to list the ingredients and macros
+ * and to move them as the servings change, 2026-08-12). A preview computed
+ * separately from the write is a promise nothing enforces: the numbers on the
+ * button and the numbers in the meal would agree only for as long as nobody
+ * touched either.
+ *
+ * Pure over rows — no database, no clock — so the sheet can call it on every
+ * keystroke, and so `db/recipes.test.mjs` can drive it directly.
+ */
+export function scaleRecipeLines(lines: RecipeIngredientRow[], factor: number): ScaledRecipeLine[] {
+  const scale = (v: number | null): number | null => (v === null ? null : v * factor);
+  return lines.map((line) => {
+    const base = {
+      id: line.id,
+      raw_text: line.raw_text,
+      name: line.name ?? line.raw_text,
+      food_id: line.food_id,
+    };
+    if (line.negligible === 1) {
+      return {
+        ...base,
+        state: 'negligible' as const,
+        grams: null,
+        kcal: null,
+        protein_g: null,
+        carbs_g: null,
+        fat_g: null,
+        fiber_g: null,
+        micros: null,
+      };
+    }
+    if (!isResolved(line)) {
+      return {
+        ...base,
+        state: 'uncounted' as const,
+        grams: null,
+        kcal: null,
+        protein_g: null,
+        carbs_g: null,
+        fat_g: null,
+        fiber_g: null,
+        micros: null,
+      };
+    }
+    return {
+      ...base,
+      state: 'counted' as const,
+      grams: line.grams * factor,
+      kcal: line.kcal * factor,
+      protein_g: scale(line.protein_g),
+      carbs_g: scale(line.carbs_g),
+      fat_g: scale(line.fat_g),
+      fiber_g: scale(line.fiber_g),
+      micros: serializeMicros(scaleMicros(parseMicros(line.micros), factor)),
+    };
+  });
+}
+
+/**
+ * Per-macro-honest sums over scaled lines: a macro is null the moment ANY
+ * counted line lacks it, exactly as {@link recipeNutrition} does one level up.
+ * A partial sum shown as a total is the failure mode this refuses.
+ *
+ * Note what it does NOT do: it makes no claim about the UNCOUNTED lines. A
+ * total of 640 kcal over three counted lines is a true statement about those
+ * three, and it is the caller's job to say beside it that two more are not in
+ * it — which is what the sheet's undercount line does.
+ */
+export function scaledTotals(scaled: ScaledRecipeLine[]): ScaledRecipeTotals {
+  const counted = scaled.filter((l) => l.state === 'counted');
+  const sum = (key: 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g'): number | null => {
+    if (counted.length === 0) return null;
+    let total = 0;
+    for (const line of counted) {
+      const v = line[key];
+      if (v === null) return null;
+      total += v;
+    }
+    return total;
+  };
+  return {
+    kcal: sum('kcal'),
+    protein_g: sum('protein_g'),
+    carbs_g: sum('carbs_g'),
+    fat_g: sum('fat_g'),
+    fiber_g: sum('fiber_g'),
+  };
+}
+
+/**
+ * The portion's scale factor, or null when the portion cannot be honoured
+ * (grams on a recipe with no recorded cooked weight, a non-positive amount).
+ *
+ * {@link portionFactor} throws, which is right for a write and wrong for a live
+ * preview that re-renders on every keystroke — half a typed number is not an
+ * error, it is a number being typed. Same function underneath, so the sheet and
+ * the write can never disagree about what a portion means.
+ */
+export function portionFactorOrNull(recipe: RecipeRow, portion: RecipePortion): number | null {
+  try {
+    return portionFactor(recipe, portion);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Cook a recipe into a real logged meal — the "explode": each counted line
  * becomes a meal_item with its per-batch SNAPSHOT scaled by pure
  * multiplication (never a catalog read); unresolved non-negligible lines
@@ -445,6 +621,9 @@ export function portionFactor(recipe: RecipeRow, portion: RecipePortion): number
  * "salt to taste" as an uncounted meal item would false-flag the meal as
  * undercounted). The meal carries recipe_id and keeps source='manual'.
  * Returns null when the recipe is gone or has no ingredient lines.
+ *
+ * The scaling itself is {@link scaleRecipeLines}, shared with the Log sheet's
+ * preview — this function only decides what becomes a meal item.
  */
 export function logRecipe(
   db: Database,
@@ -457,26 +636,25 @@ export function logRecipe(
   const lines = listIngredients(db, recipeId);
   const factor = portionFactor(recipe, portion);
 
-  const scale = (v: number | null): number | null => (v === null ? null : v * factor);
   const items: NewMealItem[] = [];
   let uncountedCount = 0;
-  for (const line of lines) {
-    if (line.negligible === 1) continue;
-    if (isResolved(line)) {
+  for (const line of scaleRecipeLines(lines, factor)) {
+    if (line.state === 'negligible') continue;
+    if (line.state === 'counted') {
       items.push({
         food_id: line.food_id,
-        name: line.name ?? line.raw_text,
-        grams: line.grams * factor,
-        kcal: line.kcal * factor,
-        protein_g: scale(line.protein_g),
-        carbs_g: scale(line.carbs_g),
-        fat_g: scale(line.fat_g),
-        fiber_g: scale(line.fiber_g),
-        micros: serializeMicros(scaleMicros(parseMicros(line.micros), factor)),
+        name: line.name,
+        grams: line.grams,
+        kcal: line.kcal,
+        protein_g: line.protein_g,
+        carbs_g: line.carbs_g,
+        fat_g: line.fat_g,
+        fiber_g: line.fiber_g,
+        micros: line.micros,
       });
     } else {
       uncountedCount += 1;
-      items.push({ name: line.name ?? line.raw_text });
+      items.push({ name: line.name });
     }
   }
   if (items.length === 0) return null;
@@ -533,6 +711,22 @@ export function saveMealAsRecipe(
     });
   });
   return id;
+}
+
+// --- 0034: the photo, and the AI estimate --------------------------------------
+
+/** Point a recipe at a photo file, or detach it. The FILE side is owned by
+ *  src/lib/media/recipe-photo-store.ts — never call this directly, or a name
+ *  and its bytes can disagree. */
+export function setRecipePhotoName(db: Database, id: string, fileName: string | null): void {
+  db.run('UPDATE recipes SET photo_file_name = ? WHERE id = ?', [fileName, id]);
+}
+
+/** Every recipe that claims a photo file — the sweep's first pass. */
+export function allRecipePhotoNames(db: Database): { id: string; photo_file_name: string }[] {
+  return db.all<{ id: string; photo_file_name: string }>(
+    'SELECT id, photo_file_name FROM recipes WHERE photo_file_name IS NOT NULL'
+  );
 }
 
 /** Book size — the Nutrition hub's "N recipes" line. */

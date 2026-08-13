@@ -24,15 +24,13 @@
  *
  * ## Native modules, guarded
  *
- * `expo-file-system` ships inside the current binary (it is a dependency of the
- * `expo` package itself, which is why the labs PDF picker was built on it) —
- * but it is still native, and this module is imported by app/_layout.tsx, a
- * route file. Expo Router eagerly loads every route to build its manifest, so a
- * module-scope throw here would break app STARTUP rather than one screen. Hence
- * the require lives in a function, in a try/catch, and its absence is a `null`
- * store that every caller already handles: no photo is written, no photo is
- * shown, and nothing crashes. That is also what lets the headless suites import
- * this file and drive the sweep against a fake store.
+ * The file half lives behind {@link PhotoFileStore}
+ * (src/lib/media/photo-file-store.ts), which owns the guarded `expo-file-system`
+ * require and the in-memory-fake seam the headless suites drive the sweep
+ * against. It was extracted there on 2026-08-12 when recipes gained a photo of
+ * their own (0034) and needed the same store over a different directory. What
+ * stayed here is everything that is about MEALS — chiefly the retention policy,
+ * which recipes deliberately do not share.
  *
  * ## Retention
  *
@@ -48,7 +46,10 @@ import {
   latestMealPhoto,
   mealPhotoFileNames,
 } from '@/lib/db/repositories/nutrition';
+import { nativeStoreIn, photoFileName, type PhotoFileStore } from '@/lib/media/photo-file-store';
 import type { MealPhotoSource } from '@/lib/nutrition/types';
+
+export type { PhotoFileStore };
 
 /**
  * How long a meal photo is kept, in days.
@@ -79,152 +80,12 @@ export const MEAL_PHOTO_RETENTION_DAYS = 7;
 export const MEAL_PHOTO_DIR = 'meal-photos';
 
 /**
- * The file side, behind an interface.
- *
- * Not indirection for its own sake: the retention sweep is the part of this
- * feature most likely to be wrong (three passes, two stores, an ordering that
- * matters) and the part least testable on a device. Behind this seam it runs
- * against an in-memory fake in db/nutrition-v2.test.mjs with the REAL database
- * underneath, which is the same trade `MigrationExecutor` and {@link Database}
- * already make in this codebase.
- *
- * Every method is best-effort and total: no method throws, because a failure to
- * touch one file must never take down an app-open sweep.
- */
-export type PhotoFileStore = {
-  /** Base names currently in the photo directory ([] when it does not exist). */
-  list(): string[];
-  exists(name: string): boolean;
-  /** True when the file is gone afterwards — including when it was already. */
-  remove(name: string): boolean;
-  /** Write a base64 JPEG under `name`; false if nothing landed. */
-  write(name: string, base64Jpeg: string): boolean;
-  /** A `file://` URI an `<Image>` can load, or null. */
-  uri(name: string): string | null;
-};
-
-/** The slice of expo-file-system's File/Directory API this module uses. */
-type FileHandle = {
-  uri: string;
-  exists: boolean;
-  create(options?: { intermediates?: boolean; overwrite?: boolean }): void;
-  write(content: string, options?: { encoding?: 'utf8' | 'base64' }): void;
-  delete(): void;
-};
-type DirectoryHandle = {
-  uri: string;
-  exists: boolean;
-  name: string;
-  create(options?: { intermediates?: boolean; idempotent?: boolean }): void;
-  list(): { name: string }[];
-};
-type FileSystemModule = {
-  Paths: { document: unknown };
-  File: new (...parts: unknown[]) => FileHandle;
-  Directory: new (...parts: unknown[]) => DirectoryHandle;
-};
-
-/**
- * The module, or null on a runtime without it (the web logic-check preview, the
- * headless suites). Resolved lazily and never at import time — see the header.
- */
-function loadFileSystem(): FileSystemModule | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('expo-file-system') as Partial<FileSystemModule>;
-    if (typeof mod.File !== 'function' || typeof mod.Directory !== 'function' || !mod.Paths) {
-      return null;
-    }
-    return mod as FileSystemModule;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The real store, or null when `expo-file-system` is not reachable.
- *
- * The directory is created on demand rather than at boot: a user who never
- * photographs a meal never gets an empty folder in their backup, and a create
- * that races itself is idempotent.
+ * The meal photo directory's store, or null when `expo-file-system` is not
+ * reachable. A thin binding of {@link nativeStoreIn} to {@link MEAL_PHOTO_DIR}
+ * — the generic half lives in src/lib/media/photo-file-store.ts.
  */
 export function nativePhotoStore(): PhotoFileStore | null {
-  const fs = loadFileSystem();
-  if (!fs) return null;
-
-  const dir = (): DirectoryHandle => new fs.Directory(fs.Paths.document, MEAL_PHOTO_DIR);
-  const file = (name: string): FileHandle => new fs.File(fs.Paths.document, MEAL_PHOTO_DIR, name);
-
-  return {
-    list() {
-      try {
-        const d = dir();
-        if (!d.exists) return [];
-        // Entries are File | Directory; ours only ever holds .jpg files, and
-        // filtering on that keeps a stray subdirectory out of the orphan pass
-        // (which would try to delete it as a file and fail every launch).
-        return d
-          .list()
-          .map((entry) => entry.name)
-          .filter((name) => typeof name === 'string' && name.endsWith('.jpg'));
-      } catch {
-        return [];
-      }
-    },
-    exists(name) {
-      try {
-        return file(name).exists;
-      } catch {
-        return false;
-      }
-    },
-    remove(name) {
-      try {
-        const f = file(name);
-        if (!f.exists) return true;
-        f.delete();
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    write(name, base64Jpeg) {
-      try {
-        const d = dir();
-        if (!d.exists) d.create({ intermediates: true, idempotent: true });
-        const f = file(name);
-        if (!f.exists) f.create({ intermediates: true });
-        // `encoding: 'base64'` writes the DECODED bytes; without it the base64
-        // text itself lands on disk and every reader gets a corrupt JPEG.
-        f.write(base64Jpeg, { encoding: 'base64' });
-        return f.exists;
-      } catch {
-        return false;
-      }
-    },
-    uri(name) {
-      try {
-        return file(name).uri;
-      } catch {
-        return null;
-      }
-    },
-  };
-}
-
-/**
- * A name for a new photo file.
- *
- * Deliberately NOT `newId(db)`: that one is minted by SQLite's `randomblob`
- * (src/lib/db/id.ts — Hermes has no `crypto` global) and it is the ROW's id,
- * which `insertMealPhoto` generates for itself. This only has to be a
- * collision-free base name, and 0033's UNIQUE on `file_name` is what makes that
- * enforceable rather than hoped for: a collision fails the insert, the write is
- * undone, and nothing is silently overwritten.
- */
-function photoFileName(): string {
-  const rand = () => Math.random().toString(36).slice(2, 10);
-  return `${Date.now().toString(36)}-${rand()}${rand()}.jpg`;
+  return nativeStoreIn(MEAL_PHOTO_DIR);
 }
 
 /** A downscaled JPEG on its way to disk — the shape both capture paths produce

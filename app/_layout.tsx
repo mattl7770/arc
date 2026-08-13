@@ -14,6 +14,7 @@ import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { getDb } from '@/lib/db/client';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
 import { runMealPhotoSweep } from '@/lib/media/meal-photo-store';
+import { runRecipePhotoSweep } from '@/lib/media/recipe-photo-store';
 import {
   configureNotificationPresentation,
   registerNotificationRouting,
@@ -76,6 +77,10 @@ export default function RootLayout() {
   useEffect(() => {
     void apiKeyStore.hydrate();
     runMealPhotoSweep(getDb());
+    // And the recipe photo directory (0034). Same reconciliation, deliberately
+    // NO expiry pass: a recipe photo is part of a document the owner keeps for
+    // years, not evidence for one day's estimate.
+    runRecipePhotoSweep(getDb());
     // Show notifications that fire while ARC is open (iOS drops them silently
     // otherwise) and route a tapped one where it belongs, instead of dumping
     // the user on Home with no idea why the phone buzzed.

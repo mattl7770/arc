@@ -28,9 +28,32 @@ function bucket(freshness: number): MuscleFreshness['state'] {
 }
 
 /**
+ * How far ahead of `now` a set may parse and still be treated as having just
+ * happened, rather than as a future set to ignore.
+ *
+ * **One minute, and the reason is a real bug this hid.** `whenIso` comes from a
+ * row stamped by SQLite's `strftime('%Y-%m-%dT%H:%M:%fZ','now')`, which reads a
+ * finer-grained clock than `Date.now()` exposes on Windows (and on any platform
+ * whose timer granularity is coarser than a millisecond). So a set written
+ * microseconds ago can parse a few MILLISECONDS ahead of the JS clock — and the
+ * old guard, a bare `dh < 0`, then discarded every set of the workout just
+ * logged and reported **"16 of 16 fresh" immediately after a session**. It was
+ * found by a flaky render test on 2026-08-12, exactly as the identical hazard
+ * in `daysUntilExpiry` (src/lib/media/meal-photo-store.ts) was.
+ *
+ * The guard itself is kept, because it is doing real work: a set genuinely
+ * dated in the future is a plan, not a session, and must not deplete anything
+ * today. A minute separates the two beyond argument — no clock skew produces
+ * it, and no user logs a set sixty seconds before doing it.
+ */
+const SKEW_TOLERANCE_HOURS = 1 / 60;
+
+/**
  * The freshness ledger: one entry per muscle in display order, every muscle
- * present (a never-trained muscle reads 100 / fresh / null). Warmup sets and
- * sets in the future relative to `now` are ignored.
+ * present (a never-trained muscle reads 100 / fresh / null). Warmup sets are
+ * ignored; so is a set genuinely dated in the future, while one that merely
+ * parses a few milliseconds ahead of the clock is treated as just-now (see
+ * {@link SKEW_TOLERANCE_HOURS}).
  */
 export function muscleFreshness(loads: MuscleLoad[], now: Date = new Date()): MuscleFreshness[] {
   const nowMs = now.getTime();
@@ -39,8 +62,12 @@ export function muscleFreshness(loads: MuscleLoad[], now: Date = new Date()): Mu
 
   for (const load of loads) {
     if (load.setType === 'warmup') continue;
-    const dh = (nowMs - Date.parse(load.whenIso)) / HOUR_MS;
-    if (!Number.isFinite(dh) || dh < 0) continue;
+    const raw = (nowMs - Date.parse(load.whenIso)) / HOUR_MS;
+    if (!Number.isFinite(raw) || raw < -SKEW_TOLERANCE_HOURS) continue;
+    // Clamped, not discarded — see SKEW_TOLERANCE_HOURS. A set logged this
+    // instant is zero hours old, which is the most fatiguing it will ever be;
+    // dropping it was the opposite answer.
+    const dh = Math.max(0, raw);
     const contrib =
       load.roleWeight *
       effortWeight(load.rpe, load.setType === 'failure') *

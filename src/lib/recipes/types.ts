@@ -30,9 +30,30 @@ export type RecipeRow = {
   tags: JsonText | null;
   notes: string | null;
   is_favorite: SqliteBool;
+  /** 0034: the photo's BASE NAME inside the recipe photo directory, never a
+   *  path (iOS re-issues the container UUID on every install). Resolved to a
+   *  URI at read time by src/lib/media/recipe-photo-store.ts. */
+  photo_file_name: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
+
+/**
+ * Who priced an ingredient line (0034). NULL ⇔ the line is unresolved.
+ *
+ * The manual Link chore was retired on 2026-08-12 in favour of pricing every
+ * line automatically — but the reason it existed was PROVENANCE, not the
+ * tapping, so the provenance became a column instead of disappearing with it:
+ *
+ *   `user`     the user picked the catalog food by hand (still available as the
+ *              correction path, and what every pre-0034 resolution was)
+ *   `catalog`  an EXACT catalog name match at a mass quantity read off the line
+ *              itself — same data as `user`, reached without asking. Never
+ *              fuzzy: exact name or leading phrase, or no match at all.
+ *   `ai`       a model priced the line. A genuine estimate, and every surface
+ *              that draws it says so.
+ */
+export type IngredientResolvedBy = 'user' | 'catalog' | 'ai';
 
 /**
  * A `recipe_ingredients` row. `raw_text` is the source of truth; qty/unit/name
@@ -59,6 +80,10 @@ export type RecipeIngredientRow = {
   fiber_g: number | null;
   micros: JsonText | null;
   negligible: SqliteBool;
+  /** 0034: who priced this line. NULL ⇔ unresolved — the pair the schema
+   *  cannot enforce as a CHECK (see the 0034 header) and the repository
+   *  maintains. */
+  resolved_by: IngredientResolvedBy | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -113,6 +138,13 @@ export type RecipeNutrition = {
   unresolvedCount: number;
   /** Lines counted into the sums (resolved, non-negligible). */
   countedCount: number;
+  /**
+   * Of those, how many a MODEL priced rather than the catalog (0034).
+   * `complete` says the numbers add up; this says what they are made of, and
+   * every screen that prints the figures prints this beside them — otherwise
+   * "complete" would quietly mean two different things.
+   */
+  estimatedCount: number;
   perServing: {
     kcal: number | null;
     protein_g: number | null;
@@ -124,6 +156,52 @@ export type RecipeNutrition = {
 
 /** The portion argument to logRecipe: servings XOR grams-of-cooked-dish. */
 export type RecipePortion = { servings: number } | { grams: number };
+
+/**
+ * Which of the three things an ingredient line is, once a portion is applied.
+ * The distinction is the whole honesty story of a recipe log:
+ *   - `counted`    — resolved, carries real scaled numbers.
+ *   - `uncounted`  — unresolved and not excused: it WILL be logged by name with
+ *                    no macros, so the meal is a known undercount.
+ *   - `negligible` — zero by the user's own declaration ("salt to taste"), so
+ *                    it is neither counted nor a shortfall.
+ */
+export type RecipeLineState = 'counted' | 'uncounted' | 'negligible';
+
+/**
+ * One ingredient line scaled to a portion. The single derivation behind both
+ * what the Log sheet lists and what `logRecipe` writes — so the preview cannot
+ * promise a number the write does not produce.
+ *
+ * Every macro is null on a non-counted line, and individually nullable on a
+ * counted one (a resolving food may genuinely lack fiber).
+ */
+export type ScaledRecipeLine = {
+  id: string;
+  /** The line as written — what the reader recognises on the sheet. */
+  raw_text: string;
+  /** The name the logged meal item takes. */
+  name: string;
+  food_id: string | null;
+  state: RecipeLineState;
+  grams: number | null;
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  fiber_g: number | null;
+  micros: JsonText | null;
+};
+
+/** Per-macro-honest sums over a set of scaled lines: null where ANY counted
+ *  line lacks that macro, never a partial sum printed as a total. */
+export type ScaledRecipeTotals = {
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  fiber_g: number | null;
+};
 
 /** logRecipe's date/time target (todayISODate + optional wall-clock time). */
 export type RecipeLogTarget = { date: DateString; time: TimeString | null };

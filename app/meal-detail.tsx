@@ -37,6 +37,23 @@ import type { FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/type
  * delete. Free-form meals (no items) show their directly-recorded totals; once
  * items exist, the repository owns the totals.
  *
+ * ## Correcting it in words (owner, 2026-08-12)
+ *
+ * *"I should be able to use plain-text input to have AI edit a meal. I.e.
+ * 'Actually, that was cooked in olive oil not butter'."* The **Adjust with AI**
+ * row is the first action on this screen, because correcting a meal is the
+ * thing you come back to it for; Log again and the two Save-as rows are about
+ * reusing it, which is a later act.
+ *
+ * It PUSHES rather than expanding inline, and that is the point: a revision
+ * replaces a record already counted into the day, the week and the Coach's
+ * snapshot, so it is a pending write in the strict sense (00-design-spec.md §5)
+ * and gets a proposal, a stated consequence and a confirm. Inline it would have
+ * had to draw the old numbers and the new ones at once — the one thing §5
+ * forbids. Nothing here changes until Save on that screen
+ * (app/meal-revise.tsx → `replaceMealItems`, which touches the items and
+ * nothing else).
+ *
  * ## Two additions from the owner's device pass, 2026-08-12
  *
  * **The time is editable.** A meal's clock time — and its DAY — could not be
@@ -597,11 +614,25 @@ export default function MealDetailScreen() {
       {/* Actions */}
       <View className="mt-8">
         <Block device="plate">
+          {/* Correct it in words (owner, 2026-08-12). First row because it is
+              the thing you come back to a logged meal to do — the other two
+              actions are about reusing it, which is a later act. The screen it
+              opens is a pending write: nothing changes until it is confirmed
+              there (app/meal-revise.tsx). */}
+          <ActionRow
+            icon="sparkles-outline"
+            label="Adjust with AI"
+            detail="“Actually, that was cooked in olive oil not butter”"
+            first
+            accessibilityLabel="Adjust this meal by describing what was different"
+            onPress={() => router.push({ pathname: '/meal-revise', params: { id: meal.id } })}
+          />
+
           <ActionRow
             icon="repeat-outline"
             label="Log again"
             detail="Duplicates this meal onto today, timed now"
-            first
+            first={false}
             accessibilityLabel="Log this meal again now"
             onPress={logAgain}
           />

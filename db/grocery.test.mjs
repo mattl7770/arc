@@ -13,9 +13,11 @@ import { createFood } from '../src/lib/db/repositories/foods.ts';
 import {
   addGroceryItems,
   addRecipeToGroceryList,
+  cartCutoff,
+  cartSections,
   checkGroceryItem,
   checkedGroceryCount,
-  clearCheckedItems,
+  clearCartSection,
   consolidatedOpenList,
   getGroceryItem,
   getNamePref,
@@ -27,6 +29,7 @@ import {
   removeGroceryItem,
   searchGroceryHistory,
   setStaple,
+  splitCart,
   uncheckGroceryItem,
   updateGroceryItem,
 } from '../src/lib/db/repositories/grocery.ts';
@@ -185,7 +188,7 @@ function freshDb() {
   if (listOpenGroceryItems(db).length === 2) ok('uncheck restores an item');
   else bad('uncheck');
   checkGroceryItem(db, a.id);
-  const cleared = clearCheckedItems(db);
+  const cleared = clearCartSection(db, 'cart');
   if (
     cleared === 2 &&
     listOpenGroceryItems(db).length === 1 &&
@@ -377,10 +380,85 @@ console.log('12. the Eat tab counts: LINES to buy, and the cart that survives');
 
   // The state nobody designs: an empty open list over a full cart. The hub says
   // "Nothing left to buy · 3 in the cart" rather than "Nothing on the list".
-  clearCheckedItems(db);
+  clearCartSection(db, 'cart');
   checkedGroceryCount(db) === 0 && openGroceryLineCount(db) === 0
     ? ok('clearing the cart empties both counts')
     : bad('after clear');
+}
+
+// ============================================================================
+// The two cart sections (owner, 2026-08-12): anything checked off more than a
+// day ago moves out of "In cart" and into "Old carts", and each section clears
+// on its own.
+// ============================================================================
+
+console.log('\n13. splitCart: the 24-hour boundary, pure over the rows');
+{
+  const cutoff = '2026-08-12T09:00:00.000Z';
+  const row = (id, checked_at) => ({ id, name: id, checked_at });
+  const { cart, old } = splitCart(
+    [
+      row('just-now', '2026-08-12T12:00:00.000Z'),
+      // Exactly ON the boundary belongs to the CURRENT cart: the comparison is
+      // >=, so an item does not fall out of the trolley at the same instant the
+      // window opens onto it.
+      row('on-the-line', cutoff),
+      row('a-second-earlier', '2026-08-12T08:59:59.999Z'),
+      row('last-week', '2026-08-05T18:00:00.000Z'),
+      // Cannot occur (callers select checked_at IS NOT NULL) — but if it ever
+      // did it must land somewhere rather than vanish.
+      row('impossible', null),
+    ],
+    cutoff
+  );
+  cart.map((i) => i.id).join(',') === 'just-now,on-the-line'
+    ? ok('the current cart is everything checked at or after the cutoff')
+    : bad('cart', cart.map((i) => i.id).join(','));
+  old.map((i) => i.id).join(',') === 'a-second-earlier,last-week,impossible'
+    ? ok('older check-offs — and a NULL — fall to old carts, nothing is dropped')
+    : bad('old', old.map((i) => i.id).join(','));
+
+  const then = new Date('2026-08-12T12:00:00.000Z');
+  cartCutoff(then) === '2026-08-11T12:00:00.000Z'
+    ? ok('cartCutoff is exactly 24h back, not "yesterday midnight"')
+    : bad('cutoff', cartCutoff(then));
+}
+
+console.log('\n14. cartSections + clearCartSection: each scope clears only itself');
+{
+  const { db } = freshDb();
+  addGroceryItems(db, [{ name: 'Milk' }, { name: 'Oats' }, { name: 'Rice' }]);
+  const [milk, oats, rice] = listOpenGroceryItems(db);
+  for (const item of [milk, oats, rice]) checkGroceryItem(db, item.id);
+  // Age two of them past the boundary by writing checked_at directly — the
+  // repository never back-dates a check-off, and the test must not pretend it
+  // can. This is the same raw-SQL staging the purge test uses.
+  db.run(`UPDATE grocery_items SET checked_at = '2026-01-01T10:00:00.000Z' WHERE id IN (?, ?)`, [
+    oats.id,
+    rice.id,
+  ]);
+
+  const split = cartSections(db);
+  split.cart.length === 1 && split.cart[0].id === milk.id
+    ? ok('only the fresh check-off is in the cart')
+    : bad('cart section', JSON.stringify(split.cart.map((i) => i.name)));
+  split.old.length === 2
+    ? ok('the two aged rows are in old carts')
+    : bad('old section', JSON.stringify(split.old.map((i) => i.name)));
+
+  const clearedOld = clearCartSection(db, 'old');
+  const after = cartSections(db);
+  clearedOld === 2 && after.old.length === 0 && after.cart.length === 1
+    ? ok('clearing old carts leaves today’s cart standing')
+    : bad('scoped clear', `${clearedOld} / ${after.cart.length} / ${after.old.length}`);
+  getNamePref(db, 'oats')?.times_added === 1
+    ? ok('and the prefs memory survives it, exactly as before')
+    : bad('prefs survive scoped clear');
+
+  const clearedCart = clearCartSection(db, 'cart');
+  clearedCart === 1 && checkedGroceryCount(db) === 0
+    ? ok('clearing the cart takes the last one')
+    : bad('cart clear', String(clearedCart));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

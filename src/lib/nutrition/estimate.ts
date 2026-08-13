@@ -262,6 +262,138 @@ export async function estimateMeal(
   return parseMealEstimate(text.length > 0 ? text : result.text);
 }
 
+// --- Revising a logged meal in plain English ---------------------------------
+//
+// Owner request, 2026-08-12: *"I should be able to use plain-text input to have
+// AI edit a meal. I.e. 'Actually, that was cooked in olive oil not butter' and
+// it then makes those changes."*
+//
+// The correction path was manual and item-shaped: open the meal, find the
+// butter row, remove it, search the catalog for olive oil, add it, set its
+// grams. Six interactions to state one fact. That is also the moment a
+// correction is least likely to be made — you are remembering something about a
+// meal you have already logged and moved on from.
+//
+// It reuses the estimator wholesale rather than growing a second pipeline: the
+// model returns THE WHOLE REVISED ITEM LIST in the same JSON shape, so
+// {@link parseMealEstimate} validates it, {@link groundMealEstimate} re-prices
+// it against the catalog, and the review screen is the same editable table with
+// the same guarantees. One schema, one parser, one review.
+//
+// **A revision is a proposal, exactly like an estimate.** Nothing is written
+// until the user confirms it on the review screen — which matters more here
+// than for a new meal, because this one REPLACES a record that already exists.
+
+/** The meal as it stands, the way the model is shown it. */
+export type MealRevisionSubject = {
+  name: string;
+  items: {
+    name: string;
+    grams: number | null;
+    kcal: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+  }[];
+};
+
+/**
+ * The revision system prompt.
+ *
+ * Its whole job is restraint. The failure mode is not a bad number, it is a
+ * model that re-estimates the entire meal because it was asked about one
+ * ingredient — so the instruction to leave untouched items byte-identical is
+ * stated first, stated twice, and is the reason the reply carries the full list
+ * rather than a patch (a full list that must round-trip unchanged is checkable
+ * on screen; a patch is not).
+ */
+export const MEAL_REVISION_SYSTEM_PROMPT = [
+  'You revise an already-logged meal for a longevity-focused food logger, following one',
+  'plain-English correction from the user.',
+  '',
+  'Rules:',
+  '- Return the COMPLETE revised item list, not a patch.',
+  '- Change ONLY what the correction implies. Every other item must come back with the same',
+  '  name, grams and macros it went in with — do not re-estimate the meal.',
+  '- A correction may remove an item, add one, rename one, or change its portion. Apply what',
+  '  was actually said and nothing more.',
+  '- When a swap changes the cooking fat, carry the portion across sensibly (the same amount',
+  '  of oil as there was butter) unless the user gave an amount.',
+  '- Keep per-item confidence honest: an item the user has just corrected is usually more',
+  '  certain, not less; one you had to infer is "low".',
+  '- Use the notes field to say what you changed, in one short sentence.',
+  '',
+  'Respond with ONLY a JSON object, no prose, matching:',
+  '{"title": string, "items": [{"name": string, "grams": number|null, "kcal": number,',
+  ' "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null,',
+  ' "confidence": "high"|"medium"|"low"}], "notes": string|null}',
+].join('\n');
+
+/** Build the revision request: the meal as it stands, then the correction. */
+export function buildMealRevisionRequest(
+  meal: MealRevisionSubject,
+  instruction: string
+): MealEstimationRequest {
+  const rows = meal.items.map((item) => {
+    const parts = [
+      item.grams === null ? null : `${Math.round(item.grams)} g`,
+      item.kcal === null ? null : `${Math.round(item.kcal)} kcal`,
+      item.protein_g === null ? null : `P ${Math.round(item.protein_g)}`,
+      item.carbs_g === null ? null : `C ${Math.round(item.carbs_g)}`,
+      item.fat_g === null ? null : `F ${Math.round(item.fat_g)}`,
+    ].filter(Boolean);
+    // An unpriced item says so in words. A blank tail would read as zero, and
+    // the model would return zeros for it.
+    return `- ${item.name}${parts.length > 0 ? ` — ${parts.join(', ')}` : ' — no numbers recorded'}`;
+  });
+  const text = [
+    `Logged meal: ${meal.name}`,
+    'Items as they stand:',
+    ...rows,
+    '',
+    `Correction from the user: ${instruction}`,
+  ].join('\n');
+  return {
+    system: MEAL_REVISION_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+  };
+}
+
+/**
+ * Apply a plain-English correction to a logged meal — one turn through the
+ * Coach's model client, no tools. Throws
+ * {@link MealEstimationUnavailableError} when no key is set or the streaming
+ * fetch is absent. The result is NOT written: the caller grounds it and lands
+ * it in an editable review the user must confirm.
+ */
+export async function reviseMeal(
+  meal: MealRevisionSubject,
+  instruction: string,
+  signal?: AbortSignal
+): Promise<MealEstimate> {
+  const apiKey = apiKeyStore.get();
+  const fetchImpl = loadStreamingFetch();
+  if (!apiKey || !fetchImpl) throw new MealEstimationUnavailableError();
+
+  const req = buildMealRevisionRequest(meal, instruction);
+  let text = '';
+  const result = await runCoachTurn(
+    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
+    { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
+    {
+      onToken: (chunk) => {
+        text += chunk;
+      },
+      signal,
+      executeTool: async () => ({ content: '' }),
+    }
+  );
+  if (result.stopReason === 'refusal') {
+    throw new Error('The model declined to revise this meal.');
+  }
+  return parseMealEstimate(text.length > 0 ? text : result.text);
+}
+
 /**
  * A catalog match confident enough to re-price from. A generic single-token
  * name ("rice", "chicken", "egg") is deliberately NOT confident — the top

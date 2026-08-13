@@ -196,6 +196,12 @@ export default function DataScreen() {
 
   const openTrend = (key: TrendKey) => {
     switch (key) {
+      case 'mission':
+        // The mission IS Home's, so the row goes to the tab that owns it rather
+        // than to a second copy of it. `navigate`, not `push`: Home is already
+        // mounted in the bar, and pushing would stack a duplicate on top of it.
+        router.navigate('/');
+        return;
       case 'weight':
         // `from` names this screen on the keypad's back control. That screen is
         // reached from the Log tab twice and from here once, and the sheet's

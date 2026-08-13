@@ -30,6 +30,7 @@ import {
   logMeal,
   logMealWithItems,
   nutritionHistory,
+  replaceMealItems,
   setNutritionTargets,
   todayTotals,
   updateMealItemPortion,
@@ -44,6 +45,7 @@ import {
 } from '../src/lib/media/meal-photo-store.ts';
 import {
   buildMealEstimationRequest,
+  buildMealRevisionRequest,
   groundMealEstimate,
   parseMealEstimate,
 } from '../src/lib/nutrition/estimate.ts';
@@ -874,6 +876,110 @@ console.log('19. retention is keyed on the PHOTO’s age, not on the meal’s da
   getMeal(db, mealId)
     ? ok('and the meal itself is untouched by either sweep')
     : bad('sweep deleted a meal');
+}
+
+// ============================================================================
+// 20. The plain-English revision (owner, 2026-08-12): "Actually, that was
+// cooked in olive oil not butter". Two halves — the write, which must replace
+// ONLY the items, and the request, which must show the model what it is
+// correcting.
+// ============================================================================
+
+console.log('\n20. replaceMealItems: swaps the items and nothing else');
+{
+  const { db } = freshDb();
+  const { mealId } = logMealWithItems(db, {
+    date: '2026-08-12',
+    time: '19:30',
+    name: 'Steak dinner',
+    notes: 'felt heavy',
+    source: 'ai_suggested',
+    items: [
+      { name: 'Ribeye', grams: 300, kcal: 800, protein_g: 60, carbs_g: 0, fat_g: 62 },
+      { name: 'Butter', grams: 28, kcal: 200, protein_g: 0, carbs_g: 0, fat_g: 23 },
+    ],
+  });
+  const beforeMeal = getMeal(db, mealId);
+
+  const ids = replaceMealItems(db, mealId, [
+    { name: 'Ribeye', grams: 300, kcal: 800, protein_g: 60, carbs_g: 0, fat_g: 62 },
+    { name: 'Olive oil', grams: 28, kcal: 248, protein_g: 0, carbs_g: 0, fat_g: 28 },
+  ]);
+  const items = listMealItems(db, mealId);
+  const after = getMeal(db, mealId);
+
+  ids.length === 2 && items.length === 2
+    ? ok('the old items are gone and exactly the new ones remain')
+    : bad('item swap', String(items.length));
+  items.map((i) => i.name).join(',') === 'Ribeye,Olive oil'
+    ? ok('in the order they were given')
+    : bad('order', items.map((i) => i.name).join(','));
+  after.kcal === 1048 && after.fat_g === 90
+    ? ok('the meal’s totals are re-derived from the new items (1048 kcal, 90 g fat)')
+    : bad('totals', `${after.kcal}/${after.fat_g}`);
+  after.date === beforeMeal.date &&
+  after.time === beforeMeal.time &&
+  after.name === beforeMeal.name &&
+  after.notes === beforeMeal.notes &&
+  after.source === beforeMeal.source
+    ? ok('date, time, name, notes and source are all untouched — a revision is about the items')
+    : bad('meal identity moved', JSON.stringify(after));
+
+  let refused = false;
+  try {
+    replaceMealItems(db, mealId, []);
+  } catch {
+    refused = true;
+  }
+  refused && listMealItems(db, mealId).length === 2
+    ? ok('an empty revision is REFUSED — emptying a meal is a different, deliberate act')
+    : bad('empty revision accepted');
+}
+
+console.log('\n20b. buildMealRevisionRequest: the model sees the meal it is correcting');
+{
+  const req = buildMealRevisionRequest(
+    {
+      name: 'Steak dinner',
+      items: [
+        { name: 'Ribeye', grams: 300, kcal: 800, protein_g: 60, carbs_g: 0, fat_g: 62 },
+        // The unpriced case: a blank tail would read as zero and come back zero.
+        {
+          name: 'Side salad',
+          grams: null,
+          kcal: null,
+          protein_g: null,
+          carbs_g: null,
+          fat_g: null,
+        },
+      ],
+    },
+    'that was cooked in olive oil, not butter'
+  );
+  const text = req.messages[0].content[0].text;
+  text.includes('Logged meal: Steak dinner') && text.includes('- Ribeye — 300 g, 800 kcal')
+    ? ok('the current items are listed with their numbers')
+    : bad('items in request', text);
+  text.includes('- Side salad — no numbers recorded')
+    ? ok('and an unpriced item SAYS so rather than showing a blank tail')
+    : bad('unpriced item', text);
+  text.includes('Correction from the user: that was cooked in olive oil, not butter')
+    ? ok('the correction is quoted verbatim')
+    : bad('correction missing', text);
+  req.system.includes('Change ONLY what the correction implies')
+    ? ok('and the system prompt leads with restraint, not with estimation')
+    : bad('system prompt');
+
+  // The reply shape is the estimator's, which is the whole point — one parser.
+  const parsed = parseMealEstimate(
+    '{"title":"Steak dinner","items":[{"name":"Ribeye","grams":300,"kcal":800,"protein_g":60,' +
+      '"carbs_g":0,"fat_g":62,"fiber_g":0,"confidence":"high"},{"name":"Olive oil","grams":28,' +
+      '"kcal":248,"protein_g":0,"carbs_g":0,"fat_g":28,"fiber_g":0,"confidence":"medium"}],' +
+      '"notes":"Swapped butter for olive oil at the same weight."}'
+  );
+  parsed.items.length === 2 && parsed.items[1].name === 'Olive oil' && parsed.notes !== null
+    ? ok('a revision reply parses through the estimator’s own parser')
+    : bad('revision parse', JSON.stringify(parsed));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
