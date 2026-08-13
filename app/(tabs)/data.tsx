@@ -273,7 +273,13 @@ export default function DataScreen() {
       chip: 'setup',
       onPress: () => router.push('/progress-photos'),
     },
-    { key: 'knowledge', label: 'Knowledge base', icon: 'library-outline', chip: 'later' },
+    {
+      key: 'knowledge',
+      label: 'Knowledge base',
+      icon: 'library-outline',
+      chip: 'setup',
+      onPress: () => router.push('/knowledge'),
+    },
     { key: 'export', label: 'Reports & export', icon: 'download-outline', chip: 'later' },
   ];
 

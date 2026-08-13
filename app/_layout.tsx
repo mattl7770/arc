@@ -214,6 +214,13 @@ export default function RootLayout() {
           <Stack.Screen name="progress-photo-add" />
           <Stack.Screen name="progress-photo-detail" />
           <Stack.Screen name="progress-photo-compare" />
+          {/* INTEGRATOR-MERGE: the knowledge base (docs/knowledge-subapp.md,
+              migration 0038 — authored as 0035, renumbered at merge) — the browsable/writable reference over the 0025
+              RAG substrate. Pushed from the Data tab's "Knowledge base" row. */}
+          <Stack.Screen name="knowledge" />
+          <Stack.Screen name="knowledge-entry" />
+          <Stack.Screen name="knowledge-entry-edit" />
+          <Stack.Screen name="knowledge-import" />
         </Stack>
         <StatusBar style="dark" />
         {/* Re-lock / privacy cover. A NATIVE full-screen Modal, not an

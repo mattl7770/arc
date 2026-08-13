@@ -430,13 +430,63 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // **There is nothing cheap left.** The next addition either finds a
   // genuinely new duplication or trims the VOICE section, and both ceilings
   // should be treated as full.
-  allToolTokens < 9000
+  //
+  // ── 2026-08-12: BOTH CEILINGS RAISED, 9,000 → 9,250 and 3,500 → 3,700, for
+  // the knowledge base (registry 42 → 43, docs/knowledge-subapp.md §6). The
+  // rule above says raising is the wrong reflex, so here is the accounting it
+  // demands, measured rather than asserted.
+  //
+  // WHAT IT COST, BEFORE ANY TRIMMING: +365 tok of schema, +308 of prompt. The
+  // ceilings were at 8,973 / 3,499 — i.e. 27 and 1 token of headroom, exactly
+  // as the ⚠️ above warned. Any addition at all would have tripped both.
+  //
+  // WHAT WAS TRIMMED FIRST, and it was real duplication, not shaving:
+  //   · The new tool's own description, cut from ~143 tok to 66. Its first
+  //     draft restated three rails that its system-prompt bullet also carries
+  //     (invitation-only, present-the-body-before-calling, the memory/knowledge
+  //     line) — the precise eight-descriptions-say-it-eight-times pattern this
+  //     comment was written about, caught before it shipped rather than after.
+  //   · search_history's description, ~153 → ~110, WHILE fixing it: it said
+  //     "ARC's curated longevity reference", which named only the shipped pack
+  //     and became false the moment user entries could outrank it.
+  //   · The knowledge doctrine was MERGED INTO the Memory bullet rather than
+  //     added beside it. The two stores are one distinction, and stating it
+  //     once beats stating "what memory is" twice. ~308 → ~185.
+  //   · Two genuine prompt duplications, both pre-existing: "never answer from
+  //     memory or by guessing" and "NEVER invent a value, a trend, or a lab
+  //     result" were the same rule in two bullets (now one, folded into the
+  //     state-block bullet with the read-tool bullet it also overlapped); and
+  //     WEARABLES' "you can read the whole Apple Health plane, so never say you
+  //     don't have it" is what the COVERAGE manifest below now asserts
+  //     systematically, for every domain, which is why the manifest was built.
+  //   · The "you cannot fetch a pasted URL" rail was recipe-specific and now
+  //     applies to two import screens, so it is stated once, generally.
+  //
+  // NET: 9,206 / 3,641. Trimming recovered 132 tok of schema and 167 of prompt
+  // — i.e. it paid for roughly half the feature, which is as much as honest
+  // dedup could reach.
+  //
+  // WHY THE REMAINDER IS A DEFENSIBLE TRADE, in the terms the 2026-08-10 entry
+  // set. save_knowledge_entry is 250 tok against a registry mean of 214, and
+  // 161 of that is schema (three string properties; the topic vocabulary is
+  // data the prompt has no business carrying). It is not a fat tool. And the
+  // prompt half buys a rail that has no cheaper form: when the user's own entry
+  // and ARC's shipped reference disagree, the Coach must cite both and follow
+  // the user's stance. Without it the model silently picks one, and the user
+  // cannot tell which — the failure this whole prefix exists to prevent.
+  //
+  // WHERE THE NEXT TRIM IS, measured so nobody re-derives it: the fat is no
+  // longer in descriptions, it is in SCHEMAS. log_workout (277 tok of schema),
+  // update_protocol (263), adjust_today (253) and create_experiment (229) carry
+  // per-property prose that in several cases restates the tool description
+  // above it. That is ~1,000 tok in four tools and it has never been swept.
+  allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(
         'tool schemas over budget',
         `${allToolTokens} tok — trim descriptions before adding more`
       );
-  systemTokens < 3500
+  systemTokens < 3700
     ? ok(`the static system prompt fits its budget (~${systemTokens} tok)`)
     : bad('system prompt over budget', String(systemTokens));
 

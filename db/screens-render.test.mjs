@@ -49,6 +49,9 @@ import { generateMissionForDay } from '../src/lib/db/repositories/mission-genera
 import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
 import { clearMuscleAnchor, setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
 
+import { ingestCorpus } from '../src/lib/rag/corpus.ts';
+import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
+
 import ExerciseScreen from '../app/exercise.tsx';
 import MissionHistoryScreen from '../app/mission-history.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
@@ -65,6 +68,10 @@ import ProgressPhotosScreen from '../app/progress-photos.tsx';
 import ProgressPhotoAddScreen from '../app/progress-photo-add.tsx';
 import ProgressPhotoDetailScreen from '../app/progress-photo-detail.tsx';
 import ProgressPhotoCompareScreen from '../app/progress-photo-compare.tsx';
+import KnowledgeScreen from '../app/knowledge.tsx';
+import KnowledgeEntryScreen from '../app/knowledge-entry.tsx';
+import KnowledgeEntryEditScreen from '../app/knowledge-entry-edit.tsx';
+import KnowledgeImportScreen from '../app/knowledge-import.tsx';
 
 let pass = 0;
 let fail = 0;
@@ -613,7 +620,7 @@ const db = getDb();
 // EXACTLY the state of the owner's current binary. Every one of those absences
 // has to be a sentence on the screen rather than a crash or a dead control.
 {
-  console.log('10. Progress photos — empty, populated, and honestly degraded');
+  console.log('11. Progress photos — empty, populated, and honestly degraded');
 
   expect('progress photos (empty)', render('progress photos (empty)', ProgressPhotosScreen), [
     'Progress photos',
@@ -761,6 +768,108 @@ const db = getDb();
     }),
     ['185.6 lb', 'weighed 2 days later']
   );
+}
+
+{
+  console.log('12. The knowledge base (0038, docs/knowledge-subapp.md)');
+
+  // Before the pack: the hub is honest that the reference has not loaded, and
+  // the "your entries" empty is AUTHORED rather than blank.
+  const cold = render('knowledge hub (cold)', KnowledgeScreen);
+  expect('knowledge hub (cold)', cold, [
+    'Knowledge',
+    'Import an article',
+    'Your entries',
+    'Nothing of your own yet',
+    'ARC reference',
+  ]);
+
+  ingestCorpus(db);
+  const withPack = render('knowledge hub (pack loaded)', KnowledgeScreen);
+  expect('knowledge hub (pack loaded)', withPack, [
+    // Grouped by topic, the labs category-plate model.
+    'Cardiovascular',
+    'Supplements',
+    'ApoB is ARC',
+  ]);
+  // The pack ships, so the screen is never globally empty — the first-run state
+  // is a reading, not a void.
+  refute('knowledge hub (pack loaded)', withPack, [
+    'ARC’s reference hasn’t loaded yet',
+  ]);
+
+  const entryId = saveKnowledgeEntry(db, {
+    title: 'Render entry: my own magnesium stance',
+    topic: 'supplements',
+    body:
+      'Glycinate over citrate, at 300 mg, taken with the evening meal.\n\n' +
+      'Citrate is notably laxative at the doses people actually take it at, which is the ' +
+      'whole reason the form matters more than the milligrams here.',
+  });
+  const withEntry = render('knowledge hub (with an entry)', KnowledgeScreen);
+  expect('knowledge hub (with an entry)', withEntry, [
+    'Render entry: my own magnesium stance',
+    'written by you', // provenance, from the shared provenanceLine
+  ]);
+  refute('knowledge hub (with an entry)', withEntry, ['Nothing of your own yet']);
+
+  // The reader, both kinds behind one route.
+  expect(
+    'knowledge-entry (user entry)',
+    render('knowledge-entry (user entry)', KnowledgeEntryScreen, {
+      id: entryId,
+      kind: 'entry',
+    }),
+    [
+      'Your entry',
+      'Render entry: my own magnesium stance',
+      'Written by you · since',
+      'Edit',
+      'Archive',
+    ]
+  );
+
+  const packId = db.get(
+    `SELECT id FROM knowledge_chunks WHERE source = 'arc-longevity-v1' ORDER BY chunk_index LIMIT 1`
+  ).id;
+  const packRead = render('knowledge-entry (pack)', KnowledgeEntryScreen, {
+    id: packId,
+    kind: 'pack',
+  });
+  expect('knowledge-entry (pack)', packRead, [
+    'ARC reference',
+    'Part of ARC’s shipped reference',
+    'Write your own entry on this topic',
+  ]);
+  // Pack entries are read-only, decisively — a version bump would eat any edit.
+  refute('knowledge-entry (pack)', packRead, ['Archive']);
+
+  expect(
+    'knowledge-entry (deleted id)',
+    render('knowledge-entry (deleted id)', KnowledgeEntryScreen, { id: 'nope', kind: 'entry' }),
+    ['That entry is no longer here']
+  );
+
+  expect('knowledge-entry-edit (new)', render('knowledge-entry-edit (new)', KnowledgeEntryEditScreen), [
+    'Write an entry',
+    'Topic',
+    'supplements', // the vocabulary chips
+    'Save entry',
+  ]);
+  expect(
+    'knowledge-entry-edit (editing)',
+    render('knowledge-entry-edit (editing)', KnowledgeEntryEditScreen, { id: entryId }),
+    ['Edit entry', 'Save changes'],
+  );
+
+  expect('knowledge-import', render('knowledge-import', KnowledgeImportScreen), [
+    'Import an article',
+    'From a link',
+    'Paste the text',
+    // Honest no-key state under node — and the manual floor is still offered.
+    'Reading an article needs a model key',
+    'Write it yourself',
+  ]);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

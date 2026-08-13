@@ -1,6 +1,8 @@
 # Knowledge base — browse, author, import, and the Coach's write path into the reference
 
-**Status:** Spec — designed 2026-08-12 in a docs-only round. **Nothing here is built**; no migration has shipped, and the Data tab's "Knowledge base" row (`app/(tabs)/data.tsx`, the `knowledge` entry) stays a disabled "Later" chip until v1 lands.
+**Status: BUILT — 2026-08-12, migration `0038_knowledge_entries.sql` (authored as 0035, renumbered at merge).** All three slices shipped in one change: the entry table + repository + four screens + the `searchUserHistory` extension; the import ladder (paste **and** URL — the §7 ADR was signed off, see §11); and the `save_knowledge_entry` registry batch (42 → 43). The Data tab's "Knowledge base" row is live and its "Later" chip has retired.
+**Gate:** `db:test` **2,424 assertions / 48 suites, 0 failed** (new suites: `db/knowledge.test.mjs` **63**, `db/knowledge-import.test.mjs` **52**; `coach-tools` 212 → 232, `screens-render` 119 → 151) · `db:validate` 20/20 · `tsc` 0 · `eslint` 0 errors · iOS bundle exports. A pre-merge adversarial pass found **three real defects**, all fixed — §11b.
+⚠️ **Headless only — none of this has been seen on a device.** The device checklist is §12.
 **Owner decisions already taken (2026-08-12):** v1 includes **all four capabilities** — (1) browse + keyword search, (2) user-authored entries, (3) AI import from URL/paste, (4) a confirmation-gated Coach write tool. **Semantic search stays gated on the embedder** (its own EAS build; `docs/rag-embeddings.md`) regardless of anything in this spec.
 **Read first:** `src/lib/rag/corpus.ts` (the pack and its editorial doctrine — the load-bearing header) · `db/migrations/0025_rag_chunks.sql` · `src/lib/ai/history-search.ts` (keyword recall as shipped) · `docs/recipes-grocery.md` (the import-ladder precedent) · `src/lib/ai/tools/index.ts` (the coverage manifest a new tool must join).
 
@@ -35,7 +37,7 @@
 
 ## 2. Data model
 
-> ⚠️ **Migration number assigned at build time.** Head measured 2026-08-12 is `0032`, so this lands at **0033+ — re-measure against `main` at branch time**; the runner silently skips numbers at or below a device's `user_version` (the 0030/0031 collision lesson). Run `npm run db:bundle` after adding the file.
+> ✅ **Shipped as `0038_knowledge_entries.sql` — authored as 0035, renumbered at the 2026-08-12 merge.** Head at branch time was `0034`, so 0035 was correctly the next free number THEN; by merge time main had taken 0035 (recipe folders), 0036 (progress photos) and 0037 (freshness anchors), so the file moved to 0038 and `npm run db:bundle` was re-run. The spec drafted this as "0033+ — re-measure at branch time"; the lesson the day kept teaching is that the re-measure belongs at MERGE time too — the runner silently skips any number at or below a device's `user_version`, so a collision is data loss, not tidiness.
 
 **Decision: an entry-level table, not new `source` values in `knowledge_chunks`.** Four reasons, each individually sufficient:
 
@@ -117,9 +119,13 @@ Flat kebab-case routes + `Stack.Screen` entries in `app/_layout.tsx`; the Data-t
 
 Three live rungs plus the floor. Every rung degrades to the next; the four-beat contract governs throughout (pick/paste → one no-tools model turn → **editable review, never auto-commit** → one-transaction save).
 
+> ✅ **Built as `src/lib/knowledge/import.ts` + `src/lib/knowledge/extract.ts`.** The readable-text half was **generalized rather than forked**, as this spec required, but one level further out than it proposed: `decodeHtmlEntities` / `metaContent` / `stripTags` / `pageTextForModel` moved from `src/lib/recipes/extract.ts` into a new **`src/lib/html/readable.ts`**, and `recipes/extract.ts` re-exports them so every existing call site and the recipe fixtures are untouched (56/56 still green). Nothing in there was ever recipe-specific, and importing a *recipes* module from a *knowledge* module to avoid a copy would have traded duplication for a worse dependency.
+>
+> One defect fell out of the move and is worth recording, because it was invisible to the recipe ladder: the shared entity table decoded `&frac34;` and not `&mdash;`. Publishers set prose through a typographer, so `&mdash;`, `&rsquo;` and the smart quotes are the commonest entities on a real article page by a wide margin — and left undecoded they do not merely look wrong, they are **stored** wrong, into the knowledge base and into whatever the Coach later cites from it. The typographic block was added and is pinned by a real-page fixture.
+
 | # | Rung | Mechanism | Gate |
 | --- | --- | --- | --- |
-| 1 | URL | fetch HTML (device UA, 10 s abort, size-capped, untrusted-input discipline) → deterministic extraction: readable text (**generalize `src/lib/recipes/extract.ts`** rather than fork it) + Article/NewsArticle JSON-LD & og-meta for provenance prefill (`headline`, `author`, `og:site_name`). Metadata only — no deterministic article→entry rung exists, so the model turn always follows. | network + the §7 ADR + key |
+| 1 | URL | fetch HTML (10 s abort, size-capped, untrusted-input discipline) → deterministic extraction: readable text + Article/NewsArticle JSON-LD & og-meta for provenance prefill (`headline`, `author`, `og:site_name`). Metadata only — no deterministic article→entry rung exists, so the model turn always follows. | network + the §7 ADR + key |
 | 2 | Any text (fetched or pasted) | **one no-tools model turn** through `runCoachTurn` (the `estimate.ts` / recipes twin): JSON-only contract, defensive parse. | key |
 | 3 | Paste text | the same turn over pasted article text — first-class UI with its own affordance, not an error state. | key |
 | — | Manual floor | the §4 editor, prefilled with whatever survived (pasted text into body, URL into provenance). | none |
@@ -157,7 +163,9 @@ One new tool. **Registry 42 → 43 (18 read + 25 write), shipped as one batched 
 
 ## 7. Network posture — the ADR this spec requires
 
-Rung 1's fetch is a **new network surface** and must be recorded as an extension of the existing exception before it ships (⚑ MATT #1). Proposed ADR text for `docs/decisions.md`:
+✅ **Signed off 2026-08-12 and recorded in `docs/decisions.md` before the fetch rung shipped.** The ADR as written there also carries the accounting this spec's proposed text did not: the mechanism is byte-for-byte the sanctioned one, only the set of qualifying URLs widened; there is no second request (no redirect-chasing, no oEmbed variant, no embed fallback — articles need none); and the anti-fabrication rule bites *harder* here than for recipes, because a fabricated recipe is discovered the first time it is cooked while a fabricated doctrine entry outranks ARC's own reference in the Coach's search.
+
+The original proposal, for the record:
 
 > *Knowledge import extends the 2026-08-08 user-initiated import-fetch exception from recipe sources to article URLs: single-shot, at import time only, the URL the user explicitly pasted or shared, HTML text only, never media, never background. Failure degrades to paste-the-text, which stays first-class UI.*
 
@@ -196,17 +204,56 @@ Without sign-off, import ships **paste-only** — genuinely useful, zero new net
 
 **Build slices** (each independently shippable): **1** — migration + repository + hub/reader/editor + the `searchUserHistory` extension (offline, keyless); **2** — import (paste-first; the URL rung when the ADR lands); **3** — the one-tool registry batch. Each slice carries its headless gate; the screens join `db/screens-render.test.mjs`.
 
+> ✅ **All three shipped, 61 + 47 new assertions plus 20 in `coach-tools` and 32 in `screens-render`.** Two things the plan above did not anticipate, both recorded because they cost real time:
+>
+> - **The prompt-token ceilings were already full.** `db/coach-eval.test.mjs` §6 held the registry at 8,973/9,000 and the system prompt at 3,499/3,500 — 27 and 1 token of headroom — with a standing instruction that the next addition *trims duplication rather than raising*. It was followed: the new tool's description was cut 143 → 66 tok (its first draft restated three rails its prompt bullet already carried), `search_history`'s description was corrected and trimmed, the knowledge doctrine was **merged into the Memory bullet** instead of added beside it, and two pre-existing prompt duplications were folded. That recovered ~132 tok of schema and ~167 of prompt — about half the feature — after which both ceilings were raised with the full accounting written into that file, including where the *next* trim is (the four schema-heavy tools, ~1,000 tok, never swept).
+> - **A flaky assertion, caught by running the suite eight times rather than once.** The listing test created two entries, edited the first, and demanded it be at the head — which passed four runs in five. `updated_at` is millisecond-precision, so all three writes land in one millisecond often enough to tie. The *rule* is now asserted (the list is sorted) plus a deterministic `ORDER BY` fixture built from raw INSERTs with explicit timestamps (an UPDATE cannot backdate a row here — the AFTER UPDATE trigger re-stamps it, by design). The tie-break also gained `created_at` as its second key, so a genuine same-millisecond tie falls back to creation order rather than to a random UUID.
+
 **Integrator merge points:** `app/_layout.tsx` (four routes) · `app/(tabs)/data.tsx` (`knowledge` row) · migration + `npm run db:bundle` + `src/lib/db/types.ts` · `history-search.ts` · the registry + `docs/ai-coach.md` tool counts + the sync trio · `docs/decisions.md` (the ADR) · `docs/project-status.md` inventory re-measured in the same change.
 
 ---
 
-## 11. ⚑ MATT — owner calls this spec carries
+## 11. Decided — 2026-08-12 (owner, at session start; all five as recommended)
 
-1. **The network ADR (§7)** — sign off on article-URL fetches joining the recipe-import exception? Without it, import ships paste-only.
-2. **`save_knowledge_entry`** — comfortable with the Coach authoring doctrine into the KB (always card-gated, `source='coach'`), or hold it back initially?
-3. **The hub's accent** — recommended: **Import an article** takes the stamp, "Write an entry" rides as a ghost. Flip if you expect to write more than you save.
-4. **Conflict doctrine** — your entry vs the ARC reference: cite both, name the difference, follow *your* stance for personal coaching. Approve that hierarchy?
-5. **Screenshot-import rung deferred** until recipes' vision rung is device-proven. Approve the deferral?
+1. **The network ADR (§7) — APPROVED.** Article-URL fetches join the recipe-import exception. The ADR is in `docs/decisions.md` dated 2026-08-12, written before the fetch rung shipped. Import therefore ships with **both** rungs, URL and paste.
+2. **`save_knowledge_entry` — IN v1, card-gated.** Registry 42 → 43 in one batched change. `source='coach'`, and the doctrine requires the model to present the drafted body verbatim before calling.
+3. **Hub accent — Import an article takes the stamp**; "Write" rides beside it as a ghost action inside the same stamp.
+4. **Conflict hierarchy — APPROVED.** Cite both, name the difference, follow the user's committed stance for personal coaching. Lives in the sync trio and is pinned by `db/coach-tools.test.mjs` §34.
+5. **Screenshot rung — DEFERRED.** Revisit once the recipes vision rung is device-proven.
+
+### Deferred / deliberately out, with their revisit triggers
+
+- **`get_knowledge_entry`** (full-entry read) — out. `search_history` returns knowledge excerpts with citations at ~500 chars. **Revisit if** real transcripts show truncated-doctrine answers, and add it *batched* with the next registry change — plausibly the `search_knowledge` registration itself.
+- **Coach edit/archive of entries** — out. Editing is the user's act in the UI; the coverage manifest's "editing or deleting anything already logged, incl. your own writes and knowledge entries (Data, Knowledge base)" says so to the model.
+- **Screenshot/vision import rung** — deferred per #5.
+- **Semantic search / `search_knowledge` registration / the embedder** — untouched by this round, by decree. Entry chunks land in the same table the backfill will sweep, so they are covered the day it ships with no knowledge-specific work (§8).
+- **Pack annotation in place** — never. §3 argues why; "write your own entry on this topic" is the shipped answer.
+
+---
+
+## 11b. Adversarial review before merge — three defects found and fixed
+
+All three were in code that passed its own tests. Recorded because each is a *class* of mistake this codebase can make again.
+
+1. **A prolific writer would have silently crowded the ARC reference out of the Coach's recall.** `searchUserHistory`'s knowledge block ran ONE query over `knowledge_chunks` with a shared `LIMIT`, then deduped per entry **in JS** — i.e. after SQL had already chosen the window. The dedupe protects the hit *budget*; it does nothing for the *window*. With enough multi-passage user entries the window filled with the user's own chunks and the pack contributed nothing at all — no error, no empty result, just a reference that quietly stopped being cited, and worse the more the owner wrote. Fixed by giving each owner its own query and its own window (pack 20, entries 60 → deduped), which makes the split structural. **The test was verified to have teeth** by reverting the query shape: it reports `pack=1` under the old design and `pack=4` under the fix. The general lesson: *a limit applied before a de-duplication is not the same limit.*
+2. **The manual floor passed a whole pasted article through a route param.** Expo Router params are search params — they round-trip through URL encoding, and a pasted article routinely contains `%` ("50% of patients", a `%20` inside a quoted link). That is a `URIError` or a mangled paragraph on the exact path a user reaches only *after* import has already failed them once. Replaced with a one-shot in-memory handoff (`src/lib/knowledge/draft-handoff.ts`), the shape `consumeIncomingShare` already establishes — replay window included, because React runs a state initializer more than once per mount. **Content goes through memory; identifiers go through params.** `id` and `topic` are still params, correctly.
+3. **`Linking.openURL` on a stored string with no scheme guard.** Everything that writes `source_url` today goes through `normalizeArticleUrl`, which forces http/https — so this was safe *by consequence of every writer having been careful*, which is not the same as safe. The allow-list now sits at the point where a stored string becomes an action the OS takes; a non-http row renders as plain text.
+
+A fourth was caught by the suite rather than by review, and is worth the same note: **a flaky ordering assertion**, found by running the suite eight times instead of once. See §10.
+
+---
+
+## 12. Device checklist (nothing below has been run on hardware)
+
+1. Data → Knowledge base opens; the pack reads as eight topic plates, and "Your entries" shows the authored empty.
+2. The stamp's hatched cap draws correctly, and the ghost "Write" button beside the pine action does not read as disabled.
+3. Write an entry with two paragraphs; reopen it — **the blank line must survive** (this is the whole reason entries are stored whole rather than as chunks).
+4. Edit it, then search the Coach for a phrase only in the NEW text: the old passage must not come back.
+5. Archive it, ask the Coach the same question: it must not be cited. Restore, ask again: it must be.
+6. Import an article by URL (needs the key + network). Confirm the review screen is editable and that nothing saved until Save was tapped.
+7. Import a paywalled article by URL: expect the honest "no readable article text" and the paste affordance, **not** a fabricated entry.
+8. Ask the Coach to save something to the knowledge base: confirm it prints the entry in the message *before* the card appears.
+9. Open a pack entry: confirm there is no Edit, and that "Write your own entry on this topic" prefills the topic.
 
 ---
 

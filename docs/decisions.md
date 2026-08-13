@@ -1,5 +1,20 @@
 # Architecture Decision Records (ADR)
 
+## 2026-08-12 — The recipe-source fetch exception extends to article URLs (knowledge import)
+
+**Decision (owner sign-off, 2026-08-12):** knowledge import extends the 2026-08-08 user-initiated import-fetch exception from recipe sources to **article URLs**: single-shot, at import time only, the URL the user explicitly pasted or shared, **HTML text only**, never media, never background. Failure degrades to paste-the-text, which stays first-class UI.
+
+**Reasoning — this is a widening of scope, not a new capability.** The mechanism is byte-for-byte the one already sanctioned: one GET, a 10-second abort, the page reduced to readable text and capped before it can reach a prompt (`pageTextForModel`, now shared out of `src/lib/html/readable.ts` rather than forked). Nothing personal leaves the device; it is the same request the user's browser would make opening the link they already have. What changes is only *which* URLs qualify, and an article URL is not a different kind of risk from a recipe URL — the recipe ladder's generic `website` rung already fetched arbitrary pages.
+
+**Bounds, which are the decision.** Never in the background. Never polling. Never a second request — there is no redirect-chasing rung, no oEmbed variant, no embed fallback, because articles need none. Never media. And the fetched bytes are untrusted throughout: parsed defensively with plain string work, never executed, never stored (the page is discarded; only the entry the user approves is saved).
+
+**Why sign-off was required before it shipped rather than after.** Without it the feature was still fully useful — paste-the-text plus the manual editor cover every article, with zero new network surface — so the URL rung was genuinely optional. That is the same "ship under a pending decision" posture the recipes ladder took, and it is what makes this an approval rather than a fait accompli.
+
+**Anti-fabrication carries over unchanged, and is the sharper rule here.** An article import that cannot read the page returns `found:false` and routes to paste. It never writes an entry synthesized from a headline — third application of the rule, after the recipes Flavorish case and the labs "never fuzzy-match a biomarker name". The reason it bites harder for knowledge than for recipes: a fabricated recipe is discovered the first time it is cooked, and a fabricated *doctrine entry* outranks ARC's own reference in the Coach's search and is cited back as the user's committed stance.
+
+---
+
+
 ## 2026-08-11 — WITHDRAWN: the three drafting devices never "stopped paying rent". They were never drawn.
 
 **Decision: the 2026-08-09 ADR below is withdrawn in full.** `field`, `margin` and `grid` draw their marks again — the corner ticks, the margin rule, the rules between grid cells — and the sheet's boxes are restored everywhere the same sweep removed them. The Coach thread staying off the `well`, which was the unrelated second half of that ADR, **stands**: that one was an owner call on hardware and has nothing to do with what follows.
