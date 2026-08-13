@@ -1,224 +1,636 @@
 /**
- * The body schematic's geometry — pure data, no React, no SVG.
+ * The body figure's geometry — pure data plus a scanline rasteriser. No React,
+ * no SVG.
  *
- * ARC draws its muscle figure the way it draws everything: as a **print
- * schematic**, not an anatomy rendering. There is no `react-native-svg` in this
- * project and none is going in (a native module costs the owner a fresh EAS
- * cloud build, 01-rn-port-guide.md §5), so every mark is a filled `View`. That
- * constraint shapes the drawing, and the shape it forced is recorded here
- * because the FIRST version of this file got it wrong.
+ * ## Three rounds, and what each one got wrong
  *
- * ## Why there are now two lists, not one
+ * **2026-08-11** drew sixteen floating rounded boxes and a ring for a head.
+ * Verdict off hardware: *"pretty rough and hard to tell what's what"*. There was
+ * no BODY — a cell means "quads" only because of where it sits on a person.
  *
- * The 2026-08-11 map was regions only: sixteen muscle cells floating on nothing,
- * with a ring for a head. The owner's verdict off hardware was "pretty rough and
- * hard to tell what's what", and the reason is legible in the data — there was
- * no BODY. A muscle cell means "quads" only because of where it sits on a
- * person, and there was no person for it to sit on. Scattered rounded boxes read
- * as scattered rounded boxes.
+ * **2026-08-12 (a)** added a nineteen-rect silhouette under the same sixteen
+ * cells and drew it twice (inflated in ink, then true-size) so the rects fused
+ * into one contoured outline. Better, still rejected: *"Muscle recovery graphic
+ * still looks terrible."* Thirty-four AXIS-ALIGNED RECTANGLES do not read as
+ * muscles no matter what you put behind them, and two discrete marks in two
+ * brown-ish signal colours are not a recovery reading.
  *
- * So the drawing is now two layers:
+ * **2026-08-12 (b), this file.** Owner brief, with a reference image: contoured
+ * organic shapes — *"pectorals as fans, the rectus abdominis as a segmented
+ * six-pack grid, deltoids as rounded caps, biceps as spindles, quadriceps as
+ * long tapered masses with the vastus lateralis/medialis split visible, calves
+ * as twin bellies, lats as tapering wings, traps as a diamond yoke"* — filled
+ * with ONE hue at varying opacity, with head, hands and feet in a neutral grey
+ * so they read as "not data".
  *
- *   {@link FIGURE_BODY}     the silhouette — head, neck, torso, waist, pelvis,
- *                           arms, hands, thighs, knees, calves, feet. Nineteen
- *                           rects that OVERLAP AT THE JOINTS on purpose, so the
- *                           figure reads as one continuous body rather than as
- *                           a stack of parts. Carries no data; it is the ground.
+ * ## Still no SVG. Two primitives instead.
  *
- *   {@link FIGURE_REGIONS}  the muscle groups, placed ON that ground. Every
- *                           region is fully covered by the body (asserted in
- *                           db/exercise-ai.test.mjs by rasterising both lists),
- *                           so a muscle can never float off the figure, and no
- *                           two regions on the same side overlap.
+ * `react-native-svg` is not installed and is not going in — a native module
+ * costs the owner a fresh EAS cloud build (01-rn-port-guide.md §5), and the
+ * entire value of this change is that it ships over-the-air onto the binary he
+ * already has. So every mark is a filled `View`, and contour comes from two
+ * primitives chosen per shape by which one draws it better, not by which one is
+ * more elegant:
  *
- * The component draws the body TWICE — once inflated by {@link BODY_OUTLINE}
- * in ink, once at true size in paper-deep — which turns one list of rects into a
- * contoured silhouette with no internal seams. See muscle-figure.tsx for why
- * that trick is the whole answer to "make boxes read as anatomy".
+ *   {@link Blob}  one `View`: a rect with FOUR INDEPENDENT corner radii. Free
+ *                 antialiased curves, one node. This is the right primitive
+ *                 wherever the shape is a rounded mass rather than a taper — a
+ *                 bicep spindle (a capsule *is* a spindle), a glute, an ab
+ *                 segment, a calf belly, a hand, the skull.
  *
- * Coordinates are {x, y, w, h} in grid units, origin top-left, on a 100×240
- * design grid (was 100×220 — the figure was squat). The component scales the
- * grid to the available width.
+ *   {@link Poly}  a polygon in grid units, RASTERISED at render time into
+ *                 horizontal scanline bars ({@link polyBars}) — one thin
+ *                 absolutely-positioned `View` per row, its left edge and width
+ *                 following the outline at that y. This is what draws a taper:
+ *                 a lat narrowing toward the waist, a pec fanning off the
+ *                 sternum, a quad sweeping outward then back in. The end bars
+ *                 take a `borderRadius` cap so the shape closes with a dome
+ *                 rather than a chopped edge.
  *
- * Left/right pairs are two cells sharing one muscle: a freshness score colours
- * both. The gaps between paired cells (3 units at the chest, 4 between the
- * thighs, 3 at the armpit) are not decoration — they are what stops two adjacent
- * marked cells from merging into one blob, which is the second reason the old
- * map was hard to read.
+ * A blob costs 1 view and a poly costs one view per bar, twice over (the ink
+ * outline is an inflated copy — see below), so the split is also the cost
+ * control. {@link figureViewCount} reports the real number and
+ * db/exercise-ai.test.mjs asserts a budget against it, because this drawing
+ * renders inside two scrolling screens.
+ *
+ * ## Bar count is adaptive, and that is not a nicety
+ *
+ * The same geometry renders at 72pt (exercise-detail, beside a photo), 118pt
+ * (the Exercise hub) and 128pt (the pushed screen). A fixed bar count would be
+ * either jagged at the big size or wasteful at the small one, so
+ * {@link barsFor} targets a CONSTANT RENDERED BAR HEIGHT of
+ * {@link BAR_POINTS}pt and clamps to [{@link MIN_BARS}, {@link MAX_BARS}].
+ *
+ * ## Coordinates
+ *
+ * A 100 × 240 design grid, origin top-left; the component scales it to the
+ * available width. Left/right pairs are two shapes sharing one muscle — a
+ * freshness score fills both.
  */
 import type { Muscle } from './types';
 
 export type FigureSide = 'front' | 'back';
 
+/** A point in grid units. */
+export type Pt = readonly [number, number];
+
 /** A rect in grid units, origin top-left of the figure box. */
 export type FigureRect = { x: number; y: number; w: number; h: number };
 
-export type FigureRegion = FigureRect & {
-  muscle: Muscle;
-  side: FigureSide;
-};
+/** Corner radii in grid units, CSS order: top-left, top-right, bottom-right, bottom-left. */
+export type Radii = readonly [number, number, number, number];
+
+/** A rounded mass: one `View`, four independent corner radii, no rasterising. */
+export type Blob = FigureRect & { kind: 'blob'; r: Radii };
+
+/** A contoured shape: a closed polygon, rasterised into scanline bars. */
+export type Poly = { kind: 'poly'; pts: readonly Pt[] };
+
+export type Shape = Blob | Poly;
 
 /**
- * A block of the silhouette. `round` is the ONE curve in this drawing: a
- * rectangular head reads as a robot, and 00-design-spec.md §4's square-corner
- * rule governs CONTAINERS (a card is a drawing, not a bubble), not depiction —
- * a skull is round because skulls are round.
+ * One block of the body ground. `neutral` marks the parts that carry NO reading
+ * — head, hands, feet — which the component fills in a flat grey instead of the
+ * muscle ground, so the eye learns which regions are data before reading any.
  */
-export type FigureBody = FigureRect & { part: string; round?: boolean };
+export type FigureBodyPart = { part: string; neutral?: boolean; shape: Blob };
 
-/** The design grid the figure is placed on (see muscle-figure.tsx). */
+/** One muscle's shape on one side. A muscle may have several. */
+export type FigureMuscleShape = { muscle: Muscle; side: FigureSide; shape: Shape };
+
+/** The design grid the figure is placed on. */
 export const FIGURE_GRID = { w: 100, h: 240 } as const;
 
 /**
- * How far the ink contour is inflated past the body fill, in grid units. One
- * unit lands at 1.18pt on the hub's figure and 1.38pt on the full-screen one —
- * a drawn contour at both sizes, and it never falls below a device pixel.
+ * How far the body's ink contour is inflated past its fill, in grid units. The
+ * body is drawn TWICE — every block inflated by this in ink, then every block
+ * at true size in the ground colour — so wherever a block has no neighbour one
+ * unit of ink survives as the silhouette's outline, and wherever two blocks
+ * abut (they overlap at every joint on purpose) the neighbour's fill covers the
+ * inflation and no internal seam is drawn. One list of blocks, two `map`s.
  */
 export const BODY_OUTLINE = 1;
 
 /**
- * The silhouette. Blocks overlap at every joint (the neck into the head and the
- * torso, the waist into the torso and the pelvis, the hand into the forearm) so
- * the inflated ink pass fuses into ONE outline instead of drawing a seam at
- * every join. Where a gap is wanted the gap is explicit: 3 units between each
- * arm and the torso (the armpit), 4 between the thighs, and a knee break in the
- * leg that reads as a joint.
+ * The ink line around each MUSCLE, in grid units — a `borderWidth` on a blob
+ * (uniform on all four edges, the only legal border shape in this codebase) and
+ * an inflated bar copy under a poly.
+ *
+ * It is load-bearing rather than decorative. The fill carries freshness as
+ * OPACITY, so a spent muscle is pale by construction and cannot be relied on to
+ * show its own edge; the ink line is what keeps the contour readable at every
+ * point of the ramp (9.74:1 on the ground it encloses). Without it the floor
+ * would have to be raised so far that fresh and spent stopped separating.
+ */
+export const MUSCLE_OUTLINE = 0.55;
+
+/**
+ * The alpha a fully-SPENT muscle still draws at — the floor of the freshness
+ * ramp, and the number that stops the encoding from punching holes in the body.
+ *
+ * ## Which way the ramp runs (owner, 2026-08-12)
+ *
+ * *"the color opacity showing how fresh"* — so **full green is fresh and faded
+ * is spent**, and the scale beside the figure prints both ends in words because
+ * a ramp with no stated direction is a ramp anyone can read backwards.
+ *
+ * ## Why 0.45 and not 0
+ *
+ * The fill is `signal-optimal-ink` #185A36 composited over the `paper-deep`
+ * #C6C1B0 body ground. Measured on the `paper-hi` plate the figure sits on:
+ *
+ *   freshness   alpha   composite   vs plate   vs body ground
+ *      0        0.45     #78936F     3.03:1        1.87:1
+ *     50        0.725    #487658     4.72:1        2.90:1
+ *    100        1.00     #185A36     7.41:1        4.56:1
+ *
+ * 0.45 is the lowest floor at which a spent muscle still clears WCAG 1.4.11's
+ * 3:1 for a graphical object against the sheet it is drawn on. Below it the
+ * spent end fades toward the ground and the body starts reading as if pieces
+ * were missing rather than depleted. The two ENDS of the ramp measure 2.45:1
+ * against each other — a plainly visible difference, and forty times the 1.03:1
+ * that separated the two marks this figure replaced.
+ *
+ * The floor is not what makes a spent muscle legible on its own, though: the
+ * ink line around every shape ({@link MUSCLE_OUTLINE}) is, at 9.74:1. The floor
+ * is what stops the FILL from disappearing inside it.
+ */
+export const MUSCLE_ALPHA_FLOOR = 0.45;
+
+/** Freshness 0-100 → the fill alpha it draws at. Monotone, floored, never 0. */
+export function freshnessAlpha(freshness: number): number {
+  const f = Math.max(0, Math.min(100, Number.isFinite(freshness) ? freshness : 0));
+  return MUSCLE_ALPHA_FLOOR + (1 - MUSCLE_ALPHA_FLOOR) * (f / 100);
+}
+
+/** The rendered height one scanline bar aims for, in points. */
+export const BAR_POINTS = 4.4;
+export const MIN_BARS = 3;
+export const MAX_BARS = 12;
+
+/**
+ * The body ground — head to feet, shared by both views.
+ *
+ * Blocks OVERLAP AT EVERY JOINT on purpose (the neck into the skull and the
+ * torso, the waist into both, the calf into the thigh) so the inflated ink pass
+ * fuses into ONE outline instead of drawing a seam at every join. Where a gap is
+ * wanted it is explicit: 3 units of armpit between each arm and the torso, 2
+ * units of crotch between the thighs.
  *
  * Proportions are a standing figure of about eight heads, arms at the sides —
- * shoulders at y 34, navel at 96, hips at 116, knee at 178, ankle at 228.
+ * shoulders at y 34, navel at 96, hips at 116, knee at 176, ankle at 226.
+ *
+ * `neutral` marks the parts that carry NO reading. In the owner's reference the
+ * head, hands and feet are grey while every muscle is on the colour ramp, and
+ * that split is most of why the reference is legible: it tells the eye which
+ * regions are data before it has read any of them.
  */
-export const FIGURE_BODY: FigureBody[] = [
-  { part: 'head', x: 39, y: 2, w: 22, h: 27, round: true },
-  // The neck starts high enough that the head's ROUND fill still spans its
+export const FIGURE_BODY: FigureBodyPart[] = [
+  {
+    part: 'head',
+    neutral: true,
+    shape: { kind: 'blob', x: 38, y: 2, w: 24, h: 28, r: [12, 12, 11, 11] },
+  },
+  // The neck starts high enough that the skull's ROUND fill still spans its
   // outline where the two meet — a straight-sided neck butted against a curved
-  // skull leaves a nub of contour at each side otherwise, and at y 24 the
-  // skull's half-width is 9.2 units against the neck's 7.
-  { part: 'neck', x: 44, y: 24, w: 12, h: 12 },
-  { part: 'torso', x: 28, y: 34, w: 44, h: 52 },
-  { part: 'waist', x: 32, y: 84, w: 36, h: 24 },
-  { part: 'pelvis', x: 29, y: 106, w: 42, h: 18 },
-  { part: 'upper-arm-l', x: 12, y: 38, w: 13, h: 44 },
-  { part: 'upper-arm-r', x: 75, y: 38, w: 13, h: 44 },
-  { part: 'forearm-l', x: 11, y: 80, w: 12, h: 42 },
-  { part: 'forearm-r', x: 77, y: 80, w: 12, h: 42 },
-  { part: 'hand-l', x: 11, y: 120, w: 11, h: 15 },
-  { part: 'hand-r', x: 78, y: 120, w: 11, h: 15 },
-  { part: 'thigh-l', x: 30, y: 120, w: 18, h: 56 },
-  { part: 'thigh-r', x: 52, y: 120, w: 18, h: 56 },
-  { part: 'knee-l', x: 32, y: 172, w: 14, h: 12 },
-  { part: 'knee-r', x: 54, y: 172, w: 14, h: 12 },
-  { part: 'calf-l', x: 32, y: 180, w: 15, h: 48 },
-  { part: 'calf-r', x: 53, y: 180, w: 15, h: 48 },
-  { part: 'foot-l', x: 31, y: 226, w: 15, h: 12 },
-  { part: 'foot-r', x: 54, y: 226, w: 15, h: 12 },
+  // skull leaves a nub of contour at each side otherwise.
+  { part: 'neck', shape: { kind: 'blob', x: 44, y: 26, w: 12, h: 11, r: [0, 0, 2, 2] } },
+  // Top radius 7, not more: the front deltoids ride the shoulder's outer corner,
+  // and a rounder shoulder would leave them hanging off the torso's fill.
+  { part: 'torso', shape: { kind: 'blob', x: 27, y: 34, w: 46, h: 50, r: [7, 7, 3, 3] } },
+  { part: 'waist', shape: { kind: 'blob', x: 32, y: 81, w: 36, h: 27, r: [3, 3, 5, 5] } },
+  { part: 'pelvis', shape: { kind: 'blob', x: 29, y: 104, w: 42, h: 22, r: [5, 5, 9, 9] } },
+  { part: 'upper-arm-l', shape: { kind: 'blob', x: 12, y: 37, w: 14, h: 46, r: [7, 7, 5, 5] } },
+  { part: 'upper-arm-r', shape: { kind: 'blob', x: 74, y: 37, w: 14, h: 46, r: [7, 7, 5, 5] } },
+  { part: 'forearm-l', shape: { kind: 'blob', x: 11, y: 79, w: 12, h: 43, r: [5, 5, 4, 4] } },
+  { part: 'forearm-r', shape: { kind: 'blob', x: 77, y: 79, w: 12, h: 43, r: [5, 5, 4, 4] } },
+  {
+    part: 'hand-l',
+    neutral: true,
+    shape: { kind: 'blob', x: 10, y: 118, w: 12, h: 17, r: [4, 4, 6, 6] },
+  },
+  {
+    part: 'hand-r',
+    neutral: true,
+    shape: { kind: 'blob', x: 78, y: 118, w: 12, h: 17, r: [4, 4, 6, 6] },
+  },
+  { part: 'thigh-l', shape: { kind: 'blob', x: 30, y: 118, w: 19, h: 60, r: [9, 9, 6, 6] } },
+  { part: 'thigh-r', shape: { kind: 'blob', x: 51, y: 118, w: 19, h: 60, r: [9, 9, 6, 6] } },
+  { part: 'calf-l', shape: { kind: 'blob', x: 32, y: 174, w: 16, h: 54, r: [7, 7, 5, 5] } },
+  { part: 'calf-r', shape: { kind: 'blob', x: 52, y: 174, w: 16, h: 54, r: [7, 7, 5, 5] } },
+  {
+    part: 'foot-l',
+    neutral: true,
+    shape: { kind: 'blob', x: 32, y: 224, w: 16, h: 13, r: [3, 3, 6, 6] },
+  },
+  {
+    part: 'foot-r',
+    neutral: true,
+    shape: { kind: 'blob', x: 52, y: 224, w: 16, h: 13, r: [3, 3, 6, 6] },
+  },
+];
+
+const blob = (x: number, y: number, w: number, h: number, r: Radii): Blob => ({
+  kind: 'blob',
+  x,
+  y,
+  w,
+  h,
+  r,
+});
+const poly = (...pts: Pt[]): Poly => ({ kind: 'poly', pts });
+
+/**
+ * A shape reflected about the figure's midline.
+ *
+ * Every paired muscle is authored ONCE, on the left, and mirrored. The first
+ * draft hand-wrote both sides and two of the pairs had drifted by a tenth of a
+ * unit before anything was rendered — invisible in the numbers, visible as a
+ * lopsided body. A reflection cannot drift.
+ */
+function mirror(shape: Shape): Shape {
+  if (shape.kind === 'blob') {
+    return {
+      ...shape,
+      x: FIGURE_GRID.w - shape.x - shape.w,
+      // Corner radii are positional, so they swap left for right.
+      r: [shape.r[1], shape.r[0], shape.r[3], shape.r[2]],
+    };
+  }
+  return { kind: 'poly', pts: shape.pts.map(([x, y]) => [FIGURE_GRID.w - x, y] as Pt) };
+}
+
+/** One muscle on one side, drawn on both halves of the body. */
+const pair = (muscle: Muscle, side: FigureSide, shape: Shape): FigureMuscleShape[] => [
+  { muscle, side, shape },
+  { muscle, side, shape: mirror(shape) },
+];
+
+/** One muscle on one side, drawn once (the midline shapes: traps). */
+const single = (muscle: Muscle, side: FigureSide, shape: Shape): FigureMuscleShape[] => [
+  { muscle, side, shape },
 ];
 
 /**
- * Both figures' muscle regions.
+ * Every muscle's shape, on the view it is visible from.
  *
- *          front                         back
- *        ┌─ head ─┐                   ┌─ head ─┐
- *   side · front-delt · front-delt · side   rear · traps · rear
- *   bi  ·   chest    chest   ·  bi    tri · upper-back · tri
- *   fore ·    abs (2 stacks)  · fore   fore ·   lats    · fore
- *                                          lower-back
- *          quads · quads              glutes · glutes
- *                                     hams   · hams
- *         calves · calves             calves · calves
+ *          FRONT                              BACK
+ *   front delts (shoulder caps)        traps (diamond yoke)
+ *   side delts (arm caps)              rear delts (arm caps)
+ *   pectoral fans                      upper back (rhomboid plates)
+ *   six-pack grid                      lat wings + erector columns
+ *   bicep spindles · forearm cones     tricep spindles · forearm cones
+ *   quads (lateralis + medialis)       glutes · hamstring strips
+ *   calf bellies                       calf bellies
  *
- * The deltoid heads are split by PLACE rather than by stacking three cells on
- * one shoulder: front delts are the torso's top corners flanking the chest,
- * side and rear delts are the caps of the upper arms (front and back views
- * respectively). Anatomically defensible, and — the reason it is drawn this way
- * — the armpit gap separates them, where three stacked cells on a 16pt shoulder
- * would have been three indistinguishable slivers.
+ * The deltoid heads are split by PLACE rather than by stacking three slivers on
+ * one 16pt shoulder: front delts cap the torso's shoulder corners, side and rear
+ * delts cap the upper arms on their respective views. Anatomically defensible,
+ * and the armpit gap keeps the two apart on the page.
+ *
+ * No two shapes on a side overlap, and every shape is fully inside the body
+ * ground — both asserted in db/exercise-ai.test.mjs, so nudging a body block
+ * without nudging the muscles that ride on it fails the suite instead of
+ * shipping a muscle floating beside the figure.
  */
-export const FIGURE_REGIONS: FigureRegion[] = [
-  // --- FRONT --------------------------------------------------------------
-  // Front delts: the torso's top corners, flanking the chest.
-  { muscle: 'front_delts', side: 'front', x: 29, y: 35, w: 12, h: 13 },
-  { muscle: 'front_delts', side: 'front', x: 59, y: 35, w: 12, h: 13 },
+export const FIGURE_MUSCLES: FigureMuscleShape[] = [
+  // --- FRONT ---------------------------------------------------------------
+  // Front delts: caps over the shoulder corners, cut to follow the torso's own
+  // curve rather than sitting square on it and hanging off the shoulder.
+  ...pair(
+    'front_delts',
+    'front',
+    poly([41.5, 34.9], [41.5, 48], [35.5, 50.5], [28.3, 46], [28.3, 39.5], [31.6, 35.4])
+  ),
   // Side delts: the outer caps of the shoulders, on the arms.
-  { muscle: 'side_delts', side: 'front', x: 12, y: 38, w: 13, h: 12 },
-  { muscle: 'side_delts', side: 'front', x: 75, y: 38, w: 13, h: 12 },
-  // Chest: two plates under the collar line, split by a 4-unit sternum gap.
-  { muscle: 'chest', side: 'front', x: 29, y: 51, w: 19, h: 20 },
-  { muscle: 'chest', side: 'front', x: 52, y: 51, w: 19, h: 20 },
-  // Abs: two stacked panels down the midline, crossing the torso/waist join.
-  { muscle: 'abs', side: 'front', x: 39, y: 74, w: 22, h: 14 },
-  { muscle: 'abs', side: 'front', x: 39, y: 90, w: 22, h: 14 },
-  // Biceps: the fronts of the upper arms, below the delt caps.
-  { muscle: 'biceps', side: 'front', x: 12, y: 54, w: 13, h: 26 },
-  { muscle: 'biceps', side: 'front', x: 75, y: 54, w: 13, h: 26 },
-  // Forearms, past the elbow break.
-  { muscle: 'forearms', side: 'front', x: 11, y: 84, w: 12, h: 32 },
-  { muscle: 'forearms', side: 'front', x: 77, y: 84, w: 12, h: 32 },
-  // Quads: the fronts of the thighs.
-  { muscle: 'quads', side: 'front', x: 31, y: 126, w: 16, h: 46 },
-  { muscle: 'quads', side: 'front', x: 53, y: 126, w: 16, h: 46 },
-  // Calves (slimmer from the front).
-  { muscle: 'calves', side: 'front', x: 33, y: 186, w: 13, h: 38 },
-  { muscle: 'calves', side: 'front', x: 54, y: 186, w: 13, h: 38 },
+  ...pair(
+    'side_delts',
+    'front',
+    poly([14, 39.5], [24, 39.5], [25.6, 44], [25.6, 57], [12.4, 57], [12.4, 44])
+  ),
+  // Pectoral fans: broad at the sternum, sweeping out and down to the armpit.
+  ...pair(
+    'chest',
+    'front',
+    poly([48.5, 50], [37, 51.5], [30.5, 56], [29.5, 64.5], [34, 71.5], [48.5, 70])
+  ),
+  // The rectus sheet as a segmented grid — four rows of two, the lowest pair
+  // longer, split by a 1.6-unit linea alba. Blobs: an ab segment IS a rounded
+  // rect, and eight of them cost eight nodes.
+  ...pair('abs', 'front', blob(39.8, 72.8, 9.4, 8, [2, 2, 2, 2])),
+  ...pair('abs', 'front', blob(39.8, 81.6, 9.4, 8, [2, 2, 2, 2])),
+  ...pair('abs', 'front', blob(39.8, 90.4, 9.4, 8, [2, 2, 2, 2])),
+  ...pair('abs', 'front', blob(39.8, 99.2, 9.4, 10, [2, 2, 4, 4])),
+  // ...and the obliques down the flanks, which are the same muscle in this
+  // taxonomy. Without them the waist reads as bare ground on a body whose every
+  // other panel is filled, which is most of what made the first draft look like
+  // an action figure rather than an anatomy plate.
+  ...pair(
+    'abs',
+    'front',
+    poly([38.8, 73.5], [38.6, 85], [39, 99], [36.5, 101], [33, 90], [33.5, 76.5])
+  ),
+  // Bicep spindles — a capsule is a spindle, and it is one node.
+  ...pair('biceps', 'front', blob(12.8, 57.8, 12.4, 23, [6.2, 6.2, 6.2, 6.2])),
+  // Forearms: tapering cones past the elbow.
+  ...pair(
+    'forearms',
+    'front',
+    poly([11.6, 84.5], [22.6, 84.5], [21.2, 102], [19, 119.5], [13.6, 119.5], [11.8, 102])
+  ),
+  // Quads, each leg in two masses so the vastus lateralis/medialis split shows:
+  // the long outer sweep, and the teardrop that sits above the inner knee.
+  ...pair(
+    'quads',
+    'front',
+    poly(
+      [31.7, 122.5],
+      [41.5, 120.9],
+      [44, 133],
+      [43.5, 152],
+      [39.5, 173.5],
+      [33.5, 173.5],
+      [30.7, 152],
+      [30.4, 133]
+    )
+  ),
+  ...pair(
+    'quads',
+    'front',
+    poly([45.5, 138], [48.4, 146], [48.6, 160], [46, 173.5], [41.5, 173.5], [44, 158], [44.6, 147])
+  ),
+  // Calves: twin bellies, the outer one longer — which is what a gastrocnemius
+  // looks like, and what a single box never could.
+  ...pair('calves', 'front', blob(32.6, 181, 7.6, 32, [3.8, 3.8, 3.8, 3.8])),
+  ...pair('calves', 'front', blob(40.9, 181, 7, 27, [3.5, 3.5, 3.5, 3.5])),
 
-  // --- BACK ---------------------------------------------------------------
-  // Traps: the yoke across the top of the back.
-  { muscle: 'traps', side: 'back', x: 33, y: 35, w: 34, h: 13 },
+  // --- BACK ----------------------------------------------------------------
+  // Traps: the diamond yoke across the top of the back. Symmetric about the
+  // spine, so it is one shape rather than a pair.
+  ...single(
+    'traps',
+    'back',
+    poly([50, 34.4], [63, 37], [69.5, 45], [59, 53.5], [50, 55.5], [41, 53.5], [30.5, 45], [37, 37])
+  ),
   // Rear delts: the caps of the upper arms, seen from behind.
-  { muscle: 'rear_delts', side: 'back', x: 12, y: 38, w: 13, h: 12 },
-  { muscle: 'rear_delts', side: 'back', x: 75, y: 38, w: 13, h: 12 },
-  // Upper back: between the shoulder blades.
-  { muscle: 'upper_back', side: 'back', x: 29, y: 51, w: 19, h: 15 },
-  { muscle: 'upper_back', side: 'back', x: 52, y: 51, w: 19, h: 15 },
-  // Lats: two wings tapering toward the waist.
-  { muscle: 'lats', side: 'back', x: 29, y: 69, w: 17, h: 16 },
-  { muscle: 'lats', side: 'back', x: 54, y: 69, w: 17, h: 16 },
-  // Triceps: the backs of the upper arms.
-  { muscle: 'triceps', side: 'back', x: 12, y: 54, w: 13, h: 26 },
-  { muscle: 'triceps', side: 'back', x: 75, y: 54, w: 13, h: 26 },
-  // Forearms (visible from behind too).
-  { muscle: 'forearms', side: 'back', x: 11, y: 84, w: 12, h: 32 },
-  { muscle: 'forearms', side: 'back', x: 77, y: 84, w: 12, h: 32 },
-  // Lower back: the column above the pelvis.
-  { muscle: 'lower_back', side: 'back', x: 38, y: 88, w: 24, h: 15 },
-  // Glutes.
-  { muscle: 'glutes', side: 'back', x: 31, y: 107, w: 18, h: 15 },
-  { muscle: 'glutes', side: 'back', x: 51, y: 107, w: 18, h: 15 },
-  // Hamstrings: the backs of the thighs.
-  { muscle: 'hamstrings', side: 'back', x: 31, y: 128, w: 16, h: 42 },
-  { muscle: 'hamstrings', side: 'back', x: 53, y: 128, w: 16, h: 42 },
-  // Calves read fuller from behind.
-  { muscle: 'calves', side: 'back', x: 33, y: 184, w: 13, h: 41 },
-  { muscle: 'calves', side: 'back', x: 54, y: 184, w: 13, h: 41 },
+  ...pair(
+    'rear_delts',
+    'back',
+    poly([14, 39.5], [24, 39.5], [25.6, 44], [25.6, 57], [12.4, 57], [12.4, 44])
+  ),
+  // Upper back: the rhomboid plates between the shoulder blades.
+  ...pair(
+    'upper_back',
+    'back',
+    poly([48.5, 57], [36, 58], [31, 63], [32, 71], [41, 73.5], [48.5, 71.5])
+  ),
+  // Lats: wings that taper toward the waist — the shape a rectangle is most
+  // obviously wrong for, and the reason this file rasterises polygons at all.
+  ...pair(
+    'lats',
+    'back',
+    poly([48.5, 75.5], [45, 83], [41, 92], [36, 95], [33.2, 86.5], [30.4, 79], [34.5, 74])
+  ),
+  // Lower back: the erector columns flanking the spine.
+  ...pair('lower_back', 'back', blob(43.6, 88, 5.6, 17, [2.5, 2.5, 3, 3])),
+  // Tricep spindles.
+  ...pair('triceps', 'back', blob(12.8, 57.8, 12.4, 23, [6.2, 6.2, 6.2, 6.2])),
+  // Forearms read the same from behind.
+  ...pair(
+    'forearms',
+    'back',
+    poly([11.6, 84.5], [22.6, 84.5], [21.2, 102], [19, 119.5], [13.6, 119.5], [11.8, 102])
+  ),
+  // Glutes: rounded masses.
+  ...pair('glutes', 'back', blob(31.5, 105.5, 18, 18, [7, 7, 8, 8])),
+  // Hamstrings: long strips down the back of the thigh.
+  ...pair(
+    'hamstrings',
+    'back',
+    poly(
+      [46.5, 127],
+      [47.5, 146],
+      [45.5, 167],
+      [41, 175],
+      [34.5, 175],
+      [31.5, 158],
+      [31.8, 139],
+      [34.5, 127]
+    )
+  ),
+  // Calves read fuller from behind — same bellies, same places.
+  ...pair('calves', 'back', blob(32.6, 181, 7.6, 32, [3.8, 3.8, 3.8, 3.8])),
+  ...pair('calves', 'back', blob(40.9, 181, 7, 27, [3.5, 3.5, 3.5, 3.5])),
 ];
 
-/** The regions of one side, in declaration (paint) order. */
-export function regionsFor(side: FigureSide): FigureRegion[] {
-  return FIGURE_REGIONS.filter((r) => r.side === side);
+/** The muscle shapes of one side, in declaration (paint) order. */
+export function musclesFor(side: FigureSide): FigureMuscleShape[] {
+  return FIGURE_MUSCLES.filter((m) => m.side === side);
 }
 
 /** Every muscle that appears on at least one side — the completeness contract. */
 export function mappedMuscles(): Set<Muscle> {
-  return new Set(FIGURE_REGIONS.map((r) => r.muscle));
+  return new Set(FIGURE_MUSCLES.map((m) => m.muscle));
+}
+
+/** The axis-aligned bounds of any shape. */
+export function shapeBounds(shape: Shape): FigureRect {
+  if (shape.kind === 'blob') return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+  const xs = shape.pts.map((p) => p[0]);
+  const ys = shape.pts.map((p) => p[1]);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+}
+
+/** One rasterised scanline of a polygon, in grid units. */
+export type Bar = FigureRect;
+
+/**
+ * How many scanline bars a polygon gets at a given scale — enough that each bar
+ * lands near {@link BAR_POINTS} of rendered height, clamped so a tiny shape
+ * still shows a taper and a tall one never runs away with the view budget.
+ */
+export function barsFor(shape: Shape, scale: number): number {
+  const { h } = shapeBounds(shape);
+  return Math.max(MIN_BARS, Math.min(MAX_BARS, Math.round((h * scale) / BAR_POINTS)));
 }
 
 /**
- * Is every grid cell of `rect` covered by the silhouette? The invariant that
- * keeps a muscle from floating in space beside the body — asserted over all 34
- * regions in db/exercise-ai.test.mjs, so moving a body block without moving the
- * muscles that ride on it fails the suite instead of shipping.
+ * Rasterise a closed polygon into horizontal bars — the whole trick that makes a
+ * contoured muscle out of nothing but filled `View`s.
  *
- * Rasterised rather than solved analytically because a region may legitimately
- * span TWO overlapping body blocks (the upper abs panel crosses the torso/waist
- * join), which no single-rect containment test would accept.
+ * Standard even-odd scanline fill: sample the polygon at the vertical centre of
+ * each row, intersect every non-horizontal edge with that line, sort the
+ * crossings and pair them. A convex-ish muscle yields one span per row; a shape
+ * that genuinely has two lobes at some height yields two, and both draw.
+ *
+ * `bleed` extends every bar but the last downward by a fraction of a grid unit,
+ * so consecutive bars OVERLAP rather than abut. Abutting bars are the classic
+ * failure here: each `View`'s frame is rounded to device pixels independently,
+ * and a third of a point of rounding error prints a hairline of the ground
+ * between two bars — a muscle striped like a barcode. The overlap must be
+ * composited under ONE opacity (see the fill wrapper in muscle-figure.tsx),
+ * never per-bar alpha, or the overlaps double-darken and stripe the other way.
  */
-export function coveredByBody(rect: FigureRect): boolean {
-  for (let y = rect.y; y < rect.y + rect.h; y++) {
-    for (let x = rect.x; x < rect.x + rect.w; x++) {
-      const inside = FIGURE_BODY.some(
-        (b) => x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h
-      );
-      if (!inside) return false;
+export function polyBars(pts: readonly Pt[], bars: number, bleed = 0.4): Bar[] {
+  const ys = pts.map((p) => p[1]);
+  const yMin = Math.min(...ys);
+  const yMax = Math.max(...ys);
+  const rowH = (yMax - yMin) / bars;
+  const out: Bar[] = [];
+  for (let i = 0; i < bars; i++) {
+    const yc = yMin + (i + 0.5) * rowH;
+    const xs: number[] = [];
+    for (let k = 0; k < pts.length; k++) {
+      const a = pts[k]!;
+      const b = pts[(k + 1) % pts.length]!;
+      if (a[1] === b[1]) continue;
+      const lo = Math.min(a[1], b[1]);
+      const hi = Math.max(a[1], b[1]);
+      // Half-open in y so a vertex shared by two edges is counted once.
+      if (yc < lo || yc >= hi) continue;
+      xs.push(a[0] + ((yc - a[1]) / (b[1] - a[1])) * (b[0] - a[0]));
+    }
+    xs.sort((p, q) => p - q);
+    for (let s = 0; s + 1 < xs.length; s += 2) {
+      const w = xs[s + 1]! - xs[s]!;
+      if (w <= 0) continue;
+      out.push({
+        x: xs[s]!,
+        y: yMin + i * rowH,
+        w,
+        h: rowH + (i === bars - 1 ? 0 : bleed),
+      });
     }
   }
+  return out;
+}
+
+/** Is a point inside a rounded rect? Exact at the corners, not just the bounds. */
+function insideBlob(b: Blob, x: number, y: number): boolean {
+  if (x < b.x || x > b.x + b.w || y < b.y || y > b.y + b.h) return false;
+  const cap = Math.min(b.w, b.h) / 2;
+  const [tl, tr, br, bl] = b.r.map((v) => Math.min(v, cap)) as unknown as Radii;
+  const near = (cx: number, cy: number, r: number) => (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
+  if (x < b.x + tl && y < b.y + tl) return near(b.x + tl, b.y + tl, tl);
+  if (x > b.x + b.w - tr && y < b.y + tr) return near(b.x + b.w - tr, b.y + tr, tr);
+  if (x > b.x + b.w - br && y > b.y + b.h - br) return near(b.x + b.w - br, b.y + b.h - br, br);
+  if (x < b.x + bl && y > b.y + b.h - bl) return near(b.x + bl, b.y + b.h - bl, bl);
   return true;
+}
+
+/** A handful of points guaranteed to be inside `shape`, for the coverage test. */
+function samplePoints(shape: Shape): Pt[] {
+  const out: Pt[] = [];
+  if (shape.kind === 'blob') {
+    const cap = Math.min(shape.w, shape.h) / 2;
+    const [tl, tr, br, bl] = shape.r.map((v) => Math.min(v, cap));
+    // The four corners pulled in by their own radius (the extreme points of the
+    // rounded outline), plus the edge midpoints and the centre.
+    const inset = 0.29; // 1 - cos45°, the corner arc's deepest excursion
+    out.push([shape.x + tl! * inset, shape.y + tl! * inset]);
+    out.push([shape.x + shape.w - tr! * inset, shape.y + tr! * inset]);
+    out.push([shape.x + shape.w - br! * inset, shape.y + shape.h - br! * inset]);
+    out.push([shape.x + bl! * inset, shape.y + shape.h - bl! * inset]);
+    out.push([shape.x + shape.w / 2, shape.y]);
+    out.push([shape.x + shape.w / 2, shape.y + shape.h]);
+    out.push([shape.x, shape.y + shape.h / 2]);
+    out.push([shape.x + shape.w, shape.y + shape.h / 2]);
+    return out;
+  }
+  // Every vertex, plus both ends of every rasterised bar at a resolution finer
+  // than anything the component will draw.
+  for (const p of shape.pts) out.push(p);
+  for (const bar of polyBars(shape.pts, 40, 0)) {
+    out.push([bar.x, bar.y + bar.h / 2]);
+    out.push([bar.x + bar.w, bar.y + bar.h / 2]);
+  }
+  return out;
+}
+
+/** Even-odd point-in-polygon. */
+function insidePoly(pts: readonly Pt[], x: number, y: number): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i]!;
+    const [xj, yj] = pts[j]!;
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Is a point inside a shape, corner radii and concavities included? */
+export function insideShape(shape: Shape, x: number, y: number): boolean {
+  return shape.kind === 'blob' ? insideBlob(shape, x, y) : insidePoly(shape.pts, x, y);
+}
+
+/**
+ * Do two shapes share any area? Rasterised, because a BOUNDING-BOX test is
+ * useless here: the vastus lateralis and medialis of one leg have overlapping
+ * boxes and touch nowhere, and so do a lat wing and the erector column beside
+ * it. Two shapes that genuinely overlap would paint one muscle's reading over
+ * another's and silently lose it, which is the failure worth asserting on.
+ */
+export function shapesOverlap(a: Shape, b: Shape): boolean {
+  const ba = shapeBounds(a);
+  const bb = shapeBounds(b);
+  if (
+    Math.min(ba.x + ba.w, bb.x + bb.w) - Math.max(ba.x, bb.x) <= 0 ||
+    Math.min(ba.y + ba.h, bb.y + bb.h) - Math.max(ba.y, bb.y) <= 0
+  ) {
+    return false;
+  }
+  const x0 = Math.max(ba.x, bb.x);
+  const x1 = Math.min(ba.x + ba.w, bb.x + bb.w);
+  const y0 = Math.max(ba.y, bb.y);
+  const y1 = Math.min(ba.y + ba.h, bb.y + bb.h);
+  const steps = 60;
+  for (let i = 0; i <= steps; i++) {
+    const y = y0 + ((y1 - y0) * i) / steps;
+    for (let k = 0; k <= steps; k++) {
+      const x = x0 + ((x1 - x0) * k) / steps;
+      if (insideShape(a, x, y) && insideShape(b, x, y)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Is every point of `shape` covered by the body ground?
+ *
+ * The invariant that keeps a muscle from floating in space beside the figure —
+ * asserted over every muscle shape in db/exercise-ai.test.mjs, so moving a body
+ * block without moving the muscles that ride on it fails the suite instead of
+ * shipping. Sampled rather than solved analytically because a shape may
+ * legitimately span TWO overlapping body blocks (the lower abs cross the
+ * waist/pelvis join), which no single-block containment test would accept, and
+ * because the blocks are ROUNDED — a rect test would pass a muscle that hangs
+ * off a curved shoulder, which is exactly the failure worth catching.
+ */
+export function coveredByBody(shape: Shape): boolean {
+  for (const [x, y] of samplePoints(shape)) {
+    if (!FIGURE_BODY.some((b) => insideBlob(b.shape, x, y))) return false;
+  }
+  return true;
+}
+
+/**
+ * How many native `View`s one figure PAIR costs at a given per-figure width.
+ *
+ * The drawing sits inside two scrolling screens, so its node count is a budget
+ * and not an afterthought. Counted here rather than guessed: body ground blocks
+ * cost two each (the contour pass and the fill pass), a muscle blob costs one
+ * (its ink line is a uniform `borderWidth`, not a second node), and a muscle
+ * poly costs one node per bar twice over — the inflated ink copy and the fill —
+ * plus one wrapper that holds the fill's single opacity.
+ */
+export function figureViewCount(width: number): number {
+  const scale = width / FIGURE_GRID.w;
+  let n = FIGURE_BODY.length * 2 * 2; // both sides, contour + fill
+  for (const m of FIGURE_MUSCLES) {
+    if (m.shape.kind === 'blob') n += 1;
+    else n += polyBars(m.shape.pts, barsFor(m.shape, scale)).length * 2 + 1;
+  }
+  return n;
 }

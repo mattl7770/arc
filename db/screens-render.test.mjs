@@ -28,8 +28,10 @@ import {
   setNutritionTargets,
 } from '../src/lib/db/repositories/nutrition.ts';
 import {
+  createFolder,
   createRecipe,
   listIngredients,
+  moveRecipeToFolder,
   resolveIngredient,
   setIngredientNegligible,
   setRecipeFavorite,
@@ -41,19 +43,31 @@ import {
 } from '../src/lib/db/repositories/grocery.ts';
 
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import { importProgressPhotos } from '../src/lib/media/progress-photo-store.ts';
+import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
+import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
+import { clearMuscleAnchor, setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
 
 import { ingestCorpus } from '../src/lib/rag/corpus.ts';
 import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
 
 import ExerciseScreen from '../app/exercise.tsx';
+import MissionHistoryScreen from '../app/mission-history.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
 import RecipeEditScreen from '../app/recipe-edit.tsx';
 import RecipeImportScreen from '../app/recipe-import.tsx';
+import RecipeFoldersScreen from '../app/recipe-folders.tsx';
+import RecipeReviseScreen from '../app/recipe-revise.tsx';
 import GroceryScreen from '../app/grocery.tsx';
 import NutritionScreen from '../app/nutrition.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
+import ProgressPhotosScreen from '../app/progress-photos.tsx';
+import ProgressPhotoAddScreen from '../app/progress-photo-add.tsx';
+import ProgressPhotoDetailScreen from '../app/progress-photo-detail.tsx';
+import ProgressPhotoCompareScreen from '../app/progress-photo-compare.tsx';
 import KnowledgeScreen from '../app/knowledge.tsx';
 import KnowledgeEntryScreen from '../app/knowledge-entry.tsx';
 import KnowledgeEntryEditScreen from '../app/knowledge-entry-edit.tsx';
@@ -129,6 +143,40 @@ const db = getDb();
     'Paste text',
     'No model key is set', // honest no-key state under node
   ]);
+
+  // The execution record on a database that has never planned a day. This
+  // render has to happen HERE, before any fixture touches log_entries: the
+  // never-planned state is the one this screen most has to get right, and it
+  // only exists once.
+  const virgin = render('mission-history (never planned)', MissionHistoryScreen);
+  expect('mission-history (never planned)', virgin, [
+    'Mission',
+    'No mission has been planned yet',
+    'Set up a protocol', // the accent moves to the one action when there are no bars
+  ]);
+  // Nothing may imply a record that does not exist: no rate, no denominators,
+  // no day rows, and above all no "nothing was missed" — which is a claim about
+  // a plan, and there has never been one.
+  refute('mission-history (never planned)', virgin, [
+    '0 of 0',
+    '0%',
+    'Nothing was missed',
+    'on record',
+    'By day',
+  ]);
+
+  // 0035: the cabinet before there is anything in it. "Unfiled is a place" is
+  // the design statement the whole feature turns on, so it is asserted.
+  expect('recipe-folders (empty)', render('recipe-folders (empty)', RecipeFoldersScreen), [
+    'Folders',
+    'New folder',
+    'No folders yet',
+  ]);
+  expect(
+    'recipe-revise (missing id)',
+    render('recipe-revise (missing id)', RecipeReviseScreen, { id: 'nope' }),
+    ['This recipe is gone']
+  );
 }
 
 {
@@ -349,19 +397,80 @@ const db = getDb();
   expect('grocery (with cart)', render('grocery (with cart)', GroceryScreen), ['In cart']);
 
   // -------------------------------------------------------------------------
-  // The body figure (reworked 2026-08-12 after the owner's "hard to tell what's
-  // what"). What a server render CAN prove about a drawing is narrow but it is
-  // exactly the part that was broken: the figure's ~90 positioned views cost
-  // nothing to VoiceOver, so the whole burden of saying WHICH muscle is in
-  // WHICH state falls on words — the key's rows and the section tally. Those
-  // are text, so they are assertable here. The drawing itself stays an
-  // on-device check (memory: verify on device, not web).
+  console.log('8b. Folders (0035) — the filter strip, the drawer, and the unfiled place');
+  {
+    const dinners = createFolder(db, 'Dinners');
+    moveRecipeToFolder(db, adobo, dinners);
+
+    const book = render('recipes (with folders)', RecipesScreen);
+    expect('recipes (with folders)', book, [
+      'Folders',
+      'Dinners',
+      'Unfiled', // the draft recipe is still in no folder, so the chip is drawn
+      'Manage',
+      'Chicken Adobo',
+      'Mystery stew',
+    ]);
+    // The strip is a FILTER, never an editor: nothing destructive may appear
+    // on the book, or a scoping tap and a deleting tap share a row.
+    refute('recipes (with folders)', book, ['Delete folder', 'Confirm delete']);
+
+    // Scoped by the route param the folders screen pushes with.
+    const scoped = render('recipes (scoped)', RecipesScreen, { folder: dinners });
+    expect('recipes (scoped)', scoped, ['Chicken Adobo']);
+    refute('recipes (scoped)', scoped, ['Mystery stew']);
+
+    expect('recipe-folders (populated)', render('recipe-folders', RecipeFoldersScreen), [
+      'Dinners',
+      '1 recipe',
+      'recipe is unfiled', // "Unfiled is a place, not a backlog"
+    ]);
+
+    // A filed recipe says where it lives; an unfiled one says so too.
+    expect(
+      'recipe-detail (filed)',
+      render('recipe-detail (filed)', RecipeDetailScreen, { id: adobo }),
+      ['Dinners', 'Edit in words']
+    );
+    expect(
+      'recipe-detail (unfiled)',
+      render('recipe-detail (unfiled)', RecipeDetailScreen, { id: draft }),
+      ['Unfiled']
+    );
+  }
+
+  console.log('8c. recipe-revise — the honest no-key state, and the recipe it is about');
+  {
+    // No model key exists under node, so the screen must say what is missing
+    // rather than drawing a field that cannot work.
+    const html = render('recipe-revise (no key)', RecipeReviseScreen, { id: adobo });
+    expect('recipe-revise (no key)', html, [
+      'Edit in words',
+      'needs a model key',
+      'Settings › Coach',
+    ]);
+    // And nothing may look like a write is pending.
+    refute('recipe-revise (no key)', html, ['Save changes', 'Apply']);
+  }
+
+  // -------------------------------------------------------------------------
+  // The body figure (contoured rewrite, 2026-08-12 — the third round). What a
+  // server render CAN prove about a drawing is narrow, but it is exactly the
+  // part that keeps failing: the figure's ~490 positioned views cost nothing to
+  // VoiceOver, so the whole burden of saying WHICH muscle is in WHICH state
+  // falls on words — the roll call, the section tally, and the ramp's two named
+  // ends. Those are text, so they are assertable here. Everything about how it
+  // LOOKS stays an on-device check (memory: verify on device, not web).
   console.log('9. Muscle freshness — the figure key states its case in words');
   {
     const empty = render('exercise hub (never trained)', ExerciseScreen);
     expect('exercise hub (never trained)', empty, [
       'Muscle freshness',
       '16 of 16 fresh',
+      // The scale beside the figure names both ends. A continuous opacity ramp
+      // with no stated direction is a ramp anyone can read backwards.
+      'Fresh',
+      'Spent',
       // Empty is AUTHORED, never blank — and "nothing logged" is not the same
       // fact as "nothing depleted", which the model renders identically.
       'No sessions logged yet, so every muscle reads fresh.',
@@ -389,17 +498,280 @@ const db = getDb();
       'No sessions logged yet, so every muscle reads fresh.',
     ]);
 
-    expect('muscle-freshness (pushed)', render('muscle-freshness', MuscleFreshnessScreen), [
+    const pushed = render('muscle-freshness', MuscleFreshnessScreen);
+    expect('muscle-freshness (pushed)', pushed, [
       'Muscle freshness',
       'Per muscle',
       'Fatigued',
       'Chest',
     ]);
+    // Nothing is hand-set yet, so nothing claims to be.
+    refute('muscle-freshness (pushed)', pushed, ['Set by hand']);
+
+    // An asserted number and a derived one must not wear the same face
+    // (the rule `resolved_by` applies to recipe lines, 0034). Anchor a muscle
+    // and the row says so — 0037's whole visible contract.
+    setMuscleAnchor(db, 'calves', 20);
+    const anchored = render('muscle-freshness (hand-set)', MuscleFreshnessScreen);
+    expect('muscle-freshness (hand-set)', anchored, ['Set by hand', 'Calves']);
+    clearMuscleAnchor(db, 'calves');
+    refute(
+      'muscle-freshness (cleared)',
+      render('muscle-freshness (cleared)', MuscleFreshnessScreen),
+      ['Set by hand']
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // The execution record with a real, YOUNG record behind it — the state a
+  // brand-new install is actually in, and the one the standing rule is about:
+  // three days of history must SAY three days, not draw a fortnight of nothing.
+  //
+  // The fixture is deliberately lopsided: one protocol item done every day, one
+  // never done. That is the shape the screen exists to name — a protocol whose
+  // items are not getting done is a protocol to change.
+  console.log('10. Mission — the execution record behind Data’s Mission row');
+  {
+    const day = (n) => {
+      const d = new Date();
+      d.setDate(d.getDate() - n);
+      return todayISODate(d);
+    };
+    const settledDays = [day(3), day(2), day(1)];
+
+    createProtocolWithVersion(
+      db,
+      { name: 'Morning stack', type: 'supplement_stack' },
+      {
+        items: [
+          { title: 'Creatine', scheduled_time: '07:00', dose: '5 g', notes: null },
+          { title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null },
+        ],
+      }
+    );
+    for (const date of [...settledDays, today]) generateMissionForDay(db, date);
+
+    const idsOn = (date) =>
+      new Map(
+        db
+          .all(
+            `SELECT e.id, e.title FROM log_entries e
+               JOIN daily_logs d ON d.id = e.daily_log_id
+              WHERE d.date = ?`,
+            [date]
+          )
+          .map((r) => [r.title, r.id])
+      );
+    // Creatine every day, Magnesium never — including today, which is still
+    // open and must therefore not be judged.
+    for (const date of [...settledDays, today]) {
+      setMissionStatus(db, idsOn(date).get('Creatine'), 'completed');
+    }
+
+    const young = render('mission-history (4-day record)', MissionHistoryScreen);
+    expect('mission-history (4-day record)', young, [
+      '50%', // 3 of 6 over the three days that are OVER
+      'of 6 planned',
+      '3 done', // the ledger sums to the denominator beside the rate
+      '0 skipped',
+      '3 untouched',
+      '4 days on record', // the record's true extent, stated
+      'too little to read as a trend', // ...and disclaimed, because it is 3 days
+      'Judged ', // the window the rate is over, stated
+      '3 finished days', // ...and the section that shares it
+      'Morning stack', // the source, worst first
+      '3 missed', // every figure on that plate is framed as a miss
+      'of 6 planned',
+      'Magnesium', // its worst item, named
+      '3 of 3 missed',
+      'today, still open', // today is on the record but is not judged
+    ]);
+    // Today has 2 planned and 1 done. If today were folded into the rate it
+    // would read 4 of 8 = 50%… identical here by coincidence, which is exactly
+    // why the DENOMINATOR is the assertion: 6, never 8.
+    refute('mission-history (4-day record)', young, [
+      'of 8 planned',
+      'Nothing was missed',
+      '0 of 0',
+    ]);
+
+    // Now do the missing item on every settled day. "Nothing was missed" and
+    // "nothing was ever planned" are different facts and must not render
+    // alike — this is the same pair the codebase has confused twice before.
+    for (const date of settledDays) {
+      setMissionStatus(db, idsOn(date).get('Magnesium'), 'completed');
+    }
+    const clean = render('mission-history (all done)', MissionHistoryScreen);
+    expect('mission-history (all done)', clean, [
+      '100%',
+      'Nothing was missed. All 6 planned items were completed.',
+    ]);
+    refute('mission-history (all done)', clean, [
+      '3 missed',
+      'No mission has been planned yet', // the never-planned sentence, which is a different fact
+    ]);
   }
 }
 
+// ---------------------------------------------------------------------------
+// Progress photos (0035, docs/progress-photos-subapp.md). The point of walking
+// these four through a real render is the degradation ledger: under node there
+// is no expo-image-picker, no expo-file-system and no model key, which is
+// EXACTLY the state of the owner's current binary. Every one of those absences
+// has to be a sentence on the screen rather than a crash or a dead control.
 {
-  console.log('4. The knowledge base (0035, docs/knowledge-subapp.md)');
+  console.log('11. Progress photos — empty, populated, and honestly degraded');
+
+  expect('progress photos (empty)', render('progress photos (empty)', ProgressPhotosScreen), [
+    'Progress photos',
+    'Bring in your progress photos',
+    'No photos yet',
+    // The picker is not in this binary: the control is disabled and says why.
+    'rides the next app build',
+  ]);
+  refute('progress photos (empty)', render('progress photos (empty)', ProgressPhotosScreen), [
+    // Nothing may claim a tally before there is anything to tally.
+    'photos · ',
+  ]);
+
+  expect('progress photo add', render('progress photo add', ProgressPhotoAddScreen), [
+    'Add photos',
+    'From your library',
+    'Choose photos',
+    'not today',
+  ]);
+
+  // Fixtures through the REAL store seam, with an in-memory file system.
+  const photoFiles = new Map();
+  const fakeStore = {
+    list: () => [...photoFiles.keys()],
+    exists: (name) => photoFiles.has(name),
+    remove: (name) => {
+      photoFiles.delete(name);
+      return true;
+    },
+    write: (name, bytes) => {
+      photoFiles.set(name, bytes);
+      return true;
+    },
+    uri: (name) => (photoFiles.has(name) ? `file:///documents/progress-photos/${name}` : null),
+  };
+  const photoIds = importProgressPhotos(
+    db,
+    [
+      { taken_on: '2026-01-12', pose: 'front', workingBase64Jpeg: '/9j/jan' },
+      { taken_on: '2026-08-09', pose: 'front', workingBase64Jpeg: '/9j/aug' },
+      { taken_on: '2026-08-09', pose: 'side', workingBase64Jpeg: '/9j/augside' },
+    ],
+    fakeStore
+  );
+  ok('progress photo fixtures seeded through the real store');
+
+  const gallery = render('progress photos (populated)', ProgressPhotosScreen);
+  expect('progress photos (populated)', gallery, [
+    'August 2026',
+    'January 2026',
+    '2 photos · 2 poses',
+    '1 photo · 1 pose',
+    'Compare',
+    'Front',
+    'Side',
+    // No expo-file-system under node, so every cell resolves to no URI — and
+    // draws the authored state rather than a broken frame.
+    'Not on this phone',
+  ]);
+
+  expect(
+    'progress photo detail',
+    render('progress photo detail', ProgressPhotoDetailScreen, { id: photoIds[1] }),
+    [
+      '9 Aug 2026',
+      'Details',
+      'Taken on',
+      'Pose',
+      'Important',
+      // No weigh-in exists near that date in this fixture DB.
+      'no weigh-in near this date',
+      // No model key under node: the reading affordance is a sentence, not a button.
+      'needs a model key',
+      'Delete photo',
+      // The honest retro-flag caveat is on the row that could mislead.
+      'at import time',
+      // Provenance is the PERSISTED fact, not a guess from `taken_at`.
+      'Set by you.',
+    ]
+  );
+
+  // THE HONESTY CASE THE SWEEP IS BUILT TO PRODUCE: a row that claims a
+  // full-size original whose file did not come across. The screen must not say
+  // "a full-size original is kept inside ARC" directly beneath "Image not on
+  // this phone". Under node there is no file system at all, so every row is in
+  // exactly this state — which makes it the cheapest possible assertion and the
+  // one whose absence let the bug ship.
+  db.run('UPDATE progress_photos SET original_file_name = ?, is_important = 1 WHERE id = ?', [
+    'orphaned-original.jpg',
+    photoIds[0],
+  ]);
+  const orphaned = render('progress photo detail (no files)', ProgressPhotoDetailScreen, {
+    id: photoIds[0],
+  });
+  expect('progress photo detail (no files)', orphaned, [
+    'Image not on this phone.',
+    'isn’t on this phone either',
+  ]);
+  refute('progress photo detail (no files)', orphaned, [
+    'A full-size original is kept inside ARC for this one.',
+  ]);
+  expect(
+    'progress photo detail (missing id)',
+    render('progress photo detail (missing)', ProgressPhotoDetailScreen, { id: 'nope' }),
+    ['This photo is gone.']
+  );
+
+  expect(
+    'progress photo compare',
+    render('progress photo compare', ProgressPhotoCompareScreen, {
+      a: photoIds[0],
+      b: photoIds[1],
+    }),
+    [
+      'Compare',
+      '12 Jan 2026',
+      '9 Aug 2026',
+      'days apart',
+      'both front',
+      'Compare against',
+      'no weigh-in near this date',
+    ]
+  );
+
+  // The weigh-in caption, with its distance — the claim the whole compare
+  // surface rests on. A weigh-in two days after the January photo must print
+  // that distance, not just a number.
+  //
+  // 84.2 kg renders as **185.6 lb** because DEFAULT_UNIT_PREFERENCES.weight is
+  // 'lb' and this surface goes through the same resolveDisplay/formatMeasured
+  // pair as every other measured value in the app. Asserting the converted
+  // figure is the point: a photo caption that hard-coded "kg" would be the one
+  // number on the phone that ignored the owner's unit choice.
+  db.run('INSERT INTO body_metrics (id, measured_at, weight_kg, source) VALUES (?, ?, ?, ?)', [
+    'render-weigh-1',
+    '2026-01-14T07:00:00.000Z',
+    84.2,
+    'manual',
+  ]);
+  expect(
+    'progress photo compare (with a weigh-in)',
+    render('progress photo compare (weighed)', ProgressPhotoCompareScreen, {
+      a: photoIds[0],
+      b: photoIds[1],
+    }),
+    ['185.6 lb', 'weighed 2 days later']
+  );
+}
+
+{
+  console.log('12. The knowledge base (0038, docs/knowledge-subapp.md)');
 
   // Before the pack: the hub is honest that the reference has not loaded, and
   // the "your entries" empty is AUTHORED rather than blank.

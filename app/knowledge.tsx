@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
@@ -10,6 +10,7 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import {
+  deleteKnowledgeEntry,
   listKnowledgeEntries,
   listPackEntries,
   restoreKnowledgeEntry,
@@ -353,6 +354,37 @@ export default function KnowledgeScreen() {
                         className="min-h-[44px] justify-center active:opacity-60">
                         <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine">
                           Restore
+                        </Text>
+                      </Pressable>
+                      {/* The spec's promised hard delete (§2/§3), arm/confirm —
+                          the coach-memory idiom. Muted, never the accent: a
+                          destructive control does not compete with Restore.
+                          (2026-08-13 review fix: deleteKnowledgeEntry existed
+                          with zero callers while the spec said BUILT.) */}
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Delete ${entry.title} permanently`}
+                        hitSlop={8}
+                        onPress={() =>
+                          Alert.alert(
+                            'Delete this entry?',
+                            `“${entry.title}” and its chunks are removed for good — the Coach can never cite it again. Restore exists; undelete does not.`,
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              {
+                                text: 'Delete',
+                                style: 'destructive',
+                                onPress: () => {
+                                  deleteKnowledgeEntry(getDb(), entry.id);
+                                  load(query);
+                                },
+                              },
+                            ]
+                          )
+                        }
+                        className="min-h-[44px] justify-center active:opacity-60">
+                        <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+                          Delete
                         </Text>
                       </Pressable>
                     </View>

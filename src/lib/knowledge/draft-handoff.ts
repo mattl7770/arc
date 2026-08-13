@@ -26,13 +26,19 @@
 /** How long a just-consumed draft stays replayable. Matches incoming-share. */
 const REPLAY_MS = 3000;
 
-let pending: string | null = null;
-let lastConsumed: { body: string; at: number } | null = null;
+/** What the import screen hands the editor: the text, and — when the user
+ * came down the URL rung — the source URL, so the spec's "URL into provenance"
+ * (§5, the manual floor) holds on the fall-through path too. */
+export type StashedDraft = { body: string; sourceUrl: string | null };
 
-/** Stash text for the editor to pick up on its next mount. */
-export function stashKnowledgeDraft(body: string): void {
+let pending: StashedDraft | null = null;
+let lastConsumed: { draft: StashedDraft; at: number } | null = null;
+
+/** Stash text (and the URL it came from, if any) for the editor's next mount. */
+export function stashKnowledgeDraft(body: string, sourceUrl: string | null = null): void {
   const trimmed = body.trim();
-  pending = trimmed === '' ? null : trimmed;
+  const url = sourceUrl?.trim() || null;
+  pending = trimmed === '' && url === null ? null : { body: trimmed, sourceUrl: url };
 }
 
 /**
@@ -43,14 +49,14 @@ export function stashKnowledgeDraft(body: string): void {
  * `now` is injectable so db/knowledge-import.test.mjs can exercise the window
  * without sleeping.
  */
-export function consumeKnowledgeDraft(now: number = Date.now()): string | null {
+export function consumeKnowledgeDraft(now: number = Date.now()): StashedDraft | null {
   if (pending !== null) {
-    const body = pending;
+    const draft = pending;
     pending = null;
-    lastConsumed = { body, at: now };
-    return body;
+    lastConsumed = { draft, at: now };
+    return draft;
   }
-  if (lastConsumed && now - lastConsumed.at < REPLAY_MS) return lastConsumed.body;
+  if (lastConsumed && now - lastConsumed.at < REPLAY_MS) return lastConsumed.draft;
   return null;
 }
 

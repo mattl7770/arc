@@ -150,6 +150,12 @@ export const UNCOVERED_DOMAINS: string[] = [
   'saved meal templates (Eat)',
   'saved workouts, routines and programs (Train)',
   'lab report files and the PDF import (Data, Labs)',
+  // 0035. Deliberately a blind spot rather than a tool (owner call, 2026-08-12):
+  // the catalog is ~66-72% of the cached prompt prefix and every addition
+  // invalidates it, while photo METADATA — counts, dates, poses — gives the model
+  // almost nothing actionable. The pixels are the value, and those flow through
+  // the user-triggered reading on the screen itself.
+  'progress photos and their AI readings (Data › Progress photos)',
   'booking, moving or cancelling an appointment (Data, Screenings)',
   'creating a protocol or a screening from scratch',
   // Widened 2026-08-12 (0035) rather than given its own line: a knowledge entry
@@ -168,6 +174,26 @@ const WRITE_NAMES = new Set(WRITE_TOOLS.map((tool) => tool.name));
  * Tool NAMES are deliberately not printed: the schemas are already on the wire,
  * and repeating 43 of them here would pay twice for the same information. The
  * model needs the domain vocabulary, not a second copy of its own toolbox.
+ *
+ * ## The preamble lost a sentence, 2026-08-12
+ *
+ * Adding the progress-photos blind spot cost ~18 tokens against ~1 token of
+ * headroom on the system-prompt ceiling (db/coach-eval.test.mjs §6), whose
+ * standing rule is that the next addition finds duplication rather than raising
+ * the ceiling a third time. The duplication was here. The preamble ran
+ * fact → prohibition-restating-the-fact → instruction:
+ *
+ *   1. "A domain missing from your tools is one you are BLIND to, never proof
+ *      the user lacks the feature."
+ *   2. "So never report a setting, a screen or a feature as absent because you
+ *      have no tool for it."
+ *   3. "Say you cannot see it, name where it lives, and ask the user for the
+ *      number."
+ *
+ * (2) is (1) in the imperative — the same sentence from the other side, which
+ * is exactly the pattern the 2026-08-12 trim of the two state-block bullets
+ * already established as the right thing to delete. The fact and the
+ * instruction both stand; only the restatement went.
  */
 export function buildCoverageManifest(): string {
   const writable: string[] = [];
@@ -178,8 +204,7 @@ export function buildCoverageManifest(): string {
   return (
     `What you can see, and what you cannot.\n` +
     `ARC holds more than your tools reach. A domain missing from your tools is one you are ` +
-    `BLIND to, never proof the user lacks the feature. So never report a setting, a screen or ` +
-    `a feature as absent because you have no tool for it. Say you cannot see it, name where ` +
+    `BLIND to, never proof the user lacks the feature. Say you cannot see it, name where ` +
     `it lives, and ask the user for the number.\n` +
     `Read and write: ${writable.join('; ')}.\n` +
     `Read only: ${readOnly.join('; ')}.\n` +

@@ -82,7 +82,8 @@ export default function KnowledgeEntryEditScreen() {
   // because the model couldn't read it, and it must not be mangled by URL
   // decoding on the way (src/lib/knowledge/draft-handoff.ts). Read-and-clear in
   // the initializer, which is why that function has a replay window.
-  const [body, setBody] = useState(editing?.body ?? consumeKnowledgeDraft() ?? '');
+  const [draft] = useState(() => (editing ? null : consumeKnowledgeDraft()));
+  const [body, setBody] = useState(editing?.body ?? draft?.body ?? '');
   const [topics] = useState<string[]>(() => listKnowledgeTopics(getDb()));
 
   const words = wordCount(body);
@@ -96,7 +97,15 @@ export default function KnowledgeEntryEditScreen() {
       router.back();
       return;
     }
-    const newId = saveKnowledgeEntry(db, { title, topic, body, source: 'user' });
+    // A fall-through from a failed URL import keeps its source URL — the entry
+    // is still "written by you", but the provenance line can say where from.
+    const newId = saveKnowledgeEntry(db, {
+      title,
+      topic,
+      body,
+      source: 'user',
+      sourceUrl: draft?.sourceUrl ?? undefined,
+    });
     // `replace`, not `push`: coming back from the reader should land on the hub,
     // not on the empty editor the entry was just written in.
     router.replace({ pathname: '/knowledge-entry', params: { id: newId, kind: 'entry' } });

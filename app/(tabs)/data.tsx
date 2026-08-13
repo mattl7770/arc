@@ -15,9 +15,9 @@ import { useDataOverview, type TrendKey } from '@/hooks/use-data-overview';
  *
  * The exploratory surface: never directive — that is Home's job — just a calm,
  * drafted record. Top to bottom: today's folio line and title; **Trends**
- * (Weight, Nutrition, Training, Symptoms, each with a live sparkline and
- * headline, or an honest first-run invite); **The full file**, the manage/browse
- * index into everything; and the row into **Settings**.
+ * (Mission, Weight, Nutrition, Training, Symptoms, each with a live sparkline
+ * and headline, or an honest first-run invite); **The full file**, the
+ * manage/browse index into everything; and the row into **Settings**.
  *
  * ## Bloodwork lives on the Labs screen — all of it (owner call, 2026-08-11)
  *
@@ -54,8 +54,8 @@ import { useDataOverview, type TrendKey } from '@/hooks/use-data-overview';
  * markers** (`BIOMARKER_SEED` in src/lib/labs/catalog.ts), every one of them
  * drawn, which before an import was 65 rows of "No reading yet" burying the
  * index and Settings under a long scroll. That section has now left the screen
- * entirely (above), so what remains is Trends (4 rows) and The full file (8
- * rows), **both open**: together they are about a screen and a half, which is
+ * entirely (above), so what remains is Trends (5 rows, Mission added 2026-08-12)
+ * and The full file (8 rows), **both open**: together about a screen and a half, which is
  * the tab as it should first read. The fold survives as a way to put a section
  * aside, no longer as the thing that made this screen navigable.
  *
@@ -197,10 +197,13 @@ export default function DataScreen() {
   const openTrend = (key: TrendKey) => {
     switch (key) {
       case 'mission':
-        // The mission IS Home's, so the row goes to the tab that owns it rather
-        // than to a second copy of it. `navigate`, not `push`: Home is already
-        // mounted in the bar, and pushing would stack a duplicate on top of it.
-        router.navigate('/');
+        // The execution RECORD, not today's mission. This row used to
+        // `navigate('/')` on the reasoning that the mission is Home's — true of
+        // *today's* mission, and beside the point for a trend row, which asks
+        // about the days behind you. Home cannot answer "how well am I
+        // executing, and where am I failing?" because Home only ever draws one
+        // day. app/mission-history.tsx does, and ends on the protocol to change.
+        router.push('/mission-history');
         return;
       case 'weight':
         // `from` names this screen on the keypad's back control. That screen is
@@ -263,7 +266,13 @@ export default function DataScreen() {
       chip: 'setup',
       onPress: () => router.push('/experiments'),
     },
-    { key: 'photos', label: 'Progress photos', icon: 'images-outline', chip: 'later' },
+    {
+      key: 'photos',
+      label: 'Progress photos',
+      icon: 'images-outline',
+      chip: 'setup',
+      onPress: () => router.push('/progress-photos'),
+    },
     {
       key: 'knowledge',
       label: 'Knowledge base',

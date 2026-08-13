@@ -1,5 +1,5 @@
 /**
- * The knowledge base (0035) — the browsable, writable reference the Coach cites
+ * The knowledge base (0038) — the browsable, writable reference the Coach cites
  * (docs/knowledge-subapp.md).
  *
  * Two stores, one table for retrieval:
@@ -13,7 +13,7 @@
  *                        are cheap DERIVED data — deleted and re-derived freely,
  *                        never authored directly.
  *
- * ## The ownership invariant (0035's header; pinned by db/knowledge.test.mjs)
+ * ## The ownership invariant (0038's header; pinned by db/knowledge.test.mjs)
  *
  *   pack chunks   source = 'arc-longevity-v1'   entry_id NULL       pack_version NOT NULL
  *   entry chunks  source = 'user-knowledge'     entry_id NOT NULL   pack_version NULL
@@ -53,7 +53,7 @@ import { deleteVectors, insertKnowledgeChunk } from './rag';
  */
 export const USER_KNOWLEDGE_SOURCE = 'user-knowledge';
 
-/** How an entry got here (0035 CHECK vocabulary). */
+/** How an entry got here (0038 CHECK vocabulary). */
 export type KnowledgeEntrySource = 'user' | 'import' | 'coach';
 
 export type KnowledgeEntryRow = {
@@ -99,7 +99,7 @@ export type PackEntry = {
 
 /**
  * The topics the editor offers as chips: the pack's eight, plus every topic a
- * user entry already uses. Data-owned vocabulary (0035 leaves `topic` free
+ * user entry already uses. Data-owned vocabulary (0038 leaves `topic` free
  * text), so this is a query and not a constant.
  */
 export const PACK_TOPICS = [

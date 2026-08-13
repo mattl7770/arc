@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
@@ -9,9 +9,9 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
-import { listRecipes } from '@/lib/db/repositories/recipes';
+import { listFolders, listRecipes, unfiledRecipeCount } from '@/lib/db/repositories/recipes';
 import { fmtInt } from '@/lib/nutrition/format';
-import type { RecipeSummary } from '@/lib/recipes/types';
+import type { RecipeFolderSummary, RecipeSummary } from '@/lib/recipes/types';
 
 /**
  * The recipe book (docs/recipes-grocery.md §5): search + list, favorites and
@@ -37,7 +37,37 @@ import type { RecipeSummary } from '@/lib/recipes/types';
  * passes (`perServingKcal !== null`); an incomplete recipe shows its ingredient
  * count and no number, never an invented one. The section's tally counts the
  * rows actually drawn — nothing here folds.
+ *
+ * ## Folders (0035, owner: *"Make functionality for creating folders in the
+ * recipe book"*)
+ *
+ * The strip above the book is a **filter, not an editor**. Tapping a drawer
+ * scopes the list; nothing here can rename or delete one, because a filter and
+ * a destructive control must never be the same row under the same finger —
+ * managing lives on app/recipe-folders.tsx, one quiet chip away.
+ *
+ * **`All` is the default and stays the default.** A recipe in no folder is
+ * never harder to reach than one in a folder, so the book opens on everything
+ * and `Unfiled` is a filter beside the drawers rather than a quarantine. The
+ * strip appears only once a folder exists; before that it is one chip offering
+ * to start.
+ *
+ * Chips are **controls, not content**, so they take no device — named by a
+ * `SectionLabel` and set apart by air, exactly as the grocery screen's staples
+ * are. The selected chip is marked in ink; the accent stays on `Import`.
  */
+
+/** What the book is scoped to. `all` is the default and the only state in
+ *  which every recipe is reachable in one list — see the docblock. */
+type Scope = { kind: 'all' } | { kind: 'unfiled' } | { kind: 'folder'; id: string };
+
+/** The repository's tri-state filter for a scope: `undefined` = everything,
+ *  `null` = unfiled only, an id = that drawer (listRecipes' `opts.folder`). */
+function scopeFilter(scope: Scope): string | null | undefined {
+  if (scope.kind === 'all') return undefined;
+  if (scope.kind === 'unfiled') return null;
+  return scope.id;
+}
 
 /** "469 kcal/serving · 8 ingredients · cooked 3×" — the mono detail line. */
 function detailLine(r: RecipeSummary): string {
@@ -66,23 +96,55 @@ const BOOK_LIMIT = 500;
 
 export default function RecipesScreen() {
   const router = useRouter();
+  // A drawer tapped on app/recipe-folders.tsx opens the book already scoped to
+  // it — the folders screen is a way INTO the book, not a dead end.
+  const { folder } = useLocalSearchParams<{ folder?: string }>();
+  const [scope, setScope] = useState<Scope>(() =>
+    typeof folder === 'string' && folder !== '' ? { kind: 'folder', id: folder } : { kind: 'all' }
+  );
   const [query, setQuery] = useState('');
   const [recipes, setRecipes] = useState<RecipeSummary[]>(() =>
-    listRecipes(getDb(), '', { limit: BOOK_LIMIT })
+    listRecipes(getDb(), '', { limit: BOOK_LIMIT, folder: scopeFilter(scope) })
   );
+  const [folders, setFolders] = useState<RecipeFolderSummary[]>(() => listFolders(getDb()));
+  const [unfiled, setUnfiled] = useState(() => unfiledRecipeCount(getDb()));
 
-  const reload = useCallback(
-    () => setRecipes(listRecipes(getDb(), query, { limit: BOOK_LIMIT })),
-    [query]
-  );
+  const reload = useCallback(() => {
+    const db = getDb();
+    const live = listFolders(db);
+    setFolders(live);
+    setUnfiled(unfiledRecipeCount(db));
+    // A SCOPE CAN OUTLIVE ITS FOLDER. Manage → delete the drawer you were
+    // looking at → come back, and the book would keep querying a folder id
+    // that no longer exists: an empty list under a heading reading "Folder",
+    // and — if it was the last drawer — no `All` chip to escape with, because
+    // the strip collapses to its single "Organise into folders" state. So the
+    // scope is reconciled against the folders that actually exist, on every
+    // focus, and falls back to the one view that is always correct.
+    const gone = scope.kind === 'folder' && !live.some((f) => f.folder.id === scope.id);
+    const effective: Scope = gone ? { kind: 'all' } : scope;
+    if (gone) setScope(effective);
+    setRecipes(listRecipes(db, query, { limit: BOOK_LIMIT, folder: scopeFilter(effective) }));
+  }, [query, scope]);
   useFocusEffect(reload);
 
   const search = (text: string) => {
     setQuery(text);
-    setRecipes(listRecipes(getDb(), text, { limit: BOOK_LIMIT }));
+    setRecipes(listRecipes(getDb(), text, { limit: BOOK_LIMIT, folder: scopeFilter(scope) }));
+  };
+
+  const rescope = (next: Scope) => {
+    setScope(next);
+    setRecipes(listRecipes(getDb(), query, { limit: BOOK_LIMIT, folder: scopeFilter(next) }));
   };
 
   const searching = query.trim() !== '';
+  const scopeName =
+    scope.kind === 'all'
+      ? null
+      : scope.kind === 'unfiled'
+        ? 'Unfiled'
+        : (folders.find((f) => f.folder.id === scope.id)?.folder.name ?? 'Folder');
 
   return (
     <Screen scroll>
@@ -134,25 +196,81 @@ export default function RecipesScreen() {
         </Block>
       </View>
 
+      {/* FOLDERS — a filter strip, never an editor (see the docblock). Chips
+          are controls, so no device; the selected one is marked in ink. */}
+      <View className="mt-6">
+        <SectionLabel label="Folders" />
+        <View className="mt-2 flex-row flex-wrap gap-2">
+          {folders.length === 0 ? (
+            <FolderChip
+              label="Organise into folders"
+              icon="folder-outline"
+              selected={false}
+              onPress={() => router.push('/recipe-folders')}
+            />
+          ) : (
+            <>
+              <FolderChip
+                label="All"
+                selected={scope.kind === 'all'}
+                onPress={() => rescope({ kind: 'all' })}
+              />
+              {folders.map((f) => (
+                <FolderChip
+                  key={f.folder.id}
+                  label={f.folder.name}
+                  count={f.recipeCount}
+                  selected={scope.kind === 'folder' && scope.id === f.folder.id}
+                  onPress={() => rescope({ kind: 'folder', id: f.folder.id })}
+                />
+              ))}
+              {unfiled > 0 ? (
+                <FolderChip
+                  label="Unfiled"
+                  count={unfiled}
+                  selected={scope.kind === 'unfiled'}
+                  onPress={() => rescope({ kind: 'unfiled' })}
+                />
+              ) : null}
+              <FolderChip
+                label="Manage"
+                icon="create-outline"
+                selected={false}
+                onPress={() => router.push('/recipe-folders')}
+              />
+            </>
+          )}
+        </View>
+      </View>
+
       {/* THE BOOK. The plate goes round the rows, never round the empty
           sentence: a plate closes a record, and an empty book is a sentence on
           the bare sheet under its label. */}
-      <View className="mt-7">
+      <View className="mt-6">
         <SectionLabel
-          label={searching ? 'Matches' : 'Your book'}
+          label={searching ? 'Matches' : (scopeName ?? 'Your book')}
           note={recipes.length > 0 ? String(recipes.length) : undefined}
         />
         {recipes.length === 0 ? (
           <View className="mt-2">
             <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
-              {searching ? 'Nothing matches.' : 'No recipes yet.'}
+              {searching
+                ? 'Nothing matches.'
+                : scopeName !== null
+                  ? `Nothing is filed in ${scopeName} yet.`
+                  : 'No recipes yet.'}
             </Text>
-            {searching ? null : (
+            {searching || scopeName !== null ? null : (
               <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
                 Share an Instagram reel or TikTok to ARC, paste a link, or save a logged meal as a
                 recipe — the book builds itself from what you actually cook.
               </Text>
             )}
+            {!searching && scopeName !== null ? (
+              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+                Open a recipe and tap its folder to file it here.
+              </Text>
+            ) : null}
           </View>
         ) : (
           <View className="mt-2">
@@ -202,5 +320,50 @@ export default function RecipesScreen() {
         )}
       </View>
     </Screen>
+  );
+}
+
+/**
+ * One chip of the folders strip. A count is a measured value, so it stays mono
+ * inside the label (§3's one exception); the selected mark is ink, never the
+ * accent, because a filter is not the screen's next action.
+ */
+function FolderChip({
+  label,
+  count,
+  icon,
+  selected,
+  onPress,
+}: {
+  label: string;
+  count?: number;
+  icon?: 'folder-outline' | 'create-outline';
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={count === undefined ? label : `${label}, ${count} recipes`}
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      className={
+        selected
+          ? 'min-h-[44px] flex-row items-center gap-2 rounded-btn border border-ink bg-paper-dim px-3 py-2'
+          : 'min-h-[44px] flex-row items-center gap-2 rounded-btn border border-hairline px-3 py-2 active:bg-paper-dim'
+      }>
+      {icon ? <Ionicons name={icon} size={14} color={palette.inkSecondary} /> : null}
+      <Text
+        className={
+          selected
+            ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink'
+            : 'font-label text-[12px] uppercase tracking-[1.2px] text-ink-secondary'
+        }>
+        {label}
+      </Text>
+      {count === undefined ? null : (
+        <Text className="font-mono text-[11px] text-ink-muted">{count}</Text>
+      )}
+    </Pressable>
   );
 }

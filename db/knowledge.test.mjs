@@ -1,5 +1,5 @@
 /**
- * Headless test of the knowledge base (0035) against real SQLite via
+ * Headless test of the knowledge base (0038) against real SQLite via
  * node:sqlite — docs/knowledge-subapp.md §10.
  *
  * The load-bearing assertion in this file is §4's PACK-PROTECTION INVARIANT.
@@ -31,7 +31,7 @@ import {
   updateKnowledgeEntry,
   USER_KNOWLEDGE_SOURCE,
 } from '../src/lib/db/repositories/knowledge.ts';
-import { CORPUS, CORPUS_SOURCE, ingestCorpus } from '../src/lib/rag/corpus.ts';
+import { CORPUS, CORPUS_SOURCE, CORPUS_VERSION, ingestCorpus } from '../src/lib/rag/corpus.ts';
 import { insertKnowledgeChunk } from '../src/lib/db/repositories/rag.ts';
 import { searchUserHistory } from '../src/lib/ai/history-search.ts';
 import { resetVectorTableProbe } from '../src/lib/db/repositories/rag.ts';
@@ -103,7 +103,7 @@ const LONG_BODY = Array.from(
     `notably laxative at the doses people actually take it at.`
 ).join(' ');
 
-console.log('0. migration 0035 applied over head');
+console.log('0. migration 0038 applied over head');
 {
   const { raw } = freshDb();
   const cols = raw
@@ -126,7 +126,7 @@ console.log('0. migration 0035 applied over head');
     : bad('entry_id missing', chunkCols.join(','));
 
   const version = raw.prepare('PRAGMA user_version').get().user_version;
-  version >= 35 ? ok(`user_version stamped ${version}`) : bad('user_version', version);
+  version >= 38 ? ok(`user_version stamped ${version}`) : bad('user_version', version);
 }
 
 console.log('1. CHECKs reject what the repository would never write');
@@ -234,22 +234,17 @@ console.log('4. THE PACK-PROTECTION INVARIANT — a version bump cannot eat user
     [entryId]
   );
 
-  // Simulate a pack version bump exactly as ingestCorpus does it: the DELETE is
-  // by SOURCE, and this is the statement the whole two-owner split exists to
-  // make safe.
-  db.transaction(() => {
-    db.run(`DELETE FROM knowledge_chunks WHERE source = ?`, [CORPUS_SOURCE]);
-    CORPUS.forEach((e, index) => {
-      insertKnowledgeChunk(db, {
-        source: CORPUS_SOURCE,
-        packVersion: '2',
-        title: e.title,
-        topic: e.topic,
-        body: e.body,
-        chunkIndex: index,
-      });
-    });
-  });
+  // THE TEETH REQUIREMENT (2026-08-13 cross-review): this section once
+  // SIMULATED the version bump with its own inline copy of the DELETE + insert
+  // loop — and widening the real ingestCorpus DELETE to eat the whole table
+  // left the suite green, because the inline copy stayed narrow. The bump now
+  // goes through the REAL function: the fixture downgrades the stored pack to
+  // version '0' (an older installed pack — exactly what a device holds the day
+  // a new pack ships), and ingestCorpus itself decides what to delete. If its
+  // DELETE ever widens past its own source, the entry chunks die and this
+  // section fails.
+  db.run(`UPDATE knowledge_chunks SET pack_version = '0' WHERE source = ?`, [CORPUS_SOURCE]);
+  ingestCorpus(db);
 
   const after = db.all(
     `SELECT id, source, pack_version, entry_id, chunk_index, title, topic, body, token_estimate
@@ -260,10 +255,11 @@ console.log('4. THE PACK-PROTECTION INVARIANT — a version bump cannot eat user
     ? ok('entry chunks are BYTE-IDENTICAL after a pack version bump + re-ingest')
     : bad('a pack re-ingest disturbed entry chunks', JSON.stringify({ before, after }));
   getKnowledgeEntry(db, entryId) ? ok('the entry row itself survives') : bad('entry row destroyed');
-  db.get(`SELECT count(*) c FROM knowledge_chunks WHERE source = ? AND pack_version = '2'`, [
+  db.get(`SELECT count(*) c FROM knowledge_chunks WHERE source = ? AND pack_version = ?`, [
     CORPUS_SOURCE,
+    CORPUS_VERSION,
   ]).c === CORPUS.length
-    ? ok('the new pack version did land')
+    ? ok('the real ingestCorpus re-ingested the pack at the current version')
     : bad('pack re-ingest did not write');
 }
 

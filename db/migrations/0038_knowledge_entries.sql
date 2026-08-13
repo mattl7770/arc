@@ -1,5 +1,5 @@
 -- ============================================================================
--- ARC 0035 — knowledge entries: the authoring unit above the retrieval unit
+-- ARC 0038 — knowledge entries: the authoring unit above the retrieval unit
 --
 -- docs/knowledge-subapp.md §2. `knowledge_chunks` (0025) already held the
 -- curated pack and was already searchable by keyword, but there was no way for
@@ -28,7 +28,10 @@
 --      origin, replaced by origin on re-ingest. Entries mirror it exactly —
 --      with one deliberate inversion, below.
 --
--- Numbered 0035: the next free number above 0034 (recipe photo autoresolve).
+-- Numbered 0038: AUTHORED as 0035 (the next free number above 0034 at branch
+-- time) and RENUMBERED AT MERGE — main took 0035 (recipe folders), 0036
+-- (progress photos) and 0037 (freshness anchors) while this branch was in
+-- flight. The day's third such collision; re-measure at MERGE, not authoring.
 -- NEVER renumber below a shipped version — the runner filters
 -- `version > user_version` and would skip it SILENTLY (docs/project-status.md
 -- "Known caveats"; 0005/0006/0010/0019/0022/0023 are permanently dead gaps).

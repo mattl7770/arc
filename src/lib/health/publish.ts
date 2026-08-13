@@ -1,11 +1,13 @@
 /**
- * The OUTBOUND Apple Health channel (docs/wearables-subapp.md §10).
+ * The OUTBOUND half of the Apple Health body channel (docs/wearables-subapp.md
+ * §10; the inbound half is §11, in `sync.ts` + `mapping.ts`).
  *
- * ARC stays AUTHORITATIVE and PUBLISHES; this is deliberately not two-way sync.
- * Weight, body-fat % and waist are owned by `body_metrics` and nowhere else;
- * Apple Health receives a copy so the rest of the user's phone can see it.
- * Nothing comes back — none of the published identifiers is in the read set, and
- * `readWriteScopeOverlap()` fails the test suite if that ever changes.
+ * The link is two-way over these three columns, but no single VALUE is: every
+ * `body_metrics` row records where it came from, and this pass publishes only
+ * rows ARC originated. Rows ingested FROM Apple Health carry
+ * `source = 'apple_health'` and are excluded by `publishableBodyAfter` at the
+ * SQL level — the structural half of echo suppression, and the one that holds
+ * even if every provenance check upstream fails at once.
  *
  * Structure mirrors `sync.ts`: the policy is pure and exported for the headless
  * tests ({@link bodySamplesFor}), the orchestration glues the pure part to the

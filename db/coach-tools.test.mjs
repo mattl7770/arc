@@ -2282,8 +2282,7 @@ console.log('34. screenings + appointments: the second domain no tool could see'
     : bad('bad date accepted');
 }
 
-console.log('35. the coverage manifest: the model is told what it CANNOT see');
-console.log('33. save_knowledge_entry (docs/knowledge-subapp.md §6, migration 0035)');
+console.log('35. save_knowledge_entry (docs/knowledge-subapp.md §6, migration 0038)');
 {
   const { db } = freshDb();
   const summary = (name, input) => toolByName(name).confirmSummary(input, db, CTX);
@@ -2366,7 +2365,7 @@ console.log('33. save_knowledge_entry (docs/knowledge-subapp.md §6, migration 0
     : bad('a Coach edit path appeared');
 }
 
-console.log('34. coverage manifest');
+console.log('36. the coverage manifest: the model is told what it CANNOT see');
 {
   // WHY. The nutrition-targets reply was not a nutrition bug. From inside the
   // model's view — the tool schemas and nothing else — "no tool reads X" and
@@ -2397,7 +2396,7 @@ console.log('34. coverage manifest');
   manifest.includes('meals and nutrition targets') && manifest.includes('screenings')
     ? ok('the domains closed on this branch read as covered')
     : bad('new domains not in manifest');
-  // The knowledge domain acquired a write tool with 0035, so the DERIVED
+  // The knowledge domain acquired a write tool with 0038, so the DERIVED
   // read/write split must have moved it on its own — nothing here is
   // hand-labelled, which is the whole point of generating the manifest.
   /Read and write:[^\n]*the knowledge base and past conversations/.test(manifest)

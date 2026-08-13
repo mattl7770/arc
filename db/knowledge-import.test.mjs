@@ -371,14 +371,14 @@ console.log('6. the draft handoff — why the manual floor does not use a route 
   // what every article about a study contains.
   const ARTICLE = 'In the trial, 50% of patients improved. See https://x.example/a%20b for the table.';
   stashKnowledgeDraft(ARTICLE);
-  consumeKnowledgeDraft(1000) === ARTICLE
+  consumeKnowledgeDraft(1000)?.body === ARTICLE
     ? ok('a body containing % and an encoded URL survives verbatim')
     : bad('handoff mangled the body', consumeKnowledgeDraft(1000));
 
   // React can run a screen's state initializer twice for one mount, and the
   // first run already cleared the store — without the replay window the user's
   // paste would vanish on the path they reach only after import failed them.
-  consumeKnowledgeDraft(1500) === ARTICLE
+  consumeKnowledgeDraft(1500)?.body === ARTICLE
     ? ok('a second read inside the replay window returns the same text')
     : bad('replay window does not hold');
   consumeKnowledgeDraft(9000) === null
@@ -390,6 +390,19 @@ console.log('6. the draft handoff — why the manual floor does not use a route 
   consumeKnowledgeDraft(0) === null
     ? ok('a whitespace-only stash is nothing, not an empty draft')
     : bad('whitespace stash returned a draft');
+
+  // 2026-08-13 review fix: the spec's ladder table says the manual floor keeps
+  // "URL into provenance". The handoff is where that either survives or dies.
+  resetKnowledgeDraft();
+  stashKnowledgeDraft(ARTICLE, ' https://x.example/piece ');
+  const withUrl = consumeKnowledgeDraft(0);
+  withUrl?.body === ARTICLE && withUrl?.sourceUrl === 'https://x.example/piece'
+    ? ok('the URL rides the handoff, trimmed — the manual floor keeps provenance')
+    : bad('URL dropped or mangled by the handoff', withUrl);
+  stashKnowledgeDraft(ARTICLE);
+  consumeKnowledgeDraft(0)?.sourceUrl === null
+    ? ok('no URL stashed → sourceUrl is null, never undefined')
+    : bad('sourceUrl shape drifted');
   resetKnowledgeDraft();
 }
 

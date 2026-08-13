@@ -1,6 +1,6 @@
 # Knowledge base — browse, author, import, and the Coach's write path into the reference
 
-**Status: BUILT — 2026-08-12, migration `0035_knowledge_entries.sql`.** All three slices shipped in one change: the entry table + repository + four screens + the `searchUserHistory` extension; the import ladder (paste **and** URL — the §7 ADR was signed off, see §11); and the `save_knowledge_entry` registry batch (42 → 43). The Data tab's "Knowledge base" row is live and its "Later" chip has retired.
+**Status: BUILT — 2026-08-12, migration `0038_knowledge_entries.sql` (authored as 0035, renumbered at merge).** All three slices shipped in one change: the entry table + repository + four screens + the `searchUserHistory` extension; the import ladder (paste **and** URL — the §7 ADR was signed off, see §11); and the `save_knowledge_entry` registry batch (42 → 43). The Data tab's "Knowledge base" row is live and its "Later" chip has retired.
 **Gate:** `db:test` **2,424 assertions / 48 suites, 0 failed** (new suites: `db/knowledge.test.mjs` **63**, `db/knowledge-import.test.mjs` **52**; `coach-tools` 212 → 232, `screens-render` 119 → 151) · `db:validate` 20/20 · `tsc` 0 · `eslint` 0 errors · iOS bundle exports. A pre-merge adversarial pass found **three real defects**, all fixed — §11b.
 ⚠️ **Headless only — none of this has been seen on a device.** The device checklist is §12.
 **Owner decisions already taken (2026-08-12):** v1 includes **all four capabilities** — (1) browse + keyword search, (2) user-authored entries, (3) AI import from URL/paste, (4) a confirmation-gated Coach write tool. **Semantic search stays gated on the embedder** (its own EAS build; `docs/rag-embeddings.md`) regardless of anything in this spec.
@@ -37,7 +37,7 @@
 
 ## 2. Data model
 
-> ✅ **Shipped as `0035_knowledge_entries.sql`.** Head at branch time was `0034` (recipe photo autoresolve), so this took the next free number; `npm run db:bundle` was re-run and `migrations.generated.ts` committed with it. The spec drafted this as "0033+ — re-measure at branch time", and main had moved two migrations in the interval, which is exactly why that instruction was written: the runner silently skips any number at or below a device's `user_version` (the 0030/0031 collision lesson).
+> ✅ **Shipped as `0038_knowledge_entries.sql` — authored as 0035, renumbered at the 2026-08-12 merge.** Head at branch time was `0034`, so 0035 was correctly the next free number THEN; by merge time main had taken 0035 (recipe folders), 0036 (progress photos) and 0037 (freshness anchors), so the file moved to 0038 and `npm run db:bundle` was re-run. The spec drafted this as "0033+ — re-measure at branch time"; the lesson the day kept teaching is that the re-measure belongs at MERGE time too — the runner silently skips any number at or below a device's `user_version`, so a collision is data loss, not tidiness.
 
 **Decision: an entry-level table, not new `source` values in `knowledge_chunks`.** Four reasons, each individually sufficient:
 

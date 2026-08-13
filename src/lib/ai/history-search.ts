@@ -33,7 +33,7 @@ export type HistoryHit = {
 const EXCERPT_CHARS = 300;
 
 /**
- * Knowledge passages get a longer window (0035). A chat line truncated at 300
+ * Knowledge passages get a longer window (0038). A chat line truncated at 300
  * characters loses a sentence; a doctrine gist truncated at 300 loses the
  * qualification that made it doctrine rather than a slogan — and the Coach is
  * expected to CITE these, so a half-carried caveat is the failure mode that
@@ -84,7 +84,7 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
 
   /**
    * A hit plus two things the ranker needs and the caller must never see: how
-   * long its excerpt may run, and whether it is the user's OWN reference (0035)
+   * long its excerpt may run, and whether it is the user's OWN reference (0038)
    * rather than the shipped pack. Both optional so the five sources that want
    * the defaults push a plain {@link HistoryHit}.
    */
@@ -153,7 +153,7 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
     });
   }
 
-  // 5) The knowledge base — BOTH owners of `knowledge_chunks` (0035):
+  // 5) The knowledge base — BOTH owners of `knowledge_chunks` (0038):
   //
   //    · the curated longevity pack (src/lib/rag/corpus.ts), so an explanation
   //      is grounded in what ARC actually commits to rather than the model's
@@ -257,7 +257,7 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
       const aRef = a.date === 'reference';
       const bRef = b.date === 'reference';
       if (aRef !== bRef) return aRef ? 1 : -1;
-      // Among references, the user's OWN entry outranks the shipped pack (0035):
+      // Among references, the user's OWN entry outranks the shipped pack (0038):
       // where both have something to say on a topic, what the user has committed
       // to is the more binding of the two. They are never silently merged — both
       // are returned, labelled by provenance, and the Coach's doctrine is to cite

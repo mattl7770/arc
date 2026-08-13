@@ -140,7 +140,9 @@ export default function KnowledgeImportScreen() {
    * round-trip through URL decoding (see src/lib/knowledge/draft-handoff.ts).
    */
   const toEditor = () => {
-    stashKnowledgeDraft(text);
+    // The URL rides along when the user came down the URL rung, so the spec's
+    // "URL into provenance" holds on the floor too (2026-08-13 review fix).
+    stashKnowledgeDraft(text, mode === 'url' ? url : null);
     router.replace('/knowledge-entry-edit');
   };
 
@@ -158,8 +160,7 @@ export default function KnowledgeImportScreen() {
     router.replace({ pathname: '/knowledge-entry', params: { id, kind: 'entry' } });
   };
 
-  const canImport =
-    keySet && (mode === 'url' ? url.trim() !== '' : text.trim().length >= 200);
+  const canImport = keySet && (mode === 'url' ? url.trim() !== '' : text.trim().length >= 200);
   const canSave = title.trim() !== '' && body.trim() !== '';
 
   return (
