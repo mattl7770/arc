@@ -298,3 +298,72 @@ export function setHealthSyncState(
     [newId(db), key, JSON.stringify(state)]
   );
 }
+
+// --- The OUTBOUND cursor (2026-08-12) ---------------------------------------
+//
+// ARC publishes weight / body fat / waist to Apple Health. This is its cursor,
+// and it needs NO MIGRATION: `health_sync_state` is a KV whose `key` carries no
+// CHECK and whose `value` is free JSON — 0021 wrote that shape down explicitly
+// so a second integration cursor would not be a schema change. A separate key
+// rather than more fields under 'apple_health' keeps the two directions
+// independent: re-arming publishing must not disturb the ingest backfill logic,
+// which reads `firstSyncedAt` to decide whether to pull 90 days.
+
+/** The JSON under health_sync_state.value for key 'apple_health_publish'. */
+export type HealthPublishState = {
+  /**
+   * ISO instant the outbound channel was first armed, or null when it never has
+   * been. Arming is what implements the no-backfill policy: on the first pass
+   * the cursor jumps straight to the newest existing `body_metrics` row, so
+   * every measurement recorded BEFORE ARC could publish stays where it is.
+   * Distinguishing "armed, cursor null (table was empty)" from "never armed" is
+   * the whole reason this field exists.
+   */
+  armedAt: string | null;
+  /** `created_at` of the last fully-published `body_metrics` row. */
+  cursorCreatedAt: string | null;
+  /** That row's id — the tiebreak half of the (created_at, id) keyset. */
+  cursorId: string | null;
+  /** ISO instant of the last pass that actually wrote a sample. */
+  lastPublishedAt: string | null;
+};
+
+export const HEALTH_PUBLISH_KEY = 'apple_health_publish';
+
+export function getHealthPublishState(
+  db: Database,
+  key: string = HEALTH_PUBLISH_KEY
+): HealthPublishState {
+  const row = db.get<{ value: string }>('SELECT value FROM health_sync_state WHERE key = ?', [key]);
+  const state: HealthPublishState = {
+    armedAt: null,
+    cursorCreatedAt: null,
+    cursorId: null,
+    lastPublishedAt: null,
+  };
+  if (!row) return state;
+  try {
+    const parsed = JSON.parse(row.value) as Record<string, unknown>;
+    if (typeof parsed.armedAt === 'string') state.armedAt = parsed.armedAt;
+    if (typeof parsed.cursorCreatedAt === 'string') state.cursorCreatedAt = parsed.cursorCreatedAt;
+    if (typeof parsed.cursorId === 'string') state.cursorId = parsed.cursorId;
+    if (typeof parsed.lastPublishedAt === 'string') state.lastPublishedAt = parsed.lastPublishedAt;
+  } catch {
+    // Corrupt state reads as "never armed", so the next pass re-arms at the
+    // newest row and republishes nothing. Erring toward silence is right here:
+    // the alternative failure mode is re-posting history no one can delete.
+  }
+  return state;
+}
+
+export function setHealthPublishState(
+  db: Database,
+  state: HealthPublishState,
+  key: string = HEALTH_PUBLISH_KEY
+): void {
+  db.run(
+    `INSERT INTO health_sync_state (id, key, value) VALUES (?, ?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    [newId(db), key, JSON.stringify(state)]
+  );
+}
