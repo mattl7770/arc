@@ -2,7 +2,11 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Text, View } from 'react-native';
 
-import { FRESHNESS_SPOKEN, freshnessTone } from '@/components/exercise/freshness-display';
+import {
+  FRESHNESS_SPOKEN,
+  freshnessTally,
+  freshnessTone,
+} from '@/components/exercise/freshness-display';
 import { MuscleFigure, MuscleFigureLegend } from '@/components/exercise/muscle-figure';
 import { Block, Divider } from '@/components/ui/block';
 import { GaugeTrack, gaugeTextClass } from '@/components/ui/gauge';
@@ -21,9 +25,15 @@ import type { MuscleFreshness } from '@/lib/exercise/types';
  * gauge track, and the toned mono score, one ruled row per muscle. The hub
  * shows the figure; this screen shows the numbers behind it.
  *
+ * The two are not redundant and the split is deliberate: the FIGURE answers
+ * *where on me*, which no list can, and the LEDGER answers *by how much*, which
+ * no drawing can. That division is why the 2026-08-12 rework kept a silhouette
+ * instead of replacing it with a labelled board — the board is this page
+ * (src/components/exercise/muscle-figure.tsx).
+ *
  * ## The surface system (00-design-spec.md §1)
  *
- *   Figure + legend  field  a readout about the body — corner ticks, no box
+ *   Figure + key     field  a readout about the body — corner ticks, no box
  *   Ledger           plate  a record, ruled
  *
  * No accent — nothing here is an action. Freshness is a biological state, so
@@ -48,12 +58,28 @@ export default function MuscleFreshnessScreen() {
         <StackHeader title="Muscle freshness" />
       </View>
 
-      {/* The figure — a readout about the body, so: measured field. */}
+      {/* The figure — a readout about the body, so: measured field.
+          128pt per figure: with the recovery bar (24pt) and two 10pt gaps that
+          is 300pt, inside the 311 a 375pt iPhone SE leaves after the Screen's
+          20pt gutters and this device's 12pt padding. Nothing here shrinks —
+          `flexShrink` is 0 in React Native — so the budget is a hard edge, not
+          a hint. The hub draws the same figure at its 118pt default. */}
       <View className="mt-4">
         <Block device="field">
-          <MuscleFigure mode="freshness" ledger={ledger} figureWidth={150} />
+          {/* The label is what the recovery bar counts. Its poles are bare
+              numerals — `16` full, `0` empty, the numbered-scale idiom `Gauge`
+              uses — and a scale with no stated unit is a scale of nothing, so
+              the tally names it here. The hub carries the same string in its
+              own section note. */}
+          <SectionLabel
+            label="Body map"
+            note={`${freshnessTally(ledger).fresh.length} of ${ledger.length} fresh`}
+          />
           <View className="mt-3">
-            <MuscleFigureLegend mode="freshness" />
+            <MuscleFigure mode="freshness" ledger={ledger} figureWidth={128} />
+          </View>
+          <View className="mt-3">
+            <MuscleFigureLegend mode="freshness" ledger={ledger} />
           </View>
         </Block>
       </View>

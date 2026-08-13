@@ -15,7 +15,20 @@ import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import { createCustomExercise, getExercise } from '../src/lib/db/repositories/exercise-catalog.ts';
 import { attributedInstant, recentMuscleLoads } from '../src/lib/db/repositories/training-stats.ts';
-import { FIGURE_REGIONS, mappedMuscles, regionsFor } from '../src/lib/exercise/figure.ts';
+import {
+  BODY_OUTLINE,
+  FIGURE_BODY,
+  FIGURE_GRID,
+  FIGURE_REGIONS,
+  coveredByBody,
+  mappedMuscles,
+  regionsFor,
+} from '../src/lib/exercise/figure.ts';
+import {
+  freshnessSummary,
+  freshnessTally,
+  muscleNames,
+} from '../src/components/exercise/freshness-display.ts';
 import { MUSCLE_ORDER } from '../src/lib/exercise/constants.ts';
 import { muscleFreshness } from '../src/lib/exercise/freshness.ts';
 import {
@@ -94,8 +107,10 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
   regionsFor('front').length > 0 && regionsFor('back').length > 0
     ? ok('both sides carry regions')
     : bad('sides');
-  FIGURE_REGIONS.every((r) => r.x >= 0 && r.y >= 0 && r.x + r.w <= 100 && r.y + r.h <= 220)
-    ? ok('every region sits inside the 100×220 grid')
+  const inGrid = (r) =>
+    r.x >= 0 && r.y >= 0 && r.x + r.w <= FIGURE_GRID.w && r.y + r.h <= FIGURE_GRID.h;
+  FIGURE_REGIONS.every(inGrid)
+    ? ok(`every region sits inside the ${FIGURE_GRID.w}×${FIGURE_GRID.h} grid`)
     : bad('region bounds');
   // The back view must include the muscles invisible from the front.
   const back = new Set(regionsFor('back').map((r) => r.muscle));
@@ -104,6 +119,90 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
   )
     ? ok('posterior chain lives on the back view')
     : bad('back coverage');
+
+  // --- the 2026-08-12 rework's invariants ---------------------------------
+  // A muscle cell means "quads" only because of where it sits ON A PERSON, so
+  // the silhouette is load-bearing now and every region has to ride on it.
+  const offBody = FIGURE_REGIONS.filter((r) => !coveredByBody(r));
+  offBody.length === 0
+    ? ok('every region is fully covered by the body silhouette')
+    : bad('regions off the body', offBody.map((r) => `${r.muscle}@${r.x},${r.y}`).join(' '));
+
+  // The contour is drawn by inflating each block by BODY_OUTLINE, so the
+  // INFLATED body — not just its fill — has to stay on the grid, or the
+  // silhouette's outline clips against the edge of the figure box.
+  FIGURE_BODY.every(
+    (b) =>
+      b.x - BODY_OUTLINE >= 0 &&
+      b.y - BODY_OUTLINE >= 0 &&
+      b.x + b.w + BODY_OUTLINE <= FIGURE_GRID.w &&
+      b.y + b.h + BODY_OUTLINE <= FIGURE_GRID.h
+  )
+    ? ok('the inflated silhouette stays inside the grid (the contour never clips)')
+    : bad('body outline clips the grid');
+
+  // Two overlapping cells on one side would paint one state over another and
+  // silently lose a muscle's reading.
+  const overlaps = [];
+  for (const list of [regionsFor('front'), regionsFor('back')]) {
+    for (let a = 0; a < list.length; a++) {
+      for (let b = a + 1; b < list.length; b++) {
+        const p = list[a];
+        const q = list[b];
+        const ox = Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x);
+        const oy = Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y);
+        if (ox > 0 && oy > 0) overlaps.push(`${p.muscle}/${q.muscle}`);
+      }
+    }
+  }
+  overlaps.length === 0
+    ? ok('no two regions on a side overlap')
+    : bad('overlapping regions', overlaps.join(' '));
+
+  // Below ~9pt a hollow ring closes up and reads as solid, which would collapse
+  // the one hue-free cue separating `recovering` from `fatigued` — the two
+  // fills measure 1.03:1 against each other. 118 is the component's default.
+  const smallest =
+    Math.min(...FIGURE_REGIONS.map((r) => Math.min(r.w, r.h))) * (118 / FIGURE_GRID.w);
+  smallest >= 9
+    ? ok(`smallest cell is ${smallest.toFixed(1)}pt at the default figure width`)
+    : bad('a cell is too small to carry a ring', `${smallest.toFixed(1)}pt`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('1b. freshness display: tally, spoken summary, the never-trained basis');
+{
+  const ledger = MUSCLE_ORDER.map((muscle) => ({
+    muscle,
+    freshness: 100,
+    state: 'fresh',
+    hoursSinceLast: null,
+  }));
+  const virgin = freshnessTally(ledger);
+  virgin.neverTrained && virgin.fresh.length === 16 && virgin.total === 16
+    ? ok('a never-trained ledger reads 16/16 fresh AND flags its own basis')
+    : bad('virgin tally', JSON.stringify(virgin));
+  freshnessSummary(ledger).includes('No sessions logged')
+    ? ok('the spoken summary states the basis when nothing has been logged')
+    : bad('virgin summary', freshnessSummary(ledger));
+
+  const worked = ledger.map((m) => {
+    if (m.muscle === 'chest') return { ...m, freshness: 30, state: 'fatigued', hoursSinceLast: 6 };
+    if (m.muscle === 'triceps')
+      return { ...m, freshness: 65, state: 'recovering', hoursSinceLast: 6 };
+    return m;
+  });
+  const t = freshnessTally(worked);
+  t.fresh.length === 14 && t.recovering.length === 1 && t.fatigued.length === 1 && !t.neverTrained
+    ? ok('a worked ledger splits 14 fresh / 1 recovering / 1 fatigued')
+    : bad('worked tally', JSON.stringify(t));
+  const summary = freshnessSummary(worked);
+  summary.includes('14 of 16') && summary.includes('chest') && summary.includes('triceps')
+    ? ok('the spoken summary names every marked muscle')
+    : bad('worked summary', summary);
+  muscleNames(['front_delts', 'lower_back']) === 'Front delts · Lower back'
+    ? ok('printed muscle names join on the sheet mid-dot')
+    : bad('muscleNames', muscleNames(['front_delts', 'lower_back']));
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,8 @@ import { Pressable, Text, View } from 'react-native';
 import {
   FRESHNESS_SPOKEN,
   freshnessState,
+  freshnessSummary,
+  freshnessTally,
   freshnessTone,
 } from '@/components/exercise/freshness-display';
 import { MuscleFigure, MuscleFigureLegend } from '@/components/exercise/muscle-figure';
@@ -147,34 +149,47 @@ export default function ExerciseScreen() {
         <WeeklyVolume volume={volume} />
       </View>
 
-      {/* Muscle freshness — the body schematic. A record of the body's state,
-          so: ruled plate; the whole plate navigates to the full per-muscle
-          ledger (app/muscle-freshness.tsx), where the numbers and their gauge
-          tracks live. Cells mark only DEPLETION — a rested body is an
-          unremarkable one (muscle-figure.tsx). */}
+      {/* Muscle freshness — the body figure. A record of the body's state, so:
+          ruled plate; the whole plate navigates to the full per-muscle ledger
+          (app/muscle-freshness.tsx), where the numbers and their gauge tracks
+          live. Only DEPLETION marks — a rested body is an unremarkable one, and
+          the key under the figure names whatever is marked (muscle-figure.tsx).
+
+          ⚠️ **The summary has to ride on the Pressable, not on the figure.**
+          This wrapper is `accessible` by virtue of being a touchable, and iOS
+          does not descend into an accessible ancestor — so the figure's own
+          label, the key's rows and the bar's `progressbar` are all collapsed
+          into THIS button and none of them is ever spoken. `freshnessSummary`
+          is the one string that carries the whole drawing in words, which is
+          why it lives in freshness-display.ts rather than inside the figure. */}
       <View className="mt-7">
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Muscle freshness. Open the full per-muscle ledger."
+          accessibilityLabel={`Muscle freshness. ${freshnessSummary(ledger)} Opens the full per-muscle ledger.`}
           onPress={() => router.push('/muscle-freshness')}
           className="active:opacity-60">
           <Block device="plate">
+            {/* The tally and the chevron ride together in `accessory` rather
+                than splitting across `accessory` + `note`, which would print
+                the chevron BETWEEN the label and its own tally. Same mono-10
+                metadata voice `note` uses; `self-center` because a mark has no
+                baseline to sit on. */}
             <SectionLabel
               label="Muscle freshness"
               accessory={
-                <Ionicons
-                  name="chevron-forward"
-                  size={13}
-                  color={palette.inkMuted}
-                  style={{ alignSelf: 'center' }}
-                />
+                <View className="flex-row items-center gap-1.5 self-center">
+                  <Text className="font-mono text-[10px] text-ink-muted">
+                    {`${freshnessTally(ledger).fresh.length} of ${ledger.length} fresh`}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={13} color={palette.inkMuted} />
+                </View>
               }
             />
             <View className="mt-3">
               <MuscleFigure mode="freshness" ledger={ledger} />
             </View>
             <View className="mt-3">
-              <MuscleFigureLegend mode="freshness" />
+              <MuscleFigureLegend mode="freshness" ledger={ledger} />
             </View>
           </Block>
         </Pressable>
