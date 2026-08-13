@@ -399,7 +399,7 @@ const db = getDb();
 
     // An asserted number and a derived one must not wear the same face
     // (the rule `resolved_by` applies to recipe lines, 0034). Anchor a muscle
-    // and the row says so — 0036's whole visible contract.
+    // and the row says so — 0037's whole visible contract.
     setMuscleAnchor(db, 'calves', 20);
     const anchored = render('muscle-freshness (hand-set)', MuscleFreshnessScreen);
     expect('muscle-freshness (hand-set)', anchored, ['Set by hand', 'Calves']);

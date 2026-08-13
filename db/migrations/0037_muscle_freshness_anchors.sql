@@ -1,5 +1,5 @@
 -- ============================================================================
--- ARC 0036 — muscle freshness the user can correct BY HAND, without the
+-- ARC 0037 — muscle freshness the user can correct BY HAND, without the
 -- correction rotting
 --
 -- Owner request, 2026-08-12, off the muscle-freshness screen: *"Add
@@ -70,10 +70,20 @@
 -- ISO-8601 text timestamps; created_at + updated_at with the AFTER UPDATE
 -- trigger (recursive_triggers stays OFF); enum vocabulary as text + CHECK.
 --
--- Numbered 0036: 0034 is main's current max and 0035 is spoken for by work in
--- flight. The runner is forward-only and silently SKIPS any file at or below a
--- device's user_version, so a lower number would never run on the owner's
--- phone. The runner stamps PRAGMA user_version = 36 after applying this file.
+-- Numbered 0037. The runner is forward-only and silently SKIPS any file at or
+-- below a device's user_version, so a number below main's head would never run
+-- on the owner's phone. The runner stamps PRAGMA user_version = 37 after
+-- applying this file.
+--
+-- This file was authored as 0036 against a main whose head was 0034, holding
+-- 0035 back for work then in flight. Both 0035 (recipe folders) and 0036
+-- (progress photos) landed on main while this branch was being written, so it
+-- was renumbered on the way in. That is the expected outcome of parallel
+-- branches rather than a mistake, and it carries the rule: RESERVING A NUMBER
+-- DOES NOT HOLD IT — re-check main's head at MERGE time, not at authoring time.
+-- Renumbering is cheap; colliding is not. Two files sharing a number apply in
+-- an order nothing defines, and only one of them stamps user_version, so the
+-- other is silently skipped forever on any device that has already migrated.
 -- ============================================================================
 
 CREATE TABLE muscle_freshness_anchors (

@@ -54,7 +54,7 @@ const SKEW_TOLERANCE_HOURS = 1 / 60;
 
 /**
  * The fatigue an ANCHOR contributes, decayed to now — the whole of migration
- * 0036's model in three lines.
+ * 0037's model in three lines.
  *
  * An anchor asserts a freshness AT AN INSTANT, so it converts straight back into
  * the fatigue units that would have produced it (`FRESH_FULL × (1 − f/100)`) and
@@ -86,7 +86,7 @@ function anchorFatigue(anchor: FreshnessAnchor, nowMs: number): number | null {
  * parses a few milliseconds ahead of the clock is treated as just-now (see
  * {@link SKEW_TOLERANCE_HOURS}).
  *
- * `anchors` are the user's hand-set corrections (migration 0036). An anchor
+ * `anchors` are the user's hand-set corrections (migration 0037). An anchor
  * SUPERSEDES every set older than itself — "the quads are at 40 right now" is a
  * complete statement about the quads right now, so replaying the sets that
  * produced the reading it corrects would double-count them — and later sets

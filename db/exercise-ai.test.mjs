@@ -2,7 +2,7 @@
  * Headless test of the exercise features that are not the logger: the body
  * figure's GEOMETRY (figure.ts — completeness, coverage, non-overlap, the
  * rasteriser, the view budget and the opacity ramp), hand-set freshness anchors
- * (migration 0036), the photo-import parser/grounder (import-workout.ts),
+ * (migration 0037), the photo-import parser/grounder (import-workout.ts),
  * backdated-fatigue attribution (training-stats.attributedInstant + the
  * freshness window), the AI exercise-search parser (ai-search.ts), and custom
  * exercises carrying instructions. Real SQLite via node:sqlite; op-sqlite /
@@ -497,7 +497,7 @@ console.log('7. createCustomExercise persists instructions (AI-created movements
 }
 
 // ---------------------------------------------------------------------------
-console.log('8. hand-set freshness anchors (0036): assert, decay, supersede, clear');
+console.log('8. hand-set freshness anchors (0037): assert, decay, supersede, clear');
 {
   const { db } = freshDb();
   const now = new Date(2026, 7, 12, 12, 0, 0);

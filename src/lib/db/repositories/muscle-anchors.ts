@@ -1,11 +1,11 @@
 /**
- * Hand-set muscle freshness — the read/write side of migration 0036.
+ * Hand-set muscle freshness — the read/write side of migration 0037.
  *
  * A row here is an ANCHOR, never a value: "as of this instant, this muscle was
  * N percent recovered". `muscleFreshness` decays it on the muscle's own clock
  * and lets later sets deplete from it, so a correction fades the way a session
  * does instead of pinning the figure at a number forever. The reasoning in full
- * is in db/migrations/0036_muscle_freshness_anchors.sql.
+ * is in db/migrations/0037_muscle_freshness_anchors.sql.
  *
  * Depends only on the {@link Database} interface, so it runs headless in
  * db/exercise-ai.test.mjs against node:sqlite.

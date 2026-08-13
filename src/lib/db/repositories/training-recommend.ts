@@ -150,7 +150,7 @@ export function buildRecommendation(
   now: Date = new Date(),
   options: RecommendationOptions = {}
 ): TrainingRecommendation {
-  // Hand-set anchors ride along (0036): a correction made on the freshness
+  // Hand-set anchors ride along (0037): a correction made on the freshness
   // screen has to reach what the app RECOMMENDS, or the figure and the session
   // it proposes are reading two different bodies.
   const ledger = muscleFreshness(

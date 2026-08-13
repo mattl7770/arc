@@ -37,7 +37,7 @@ import type { Muscle, MuscleFreshness } from '@/lib/exercise/types';
  * *where on me*, which no list can, and the LEDGER answers *by how much*, which
  * no drawing can.
  *
- * ## Correcting a reading (owner, 2026-08-12; migration 0036)
+ * ## Correcting a reading (owner, 2026-08-12; migration 0037)
  *
  * *"Add functionality to manually adjust muscle freshness after tapping into
  * the sub-screen"*. Tapping a row opens its adjuster: nudge by ten, or jump to
@@ -48,7 +48,7 @@ import type { Muscle, MuscleFreshness } from '@/lib/exercise/types';
  * percent". The recovery model then proceeds from there — the assertion decays
  * on the muscle's own clock and the next real session depletes from it — so a
  * correction fades the way a session does instead of pinning the figure forever.
- * The full argument is in db/migrations/0036_muscle_freshness_anchors.sql.
+ * The full argument is in db/migrations/0037_muscle_freshness_anchors.sql.
  *
  * An asserted number and a derived one must not wear the same face (the rule
  * `resolved_by` applies to recipe lines, 0034), so a row currently resting on an

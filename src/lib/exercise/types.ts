@@ -338,7 +338,7 @@ export type MuscleLoad = {
 };
 
 /**
- * A hand-set freshness assertion (migration 0036): "as of `anchoredAt`, this
+ * A hand-set freshness assertion (migration 0037): "as of `anchoredAt`, this
  * muscle was `freshness` percent recovered". Not a value that persists — an
  * anchor the recovery model proceeds from. See the migration for why the
  * obvious flat override rots and this does not.
