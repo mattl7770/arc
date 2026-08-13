@@ -47,6 +47,7 @@ import { importProgressPhotos } from '../src/lib/media/progress-photo-store.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
 import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
+import { clearMuscleAnchor, setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
 
 import ExerciseScreen from '../app/exercise.tsx';
 import MissionHistoryScreen from '../app/mission-history.tsx';
@@ -446,19 +447,23 @@ const db = getDb();
   }
 
   // -------------------------------------------------------------------------
-  // The body figure (reworked 2026-08-12 after the owner's "hard to tell what's
-  // what"). What a server render CAN prove about a drawing is narrow but it is
-  // exactly the part that was broken: the figure's ~90 positioned views cost
-  // nothing to VoiceOver, so the whole burden of saying WHICH muscle is in
-  // WHICH state falls on words — the key's rows and the section tally. Those
-  // are text, so they are assertable here. The drawing itself stays an
-  // on-device check (memory: verify on device, not web).
+  // The body figure (contoured rewrite, 2026-08-12 — the third round). What a
+  // server render CAN prove about a drawing is narrow, but it is exactly the
+  // part that keeps failing: the figure's ~490 positioned views cost nothing to
+  // VoiceOver, so the whole burden of saying WHICH muscle is in WHICH state
+  // falls on words — the roll call, the section tally, and the ramp's two named
+  // ends. Those are text, so they are assertable here. Everything about how it
+  // LOOKS stays an on-device check (memory: verify on device, not web).
   console.log('9. Muscle freshness — the figure key states its case in words');
   {
     const empty = render('exercise hub (never trained)', ExerciseScreen);
     expect('exercise hub (never trained)', empty, [
       'Muscle freshness',
       '16 of 16 fresh',
+      // The scale beside the figure names both ends. A continuous opacity ramp
+      // with no stated direction is a ramp anyone can read backwards.
+      'Fresh',
+      'Spent',
       // Empty is AUTHORED, never blank — and "nothing logged" is not the same
       // fact as "nothing depleted", which the model renders identically.
       'No sessions logged yet, so every muscle reads fresh.',
@@ -486,12 +491,28 @@ const db = getDb();
       'No sessions logged yet, so every muscle reads fresh.',
     ]);
 
-    expect('muscle-freshness (pushed)', render('muscle-freshness', MuscleFreshnessScreen), [
+    const pushed = render('muscle-freshness', MuscleFreshnessScreen);
+    expect('muscle-freshness (pushed)', pushed, [
       'Muscle freshness',
       'Per muscle',
       'Fatigued',
       'Chest',
     ]);
+    // Nothing is hand-set yet, so nothing claims to be.
+    refute('muscle-freshness (pushed)', pushed, ['Set by hand']);
+
+    // An asserted number and a derived one must not wear the same face
+    // (the rule `resolved_by` applies to recipe lines, 0034). Anchor a muscle
+    // and the row says so — 0037's whole visible contract.
+    setMuscleAnchor(db, 'calves', 20);
+    const anchored = render('muscle-freshness (hand-set)', MuscleFreshnessScreen);
+    expect('muscle-freshness (hand-set)', anchored, ['Set by hand', 'Calves']);
+    clearMuscleAnchor(db, 'calves');
+    refute(
+      'muscle-freshness (cleared)',
+      render('muscle-freshness (cleared)', MuscleFreshnessScreen),
+      ['Set by hand']
+    );
   }
 
   // -------------------------------------------------------------------------

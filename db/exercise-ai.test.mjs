@@ -1,12 +1,21 @@
 /**
- * Headless test of the 2026-08-11 exercise features: the body-figure region map
- * (figure.ts completeness), the photo-import parser/grounder (import-workout.ts),
+ * Headless test of the exercise features that are not the logger: the body
+ * figure's GEOMETRY (figure.ts — completeness, coverage, non-overlap, the
+ * rasteriser, the view budget and the opacity ramp), hand-set freshness anchors
+ * (migration 0037), the photo-import parser/grounder (import-workout.ts),
  * backdated-fatigue attribution (training-stats.attributedInstant + the
  * freshness window), the AI exercise-search parser (ai-search.ts), and custom
  * exercises carrying instructions. Real SQLite via node:sqlite; op-sqlite /
  * Expo / the network never loaded — the model calls themselves are NOT tested
  * here, only the pure request/parse/ground layers around them (the
  * db/nutrition-style split). Run: npm run db:test.
+ *
+ * What §1 CANNOT test is how the figure looks, which is the thing that has been
+ * rejected twice. It tests the invariants a drawing can be wrong about
+ * silently — a muscle floating off the body, two shapes painting over each
+ * other, a polygon wound so it rasterises to nothing, a node count that turns a
+ * scrolling screen to treacle. Looks stay an on-device check (memory: verify on
+ * device, not web).
  */
 import { DatabaseSync } from 'node:sqlite';
 
@@ -19,11 +28,22 @@ import {
   BODY_OUTLINE,
   FIGURE_BODY,
   FIGURE_GRID,
-  FIGURE_REGIONS,
+  FIGURE_MUSCLES,
+  MUSCLE_ALPHA_FLOOR,
   coveredByBody,
+  figureViewCount,
+  freshnessAlpha,
   mappedMuscles,
-  regionsFor,
+  musclesFor,
+  polyBars,
+  shapeBounds,
+  shapesOverlap,
 } from '../src/lib/exercise/figure.ts';
+import {
+  clearMuscleAnchor,
+  listMuscleAnchors,
+  setMuscleAnchor,
+} from '../src/lib/db/repositories/muscle-anchors.ts';
 import {
   freshnessSummary,
   freshnessTally,
@@ -104,35 +124,39 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
   MUSCLE_ORDER.every((m) => mapped.has(m))
     ? ok('every muscle group appears on the figure (front and/or back)')
     : bad('unmapped muscles', MUSCLE_ORDER.filter((m) => !mapped.has(m)).join(','));
-  regionsFor('front').length > 0 && regionsFor('back').length > 0
-    ? ok('both sides carry regions')
+  musclesFor('front').length > 0 && musclesFor('back').length > 0
+    ? ok('both sides carry muscle shapes')
     : bad('sides');
-  const inGrid = (r) =>
-    r.x >= 0 && r.y >= 0 && r.x + r.w <= FIGURE_GRID.w && r.y + r.h <= FIGURE_GRID.h;
-  FIGURE_REGIONS.every(inGrid)
-    ? ok(`every region sits inside the ${FIGURE_GRID.w}×${FIGURE_GRID.h} grid`)
-    : bad('region bounds');
+  const inGrid = (s) => {
+    const b = shapeBounds(s);
+    return b.x >= 0 && b.y >= 0 && b.x + b.w <= FIGURE_GRID.w && b.y + b.h <= FIGURE_GRID.h;
+  };
+  FIGURE_MUSCLES.every((m) => inGrid(m.shape))
+    ? ok(`every muscle shape sits inside the ${FIGURE_GRID.w}×${FIGURE_GRID.h} grid`)
+    : bad('shape bounds');
   // The back view must include the muscles invisible from the front.
-  const back = new Set(regionsFor('back').map((r) => r.muscle));
+  const back = new Set(musclesFor('back').map((m) => m.muscle));
   ['lats', 'upper_back', 'lower_back', 'glutes', 'hamstrings', 'traps', 'rear_delts'].every((m) =>
     back.has(m)
   )
     ? ok('posterior chain lives on the back view')
     : bad('back coverage');
 
-  // --- the 2026-08-12 rework's invariants ---------------------------------
-  // A muscle cell means "quads" only because of where it sits ON A PERSON, so
-  // the silhouette is load-bearing now and every region has to ride on it.
-  const offBody = FIGURE_REGIONS.filter((r) => !coveredByBody(r));
+  // --- the invariants the 2026-08-12 contoured rewrite inherits -------------
+  // A muscle means "quads" only because of where it sits ON A PERSON, so the
+  // silhouette is load-bearing and every shape has to ride on it. Now sampled
+  // against the ROUNDED body blocks rather than their bounding rects, so a
+  // muscle hanging off a curved shoulder fails here instead of on the phone.
+  const offBody = FIGURE_MUSCLES.filter((m) => !coveredByBody(m.shape));
   offBody.length === 0
-    ? ok('every region is fully covered by the body silhouette')
-    : bad('regions off the body', offBody.map((r) => `${r.muscle}@${r.x},${r.y}`).join(' '));
+    ? ok('every muscle shape is fully covered by the body silhouette')
+    : bad('shapes off the body', offBody.map((m) => `${m.muscle}@${m.side}`).join(' '));
 
   // The contour is drawn by inflating each block by BODY_OUTLINE, so the
   // INFLATED body — not just its fill — has to stay on the grid, or the
   // silhouette's outline clips against the edge of the figure box.
   FIGURE_BODY.every(
-    (b) =>
+    ({ shape: b }) =>
       b.x - BODY_OUTLINE >= 0 &&
       b.y - BODY_OUTLINE >= 0 &&
       b.x + b.w + BODY_OUTLINE <= FIGURE_GRID.w &&
@@ -141,32 +165,51 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     ? ok('the inflated silhouette stays inside the grid (the contour never clips)')
     : bad('body outline clips the grid');
 
-  // Two overlapping cells on one side would paint one state over another and
-  // silently lose a muscle's reading.
+  // Two overlapping shapes on one side would paint one reading over another and
+  // silently lose a muscle. Rasterised, not bounding-box: the two heads of a
+  // quad, and a lat beside its erector column, have overlapping BOXES and share
+  // no area — a box test would condemn correct anatomy.
   const overlaps = [];
-  for (const list of [regionsFor('front'), regionsFor('back')]) {
+  for (const list of [musclesFor('front'), musclesFor('back')]) {
     for (let a = 0; a < list.length; a++) {
       for (let b = a + 1; b < list.length; b++) {
-        const p = list[a];
-        const q = list[b];
-        const ox = Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x);
-        const oy = Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y);
-        if (ox > 0 && oy > 0) overlaps.push(`${p.muscle}/${q.muscle}`);
+        if (shapesOverlap(list[a].shape, list[b].shape)) {
+          overlaps.push(`${list[a].muscle}/${list[b].muscle}`);
+        }
       }
     }
   }
   overlaps.length === 0
-    ? ok('no two regions on a side overlap')
-    : bad('overlapping regions', overlaps.join(' '));
+    ? ok('no two muscle shapes on a side overlap')
+    : bad('overlapping shapes', overlaps.join(' '));
 
-  // Below ~9pt a hollow ring closes up and reads as solid, which would collapse
-  // the one hue-free cue separating `recovering` from `fatigued` — the two
-  // fills measure 1.03:1 against each other. 118 is the component's default.
-  const smallest =
-    Math.min(...FIGURE_REGIONS.map((r) => Math.min(r.w, r.h))) * (118 / FIGURE_GRID.w);
-  smallest >= 9
-    ? ok(`smallest cell is ${smallest.toFixed(1)}pt at the default figure width`)
-    : bad('a cell is too small to carry a ring', `${smallest.toFixed(1)}pt`);
+  // A polygon has to rasterise into something. An empty bar list is a shape
+  // wound wrong or degenerate, and it draws as nothing at all.
+  const empty = FIGURE_MUSCLES.filter(
+    (m) => m.shape.kind === 'poly' && polyBars(m.shape.pts, 8).length < 8
+  );
+  empty.length === 0
+    ? ok('every polygon rasterises to one span on every scanline')
+    : bad('degenerate polygons', empty.map((m) => m.muscle).join(' '));
+
+  // The drawing lives inside two scrolling screens, so its node count is a
+  // budget. Counted, never assumed — see figureViewCount.
+  const hub = figureViewCount(118);
+  const full = figureViewCount(128);
+  full < 600
+    ? ok(`the figure pair costs ${hub} views at 118pt and ${full} at 128pt (budget 600)`)
+    : bad('view budget blown', String(full));
+
+  // The ramp: full green is FRESH, faded is spent, and the floor is what keeps
+  // a spent muscle a muscle rather than a hole in the body.
+  freshnessAlpha(100) === 1 && freshnessAlpha(0) === MUSCLE_ALPHA_FLOOR
+    ? ok(`the opacity ramp runs ${MUSCLE_ALPHA_FLOOR} (spent) → 1 (fresh)`)
+    : bad('ramp ends', `${freshnessAlpha(0)}..${freshnessAlpha(100)}`);
+  let monotone = true;
+  for (let f = 1; f <= 100; f++) if (freshnessAlpha(f) <= freshnessAlpha(f - 1)) monotone = false;
+  monotone && freshnessAlpha(-50) === MUSCLE_ALPHA_FLOOR && freshnessAlpha(1e9) === 1
+    ? ok('the ramp is monotone and clamps outside 0-100')
+    : bad('ramp shape');
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +494,106 @@ console.log('7. createCustomExercise persists instructions (AI-created movements
   raw.prepare('SELECT instructions FROM exercises WHERE id = ?').get(bare).instructions === null
     ? ok('no instructions stores NULL, not an empty array')
     : bad('bare instructions');
+}
+
+// ---------------------------------------------------------------------------
+console.log('8. hand-set freshness anchors (0037): assert, decay, supersede, clear');
+{
+  const { db } = freshDb();
+  const now = new Date(2026, 7, 12, 12, 0, 0);
+  const iso = (d) => d.toISOString();
+
+  // An anchor asserted right now IS the reading.
+  const anchorNow = (muscle, freshness, at) => [{ muscle, freshness, anchoredAt: iso(at) }];
+  const quads = (loads, anchors, when = now) =>
+    muscleFreshness(loads, when, anchors).find((m) => m.muscle === 'quads');
+
+  const spent = quads([], anchorNow('quads', 0, now));
+  spent.freshness === 0 && spent.state === 'fatigued'
+    ? ok('an anchor of 0 reads 0 with no sets at all')
+    : bad('anchor 0', JSON.stringify(spent));
+  spent.anchoredAt === iso(now)
+    ? ok('the ledger says the reading rests on a hand-set value')
+    : bad('anchoredAt missing', JSON.stringify(spent));
+  quads([], anchorNow('quads', 55, now)).freshness === 55
+    ? ok('an anchor of 55 reads 55')
+    : bad('anchor 55');
+
+  // It DECAYS on the muscle's own clock — τ = 72/3 = 24h for quads, so three
+  // days after "fully spent" the muscle is ~95% recovered, not still at zero.
+  const later = new Date(2026, 7, 15, 12, 0, 0);
+  const decayed = quads([], anchorNow('quads', 0, now), later);
+  decayed.freshness >= 90
+    ? ok(`a "fully spent" anchor recovers to ${decayed.freshness} after three days`)
+    : bad('anchor did not decay', JSON.stringify(decayed));
+
+  // Sets BEFORE the anchor are superseded — the assertion already accounts for
+  // them, so replaying them would double-count.
+  const before = Array.from({ length: 8 }, () => ({
+    muscle: 'quads',
+    roleWeight: 1,
+    reps: 8,
+    rpe: 8,
+    weightKg: 100,
+    setType: 'normal',
+    whenIso: iso(new Date(2026, 7, 12, 6, 0, 0)),
+  }));
+  quads(before, anchorNow('quads', 100, now)).freshness === 100
+    ? ok('sets logged before the anchor are superseded by it')
+    : bad('supersede', JSON.stringify(quads(before, anchorNow('quads', 100, now))));
+
+  // Sets AFTER it deplete from it, so a real session takes the reading back
+  // without anyone clearing anything.
+  const after = Array.from({ length: 4 }, () => ({
+    muscle: 'quads',
+    roleWeight: 1,
+    reps: 8,
+    rpe: 8,
+    weightKg: 100,
+    setType: 'normal',
+    whenIso: iso(new Date(2026, 7, 12, 13, 0, 0)),
+  }));
+  const worked = quads(after, anchorNow('quads', 100, now), new Date(2026, 7, 12, 14, 0, 0));
+  worked.freshness > 30 && worked.freshness < 70
+    ? ok(`four sets after a "fresh" anchor pull it to ${worked.freshness}`)
+    : bad('post-anchor sets', JSON.stringify(worked));
+
+  // Stale anchors age out with the lookback window, so nothing rots.
+  const ancient = quads([], anchorNow('quads', 0, new Date(2026, 6, 1, 12, 0, 0)));
+  ancient.freshness === 100 && ancient.anchoredAt === null
+    ? ok('an anchor older than the lookback window is ignored, and stops claiming the reading')
+    : bad('stale anchor', JSON.stringify(ancient));
+
+  // A future-dated anchor is not a reading about today.
+  quads([], anchorNow('quads', 0, new Date(2026, 7, 13, 12, 0, 0))).freshness === 100
+    ? ok('a future-dated anchor does not deplete anything today')
+    : bad('future anchor');
+
+  // The repository: one row per muscle, UPSERT replaces, clear removes.
+  setMuscleAnchor(db, 'quads', 40);
+  setMuscleAnchor(db, 'chest', 0);
+  setMuscleAnchor(db, 'quads', 70);
+  const rows = listMuscleAnchors(db);
+  rows.length === 2 && rows.find((r) => r.muscle === 'quads').freshness === 70
+    ? ok('one anchor per muscle; setting again replaces it')
+    : bad('upsert', JSON.stringify(rows));
+  rows.every((r) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(r.anchoredAt))
+    ? ok('anchored_at is a SQLite-stamped ISO instant')
+    : bad('anchored_at shape', JSON.stringify(rows));
+  setMuscleAnchor(db, 'chest', 250);
+  listMuscleAnchors(db).find((r) => r.muscle === 'chest').freshness === 100
+    ? ok('an out-of-range value is clamped, never written raw')
+    : bad('clamp');
+  clearMuscleAnchor(db, 'quads');
+  listMuscleAnchors(db).some((r) => r.muscle === 'quads') === false
+    ? ok('clearing an anchor removes the row')
+    : bad('clear');
+  throws(() =>
+    db.run(`INSERT INTO muscle_freshness_anchors (id, muscle, freshness, anchored_at)
+                       VALUES ('x', 'earlobe', 50, '2026-08-12T12:00:00.000Z')`)
+  )
+    ? ok('the muscle vocabulary is a CHECK, not a convention')
+    : bad('muscle CHECK');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

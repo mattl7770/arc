@@ -337,6 +337,20 @@ export type MuscleLoad = {
   whenIso: Timestamp;
 };
 
+/**
+ * A hand-set freshness assertion (migration 0037): "as of `anchoredAt`, this
+ * muscle was `freshness` percent recovered". Not a value that persists — an
+ * anchor the recovery model proceeds from. See the migration for why the
+ * obvious flat override rots and this does not.
+ */
+export type FreshnessAnchor = {
+  muscle: Muscle;
+  /** 0-100, as asserted. */
+  freshness: number;
+  /** The instant the assertion is about (ISO-8601, SQLite-stamped). */
+  anchoredAt: Timestamp;
+};
+
 /** Per-muscle freshness for the ledger. */
 export type MuscleFreshness = {
   muscle: Muscle;
@@ -346,6 +360,14 @@ export type MuscleFreshness = {
   state: 'fresh' | 'recovering' | 'fatigued';
   /** Whole hours since this muscle was last worked, or null if never. */
   hoursSinceLast: number | null;
+  /**
+   * Set when a hand-set anchor is part of THIS reading — the flag that keeps an
+   * asserted number and a derived one from wearing the same face (the rule
+   * `resolved_by` applies to recipe lines, 0034). Null once the anchor ages out
+   * of the lookback window, because at that point it is no longer what the
+   * reading rests on.
+   */
+  anchoredAt: Timestamp | null;
 };
 
 /** A per-exercise estimated 1RM data point (for the detail sparkline). */
