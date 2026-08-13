@@ -1,7 +1,16 @@
 # Progress Photos — the body-progress gallery, import, and on-demand AI reading
 
-**Status:** Spec — designed 2026-08-12 in a docs-only round. **Nothing here is built**; no migration has shipped and no route exists. The Data tab's "Progress photos" row (`app/(tabs)/data.tsx`, the `photos` entry) stays a disabled "Later" chip until this spec's v1 lands.
-**Owner decisions already taken (2026-08-12):** on-demand AI analysis is **in** (user-triggered, never automatic); the build itself is a later round.
+**Status: BUILT — 2026-08-12** (migration **0035**), v1 complete and **headless-verified only**. The Data tab's "Progress photos" row is live and its chip has retired. See "What shipped" below before reading the spec as a plan; where the two disagree, the code wins.
+
+**What shipped.** All of §1a (the store over the 0033/0034 substrate, no retention sweep, reconciliation on app open), §2 (both tables, plus two documented departures), §3 (library multi-select import with EXIF-date honesty, pose chips, dedupe, editable review, transactional save), §4 (all four routes), §5 (on-demand AI reading, qualitative-only, caveats mandatory, review-before-save), §7 (the `UNCOVERED_DOMAINS` entry, no tool), §9 (the test contract — `db/progress-photos.test.mjs`, plus four screens on the render walk).
+
+**What did NOT ship, and why.** No in-app camera (§3 — owner call, deferred to a MediaLibrary-era build). No retro-fetch of a full-resolution original (§6 — needs `expo-media-library`, not installed). No thumbnail sidecar files (§2 — one working copy, cells downscale at render). No AI pose tagging. No cadence nudge (§10 #6). The `ArcExport` envelope note naming `progress-photos/` as a sibling directory (§8) is **not yet written** — the DB rows ride the export untouched as designed, but the exporter does not say the images are absent. That is the one piece of §8 left open; Phase 4's snapshot does not exist yet either, and the owner's "files ride it" decision is recorded for whoever builds it.
+
+**Two departures from §2's sketch**, both argued in `db/migrations/0035_progress_photos.sql`'s header: `progress_photo_analyses.caveats` is **NOT NULL** (a mandatory field inside a JSON blob is one that quietly goes missing), and `observations` / `changes` are separate JSON columns rather than one bag. A `CHECK` also forbids comparing a photo with itself.
+
+**⚠️ Verified headless, not on hardware.** Every claim below rests on `db/progress-photos.test.mjs` (real SQLite via `node:sqlite`) and `db/screens-render.test.mjs` (the real screens through `renderToString`). `expo-image-picker`, `expo-image-manipulator` and `expo-file-system` are not exercised on device — the picker and manipulator ride the pending EAS build — and the `assetId`/`exif` wire shapes are parsed by pure functions against **fixtures written from the documentation, not from a real payload** (§3's ⚠). The degradation ledger in §6 is the claim to check against on the first device run.
+
+**Owner decisions taken 2026-08-12:** on-demand AI analysis is **in** (user-triggered, never automatic); the six ⚑ questions are answered in §10's "Decided" block.
 **Read first:** `CLAUDE.md` (§2 principles, §9 DB conventions) · `docs/architecture-migration.md` §Phase 4 (the 2026-07-24 media policy this spec amends) · `docs/labs-subapp.md` (the import-review-commit discipline this spec copies) · `src/lib/media/photo-library.ts` (the guarded picker seam this spec widens) · **`db/migrations/0033_meal_photos.sql` + `src/lib/media/photo-file-store.ts`** (the durable-photo substrate that landed hours after this spec's first draft — this feature is that substrate's third consumer, not a new invention; see §1a).
 
 ---

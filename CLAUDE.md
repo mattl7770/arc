@@ -192,7 +192,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `/docs/ai-coach.md` — System prompt, tools, memory design
 - `/docs/wearables-subapp.md` — Apple Health ingestion: library, scopes, mapping, dedup, readiness seam
 - `/docs/recipes-grocery.md` — **the recipe book, grocery list, AI recipe import (Instagram/TikTok/YouTube/websites), and the Coach's recipe/grocery tools** (migrations 0031/0032 — the numbers here read 0030/0031 until 2026-08-12, a leftover from the pre-merge renumbering; the import ADR)
-- `/docs/progress-photos-subapp.md` — **spec, unbuilt (2026-08-12):** the body-progress gallery — working-copy storage (amending the PhotoKit-reference letter, and why), library-pick import, compare, on-demand AI reading
+- `/docs/progress-photos-subapp.md` — **BUILT 2026-08-12 (migration 0035):** the body-progress gallery — working-copy storage (**amending the 2026-07-24 PhotoKit-reference letter**, owner-accepted, and why), library-pick import with EXIF-date honesty, compare, on-demand AI reading. Headless-verified only; the picker/manipulator ride the pending EAS build
 - `/docs/knowledge-subapp.md` — **spec, unbuilt (2026-08-12):** the browsable/writable knowledge base over the 0025 RAG substrate — entries table, article import, the `save_knowledge_entry` Coach tool
 - `/docs/reports-subapp.md` — **spec, unbuilt (2026-08-12):** the periodic self-review + doctor-visit pack — deterministic assembly, HTML + native preview, the reports ledger
 - `/docs/decisions.md` — Architecture Decision Records
