@@ -1,7 +1,20 @@
 # Progress Photos — the body-progress gallery, import, and on-demand AI reading
 
-**Status:** Spec — designed 2026-08-12 in a docs-only round. **Nothing here is built**; no migration has shipped and no route exists. The Data tab's "Progress photos" row (`app/(tabs)/data.tsx`, the `photos` entry) stays a disabled "Later" chip until this spec's v1 lands.
-**Owner decisions already taken (2026-08-12):** on-demand AI analysis is **in** (user-triggered, never automatic); the build itself is a later round.
+**Status: BUILT — 2026-08-12** (migration **0036**), v1 complete and **headless-verified only**. The Data tab's "Progress photos" row is live and its chip has retired. See "What shipped" below before reading the spec as a plan; where the two disagree, the code wins.
+
+**What shipped.** All of §1a (the store over the 0033/0034 substrate, no retention sweep, reconciliation on app open), §2 (both tables, plus two documented departures), §3 (library multi-select import with EXIF-date honesty, pose chips, dedupe, editable review, transactional save), §4 (all four routes), §5 (on-demand AI reading, qualitative-only, caveats mandatory, review-before-save), §7 (the `UNCOVERED_DOMAINS` entry, no tool), §9 (the test contract — `db/progress-photos.test.mjs`, plus four screens on the render walk).
+
+**What did NOT ship, and why.** No in-app camera (§3 — owner call, deferred to a MediaLibrary-era build). No retro-fetch of a full-resolution original (§6 — needs `expo-media-library`, not installed). No thumbnail sidecar files (§2 — one working copy, cells downscale at render). No AI pose tagging. No cadence nudge (§10 #6). Phase 4's encrypted snapshot does not exist yet at all, so the owner's "the files ride it" decision is recorded for whoever builds it, not implemented here.
+
+§8's export note **did** ship, and generalised: `ArcExport` gains an **`omittedMedia`** array beside `omittedTables` — the same philosophy applied to files — naming every media directory the JSON references and cannot contain, with a file count and a sentence. It covers `recipe-photos` and `meal-photos` too, since the same asymmetry (perfect rows, no pixels) was already true of both and unstated. `formatVersion` stays 1 on purpose: the field is additive, and the version exists so a future importer can branch on something that needs handling.
+
+**Departures from §2's sketch**, all argued in `db/migrations/0036_progress_photos.sql`'s header: `progress_photo_analyses.caveats` is **NOT NULL** (a mandatory field inside a JSON blob is one that quietly goes missing); `observations` / `changes` are separate JSON columns rather than one bag; a `CHECK` forbids comparing a photo with itself; `taken_on` carries a second `CHECK` (`julianday(...) IS NOT NULL`) because the GLOB is only a shape and `2026-31-12` passes it; and the table gained a **`date_origin`** column the sketch did not have — see below.
+
+**A pre-merge adversarial review pass ran over the finished diff and found sixteen real defects, all fixed before merge.** Worth recording because of *where* they were. One was a genuine data-loss path: the sweep claimed a working copy only when `exists()` said so, and `exists()` returns false on any thrown error, so a transient stat failure could have let the orphan pass delete a photograph ARC cannot re-fetch. The rest clustered in the **honesty strings** — the detail screen claiming a full-size original was kept when its file had not come across; a provenance badge inferred from `taken_at`, which is wrong in both directions (hence `date_origin`); a saved comparison rendered without naming what it was compared against; a date field that accepted `2026-31-12`; a "Compare these two" button left enabled and dead after a filter change; a truncated reply reported as a network problem. In a feature whose entire justification is honesty about a lossy storage compromise, the honesty strings turned out to be the part most likely to be false — and the tests that would have caught them were the ones nobody had written. Each fix carries its finding in a comment.
+
+**⚠️ Verified headless, not on hardware.** Every claim below rests on `db/progress-photos.test.mjs` (real SQLite via `node:sqlite`) and `db/screens-render.test.mjs` (the real screens through `renderToString`). `expo-image-picker`, `expo-image-manipulator` and `expo-file-system` are not exercised on device — the picker and manipulator ride the pending EAS build — and the `assetId`/`exif` wire shapes are parsed by pure functions against **fixtures written from the documentation, not from a real payload** (§3's ⚠). The degradation ledger in §6 is the claim to check against on the first device run.
+
+**Owner decisions taken 2026-08-12:** on-demand AI analysis is **in** (user-triggered, never automatic); the six ⚑ questions are answered in §10's "Decided" block.
 **Read first:** `CLAUDE.md` (§2 principles, §9 DB conventions) · `docs/architecture-migration.md` §Phase 4 (the 2026-07-24 media policy this spec amends) · `docs/labs-subapp.md` (the import-review-commit discipline this spec copies) · `src/lib/media/photo-library.ts` (the guarded picker seam this spec widens) · **`db/migrations/0033_meal_photos.sql` + `src/lib/media/photo-file-store.ts`** (the durable-photo substrate that landed hours after this spec's first draft — this feature is that substrate's third consumer, not a new invention; see §1a).
 
 ---
@@ -225,14 +238,14 @@ Why no tool: the catalog is ~66–72% of the cached prompt prefix and every addi
 
 **Integrator merge points:** `app/_layout.tsx` (four `Stack.Screen` entries) · `app/(tabs)/data.tsx` (the `photos` row gains `onPress`, chip retires, tally self-updates) · the migration + `npm run db:bundle` · `src/lib/db/types.ts` row types · `UNCOVERED_DOMAINS` in `src/lib/ai/tools/index.ts` · `package.json` `db:test` chain · `docs/project-status.md` schema inventory re-measured in the same change.
 
-**⚑ MATT — owner calls this spec carries, not decisions it has made:**
+**Decided — owner calls, 2026-08-12** (all six answered in one round at the top of the build session; every one landed on the spec's recommendation, so the body above stands unamended):
 
-1. **The working-copy amendment (§1):** 1600 px copies (~0.5 GB/decade) as the always-stored artifact, superseding the 2026-07-24 "thumbnail only" letter — or hold the letter (512 px thumbnails, ~60 MB/decade) and accept that a restore degrades the whole history to thumbnails?
-2. **May analyses output ≈-labelled numeric estimates** (body-fat %), meal-estimate style — or qualitative-only as specced?
-3. **Library-pick-only v1** (guided in-app capture deferred to a MediaLibrary build) — agreed?
-4. **Do the photo files ride the Phase 4 encrypted snapshot?** (Recommended yes — it is the only restore path that keeps images.)
-5. **Coach stays blind in v1** (declared in the manifest, no tool) — agreed, or is "when did I last take photos" worth a read tool now?
-6. **Cadence:** should "photo day" exist as a protocol item / reminder nudge, or stay out of scope? (Out as specced; it composes naturally with the protocol model rework whenever that lands.)
+1. **The working-copy amendment (§1) is ACCEPTED.** 1600 px JPEG q0.7 working copies (~0.5 GB/decade) are the always-stored artifact, superseding the 2026-07-24 "PhotoKit reference + thumbnail" letter. `docs/architecture-migration.md` §Phase 4 is amended by this decision, not contradicted by it: iCloud Photos still owns the original, ARC's copy is a working record.
+2. **Qualitative only — no numeric body-composition estimates.** No body-fat percentages, ≈-labelled or otherwise. The asymmetry with meal-estimate's ≈-numbers is deliberate and owner-confirmed: a visual BF% is ±5 points on a good day and a plausible wrong number filed near a trend surface is the exact hazard the labs mapper exists to prevent.
+3. **Library-pick-only v1 confirmed.** No in-app camera until a MediaLibrary-era build can write captures back to the camera roll. `source` keeps its `'camera'` CHECK value so v2 needs no rebuild.
+4. **The photo files ride the Phase 4 encrypted snapshot.** Working copies and the `is_important` full-res originals both. Camera-roll originals never ride — iCloud Photos owns those.
+5. **Coach stays blind in v1.** `UNCOVERED_DOMAINS` entry only, no tool registered. A `get_progress_photo_log` read tool stays gated on demonstrated conversational need.
+6. **Cadence nudge is out of scope.** "Photo day" composes with the protocol model rework whenever that lands; ARC will not grow a second scheduling mechanism for it now.
 
 ---
 
