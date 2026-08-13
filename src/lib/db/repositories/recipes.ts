@@ -31,6 +31,8 @@ import type {
   NewRecipe,
   NewRecipeIngredient,
   IngredientResolvedBy,
+  RecipeFolderRow,
+  RecipeFolderSummary,
   RecipeIngredientRow,
   RecipeLogTarget,
   RecipeNutrition,
@@ -217,17 +219,35 @@ type SummaryRow = RecipeRow & {
  * pattern — every token must match, whole-query prefix ranks first).
  * Per-serving kcal appears only when the nutrition gate passes (every line
  * resolved-or-negligible AND ≥1 counted line) — no partial numbers.
+ *
+ * `opts.folder` is the 0035 filing filter, and its three states are the three
+ * things the book can be showing — expressed the way this file already
+ * expresses a tri-state (see `updateRecipe`'s `tags`):
+ *   - `undefined` — every recipe, filed or not. The default view, so a recipe
+ *     in no folder is never harder to reach than one in a folder.
+ *   - `null` — Unfiled only (`folder_id IS NULL`).
+ *   - a folder id — that drawer only.
  */
 export function listRecipes(
   db: Database,
   query: string = '',
-  opts: { favoriteOnly?: boolean; limit?: number } = {}
+  opts: { favoriteOnly?: boolean; limit?: number; folder?: string | null } = {}
 ): RecipeSummary[] {
   const q = normalizeFoodName(query);
   const tokens = q === '' ? [] : q.split(' ');
   const where: string[] = tokens.map(() => `r.title_norm LIKE ? ESCAPE '\\'`);
   if (opts.favoriteOnly) where.push('r.is_favorite = 1');
   const params: (string | number)[] = tokens.map((t) => `%${escapeLike(t)}%`);
+  // `!== undefined` rather than a truthiness test: null is a MEANINGFUL value
+  // here (Unfiled) and only `undefined` means "don't filter".
+  if (opts.folder !== undefined) {
+    if (opts.folder === null) {
+      where.push('r.folder_id IS NULL');
+    } else {
+      where.push('r.folder_id = ?');
+      params.push(opts.folder);
+    }
+  }
 
   // A bare integer in ORDER BY is a column index to SQLite, so the prefix-rank
   // term is added only when there is a query to rank against.
@@ -711,6 +731,248 @@ export function saveMealAsRecipe(
     });
   });
   return id;
+}
+
+// --- Applying a plain-English revision ----------------------------------------
+
+/** What a revision did to the ingredient list, in rows. */
+export type RecipeRevisionApplication = {
+  /** Lines whose wording is unchanged — and which therefore KEPT their
+   *  resolution, snapshots and provenance untouched. */
+  kept: number;
+  /** Lines that are new or reworded. They land unresolved, so the automatic
+   *  passes price them and stamp their own provenance. */
+  added: number;
+  /** Lines the revision dropped. */
+  removed: number;
+};
+
+/**
+ * Write an accepted revision (app/recipe-revise.tsx) over a recipe.
+ *
+ * ## Matching by wording is what protects provenance
+ *
+ * The naive write — delete every line, insert the revised ones — would be
+ * correct about the text and catastrophic about everything else: a line the
+ * user resolved BY HAND ("that's the 2% milk, 240 g") would come back
+ * unresolved and be re-priced by whichever automatic pass got to it first, and
+ * the strongest provenance on the screen would have been destroyed by an edit
+ * that never mentioned it. It would also bill a model turn to re-derive
+ * numbers the database already held.
+ *
+ * So lines are matched by exact `raw_text`, first-come, and a matched line is
+ * KEPT — the row survives with its `food_id`, its per-batch snapshots and its
+ * `resolved_by`, and only its `position` moves. A line whose wording changed
+ * at all is a different line: it is inserted fresh and therefore UNRESOLVED,
+ * which is exactly right, because "whole milk" becoming "almond milk" must not
+ * inherit the numbers that were true of the milk.
+ *
+ * ## What it deliberately does not touch
+ *
+ * Notes, tags, the photo, `total_weight_g`, prep/cook minutes, the source
+ * provenance, and every meal ever cooked from this recipe. A revision changes
+ * the recipe's title, its yield, its lines and its steps — the four things the
+ * instruction can be about — and nothing else (the `updateMealMeta` rule:
+ * editors write only the fields they own).
+ *
+ * ## Pricing happens after, not here
+ *
+ * The caller runs `catalogResolveRecipe` (src/lib/recipes/estimate.ts) over the
+ * result — the deterministic, offline, free pass — before anything reaches a
+ * model, exactly as `save_recipe` does. This module cannot call it itself
+ * without a circular import, and that separation is fine: the pass is
+ * idempotent and the detail screen runs it on every open regardless.
+ *
+ * Returns null when the recipe is gone; throws when the revision is not a
+ * recipe (no ingredients, a non-positive yield) rather than writing a husk.
+ */
+export function applyRecipeRevision(
+  db: Database,
+  recipeId: string,
+  revision: { title: string; servings: number; ingredients: string[]; steps: string[] }
+): RecipeRevisionApplication | null {
+  const recipe = getRecipe(db, recipeId);
+  if (!recipe) return null;
+  if (!(revision.servings > 0)) throw new Error('servings must be > 0');
+  const title = revision.title.trim() === '' ? recipe.title : revision.title.trim();
+  const lines = revision.ingredients.map((l) => l.trim()).filter((l) => l !== '');
+  if (lines.length === 0) throw new Error('a revision cannot leave a recipe with no ingredients');
+  const steps = revision.steps.map((s) => s.trim()).filter((s) => s !== '');
+
+  let kept = 0;
+  let added = 0;
+  let removed = 0;
+  db.transaction(() => {
+    db.run('UPDATE recipes SET title = ?, title_norm = ?, servings = ?, steps = ? WHERE id = ?', [
+      title,
+      normalizeFoodName(title),
+      revision.servings,
+      JSON.stringify(steps),
+      recipeId,
+    ]);
+
+    const existing = listIngredients(db, recipeId);
+    // raw_text → the ids that still carry it, in display order. A recipe with
+    // two identical lines ("1 tbsp olive oil" twice) matches them one for one
+    // rather than collapsing them, which is why this is a queue and not a set.
+    //
+    // **Keyed on the TRIMMED text**, and that is load-bearing rather than
+    // tidiness: the stored line goes up to the model untrimmed, and every line
+    // that comes back is trimmed on the way through `stringList`. A stored
+    // `raw_text` with a leading space (nothing trims on insert — import and the
+    // Coach both write what they were given) could therefore never match its
+    // own echo, so a line NOBODY asked to change would be deleted and
+    // re-inserted unresolved, destroying a hand pick and its snapshots. The
+    // review reads the same rule (`survivorFlags`, src/lib/recipes/estimate.ts)
+    // so what it marks `kept` is what keeps its price.
+    const byText = new Map<string, string[]>();
+    for (const line of existing) {
+      const key = line.raw_text.trim();
+      const pool = byText.get(key);
+      if (pool) pool.push(line.id);
+      else byText.set(key, [line.id]);
+    }
+
+    const survivors = new Set<string>();
+    lines.forEach((raw, position) => {
+      const id = byText.get(raw)?.shift();
+      if (id !== undefined) {
+        db.run('UPDATE recipe_ingredients SET position = ? WHERE id = ?', [position, id]);
+        survivors.add(id);
+        kept += 1;
+      } else {
+        insertIngredient(db, recipeId, position, { raw_text: raw });
+        added += 1;
+      }
+    });
+
+    for (const line of existing) {
+      if (survivors.has(line.id)) continue;
+      db.run('DELETE FROM recipe_ingredients WHERE id = ?', [line.id]);
+      removed += 1;
+    }
+  });
+  return { kept, added, removed };
+}
+
+// --- 0035: folders — the book's filing system ---------------------------------
+//
+// Owner request, 2026-08-12: *"Make functionality for creating folders in the
+// recipe book."* Flat, single-membership, and `ON DELETE SET NULL` so deleting
+// a folder unfiles its recipes instead of destroying them — the full reasoning
+// (including why this is not a join table and not a tree) is the 0035 header.
+
+/** Thrown when a folder name is already taken. The UNIQUE index is the actual
+ *  guarantee; this is what turns its error into a sentence the user reads. */
+export class DuplicateFolderError extends Error {
+  constructor(name: string) {
+    super(`There's already a folder called "${name}".`);
+    this.name = 'DuplicateFolderError';
+  }
+}
+
+/**
+ * Create a folder. Throws {@link DuplicateFolderError} when the name is taken
+ * (case- and whitespace-insensitively — "Dinners" and "dinners " are the same
+ * drawer) and a plain Error when the name is blank.
+ */
+export function createFolder(db: Database, name: string): string {
+  const trimmed = name.trim();
+  if (trimmed === '') throw new Error('a folder needs a name');
+  const nameNorm = normalizeFoodName(trimmed);
+  if (getFolderByName(db, nameNorm)) throw new DuplicateFolderError(trimmed);
+  const id = newId(db);
+  // The pre-check and the INSERT are two statements, so the UNIQUE index is
+  // the real guarantee and this catch is what stops its raw driver text —
+  // "UNIQUE constraint failed: recipe_folders.name_norm" — reaching a screen
+  // that prints `error.message` verbatim. Any other failure rethrows.
+  try {
+    db.run('INSERT INTO recipe_folders (id, name, name_norm) VALUES (?, ?, ?)', [
+      id,
+      trimmed,
+      nameNorm,
+    ]);
+  } catch (error) {
+    throw isUniqueViolation(error) ? new DuplicateFolderError(trimmed) : error;
+  }
+  return id;
+}
+
+/** Rename a folder. Same duplicate rule as creation, except that renaming a
+ *  folder to its own name (a casing fix, say) is allowed. */
+export function renameFolder(db: Database, id: string, name: string): void {
+  const trimmed = name.trim();
+  if (trimmed === '') throw new Error('a folder needs a name');
+  const nameNorm = normalizeFoodName(trimmed);
+  const clash = getFolderByName(db, nameNorm);
+  if (clash && clash.id !== id) throw new DuplicateFolderError(trimmed);
+  try {
+    db.run('UPDATE recipe_folders SET name = ?, name_norm = ? WHERE id = ?', [
+      trimmed,
+      nameNorm,
+      id,
+    ]);
+  } catch (error) {
+    throw isUniqueViolation(error) ? new DuplicateFolderError(trimmed) : error;
+  }
+}
+
+/** Whether a driver error is the folder-name UNIQUE index firing. Matched on
+ *  the message because neither op-sqlite nor node:sqlite exposes a stable
+ *  error code, and both spell it "UNIQUE constraint failed". */
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Error && /UNIQUE constraint failed/i.test(error.message);
+}
+
+/**
+ * Delete a folder. Its recipes are UNFILED, never deleted — the FK is
+ * ON DELETE SET NULL and that is the whole point of the column's declaration
+ * (0035 header). Requires `PRAGMA foreign_keys = ON`, which every connection
+ * sets (CLAUDE.md §9).
+ */
+export function deleteFolder(db: Database, id: string): void {
+  db.run('DELETE FROM recipe_folders WHERE id = ?', [id]);
+}
+
+export function getFolder(db: Database, id: string): RecipeFolderRow | undefined {
+  return db.get<RecipeFolderRow>('SELECT * FROM recipe_folders WHERE id = ?', [id]);
+}
+
+/** Look a folder up by its normalized name — the uniqueness check's read half. */
+export function getFolderByName(db: Database, nameNorm: string): RecipeFolderRow | undefined {
+  return db.get<RecipeFolderRow>('SELECT * FROM recipe_folders WHERE name_norm = ?', [nameNorm]);
+}
+
+/**
+ * Every folder with the number of recipes filed in it, alphabetically.
+ *
+ * Alphabetical rather than hand-ordered: a dozen drawers sort themselves, and
+ * a `position` column with no reorder control behind it is schema that lies
+ * about what the app can do.
+ */
+export function listFolders(db: Database): RecipeFolderSummary[] {
+  const rows = db.all<RecipeFolderRow & { recipe_count: number }>(
+    `SELECT f.*, (SELECT count(*) FROM recipes r WHERE r.folder_id = f.id) AS recipe_count
+     FROM recipe_folders f ORDER BY f.name_norm, f.id`
+  );
+  return rows.map(({ recipe_count, ...folder }) => ({ folder, recipeCount: recipe_count }));
+}
+
+/** How many recipes are in no folder — the "Unfiled" tally. */
+export function unfiledRecipeCount(db: Database): number {
+  const row = db.get<{ n: number }>('SELECT count(*) AS n FROM recipes WHERE folder_id IS NULL');
+  return row?.n ?? 0;
+}
+
+/**
+ * File a recipe into a folder, or (with `null`) take it out of every folder.
+ *
+ * Moving is the only write here: nothing about the recipe itself changes, and
+ * a recipe can be moved as often as the user likes without touching an
+ * ingredient, a snapshot or a cooked meal.
+ */
+export function moveRecipeToFolder(db: Database, recipeId: string, folderId: string | null): void {
+  db.run('UPDATE recipes SET folder_id = ? WHERE id = ?', [folderId, recipeId]);
 }
 
 // --- 0034: the photo, and the AI estimate --------------------------------------

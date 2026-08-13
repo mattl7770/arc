@@ -28,8 +28,10 @@ import {
   setNutritionTargets,
 } from '../src/lib/db/repositories/nutrition.ts';
 import {
+  createFolder,
   createRecipe,
   listIngredients,
+  moveRecipeToFolder,
   resolveIngredient,
   setIngredientNegligible,
   setRecipeFavorite,
@@ -52,6 +54,8 @@ import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
 import RecipeEditScreen from '../app/recipe-edit.tsx';
 import RecipeImportScreen from '../app/recipe-import.tsx';
+import RecipeFoldersScreen from '../app/recipe-folders.tsx';
+import RecipeReviseScreen from '../app/recipe-revise.tsx';
 import GroceryScreen from '../app/grocery.tsx';
 import NutritionScreen from '../app/nutrition.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
@@ -147,6 +151,19 @@ const db = getDb();
     'on record',
     'By day',
   ]);
+
+  // 0035: the cabinet before there is anything in it. "Unfiled is a place" is
+  // the design statement the whole feature turns on, so it is asserted.
+  expect('recipe-folders (empty)', render('recipe-folders (empty)', RecipeFoldersScreen), [
+    'Folders',
+    'New folder',
+    'No folders yet',
+  ]);
+  expect(
+    'recipe-revise (missing id)',
+    render('recipe-revise (missing id)', RecipeReviseScreen, { id: 'nope' }),
+    ['This recipe is gone']
+  );
 }
 
 {
@@ -365,6 +382,63 @@ const db = getDb();
   const milk = db.get(`SELECT id FROM grocery_items WHERE name = 'Milk'`);
   checkGroceryItem(db, milk.id);
   expect('grocery (with cart)', render('grocery (with cart)', GroceryScreen), ['In cart']);
+
+  // -------------------------------------------------------------------------
+  console.log('8b. Folders (0035) — the filter strip, the drawer, and the unfiled place');
+  {
+    const dinners = createFolder(db, 'Dinners');
+    moveRecipeToFolder(db, adobo, dinners);
+
+    const book = render('recipes (with folders)', RecipesScreen);
+    expect('recipes (with folders)', book, [
+      'Folders',
+      'Dinners',
+      'Unfiled', // the draft recipe is still in no folder, so the chip is drawn
+      'Manage',
+      'Chicken Adobo',
+      'Mystery stew',
+    ]);
+    // The strip is a FILTER, never an editor: nothing destructive may appear
+    // on the book, or a scoping tap and a deleting tap share a row.
+    refute('recipes (with folders)', book, ['Delete folder', 'Confirm delete']);
+
+    // Scoped by the route param the folders screen pushes with.
+    const scoped = render('recipes (scoped)', RecipesScreen, { folder: dinners });
+    expect('recipes (scoped)', scoped, ['Chicken Adobo']);
+    refute('recipes (scoped)', scoped, ['Mystery stew']);
+
+    expect('recipe-folders (populated)', render('recipe-folders', RecipeFoldersScreen), [
+      'Dinners',
+      '1 recipe',
+      'recipe is unfiled', // "Unfiled is a place, not a backlog"
+    ]);
+
+    // A filed recipe says where it lives; an unfiled one says so too.
+    expect(
+      'recipe-detail (filed)',
+      render('recipe-detail (filed)', RecipeDetailScreen, { id: adobo }),
+      ['Dinners', 'Edit in words']
+    );
+    expect(
+      'recipe-detail (unfiled)',
+      render('recipe-detail (unfiled)', RecipeDetailScreen, { id: draft }),
+      ['Unfiled']
+    );
+  }
+
+  console.log('8c. recipe-revise — the honest no-key state, and the recipe it is about');
+  {
+    // No model key exists under node, so the screen must say what is missing
+    // rather than drawing a field that cannot work.
+    const html = render('recipe-revise (no key)', RecipeReviseScreen, { id: adobo });
+    expect('recipe-revise (no key)', html, [
+      'Edit in words',
+      'needs a model key',
+      'Settings › Coach',
+    ]);
+    // And nothing may look like a write is pending.
+    refute('recipe-revise (no key)', html, ['Save changes', 'Apply']);
+  }
 
   // -------------------------------------------------------------------------
   // The body figure (reworked 2026-08-12 after the owner's "hard to tell what's
