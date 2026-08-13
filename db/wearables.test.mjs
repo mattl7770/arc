@@ -2,7 +2,10 @@
  * Headless test of the wearables repository (src/lib/db/repositories/wearables.ts)
  * and migration 0021 against real SQLite via node:sqlite: the wearable_data
  * rebuild preserves rows, the upsert dedups on (source_device, source_raw_id),
- * source-priority day picking, series/latest reads, and the sync-state KV.
+ * source-priority day picking, series/latest reads, and the sync-state KV —
+ * plus the OUTBOUND publish channel: its cursor KV (no migration, key
+ * 'apple_health_publish'), the (created_at, id) keyset walk over body_metrics,
+ * and the no-backfill arming rule.
  * Run: npm run db:test.
  */
 import { DatabaseSync } from 'node:sqlite';
@@ -12,15 +15,26 @@ import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
   dailyMetricSeries,
   deviceLabel,
+  getHealthPublishState,
   getHealthSyncState,
+  HEALTH_PUBLISH_KEY,
   latestMetric,
   pickDailyMetric,
   recentWearableWorkouts,
+  setHealthPublishState,
   setHealthSyncState,
+  SOURCE_PRIORITY,
   upsertWearableRows,
 } from '../src/lib/db/repositories/wearables.ts';
+import { newestBodyCursor, publishableBodyAfter } from '../src/lib/db/repositories/body.ts';
 import { isHealthSyncEnabled, setHealthSyncEnabled } from '../src/lib/db/repositories/user.ts';
-import { quantityDailyRows, SAMPLE_METRICS, sleepDailyRows } from '../src/lib/health/mapping.ts';
+import {
+  ARC_WRITE_METADATA_KEY,
+  quantityDailyRows,
+  SAMPLE_METRICS,
+  sleepDailyRows,
+} from '../src/lib/health/mapping.ts';
+import { publishBodyMetrics, PUBLISH_BATCH_ROWS } from '../src/lib/health/publish.ts';
 import { clampRowsToWindow, syncDayWindows } from '../src/lib/health/sync.ts';
 
 let pass = 0;
@@ -543,6 +557,325 @@ console.log('5. inventory discovery can never hide a day pickDailyMetric can see
   stale.lastDate < today && pickDailyMetric(db, 'steps', today) === null
     ? ok('drop today’s row and both readers report absence — the gate is not over-eager')
     : bad('stale gating', JSON.stringify(stale));
+}
+
+// ---------------------------------------------------------------------------
+// Outbound publishing (docs/wearables-subapp.md §10)
+// ---------------------------------------------------------------------------
+
+/** Insert a body_metrics row with an explicit created_at, returning its id. */
+let bodySeq = 0;
+function addBody(
+  db,
+  { id, createdAt, measuredAt, weightKg = null, bodyFatPct = null, waistCm = null }
+) {
+  const rowId = id ?? `body-${String(++bodySeq).padStart(3, '0')}`;
+  db.run(
+    `INSERT INTO body_metrics
+       (id, measured_at, weight_kg, body_fat_pct, waist_cm, source, created_at)
+     VALUES (?, ?, ?, ?, ?, 'manual', ?)`,
+    [rowId, measuredAt, weightKg, bodyFatPct, waistCm, createdAt]
+  );
+  return rowId;
+}
+
+/** A recording saver standing in for the native seam. */
+function recorder(behaviour = () => true) {
+  const calls = [];
+  return {
+    calls,
+    deps: {
+      isAvailable: () => true,
+      save: async (identifier, unit, value, start, end, metadata) => {
+        const accepted = behaviour(identifier, calls.length);
+        calls.push({ identifier, unit, value, at: start.toISOString(), metadata, accepted });
+        return accepted;
+      },
+    },
+  };
+}
+
+console.log('10. publish cursor KV — no migration, key apple_health_publish');
+{
+  const { raw, db } = freshDb();
+
+  const fresh = getHealthPublishState(db);
+  fresh.armedAt === null && fresh.cursorCreatedAt === null && fresh.cursorId === null
+    ? ok('never-armed state reads as all-null')
+    : bad('publish state default', JSON.stringify(fresh));
+
+  setHealthPublishState(db, {
+    armedAt: '2026-08-12T09:00:00.000Z',
+    cursorCreatedAt: '2026-08-12T09:00:00.000Z',
+    cursorId: 'body-001',
+    lastPublishedAt: '2026-08-12T09:05:00.000Z',
+  });
+  const back = getHealthPublishState(db);
+  back.armedAt === '2026-08-12T09:00:00.000Z' && back.cursorId === 'body-001'
+    ? ok('publish state round-trips')
+    : bad('publish state round-trip', JSON.stringify(back));
+
+  // It shares health_sync_state with the ingest cursor but not the ROW — the two
+  // directions must never overwrite each other's progress.
+  setHealthSyncState(db, { lastSyncedAt: '2026-08-12T10:00:00.000Z', firstSyncedAt: null });
+  const bothKeys = raw.prepare('SELECT count(*) AS n FROM health_sync_state').get();
+  bothKeys.n === 2 && getHealthPublishState(db).cursorId === 'body-001'
+    ? ok('ingest and publish cursors are separate keys, neither clobbers the other')
+    : bad('cursor separation', JSON.stringify(bothKeys));
+
+  // No migration was needed for any of this: 0021's key column carries no CHECK
+  // and its value column is free JSON. Prove the key is stored verbatim.
+  const stored = raw
+    .prepare('SELECT key FROM health_sync_state WHERE key = ?')
+    .get(HEALTH_PUBLISH_KEY);
+  stored && stored.key === 'apple_health_publish'
+    ? ok('cursor lives in the 0021 KV as-is — no schema change')
+    : bad('publish key', JSON.stringify(stored));
+
+  // 0021's `CHECK (json_valid(value))` makes unparseable JSON unstorable, so the
+  // realistic corruption is valid JSON of the WRONG SHAPE — a rolled-back schema
+  // change, a hand-edited backup. Every field is type-checked on read, and a
+  // failure reads as never-armed: the next pass re-arms at the newest row and
+  // republishes nothing, which is the right way to fail when the alternative is
+  // re-posting history no one can delete.
+  raw.exec(`UPDATE health_sync_state SET value = '{"armedAt":42,"cursorId":null}'
+            WHERE key = '${HEALTH_PUBLISH_KEY}'`);
+  const corrupt = getHealthPublishState(db);
+  corrupt.armedAt === null && corrupt.cursorId === null
+    ? ok('wrong-shaped cursor reads as never-armed — re-arms rather than republishing history')
+    : bad('corrupt publish state', JSON.stringify(corrupt));
+}
+
+console.log('11. body_metrics keyset walk — backdating and same-millisecond ties');
+{
+  const { db } = freshDb();
+  // Deliberately adversarial: created_at ASCENDING (insertion order) while
+  // measured_at goes BACKWARDS. A measured_at watermark would skip b and c.
+  const a = addBody(db, {
+    createdAt: '2026-08-12T09:00:00.000Z',
+    measuredAt: '2026-08-12T09:00:00.000Z',
+    weightKg: 82,
+  });
+  const b = addBody(db, {
+    createdAt: '2026-08-12T09:00:01.000Z',
+    measuredAt: '2026-08-05T12:00:00.000Z', // backdated a week
+    weightKg: 83,
+  });
+  // Same millisecond as b — the tie the id half of the keyset exists for.
+  const c = addBody(db, {
+    id: 'body-zzz',
+    createdAt: '2026-08-12T09:00:01.000Z',
+    measuredAt: '2026-08-06T12:00:00.000Z',
+    waistCm: 81,
+  });
+  // Carries nothing ARC publishes.
+  addBody(db, {
+    createdAt: '2026-08-12T09:00:02.000Z',
+    measuredAt: '2026-08-12T09:00:02.000Z',
+  });
+
+  const all = publishableBodyAfter(db, null, 50).map((r) => r.id);
+  all.length === 3 && all[0] === a
+    ? ok('only rows with a publishable column, oldest created_at first')
+    : bad('walk', all.join(','));
+
+  const afterB = publishableBodyAfter(db, { createdAt: '2026-08-12T09:00:01.000Z', id: b }, 50);
+  afterB.length === 1 && afterB[0].id === c
+    ? ok('same-millisecond sibling is not skipped — (created_at, id) keyset holds')
+    : bad('tie handling', JSON.stringify(afterB.map((r) => r.id)));
+
+  const afterC = publishableBodyAfter(
+    db,
+    { createdAt: '2026-08-12T09:00:01.000Z', id: 'body-zzz' },
+    50
+  );
+  afterC.length === 0
+    ? ok('walking past the last tie ends the batch')
+    : bad('tie end', afterC.length);
+
+  const newest = newestBodyCursor(db);
+  newest && newest.createdAt === '2026-08-12T09:00:02.000Z'
+    ? ok('newestBodyCursor includes non-publishable rows — it is a table position')
+    : bad('newest cursor', JSON.stringify(newest));
+  newestBodyCursor(freshDb().db) === null ? ok('empty table → null cursor') : bad('empty newest');
+
+  PUBLISH_BATCH_ROWS > 0 && publishableBodyAfter(db, null, 1).length === 1
+    ? ok('batch limit is honoured')
+    : bad('batch limit');
+}
+
+console.log('12. publish pass — arm without backfill, then forward only');
+{
+  const { db } = freshDb();
+  setHealthSyncEnabled(db, true);
+  // Years of history, exactly the hazard: irreversible from inside ARC, since
+  // nothing stores the HealthKit UUID a delete would need.
+  for (let i = 0; i < 40; i++) {
+    addBody(db, {
+      createdAt: `2025-01-${String((i % 28) + 1).padStart(2, '0')}T08:00:00.000Z`,
+      measuredAt: `2025-01-${String((i % 28) + 1).padStart(2, '0')}T08:00:00.000Z`,
+      weightKg: 80 + i * 0.1,
+    });
+  }
+
+  const arm = recorder();
+  const armResult = await publishBodyMetrics(db, new Date('2026-08-12T09:00:00.000Z'), arm.deps);
+  armResult.armed && armResult.samplesWritten === 0 && arm.calls.length === 0
+    ? ok('first pass ARMS: 40 rows of history, zero samples written')
+    : bad('arming', JSON.stringify(armResult));
+  const armed = getHealthPublishState(db);
+  armed.armedAt === '2026-08-12T09:00:00.000Z' && armed.cursorId !== null
+    ? ok('cursor parked on the newest existing row')
+    : bad('armed state', JSON.stringify(armed));
+
+  // Nothing new yet → still nothing published, and re-running never re-arms.
+  const idle = recorder();
+  const idleResult = await publishBodyMetrics(db, new Date('2026-08-12T09:15:00.000Z'), idle.deps);
+  idleResult.armed === false && idle.calls.length === 0
+    ? ok('a second pass with nothing new publishes nothing and does not re-arm')
+    : bad('idle pass', JSON.stringify(idleResult));
+
+  // A new measurement, all three columns.
+  addBody(db, {
+    id: 'body-new',
+    createdAt: '2026-08-12T10:00:00.000Z',
+    measuredAt: '2026-08-12T09:58:00.000Z',
+    weightKg: 82.4,
+    bodyFatPct: 18.5,
+    waistCm: 81,
+  });
+  const live = recorder();
+  const liveResult = await publishBodyMetrics(db, new Date('2026-08-12T10:01:00.000Z'), live.deps);
+  liveResult.samplesWritten === 3 && live.calls.length === 3
+    ? ok('a measurement logged after arming publishes all three of its columns')
+    : bad('live publish', JSON.stringify(liveResult));
+
+  const fat = live.calls.find((c) => c.identifier === 'HKQuantityTypeIdentifierBodyFatPercentage');
+  fat && fat.unit === '%' && Math.abs(fat.value - 0.185) < 1e-12
+    ? ok('18.5 % goes out as the 0.185 fraction HKUnit.percent means')
+    : bad('body fat on the wire', JSON.stringify(fat));
+  const mass = live.calls.find((c) => c.identifier === 'HKQuantityTypeIdentifierBodyMass');
+  mass && mass.unit === 'kg' && mass.value === 82.4 && mass.at === '2026-08-12T09:58:00.000Z'
+    ? ok('weight goes out in kg at the measurement instant, not the publish instant')
+    : bad('weight on the wire', JSON.stringify(mass));
+  live.calls.every((c) => c.metadata[ARC_WRITE_METADATA_KEY] === 'body-new')
+    ? ok('every sample is stamped with its originating body_metrics id')
+    : bad('write metadata', JSON.stringify(live.calls.map((c) => c.metadata)));
+
+  // The cursor moved, so a re-publish cannot double-post.
+  const again = recorder();
+  const againResult = await publishBodyMetrics(
+    db,
+    new Date('2026-08-12T10:30:00.000Z'),
+    again.deps
+  );
+  againResult.samplesWritten === 0 && again.calls.length === 0
+    ? ok('re-running the pass never double-posts — the cursor advanced')
+    : bad('double post', JSON.stringify(againResult));
+}
+
+console.log('13. publish refusals never advance the cursor, and the toggle governs both ways');
+{
+  const { db } = freshDb();
+  setHealthSyncEnabled(db, true);
+  setHealthPublishState(db, {
+    armedAt: '2026-08-12T09:00:00.000Z',
+    cursorCreatedAt: null,
+    cursorId: null,
+    lastPublishedAt: null,
+  });
+  addBody(db, {
+    id: 'body-a',
+    createdAt: '2026-08-12T10:00:00.000Z',
+    measuredAt: '2026-08-12T10:00:00.000Z',
+    weightKg: 82,
+  });
+  addBody(db, {
+    id: 'body-b',
+    createdAt: '2026-08-12T11:00:00.000Z',
+    measuredAt: '2026-08-12T11:00:00.000Z',
+    weightKg: 83,
+  });
+
+  // HealthKit refuses the second row (share access revoked mid-pass).
+  const refuse = recorder((_id, index) => index < 1);
+  const refused = await publishBodyMetrics(db, new Date('2026-08-12T11:05:00.000Z'), refuse.deps);
+  refused.samplesWritten === 1 && refused.stalled
+    ? ok('a refusal stops the pass rather than skipping the row')
+    : bad('stall', JSON.stringify(refused));
+  const stalledAt = getHealthPublishState(db);
+  stalledAt.cursorId === 'body-a'
+    ? ok('cursor sits on the last FULLY published row — the refused reading is not lost')
+    : bad('stalled cursor', JSON.stringify(stalledAt));
+
+  // Access restored → the refused row publishes on the next pass.
+  const retry = recorder();
+  const retried = await publishBodyMetrics(db, new Date('2026-08-12T11:10:00.000Z'), retry.deps);
+  retried.samplesWritten === 1 &&
+  retry.calls[0].metadata[ARC_WRITE_METADATA_KEY] === 'body-b' &&
+  getHealthPublishState(db).cursorId === 'body-b'
+    ? ok('the next pass retries exactly the refused row')
+    : bad('retry', JSON.stringify(retried));
+
+  // One switch governs both directions.
+  setHealthSyncEnabled(db, false);
+  addBody(db, {
+    createdAt: '2026-08-12T12:00:00.000Z',
+    measuredAt: '2026-08-12T12:00:00.000Z',
+    weightKg: 84,
+  });
+  const off = recorder();
+  const offResult = await publishBodyMetrics(db, new Date('2026-08-12T12:01:00.000Z'), off.deps);
+  offResult.status === 'disabled' && off.calls.length === 0
+    ? ok('“Turn off” stops publishing too — one Apple Health switch, both directions')
+    : bad('disabled publish', JSON.stringify(offResult));
+
+  // And without the native module there is nothing to publish to.
+  setHealthSyncEnabled(db, true);
+  const absent = await publishBodyMetrics(db, new Date('2026-08-12T12:02:00.000Z'), {
+    isAvailable: () => false,
+    save: async () => true,
+  });
+  absent.status === 'unavailable' && absent.samplesWritten === 0
+    ? ok('no HealthKit → the pass is a no-op, cursor untouched')
+    : bad('unavailable publish', JSON.stringify(absent));
+}
+
+console.log('14. source priority still ranks an ARC echo below everything real');
+{
+  const { db } = freshDb();
+  // 'other' keeps its place — an unrecognised vendor is a LIVE case (no wearable
+  // chosen yet), so it must still outrank a stale keypad entry…
+  SOURCE_PRIORITY.indexOf('other') < SOURCE_PRIORITY.indexOf('manual')
+    ? ok("'other' was NOT demoted — an unknown ring still beats manual")
+    : bad('other/manual order', SOURCE_PRIORITY.join(','));
+  // …and 'manual', where ARC's own bundle now buckets, remains the floor.
+  SOURCE_PRIORITY[SOURCE_PRIORITY.length - 1] === 'manual'
+    ? ok("'manual' is the priority floor, so an ARC echo can never outrank its origin")
+    : bad('manual is not last', SOURCE_PRIORITY.join(','));
+
+  // Prove it end-to-end: an echo row (ARC's bundle → 'manual') loses to the
+  // merged Apple total on the same day.
+  upsertWearableRows(db, [
+    row({
+      metricType: 'steps',
+      value: 8000,
+      sourceDevice: 'apple_health',
+      sourceRawId: 'hk:steps:2026-08-12',
+      date: '2026-08-12',
+    }),
+    row({
+      metricType: 'steps',
+      value: 1,
+      sourceDevice: 'manual',
+      sourceRawId: 'echo',
+      date: '2026-08-12',
+    }),
+  ]);
+  const won = pickDailyMetric(db, 'steps', '2026-08-12');
+  won && won.value === 8000 && won.sourceDevice === 'apple_health'
+    ? ok('an ARC-labelled echo loses to the real merged value')
+    : bad('echo arbitration', JSON.stringify(won));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

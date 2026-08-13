@@ -5,10 +5,15 @@
  * Run: npm run db:test.
  */
 import {
+  ARC_BUNDLE_ID,
+  ARC_WRITE_METADATA_KEY,
+  BODY_PUBLISH_METRICS,
   dayRawId,
   HEALTH_READ_IDENTIFIERS,
+  HEALTH_WRITE_IDENTIFIERS,
   localDayOf,
   quantityDailyRows,
+  readWriteScopeOverlap,
   SAMPLE_METRICS,
   sleepDailyRows,
   sourceDeviceFor,
@@ -17,6 +22,7 @@ import {
   workoutActivityName,
   workoutRows,
 } from '../src/lib/health/mapping.ts';
+import { bodySamplesFor } from '../src/lib/health/publish.ts';
 import {
   clampRowsToWindow,
   FIRST_SYNC_DAYS,
@@ -28,6 +34,7 @@ import {
   syncWindowDays,
 } from '../src/lib/health/sync.ts';
 import {
+  healthWriteAccess,
   isHealthKitAvailable,
   isHealthKitSupported,
   parseCategorySample,
@@ -36,6 +43,7 @@ import {
   parseWorkoutSample,
   readQuantitySamples,
   requestHealthPermissions,
+  saveHealthQuantity,
 } from '../src/lib/health/healthkit.ts';
 
 let pass = 0;
@@ -73,6 +81,12 @@ console.log('0. source bucketing (spec §4)');
     [prov('com.apple.Health'), 'manual'],
     [prov('com.somebody.new'), 'other'],
     [prov(null), 'other'],
+    // ECHO SUPPRESSION, second line of defence: ARC's own published samples must
+    // never bucket as 'other' (priority 7 — above apple_health and manual), or
+    // ARC would rank its own reflection over the merged Apple total and over the
+    // user's keypad entry. 'manual' is both truthful and the priority floor.
+    [prov(ARC_BUNDLE_ID), 'manual'],
+    [prov(ARC_BUNDLE_ID, 'iPhone16,2', 'ARC'), 'manual'],
   ];
   for (const [p, want] of cases) {
     const got = sourceDeviceFor(p);
@@ -666,6 +680,131 @@ console.log('7. read scopes cover the spec');
   const missing = want.filter((id) => !HEALTH_READ_IDENTIFIERS.includes(id));
   missing.length === 0 ? ok('all 12 scopes present') : bad('scopes', missing.join(','));
   dayRawId('hrv', '2026-07-29') === 'hk:hrv:2026-07-29' ? ok('dayRawId shape') : bad('dayRawId');
+}
+
+console.log('8. write scopes + the echo-loop tripwire (spec §10)');
+{
+  const want = [
+    'HKQuantityTypeIdentifierBodyMass',
+    'HKQuantityTypeIdentifierBodyFatPercentage',
+    'HKQuantityTypeIdentifierWaistCircumference',
+  ];
+  const missingWrite = want.filter((id) => !HEALTH_WRITE_IDENTIFIERS.includes(id));
+  missingWrite.length === 0 && HEALTH_WRITE_IDENTIFIERS.length === 3
+    ? ok('write scopes are exactly weight / body fat / waist')
+    : bad('write scopes', HEALTH_WRITE_IDENTIFIERS.join(','));
+
+  // THE tripwire. Nothing echoes today only because none of what ARC writes is
+  // in the read set. That is a property of two lists, not of anything
+  // structural, so it gets asserted rather than assumed — this is the test that
+  // must fail the day someone adds BodyMass to the read scopes.
+  const overlap = readWriteScopeOverlap();
+  overlap.length === 0
+    ? ok('read and write scopes are disjoint — no echo loop')
+    : bad('READ/WRITE SCOPE OVERLAP', overlap.join(','));
+
+  // Workouts and nutrition are explicitly out of scope: neither can be deleted
+  // once written (no column stores a HealthKit UUID).
+  const forbidden = HEALTH_WRITE_IDENTIFIERS.filter(
+    (id) => id.startsWith('HKQuantityTypeIdentifierDietary') || id === 'HKWorkoutTypeIdentifier'
+  );
+  forbidden.length === 0
+    ? ok('no workout or nutrition write scopes')
+    : bad('out-of-scope write', forbidden.join(','));
+}
+
+console.log('9. body publish mapping — units are the whole job');
+{
+  const byColumn = (c) => BODY_PUBLISH_METRICS.find((m) => m.column === c);
+
+  // Weight and waist are already canonical (body_metrics stores kg and cm), and
+  // 'kg'/'cm' are exact HKUnit strings (MassUnit / LengthUnit).
+  const weight = byColumn('weight_kg');
+  weight.hkUnit === 'kg' && weight.toHealthKit(82.4) === 82.4
+    ? ok("weight_kg → BodyMass in 'kg', unconverted")
+    : bad('weight unit', JSON.stringify(weight));
+  const waist = byColumn('waist_cm');
+  waist.hkUnit === 'cm' && waist.toHealthKit(81) === 81
+    ? ok("waist_cm → WaistCircumference in 'cm', unconverted")
+    : bad('waist unit', JSON.stringify(waist));
+
+  // The one that would silently corrupt a medical record: HKUnit.percent() is a
+  // FRACTION 0.0–1.0, so 18.5 % must go out as 0.185, not 18.5 (which Health
+  // would read as 1850 %). Same trap the read side handles for SpO2, reversed.
+  const fat = byColumn('body_fat_pct');
+  fat.hkUnit === '%' && Math.abs(fat.toHealthKit(18.5) - 0.185) < 1e-12
+    ? ok('body_fat_pct 18.5 → 0.185 (HKUnit.percent is a fraction)')
+    : bad('body fat conversion', JSON.stringify(fat.toHealthKit(18.5)));
+  fat.toHealthKit(100) === 1 ? ok('body fat 100 % → 1.0') : bad('body fat ceiling');
+
+  // One row → the samples it produces.
+  const at = '2026-08-12T09:30:00.000Z';
+  const all = bodySamplesFor({
+    id: 'row-1',
+    createdAt: '2026-08-12T09:30:00.100Z',
+    measuredAt: at,
+    weightKg: 82.4,
+    bodyFatPct: 18.5,
+    waistCm: 81,
+  });
+  all.length === 3
+    ? ok('a row with all three columns → 3 samples')
+    : bad('sample count', all.length);
+  all.every((s) => s.at.toISOString() === at && s.sourceRowId === 'row-1')
+    ? ok('samples carry the measurement instant and their source row id')
+    : bad('sample provenance', JSON.stringify(all));
+
+  const partial = bodySamplesFor({
+    id: 'row-2',
+    createdAt: at,
+    measuredAt: at,
+    weightKg: 82.4,
+    bodyFatPct: null,
+    waistCm: null,
+  });
+  partial.length === 1 && partial[0].hkIdentifier === 'HKQuantityTypeIdentifierBodyMass'
+    ? ok('null columns publish nothing (keypad writes one at a time)')
+    : bad('partial row', JSON.stringify(partial));
+
+  // Nothing doubtful is ever sent: HealthKit does not sanity-check magnitudes.
+  bodySamplesFor({
+    id: 'row-3',
+    createdAt: at,
+    measuredAt: 'not-a-date',
+    weightKg: 82.4,
+    bodyFatPct: null,
+    waistCm: null,
+  }).length === 0
+    ? ok('unparseable measured_at publishes nothing')
+    : bad('bad instant');
+  bodySamplesFor({
+    id: 'row-4',
+    createdAt: at,
+    measuredAt: at,
+    weightKg: Number.NaN,
+    bodyFatPct: null,
+    waistCm: null,
+  }).length === 0
+    ? ok('non-finite value publishes nothing')
+    : bad('NaN value');
+}
+
+console.log('10. the write half of the guarded seam no-ops without the module');
+{
+  healthWriteAccess() === 'unsupported'
+    ? ok("healthWriteAccess() 'unsupported' under node")
+    : bad('write access', healthWriteAccess());
+  const saved = await saveHealthQuantity(
+    'HKQuantityTypeIdentifierBodyMass',
+    'kg',
+    82.4,
+    new Date(),
+    new Date(),
+    { [ARC_WRITE_METADATA_KEY]: 'row-1' }
+  );
+  saved === false
+    ? ok('saveHealthQuantity resolves false — a refused write is never claimed')
+    : bad('save', saved);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

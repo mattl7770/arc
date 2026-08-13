@@ -1,5 +1,5 @@
 /**
- * PURE HealthKit → `wearable_data` mapping (docs/wearables-subapp.md §3–4).
+ * PURE HealthKit mapping, both directions (docs/wearables-subapp.md §3–4, §10).
  *
  * Everything here is deterministic over plain inputs — no native module, no DB,
  * no clock — so db/health-mapping.test.mjs exercises the whole ingest brain
@@ -12,7 +12,15 @@
  *   - sleep sessionisation: noon-to-noon window, gap-split sessions, longest
  *     session wins, stages summed by category value, attributed to the WAKE day;
  *   - deterministic `source_raw_id`s so re-syncs UPDATE instead of duplicate.
+ *
+ * The OUTBOUND half is much smaller and lives at the bottom: the three
+ * `body_metrics` columns ARC publishes to Apple Health, the unit conversion each
+ * needs, and the scope lists for both directions. It sits here rather than in
+ * `publish.ts` so the read and write scopes are declared side by side — the
+ * invariant that keeps the echo loop shut ({@link readWriteScopeOverlap}) is
+ * only checkable when both lists are in one place.
  */
+import type { BodyColumn } from '@/lib/db/repositories/body';
 import type { WearableUpsert } from '@/lib/db/repositories/wearables';
 import type { WearableDevice } from '@/lib/db/types';
 
@@ -37,14 +45,48 @@ const VENDOR_BUNDLES: readonly { prefix: string; device: WearableDevice }[] = [
 ];
 
 /**
+ * ARC's own bundle id (app.json → `ios.bundleIdentifier`). Samples ARC publishes
+ * to Apple Health come back carrying this, so it needs a bucket of its own —
+ * see {@link sourceDeviceFor}.
+ */
+export const ARC_BUNDLE_ID = 'com.arcresilience.app';
+
+/**
  * Bucket a sample's provenance into `source_device`. Apple system data all sits
  * under the com.apple.health umbrella, so Watch vs iPhone is discriminated on
  * productType; a bare `com.apple.Health` bundle is the Health app itself — a
  * manual entry. Unknown vendors land in 'other' with the raw identity preserved
  * in row metadata, so extending the table above is never a data migration.
+ *
+ * **ARC's own writes map to 'manual' — the second half of echo suppression.**
+ * The first half is the query filter (`healthkit.ts`), which excludes ARC's
+ * samples before they ever reach this function. This is what happens if that
+ * filter is ever defeated. Without a case here ARC's bundle falls through to
+ * 'other', which sits at index 7 in `SOURCE_PRIORITY` — ABOVE 'apple_health' (8)
+ * and 'manual' (9) — so ARC would rank its own reflection over both the merged
+ * Apple total and the user's own keypad entry. That is the classic write-back
+ * feedback loop, and it would be silent.
+ *
+ * Two other fixes were considered and rejected:
+ *
+ *   - *Add a distinct 'arc' device.* `source_device` is a CHECK-constrained
+ *     enum (0021), so a new value is a migration — and inserting an unlisted
+ *     value would throw and sink the whole sync pass. Numbering is forward-only
+ *     and this feature is otherwise OTA-shippable; not worth a migration.
+ *   - *Demote 'other' to last in SOURCE_PRIORITY.* That fixes ARC's case by
+ *     accident and breaks a live one: no wearable is chosen yet (CLAUDE.md §8),
+ *     so an unrecognised ring's bundle landing in 'other' is the EXPECTED state,
+ *     not an edge case. Demoting it would make a real measuring device lose to a
+ *     stale keypad entry.
+ *
+ * 'manual' is also simply the truth: everything ARC publishes originates as a
+ * number the user typed into ARC. Labelling it anything else would be the
+ * invented provenance the design spec forbids. And it is the floor of
+ * `SOURCE_PRIORITY`, so an echo can never outrank the thing it is an echo of.
  */
 export function sourceDeviceFor(provenance: HealthProvenance): WearableDevice {
   const bundle = provenance.bundleId ?? '';
+  if (bundle === ARC_BUNDLE_ID) return 'manual';
   for (const vendor of VENDOR_BUNDLES) {
     if (bundle.startsWith(vendor.prefix)) return vendor.device;
   }
@@ -529,7 +571,80 @@ export function workoutRows(workouts: HealthWorkoutSample[]): WearableUpsert[] {
     }));
 }
 
-// --- Read scopes ---------------------------------------------------------------------
+// --- Outbound: what ARC publishes to Apple Health (§10) -------------------------------
+//
+// ARC stays AUTHORITATIVE and PUBLISHES; this is not bidirectional sync. No
+// value is ever owned in two places: the three columns below are owned by
+// `body_metrics`, and Apple Health receives a copy so other apps can see it.
+// Nothing flows back — none of these identifiers is in the read set, and
+// `readWriteScopeOverlap()` exists to keep it that way.
+
+/**
+ * Metadata key stamped on every sample ARC writes. It carries the originating
+ * `body_metrics.id`, which makes a sample traceable back to the row that
+ * produced it, and it doubles as the fallback echo-suppression predicate when
+ * source-based exclusion is unavailable (`healthkit.ts`).
+ */
+export const ARC_WRITE_METADATA_KEY = 'ARCPublishedFrom';
+
+/** How one `body_metrics` column becomes a HealthKit quantity sample. */
+export type BodyPublishSpec = {
+  /** The owning `body_metrics` column — the single source of truth. */
+  column: BodyColumn;
+  hkIdentifier: string;
+  /** HKUnit string passed to `saveQuantitySample`. */
+  hkUnit: string;
+  /**
+   * ARC's canonical value → the number HealthKit expects **in `hkUnit`**. Only
+   * body fat needs one; see the comment on its entry.
+   */
+  toHealthKit: (value: number) => number;
+  /** Human label for Settings — what the user is told ARC writes. */
+  label: string;
+};
+
+/**
+ * The three published columns. Units are the load-bearing detail here: this is a
+ * medical record, and a wrong unit is a wrong number in it, not a rendering bug.
+ * Each was verified against the library's generated unit map
+ * (`lib/typescript/generated/healthkit.generated.d.ts` →
+ * `QuantityUnitByIdentifierMap`) and `types/Units.d.ts`.
+ */
+export const BODY_PUBLISH_METRICS: readonly BodyPublishSpec[] = [
+  {
+    column: 'weight_kg',
+    hkIdentifier: 'HKQuantityTypeIdentifierBodyMass',
+    // BodyMass takes a MassUnit = `${MetricPrefix}g` | 'oz' | 'st' | 'lb', so
+    // 'kg' is exact and `body_metrics.weight_kg` is already canonical kg.
+    hkUnit: 'kg',
+    toHealthKit: (v) => v,
+    label: 'Weight',
+  },
+  {
+    column: 'body_fat_pct',
+    hkIdentifier: 'HKQuantityTypeIdentifierBodyFatPercentage',
+    // ⚠️ BodyFatPercentage's only unit is '%' — and HKUnit.percent() measures a
+    // FRACTION, 0.0–1.0, not 0–100. This is the same trap the READ side already
+    // documents for SpO2 (`spo2_pct` multiplies by 100 on the way in); outbound
+    // it runs the other way. `body_metrics.body_fat_pct` is CHECK-bounded to
+    // 0–100, so writing it unconverted would put "1850 %" body fat into Apple
+    // Health — silently, since HealthKit does not sanity-check magnitudes.
+    hkUnit: '%',
+    toHealthKit: (v) => v / 100,
+    label: 'Body fat',
+  },
+  {
+    column: 'waist_cm',
+    hkIdentifier: 'HKQuantityTypeIdentifierWaistCircumference',
+    // WaistCircumference takes a LengthUnit = `${MetricPrefix}m` | 'ft' | 'in' |
+    // 'yd' | 'mi', so 'cm' is exact and `waist_cm` is already canonical cm.
+    hkUnit: 'cm',
+    toHealthKit: (v) => v,
+    label: 'Waist circumference',
+  },
+];
+
+// --- Scopes ---------------------------------------------------------------------------
 
 /** Every HealthKit type ARC asks to read (docs/wearables-subapp.md §2). */
 export const HEALTH_READ_IDENTIFIERS: readonly string[] = [
@@ -538,3 +653,28 @@ export const HEALTH_READ_IDENTIFIERS: readonly string[] = [
   'HKCategoryTypeIdentifierSleepAnalysis',
   'HKWorkoutTypeIdentifier',
 ];
+
+/** Every HealthKit type ARC asks to WRITE (`toShare`; docs §10). */
+export const HEALTH_WRITE_IDENTIFIERS: readonly string[] = BODY_PUBLISH_METRICS.map(
+  (m) => m.hkIdentifier
+);
+
+/**
+ * Identifiers that appear in BOTH scope lists — the echo-loop tripwire, asserted
+ * empty by db/health-mapping.test.mjs.
+ *
+ * Nothing echoes today because ARC does not read BodyMass, BodyFatPercentage or
+ * WaistCircumference, and that is the ONLY reason the loop is shut. It is a
+ * property of these two lists, not of anything structural, so it needs a guard
+ * that fails in CI the moment someone adds weight to the read set. Should that
+ * day come, the query-level exclusion in `healthkit.ts` becomes load-bearing
+ * rather than prophylactic and its unfiltered fallback must be reconsidered
+ * before the overlap is allowed.
+ *
+ * A pure function rather than a module-scope assertion on purpose: Expo Router
+ * eagerly requires everything reachable from `app/`, so a throw at import time
+ * is an app-STARTUP crash, not a test failure.
+ */
+export function readWriteScopeOverlap(): string[] {
+  return HEALTH_WRITE_IDENTIFIERS.filter((id) => HEALTH_READ_IDENTIFIERS.includes(id));
+}
