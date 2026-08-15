@@ -55,6 +55,24 @@ import type { RecipeFolderSummary, RecipeSummary } from '@/lib/recipes/types';
  * Chips are **controls, not content**, so they take no device — named by a
  * `SectionLabel` and set apart by air, exactly as the grocery screen's staples
  * are. The selected chip is marked in ink; the accent stays on `Import`.
+ *
+ * ## The title's weight (owner, 2026-08-15)
+ *
+ * *"Make the names of recipes a bit bolder on the recipe book screen so they
+ * stand out a bit more."* A row's SUBJECT is the title, and it was set at the
+ * same weight as the folder chips and the empty-state prose around it. It is
+ * now `font-semibold` at the same 16px — weight inside the existing scale,
+ * never a size invented for this screen, and nothing else on the row shrank to
+ * make room (the 10px floor is a standing open item; going near it to buy
+ * contrast would trade one defect for a worse one).
+ *
+ * **The sibling surfaces did not move, and that is deliberate.** This is the
+ * only list of recipe titles in the app: `app/recipe-detail.tsx` renders its
+ * title through `StackHeader`, which has always been serif **semibold** — so
+ * the row and the screen it opens now agree rather than diverge, which is the
+ * consistency argument pointing the same way as the request.
+ * `app/recipe-folders.tsx` lists FOLDERS, not recipes, and the Coach's recipe
+ * references are text in a turn with no row treatment at all.
  */
 
 /** What the book is scoped to. `all` is the default and the only state in
@@ -293,7 +311,20 @@ export default function RecipesScreen() {
                         <Ionicons name="star" size={14} color={palette.inkSecondary} />
                       ) : null}
                       <View className="flex-1">
-                        <Text className="font-serif text-[16px] leading-5 text-ink">
+                        {/* WEIGHT, not size (owner, 2026-08-15: *"make the
+                            names of recipes a bit bolder on the recipe book
+                            screen so they stand out a bit more"*). 16px is
+                            already the largest thing on the row and the same
+                            step every list title in the app sits at, so a
+                            bespoke size here would only make the book disagree
+                            with the rest of the sheet. Semibold is the step the
+                            type scale already has, and it is what `StackHeader`
+                            sets a recipe's title in when you open it — so the
+                            row and the screen it leads to now speak in the same
+                            weight. Nothing else on the row moved: the 10px
+                            floor is the standing open item and the detail line
+                            stays where it is (00-design-spec.md §4). */}
+                        <Text className="font-serif text-[16px] font-semibold leading-5 text-ink">
                           {r.recipe.title}
                         </Text>
                         {/* Every value on this line is measured — kcal, counts,

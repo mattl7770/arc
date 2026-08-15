@@ -11,9 +11,13 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
   getMeal,
+  insertMealPhoto,
+  listMealItems,
   listTodayMeals,
   logMeal,
+  logMealWithItems,
   todayTotals,
+  updateMealName,
   updateMealTime,
 } from '../src/lib/db/repositories/nutrition.ts';
 import {
@@ -373,6 +377,99 @@ console.log('12. the pure when-editor helpers (src/lib/nutrition/meal-time.ts)')
   JSON.stringify(partsFromClock(null)) === JSON.stringify({ hour: '', minute: '' })
     ? ok('partsFromClock round-trips, and an untimed meal opens the editor empty')
     : bad('partsFromClock', JSON.stringify(partsFromClock('08:05')));
+}
+
+// === Renaming a logged meal (owner request, 2026-08-15) ======================
+//
+// A meal's name was ALWAYS a free-text NOT NULL column (0002) — not a slot and
+// not derived from the items — so the whole feature is one UPDATE of one column
+// and needed no migration. What has to be pinned is therefore not that the name
+// changes (it obviously does) but that NOTHING ELSE does, and that a name can
+// never become blank.
+
+console.log('13. updateMealName rewrites the name and nothing else');
+{
+  const { db, raw } = freshDb();
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '12:30',
+    name: 'Lunch',
+    source: 'ai_suggested',
+    notes: 'ate half of it',
+    items: [
+      { name: 'Chicken thigh', grams: 150, kcal: 300, protein_g: 28 },
+      { name: 'Rice', grams: 200, kcal: 260, carbs_g: 57 },
+    ],
+  });
+  insertMealPhoto(db, { meal_id: mealId, file_name: 'lunch.jpg', source: 'camera' });
+  const before = getMeal(db, mealId);
+  raw
+    .prepare('UPDATE meals SET updated_at = ? WHERE id = ?')
+    .run('2000-01-01T00:00:00.000Z', mealId);
+
+  updateMealName(db, mealId, 'Leftover chicken and rice');
+
+  const after = getMeal(db, mealId);
+  after && after.name === 'Leftover chicken and rice'
+    ? ok('the name is rewritten')
+    : bad('rename', JSON.stringify(after));
+  after &&
+  after.date === before.date &&
+  after.time === before.time &&
+  near(after.kcal, before.kcal) &&
+  near(after.protein_g, before.protein_g) &&
+  near(after.carbs_g, before.carbs_g) &&
+  after.source === 'ai_suggested' &&
+  after.notes === 'ate half of it'
+    ? ok('when, totals, provenance and notes are untouched (this write owns the name)')
+    : bad('collateral damage', JSON.stringify(after));
+  JSON.stringify(listMealItems(db, mealId).map((i) => i.name)) ===
+  JSON.stringify(['Chicken thigh', 'Rice'])
+    ? ok('the items survive a rename intact')
+    : bad('items after rename', JSON.stringify(listMealItems(db, mealId).map((i) => i.name)));
+  raw.prepare('SELECT count(*) c FROM meal_photos WHERE meal_id = ?').get(mealId).c === 1
+    ? ok('the photo row survives a rename')
+    : bad('photo after rename');
+  after && after.updated_at !== '2000-01-01T00:00:00.000Z'
+    ? ok('the updated_at trigger restamps the renamed meal')
+    : bad('updated_at after rename', JSON.stringify(after));
+
+  // The renamed meal is what the Eaten-today plate draws.
+  JSON.stringify(listTodayMeals(db, TODAY).map((m) => m.name)) ===
+  JSON.stringify(['Leftover chicken and rice'])
+    ? ok('the day list carries the new name')
+    : bad('day list after rename', JSON.stringify(listTodayMeals(db, TODAY).map((m) => m.name)));
+}
+
+console.log('14. a meal can never be renamed to nothing');
+{
+  const { db } = freshDb();
+  const id = logMeal(db, { date: TODAY, time: '08:05', name: 'Protein oats', kcal: 620 });
+
+  // There is no derived title to fall back to — meals.name is NOT NULL and
+  // nothing reconstructs one — so an empty name is REFUSED, not stored. The
+  // editor disables Save on exactly this predicate; this is the backstop.
+  throws(() => updateMealName(db, id, ''))
+    ? ok('an empty name is refused')
+    : bad('empty name accepted');
+  throws(() => updateMealName(db, id, '   '))
+    ? ok('a whitespace-only name is refused too (it trims to empty)')
+    : bad('whitespace name accepted');
+  getMeal(db, id).name === 'Protein oats'
+    ? ok('a refused rename changes nothing — the meal keeps the name it had')
+    : bad('refused rename leaked', JSON.stringify(getMeal(db, id)));
+
+  updateMealName(db, id, '  Overnight oats  ');
+  getMeal(db, id).name === 'Overnight oats'
+    ? ok('a name is trimmed before it is stored')
+    : bad('untrimmed name', JSON.stringify(getMeal(db, id)));
+
+  // Renaming a meal to what it is already called is a no-op, not an error — a
+  // casing fix goes through the same path (the renameFolder rule).
+  updateMealName(db, id, 'Overnight oats');
+  getMeal(db, id).name === 'Overnight oats'
+    ? ok('renaming a meal to its own name is allowed')
+    : bad('self-rename', JSON.stringify(getMeal(db, id)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

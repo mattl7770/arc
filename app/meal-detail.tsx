@@ -19,6 +19,7 @@ import {
   relogMeal,
   removeMealItem,
   updateMealItemPortion,
+  updateMealName,
   updateMealTime,
 } from '@/lib/db/repositories/nutrition';
 import {
@@ -72,6 +73,33 @@ import type { FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/type
  * `date` column at read time. The reasoning and the test are on `updateMealTime`
  * (src/lib/db/repositories/nutrition.ts).
  *
+ * ## The name is editable too (owner, 2026-08-15)
+ *
+ * *"Add functionality to be able to change the name of a meal."*
+ *
+ * **A meal's name was already a real, free-text column** — `meals.name`,
+ * `NOT NULL` since 0002 — written once by whichever path logged the row and
+ * never editable afterwards. It is not a slot (`breakfast`/`lunch`/…) and it is
+ * not derived from the items, so this needed **no migration**: it is one UPDATE
+ * of one column, `updateMealName`, single-purpose for the same reason
+ * `updateMealTime` is.
+ *
+ * **The control sits on the value it changes**, which is the rule the time
+ * control established — and a meal's name is not on a line of its own, it IS
+ * the header title. So `StackHeader` grew an optional trailing `action` slot
+ * and the `Rename` affordance lives there, with {@link MealNameEditor} opening
+ * directly beneath it. Putting it on the date/time line beside `Change` was the
+ * alternative and it is worse: two trailing label-voice controls on one line
+ * leave the reader guessing which changes what.
+ *
+ * **An empty name is refused, not cleared.** There is nothing to clear back
+ * TO — no slot, no derivation, and a name invented from the items would be a
+ * fabricated record (00-design-spec.md §5). So a blank field disables Save,
+ * says so in words, and the meal keeps the name it has; `updateMealName` throws
+ * as the backstop. **A rename touches nothing else** — items, macros, photo,
+ * time and provenance are all outside the one column it writes, which
+ * db/nutrition.test.mjs §13 asserts field by field.
+ *
  * **The photo is shown.** A meal logged through the estimator now keeps the
  * image it was estimated from (0033), and it is drawn here at its own aspect
  * with the retention stated under it. A meal with no photo draws NOTHING —
@@ -105,10 +133,10 @@ import type { FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/type
  * "(as logged)" item, so the two never silently diverge.) A free-form meal
  * carries no such note, because there is nothing to reconcile against.
  *
- * **Accent budget: one.** An open editor's Save — and this screen now has two
- * editors (portion, time), so they are MUTUALLY EXCLUSIVE: opening either
- * closes the other. That is what keeps the budget a ceiling rather than a
- * quota, and it is enforced in the open handlers, not by convention.
+ * **Accent budget: one.** An open editor's Save — and this screen now has three
+ * editors (portion, time, name), so they are MUTUALLY EXCLUSIVE: opening any
+ * one closes the other two. That is what keeps the budget a ceiling rather than
+ * a quota, and it is enforced in the open handlers, not by convention.
  */
 
 type MealState = {
@@ -132,6 +160,10 @@ type ItemEdit = {
 /** The when-editor's draft. Held apart from the row so backing out writes
  *  nothing — nothing is saved until Save. */
 type TimeEdit = { date: string; hour: string; minute: string };
+
+/** The rename editor's draft, or null when it is closed. A plain string rather
+ *  than a record: a meal has exactly one name and nothing else moves with it. */
+type NameEdit = string | null;
 
 function readMeal(id: string): MealState {
   const db = getDb();
@@ -234,6 +266,8 @@ export default function MealDetailScreen() {
   const [editing, setEditing] = useState<ItemEdit | null>(null);
   // The when-editor's draft, or null when it is closed.
   const [timeEdit, setTimeEdit] = useState<TimeEdit | null>(null);
+  // The rename editor's draft, or null when it is closed.
+  const [nameEdit, setNameEdit] = useState<NameEdit>(null);
 
   const reload = useCallback(() => {
     setState(readMeal(mealId));
@@ -249,6 +283,7 @@ export default function MealDetailScreen() {
     // A draft that survived a detour would be editing a meal that may since
     // have moved — and its Save would silently overwrite the newer value.
     setTimeEdit(null);
+    setNameEdit(null);
   }, [mealId]);
   useFocusEffect(reload);
 
@@ -265,6 +300,7 @@ export default function MealDetailScreen() {
     const canServing = food?.serving_grams != null;
     // One editor at a time — that is what keeps the accent budget a ceiling.
     setTimeEdit(null);
+    setNameEdit(null);
     setEditing({
       itemId: item.id,
       food,
@@ -348,8 +384,31 @@ export default function MealDetailScreen() {
     if (timeEdit) return setTimeEdit(null);
     // One editor at a time (see the accent-budget note in the header).
     setEditing(null);
+    setNameEdit(null);
     const parts = partsFromClock(meal.time);
     setTimeEdit({ date: meal.date, hour: parts.hour, minute: parts.minute });
+  };
+
+  /** Open the rename editor prefilled with the name the meal has, or close it.
+   *  Closing discards the draft, the way backing out of every other editor on
+   *  this screen does. */
+  const toggleNameEdit = () => {
+    if (nameEdit !== null) return setNameEdit(null);
+    // One editor at a time (see the accent-budget note in the header).
+    setEditing(null);
+    setTimeEdit(null);
+    setNameEdit(meal.name);
+  };
+
+  /** Write the renamed meal. A blank name never gets here — Save is disabled on
+   *  it — and `updateMealName` throws if a future caller lets one through. */
+  const saveName = () => {
+    if (nameEdit === null) return;
+    const trimmed = nameEdit.trim();
+    if (trimmed === '') return;
+    updateMealName(getDb(), meal.id, trimmed);
+    setNameEdit(null);
+    reload();
   };
 
   /** Write the re-timed meal. The day boundary needs no special handling —
@@ -423,9 +482,39 @@ export default function MealDetailScreen() {
 
   return (
     <Screen scroll>
+      {/* The title IS the meal's name, so the control that changes it sits on
+          the title — the same rule that put `Change` on the date/time line
+          below rather than in the Actions plate. `StackHeader`'s `action` slot
+          exists for exactly this. */}
       <View className="pt-2">
-        <StackHeader title={meal.name} />
+        <StackHeader
+          title={meal.name}
+          action={
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={
+                nameEdit !== null ? 'Stop renaming this meal' : 'Rename this meal'
+              }
+              accessibilityState={{ expanded: nameEdit !== null }}
+              hitSlop={12}
+              onPress={toggleNameEdit}
+              className="min-h-[44px] justify-center pl-3 active:opacity-60">
+              <Text className="font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary">
+                {nameEdit !== null ? 'Cancel' : 'Rename'}
+              </Text>
+            </Pressable>
+          }
+        />
       </View>
+
+      {nameEdit !== null ? (
+        <MealNameEditor
+          value={nameEdit}
+          original={meal.name}
+          onChange={setNameEdit}
+          onSave={saveName}
+        />
+      ) : null}
 
       {/* When it was eaten, and the control that changes it — on the value
           itself rather than buried in the Actions plate below, so the editor
@@ -746,6 +835,101 @@ function MealPhoto({ photo, name }: { photo: MealPhotoView; name: string }) {
         />
       </View>
       <Text className="mt-1.5 font-mono text-[10px] text-ink-muted">{clears}</Text>
+    </View>
+  );
+}
+
+/**
+ * The rename editor: one field, holding the one column a rename writes.
+ *
+ * **Serif, not mono.** A meal's name is speech, not a measurement — the same
+ * voice the Items rows and the Eaten-today list already set it in
+ * (00-design-spec.md §3). The date/time editor above is mono for the opposite
+ * reason.
+ *
+ * **No device.** A form is controls, not content — form (b) of the
+ * capture-surface rule (src/components/ui/block.tsx): the field wears the
+ * well's own `border-paper-deep bg-paper-dim` directly, named by a
+ * `SectionLabel` and set apart by whitespace. Identical to
+ * {@link MealTimeEditor} one section down, because it is the same form.
+ *
+ * **An empty field is a refusal, and it says so.** `meals.name` is `NOT NULL`
+ * and nothing in this schema derives a title, so there is no state for a
+ * cleared name to fall back to — the meal simply keeps the one it has, and the
+ * note says which one rather than leaving the disabled Save to be interpreted.
+ * The placeholder is the current name for the same reason: an emptied field
+ * still shows what standing pat means.
+ *
+ * The consequence is stated in future tense above the control that performs it
+ * (§5), and it names what a rename does NOT touch — because everything else on
+ * this screen is what the user is really protecting when they hesitate over it.
+ *
+ * Save is this screen's one accent while it is open; the portion and when
+ * editors both close when this one opens, so there is never a second.
+ */
+function MealNameEditor({
+  value,
+  original,
+  onChange,
+  onSave,
+}: {
+  value: string;
+  /** The name the meal has now, so the change can be stated in future tense
+   *  and the no-op can be named. */
+  original: string;
+  onChange: (next: string) => void;
+  onSave: () => void;
+}) {
+  const trimmed = value.trim();
+  const empty = trimmed === '';
+
+  const note = empty
+    ? `A meal keeps its name — there is nothing to fall back to. Leave this empty and it stays “${original}”.`
+    : trimmed === original
+      ? null
+      : `On save: this meal is called “${trimmed}”. Its items, macros, photo, time and where it came from are untouched.`;
+
+  return (
+    <View className="mt-5">
+      <SectionLabel label="Meal name" />
+
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        autoFocus
+        placeholder={original}
+        placeholderTextColor={palette.inkMuted}
+        autoCapitalize="sentences"
+        accessibilityLabel="Meal name"
+        returnKeyType="done"
+        onSubmitEditing={onSave}
+        className="mt-2 border border-paper-deep bg-paper-dim px-3 py-2.5 font-serif text-[15px] text-ink"
+      />
+
+      {note ? (
+        <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">{note}</Text>
+      ) : null}
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Save the meal’s name"
+        accessibilityState={{ disabled: empty }}
+        disabled={empty}
+        onPress={onSave}
+        className={
+          empty
+            ? 'mt-4 min-h-[44px] items-center justify-center rounded-btn border border-paper-deep'
+            : 'mt-4 min-h-[44px] items-center justify-center rounded-btn bg-pine active:opacity-70'
+        }>
+        <Text
+          className={
+            empty
+              ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+              : 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine-on'
+          }>
+          Save
+        </Text>
+      </Pressable>
     </View>
   );
 }

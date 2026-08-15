@@ -472,6 +472,47 @@ export function updateMealTime(
   db.run('UPDATE meals SET date = ?, time = ? WHERE id = ?', [when.date, when.time, id]);
 }
 
+/**
+ * Rename a logged meal — the owner's *"add functionality to be able to change
+ * the name of a meal"* (2026-08-15).
+ *
+ * **What a meal's name already was, before this existed.** `meals.name` is free
+ * text and `NOT NULL` (0002_nutrition.sql) — a real column, not a slot enum and
+ * not a title derived from the items. It is written once, by whichever path
+ * created the row: the manual form's `Meal` field, the template's name, the
+ * recipe's title through `logRecipe`, the name the estimator's model gave the
+ * plate, or the source meal's name through `relogMeal`. So a rename is one
+ * UPDATE of one column and needed **no migration**.
+ *
+ * **There is no derived title to fall back to, so an empty name is REFUSED
+ * rather than cleared.** Nothing in this schema can reconstruct a name: an
+ * itemized meal could be described by its items, but inventing "Chicken + rice"
+ * on the user's behalf is a fabricated record, and a free-form meal has nothing
+ * at all to derive from. The column is `NOT NULL` precisely because a nameless
+ * meal is not a state this app has — it is the row's identity in the
+ * Eaten-today list, in this screen's header, in VoiceOver and in the default
+ * name offered when the meal is saved as a template or a recipe. So a blank
+ * name writes nothing and the meal keeps the name it has. The editor gates its
+ * Save on the same predicate; this is the backstop that makes the guarantee
+ * true for every future caller (the shape {@link updateMealTime} uses for an
+ * impossible clock).
+ *
+ * **Nothing else moves.** One column in one statement: the date, time, notes,
+ * `source`, `recipe_id`, totals, items and photos are all untouched by
+ * construction, and db/nutrition.test.mjs §13 walks each of them across a
+ * rename. **Separate from {@link updateMealMeta}** for the reason
+ * {@link updateMealTime} is separate from it — that one rewrites the time and
+ * notes as well, so a rename calling it would have to re-send a clock it never
+ * asked about, which is how a typo fix becomes silent destruction elsewhere.
+ */
+export function updateMealName(db: Database, id: string, name: string): void {
+  const trimmed = name.trim();
+  if (trimmed === '') {
+    throw new Error('updateMealName: a meal keeps its name — "" is not one.');
+  }
+  db.run('UPDATE meals SET name = ? WHERE id = ?', [trimmed, id]);
+}
+
 /** Edit a meal's descriptive fields; totals belong to items/logMeal, not here. */
 export function updateMealMeta(
   db: Database,
