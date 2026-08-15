@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 
 import { getDb } from '@/lib/db/client';
+import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
+import { isHealthKitSupported } from '@/lib/health/healthkit';
 import { subscribeHealthSync } from '@/lib/health/sync';
-import { deriveReadiness, type ReadinessView } from '@/lib/home/readiness';
+import { deriveReadiness, type HealthLink, type ReadinessView } from '@/lib/home/readiness';
 
 /**
  * Home's readiness view model — real `wearable_data` through the pure
@@ -12,12 +14,26 @@ import { deriveReadiness, type ReadinessView } from '@/lib/home/readiness';
  * read in the useState initializer, re-read on focus. Additionally re-reads
  * when a background Apple Health sync lands rows while Home is already
  * mounted (the boot sync is fire-and-forget, so focus alone would miss it).
+ *
+ * This hook is where the LINK STATE is established — the impure half the pure
+ * derivation refuses to look at itself. It is the difference between a pillar
+ * that says "no signal yet" and one that says "nothing can arrive in this
+ * build", and until the pending EAS rebuild lands it is always the latter.
  */
+function healthLink(db: ReturnType<typeof getDb>): HealthLink {
+  if (!isHealthKitSupported()) return 'unsupported';
+  return isHealthSyncEnabled(db) ? 'connected' : 'disconnected';
+}
+
 export function useReadiness(): ReadinessView {
-  const [state, setState] = useState(() => deriveReadiness(getDb()));
+  const [state, setState] = useState(() => {
+    const db = getDb();
+    return deriveReadiness(db, undefined, { link: healthLink(db) });
+  });
 
   const reload = useCallback(() => {
-    setState(deriveReadiness(getDb()));
+    const db = getDb();
+    setState(deriveReadiness(db, undefined, { link: healthLink(db) }));
   }, []);
 
   useFocusEffect(reload);

@@ -19,6 +19,11 @@ import {
   requestHealthPermissions,
   type HealthWriteAccess,
 } from '@/lib/health/healthkit';
+import {
+  GARMIN_ONLY_METRICS,
+  METRIC_COVERAGE,
+  type SourceVerdict,
+} from '@/lib/health/coverage';
 import { BODY_INGEST_METRICS } from '@/lib/health/mapping';
 import { syncHealthData } from '@/lib/health/sync';
 
@@ -101,6 +106,23 @@ const SYNC_SCOPES: readonly { label: string; direction: SyncDirection }[] = [
   { label: 'Body and sleeping-wrist temperature', direction: 'in' },
   { label: 'VO₂max and workouts', direction: 'in' },
 ];
+
+/**
+ * The coverage tag. Deliberately three words with no colour: a source that does
+ * not send a metric is a fact about the vendor, not a biological signal, and
+ * `signal-*` marks biology only (00-design-spec.md).
+ */
+const VERDICT_LABEL: Record<SourceVerdict, string> = {
+  yes: 'Sends',
+  no: 'Never',
+  unverified: 'Unverified',
+};
+
+const VERDICT_SPOKEN: Record<SourceVerdict, string> = {
+  yes: 'Garmin sends this.',
+  no: 'Garmin never sends this.',
+  unverified: 'Unverified.',
+};
 
 /**
  * The one line to show about write access, or null when there is nothing
@@ -421,6 +443,68 @@ export default function SettingsHealthScreen() {
               Health — remove that in the Health app. A measurement that arrived from Apple Health
               is marked as such and is never sent back.
             </Text>
+          </Block>
+        </View>
+      </View>
+
+      {/* Per-metric coverage — the user-facing half of the audit table in
+          docs/wearables-subapp.md §12. A list of things, so a ruled plate.
+
+          This section exists because "connected" is not the same as "you will
+          get everything": four of the fifteen read scopes are types a Garmin
+          never writes to Apple Health, and without this list they read as ARC
+          being broken rather than as the source not sending them. */}
+      <View className="mt-8">
+        <SectionLabel label="Per-metric coverage" note="Garmin" />
+        <View className="mt-3">
+          <Block device="plate">
+            {METRIC_COVERAGE.map((metric, index) => (
+              <View key={metric.hkIdentifier}>
+                <Divider first={index === 0} />
+                <View
+                  accessible
+                  accessibilityLabel={`${metric.label}. ${VERDICT_SPOKEN[metric.garmin]} ${metric.garminNote}`}
+                  className="py-3">
+                  <View className="flex-row items-center gap-3">
+                    <Text className="flex-1 font-serif text-[13.5px] text-ink">{metric.label}</Text>
+                    {/* Filled tag, never a bordered one — a one-sided border
+                        beside a border colour paints a full rectangle in RN. */}
+                    <View className="rounded bg-paper-dim px-1.5 py-0.5">
+                      <Text className="font-label text-[10px] text-ink-muted">
+                        {VERDICT_LABEL[metric.garmin]}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text className="mt-1 font-serif text-[11px] leading-4 text-ink-muted">
+                    {metric.garminNote}
+                  </Text>
+                  {metric.verdictDays !== null ? (
+                    <Text className="mt-1 font-mono text-[10px] text-ink-muted">
+                      {metric.verdictDays === 1
+                        ? 'Reads from the first night'
+                        : `${metric.verdictDays} days of readings before a verdict`}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            ))}
+          </Block>
+        </View>
+
+        <View className="mt-4">
+          <Block device="margin">
+            <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+              Sends — Garmin Connect writes it to Apple Health, so ARC can read it. Never — it stays
+              in Garmin Connect, and no amount of waiting will change that. Unverified — Garmin
+              publishes no answer either way and this has not been checked against a device.
+            </Text>
+            {GARMIN_ONLY_METRICS.map((metric) => (
+              <Text
+                key={metric.label}
+                className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
+                {metric.label} — {metric.note}
+              </Text>
+            ))}
           </Block>
         </View>
       </View>

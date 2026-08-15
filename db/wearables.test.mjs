@@ -1061,5 +1061,231 @@ console.log('16. the echo loop is shut structurally — an ingested row is never
     : bad('echo ingested');
 }
 
+console.log('17. workout identity (0042) — one session, one row, whatever the bucket');
+{
+  const { db, raw } = freshDb();
+  const workout = (overrides = {}) =>
+    row({
+      metricType: 'workout',
+      date: '2026-07-29',
+      value: 40,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'HK-UUID-1',
+      startTime: '2026-07-29T17:00:00.000Z',
+      endTime: '2026-07-29T17:40:00.000Z',
+      metadata: { activity: 'Running' },
+      ...overrides,
+    });
+
+  // THE reported bug. `provenanceOf` yields a null bundle id whenever a
+  // sample's sourceRevision arrives in a shape the seam cannot parse, and a
+  // null bundle buckets to 'other'; parse it next time and the same UUID
+  // buckets to 'garmin'. Under the old (source_device, source_raw_id) key those
+  // were two rows, and every flip of the bucket added another.
+  upsertWearableRows(db, [workout({ sourceDevice: 'other' })]);
+  upsertWearableRows(db, [workout({ sourceDevice: 'garmin' })]);
+  upsertWearableRows(db, [workout({ sourceDevice: 'other' })]);
+  const stored = raw
+    .prepare("SELECT source_device FROM wearable_data WHERE metric_type = 'workout'")
+    .all();
+  stored.length === 1
+    ? ok('the same UUID under three different device buckets is ONE row')
+    : bad('bucket flip duplicated', JSON.stringify(stored));
+  stored[0]?.source_device === 'other'
+    ? ok('and the latest bucket wins — the label is corrected in place, not added to')
+    : bad('source_device not rewritten', JSON.stringify(stored));
+
+  // The day-bucket key is untouched: two devices reporting HRV on one day are
+  // still two readings for the read side to arbitrate between.
+  upsertWearableRows(db, [
+    row({ sourceDevice: 'garmin', sourceRawId: 'hk:hrv:2026-07-29' }),
+    row({ sourceDevice: 'apple_watch', sourceRawId: 'hk:hrv:2026-07-29' }),
+  ]);
+  raw.prepare("SELECT count(*) AS n FROM wearable_data WHERE metric_type = 'hrv'").get().n === 2
+    ? ok('day-bucket rows still separate per device — 0042 did not over-reach')
+    : bad('day-bucket rows collapsed');
+
+  // A genuine second session on the same day is still a second row.
+  upsertWearableRows(db, [
+    workout({
+      sourceRawId: 'HK-UUID-2',
+      startTime: '2026-07-29T20:00:00.000Z',
+      endTime: '2026-07-29T20:30:00.000Z',
+      value: 30,
+    }),
+  ]);
+  recentWearableWorkouts(db, 10).length === 2
+    ? ok('two real sessions on one day stay two rows')
+    : bad('a real second session was swallowed');
+}
+
+console.log('18. same session, two recorders — the read side collapses it');
+{
+  const { db } = freshDb();
+  // The duplicate the UUID key CANNOT fix: one run recorded by Garmin Connect
+  // and by the iPhone is two genuinely distinct HealthKit objects with two
+  // distinct UUIDs. Both rows are true; showing both is not.
+  upsertWearableRows(db, [
+    row({
+      metricType: 'workout',
+      value: 62,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'GARMIN-1',
+      startTime: '2026-07-29T17:00:00.000Z',
+      endTime: '2026-07-29T18:02:00.000Z',
+      metadata: { activity: 'Running' },
+    }),
+    row({
+      metricType: 'workout',
+      value: 48,
+      unit: 'min',
+      sourceDevice: 'apple_watch',
+      sourceRawId: 'WATCH-1',
+      startTime: '2026-07-29T17:06:00.000Z',
+      endTime: '2026-07-29T17:54:00.000Z',
+      metadata: { activity: 'Running' },
+    }),
+  ]);
+  const collapsed = recentWearableWorkouts(db, 10);
+  collapsed.length === 1
+    ? ok('one run recorded twice lists once')
+    : bad('overlapping sessions not collapsed', JSON.stringify(collapsed));
+  collapsed[0]?.sourceDevice === 'apple_watch'
+    ? ok('SOURCE_PRIORITY picks the winner — the same rule every other metric gets')
+    : bad('wrong winner', JSON.stringify(collapsed));
+
+  // Adjacent-but-separate sessions must survive: a cool-down after a lift is
+  // not the lift. These abut at the boundary and share no time at all.
+  upsertWearableRows(db, [
+    row({
+      metricType: 'workout',
+      value: 20,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'GARMIN-2',
+      startTime: '2026-07-29T18:02:00.000Z',
+      endTime: '2026-07-29T18:22:00.000Z',
+      metadata: { activity: 'Walking' },
+    }),
+  ]);
+  recentWearableWorkouts(db, 10).length === 2
+    ? ok('a back-to-back session that merely abuts is NOT collapsed')
+    : bad('abutting sessions wrongly merged');
+
+  // A row with no usable span cannot be reasoned about, so it is kept — never
+  // silently dropped for being unreadable.
+  upsertWearableRows(db, [
+    row({
+      metricType: 'workout',
+      value: 15,
+      unit: 'min',
+      sourceDevice: 'other',
+      sourceRawId: 'NO-TIMES',
+      startTime: null,
+      endTime: null,
+      metadata: { activity: 'Yoga' },
+    }),
+  ]);
+  recentWearableWorkouts(db, 10).length === 3
+    ? ok('a workout with no start/end time is kept, not dropped')
+    : bad('untimed workout dropped');
+}
+
+console.log('19. 0042 on a POPULATED device — the duplicates are cleaned before the index');
+{
+  // The hazard this locks down: CREATE UNIQUE INDEX fails outright if the table
+  // already violates it, and the runner wraps the file in one transaction — so
+  // a failed cleanup would roll the whole migration back and strand the device
+  // below 42 forever. Set the table up in exactly the broken state the old key
+  // permitted, then run the real migration over it.
+  const raw = new DatabaseSync(':memory:');
+  raw.exec('PRAGMA foreign_keys = ON;');
+  const { database, executor } = makeDb(raw);
+  migrate(
+    executor,
+    MIGRATIONS.filter((m) => m.version <= 41)
+  );
+
+  const plant = (id, device, uuid, createdAt) =>
+    raw
+      .prepare(
+        `INSERT INTO wearable_data
+           (id, date, metric_type, value, unit, source_device, source_raw_id, created_at, updated_at)
+         VALUES (?, '2026-07-29', 'workout', 40, 'min', ?, ?, ?, ?)`
+      )
+      .run(id, device, uuid, createdAt, createdAt);
+
+  // One session that flip-flopped across three buckets…
+  plant('a', 'other', 'UUID-A', '2026-07-29T18:00:00.000Z');
+  plant('b', 'garmin', 'UUID-A', '2026-07-29T19:00:00.000Z');
+  plant('c', 'manual', 'UUID-A', '2026-07-29T20:00:00.000Z');
+  // …a session that never duplicated…
+  plant('d', 'garmin', 'UUID-B', '2026-07-29T21:00:00.000Z');
+  // …and two rows with a NULL raw id, which the index must tolerate.
+  raw
+    .prepare(
+      `INSERT INTO wearable_data (id, date, metric_type, value, unit, source_device)
+       VALUES ('e', '2026-07-29', 'workout', 10, 'min', 'manual'),
+              ('f', '2026-07-29', 'workout', 12, 'min', 'manual')`
+    )
+    .run();
+  // A day-bucket row sharing a raw id across devices — must survive untouched.
+  raw
+    .prepare(
+      `INSERT INTO wearable_data (id, date, metric_type, value, unit, source_device, source_raw_id)
+       VALUES ('g', '2026-07-29', 'hrv', 42, 'ms', 'garmin', 'hk:hrv:2026-07-29'),
+              ('h', '2026-07-29', 'hrv', 44, 'ms', 'apple_watch', 'hk:hrv:2026-07-29')`
+    )
+    .run();
+
+  let migrated = true;
+  try {
+    migrate(executor, MIGRATIONS);
+  } catch (e) {
+    migrated = false;
+    bad('0042 threw on a populated device', e.message);
+  }
+  if (migrated) ok('0042 applies cleanly over pre-existing duplicates');
+
+  executor.getUserVersion() >= 42
+    ? ok('and the device actually reaches 42 — no silent rollback')
+    : bad('user_version', String(executor.getUserVersion()));
+
+  const survivors = raw
+    .prepare("SELECT id, source_device FROM wearable_data WHERE source_raw_id = 'UUID-A'")
+    .all();
+  survivors.length === 1
+    ? ok('three rows for one session collapse to one')
+    : bad('dedupe', JSON.stringify(survivors));
+  // SOURCE_PRIORITY: garmin (4) beats other (7) beats manual (9) — so the row
+  // the cleanup keeps is the row the UI would have chosen anyway.
+  survivors[0]?.id === 'b'
+    ? ok('the survivor is the best-sourced row, not merely the newest')
+    : bad('wrong survivor', JSON.stringify(survivors));
+
+  raw.prepare("SELECT count(*) AS n FROM wearable_data WHERE source_raw_id = 'UUID-B'").get().n === 1
+    ? ok('a session that was never duplicated is untouched')
+    : bad('non-duplicate harmed');
+  raw
+    .prepare(
+      "SELECT count(*) AS n FROM wearable_data WHERE metric_type = 'workout' AND source_raw_id IS NULL"
+    )
+    .get().n === 2
+    ? ok('NULL raw ids are left alone — a unique index does not constrain them')
+    : bad('null raw ids removed');
+  raw.prepare("SELECT count(*) AS n FROM wearable_data WHERE metric_type = 'hrv'").get().n === 2
+    ? ok('day-bucket rows sharing a raw id across devices survive intact')
+    : bad('day-bucket rows harmed by the workout cleanup');
+
+  // Re-running the same cleanup logic must be a no-op (deterministic tiebreak).
+  const before = raw.prepare('SELECT count(*) AS n FROM wearable_data').get().n;
+  migrate(executor, MIGRATIONS);
+  raw.prepare('SELECT count(*) AS n FROM wearable_data').get().n === before
+    ? ok('re-running the migration set changes nothing')
+    : bad('not idempotent');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

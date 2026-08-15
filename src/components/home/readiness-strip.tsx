@@ -130,6 +130,37 @@ export function ReadinessStrip({ readiness, pillars }: Props) {
       <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
         {readiness.detail}
       </Text>
+
+      {/* Why the flat cells are flat. A pillar with no verdict used to draw a
+          page-coloured mark and an em-dash and stop there, which states the
+          absence but not its cause — and the three causes are genuinely
+          different things to do about it: nothing can arrive in this build,
+          sync is off, or the baseline is still filling and the honest answer is
+          a number of days. §5 of the design spec: empty is authored, never
+          blank.
+
+          Notes are grouped by their text, so the common first-run case — every
+          derived pillar waiting on the same missing link — is ONE line naming
+          three pillars rather than the same sentence printed three times. */}
+      {noteGroups(pillars).map((group) => (
+        <Text
+          key={group.note}
+          className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
+          {group.labels.join(', ')} — {group.note}
+        </Text>
+      ))}
     </Block>
   );
+}
+
+/** Pillar notes collapsed to one entry per distinct note, order preserved. */
+function noteGroups(pillars: Pillar[]): { note: string; labels: string[] }[] {
+  const groups: { note: string; labels: string[] }[] = [];
+  for (const pillar of pillars) {
+    if (!pillar.note) continue;
+    const existing = groups.find((g) => g.note === pillar.note);
+    if (existing) existing.labels.push(pillar.label);
+    else groups.push({ note: pillar.note, labels: [pillar.label] });
+  }
+  return groups;
 }
