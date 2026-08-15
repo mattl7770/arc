@@ -79,7 +79,6 @@ export default function WorkoutLogScreen() {
 
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(startedAt);
-  const [name, setName] = useState('');
   const [kind, setKind] = useState<WorkoutKind>('strength');
   const [durationText, setDurationText] = useState('');
   const [sets, setSets] = useState<DraftSet[]>([]);
@@ -116,7 +115,11 @@ export default function WorkoutLogScreen() {
   const duration = durationText === '' ? null : Number(durationText);
   const durationValid =
     duration === null || (Number.isFinite(duration) && duration > 0 && duration < 1000);
-  const canSave = name.trim().length > 0 && (mode === 'live' || durationValid) && !entryBlocking;
+  // No name is required any more (owner, 2026-08-14) — a session is savable
+  // once it has either a set or a duration. An empty form still can't save,
+  // which is the only thing the name requirement was really doing.
+  const hasSubstance = sets.length > 0 || (entryDirty && canAddSet) || duration != null;
+  const canSave = hasSubstance && (mode === 'live' || durationValid) && !entryBlocking;
 
   const changeExercise = (t: string) => {
     setExercise(t);
@@ -147,7 +150,7 @@ export default function WorkoutLogScreen() {
   // An accidental back tap must not vaporise a logged workout: if anything is
   // drafted and unsaved, confirm before leaving. savedRef lets the post-save
   // router.back() through without re-prompting.
-  const hasDraft = sets.length > 0 || name.trim() !== '' || !entryBlank || durationText !== '';
+  const hasDraft = sets.length > 0 || !entryBlank || durationText !== '';
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (e) => {
       if (savedRef.current || !hasDraft) return;
@@ -179,7 +182,9 @@ export default function WorkoutLogScreen() {
     try {
       logWorkout(
         getDb(),
-        { date: todayISODate(), name: name.trim(), kind, durationMin },
+        // No name — workouts don't have them (owner, 2026-08-14). The
+        // repository writes '' into the dormant NOT NULL column.
+        { date: todayISODate(), kind, durationMin },
         allSets.map((s) => ({
           exercise: s.exercise,
           reps: s.reps,
@@ -220,18 +225,10 @@ export default function WorkoutLogScreen() {
               </Text>
             </View>
           ) : null}
-          <View className="mt-2">
-            <Field>
-              <TextInput
-                value={name}
-                onChangeText={setName}
-                placeholder="Session name — Upper A, Zone 2…"
-                placeholderTextColor={palette.inkMuted}
-                className="py-2.5 font-serif text-[15px] text-ink"
-                accessibilityLabel="Session name"
-              />
-            </Field>
-          </View>
+          {/* The session-name field stood here until 2026-08-14. Owner:
+              *"Workouts dont need names, remove this."* Kind is the first thing
+              asked now, which is also the only thing about a session that has to
+              be declared rather than derived. */}
           <View className="mt-2 flex-row flex-wrap gap-2">
             {KINDS.map((k) => {
               const on = k.key === kind;

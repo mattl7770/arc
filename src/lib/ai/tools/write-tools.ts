@@ -29,7 +29,7 @@ import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 import { logCapture, logMetric, logNote } from '@/lib/db/repositories/logs';
 import { logWorkout } from '@/lib/db/repositories/exercise';
-import { listExercises } from '@/lib/db/repositories/exercise-catalog';
+import { resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
 import {
   activeNutritionTargets,
   logMeal,
@@ -298,20 +298,22 @@ type ParsedSet = SetInput & { displayLine: string };
  * user logged through the Coach, the blinder "Train today" got (the 2026-08-08
  * review's self-defeating loop).
  *
- * Matching is the labs pipeline's discipline: a UNIQUE exact match (case-
- * insensitive) on the catalog name or an alias resolves; anything else —
- * no match, or two exercises answering to the same name — stays null rather
- * than guessing. "Bench" must never silently become "Bench Press" when a
+ * It delegates to the ONE matcher (`resolveExerciseByName`) rather than keeping
+ * its own, and that is the 2026-08-14 fix. The copy that used to live here
+ * matched on strict exact name or alias, which is why the loop was never really
+ * closed: people write their logs in plurals, so "lat pulldowns" and "barbell
+ * rows" resolved to nothing and a whole Coach-logged back day left the body
+ * figure almost untouched. The shared resolver de-pluralises and keeps the
+ * labs-pipeline discipline — a UNIQUE match resolves, anything ambiguous stays
+ * null rather than guessing, so "Press" is still null (pinned by §27 of
+ * db/coach-tools.test.mjs) and "Bench" never becomes "Bench Press" while a
  * "Bench Dip" also exists.
+ *
+ * Kept as a named local because `unmatchedExercises` in the tool result must be
+ * computed from exactly the answer the row will be given.
  */
 function resolveExerciseId(db: Database, name: string): string | null {
-  const needle = name.trim().toLowerCase();
-  if (needle.length === 0) return null;
-  // LIKE narrows (name or alias substring, non-archived); exact-match in JS.
-  const matches = listExercises(db, { search: name.trim() }).filter(
-    (ex) => ex.name.toLowerCase() === needle || ex.aliases.some((a) => a.toLowerCase() === needle)
-  );
-  return matches.length === 1 ? matches[0]!.id : null;
+  return resolveExerciseByName(db, name);
 }
 
 /**

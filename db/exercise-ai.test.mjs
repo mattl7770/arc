@@ -519,13 +519,26 @@ console.log('8. hand-set freshness anchors (0037): assert, decay, supersede, cle
     ? ok('an anchor of 55 reads 55')
     : bad('anchor 55');
 
-  // It DECAYS on the muscle's own clock — τ = 72/3 = 24h for quads, so three
-  // days after "fully spent" the muscle is ~95% recovered, not still at zero.
+  // It DECAYS on the muscle's own clock — τ = 72/3 = 24h for quads. A
+  // hand-asserted ZERO is deliberately worse than any session can produce (see
+  // ANCHOR_FLOOR_PERCENT in freshness.ts): it comes back over roughly five
+  // days, not three, so "I am completely wrecked" no longer recovers at exactly
+  // the rate one ordinary hard session did under the retired linear model.
   const later = new Date(2026, 7, 15, 12, 0, 0);
   const decayed = quads([], anchorNow('quads', 0, now), later);
-  decayed.freshness >= 90
+  decayed.freshness >= 70 && decayed.freshness < 90
     ? ok(`a "fully spent" anchor recovers to ${decayed.freshness} after three days`)
     : bad('anchor did not decay', JSON.stringify(decayed));
+  const muchLater = quads([], anchorNow('quads', 0, now), new Date(2026, 7, 17, 12, 0, 0));
+  muchLater.freshness >= 90
+    ? ok(`…and to ${muchLater.freshness} after five`)
+    : bad('anchor never recovers', JSON.stringify(muchLater));
+  // Anything the adjuster can write round-trips exactly through the new
+  // exponential inverse — the contract the screen depends on, since every tap
+  // writes and immediately re-reads.
+  [10, 20, 40, 55, 70, 90, 100].every((v) => quads([], anchorNow('quads', v, now)).freshness === v)
+    ? ok('every value the adjuster can write round-trips through the model exactly')
+    : bad('anchor round-trip');
 
   // Sets BEFORE the anchor are superseded — the assertion already accounts for
   // them, so replaying them would double-count.

@@ -104,12 +104,22 @@ export const RECOVERY_HOURS: Record<Muscle, number> = {
 export const recoveryTauHours = (muscle: Muscle): number => RECOVERY_HOURS[muscle] / 3;
 
 /**
- * Fatigue units that drive freshness to zero. One hard working set on a primary
- * muscle contributes ~1.0 (role 1.0 × effort 1.0 at RIR 1-3); ~8 fresh primary
- * sets fully spend a muscle. Global, not per-muscle: size-based recovery SPEED
- * is already encoded in τ above. Tunable.
+ * The fatigue SCALE, in fractional working sets — the volume that takes a fresh
+ * muscle to 1/e (37%). One hard working set on a primary muscle contributes
+ * ~1.0 (role 1.0 × effort 1.0 at RIR 1-3), so eight of them read 37%, sixteen
+ * read 14%, and twenty-four read 5%. Global, not per-muscle: size-based
+ * recovery SPEED is already encoded in τ above, and a second per-muscle knob
+ * here would be a number nothing could calibrate. Tunable.
+ *
+ * **It is a scale, not a ceiling — that rename is the 2026-08-14 fix.** It used
+ * to be `FRESH_FULL`, the fatigue that drove freshness *to zero* through a
+ * linear ramp `100 × (1 − min(1, F/8))`, and the `min` was the bug: eight
+ * fractional sets and twenty-four read an identical 0, so a whole back day and
+ * a warmup-and-leave both printed "spent". See the calibration table on
+ * {@link freshnessFromFatigue} (src/lib/exercise/freshness.ts) for what a
+ * session of N sets now reads.
  */
-export const FRESH_FULL = 8;
+export const FRESH_SCALE = 8;
 
 /** Freshness display buckets (percent). */
 export const FRESH_THRESHOLDS = { fresh: 80, recovering: 50 } as const;

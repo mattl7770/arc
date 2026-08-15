@@ -89,6 +89,92 @@ export function listExercises(db: Database, filter: CatalogFilter = {}): Catalog
   return rows.map(toCatalogExercise);
 }
 
+/**
+ * Fold a typed exercise name to the form the matcher compares on: lowercase,
+ * punctuation to single spaces, and each token de-pluralised.
+ *
+ * The de-pluralisation is the part that earns its keep. Nobody writes their log
+ * in the catalog's singular voice — it is "lat pulldowns", "barbell rows",
+ * "bench presses" — and a matcher that only knows "Lat Pulldown" resolves none
+ * of them. Three rules, in order, on tokens longer than three characters:
+ * an `-es` after a sibilant comes off whole (`presses` → `press`, `crunches` →
+ * `crunch`); a word already ending `-ss` is left alone (`press`); otherwise a
+ * lone trailing `s` comes off (`rows`, `raises`, `dips`, `pulldowns`). `abs` is
+ * short enough to be exempt. It is a stemmer for gym English, not for English.
+ */
+const singular = (t: string): string => {
+  if (t.length <= 3) return t;
+  if (/(?:ss|ch|sh|x|z)es$/.test(t)) return t.slice(0, -2);
+  if (t.endsWith('ss')) return t;
+  return t.endsWith('s') ? t.slice(0, -1) : t;
+};
+
+function normalizeExerciseName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .map(singular)
+    .join(' ');
+}
+
+/**
+ * Resolve a free-text exercise name to a catalog id — the identity every piece
+ * of engine intelligence (freshness, e1RM, PRs, volume, progression) keys on.
+ *
+ * **This is the fix for the 2026-08-14 freshness bug and it is worth being
+ * precise about why.** `recentMuscleLoads` joins `workout_sets` to
+ * `exercise_muscles` through `exercise_id`, so a set stored with a NULL
+ * `exercise_id` contributes *exactly nothing* to the freshness model — not a
+ * little, nothing. Three of the four write paths could produce that null: the
+ * Manual-log screen never asked for an exercise at all, the Coach's
+ * `log_workout` matched on strict exact name only ("lat pulldowns" ≠ "Lat
+ * Pulldown"), and a photo import kept unmatched names as free text. So the
+ * owner logged a full back day and the body figure moved by almost nothing.
+ * The single resolver here, applied as a backstop in `insertSet`
+ * (src/lib/db/repositories/exercise.ts), closes all three at once.
+ *
+ * Confidence discipline is the labs/nutrition-grounding rule, unchanged: a
+ * UNIQUE match resolves and anything ambiguous stays null rather than guessing.
+ * Three tiers, each tried only if the one above found nothing:
+ *
+ *   1. exact on the folded catalog name or a folded alias;
+ *   2. one name is the other's leading phrase ("incline dumbbell press" for
+ *      "incline dumbbell press machine"), multi-token only;
+ *   3. nothing.
+ *
+ * Single-token needles never reach tier 2, which is what keeps "Bench" from
+ * claiming "Bench Press" while "Bench Dip" also exists, and "Press" — pinned by
+ * db/coach-tools.test.mjs §27 — from claiming anything at all.
+ */
+export function resolveExerciseByName(db: Database, name: string): string | null {
+  const needle = normalizeExerciseName(name);
+  if (needle === '') return null;
+  // The LIKE narrows on the raw text; folding + uniqueness is decided in JS,
+  // because SQLite cannot see through "rows" → "row".
+  const first = needle.split(' ')[0] ?? '';
+  const rows = db.all<{ id: string; name: string; aliases: string | null }>(
+    `SELECT id, name, aliases FROM exercises
+     WHERE archived = 0 AND (name LIKE ? OR aliases LIKE ?)`,
+    [`%${first}%`, `%${first}%`]
+  );
+  const folded = rows.map((r) => ({
+    id: r.id,
+    names: [r.name, ...parseAliases(r.aliases)].map(normalizeExerciseName),
+  }));
+
+  const exact = folded.filter((e) => e.names.includes(needle));
+  if (exact.length === 1) return exact[0]!.id;
+  if (exact.length > 1) return null;
+
+  if (needle.split(' ').length < 2) return null;
+  const prefix = folded.filter((e) =>
+    e.names.some((n) => n.startsWith(`${needle} `) || needle.startsWith(`${n} `))
+  );
+  return prefix.length === 1 ? prefix[0]!.id : null;
+}
+
 /** One catalog exercise by id (including archived), or undefined. */
 export function getExercise(db: Database, id: string): CatalogExercise | undefined {
   const row = db.get<CatalogRow>(

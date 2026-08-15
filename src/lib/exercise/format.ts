@@ -77,6 +77,26 @@ export function dayLabel(date: string, today: string): string {
 }
 
 /**
+ * What to call a session in a list, now that sessions have no names (owner,
+ * 2026-08-14: *"Workouts dont need names, remove this"*).
+ *
+ * The movements are the answer: "Lat Pulldown · Barbell Row · Seated Cable Row"
+ * says what the session WAS, which a typed name only approximated and a
+ * generated one ("Session 14") would have faked outright. Three movements is
+ * the width budget on a 375pt screen; a fourth and beyond become "+2 more" so
+ * the line stays honest about being a summary rather than silently truncating.
+ *
+ * A session with no movements — cardio, mobility, a duration-only log — falls
+ * back to its kind label, which is the whole truth about it.
+ */
+export function sessionTitle(session: RecentSession): string {
+  const shown = session.movements.slice(0, 3);
+  if (shown.length === 0) return KIND_LABEL[session.kind];
+  const rest = session.movements.length - shown.length;
+  return rest > 0 ? `${shown.join(' · ')} +${rest} more` : shown.join(' · ');
+}
+
+/**
  * The session detail line: "18 sets · 52 min", either half alone, or the kind
  * label when a session has neither (numbers stay sans here — they sit inside
  * prose, the sanctioned exception to the mono rule).
