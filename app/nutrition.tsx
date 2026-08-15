@@ -64,7 +64,10 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  * 2. *"Five ways to log, presented as a menu."* → one accent button reading
  *    **Log**, opening src/components/nutrition/log-sheet.tsx. Nothing was
  *    deleted; the paths moved one tap in, and gained "Cook a recipe", which
- *    previously required opening the recipe first.
+ *    previously required opening the recipe first. Two **capture methods** —
+ *    Photo and Describe — sit outlined beneath it (owner, 2026-08-14); they are
+ *    shortcuts into a mode of app/meal-estimate.tsx, not doors to a screen the
+ *    sheet already reaches, and they take no accent.
  * 3. *"The most consequential setup action is the quietest thing on the
  *    screen."* → while `targets` is null, **Set daily targets** is a full-width
  *    control under the grid. It is outlined rather than pine (the accent stays
@@ -523,6 +526,41 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
           className="min-h-[52px] items-center justify-center rounded-btn bg-pine active:opacity-80">
           <Text className="font-label text-[16px] font-semibold text-pine-on">Log</Text>
         </Pressable>
+
+        {/* The two fastest capture methods, straight through (owner,
+            2026-08-14). Not navigation — that is the distinction that earns
+            them their place. The Log-tab grid lost two tiles for being doors
+            into sub-apps the tab bar already reached; these two land you INSIDE
+            a capture, in a specific mode, which the sheet cannot do: its
+            "Describe or photograph" row opens the same screen on its field, and
+            getting a viewfinder from there is three taps.
+            Outlined, never pine. The accent above is the screen's one accent in
+            every state, and it must stay the only thing on this page that
+            claims to be the next action. Same treatment as the Take-a-photo /
+            Choose-a-photo pair inside app/meal-estimate.tsx, because these are
+            the same two capture methods one level up. */}
+        <View className="mt-2 flex-row gap-2">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Photograph a meal"
+            onPress={() => router.push({ pathname: '/meal-estimate', params: { start: 'camera' } })}
+            className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+            <Ionicons name="camera-outline" size={17} color={palette.inkSecondary} />
+            <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+              Photo
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Describe a meal in words"
+            onPress={() => router.push('/meal-estimate')}
+            className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+            <Ionicons name="sparkles-outline" size={17} color={palette.inkSecondary} />
+            <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+              Describe
+            </Text>
+          </Pressable>
+        </View>
       </View>
 
       {/* EATEN TODAY — the day's real record, in eating order. The plate goes

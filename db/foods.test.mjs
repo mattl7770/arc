@@ -16,6 +16,7 @@ import {
   findFoodByBarcode,
   getFood,
   listFavoriteFoods,
+  listRecentBarcodeFoods,
   listRecentFoods,
   normalizeFoodName,
   searchFoods,
@@ -539,6 +540,71 @@ console.log('10. barcode lookup against the grown local cache');
   findFoodByBarcode(db, '0000000000000') === undefined
     ? ok('miss returns undefined (UI falls back to search/manual)')
     : bad('barcode miss');
+}
+
+console.log("10b. the scanner's running list — recently LOGGED barcodes (owner, 2026-08-14)");
+{
+  const { db, raw } = freshDb();
+  // Three foods: two barcoded, one not. Only the eaten, barcoded ones may show.
+  const scanned = testFood(db, {
+    name: 'Scanned yoghurt',
+    barcode: '4006381333931',
+    source: 'openfoodfacts',
+  });
+  const older = testFood(db, {
+    name: 'Scanned oat drink',
+    barcode: '5000000000000',
+    source: 'openfoodfacts',
+  });
+  const plain = testFood(db, { name: 'Plain rice' });
+  const cachedNeverEaten = testFood(db, {
+    name: 'Cached crisps',
+    barcode: '5011111111111',
+    source: 'openfoodfacts',
+  });
+
+  listRecentBarcodeFoods(db).length === 0
+    ? ok('nothing logged yet → the list is empty (the screen draws no heading)')
+    : bad('empty running list');
+
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:00',
+    name: 'Breakfast',
+    items: [
+      itemForPortion({ ...getFood(db, older), id: older }, { grams: 250 }),
+      itemForPortion({ ...getFood(db, plain), id: plain }, { grams: 100 }),
+    ],
+  });
+  const newest = addMealItem(db, mealId, {
+    food_id: scanned,
+    name: 'Scanned yoghurt',
+    grams: 170,
+    kcal: 100,
+  });
+  // Same-millisecond writes tie on created_at (the knowledge-base round's
+  // flake), so the ordering assertion pins the timestamps explicitly.
+  raw
+    .prepare('UPDATE meal_items SET created_at = ? WHERE id = ?')
+    .run('2030-01-01T00:00:00.000Z', newest);
+
+  const list = listRecentBarcodeFoods(db);
+  list.length === 2
+    ? ok('only barcoded foods are listed — a plain catalog food is excluded')
+    : bad('barcode narrowing', JSON.stringify(list.map((r) => r.food.name)));
+  list[0] && list[0].food.id === scanned
+    ? ok('most recently logged first')
+    : bad('running-list order', JSON.stringify(list.map((r) => r.food.name)));
+  near(list[0].lastGrams, 170)
+    ? ok('the row carries the portion it was last logged at')
+    : bad('last portion on the running list', JSON.stringify(list[0]));
+  !list.some((r) => r.food.id === cachedNeverEaten)
+    ? ok('a barcode cached but never eaten is NOT on the list (logged, not scanned)')
+    : bad('cached-never-eaten leaked onto the running list');
+
+  listRecentBarcodeFoods(db, 1).length === 1
+    ? ok('the limit holds — a running list is not an archive')
+    : bad('running-list limit');
 }
 
 console.log('11. nutrition_targets: versioned, immutable, date-resolved');

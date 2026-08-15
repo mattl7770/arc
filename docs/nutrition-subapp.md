@@ -1,7 +1,21 @@
 # Nutrition sub-app — design & build spec
 
 **Status:** **Round 5 (2026-08-11) shipped — the hub was rebuilt as the Eat TAB ROOT.** What is left leads (guarded per metric), one accent button reading `Log` opens a full-screen sheet holding every entry path, **Kitchen** carries the recipe book and grocery list with live counts, **Over time** carries 14-day energy + protein, and `Set daily targets` is a first-class control that retires once satisfied. The macro cells are boxed by owner call. Photo-library upload landed on the estimator in the same pass. Spec: `docs/information-architecture.md` › *The Eat tab, redrawn*; mockup: `docs/design-research/eat-tab-redesign.html`; the four ADRs are in `docs/decisions.md` (2026-08-11). Round 3 shipped the acquisition + editing gaps. Barcode scanning (live, with OFF lookup), inline portion editing, and AI photo/describe estimation are all wired; the only remaining online paths are barcode-OFF and AI, both gated. **Round 4 (2026-08-08) shipped as its own spec: the recipe book, grocery list, AI recipe import, and Coach integration live in `docs/recipes-grocery.md`** (migrations 0030/0031). **Weekly macro charts remain open** — a Data-tab/nutrition-history visualization, consciously deferred out of round 4 and tracked in `docs/project-status.md` §1 (Data tab).
-**Last updated:** 2026-08-12
+**Last updated:** 2026-08-14
+
+> ### Round 6 — the capture round (owner, 2026-08-14). Four requests off the device; **no migration**.
+>
+> Full detail in §12b. The short version, in the order the requests were taken:
+>
+> **1. The Log sheet's close control was under the status bar, and it was never a magic number.** *"In the menu to log where you decide which logging method to use, the back button is not accessible because it is too high up on the screen."* `SafeAreaView` in react-native-safe-area-context v5 is a **native** view: it walks `self.superview` for an `RNCSafeAreaProvider` and falls back to `self` when it finds none. An RN `Modal` on iOS presents its own `UIViewController`, so the provider react-navigation installs around the Stack is in the React tree and **unreachable in the native one** — the walk ends at `self`, which never posts the change notification and, unlike the provider, implements no `safeAreaInsetsDidChange` and no non-zero-frame retry. The inset latched at zero at attach time and never corrected, so `pt-2` was the whole offset. The fix is a `SafeAreaProvider` **inside** the Modal, now in one place: `ModalScreen` (`src/components/ui/screen.tsx`). **All three of ARC's chooser modals had it** — the Log sheet, Home's mode picker, the exercise picker. The app lock's Modal was immune by accident: it centres its content and asks for no inset.
+>
+> **2. The scanner shows what you last logged.** `listRecentBarcodeFoods` — `listRecentFoods` narrowed to `barcode IS NOT NULL`. No table, no migration: the scan already caches a `foods` row and the log already writes a `meal_items` row, so the list is the join those two facts imply.
+>
+> **3. Photo and Describe sit under Log on the Eat tab.** Two outlined buttons, no accent — the pine on `Log` stays the screen's only claim to being the next action.
+>
+> **4. The photo logger reads barcodes.** One `CameraView`, one `AVCaptureSession`: expo-camera adds the scanner as an `AVCaptureMetadataOutput` **alongside** the `AVCapturePhotoOutput`, and switches it on from the presence of `onBarcodeScanned`. A code in frame is **offered below the Capture button, never forced**, and taking the offer hands off to `/barcode-scan` rather than growing a second portion sheet.
+>
+> **And `expo-camera` moved behind a guarded seam** (`src/lib/media/camera.ts`). Both camera screens were route files with a static native import — the app-LAUNCH crash that has already shipped twice. It also made them untestable; both are now on the headless render walk.
 
 > ### Correcting a logged meal in plain English — `app/meal-revise.tsx` (owner, 2026-08-12)
 >
@@ -195,11 +209,23 @@ Migration-number note (resolved): the branch is now rebased onto the Coach-inclu
 
 All new code depends only on the `Database` interface. **No existing export changes.**
 
-**New file `src/lib/db/repositories/foods.ts`:** `normalizeFoodName`, `createFood`, `updateFood`, `deleteFood`, `getFood`, `searchFoods` (tokenized LIKE over `name_norm`, prefix-ranked, favorites boosted — a few hundred rows need no FTS5; revisit if the catalog ever passes ~5k), `setFoodFavorite`, `listFavoriteFoods`, `listRecentFoods` (from `meal_items` join, newest-first, **with each food's last-used portion**), `findFoodByBarcode`.
+> ⚠️ **This section no longer lists the exports, and that is the fix.** It carried a hand-copied inventory of two growing files, and it was stale twice: the recipe-folders round (2026-08-12) found `updateMealTime`, `replaceMealItems` and the six photo functions missing, and the capture round (2026-08-14) found the *corrected* list already missing `listRecentBarcodeFoods` — a paragraph that had been wrong, was fixed, and went wrong again inside two days. An inventory of a file that grows is stale by construction, so what follows describes the SHAPE and names only the functions whose behaviour needs explaining. **The authority is the file:**
+>
+> ```
+> grep '^export function' src/lib/db/repositories/nutrition.ts
+> grep '^export function' src/lib/db/repositories/foods.ts
+> ```
 
-**Additions to `src/lib/db/repositories/nutrition.ts`** (existing four exports untouched): `logMealWithItems` (transactional; meal macros = item sums), `getMeal`, `deleteMeal` (CASCADE clears items), `updateMealMeta` (name/time/notes), `updateMealTime`, `listMealItems`, `mealItemCounts` (per-day map for the home list), `addMealItem` / `updateMealItemPortion` / `removeMealItem` (each recomputes the parent's totals in-transaction; the first item into a typed free-form meal preserves those totals as an "(as logged)" item; a meal whose items all lack a macro sums that macro to NULL, and a meal emptied of items returns to free-form NULLs), `replaceMealItems` (the plain-text revision's write — the entry at the head of this document), `partialMealMetrics`, `dailyIntakeSeries` / `dayFiberTotal` / `dayMicroTotals` / `nutritionHistory`, `relogMeal` ("Log again" — `ai_suggested` provenance survives the copy, so an estimate stays labelled an estimate), `setNutritionTargets`, `activeNutritionTargets`, and the **0033 meal-photo ROW half** — `insertMealPhoto`, `latestMealPhoto`, `mealPhotoFileNames`, `allMealPhotos`, `expiredMealPhotos`, `deleteMealPhoto` (the FILE half is `src/lib/media/meal-photo-store.ts`; calling these six directly is how a name and its bytes come to disagree).
+**`src/lib/db/repositories/foods.ts`** — the catalog. Create/update/delete/get, `searchFoods` (tokenized LIKE over `name_norm`, prefix-ranked, favorites boosted — a few hundred rows need no FTS5; revisit if the catalog ever passes ~5k), favorites, and two recents readers over the `meal_items` join, newest-first, **each carrying the food's last-used portion**: `listRecentFoods` (everything) and `listRecentBarcodeFoods` (narrowed to `barcode IS NOT NULL` — the scanner's running list, §12b). Barcodes resolve through `findFoodByBarcode` (digits-only, offline) and cache through `cacheBarcodeFood` (idempotent on re-scan).
 
-> ⚠️ *This paragraph described the 0014–0018 tranche and was never re-swept as the repository grew — it was still missing `updateMealTime`, `replaceMealItems` and the six photo functions when the recipe-folders round corrected it (2026-08-12), and `docs/project-status.md` had already flagged it as known-stale. **The authority is `grep '^export function' src/lib/db/repositories/nutrition.ts`, not this list**; a hand-maintained inventory of a growing file is stale by construction, so re-measure rather than trusting it.*
+**`src/lib/db/repositories/nutrition.ts`** — the day's record. The original four (`logMeal`, `listTodayMeals`, `todayTotals`, `dailyIntakeSeries`) are **untouched and still are**; everything since is additive. The rules that matter, none of which the function names carry:
+
+- **The repository is the only writer of a meal's macro columns.** `logMealWithItems` / `addMealItem` / `updateMealItemPortion` / `removeMealItem` / `replaceMealItems` each recompute the parent's totals **in the same transaction**, which is what makes the denormalized sums trustworthy.
+- **The first item into a typed free-form meal preserves those totals as their own "(as logged)" item** — the forgotten egg adds to the 800-kcal dinner rather than replacing it.
+- **A meal whose items all lack a macro sums that macro to NULL**, and a meal emptied of items returns to free-form NULLs. Never a fabricated zero.
+- **`relogMeal` keeps provenance:** `ai_suggested` survives the copy, so an estimate stays labelled an estimate.
+- **Targets are append-only** (`setNutritionTargets` / `activeNutritionTargets`, the `protocol_versions` pattern).
+- **The 0033 meal-photo functions are the ROW half only.** The FILE half is `src/lib/media/meal-photo-store.ts`, and calling the row functions directly is exactly how a name and its bytes come to disagree.
 
 **Pure helpers:** `src/lib/nutrition/servings.ts` — `gramsForQty`, `macrosForGrams` (per-100 g × grams/100), used by UI and repo, headless-tested. `src/lib/nutrition/format.ts` — `fmtInt`, `macroLine`, `portionLabel` (nutrition.tsx's local copies move here; the Data-tab's own copy is untouched).
 
@@ -325,3 +351,109 @@ Round 3 (2026-07-27, rebased onto `main` with the Keychain key store / Home brie
 **Native deps (flag):** `expo-camera` (~57.0.3) + `expo-image-manipulator` (~57.0.6) added, with the `expo-camera` config plugin (camera permission) in `app.json`. **These need one shared EAS rebuild** before barcode/photo run on device; describe-in-words and everything offline run without it.
 
 **Round-3 integrator-merge points** (additive): `package.json` (2 new deps + `db:test` gains `db/barcode.test.mjs`), `app/_layout.tsx` (+2 routes: `barcode-scan`, `meal-estimate`), `app.json` (expo-camera plugin). Reuses `main`'s `api-key-store` + `model-client` (imported, not edited) — the AI estimation is the same one model path the Coach uses. **Tests:** `db/barcode.test.mjs` (21) + `db/nutrition-v2.test.mjs` grew to 53 (rescale, scaleMicros, grounding) → `db:test` **628 across 20 suites**; typecheck / lint / format:check / db:validate / `expo export ios` all green.
+
+---
+
+## 12b. Round 6 — the capture round (2026-08-14)
+
+Four owner requests off the device, in one change, **with no migration**. Everything here is headless-verified only; §12c is the device checklist.
+
+### 1. The chooser's close control was under the status bar (item 10)
+
+> *"In the menu to log where you decide which logging method to use, the back button is not accessible because it is too high up on the screen."*
+
+The screen is `src/components/nutrition/log-sheet.tsx`, opened by the Eat tab's one `Log` button. It already did what looked like the right thing: a native `Modal`, a `SafeAreaView edges={['top','bottom']}`, and the same `pt-2` every pushed screen uses. The inset it was asking for was **zero**, and this is why.
+
+`SafeAreaView` in `react-native-safe-area-context` v5 is not a JS component reading React context — it is a native view. `RNCSafeAreaViewComponentView.findNearestProvider` walks **`self.superview`**, the UIKit chain, looking for an `RNCSafeAreaProviderComponentView`, and returns `self` when there is none:
+
+```objc
+- (UIView *)findNearestProvider {
+  UIView *current = self.superview;
+  while (current != nil) {
+    if ([current isKindOfClass:RNCSafeAreaProviderComponentView.class]) return current;
+    current = current.superview;
+  }
+  return self;
+}
+```
+
+An RN `Modal` on iOS presents its own `UIViewController`. Its React children are in the same React tree — so context flows — but in the **native** tree they hang off the presented controller's view, not off the app root. The provider react-navigation installs around the Stack is therefore invisible to that walk, and `_providerView` becomes `self`.
+
+That fallback has no way to ever be right. Insets are read in `didMoveToWindow` and `finalizeUpdates`, and refreshed only on the `RNCSafeAreaDidChange` notification — which a *provider* posts and `self` never does. And unlike `RNCSafeAreaProvider`, the safe-area **view** implements no `safeAreaInsetsDidChange` and carries no "wait until the frame is non-zero" retry. (The provider has both; its comment reads *"This gets called before the view size is set by react-native so make sure to wait so we don't set wrong insets to JS."* — the exact hazard, guarded in one class and not the other.) So the view latches whatever UIKit had at attach time, which during a modal presentation is `UIEdgeInsetsZero`, and never corrects.
+
+Top padding 0 + `pt-2` = the control sitting **eight points from the physical top of the screen**: under the status bar, behind the Dynamic Island. Exactly the report.
+
+**The fix is a provider inside the Modal, not a tuned padding.** A real `RNCSafeAreaProvider` in the modal's own native hierarchy gives the view below it a source that measures, retries and posts; `SafeAreaProvider` additionally seeds itself from the parent React context, so the first frame already carries the app's insets instead of flashing at zero. It stays correct across rotation and a keyboard, and there is no number to go stale.
+
+It lives once, as `ModalScreen` in `src/components/ui/screen.tsx` (sheet + `PaperGrid` + provider + inset; deliberately **no** `px-5`, since a modal's header and its scroll body take the gutter separately).
+
+**The sibling sweep.** Every `Modal` in the app was checked, and **all three chooser modals had the same bug**: this sheet, Home's mode picker (`src/components/home/mode-control.tsx`) and the exercise picker (`src/components/exercise/exercise-picker.tsx`). All three now go through `ModalScreen`. The app lock's `Modal` (`app/_layout.tsx`) is immune **by accident** — `AppLockScreen` centres its content and asks for no inset at all. `app/(tabs)/coach.tsx` uses a bare `SafeAreaView` and is fine: it is a tab screen inside the Stack, so it is a native descendant of the real provider. No pushed screen presents modally (`app/_layout.tsx` sets no `presentation`), so the stack screens were never affected.
+
+**One judgment call beyond the fix, open to veto.** The close control moved from the trailing edge to the **leading** edge, at `-ml-3`, where `StackHeader` puts the back chevron on every pushed screen — because the owner reached for "the back button" and it was in the far corner. The exercise picker already did this. Home's mode picker still keeps its close on the right and was left alone: it was not reported, and the smaller diff is the honest one. If the leading edge is right, that picker should follow.
+
+### 2. Recently logged barcodes (item 9)
+
+> *"Under scan a barcode, lets show a running list of the most recently logged barcodes for quick tapping."*
+
+`listRecentBarcodeFoods(db, limit = 6)` in `repositories/foods.ts` — `listRecentFoods` with `WHERE f.barcode IS NOT NULL`. The decisions, each of which was a real choice:
+
+| Question | Answer | Why |
+| --- | --- | --- |
+| A new table? | **No, and no migration.** | The scan already caches a `foods` row (`cacheBarcodeFood`) and logging already writes a `meal_items` row. The list is the join those two facts already imply; a second store of scan history is one more thing to fall out of step with the catalog. |
+| How many? | **Six.** | A running list is the pantry you are rotating. Longer than a screenful is a search, and the catalog already has one. |
+| What does a row show? | **Product name, then brand, then the portion it was last logged at.** Never the digits. | A barcode number means nothing to a human. The portion is a measurement, so it is mono; no portion on record renders as an em-dash, never a stand-in number. |
+| A code scanned but never resolved? | **Never appears, by construction.** | It never became a `foods` row. It reaches this list only if the user takes the manual fallback (`/food-new` with the code prefilled), saves the food, and eats it — at which point it is a real catalog entry and belongs. |
+| A code cached but never eaten? | **Also absent.** | The join is through `meal_items`. The list exists to re-log a repeat item, and a food nobody ate is not one. Pinned in `db/foods.test.mjs` §10b by an explicit negative. |
+| Tap = log, or tap = portion sheet? | **The portion sheet**, prefilled with last time's portion. | The sheet already states what the portion comes to, and it is the same sheet a live scan lands in. One confirmation surface, not two. A repeat item is usually the same amount, so the prefill is the speed — not a skipped confirmation. |
+
+The list is read **once**, in the state initializer, and is a snapshot of the moment the scanner opened: re-reading it after each add would reorder the rows under a finger that is already travelling. It refreshes on the next visit.
+
+It renders only when non-empty — a heading over an authored empty would be a permanent fixture explaining a feature that has not happened yet.
+
+### 3. Two capture buttons under Log on the Eat tab (item 11)
+
+`Photo` → `/meal-estimate?start=camera` (straight into the viewfinder). `Describe` → `/meal-estimate` (the field, which is where that screen already opens).
+
+They are **capture methods, not navigation**, which is what earns them the space the Log-tab grid lost two tiles for. The Log sheet's "Describe or photograph" row opens the same screen on its *field*; getting to a viewfinder from the tab was three taps and is now one. Both are **outlined, never pine** — the accent on `Log` is the screen's one accent in every state and must stay the only thing on the page claiming to be the next action. Same treatment as the Take-a-photo / Choose-a-photo pair inside the estimator, because they are the same two methods one level up.
+
+### 4. Barcode detection inside the photo logger (item 12)
+
+**Feasible, confirmed against the installed `expo-camera` 57.0.3 — not from documentation.** `CameraViewProps` carries `barcodeScannerSettings` and `onBarcodeScanned` on the same component that exposes `takePictureAsync`; `ensureNativeProps` sets `barcodeScannerEnabled = !!props.onBarcodeScanned`; and on iOS the scanner is an `AVCaptureMetadataOutput` added to the session **alongside** the `AVCapturePhotoOutput` (`ios/Current/BarcodeScanner.swift` vs `CameraSessionManager.swift`), with `mode` defaulting to `.picture`, which is what capture needs. One session, both readings, no mode switch and nothing new in the build.
+
+**It sits alongside `app/barcode-scan.tsx`; it does not replace it.** The scanner is the dedicated pantry loop — scan → portion → *Scan another* → repeat, optionally into a named `mealId` from food search — and it is where item 9's running list lives. Folding that into the estimator would have made one screen serve two intentions. So item 9's list is unaffected by the merge.
+
+**The interaction is the whole design.**
+
+- A code in frame is **offered, never taken**. `Capture` stays the one accent, in the same place, doing the same thing, whether or not a packet has wandered into shot behind the plate.
+- The offer renders **below** `Capture`, not above it — so nothing the thumb is already travelling towards moves under it. That is why there is no reserved slot: the row appears at the end, where its arrival displaces nothing.
+- The offer **says which record it is about to make**: the product name (or the raw code, mono, when the catalog has never seen it) plus `Saved earlier — log a portion` or `Not scanned before`. A photograph becomes an AI estimate; a barcode becomes a catalog food at a chosen portion. Those are different writes and the surface must not blur them.
+- The lookup behind the offer is **local only** (`findFoodByBarcode` — offline, synchronous). Reaching Open Food Facts for a code nobody has accepted would spend the network on a packet that merely drifted through frame.
+- Taking the offer **pushes `/barcode-scan` with a `code` param** and drops the estimator back to its `input` phase. The push is the point: that screen already owns the resolve ladder (local → OFF → manual fallback) and the portion sheet, so the merge needed no second confirmation surface. Dropping back to `input` unmounts this screen's viewfinder — two live camera sessions stacked in one navigation stack is a battery cost and an iOS session interruption waiting to happen. On arrival the scanner opens directly in `resolving`, never in `scanning`, so it does not start a session it is about to tear down either.
+
+### The camera moved behind a guarded seam
+
+`src/lib/media/camera.ts`, modelled on `src/lib/media/photo-library.ts`. Both `app/meal-estimate.tsx` and `app/barcode-scan.tsx` carried `import { CameraView, useCameraPermissions } from 'expo-camera'` at **route-file module scope** — the pattern that has already caused two app-**launch** crashes (`expo-image-picker`, `expo-keep-awake`), because Expo Router eagerly requires every file under `app/` to build its manifest. `expo-camera` is in the binary currently on the phone, so it had not fired; it was the next one to.
+
+Two consequences beyond the rule:
+
+- **The absent branch is now a sentence, not a spinner.** Without the module `permission` stays `null` forever, and the old `!permission → "Preparing the camera…"` would have sat there for good. Both screens now check availability first and say the shot needs the next app build, naming the path that still works. The scanner additionally says its running list still works, because it does — that half is database-only.
+- **Both screens are on the headless render walk for the first time** (`db/screens-render.test.mjs` §7b). A static native import is a *resolve* failure under Node, which is why neither had ever been rendered by the suite.
+
+### Verification
+
+Gate, on this branch: `npm run typecheck` 0 · `npm run lint` 0 errors (2 pre-existing warnings in `src/lib/rag/retrieve.ts`) · `npm run db:validate` 20/20 · `npm run db:test` **3,050 assertions / 50 suites, 0 failed** (`db/foods.test.mjs` 80 → **86**, `db/screens-render.test.mjs` → **345**) · `npx expo export --platform ios` clean.
+
+**No migration.** Head stays `0039`.
+
+**Routes:** none added, none removed. Two existing routes gained an optional param — `/meal-estimate` takes `start=camera`, `/barcode-scan` takes `code` — and both were already registered in `app/_layout.tsx`.
+
+## 12c. What only a device can judge (round 6)
+
+Headless renders prove a component body does not throw and that the strings are right. Effects do not run and taps cannot be simulated, so all of the following are **unverified**:
+
+1. **The safe-area fix itself.** The whole diagnosis is read off the installed native source; nothing on this machine can present a `UIViewController`. Open the Eat tab → `Log` and check the close control clears the Dynamic Island. Then check Home's mode chip and the exercise picker, which had the same defect and the same fix.
+2. **Whether the close control belongs on the leading edge.** A judgment call, easily reverted.
+3. **The barcode offer.** Reaching it needs a real `onBarcodeScanned` event. Point the estimator's camera at a package: the offer should appear *below* `Capture`, `Capture` should not move, and photographing a plate with a packet in shot should be completely unaffected.
+4. **Both cameras at all.** `expo-camera` is in the *current* binary, but every path here is new. In particular: does the metadata output slow `takePictureAsync`, and does the handoff to `/barcode-scan` leave exactly one live session?
+5. **The handoff resolve.** `/barcode-scan?code=…` runs in a `useEffect`, which a server render never executes.
+6. **The running list's ordering under real use** — the snapshot-on-open decision is a feel judgment, not a correctness one.

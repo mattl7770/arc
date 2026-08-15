@@ -1,10 +1,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Block, Divider } from '@/components/ui/block';
-import { PaperGrid } from '@/components/ui/screen';
+import { ModalScreen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import {
   MODE_KEYS,
@@ -201,72 +200,72 @@ export function ModeControl({
         presentationStyle="fullScreen"
         onRequestClose={() => setOpen(false)}>
         {/* A native Modal builds its own root, so it never passes through
-            `<Screen>` and has to print the sheet itself — otherwise the picker
-            arrives on bare stock over a textured Home. Outside the SafeAreaView
-            and outside the ScrollView: the paper is fixed, the content moves. */}
-        <View className="flex-1 bg-paper">
-          <PaperGrid />
-          <SafeAreaView edges={['top', 'bottom']} className="flex-1">
-            <View className="flex-row items-center justify-between px-5 pt-2">
-              <Text className="font-serif text-lg font-semibold text-ink">Today&rsquo;s mode</Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close"
-                onPress={() => setOpen(false)}
-                // A 20px glyph in p-2 measures 36pt square; the floor is 44 on both axes.
-                className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn active:bg-paper-deep">
-                <Ionicons name="close" size={20} color={palette.inkSecondary} />
-              </Pressable>
-            </View>
-            {/* One operative sentence. The line that opened this — "A mode
+            `<Screen>` — `ModalScreen` prints the sheet, the grid and its OWN
+            safe-area provider, without which the close control below lands under
+            the status bar (see that component's header for the native reason). */}
+        <ModalScreen>
+          {/* Direct children of the inset, exactly as before — a `flex-1`
+              wrapper here would be a second column stretcher inside the one
+              ModalScreen already provides, for nothing. */}
+          <View className="flex-row items-center justify-between px-5 pt-2">
+            <Text className="font-serif text-lg font-semibold text-ink">Today&rsquo;s mode</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+              onPress={() => setOpen(false)}
+              // A 20px glyph in p-2 measures 36pt square; the floor is 44 on both axes.
+              className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn active:bg-paper-deep">
+              <Ionicons name="close" size={20} color={palette.inkSecondary} />
+            </Pressable>
+          </View>
+          {/* One operative sentence. The line that opened this — "A mode
                 reshapes today's plan, changes what Home leads with, and changes
                 how the Coach talks" — described the feature back at the owner
                 before they had picked anything, which is the kind of line they
                 asked to be swept out (2026-08-10). What is left is the one rule
                 that changes what picking a mode means for the day. */}
-            <Text className="px-5 pt-1 font-serif text-[13px] leading-5 text-ink-secondary">
-              A skipped item under Travel, Sick, or Social is excused, not a miss.
-            </Text>
+          <Text className="px-5 pt-1 font-serif text-[13px] leading-5 text-ink-secondary">
+            A skipped item under Travel, Sick, or Social is excused, not a miss.
+          </Text>
 
-            <ScrollView contentContainerClassName="px-5 pb-10 pt-5">
-              <View className="border border-hairline bg-paper-hi">
-                {PICKER_ORDER.map((key, index) => {
-                  const option = getModeDefinition(key);
-                  const selected = key === mode;
-                  return (
-                    <View key={key}>
-                      <Divider first={index === 0} />
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityState={{ selected }}
-                        accessibilityLabel={`${option.label}. ${option.tagline}`}
-                        onPress={() => {
-                          setOpen(false);
-                          onSelect(key);
-                        }}
-                        className="min-h-[44px] flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep">
-                        <View className="flex-1">
-                          {/* List ROW, not a control label — see the voice note above. */}
-                          <Text className="font-serif text-[15px] text-ink">{option.label}</Text>
-                          <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
-                            {option.tagline}
-                          </Text>
-                        </View>
-                        {selected ? (
-                          <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
-                        ) : null}
-                      </Pressable>
-                    </View>
-                  );
-                })}
-              </View>
-              <Text className="mt-3 font-serif text-[11px] leading-4 text-ink-muted">
-                Stays on until you set it back to Normal. Work you&rsquo;ve already logged is kept —
-                only untouched items change.
-              </Text>
-            </ScrollView>
-          </SafeAreaView>
-        </View>
+          <ScrollView contentContainerClassName="px-5 pb-10 pt-5">
+            <View className="border border-hairline bg-paper-hi">
+              {PICKER_ORDER.map((key, index) => {
+                const option = getModeDefinition(key);
+                const selected = key === mode;
+                return (
+                  <View key={key}>
+                    <Divider first={index === 0} />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`${option.label}. ${option.tagline}`}
+                      onPress={() => {
+                        setOpen(false);
+                        onSelect(key);
+                      }}
+                      className="min-h-[44px] flex-row items-center gap-3 px-4 py-3 active:bg-paper-deep">
+                      <View className="flex-1">
+                        {/* List ROW, not a control label — see the voice note above. */}
+                        <Text className="font-serif text-[15px] text-ink">{option.label}</Text>
+                        <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                          {option.tagline}
+                        </Text>
+                      </View>
+                      {selected ? (
+                        <Ionicons name="checkmark" size={18} color={palette.inkSecondary} />
+                      ) : null}
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </View>
+            <Text className="mt-3 font-serif text-[11px] leading-4 text-ink-muted">
+              Stays on until you set it back to Normal. Work you&rsquo;ve already logged is kept —
+              only untouched items change.
+            </Text>
+          </ScrollView>
+        </ModalScreen>
       </Modal>
     </>
   );

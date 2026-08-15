@@ -155,6 +155,47 @@ export function listRecentFoods(db: Database, limit: number = 12): RecentFood[] 
 }
 
 /**
+ * The scanner's running list: barcoded foods this user has actually **logged**,
+ * newest first, each with the portion it was last logged at.
+ *
+ * *"Under scan a barcode, lets show a running list of the most recently logged
+ * barcodes for quick tapping."* (owner, 2026-08-14.)
+ *
+ * It is {@link listRecentFoods} narrowed to `f.barcode IS NOT NULL`, and that
+ * narrowing is the whole design decision — no table, no migration, no second
+ * store of scan history to fall out of step with the catalog. A scanned code
+ * already lands in `foods` (`cacheBarcodeFood`, source `openfoodfacts`) and
+ * logging it already lands in `meal_items`; the list is the join those two
+ * facts already imply.
+ *
+ * **LOGGED, not scanned** — the join is through `meal_items`, so a code that was
+ * scanned and then abandoned at the portion sheet never appears. That is the
+ * point: the list exists to re-log a repeat item, and a food nobody ate is not
+ * one. A code that resolved to nothing at all never even became a `foods` row,
+ * so it cannot appear by construction; it reaches this list only if the user
+ * takes the manual fallback, saves the food, and eats it.
+ */
+export function listRecentBarcodeFoods(db: Database, limit: number = 6): RecentFood[] {
+  const rows = db.all<RecentRow>(
+    `SELECT f.*, mi.grams AS last_grams, mi.serving_qty AS last_serving_qty,
+            max(mi.created_at) AS last_logged_at
+     FROM meal_items mi
+     JOIN foods f ON f.id = mi.food_id
+     WHERE f.barcode IS NOT NULL
+     GROUP BY f.id
+     ORDER BY last_logged_at DESC, f.id
+     LIMIT ?`,
+    [limit]
+  );
+  return rows.map(({ last_grams, last_serving_qty, last_logged_at, ...food }) => ({
+    food,
+    lastGrams: last_grams,
+    lastServingQty: last_serving_qty,
+    lastLoggedAt: last_logged_at,
+  }));
+}
+
+/**
  * Offline barcode lookup against the grown local cache (seeded foods carry no
  * barcodes; scanned Open Food Facts hits are written back as catalog rows).
  * Accepts raw scanner output — anything non-digit is stripped before lookup.

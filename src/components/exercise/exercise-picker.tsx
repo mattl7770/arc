@@ -10,10 +10,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Block, Divider, VerticalDivider } from '@/components/ui/block';
-import { PaperGrid } from '@/components/ui/screen';
+import { ModalScreen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -146,66 +145,60 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
       onRequestClose={close}
       onDismiss={afterDismiss}
       transparent={false}>
-      {/* A native Modal never passes through `<Screen>`, so it prints the sheet
-          itself. Outside the SafeAreaView (edge to edge, no seam at the inset)
-          and outside every ScrollView below (the paper does not scroll). */}
-      <View className="flex-1 bg-paper">
-        <PaperGrid />
-        <SafeAreaView edges={['top', 'bottom']} className="flex-1">
-          <View className="flex-1 px-5">
-            {/* Header */}
-            <View className="flex-row items-center gap-1 pb-1 pt-2">
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close"
-                onPress={close}
-                className="-ml-2 h-11 w-11 items-center justify-center active:opacity-60">
-                <Ionicons name="close" size={22} color={palette.ink} />
-              </Pressable>
-              <Text className="font-serif text-lg font-semibold text-ink">
-                {mode === 'create'
-                  ? 'New exercise'
-                  : mode === 'ai'
-                    ? 'Find with AI'
-                    : 'Add exercise'}
-              </Text>
-            </View>
-
-            {mode === 'create' ? (
-              <CreateExerciseForm
-                onCancel={() => setMode('browse')}
-                onCreated={(id) => {
-                  reloadCatalog();
-                  const ex = getExercise(getDb(), id);
-                  if (ex) select(ex);
-                }}
-              />
-            ) : mode === 'ai' ? (
-              <AiSearchView
-                onCancel={() => setMode('browse')}
-                onSelect={select}
-                onCreated={(id) => {
-                  reloadCatalog();
-                  const ex = getExercise(getDb(), id);
-                  if (ex) select(ex);
-                }}
-              />
-            ) : (
-              <BrowseCatalog
-                search={search}
-                setSearch={setSearch}
-                muscle={muscle}
-                setMuscle={setMuscle}
-                filtered={filtered}
-                onSelect={select}
-                onOpenDetail={openDetail}
-                onNew={() => setMode('create')}
-                onAi={isExerciseSearchAvailable() ? () => setMode('ai') : null}
-              />
-            )}
+      {/* A native Modal never passes through `<Screen>`, so `ModalScreen` prints
+          the sheet, the grid and the safe-area provider this hierarchy has to
+          carry itself — see that component for why the inset is otherwise zero
+          and the close control lands under the status bar. */}
+      <ModalScreen>
+        <View className="flex-1 px-5">
+          {/* Header */}
+          <View className="flex-row items-center gap-1 pb-1 pt-2">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+              onPress={close}
+              className="-ml-2 h-11 w-11 items-center justify-center active:opacity-60">
+              <Ionicons name="close" size={22} color={palette.ink} />
+            </Pressable>
+            <Text className="font-serif text-lg font-semibold text-ink">
+              {mode === 'create' ? 'New exercise' : mode === 'ai' ? 'Find with AI' : 'Add exercise'}
+            </Text>
           </View>
-        </SafeAreaView>
-      </View>
+
+          {mode === 'create' ? (
+            <CreateExerciseForm
+              onCancel={() => setMode('browse')}
+              onCreated={(id) => {
+                reloadCatalog();
+                const ex = getExercise(getDb(), id);
+                if (ex) select(ex);
+              }}
+            />
+          ) : mode === 'ai' ? (
+            <AiSearchView
+              onCancel={() => setMode('browse')}
+              onSelect={select}
+              onCreated={(id) => {
+                reloadCatalog();
+                const ex = getExercise(getDb(), id);
+                if (ex) select(ex);
+              }}
+            />
+          ) : (
+            <BrowseCatalog
+              search={search}
+              setSearch={setSearch}
+              muscle={muscle}
+              setMuscle={setMuscle}
+              filtered={filtered}
+              onSelect={select}
+              onOpenDetail={openDetail}
+              onNew={() => setMode('create')}
+              onAi={isExerciseSearchAvailable() ? () => setMode('ai') : null}
+            />
+          )}
+        </View>
+      </ModalScreen>
     </Modal>
   );
 }
