@@ -501,6 +501,36 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // the raised ceilings, and the assertions below measure the merged truth.
   // The manifest has been mined twice now; the next addition digs in the four
   // fat SCHEMAS named above, not here.
+  //
+  // ── 2026-08-14: COACH FIDELITY. NEITHER CEILING MOVED, and the tool schemas
+  // were not touched at all (9,206, unchanged). Two owner reports needed two
+  // prompt rules and both were paid for out of duplication, per the rule above.
+  //
+  // ADDED (~+82 tok): never report a change as done before its tool result
+  // arrives, because no tool call means nothing happened (report 7, the phantom
+  // write); and, since earlier turns are now day-stamped, drop a suggestion
+  // already raised on a previous day and treat an old event as history
+  // (report 8, the stale grocery suggestion).
+  //
+  // PAID FOR BY (~-123 tok), and all four are corrections rather than shaving:
+  //   · The decline bullet's "a decline is about that write, not their message
+  //     — refused one of two asks, do the other" is stated MORE fully, and at
+  //     the exact moment it applies, by the decline tool result itself
+  //     (coach-service.ts). The static copy was the weaker of the two.
+  //   · The state-block bullet re-listed every label the block carries — while
+  //     the block says of itself that it is "labelled line by line". It was
+  //     also ALREADY STALE: it never listed the grocery line, which shipped
+  //     later. A hand-maintained index of a self-labelling block can only rot.
+  //   · Reminders' "an OS notification needs a capable build, a granted
+  //     permission and a moment still ahead" enumerates precisely the reason
+  //     codes the `notification` result field returns, which the very next
+  //     clause tells the model to relay.
+  //   · Grocery's "read get_grocery_list first when unsure" predates the state
+  //     block naming every open item; it now points at the cheaper source.
+  //
+  // NET 3,696 → 3,655, i.e. the branch RETURNED 41 tokens of headroom rather
+  // than spending it. The next addition still digs in the four fat SCHEMAS
+  // named above: the prompt is now genuinely swept.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { humanizeToolName, streamCoachReply } from '@/lib/ai/coach-service';
 import { CoachTurnError } from '@/lib/ai/model-client';
 import { toolByName } from '@/lib/ai/tools';
+import { claimsCompletedWrite } from '@/lib/ai/write-claim';
 import type { CoachToolCall } from '@/lib/ai/types';
 import { usageCaption } from '@/lib/ai/cost';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
@@ -12,7 +13,7 @@ import {
   appendMessage,
   getConversationSummary,
   getOrCreateActiveConversation,
-  landedWriteCalls,
+  landedWriteReceipts,
   listRecentMessages,
   markSupersededTurns,
   outcomeForStopReason,
@@ -40,11 +41,24 @@ export type CoachChatMessage = ChatMessage & {
    */
   persisted?: boolean;
   /**
-   * Human labels of the WRITES this turn actually committed — approved, not
-   * declined, not errored. The load-bearing case: a turn cut off at max_tokens
-   * after the user approved a write must still say the write landed.
+   * RECEIPTS for the writes this turn actually committed — approved, not
+   * declined, not errored — each the line the user approved on the card.
+   *
+   * Two cases depend on it. The older one: a turn cut off at max_tokens after
+   * the user approved a write must still say the write landed. The one added
+   * 2026-08-14: these print on EVERY turn that wrote, so a real change is
+   * visibly a change and prose alone can never look like one.
    */
   writes?: string[];
+  /**
+   * The turn's prose claims it changed the record, and NOTHING was written.
+   *
+   * The owner's report ("saying that a recipe has been saved when the tool was
+   * not called"). Derived, never stored: both inputs — the text and the tool
+   * record — are already persisted, so a reloaded thread reaches the same
+   * verdict as the live one.
+   */
+  phantomWrite?: boolean;
 };
 
 /** A turn as it should be rendered — with the retry-superseded mark derived. */
@@ -90,9 +104,30 @@ function isWriteTool(name: string): boolean {
   return toolByName(name)?.readOnly === false;
 }
 
-/** The write labels for the "these changes landed" line; [] for a read-only turn. */
-function landedWriteLabels(toolCalls: CoachToolCall[]): string[] {
-  return landedWriteCalls(toolCalls, isWriteTool).map((call) => humanizeToolName(call.name));
+/** The receipts for the "these changes landed" line; [] for a read-only turn. */
+function landedWrites(toolCalls: CoachToolCall[]): string[] {
+  return landedWriteReceipts(toolCalls, isWriteTool, humanizeToolName);
+}
+
+/**
+ * What a finished turn did to the record, and whether its prose agrees.
+ *
+ * One function so the live path, the failure path and the reload path cannot
+ * drift: a phantom write must look the same after a restart as it did when it
+ * happened, and the only way to guarantee that is for all three to call this.
+ *
+ * The claim check runs ONLY when nothing landed. A turn that really wrote is
+ * never examined, so no real write can ever be captioned as a phantom one.
+ */
+function writeFidelity(
+  content: string,
+  toolCalls: CoachToolCall[]
+): { writes: string[]; phantomWrite: boolean } {
+  const writes = landedWrites(toolCalls);
+  return {
+    writes,
+    phantomWrite: writes.length === 0 && claimsCompletedWrite(content),
+  };
 }
 
 /**
@@ -110,7 +145,7 @@ function loadThread(conversationId: string): CoachChatMessage[] {
     .map((row) => {
       const calls = parseToolCalls(row.tool_calls);
       const tools = calls.map((call) => humanizeToolName(call.name));
-      const writes = landedWriteLabels(calls);
+      const { writes, phantomWrite } = writeFidelity(row.content, calls);
       return {
         id: row.id,
         role: row.role as ChatMessage['role'],
@@ -120,6 +155,7 @@ function loadThread(conversationId: string): CoachChatMessage[] {
         persisted: true,
         ...(tools.length > 0 ? { tools } : {}),
         ...(writes.length > 0 ? { writes } : {}),
+        ...(row.role === 'assistant' && phantomWrite ? { phantomWrite } : {}),
         // The raw record, kept so the NEXT turn can replay this turn's tool
         // digest (src/lib/ai/history-window.ts) without re-reading the thread.
         // Never rendered — `tools` above is what the chips show.
@@ -264,7 +300,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // finished one — least of all when it already wrote to the record.
           const outcome = outcomeForStopReason(result.stopReason);
           const tools = result.toolCalls.map((call: CoachToolCall) => humanizeToolName(call.name));
-          const writes = landedWriteLabels(result.toolCalls);
+          const { writes, phantomWrite } = writeFidelity(result.text, result.toolCalls);
           const persisted = result.text.trim().length > 0 || result.toolCalls.length > 0;
           // What the turn cost, broken into cache writes / cache reads / output
           // (src/lib/ai/cost.ts). A single lump token total cannot distinguish a
@@ -283,6 +319,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
             persisted,
             ...(tools.length > 0 ? { tools } : {}),
             ...(writes.length > 0 ? { writes } : {}),
+            ...(phantomWrite ? { phantomWrite } : {}),
             ...(result.toolCalls.length > 0 ? { toolCalls: result.toolCalls } : {}),
             ...(caption ? { usageCaption: caption } : {}),
           }));
@@ -307,7 +344,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // Retry appends alongside this row; it is never deleted.
           if (err instanceof CoachTurnError) {
             const tools = err.toolCalls.map((call) => humanizeToolName(call.name));
-            const writes = landedWriteLabels(err.toolCalls);
+            const { writes, phantomWrite } = writeFidelity(err.partialText, err.toolCalls);
             appendMessage(
               getDb(),
               conversationId,
@@ -324,6 +361,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
               persisted: true,
               tools,
               ...(writes.length > 0 ? { writes } : {}),
+              ...(phantomWrite ? { phantomWrite } : {}),
             }));
             return;
           }

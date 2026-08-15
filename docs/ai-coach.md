@@ -1,7 +1,7 @@
 # ARC AI Coach — Capability Specification
 
 **Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, and protocol write-back (2026-07-27)
-**Last updated:** 2026-08-10 (§6 voice rewritten: STE register, em dashes and markdown banned)
+**Last updated:** 2026-08-14 (§5 write receipts + phantom-write detection; §4 day-stamped thread history)
 **Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, protocol write-back (2026-07-27); Modes + Experiments tools shipped (2026-07-31/08-01); **perception layer shipped (2026-08-08** — per-turn "Current state" context block, readiness/sleep/training-engine/lab-trend visibility; see `docs/coach-intelligence-review.md` for the review that drove it and the phases that follow**)**
 **Last updated:** 2026-08-08
 
@@ -251,6 +251,15 @@ What it says is written into the thread as a normal assistant turn (auditable, i
 - **Conversation persistence** — `ai_conversations` / `ai_messages` (0008). Append-only turns; every assistant turn stores its full tool-call record (`tool_calls` JSON), so a transcript is auditable: what the Coach said traces to what it actually read. Reload resumes the latest thread.
 - **Bounded context** — the last 30 turns go to the model; the data itself is *not* stuffed into context — the model re-reads through tools, which is both fresher and cheaper.
 - **Per-turn state (2026-08-08)** — the "Current state" block (`turn-context.ts`) means within-day orientation is free. It is NOT memory: nothing durable survives the 30-turn window yet — `coach_memories` + `remember`/`forget` are the next phase (coach-intelligence-review.md §4 Phase 3).
+- **A thread that knows how old it is (2026-08-14)** — turns in the history window carry a relative day stamp (`[today]` / `[yesterday]` / `[4 days ago]`) at each calendar boundary (`history-window.ts`).
+
+  Owner report: *"Coach also does weird things like recommending that I add stuff to my grocery list from dinner 2 nights ago, it needs to move past things without me telling it when time has past and I am obviously ignoring it."*
+
+  The cause was not a suggestion engine with too wide a window. `buildWireHistory` shipped the last 30 turns as bare `{role, content}` with **no timestamp anywhere on them**. The "Current state" block gave the model today's date, but every prior turn arrived undated — so a thread spanning four days read as one unbroken present, and a dinner discussed on Monday was still live business on Thursday. The Coach was not ignoring the age of the thing; it could not see it. `recentDeclines` did not help either: the owner never *declined* anything at a confirmation gate, they simply did not act, and an ignored prose suggestion leaves no row.
+
+  Stamped **on change only**, plus the first surviving turn — a same-day thread costs one `[today]` (~4 tokens), a week-long one a handful. Relative rather than absolute, because the judgment is about elapsed time and "3 days ago" states it without making the model do arithmetic against another block. Ages are **clamped at zero**: SQLite's `strftime('now')` reads a finer clock than `Date.now()` on Windows, so the newest turn can measure as fractionally in the future.
+
+  The paired prompt rule gives the model the standing instruction and leaves the call to it, per the governing principle at the head of this doc: if it already raised something on a previous day and nothing came of it, let it go, and treat an old event as history rather than as today's business. **No rule table of what is worth suggesting** — the defect was a suggestion engine that could not see its own history, so it was given the facts, not a policy.
 
 **Planned (sequenced):**
 1. **Coach notes** — a `coach_memories` table (or `users.preferences` initially) of durable facts the model asks to remember ("prefers training fasted", "magnesium gives GI trouble"), written via a `remember` tool (confirmation-gated), injected into the system prompt. Small, curated, user-inspectable — memory the user can read and delete. `⚑ MATT`: where should this be visible/editable? (Settings vs Data)
@@ -271,6 +280,26 @@ Enforced in code, not vibes:
 5. **Key hygiene.** Session-only memory store; never persisted, never logged, never rendered back. UI copy says exactly this.
 6. **Bounded agency.** Max 8 model round-trips per turn (runaway-loop guard); `days` windows clamped ≤ 365; input validation ahead of every repository call.
 7. `⚑ MATT`: should *reads* ever be gated too (e.g. a visible "Coach read your labs" trail is enough?), and should some writes (log_note?) graduate to auto-approve once trust is established? Current stance: all writes gated, all reads free but visible.
+
+### What changed is reported by the RECORD, not by the reply (2026-08-14)
+
+Owner report: *"Coach is still frequently thinking that it has done something but not actually calling the tool — i.e. saying that a recipe has been saved when the tool was not called and not actually saved."*
+
+This is the worst failure the app has, because it is silent. The owner learns about it days later, when the recipe is not there, and by then every other claim the Coach has made is in doubt.
+
+**Two causes, both reproduced against the real call site** (`db/coach-fidelity.test.mjs` §2):
+
+1. **The model asserts a completed write and calls no tool.** The turn settles `end_turn` with `toolCalls: []` and outcome `complete`. Until this change the thread rendered it *identically* to a turn that really wrote — the only difference was the absence of a small mono tool chip, which nobody reads.
+2. **The narration fallback.** `settledText` prefers the post-tool answer and falls back to the pre-tool narration when there is none. That fallback is correct and load-bearing, but when the second round-trip returns no text after a **declined** write, the turn settles on the model's own promise — "I'll save that recipe to your book now." — with nothing written.
+
+**The fix is structural, and the important half needs no text analysis.**
+
+- **`CoachToolCall.receipt`** — the line the user approved on the confirmation card, recorded in `coach-service.ts` **on the far side of `tool.execute`**. A declined write returns before it; a throwing one lands in the catch; a read never sets it. *A receipt therefore cannot exist unless a tool ran to completion*, and the model cannot reach that statement by writing a sentence. It rides the existing `tool_calls` JSON, so it needed **no migration**; rows written before it fall back to the tool name.
+- **The thread prints receipts on every writing turn**, not only on a cut-off one as before (`message-bubble.tsx`). This is what makes the absence legible: when a real save always shows a receipt, a save with no receipt is visibly not a save.
+- **`claimsCompletedWrite`** (`src/lib/ai/write-claim.ts`) — the loud half. When a turn lands **zero** writes and the prose nonetheless claims one, the bubble says "Nothing saved" and states it plainly, because an absence alone asks the reader to notice something missing and nobody does. Deliberately conservative: three guards (negation, offer/question, second-person actor) throw a sentence out before any rule is tried, so "You have not logged weight in 11 days" and "Want me to save that?" are silent. It only ever runs on turns that wrote nothing, so a real write can never be mislabelled. Derived on load rather than stored — both inputs are already persisted, so a reloaded thread reaches the same verdict.
+- **One prompt rule**, in the cached prefix: never report a change as done before its tool result arrives, and the app prints a receipt from the tool record.
+
+The prompt rule is the weakest of the four and is stated last on purpose. The receipt is what actually holds, because it is not advice.
 
 ---
 
@@ -397,6 +426,8 @@ Neither `isDueOn` nor the notification path changed; only ranking, labelling and
 - `body_metrics` daily series group by the **UTC** day of `measured_at` while window boundaries are local days — an evening weigh-in near the boundary can land on the adjacent day. Weight thresholds are conservative and the tone is info; the clean fix (store a local `date` alongside, like every other table) is a future migration.
 - A thread that ends in a user turn with no reply (app killed mid-stream) reloads without a retry affordance — typing anything re-engages; a "Coach didn't reply · Retry" pill is a small follow-up.
 - Duplicate-write protection across a retried turn is the audit trail, not dedup — see §5.4.
+- **The phantom-write detector covers whole claims, not partial ones (2026-08-14).** `claimsCompletedWrite` runs only when a turn landed **zero** writes, which is what makes it safe to caption a turn "Nothing saved" — a turn that really wrote is never examined and so can never be mislabelled. The cost of that safety is the mixed case: a turn that genuinely saves the recipe **and** also claims it added the ingredients to the grocery list shows one receipt and no warning. Closing it means reconciling each claim against each tool call, which is a much less certain judgment than "nothing ran at all"; the receipt is the honest partial answer today, since the grocery line simply is not on it.
+- **The tool chips cannot tell two reminder tools apart.** `humanizeToolName` strips a leading `get|list|log|set|complete|dismiss`, so `set_reminder` and `complete_reminder` both render as **"reminder"**, and the verb-stripping is inconsistent besides (`save_recipe` keeps its verb and reads "save recipe"). Cosmetic while the chips are only a transparency trail, but that same string is the receipt fallback for rows written before receipts existed.
 
 **Product decisions for Matt:** every `⚑ MATT` above — ruthlessness rope (§2d), thresholds/targets ownership (§3), accountability cadence (§3), memory visibility (§4), read-gating/write-graduation (§5). Plus: default model choice (currently `claude-opus-5`) and whether per-turn token spend should be surfaced in the UI.
 

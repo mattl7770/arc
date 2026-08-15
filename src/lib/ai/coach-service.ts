@@ -106,7 +106,10 @@ export async function streamCoachReply(
   // in buildWireHistory (src/lib/ai/history-window.ts) — pure, so the same code
   // is headless-tested. It also folds in the rolling summary of turns that have
   // aged out, which the inline version here could not.
-  const messages = buildWireHistory(history, options.priorSummary);
+  // The clock also dates the thread: turns are stamped at each calendar
+  // boundary so the model can see how old the conversation it is reading is
+  // (history-window.ts). Without that every past turn read as "now".
+  const messages = buildWireHistory(history, options.priorSummary, clock());
 
   const result = await runCoachTurn(
     {
@@ -162,6 +165,11 @@ export async function streamCoachReply(
         // begins) throws before the user spends an Approve tap on it.
         const context: CoachToolContext = { now: clock() };
 
+        // The line the user approved, held for the receipt below. Stays
+        // undefined for reads (nothing to receipt) and for any write that never
+        // reached `execute` — which is the entire mechanism: see the return.
+        let approvedSummary: string | undefined;
+
         if (!tool.readOnly) {
           let summary: string;
           try {
@@ -199,15 +207,29 @@ export async function streamCoachReply(
               declined: true,
             };
           }
+          approvedSummary = summary;
         }
 
         try {
           // `await` handles both sync tools (a plain string) and async ones
           // (search_knowledge embeds the query on-device); a rejection lands in
           // the catch below exactly like a synchronous throw.
-          return {
-            content: await tool.execute(db, input as Record<string, unknown>, context),
-          };
+          const content = await tool.execute(db, input as Record<string, unknown>, context);
+          // THE RECEIPT, and the one line in this file that makes a claimed
+          // write and a real one distinguishable downstream.
+          //
+          // It is minted HERE and nowhere else, on the far side of `execute`, so
+          // it exists only when a tool actually ran to completion against the
+          // database. A declined write returned above; a throwing one lands in
+          // the catch below; a read never set `approvedSummary`. The model
+          // cannot reach this statement by writing a sentence, which is exactly
+          // the owner's failure mode ("saying that a recipe has been saved when
+          // the tool was not called"). The thread prints receipts, not prose.
+          //
+          // The text is the card's own summary — the line the user READ and
+          // approved — rather than a re-description of the result, so the record
+          // afterwards says the same thing the consent said.
+          return { content, ...(approvedSummary ? { receipt: approvedSummary } : {}) };
         } catch (error) {
           return { content: errorText(error), isError: true };
         }
