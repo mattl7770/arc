@@ -520,3 +520,154 @@ instants, so a sample from the span's half-day lead-in is a complete, correctly 
 **Backfill is fine here, unlike outbound.** Ingest is reversible — the rows are ARC's own
 database and the user can delete them — so the 90-day first sync applies. The asymmetry with
 §10's no-backfill rule is the asymmetry between "data I can delete" and "data I cannot".
+
+---
+
+## 12. Metric audit — what a Garmin can actually deliver (2026-08-14)
+
+Answering the owner's *"quickly check over all the metrics we are trying to read from a
+wearable — which are not able to be acquired from our Garmin CIRQA + Apple HealthKit setup?
+Do some of them just need a week or two of data before they start transmitting?"*
+
+**The headline is not in the table.** As of this writing the HealthKit native module is **not
+in the app binary** — `@kingstinct/react-native-healthkit` is in `package.json` and `app.json`
+but rides an EAS rebuild that has not happened, so `isHealthKitSupported()` returns false and
+every read is a no-op. Garmin CIRQA is syncing into Apple Health perfectly well; ARC cannot
+see any of it. Nothing below changes until that build ships.
+
+The table's source of truth is **`src/lib/health/coverage.ts`**, not this file — it is what the
+Settings screen renders, and `db/health-coverage.test.mjs` asserts that every read scope has a
+row and every row names a real read scope, so the two cannot drift apart.
+
+### The table
+
+| HealthKit type | What ARC does with it | Garmin to Apple Health | Days before it reads |
+|---|---|---|---|
+| `HeartRateVariabilitySDNN` | Home **Recovery**, today vs 30-day baseline | NEVER | 6 (moot) |
+| `RestingHeartRate` | Corroborates HRV; **becomes Recovery on its own** | Sends | 6 |
+| `ActiveEnergyBurned` | Home **Strain**, yesterday vs baseline | Sends | 7 |
+| `SleepAnalysis` (+ stages) | Home **Sleep**; stages in the ledger | Sends | 1 |
+| `StepCount` | Metrics strip, ledger | Sends | 1 |
+| `HKWorkoutType` | Wearables workout list; Coach reads daily minutes | Sends | 1 |
+| `BasalEnergyBurned` | Ledger only | Unverified | 1 |
+| `OxygenSaturation` | Ledger only | NEVER | — |
+| `RespiratoryRate` | Ledger only | NEVER | — |
+| `VO2Max` | Ledger only | NEVER | — |
+| `BodyTemperature` | Ledger only | Unverified | 1 |
+| `AppleSleepingWristTemperature` | Ledger only | Unverified | 1 |
+| `BodyMass` | Body metrics, weight trend (also published **out**) | Sends | 1 |
+| `BodyFatPercentage` | Body metrics (also published **out**) | Sends, flaky | 1 |
+| `WaistCircumference` | Body metrics (also published **out**) | Unverified, leans no | 1 |
+
+**Never leaves Garmin Connect at all** — Body Battery and Training Readiness / training status.
+Neither has *any* HealthKit type, so this is a platform fact, not a Garmin policy ARC could
+wait out. ARC's Recovery pillar is its own derivation and does not need them.
+
+### The four that will never arrive
+
+**HRV, blood oxygen, respiratory rate and VO2max are not exportable from Garmin Connect.** The
+Apple Health categories exist; Garmin does not offer toggles for them. This is a years-old,
+still-open feature request with Garmin-staff acknowledgement as recently as 2024.
+
+The consequence for Home is specific and worth stating plainly: **`hrvLevel` is the primary
+Recovery derivation and it will never fire on a Garmin-only setup.** Recovery runs permanently
+on the `rhrLevel` fallback (§6), which is the branch designed for exactly this and the reason
+it exists. It is a coarser signal — a delta in bpm against baseline rather than a ratio — and
+the Coach should be told the difference rather than left to assume HRV is merely missing today.
+
+Those four are also the concrete answer to CLAUDE.md §8's *"direct vendor API only where
+HealthKit lacks fidelity"*: **this is where it lacks fidelity.** If Garmin stays the device, a
+direct Garmin Connect integration is the only route to HRV, SpO2, respiratory rate, VO2max,
+Body Battery and Training Readiness. That is a real architecture decision and it is not made
+here.
+
+### "Do some just need a week or two?"
+
+No — nothing needs a fortnight, and the wait is shorter than it looks:
+
+- Anything that is only **displayed** reads from the **first sample**. Sleep, steps, weight,
+  workouts and the ledger metrics show a number the day they arrive.
+- Anything **graded against a baseline** needs `BASELINE_MIN_DAYS` = **5 prior days**, so the
+  verdict appears on the **6th day** of readings. That is Recovery.
+- **Strain** grades *yesterday* against a baseline of the days before it, so from a standing
+  start it is the **7th day**.
+
+Before 2026-08-14 the screens did not say any of this: a pillar with a half-filled baseline
+drew the same blank as a pillar with no data and the same blank as a pillar that could never
+receive data. It now says which of the three it is (`Pillar.note`), and where a baseline is
+genuinely filling it says how many days are left. A correctly-unknown metric that explains
+itself is not a defect; a blank one is.
+
+### Confidence
+
+Garmin's own support article on Apple Health sharing is a JS-rendered page that could not be
+retrieved, so the Sends/Never verdicts rest on Garmin Forums threads (including Garmin-staff
+replies) and specialist coverage. The Unverified rows are genuinely unestablished, not soft
+noes, and each records what was missing. **The cheapest way to close all four is empirical:**
+open Garmin Connect → Settings → Connected Apps → Apple Health and read the live toggle list.
+
+Garmin CIRQA is a real, current product (screen-free band, announced 2026-07-21) and syncs
+through the same Garmin Connect pipeline as every other Garmin device — no source suggests it
+gets expanded HealthKit export, so every verdict above applies to it unchanged.
+
+---
+
+## 13. The wearables workout log — fixed, not removed (2026-08-14, migration 0042)
+
+The owner's report: *"there is a workout log that does not work well. It has lots of
+duplicates. I don't think this is currently even being used anywhere, but we should probably
+just remove this unless you think there is good value to be gained from fixing it."*
+
+**Recommendation: keep it and fix it.** Three reasons.
+
+1. **It is not unused.** Besides the Data › Wearables list, the Coach reads these rows —
+   `src/lib/ai/tools/read-tools.ts` declares `metric_type = 'workout'` as *"Workout minutes
+   (Apple Health)"* with `agg: 'sum'`. Deleting the log blinds the Coach to every session
+   trained outside ARC, which for a wearable owner is most of them.
+2. **The identity was already there.** The standing note that *"no column stores a HealthKit
+   UUID"* is out of date for this table: `workoutRows` has always written the HK sample UUID
+   into `source_raw_id`. What was wrong was the KEY built over it, which is a one-index fix.
+3. **It unblocks the outward direction.** A stable, stored HK UUID is exactly what publishing
+   workouts back to Apple Health would need in order to update or delete what it wrote.
+
+### Why it duplicated — two mechanisms, not one
+
+**(a) The idempotency key was too loose for a workout.** 0001 gave every ingested row
+`UNIQUE (source_device, source_raw_id)`. That composite is right for day-bucket rows, whose
+raw id `hk:<metric>:<date>` is the same string for every device, so the device prefix is what
+keeps two rings' HRV apart. It is wrong for a workout: the HK UUID is *already* globally
+unique, and qualifying it by device does not tighten the key, it **loosens** it.
+
+And the device bucket is not stable. `sourceDeviceFor` buckets on `provenance.bundleId`, and
+`provenanceOf` deliberately yields a **null** bundle id whenever a sample's `sourceRevision`
+arrives in a shape the seam cannot parse — a null bundle falls through to `'other'`. Parse the
+same sample successfully next pass and it buckets to `'garmin'`. Under the composite key those
+are two rows, and every flip adds another.
+
+Migration **0042** keys workouts on the UUID alone (a partial unique index, so day-bucket rows
+are untouched) and the workout upsert rewrites `source_device` in its `DO UPDATE`, so a
+re-bucket now corrects the label in place. The migration deduplicates first — a
+`CREATE UNIQUE INDEX` over a violating table fails, and the runner's transaction would roll
+the whole thing back and strand the device below 42 — keeping the best-sourced row per UUID by
+the same `SOURCE_PRIORITY` order the read side arbitrates with.
+
+**(b) One session, two recorders.** This is the one the UUID key cannot fix, and the one a
+Garmin owner actually sees: a single run recorded by both Garmin Connect and the iPhone is two
+genuinely distinct HealthKit objects with two distinct UUIDs. Both rows are true; listing both
+is not, because the user did not do two runs. `recentWearableWorkouts` was the only wearable
+read in the repository doing a bare `SELECT` with **no source arbitration at all** — every
+other metric goes through `pickDailyMetric` — which is why it was the only one that looked
+duplicated. It now collapses rows sharing more than half of the shorter session's span,
+keeping the `SOURCE_PRIORITY` winner. Sessions that merely abut are not collapsed, and a row
+with no readable time span is kept rather than silently dropped.
+
+### Migration numbering
+
+0042, not the 0039 this branch was briefed to take: 0039 (reports) and 0038 (knowledge) had
+already merged to `main` before the work started, and 0040/0041 are held by branches running in
+parallel. Numbering is forward-only — `pendingMigrations` filters `version > user_version`, so
+a file numbered at or below a device's stamp is skipped silently, with no error and no tables.
+
+⚠️ **Neither fix has been observed working**, because no workout has ever been ingested — the
+HealthKit module is not in the binary (§12). On the owner's device 0042's `DELETE` will affect
+zero rows. It is written for correctness after the pending EAS build.

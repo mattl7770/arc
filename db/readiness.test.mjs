@@ -290,5 +290,172 @@ console.log('7. verdict = worst of Recovery and Sleep');
     : bad('worst-of', JSON.stringify(view.readiness));
 }
 
+console.log('8. the link state — three different reasons a pillar is blank');
+{
+  const db = freshDb();
+  // The state ARC has actually been in since this pipeline was written: the
+  // HealthKit module is not in the binary, so nothing can arrive however well
+  // the vendor app is syncing into Apple Health. Telling the owner to connect
+  // Apple Health here would be advice they can follow and get nothing from.
+  const off = deriveReadiness(db, TODAY, { link: 'unsupported' });
+  off.readiness.detail.includes('cannot be read in this build')
+    ? ok('unsupported → says the module is not in this build')
+    : bad('unsupported detail', off.readiness.detail);
+  off.pillars
+    .filter((p) => p.label !== 'Nutrition')
+    .every((p) => p.note === 'Apple Health is not connected in this build')
+    ? ok('and every wearable pillar carries that reason, not a blank')
+    : bad('unsupported notes', JSON.stringify(off.pillars));
+
+  const disconnected = deriveReadiness(db, TODAY, { link: 'disconnected' });
+  disconnected.readiness.detail.includes('Connect Apple Health')
+    ? ok('disconnected → points at the Settings toggle')
+    : bad('disconnected detail', disconnected.readiness.detail);
+  disconnected.pillars.find((p) => p.label === 'Sleep').note ===
+  'Apple Health sync is switched off'
+    ? ok('a switched-off link reads differently from an absent module')
+    : bad('disconnected note');
+
+  const connected = deriveReadiness(db, TODAY, { link: 'connected' });
+  connected.readiness.detail.includes('Privacy & Security')
+    ? ok('connected but empty → points at the iOS read-permission screen')
+    : bad('connected detail', connected.readiness.detail);
+}
+
+console.log("9. \"how many more days?\" — the answer to the owner's question");
+{
+  // Three prior days of HRV is under the 5-day gate, so Recovery is CORRECTLY
+  // unknown. The defect was never the unknown — it was the screen not saying
+  // how long was left.
+  const db = freshDb();
+  plantBaseline(db, 'hrv', 'ms', 50, 3);
+  const recovery = deriveReadiness(db, TODAY, { link: 'connected' }).pillars.find(
+    (p) => p.label === 'Recovery'
+  );
+  recovery.level === 'unknown' ? ok('3 prior days → still unknown') : bad('gate');
+  recovery.note === '2 more days of HRV or resting heart rate before a baseline'
+    ? ok('and it says exactly how many days are left')
+    : bad('days remaining', recovery.note);
+
+  // One day short reads "1 more day", not "1 more days".
+  const db2 = freshDb();
+  plantBaseline(db2, 'hrv', 'ms', 50, 4);
+  deriveReadiness(db2, TODAY, { link: 'connected' })
+    .pillars.find((p) => p.label === 'Recovery')
+    .note.startsWith('1 more day of')
+    ? ok('singular day is not "1 more days"')
+    : bad('plural');
+
+  // Baseline satisfied but nothing today — a different fact from a short
+  // baseline, and it must not claim days are still needed.
+  const db3 = freshDb();
+  plantBaseline(db3, 'hrv', 'ms', 50, 8);
+  const note3 = deriveReadiness(db3, TODAY, { link: 'connected' }).pillars.find(
+    (p) => p.label === 'Recovery'
+  ).note;
+  note3 === 'no HRV or resting heart rate reading today'
+    ? ok('a full baseline with no reading today says so, not "N more days"')
+    : bad('no-reading note', note3);
+}
+
+console.log('10. nutrition is graded against targets, not against "did you open the app"');
+{
+  const setTargets = (db, kcal, protein) =>
+    db.run(
+      `INSERT INTO nutrition_targets (id, effective_date, kcal, protein_g)
+       VALUES ('t-' || abs(random()), '2026-01-01', ?, ?)`,
+      [kcal, protein]
+    );
+  const logMeal = (db, kcal, protein) =>
+    db.run(
+      `INSERT INTO meals (id, date, name, kcal, protein_g)
+       VALUES ('m-' || abs(random()), ?, 'Meal', ?, ?)`,
+      [TODAY, kcal, protein]
+    );
+  const nutritionOf = (db, hour) =>
+    deriveReadiness(db, TODAY, {
+      link: 'connected',
+      now: new Date(2026, 6, 29, hour, 0, 0),
+    }).pillars.find((p) => p.label === 'Nutrition');
+
+  // The old rule outright: one meal logged scored 'good'. It was a fact about
+  // whether the app had been opened.
+  {
+    const db = freshDb();
+    logMeal(db, 400, 30);
+    const pillar = nutritionOf(db, 12);
+    pillar.level === 'unknown' && pillar.note.includes('no daily targets set')
+      ? ok('one meal and NO targets is unknown, not "good"')
+      : bad('no-targets', JSON.stringify(pillar));
+  }
+
+  // A day at 11am is not a failed day.
+  {
+    const db = freshDb();
+    setTargets(db, 2400, 180);
+    logMeal(db, 500, 35);
+    const pillar = nutritionOf(db, 11);
+    pillar.level === 'unknown' && pillar.note.includes('day in progress')
+      ? ok('mid-morning, well under target → in progress, not "poor"')
+      : bad('in-progress', JSON.stringify(pillar));
+    pillar.note.includes('500 / 2,400 kcal') && pillar.note.includes('35 / 180 g protein')
+      ? ok('and it shows real progress against real denominators')
+      : bad('progress note', pillar.note);
+  }
+
+  // The ceiling IS judgable all day — eaten calories cannot be un-eaten.
+  {
+    const db = freshDb();
+    setTargets(db, 2000, 150);
+    logMeal(db, 2800, 60);
+    const pillar = nutritionOf(db, 11);
+    pillar.level === 'poor' && pillar.note.includes('800 kcal over target')
+      ? ok('40% over target at 11am is already a completed fact')
+      : bad('ceiling', JSON.stringify(pillar));
+  }
+
+  // A protein target already met is also a completed fact.
+  {
+    const db = freshDb();
+    setTargets(db, 2400, 150);
+    logMeal(db, 1200, 160);
+    const pillar = nutritionOf(db, 13);
+    pillar.level === 'optimal' && pillar.note.includes('protein target met')
+      ? ok('protein hit early reads optimal without waiting for the day to end')
+      : bad('protein met', JSON.stringify(pillar));
+  }
+
+  // After the close hour both halves grade, and the WORSE one wins — a hit
+  // protein target must not paper over a large calorie shortfall.
+  {
+    const db = freshDb();
+    setTargets(db, 2400, 180);
+    logMeal(db, 2350, 185);
+    nutritionOf(db, 21).level === 'optimal'
+      ? ok('a closed day on target both ways → optimal')
+      : bad('closed optimal', JSON.stringify(nutritionOf(db, 21)));
+
+    const db2 = freshDb();
+    setTargets(db2, 2400, 180);
+    logMeal(db2, 1200, 185); // protein met, calories 50% short
+    nutritionOf(db2, 21).level === 'poor'
+      ? ok('a closed day half-eaten is poor even with protein met — worst-of wins')
+      : bad('worst-of', JSON.stringify(nutritionOf(db2, 21)));
+  }
+
+  // Nothing logged is not a grade.
+  {
+    const db = freshDb();
+    setTargets(db, 2400, 180);
+    const open = nutritionOf(db, 11);
+    const closed = nutritionOf(db, 22);
+    open.level === 'unknown' &&
+    open.note === 'nothing logged yet' &&
+    closed.note === 'nothing logged today'
+      ? ok('an empty day is unknown, and reads differently once the day has closed')
+      : bad('empty day', JSON.stringify([open, closed]));
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

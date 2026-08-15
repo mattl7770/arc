@@ -39,10 +39,81 @@ export type WearableUpsert = {
 const METRIC_TYPE_SHAPE = /^[a-z0-9_]+$/;
 
 /**
- * Insert-or-update a batch of ingested rows in one transaction. Conflict target
- * is the 0001 partial unique index; the DO UPDATE only fires a real write (and
- * the updated_at trigger) when something actually changed, so a quiet re-sync
- * of an unchanged fortnight doesn't churn every row's updated_at.
+ * The metric whose `source_raw_id` is a GLOBAL identity rather than a per-device
+ * one — a HealthKit workout UUID names one object in the HealthKit store, and
+ * the same UUID under two `source_device` buckets is the same session twice.
+ *
+ * Every other ingested row is keyed `hk:<metric>:<date>`, which is deliberately
+ * per-device: two devices reporting HRV on one day are two readings and the read
+ * side arbitrates between them. A workout has no such reading to arbitrate.
+ */
+const GLOBAL_IDENTITY_METRIC = 'workout';
+
+const UPSERT_COLUMNS = `INSERT INTO wearable_data
+   (id, date, metric_type, value, unit, source_device, source_raw_id,
+    start_time, end_time, metadata)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+/** The shared "did anything actually change?" guard, minus source_device. */
+const CHANGED = `wearable_data.value IS NOT excluded.value
+    OR wearable_data.date IS NOT excluded.date
+    OR wearable_data.unit IS NOT excluded.unit
+    OR wearable_data.start_time IS NOT excluded.start_time
+    OR wearable_data.end_time IS NOT excluded.end_time
+    OR wearable_data.metadata IS NOT excluded.metadata`;
+
+/** Day-bucket rows: identity is (device, `hk:<metric>:<date>`) — the 0001 index. */
+const DAY_BUCKET_UPSERT_SQL = `${UPSERT_COLUMNS}
+ ON CONFLICT (source_device, source_raw_id) WHERE source_raw_id IS NOT NULL
+ DO UPDATE SET
+   date = excluded.date,
+   metric_type = excluded.metric_type,
+   value = excluded.value,
+   unit = excluded.unit,
+   start_time = excluded.start_time,
+   end_time = excluded.end_time,
+   metadata = excluded.metadata
+ WHERE ${CHANGED}`;
+
+/**
+ * Workouts: identity is the HealthKit UUID alone — the 0042 partial index.
+ * `source_device` is in the SET (not just the WHERE) because correcting a
+ * mis-bucketed source is the whole point of keying on the UUID.
+ */
+const WORKOUT_UPSERT_SQL = `${UPSERT_COLUMNS}
+ ON CONFLICT (source_raw_id) WHERE metric_type = 'workout' AND source_raw_id IS NOT NULL
+ DO UPDATE SET
+   date = excluded.date,
+   metric_type = excluded.metric_type,
+   value = excluded.value,
+   unit = excluded.unit,
+   source_device = excluded.source_device,
+   start_time = excluded.start_time,
+   end_time = excluded.end_time,
+   metadata = excluded.metadata
+ WHERE ${CHANGED}
+    OR wearable_data.source_device IS NOT excluded.source_device`;
+
+/**
+ * Insert-or-update a batch of ingested rows in one transaction. The DO UPDATE
+ * only fires a real write (and the updated_at trigger) when something actually
+ * changed, so a quiet re-sync of an unchanged fortnight doesn't churn every
+ * row's updated_at.
+ *
+ * **Two conflict targets, because there are two kinds of identity here** (see
+ * {@link GLOBAL_IDENTITY_METRIC}). Day-bucket rows conflict on the 0001
+ * `(source_device, source_raw_id)` index; workouts conflict on the 0042
+ * `source_raw_id`-alone partial index, and their DO UPDATE additionally
+ * rewrites `source_device`.
+ *
+ * That last detail is the actual duplicate bug, and it is not hypothetical.
+ * `sourceDeviceFor` buckets on `provenance.bundleId`, and `provenanceOf` yields
+ * a null bundle id whenever a sample's `sourceRevision` arrives in a shape the
+ * seam cannot parse — which lands the workout in 'other'. Parse it successfully
+ * on the next sync and the same UUID lands in 'garmin'. Under a
+ * `(source_device, source_raw_id)` key those are two different rows, so one
+ * session appears twice and re-appears every time the bucket flips. Keying on
+ * the UUID alone makes the second pass an UPDATE that corrects the label.
  */
 export function upsertWearableRows(db: Database, rows: WearableUpsert[]): number {
   if (rows.length === 0) return 0;
@@ -60,25 +131,7 @@ export function upsertWearableRows(db: Database, rows: WearableUpsert[]): number
   db.transaction(() => {
     for (const row of rows) {
       db.run(
-        `INSERT INTO wearable_data
-           (id, date, metric_type, value, unit, source_device, source_raw_id,
-            start_time, end_time, metadata)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (source_device, source_raw_id) WHERE source_raw_id IS NOT NULL
-         DO UPDATE SET
-           date = excluded.date,
-           metric_type = excluded.metric_type,
-           value = excluded.value,
-           unit = excluded.unit,
-           start_time = excluded.start_time,
-           end_time = excluded.end_time,
-           metadata = excluded.metadata
-         WHERE wearable_data.value IS NOT excluded.value
-            OR wearable_data.date IS NOT excluded.date
-            OR wearable_data.unit IS NOT excluded.unit
-            OR wearable_data.start_time IS NOT excluded.start_time
-            OR wearable_data.end_time IS NOT excluded.end_time
-            OR wearable_data.metadata IS NOT excluded.metadata`,
+        row.metricType === GLOBAL_IDENTITY_METRIC ? WORKOUT_UPSERT_SQL : DAY_BUCKET_UPSERT_SQL,
         [
           newId(db),
           row.date,
@@ -233,14 +286,84 @@ export type WearableWorkout = {
   kcal: number | null;
 };
 
-/** Recent HealthKit-ingested workouts, newest first. */
+/** A workout row's usable time span, or null when it cannot be reasoned about. */
+function workoutSpan(row: WearableDataRow): { start: number; end: number } | null {
+  if (!row.start_time || !row.end_time) return null;
+  const start = new Date(row.start_time).getTime();
+  const end = new Date(row.end_time).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return { start, end };
+}
+
+/**
+ * Fraction of the SHORTER session that two spans share. Measuring against the
+ * shorter one is deliberate: a watch that records a 62-minute session and a
+ * phone that catches 48 minutes of it are the same workout, and dividing by the
+ * longer span would score that 0.77 against a union-based 0.48 and start
+ * depending on which source happened to be more generous.
+ */
+function overlapFraction(
+  a: { start: number; end: number },
+  b: { start: number; end: number }
+): number {
+  const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
+  if (overlap <= 0) return 0;
+  return overlap / Math.min(a.end - a.start, b.end - b.start);
+}
+
+/** Above this shared fraction, two rows are treated as one real session. */
+const SAME_SESSION_OVERLAP = 0.5;
+
+/**
+ * Recent HealthKit-ingested workouts, newest first, with **same-session
+ * duplicates collapsed**.
+ *
+ * The UUID identity fixed at 0042 stops ONE session becoming two rows across
+ * re-syncs. It cannot help with the other duplicate, which is the one a Garmin
+ * user actually sees: a single run recorded by both Garmin Connect and the
+ * iPhone arrives as two genuinely distinct HealthKit objects with two distinct
+ * UUIDs. Both rows are true; listing both is not, because the user did not do
+ * two runs.
+ *
+ * So the same {@link SOURCE_PRIORITY} arbitration every other metric already
+ * gets is applied here — this list was the only wearable read in the file doing
+ * a bare SELECT with no arbitration at all, which is why it was the only one
+ * that looked duplicated. Rows whose span cannot be read are never collapsed:
+ * an unreasonable row is kept, never silently dropped.
+ */
 export function recentWearableWorkouts(db: Database, limit: number): WearableWorkout[] {
-  const rows = db.all<WearableDataRow>(
+  // Over-fetch, because collapsing happens after the read — a straight
+  // `LIMIT ?` could hand back a page that is entirely one duplicated session.
+  const pool = db.all<WearableDataRow>(
     `SELECT * FROM wearable_data WHERE metric_type = 'workout'
      ORDER BY date DESC, start_time DESC LIMIT ?`,
-    [limit]
+    [Math.max(limit * 4, 40)]
   );
-  return rows.map((row) => {
+
+  const kept: { row: WearableDataRow; span: { start: number; end: number } | null }[] = [];
+  for (const row of pool) {
+    const span = workoutSpan(row);
+    if (span) {
+      const twin = kept.find(
+        (k) => k.span !== null && overlapFraction(k.span, span) >= SAME_SESSION_OVERLAP
+      );
+      if (twin) {
+        // Same session, two recorders: keep the better source, and on a tie the
+        // longer record (a truncated copy tells you less about the session).
+        const incumbent = priorityOf(twin.row.source_device);
+        const challenger = priorityOf(row.source_device);
+        const longer = span.end - span.start > (twin.span!.end - twin.span!.start);
+        if (challenger < incumbent || (challenger === incumbent && longer)) {
+          twin.row = row;
+          twin.span = span;
+        }
+        continue;
+      }
+    }
+    kept.push({ row, span });
+  }
+
+  return kept.slice(0, limit).map(({ row }) => {
     let activity: string | null = null;
     let kcal: number | null = null;
     try {

@@ -65,6 +65,21 @@ export type Readiness = {
 export type Pillar = {
   label: string;
   level: SignalLevel;
+  /**
+   * Why this pillar reads the way it does, when the reason is not self-evident
+   * — almost always why it is `unknown`.
+   *
+   * An absent value must never render as an empty slot the reader has to
+   * interpret (00-design-spec.md §5: empty is authored, never blank). "No
+   * signal yet" and "not connected" are different facts, and "four more days
+   * before a baseline exists" is a third — there the pillar is *correctly*
+   * unknown, and saying how long is left is the difference between a screen
+   * that looks broken and one that is visibly waiting.
+   *
+   * Short enough to sit in a joined line beneath the strip; the cell itself is
+   * four abreast and has no room for a sentence.
+   */
+  note?: string;
 };
 
 export type Metric = {
