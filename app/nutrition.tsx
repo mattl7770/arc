@@ -61,13 +61,15 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  *    plus the target reconcile on one line, and the note still opens the targets
  *    editor. **Guarded** — see the honesty note below; this is the change that
  *    could most easily have shipped a lie.
- * 2. *"Five ways to log, presented as a menu."* → one accent button reading
- *    **Log**, opening src/components/nutrition/log-sheet.tsx. Nothing was
+ * 2. *"Five ways to log, presented as a menu."* → the menu moved behind one
+ *    control opening src/components/nutrition/log-sheet.tsx. Nothing was
  *    deleted; the paths moved one tap in, and gained "Cook a recipe", which
  *    previously required opening the recipe first. Two **capture methods** —
- *    Photo and Describe — sit outlined beneath it (owner, 2026-08-14); they are
- *    shortcuts into a mode of app/meal-estimate.tsx, not doors to a screen the
- *    sheet already reaches, and they take no accent.
+ *    Photo and Describe — joined it on 2026-08-14, outlined beneath the accent.
+ *    **Inverted 2026-08-15** after the owner used it: the two capture methods
+ *    take the accent and the menu is demoted to an outlined **Other ways to
+ *    log** beneath them. See the reasoning at the buttons themselves — in
+ *    particular why two pine buttons do not spend the accent budget twice.
  * 3. *"The most consequential setup action is the quietest thing on the
  *    screen."* → while `targets` is null, **Set daily targets** is a full-width
  *    control under the grid. It is outlined rather than pine (the accent stays
@@ -109,7 +111,11 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  *   Kitchen      → **ruled plate**: two destinations with live state.
  *   Over time    → **ruled plate**: two readings and a drill-down.
  *
- * **Accent budget: one.** The Log button is it, in every state.
+ * **Accent budget: one — one ACTION, drawn as the two ways of taking it.**
+ * `Photo` and `Describe` are the screen's only accent in every state; `Set
+ * daily targets` and `Other ways to log` are outlined and stay outlined. The
+ * full argument for why two pine buttons is one claim and not two is at the
+ * buttons.
  */
 
 /** The Today grid's three counted-down macros. Fiber is deliberately absent —
@@ -517,50 +523,87 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
         </Block>
       </View>
 
-      {/* The one action, the whole word. */}
+      {/* THE CAPTURE PAIR — the accent, and the menu beneath it.
+          Inverted at the owner's request, 2026-08-15: *"lets swap the log
+          button and the photo and describe log buttons, swapping the
+          colors/style too, and then rename the log button to 'Other ways to
+          log'"*. Photo and Describe were added outlined under `Log` on
+          2026-08-14; one day of real use put the hierarchy the other way up,
+          which is the right answer — a menu of six methods is not the next
+          action, it is the fallback for the four you rarely reach for. */}
       <View className="mt-7">
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Log a meal"
-          onPress={() => setLogOpen(true)}
-          className="min-h-[52px] items-center justify-center rounded-btn bg-pine active:opacity-80">
-          <Text className="font-label text-[16px] font-semibold text-pine-on">Log</Text>
-        </Pressable>
+        {/* Two pine buttons, deliberately — not one accent band split in two,
+            and not one of them promoted over the other.
 
-        {/* The two fastest capture methods, straight through (owner,
-            2026-08-14). Not navigation — that is the distinction that earns
-            them their place. The Log-tab grid lost two tiles for being doors
-            into sub-apps the tab bar already reached; these two land you INSIDE
-            a capture, in a specific mode, which the sheet cannot do: its
-            "Describe or photograph" row opens the same screen on its field, and
-            getting a viewfinder from there is three taps.
-            Outlined, never pine. The accent above is the screen's one accent in
-            every state, and it must stay the only thing on this page that
-            claims to be the next action. Same treatment as the Take-a-photo /
-            Choose-a-photo pair inside app/meal-estimate.tsx, because these are
-            the same two capture methods one level up. */}
-        <View className="mt-2 flex-row gap-2">
+            The rule this had to be checked against is the accent budget
+            (00-design-spec.md §2): the accent marks *one primary action per
+            screen*, and the docblock above has claimed "Accent budget: one"
+            since the tab was re-cut. Two pine slabs look, at a glance, like
+            spending it twice.
+
+            They do not, and the reason is what the budget is a ceiling ON. It
+            counts CLAIMS to being the next action, not accent-coloured
+            rectangles — the same section spends the accent on every one of the
+            user's chat bubbles, because they are one voice, not N actions.
+            Photo and Describe are one act, `capture what I just ate`, offered
+            in the two modalities it has; you take one or the other and never
+            both, and neither is a step towards the other. A reader landing on
+            this screen is never asked *which of these two is the thing to do* —
+            only *which way do I want to say it*. That is not the confusion the
+            rule exists to prevent.
+
+            A single accent band ruled into two halves was the other candidate,
+            and it is the more literal reading of "one". It was rejected on
+            craft: a filled track divided by a hairline is what iOS draws for a
+            SEGMENTED CONTROL, so the one shape that most cleanly satisfies the
+            letter of the rule is also the one most likely to be read as "pick a
+            mode" rather than "tap to start". Two objects with sheet between
+            them cannot be misread that way. The budget survives either way; the
+            misreading only survives one.
+
+            What DOES keep the budget honest is that nothing else on this screen
+            takes pine in any state — `Set daily targets` above and `Other ways
+            to log` below are both outlined, and both stay outlined.
+
+            15px sentence case, not 13px uppercase: these are full-weight
+            primary actions now, and §3 sets that weight by size and casing
+            rather than by face. Still the label voice, as every button is. */}
+        <View className="flex-row gap-2">
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Photograph a meal"
             onPress={() => router.push({ pathname: '/meal-estimate', params: { start: 'camera' } })}
-            className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
-            <Ionicons name="camera-outline" size={17} color={palette.inkSecondary} />
-            <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
-              Photo
-            </Text>
+            className="min-h-[52px] flex-1 flex-row items-center justify-center gap-2 rounded-btn bg-pine px-3 active:opacity-80">
+            <Ionicons name="camera-outline" size={18} color={palette.pineOn} />
+            <Text className="font-label text-[15px] font-semibold text-pine-on">Photo</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Describe a meal in words"
             onPress={() => router.push('/meal-estimate')}
-            className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
-            <Ionicons name="sparkles-outline" size={17} color={palette.inkSecondary} />
-            <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
-              Describe
-            </Text>
+            className="min-h-[52px] flex-1 flex-row items-center justify-center gap-2 rounded-btn bg-pine px-3 active:opacity-80">
+            <Ionicons name="sparkles-outline" size={18} color={palette.pineOn} />
+            <Text className="font-label text-[15px] font-semibold text-pine-on">Describe</Text>
           </Pressable>
         </View>
+
+        {/* The chooser, demoted and renamed. It still opens
+            src/components/nutrition/log-sheet.tsx unchanged and still reaches
+            all six methods — nothing was deleted, the two fastest were promoted
+            past it. Outlined, in the same treatment `Set daily targets` wears
+            one section up, so the two secondary controls on this screen agree.
+            The ellipsis is the mark for "there are more of these", which is
+            exactly what the sheet is. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Other ways to log a meal"
+          onPress={() => setLogOpen(true)}
+          className="mt-2 min-h-[46px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+          <Ionicons name="ellipsis-horizontal" size={17} color={palette.inkSecondary} />
+          <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink">
+            Other ways to log
+          </Text>
+        </Pressable>
       </View>
 
       {/* EATEN TODAY — the day's real record, in eating order. The plate goes

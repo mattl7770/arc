@@ -26,6 +26,7 @@ import {
   logMeal,
   logMealWithItems,
   setNutritionTargets,
+  updateMealName,
 } from '../src/lib/db/repositories/nutrition.ts';
 import {
   createFolder,
@@ -356,7 +357,12 @@ const db = getDb();
     expect('nutrition hub (first run)', html, [
       'Nothing logged yet today, and no targets set',
       'Set daily targets', // promoted to a full-width control while it is needed
-      'Log', // the one accent, in every state
+      // The capture pair is the accent in every state, and the chooser sits
+      // under it outlined — the owner's words, verbatim (2026-08-15). Asserted
+      // by NAME so a sweep that quietly restores "Log" fails the suite.
+      'Other ways to log',
+      'Photo',
+      'Describe',
       'Kitchen',
       'Recipe book',
       'Grocery list',
@@ -446,21 +452,49 @@ const db = getDb();
     const tabRoot = render('nutrition hub (tab root)', NutritionScreen, {}, { asTab: true });
     expect('nutrition hub (tab root)', tabRoot, [
       'Nutrition',
-      // The two capture shortcuts under Log (owner, 2026-08-14). They stand in
-      // every state of the tab, so they are asserted on the tab render.
+      // The two capture shortcuts (owner, 2026-08-14), promoted above the
+      // chooser and given the accent on 2026-08-15. They stand in every state
+      // of the tab, so they are asserted on the tab render.
       'Photograph a meal',
       'Describe a meal in words',
+      'Other ways to log a meal', // the renamed chooser's spoken label
     ]);
+    // The old label is GONE. "Log a meal" was the accent button's spoken label
+    // and `Log` its visible word; the owner renamed it by name, so a silent
+    // revert has to fail here rather than on the device.
+    refute('nutrition hub (tab root)', tabRoot, ['Log a meal', '>Log<']);
     const pushed = render('nutrition hub (pushed)', NutritionScreen);
     expect('nutrition hub (pushed)', pushed, ['Nutrition']);
   }
 
   console.log('7. Edited shipped screens still render');
-  expect(
-    'meal-detail (+ Save as recipe)',
-    render('meal-detail', MealDetailScreen, { id: mealId }),
-    ['Render lunch', 'Save as template', 'Save as recipe']
-  );
+  {
+    const detail = render('meal-detail', MealDetailScreen, { id: mealId });
+    expect('meal-detail (+ Save as recipe)', detail, [
+      'Render lunch',
+      'Save as template',
+      'Save as recipe',
+      // The rename affordance (owner, 2026-08-15) sits in StackHeader's new
+      // trailing slot, on the title it changes. Asserted by name — the owner
+      // asked for this control, so a sweep that removes it fails here.
+      'Rename',
+      'Rename this meal',
+    ]);
+    // The editor is CLOSED on arrival: a rename is a deliberate act, and a
+    // field sitting open under the title would look like the name is unsaved.
+    refute('meal-detail', detail, ['Meal name', 'Stop renaming this meal']);
+
+    // And the rename really writes — through the same repository call the
+    // screen's Save uses, so the assertion covers the write and not a mock.
+    updateMealName(db, mealId, 'Render lunch, corrected');
+    const renamed = render('meal-detail (renamed)', MealDetailScreen, { id: mealId });
+    expect('meal-detail (renamed)', renamed, [
+      'Render lunch, corrected',
+      'Render chicken', // the items are untouched by a rename
+      '248', // ...and so are the totals derived from them (247.5 kcal, rounded)
+    ]);
+    updateMealName(db, mealId, 'Render lunch');
+  }
 
   console.log('8. Check-off state renders');
   const milk = db.get(`SELECT id FROM grocery_items WHERE name = 'Milk'`);

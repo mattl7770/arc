@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
+import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { Divider } from '@/components/ui/block';
@@ -42,8 +43,33 @@ import { palette } from '@/constants/theme';
  * reachable from two places has no single true parent — guessing one puts a
  * confident lie on the most-used control on the sheet. So a screen opts in only
  * when it knows, and the screens that do not stay exactly as they were.
+ *
+ * ## `action` — for a screen whose title IS an editable value
+ *
+ * Added 2026-08-15 for the meal rename (app/meal-detail.tsx). That screen's
+ * standing rule is *the control sits on the value it changes* — which is why
+ * the time control lives on the date/time line rather than in the Actions plate
+ * — and a meal's name is not on any line of its own: it **is** the header
+ * title. Without a slot here the rename would have had to sit on the date/time
+ * line beside `Change`, where two trailing label-voice controls give the reader
+ * no way to tell which one changes what.
+ *
+ * Optional and additive: every existing call site renders byte-identically. It
+ * takes a node rather than a label + handler because the affordance's wording
+ * is the screen's business (`Rename` toggling to `Cancel`, here), and this
+ * component has no opinion about it. Keep it to ONE control in the label voice
+ * — a header is not a toolbar, and the accent never comes here.
  */
-export function StackHeader({ title, parent }: { title: string; parent?: string }) {
+export function StackHeader({
+  title,
+  parent,
+  action,
+}: {
+  title: string;
+  parent?: string;
+  /** An optional trailing control on the title line — see the docblock. */
+  action?: ReactNode;
+}) {
   const router = useRouter();
   return (
     <View>
@@ -72,6 +98,10 @@ export function StackHeader({ title, parent }: { title: string; parent?: string 
           ) : null}
         </Pressable>
         <Text className="flex-1 font-serif text-lg font-semibold text-ink">{title}</Text>
+        {/* The title keeps `flex-1`, so a long one wraps beside the control
+            rather than pushing it off the gutter; RN leaves `flexShrink` at 0,
+            so the control itself keeps its width. */}
+        {action}
       </View>
       {/* The rule that closes the header band. Drawn, not a `border-b`: that is
           the same four-sided trap as `border-t` (see Divider), and on the
