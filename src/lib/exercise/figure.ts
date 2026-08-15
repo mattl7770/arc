@@ -20,20 +20,46 @@
  * trap diamond, filled with one hue at varying opacity. Rejected as well:
  * *"Muscle freshness still looks a bit wack… a bunch of odd shaped boxes."*
  *
- * **2026-08-14, this file.** The rasteriser was never the problem — it draws
- * whatever shape it is handed, and what it was being handed for the BODY was
- * nineteen axis-aligned rounded rectangles: a rectangular torso over a narrower
+ * **2026-08-14 (a).** The rasteriser was never the problem — it draws whatever
+ * shape it is handed, and what it was being handed for the BODY was nineteen
+ * axis-aligned rounded rectangles: a rectangular torso over a narrower
  * rectangular waist over a wider rectangular pelvis, with rectangular limbs.
  * That reads as boxes however smooth the muscles drawn on it are, and three
  * rounds went into smoothing the wrong layer.
  *
  * So the SILHOUETTE was rebuilt as polygons — one continuous contour each for
  * the torso, the two arms and the two legs, with a {@link Blob} wherever the
- * outline turns shallow ({@link FIGURE_BODY}) — and the muscles re-fitted onto
- * it. The muscle bar height dropped from 4.4pt to {@link BAR_POINTS}, the
- * deltoid gained its third head, and the ramp changed from green-fading-to-pale
- * to green-turning-to-grey ({@link freshnessFill}), which is the owner's other
- * ask from the same round.
+ * outline turns shallow ({@link FIGURE_BODY}). That part worked and is
+ * untouched below. The ramp changed with it, from green-fading-to-pale to
+ * green-turning-to-grey ({@link freshnessFill}).
+ *
+ * **2026-08-14 (b), this round.** The body read as a person and the muscles
+ * still read as ARMOUR PLATES STUCK TO IT. Every muscle was an isolated rounded
+ * blob with a wide halo of grey ground around it: the torso mostly bare with a
+ * few ovals on it, the glutes two circles, the abs a stack of tic-tacs, the
+ * calves lozenges in an empty shin.
+ *
+ * The fix is a different relationship between the two layers, not better
+ * shapes. **On an anatomy plate the muscles TILE the body** — they fill it,
+ * share edges with their neighbours, and are separated by a hairline; the
+ * ground shows only at joints, at the midline, and as that hairline. So every
+ * region here was grown to meet its neighbours at ~1.2–1.4 units, and to meet
+ * the SILHOUETTE at ~0.5–1.0 — which is inside {@link MUSCLE_OUTLINE}, so the
+ * muscle's own ink merges with the body's contour and no rim of ground survives
+ * at the edge. That single change is most of what stops the sticker look.
+ *
+ * Shapes followed: the pec became a fan with a clavicular slope and a lateral
+ * border down the deltopectoral groove; the deltoid reaches over the CROWN of
+ * the shoulder (a bare band arced across both shoulders before, and it was the
+ * loudest sticker cue in the first preview of this round); the lat is a wing
+ * from the armpit to the lower spine; the glutes and the erectors stopped being
+ * a circle and a capsule; the quads and hamstrings became two masses of
+ * different lengths whose groove OPENS toward the knee, because two equal
+ * masses either side of a dead-straight parallel groove read as sticks.
+ *
+ * db/exercise-ai.test.mjs now asserts the tiling directly — per-band coverage
+ * floors over the rasterised body ground — because `coveredByBody` alone is
+ * satisfied by pills and passed all three rejected rounds.
  *
  * **The check that caught what reasoning could not, in this round and the
  * last, is `db/figure-preview.mjs`** — it renders this geometry to a PNG
@@ -70,10 +96,19 @@
  * outline is an inflated copy — see below), so the split is also the cost
  * control, and it is what pays for the body being polygons at all: every dome
  * in the drawing — skull, the two shoulder caps, biceps and triceps, the
- * lateral deltoid heads, glutes, the inner calf bellies, hands, feet — is a
- * blob. {@link figureViewCount} reports the real number and
- * db/exercise-ai.test.mjs asserts a ceiling of 900 against it, because this
- * drawing renders inside two scrolling screens. It is 894 at 128pt today.
+ * forearms, the ab segments, the medial calf bellies, hands, feet — is a blob.
+ * {@link figureViewCount} reports the real number and db/exercise-ai.test.mjs
+ * asserts the ceiling against it, because this drawing renders inside two
+ * scrolling screens. **680 views at 72pt, 1,062 at 118pt, 1,168 at 128pt,
+ * against a ceiling of 1,200** — raised from 900 to pay for the tiling, since
+ * growing a region is bars.
+ *
+ * Two shapes were DEMOTED to blobs to afford it, and both are honest trades
+ * rather than concessions: the forearm (a gentle taper the arm's own silhouette
+ * carries) and the medial calf belly (a rounded mass, which is what a capsule
+ * draws). The erector columns went the other way, capsule → poly, because a
+ * 4×32 capsule is a stick and the erector's whole shape is its lumbar
+ * thickening.
  *
  * ## Bar count is adaptive, and that is not a nicety
  *
@@ -509,91 +544,206 @@ const single = (muscle: Muscle, side: FigureSide, shape: Shape): FigureMuscleSha
  * Every muscle's shape, on the view it is visible from.
  *
  *          FRONT                              BACK
- *   front delts (shoulder caps)        traps (diamond yoke)
- *   side delts (arm caps)              rear delts (arm caps)
- *   pectoral fans                      upper back (rhomboid plates)
- *   six-pack grid                      lat wings + erector columns
- *   bicep spindles · forearm cones     tricep spindles · forearm cones
- *   quads (lateralis + medialis)       glutes · hamstring strips
- *   calf bellies                       calf bellies
+ *   deltoid cap: front + side head     traps (yoke, neck to mid-back)
+ *   pectoral fans                      deltoid cap: rear + side head
+ *   rectus grid + oblique flanks       scapular plates · lat wings
+ *   bicep spindles · forearms          erector columns · triceps · forearms
+ *   quads (lateralis | rectus+VM)      glutes · hamstrings (outer | inner)
+ *   gastrocnemius bellies              gastrocnemius bellies
  *
- * The deltoid heads are split by PLACE rather than by stacking three slivers on
- * one 16pt shoulder: front delts cap the torso's shoulder corners, side and rear
- * delts cap the upper arms on their respective views. Anatomically defensible,
- * and the armpit gap keeps the two apart on the page.
+ * ## The deltoid is split down the cap, and the two views differ
  *
- * No two shapes on a side overlap, and every shape is fully inside the body
- * ground — both asserted in db/exercise-ai.test.mjs, so nudging a body block
- * without nudging the muscles that ride on it fails the suite instead of
- * shipping a muscle floating beside the figure.
+ * The three heads are split by PLACE rather than by stacking slivers on one
+ * 16pt shoulder. The LATERAL head is the outer lobe of the cap and the one head
+ * visible from both views, so it is the same shape on each. The anterior and
+ * posterior heads share its divide — a straight line from (31.8, 39.6) to
+ * (28.0, 63.5), the deltoid's own longitudinal groove, with each head offset
+ * 0.6 off it — but they are NOT mirrors of each other: the anterior head
+ * reaches medially onto the clavicle, while the posterior head starts at the
+ * spine of the scapula, much further out, because on the back view the upper
+ * TRAPEZIUS owns the top of the shoulder all the way to the acromion. Giving
+ * the two heads one shape put the trap inside the delt, and the overlap
+ * assertion caught it.
+ *
+ * ## What the suite holds
+ *
+ * No two DIFFERENT muscles overlap on a side; every shape is fully inside the
+ * body ground; and the muscles COVER that ground to a floor per band. The first
+ * two stop a muscle floating beside the figure when a body block moves. The
+ * third is the one this round added, and it is the one that would have caught
+ * three of the four rejections: sixteen pills in the middle of a body satisfy
+ * containment perfectly.
  */
 export const FIGURE_MUSCLES: FigureMuscleShape[] = [
   // --- FRONT ---------------------------------------------------------------
-  // Pectoral fans: broad at the sternum, sweeping out and down to the armpit.
-  // The upper-outer corner runs UNDER the deltoid rather than butting against
-  // it, so the shoulder laps over the chest the way it does on a body.
+  // Pectoral fan: the sternal border is a straight run down the midline, the
+  // superior border follows the clavicle out to the deltopectoral groove, the
+  // lateral border runs DOWN that groove to the armpit, and the inferior border
+  // sweeps back in to the costal margin — so the whole shape is a fan whose
+  // lowest point is at the sternum, not at the armpit.
   ...pair(
     'chest',
     'front',
-    poly([48.4, 51.6], [41.5, 52.8], [36.4, 55.6], [33.6, 61], [34.6, 68], [40.4, 72.4], [48.4, 71])
+    poly(
+      [48.9, 47.6],
+      [44.6, 45.4],
+      [40.6, 44.2],
+      [39.2, 48],
+      [37.6, 53],
+      [35.6, 58.5],
+      [34.6, 63],
+      [34.8, 67.6],
+      [38.4, 71.4],
+      [43.4, 73.6],
+      [48.9, 74.6]
+    )
   ),
-  // Side delts: the lateral head — the outer crown of the same cap, and the one
-  // head you see from BOTH views. A capsule is the shape, so the third deltoid
-  // costs four views instead of the fifty-six a polygon pair would have.
-  ...pair('side_delts', 'front', blob(23.6, 42.5, 6.2, 15, [3.1, 3.1, 3.1, 3.1])),
-  // Front delts: the front face of the shoulder cap, a rounded wedge that runs
-  // from the clavicle out over the joint and down. Declared BEFORE the pec and
-  // drawn after it, which is the fix for the junction the previous round
-  // flagged — see the overlap note in the header.
+  // The deltoid, split down the middle of the cap into its lateral head (here)
+  // and its anterior/posterior head (below). The DIVIDE is a straight line from
+  // (31.8, 39.6) to (28.0, 65) and both heads are offset 0.6 off it, which is
+  // the deltoid's own longitudinal groove; each head then fans from the crown to
+  // the deltoid tuberosity, and the lateral one takes the silhouette's outer
+  // edge as its own outer border. Formerly a 6×15 capsule floating in the middle
+  // of the shoulder with ground all round it.
+  ...pair(
+    'side_delts',
+    'front',
+    poly(
+      [33.0, 39.6],
+      [30.0, 38.8],
+      [27.0, 39.6],
+      [25.0, 41.2],
+      [23.6, 44],
+      [23.1, 49],
+      [22.9, 55],
+      [23.8, 60],
+      [25.4, 64.8],
+      [28.2, 64.6],
+      [28.3, 62],
+      [29.6, 56],
+      [30.9, 50],
+      [32.2, 44]
+    )
+  ),
+  // Front delts: the anterior head, from the lateral third of the clavicle over
+  // the crown and down to the same tuberosity. Its medial border IS the
+  // deltopectoral groove — the pec's lateral border runs 1.6 off it.
   ...pair(
     'front_delts',
     'front',
-    poly([38.4, 45.5], [36.2, 41.2], [32.6, 38.9], [30.6, 41.2], [30.4, 50], [31.2, 57.2], [34.8, 54.4], [37.6, 49.5])
+    poly(
+      [39.2, 45.2],
+      [38.4, 42.0],
+      [36.2, 39.6],
+      [34.2, 39.2],
+      [33.3, 44],
+      [32.0, 50],
+      [30.8, 56],
+      [29.7, 62],
+      [31.4, 64.6],
+      [34.0, 58],
+      [36.2, 51],
+      [37.8, 47.5]
+    )
   ),
-  // The rectus sheet as a segmented grid — four rows either side of a 1.6-unit
-  // linea alba, the lowest pair longer. Blobs: an ab segment IS a rounded rect,
-  // and eight of them cost eight nodes where eight polys would cost eighty.
-  ...pair('abs', 'front', blob(41.2, 74, 8, 7.4, [2, 2, 2, 2])),
-  ...pair('abs', 'front', blob(41.2, 82.4, 8, 7.4, [2, 2, 2, 2])),
-  ...pair('abs', 'front', blob(41.2, 90.8, 8, 7.4, [2, 2, 2, 2])),
-  ...pair('abs', 'front', blob(41.2, 99.2, 8, 9.4, [2, 2, 4, 4])),
-  // ...and the obliques down the flanks, which are the same muscle in this
-  // taxonomy. Without them the waist reads as bare ground on a body whose every
-  // other panel is filled, which is most of what made the first draft look like
-  // an action figure rather than an anatomy plate.
+  // The rectus sheet: FIVE rows either side of a 1.7-unit linea alba, running
+  // from the costal margin to the pubis rather than stopping at the navel and
+  // leaving the lower belly bare. Blobs — an ab segment IS a rounded rect, and
+  // ten of them cost ten nodes where ten polys would cost a hundred and seventy.
+  ...pair('abs', 'front', blob(40.6, 77.0, 8.7, 9.0, [1.7, 1.7, 1.7, 1.7])),
+  ...pair('abs', 'front', blob(40.6, 87.2, 8.7, 9.0, [1.7, 1.7, 1.7, 1.7])),
+  ...pair('abs', 'front', blob(40.6, 97.4, 8.7, 9.0, [1.7, 1.7, 1.7, 1.7])),
+  ...pair('abs', 'front', blob(40.6, 107.6, 8.7, 11.4, [1.7, 1.7, 3.6, 3.6])),
+  // ...and the external obliques down the flanks, the same muscle in this
+  // taxonomy. They now run the full height of the abdomen and take the
+  // silhouette's flank as their outer border — through the waist's pinch at
+  // y 94 and out again over the iliac crest — so nothing of the trunk between
+  // the ribs and the pelvis is bare ground.
   ...pair(
     'abs',
     'front',
-    poly([40.2, 74.6], [40.0, 88], [40.4, 100], [38.4, 103.5], [36.2, 96], [35.8, 84], [36.4, 75.4])
+    poly(
+      [39.4, 74.6],
+      [39.2, 88],
+      [39.3, 100],
+      [39.4, 110],
+      [39.2, 121.5],
+      [36.4, 117],
+      [34.4, 108],
+      [36.5, 98],
+      [36.4, 86],
+      [35.2, 78],
+      [36.6, 72.0]
+    )
   ),
-  // Bicep spindles — tapered, because the arm they sit on tapers.
-  ...pair('biceps', 'front', blob(22.2, 59.5, 10.8, 21, [5.4, 5.4, 5.2, 5.2])),
-  // Forearms: the brachioradialis belly swelling below the elbow, then the wrist.
-  ...pair(
-    'forearms',
-    'front',
-    poly([30.2, 86], [29.4, 94], [28.6, 104], [27.4, 114], [22.6, 114], [21.8, 104], [21.2, 94], [22.0, 86])
-  ),
-  // Quads, each leg in two masses so the vastus lateralis/medialis split shows:
-  // the long outer sweep, and the teardrop that sits above the inner knee.
+  // Bicep spindles, filling the upper arm from the deltoid insertion to the
+  // elbow crease. A capsule IS a spindle, so this is one view rather than seven.
+  ...pair('biceps', 'front', blob(21.4, 68.0, 9.3, 22, [4.65, 4.65, 4.65, 4.65])),
+  // Forearms: the brachioradialis belly below the elbow down to the wrist. A
+  // capsule, and that is a BUDGET decision rather than a shape one — contoured
+  // forearms are four polys across the two views and 56 of the 1,200 views,
+  // which the erector columns and the deltoid crowns both wanted more. The
+  // forearm's taper is gentle enough that the arm's own silhouette carries it.
+  ...pair('forearms', 'front', blob(21.5, 92.4, 7.1, 18.0, [3.55, 3.55, 3.55, 3.55])),
+  // Quads as TWO longitudinal masses rather than one sweep and a sliver: the
+  // vastus lateralis taking the outer half of the thigh from the hip to the
+  // patella, and the rectus femoris + vastus medialis taking the inner half and
+  // bulging low above the knee. Together they cover the thigh edge to edge with
+  // the intermuscular groove down the middle.
   ...pair(
     'quads',
     'front',
-    poly([41.4, 130], [43.4, 142], [43.4, 158], [41.2, 172], [35.2, 172], [32.4, 156], [31.4, 141], [33.2, 129.5])
+    poly(
+      [38.6, 129.0],
+      [39.0, 142],
+      [39.2, 155],
+      [38.6, 165],
+      [36.8, 173.5],
+      [33.5, 168],
+      [31.6, 158],
+      [30.9, 146],
+      [31.0, 136],
+      [32.8, 129.5],
+      [35.6, 127.2]
+    )
   ),
   ...pair(
     'quads',
     'front',
-    poly([46.2, 146], [47.0, 156], [46.2, 168], [44.0, 176], [42.4, 168], [43.4, 156], [44.6, 147])
+    poly(
+      [46.4, 128.0],
+      [46.9, 140],
+      [46.6, 152],
+      [46.2, 163],
+      [45.0, 173],
+      [42.8, 179],
+      [41.0, 172],
+      [40.4, 160],
+      [40.2, 146],
+      [40.8, 134],
+      [43.2, 127.8]
+    )
   ),
-  // Calves: twin bellies, the outer one longer and lower — which is what a
-  // gastrocnemius looks like, and what a single box never could.
+  // Calves: the two gastrocnemius bellies, the lateral one (a poly, because it
+  // tapers into the achilles) and the medial one lower and fuller (a capsule).
+  // Both now run the width of the lower leg instead of sitting as lozenges in
+  // the middle of it.
   ...pair(
     'calves',
     'front',
-    poly([40.2, 181.5], [41.2, 190], [40.6, 200], [38.4, 208], [35.7, 200], [34.0, 190], [35.4, 182.5])
+    poly(
+      [39.5, 183.5],
+      [39.8, 192],
+      [39.7, 201],
+      [39.6, 209],
+      [38.6, 214],
+      [37.0, 208],
+      [35.25, 197],
+      [34.3, 190.5],
+      [34.8, 184.5]
+    )
   ),
-  ...pair('calves', 'front', blob(41.2, 182.5, 4.4, 20, [2.2, 2.2, 2.2, 2.2])),
+  ...pair('calves', 'front', blob(40.9, 185, 4.0, 24, [2.0, 2.0, 2.0, 2.0])),
 
   // --- BACK ----------------------------------------------------------------
   // Traps: the diamond yoke across the top of the back. Symmetric about the
@@ -601,53 +751,194 @@ export const FIGURE_MUSCLES: FigureMuscleShape[] = [
   ...single(
     'traps',
     'back',
-    poly([50, 37.2], [56.8, 39], [60.4, 44], [61, 52], [56.4, 60], [50, 62.8], [43.6, 60], [39, 52], [39.6, 44], [43.2, 39])
+    poly(
+      [50, 34.4],
+      [55.6, 36.6],
+      [59.6, 39.8],
+      [63.0, 43.6],
+      [63.8, 48.4],
+      [61.2, 53.0],
+      [57.4, 57.4],
+      [55.0, 64],
+      [53.2, 70],
+      [50.0, 76],
+      [46.8, 70],
+      [45.0, 64],
+      [42.6, 57.4],
+      [38.8, 53.0],
+      [36.2, 48.4],
+      [37.0, 43.6],
+      [40.4, 39.8],
+      [44.4, 36.6]
+    )
   ),
-  // Upper back: the rhomboid plates between the shoulder blades.
+  // Upper back: the scapular plates, filling the whole span between the trap's
+  // lateral border and the deltoid, from the spine of the scapula down to the
+  // lat's upper border. Formerly two rounded plates with the flank bare on
+  // either side of them.
   ...pair(
     'upper_back',
     'back',
-    poly([49, 64.5], [41.5, 65.5], [36.4, 69], [35.4, 75.5], [38.6, 80.5], [45, 81], [49, 79])
+    poly(
+      [38.4, 56.2],
+      [41.2, 58.2],
+      [43.6, 64],
+      [45.4, 71],
+      [46.6, 76],
+      [43.4, 80],
+      [38.2, 74],
+      [35.2, 68],
+      [34.6, 62],
+      [35.8, 58]
+    )
   ),
-  ...pair('side_delts', 'back', blob(23.6, 42.5, 6.2, 15, [3.1, 3.1, 3.1, 3.1])),
-  // Rear delts: the back face of the same shoulder cap the front delts sit on.
+  ...pair(
+    'side_delts',
+    'back',
+    poly(
+      [33.0, 39.6],
+      [30.0, 38.8],
+      [27.0, 39.6],
+      [25.0, 41.2],
+      [23.6, 44],
+      [23.1, 49],
+      [22.9, 55],
+      [23.8, 60],
+      [25.4, 64.8],
+      [28.2, 64.6],
+      [28.3, 62],
+      [29.6, 56],
+      [30.9, 50],
+      [32.2, 44]
+    )
+  ),
+  // Rear delts: the posterior head of the same cap, and NOT a mirror of the
+  // anterior one. The anterior head reaches medially onto the clavicle; the
+  // posterior head starts at the spine of the scapula, which is much further
+  // out — and the difference is load-bearing, because on this view the upper
+  // TRAPEZIUS owns the top of the shoulder all the way to the acromion. Giving
+  // the two heads one shape put the trap inside the delt.
   ...pair(
     'rear_delts',
     'back',
-    poly([38.4, 45.5], [36.2, 41.2], [32.6, 38.9], [30.6, 41.2], [30.4, 50], [31.2, 57.2], [34.8, 54.4], [37.6, 49.5])
+    poly(
+      [35.6, 44.2],
+      [35.0, 41.4],
+      [34.0, 40.4],
+      [33.3, 44],
+      [32.0, 50],
+      [30.8, 56],
+      [29.7, 62],
+      [31.4, 64.6],
+      [33.2, 58],
+      [34.6, 51],
+      [35.5, 46.6]
+    )
   ),
-  // Lats: wings that taper toward the waist — the shape a rectangle is most
-  // obviously wrong for, and the reason this file rasterises polygons at all.
+  // Lats: a wing whose APEX is at the armpit and whose base runs down the
+  // thoracolumbar fascia to the iliac crest — broad under the arm, tapering to a
+  // point at the lower spine, and taking the flank of the silhouette as its
+  // outer border the whole way down.
   ...pair(
     'lats',
     'back',
-    poly([48, 82.5], [45, 89], [41, 97], [37.2, 100.6], [36.2, 92], [35.4, 84.5], [37.8, 81.4])
+    poly(
+      [35.2, 70.0],
+      [39.2, 76.6],
+      [43.0, 81.8],
+      [43.6, 87],
+      [43.6, 99],
+      [42.4, 107],
+      [38.6, 110.5],
+      [36.0, 104],
+      [36.4, 94],
+      [36.2, 84],
+      [35.2, 76]
+    )
   ),
-  // Lower back: the erector columns flanking the spine.
-  ...pair('lower_back', 'back', blob(45.7, 88, 3.6, 17, [1.8, 1.8, 2.4, 2.4])),
-  // Tricep spindles, on the same arm the biceps ride on the other view.
-  ...pair('triceps', 'back', blob(22.2, 59.5, 10.8, 21, [5.4, 5.4, 5.2, 5.2])),
-  // Forearms read the same from behind.
+  // Lower back: the erector columns flanking the spine, thickening through the
+  // lumbar and converging on the sacrum. A poly rather than the capsule it was,
+  // because a capsule of this proportion is a stick and the erector's whole
+  // shape is that thickening.
   ...pair(
-    'forearms',
+    'lower_back',
     'back',
-    poly([30.2, 86], [29.4, 94], [28.6, 104], [27.4, 114], [22.6, 114], [21.8, 104], [21.2, 94], [22.0, 86])
+    poly([49.2, 86], [49.2, 110], [47.8, 117.5], [44.4, 111], [44.8, 98], [46.4, 87.5])
   ),
-  // Glutes: rounded masses filling the pelvis.
-  ...pair('glutes', 'back', blob(34.2, 109.5, 15, 21, [7, 7.5, 7.5, 7])),
-  // Hamstrings: long tapering masses down the back of the thigh.
+  // Tricep spindles, on the same arm the biceps ride on the other view.
+  ...pair('triceps', 'back', blob(21.4, 68.0, 9.3, 22, [4.65, 4.65, 4.65, 4.65])),
+  // Forearms read the same from behind.
+  ...pair('forearms', 'back', blob(21.5, 92.4, 7.1, 18.0, [3.55, 3.55, 3.55, 3.55])),
+  // Glutes: a rounded mass that meets the pelvis edge above and the gluteal fold
+  // below — a poly, not the circle it used to be, because the fold is a straight
+  // diagonal and a circle cannot draw one.
+  ...pair(
+    'glutes',
+    'back',
+    poly(
+      [45.8, 119.5],
+      [47.2, 126],
+      [46.8, 134],
+      [44.6, 140],
+      [37.4, 141],
+      [35.5, 140.2],
+      [32.8, 136.5],
+      [31.6, 127],
+      [32.0, 120],
+      [34.0, 116.4],
+      [40.0, 116.2]
+    )
+  ),
+  // Hamstrings in two masses like the quads opposite them: biceps femoris
+  // outside, semitendinosus/semimembranosus inside, splitting toward the knee.
   ...pair(
     'hamstrings',
     'back',
-    poly([46.0, 134], [47.2, 146], [46.8, 160], [44.4, 172], [37.0, 172], [33.6, 158], [32.4, 145], [34.8, 134.5])
+    poly(
+      [38.8, 142.5],
+      [39.0, 154],
+      [39.2, 165],
+      [38.4, 174],
+      [35.2, 176],
+      [33.4, 166],
+      [31.5, 154],
+      [30.9, 141.5],
+      [33.6, 140.5]
+    )
   ),
-  // Calves read fuller from behind — same bellies, same places.
+  ...pair(
+    'hamstrings',
+    'back',
+    poly(
+      [46.6, 143],
+      [46.6, 154],
+      [46.2, 165],
+      [45.0, 175],
+      [42.8, 178.5],
+      [41.0, 172],
+      [40.4, 160],
+      [40.4, 148],
+      [41.2, 142],
+      [43.4, 140.8]
+    )
+  ),
+  // Calves read the same from behind — same bellies, same places.
   ...pair(
     'calves',
     'back',
-    poly([40.2, 181.5], [41.2, 190], [40.6, 200], [38.4, 208], [35.7, 200], [34.0, 190], [35.4, 182.5])
+    poly(
+      [39.5, 183.5],
+      [39.8, 192],
+      [39.7, 201],
+      [39.6, 209],
+      [38.6, 214],
+      [37.0, 208],
+      [35.25, 197],
+      [34.3, 190.5],
+      [34.8, 184.5]
+    )
   ),
-  ...pair('calves', 'back', blob(41.2, 182.5, 4.4, 20, [2.2, 2.2, 2.2, 2.2])),
+  ...pair('calves', 'back', blob(40.9, 185, 4.0, 24, [2.0, 2.0, 2.0, 2.0])),
 ];
 
 /** The muscle shapes of one side, in declaration (paint) order. */

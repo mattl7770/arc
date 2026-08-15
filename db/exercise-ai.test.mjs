@@ -37,6 +37,7 @@ import {
   mappedMuscles,
   musclesFor,
   polyBars,
+  insideShape,
   shapeBounds,
   shapesOverlap,
 } from '../src/lib/exercise/figure.ts';
@@ -153,6 +154,44 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     ? ok('every muscle shape is fully covered by the body silhouette')
     : bad('shapes off the body', offBody.map((m) => `${m.muscle}@${m.side}`).join(' '));
 
+  // ...and the COMPLEMENT of that, which is the 2026-08-14 (b) round's whole
+  // point. Containment alone is satisfied by sixteen pills floating in the
+  // middle of a body — that is exactly what three rejected rounds shipped, and
+  // `coveredByBody` passed every one of them. The muscles have to TILE: fill the
+  // regions that carry muscle, share edges with their neighbours, and leave
+  // ground only at joints, at the midline and as a hairline between groups.
+  //
+  // Measured by rasterising each band of the NON-NEUTRAL body ground and asking
+  // what fraction of it a muscle covers. The floors sit above what the pill
+  // version scored (trunk 58/62, thigh 62/59), so shrinking back toward islands
+  // fails here instead of on the owner's phone. They are deliberately not near
+  // 100: the neck, the pelvis, the elbow, the knee and the ankle are inside
+  // these bands and correctly carry nothing.
+  const BANDS = { trunk: [44, 120], thigh: [128, 178] };
+  const FLOOR = { trunk: 62, thigh: 65 };
+  const thin = [];
+  const scores = [];
+  for (const side of ['front', 'back']) {
+    const shapes = musclesFor(side);
+    for (const [band, [y0, y1]] of Object.entries(BANDS)) {
+      let ground = 0;
+      let inked = 0;
+      for (let y = y0; y < y1; y += 0.25) {
+        for (let x = 0; x < FIGURE_GRID.w; x += 0.25) {
+          if (!FIGURE_BODY.some((b) => !b.neutral && insideShape(b.shape, x, y))) continue;
+          ground++;
+          if (shapes.some((m) => insideShape(m.shape, x, y))) inked++;
+        }
+      }
+      const pct = (inked / ground) * 100;
+      scores.push(`${side} ${band} ${pct.toFixed(0)}%`);
+      if (pct < FLOOR[band]) thin.push(`${side}/${band} ${pct.toFixed(0)}%`);
+    }
+  }
+  thin.length === 0
+    ? ok(`the muscles tile the body — ${scores.join(', ')}`)
+    : bad('muscles have shrunk back into islands', thin.join(' '));
+
   // The contour is drawn by inflating each block by BODY_OUTLINE, so the
   // INFLATED body — not just its fill — has to stay on the grid, or the
   // silhouette's outline clips against the edge of the figure box.
@@ -212,14 +251,20 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     : bad('degenerate body', emptyBody.map((b) => b.part).join(' '));
 
   // The drawing lives inside two scrolling screens, so its node count is a
-  // budget. Counted, never assumed — see figureViewCount. The ceiling rose from
-  // 600 to 900 to pay for the polygonal body and finer muscle bars; what kept it
-  // reachable was making every DOME a blob (skull, shoulder caps, biceps and
-  // triceps, glutes, the inner calf belly, hands, feet), one view each.
+  // budget. Counted, never assumed — see figureViewCount. The ceiling rose 600 →
+  // 900 → 1200: 900 paid for the polygonal body, and 1200 pays for the muscles
+  // TILING that body instead of sitting on it as pills, which is bars on every
+  // grown region. What holds it down is still the primitive split — every dome
+  // is a blob (skull, shoulder caps, biceps/triceps, forearms, ab segments, the
+  // medial calf belly, hands, feet), one view each.
+  const detail = figureViewCount(72);
   const hub = figureViewCount(118);
   const full = figureViewCount(128);
-  full <= 900
-    ? ok(`the figure pair costs ${hub} views at 118pt and ${full} at 128pt (ceiling 900)`)
+  full <= 1200
+    ? ok(
+        `the figure pair costs ${detail} views at 72pt, ${hub} at 118pt and ` +
+          `${full} at 128pt (ceiling 1200)`
+      )
     : bad('view budget blown', String(full));
 
   // --- the ramp (owner, 2026-08-14: spent fades to GREY, not to pale green) --

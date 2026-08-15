@@ -290,6 +290,37 @@ function compose(tiles, plate, gap = 14, margin = 14) {
 const widthArg = process.argv.indexOf('--width');
 const WIDTH = widthArg > -1 ? Number(process.argv[widthArg + 1]) : 128;
 
+/**
+ * `--crop x,y,w,h` in GRID units — cut one region out of the composed sheet and
+ * blow it up, because a shoulder is forty pixels tall in a full-figure PNG and
+ * "look at the drawing" only works if the drawing is legible. The rect is read
+ * on the FRONT figure's grid; the back figure sits one figure-width plus the gap
+ * to its right, so the same rect lands on the same anatomy on both.
+ */
+const cropArg = process.argv.indexOf('--crop');
+const CROP = cropArg > -1 ? process.argv[cropArg + 1].split(',').map(Number) : null;
+
+/** Nearest-neighbour blow-up of a region, so the bars stay countable. */
+function cropZoom({ buf, W, H }, rect, scale, zoom) {
+  const x0 = Math.max(0, Math.round(rect[0] * scale) + 14);
+  const y0 = Math.max(0, Math.round(rect[1] * scale) + 14);
+  const w = Math.min(W - x0, Math.round(rect[2] * scale));
+  const h = Math.min(H - y0, Math.round(rect[3] * scale));
+  const oW = w * zoom;
+  const oH = h * zoom;
+  const out = Buffer.alloc(oW * oH * 3);
+  for (let y = 0; y < oH; y++) {
+    for (let x = 0; x < oW; x++) {
+      const s = ((y0 + Math.floor(y / zoom)) * W + (x0 + Math.floor(x / zoom))) * 3;
+      const d = (y * oW + x) * 3;
+      out[d] = buf[s];
+      out[d + 1] = buf[s + 1];
+      out[d + 2] = buf[s + 2];
+    }
+  }
+  return { buf: out, W: oW, H: oH };
+}
+
 /** The four readings that have to be told apart at a glance. */
 const SCENES = {
   'all-fresh': () => 100,
@@ -313,8 +344,15 @@ mkdirSync(OUT, { recursive: true });
 for (const [name, reading] of Object.entries(SCENES)) {
   const front = downsample(paintFigure('front', reading, WIDTH, palette.paperHi));
   const back = downsample(paintFigure('back', reading, WIDTH, palette.paperHi));
-  const sheet = compose([front, back], palette.paperHi);
-  const file = resolve(OUT, `${name}-${WIDTH}.png`);
+  let sheet = compose([front, back], palette.paperHi);
+  let tag = `${WIDTH}`;
+  if (CROP) {
+    const scale = WIDTH / FIGURE_GRID.w;
+    const wide = [CROP[0], CROP[1], CROP[2] + FIGURE_GRID.w + 14 / scale, CROP[3]];
+    sheet = cropZoom(sheet, wide, scale, 4);
+    tag = `${WIDTH}-crop`;
+  }
+  const file = resolve(OUT, `${name}-${tag}.png`);
   writeFileSync(file, encodePng(sheet.buf, sheet.W, sheet.H));
   console.log(`wrote ${file}  (${sheet.W}x${sheet.H})`);
 }
