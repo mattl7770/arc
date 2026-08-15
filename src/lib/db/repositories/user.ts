@@ -140,6 +140,45 @@ export function setHealthSyncEnabled(db: Database, enabled: boolean): void {
 }
 
 /**
+ * The daily hydration goal in canonical **ml**, or `null` when the user has
+ * never set one — which is the default, and stays the default.
+ *
+ * **There is no stock target and there must not be one.** A denominator the user
+ * did not choose turns every honest reading into a manufactured verdict: an
+ * invented "2,000 ml" would print a percentage, a progress bar and an implied
+ * failure out of a number ARC made up (00-design-spec.md §5, and the same
+ * refusal `recent-logs.tsx` records for macros). Until a goal exists the water
+ * screen shows the total and no denominator at all.
+ *
+ * It lives in the preferences blob rather than in a table because it is a single
+ * durable thing the user *sets* — the same category as unit choices and the app
+ * lock, and the same shape as the `health` section written just above, which is
+ * likewise not on the `Preferences` type. That is deliberately NOT what
+ * `nutrition_targets` (0015) is: macro targets are versioned and immutable so a
+ * past day can be judged against the era it was lived in. A hydration goal here
+ * is a live setting, so raising it re-judges the history against the new number.
+ * For one user reading their own record that is the more useful reading, and it
+ * costs no migration — but it is a real trade-off and is flagged as such in
+ * docs/project-status.md.
+ */
+export function getWaterTarget(db: Database): number | null {
+  const obj = parseObject(getOrCreateUser(db).preferences);
+  const value = readSection(obj, 'goals').waterMl;
+  // Strict: only a finite positive number is a goal. A junk or zero value reads
+  // as "no goal", never as a target of zero — which would make every day a win.
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** Set or clear (`null`) the daily hydration goal, preserving unrelated keys. */
+export function setWaterTarget(db: Database, ml: number | null): void {
+  const user = getOrCreateUser(db);
+  const obj = parseObject(user.preferences);
+  const next = ml !== null && Number.isFinite(ml) && ml > 0 ? ml : null;
+  obj.goals = { ...readSection(obj, 'goals'), waterMl: next };
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+}
+
+/**
  * Set one unit preference and persist. Merges into the existing blob (unknown
  * preference keys are preserved), and returns the normalised result.
  */

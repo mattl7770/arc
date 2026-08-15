@@ -197,6 +197,11 @@ export default function RootLayout() {
               used to navigate to Home, which is today's plan and therefore not
               an answer to a question about the days behind you. */}
           <Stack.Screen name="mission-history" />
+          {/* The water record, behind Data's Water trend row — the one screen
+              that tracks, logs AND edits a single metric. Water was already
+              stored one row per capture (src/lib/db/repositories/water.ts),
+              which is what makes editing a past entry expressible at all. */}
+          <Stack.Screen name="water" />
           <Stack.Screen name="protocols" />
           <Stack.Screen name="protocol-edit" />
           {/* Pushed from the protocol editor: the version timeline. */}
