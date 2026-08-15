@@ -1,6 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
@@ -11,8 +10,16 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
-import { getFood } from '@/lib/db/repositories/foods';
+import { findFoodByBarcode, getFood } from '@/lib/db/repositories/foods';
 import { logMealWithItems } from '@/lib/db/repositories/nutrition';
+import {
+  ArcCameraView,
+  type CameraHandle,
+  FOOD_BARCODE_TYPES,
+  isCameraAvailable,
+  useCameraPermission,
+} from '@/lib/media/camera';
+import { normalizeBarcode } from '@/lib/nutrition/openfoodfacts';
 import {
   type EstimateInput,
   estimateMeal,
@@ -77,6 +84,38 @@ import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
  *
  * **Accent budget: one per phase.** Estimate (input), Capture (camera), Allow
  * camera (permission), Save meal (review). The phases are exclusive.
+ *
+ * ## One camera, two readings (owner, 2026-08-14)
+ *
+ * *"Can we put the barcode detection in the photo logging and combine the two?"*
+ * — yes, and it is one `AVCaptureSession`, not two surfaces stitched together.
+ * `CameraView` derives its native `barcodeScannerEnabled` from the presence of
+ * `onBarcodeScanned`, and expo-camera adds the scanner as an
+ * `AVCaptureMetadataOutput` **alongside** the `AVCapturePhotoOutput` it already
+ * has. So the viewfinder that photographs a plate also reads a package, with no
+ * mode switch and nothing new in the build.
+ *
+ * **Offered, never forced.** A packet in shot behind a plate must not hijack the
+ * capture: `Capture` stays the one accent, in the same place, doing the same
+ * thing, whether or not a code is in frame. A detected code appears as a row
+ * BELOW that button — below, so nothing the thumb is already reaching for ever
+ * moves under it — and it is a row you may ignore.
+ *
+ * **The two outcomes are different records, and the offer says which.** A
+ * photograph becomes an AI estimate the user reviews; a barcode becomes a
+ * catalog food at a chosen portion. Taking the offer therefore LEAVES this
+ * screen for `/barcode-scan`, carrying the code: that screen already owns the
+ * resolve ladder (local cache → Open Food Facts → manual) and the portion sheet
+ * that states what the portion comes to. Duplicating either here would be a
+ * second confirmation surface for the same write.
+ *
+ * Handing off also drops this screen back to `input`, which unmounts the
+ * viewfinder — two live camera sessions stacked in one navigation stack is a
+ * battery cost and an iOS interruption waiting to happen.
+ *
+ * The lookup behind the offer is **local only** (`findFoodByBarcode`, offline,
+ * synchronous). Reaching Open Food Facts for a code nobody has accepted yet
+ * would spend the network on a packet that merely wandered into frame.
  */
 
 type Phase =
@@ -85,6 +124,9 @@ type Phase =
   | { kind: 'estimating' }
   | { kind: 'review'; title: string; notes: string | null }
   | { kind: 'error'; message: string };
+
+/** A code sitting in the viewfinder, with whatever the local catalog knows. */
+type SeenCode = { code: string; name: string | null; brand: string | null };
 
 /** One editable review row: the model's item, grounded, with a live grams edit. */
 type ReviewItem = {
@@ -133,11 +175,20 @@ function currentPortion(row: ReviewItem) {
 
 export default function MealEstimateScreen() {
   const router = useRouter();
-  const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef = useRef<CameraView>(null);
+  // `start=camera` opens straight into the viewfinder — the Eat tab's Photo
+  // quick-log (app/nutrition.tsx). Without it the screen opens on the field,
+  // which is the Describe quick-log and the default.
+  const { start } = useLocalSearchParams<{ start?: string }>();
+  const [permission, requestPermission] = useCameraPermission();
+  const cameraRef = useRef<CameraHandle | null>(null);
+  const cameraInstalled = isCameraAvailable();
+  const Camera = ArcCameraView;
 
   const available = isMealEstimationAvailable();
-  const [phase, setPhase] = useState<Phase>({ kind: 'input' });
+  const [phase, setPhase] = useState<Phase>(() =>
+    start === 'camera' ? { kind: 'camera' } : { kind: 'input' }
+  );
+  const [seen, setSeen] = useState<SeenCode | null>(null);
   const [description, setDescription] = useState('');
   const [rows, setRows] = useState<ReviewItem[]>([]);
   // The image behind the current estimate, held until Save writes it to disk.
@@ -252,6 +303,30 @@ export default function MealEstimateScreen() {
       },
       captured
     );
+  };
+
+  /**
+   * A code in the viewfinder. Fires on every frame it stays in view, so this
+   * ignores the code it is already showing rather than re-reading the catalog
+   * sixty times a second. Nothing navigates and nothing is written: the offer is
+   * drawn below the capture button and the user decides.
+   */
+  const onBarcodeSeen = (raw: string) => {
+    const code = normalizeBarcode(raw);
+    if (code === '' || code === seen?.code) return;
+    const known = findFoodByBarcode(getDb(), code);
+    setSeen({ code, name: known?.name ?? null, brand: known?.brand ?? null });
+  };
+
+  /**
+   * Take the offer: hand the code to the scanner screen, which owns the resolve
+   * ladder and the portion sheet, and drop back to `input` so this screen's
+   * viewfinder unmounts rather than running under the pushed one.
+   */
+  const followBarcode = (code: string) => {
+    setSeen(null);
+    setPhase({ kind: 'input' });
+    router.push({ pathname: '/barcode-scan', params: { code } });
   };
 
   const capturePhoto = async () => {
@@ -403,7 +478,12 @@ export default function MealEstimateScreen() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Take a photo of the meal"
-              onPress={() => setPhase({ kind: 'camera' })}
+              // A stale offer from the last visit to the viewfinder must not be
+              // waiting under the button when it reopens.
+              onPress={() => {
+                setSeen(null);
+                setPhase({ kind: 'camera' });
+              }}
               className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:opacity-60">
               <Ionicons name="camera-outline" size={18} color={palette.inkSecondary} />
               <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
@@ -434,7 +514,28 @@ export default function MealEstimateScreen() {
       ) : null}
 
       {phase.kind === 'camera' ? (
-        !permission ? (
+        /* The absent module is a SENTENCE, not a spinner. `permission` stays
+           null forever without the native module, so reading null as "still
+           loading" would print "Preparing the camera…" until the end of time. */
+        !cameraInstalled || Camera === null ? (
+          <View className="mt-6">
+            <Block device="margin">
+              <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
+                The camera needs the next app build — it isn’t in this one yet. Choose a photo from
+                your library, or describe the meal.
+              </Text>
+            </Block>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to describing the meal"
+              onPress={() => setPhase({ kind: 'input' })}
+              className="mt-4 min-h-[44px] items-center justify-center rounded-btn border border-ink py-3 active:opacity-60">
+              <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink">
+                Describe it instead
+              </Text>
+            </Pressable>
+          </View>
+        ) : !permission ? (
           <Text className="mt-6 font-serif text-[14px] text-ink-secondary">
             Preparing the camera…
           </Text>
@@ -446,7 +547,7 @@ export default function MealEstimateScreen() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Allow camera"
-              onPress={requestPermission}
+              onPress={() => void requestPermission()}
               className="mt-3 min-h-[44px] items-center justify-center rounded-btn bg-pine py-3 active:opacity-70">
               <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-pine-on">
                 Allow camera
@@ -456,7 +557,16 @@ export default function MealEstimateScreen() {
         ) : (
           <View className="mt-4">
             <View className="aspect-square w-full overflow-hidden border border-hairline bg-ink">
-              <CameraView ref={cameraRef} style={{ flex: 1 }} facing="back" />
+              {/* Barcode detection rides the SAME view and the same session —
+                  passing `onBarcodeScanned` is what switches the native scanner
+                  on. Nothing about the photo path changes. */}
+              <Camera
+                ref={cameraRef}
+                style={{ flex: 1 }}
+                facing="back"
+                barcodeScannerSettings={{ barcodeTypes: FOOD_BARCODE_TYPES }}
+                onBarcodeScanned={({ data }) => onBarcodeSeen(data)}
+              />
             </View>
             <Pressable
               accessibilityRole="button"
@@ -468,6 +578,51 @@ export default function MealEstimateScreen() {
                 Capture
               </Text>
             </Pressable>
+
+            {/* The offer. BELOW Capture, deliberately: a packet that wanders
+                into shot behind a plate must never move the button the thumb is
+                already travelling to. It is an alternative, so it takes no
+                accent — the accent is spent on Capture in this phase. */}
+            {seen ? (
+              <View className="mt-5">
+                <SectionLabel label="Barcode in frame" />
+                <View className="mt-2">
+                  <Block device="plate">
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        seen.name
+                          ? `Log ${seen.name} from its barcode instead of photographing the meal`
+                          : `Look up barcode ${seen.code}`
+                      }
+                      onPress={() => followBarcode(seen.code)}
+                      className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
+                      <Ionicons name="barcode-outline" size={19} color={palette.inkSecondary} />
+                      <View className="flex-1">
+                        {/* The product name if we have one — a barcode number
+                            means nothing to a human. The digits are the fallback
+                            and only the fallback, and they are a measured value,
+                            so they take mono. */}
+                        {seen.name ? (
+                          <Text className="font-serif text-[16px] leading-5 text-ink">
+                            {seen.name}
+                            {seen.brand ? (
+                              <Text className="font-serif text-ink-muted"> · {seen.brand}</Text>
+                            ) : null}
+                          </Text>
+                        ) : (
+                          <Text className="font-mono text-[15px] text-ink">{seen.code}</Text>
+                        )}
+                        <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+                          {seen.name ? 'Saved earlier — log a portion' : 'Not scanned before'}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={palette.inkSecondary} />
+                    </Pressable>
+                  </Block>
+                </View>
+              </View>
+            ) : null}
           </View>
         )
       ) : null}

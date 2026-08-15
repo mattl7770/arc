@@ -1,6 +1,6 @@
 import { memo, type ReactNode, useMemo } from 'react';
 import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
-import { type Edge, SafeAreaView } from 'react-native-safe-area-context';
+import { type Edge, SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { paperGrid, palette } from '@/constants/theme';
 
@@ -112,6 +112,72 @@ export const PaperGrid = memo(function PaperGrid() {
     </View>
   );
 });
+
+/**
+ * The root of a full-screen native `Modal` — the sheet, the grid, **its own
+ * safe-area provider**, and the inset itself.
+ *
+ * ## The bug this exists to fix (owner, on device: *"the back button is not
+ * accessible because it is too high up on the screen"*)
+ *
+ * `SafeAreaView` from react-native-safe-area-context v5 is a NATIVE view, not a
+ * JS component reading React context. `RNCSafeAreaViewComponentView.findNearestProvider`
+ * walks **`self.superview`** — the UIKit hierarchy — looking for an
+ * `RNCSafeAreaProviderComponentView`, and falls back to `self` when it finds
+ * none. An RN `Modal` on iOS presents its own `UIViewController`, so the React
+ * children mount into a view tree that is **not a descendant of the app root**:
+ * the provider react-navigation installs around the Stack is in the React tree
+ * and unreachable in the native one. The walk therefore ends at `self`.
+ *
+ * That fallback has no update path. The insets are read in `didMoveToWindow` and
+ * in `finalizeUpdates`, and refreshed only on the `RNCSafeAreaDidChange`
+ * notification — which is posted by a *provider* and never by `self`. Unlike the
+ * provider, the safe-area VIEW does not implement `safeAreaInsetsDidChange` and
+ * has no "wait until the frame is non-zero" retry (the provider has both:
+ * `RNCSafeAreaProvider.invalidateSafeAreaInsets`, and its comment says exactly
+ * why). So a `SafeAreaView` inside a Modal latches whatever UIKit had for it at
+ * attach time — zero, since the presentation has not laid it out yet — and never
+ * corrects. The top padding is 0, `pt-2` is the whole offset, and the close
+ * control sits eight points from the physical top of the screen: under the
+ * status bar, behind the Dynamic Island, unreachable.
+ *
+ * **The fix is a provider inside the Modal, not a hand-tuned padding.** A real
+ * `RNCSafeAreaProvider` in the modal's own native hierarchy gives the view below
+ * it a live source that measures, retries and posts. `SafeAreaProvider` also
+ * seeds itself from the parent context, so the first frame already carries the
+ * app's insets rather than flashing at zero. Nothing here is a magic number, and
+ * the value stays correct across rotation and a keyboard.
+ *
+ * All three of ARC's chooser modals had this — the Log sheet the owner reported,
+ * Home's mode picker, and the exercise picker — so it lives here once. The app
+ * lock's Modal is immune only by accident: it centres its content and asks for
+ * no inset at all.
+ *
+ * **What it does NOT supply:** the `px-5` gutter. A modal's header and its
+ * scroll body take the gutter separately (the paper must run edge to edge behind
+ * both), so imposing one here would double it at every call site.
+ */
+export function ModalScreen({
+  children,
+  edges = ['top', 'bottom'],
+}: {
+  children: ReactNode;
+  edges?: readonly Edge[];
+}) {
+  return (
+    <View className="flex-1 bg-paper">
+      {/* Outside the SafeAreaView so the stock runs edge to edge with no seam at
+          the inset, and outside every ScrollView below: the paper is fixed and
+          the content moves over it. Same placement rule as `Screen`. */}
+      <PaperGrid />
+      <SafeAreaProvider>
+        <SafeAreaView edges={edges} className="flex-1">
+          {children}
+        </SafeAreaView>
+      </SafeAreaProvider>
+    </View>
+  );
+}
 
 type ScreenProps = {
   children: ReactNode;

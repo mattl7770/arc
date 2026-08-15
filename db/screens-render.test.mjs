@@ -65,6 +65,12 @@ import RecipeReviseScreen from '../app/recipe-revise.tsx';
 import GroceryScreen from '../app/grocery.tsx';
 import NutritionScreen from '../app/nutrition.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
+// The two camera screens. They could not be imported here until `expo-camera`
+// moved behind the guarded seam (src/lib/media/camera.ts) — a static native
+// import is a resolve failure under node, not a render failure.
+import BarcodeScanScreen from '../app/barcode-scan.tsx';
+import MealEstimateScreen from '../app/meal-estimate.tsx';
+import { apiKeyStore } from '../src/lib/ai/api-key-store.ts';
 import ProgressPhotosScreen from '../app/progress-photos.tsx';
 import ProgressPhotoAddScreen from '../app/progress-photo-add.tsx';
 import ProgressPhotoDetailScreen from '../app/progress-photo-detail.tsx';
@@ -76,6 +82,7 @@ import KnowledgeImportScreen from '../app/knowledge-import.tsx';
 import ReportsScreen from '../app/reports.tsx';
 import ReportViewScreen from '../app/report-view.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
+import HomeScreen from '../app/(tabs)/index.tsx';
 
 import { logWater } from '../src/lib/db/repositories/water.ts';
 import { setWaterTarget } from '../src/lib/db/repositories/user.ts';
@@ -266,6 +273,25 @@ const db = getDb();
     items: [{ food_id: chicken, name: 'Render chicken', grams: 150, kcal: 247.5, protein_g: 46.5 }],
   });
 
+  // A BARCODED food, logged — the two facts the scanner's running list joins
+  // (§7b). `Render chicken` above is deliberately left barcode-less, so the
+  // list's narrowing is proved by an exclusion and not only by an inclusion.
+  const oatDrink = createFood(db, {
+    name: 'Render oat drink',
+    brand: 'Oatly-ish',
+    barcode: '5060000000000',
+    kcal_100g: 46,
+    protein_g_100g: 1,
+    carbs_g_100g: 6.7,
+    fat_g_100g: 1.5,
+  });
+  logMealWithItems(db, {
+    date: '2026-08-08',
+    time: '07:30',
+    name: 'Render breakfast',
+    items: [{ food_id: oatDrink, name: 'Render oat drink', grams: 250, kcal: 115 }],
+  });
+
   ok('fixtures seeded (recipes, grocery, meal)');
 
   console.log('2. Populated renders');
@@ -418,7 +444,13 @@ const db = getDb();
     // The tab root is a PROP now, not global route state — app/(tabs)/eat.tsx
     // renders <NutritionScreen asTab />, so that is what this renders.
     const tabRoot = render('nutrition hub (tab root)', NutritionScreen, {}, { asTab: true });
-    expect('nutrition hub (tab root)', tabRoot, ['Nutrition']);
+    expect('nutrition hub (tab root)', tabRoot, [
+      'Nutrition',
+      // The two capture shortcuts under Log (owner, 2026-08-14). They stand in
+      // every state of the tab, so they are asserted on the tab render.
+      'Photograph a meal',
+      'Describe a meal in words',
+    ]);
     const pushed = render('nutrition hub (pushed)', NutritionScreen);
     expect('nutrition hub (pushed)', pushed, ['Nutrition']);
   }
@@ -434,6 +466,71 @@ const db = getDb();
   const milk = db.get(`SELECT id FROM grocery_items WHERE name = 'Milk'`);
   checkGroceryItem(db, milk.id);
   expect('grocery (with cart)', render('grocery (with cart)', GroceryScreen), ['In cart']);
+
+  // -------------------------------------------------------------------------
+  console.log('7b. The two CAPTURE screens — on this walk for the first time');
+  {
+    // Both used to `import { CameraView } from 'expo-camera'` at module scope,
+    // which made them unloadable under node and therefore untestable. They now
+    // go through the guarded seam (src/lib/media/camera.ts), so under node the
+    // module is absent and each screen renders its ABSENT branch — which is
+    // precisely the branch that has to be honest rather than a dead spinner.
+
+    // a. The scanner, and the running list of recently logged barcodes
+    //    (owner, 2026-08-14). `barcodeFood` was logged in the fixtures above.
+    const scan = render('barcode-scan', BarcodeScanScreen);
+    expect('barcode-scan', scan, [
+      'Scan barcode',
+      // The absence is a sentence, and it says the rest of the screen still works.
+      'Scanning needs the next app build',
+      'Anything below can still be logged',
+      // THE FEATURE: name and brand, never the digits, and last time's portion.
+      'Recently logged',
+      'Render oat drink',
+      'Oatly-ish',
+      '250 g',
+    ]);
+    // A barcode number means nothing to a human, so the list never prints one;
+    // and a food with no barcode is not on this list however recently it was
+    // eaten — the query is narrowed to barcoded rows on purpose.
+    refute('barcode-scan', scan, ['5060000000000', 'Render chicken']);
+
+    // b. The estimator with no model key — unchanged behaviour, now covered.
+    expect('meal-estimate (no key)', render('meal-estimate (no key)', MealEstimateScreen), [
+      'Describe or snap',
+      'AI meal estimation needs a model key',
+    ]);
+
+    // c. With a key, the input phase — and `start=camera` (the Eat tab's Photo
+    //    button) opening straight into the viewfinder. The key is an in-memory
+    //    placeholder; rendering makes no model call, and none is made here.
+    await apiKeyStore.setKey('render-test-key');
+    expect('meal-estimate (input)', render('meal-estimate (input)', MealEstimateScreen), [
+      'Describe the meal',
+      'Take a photo',
+      'Choose a photo',
+    ]);
+    const straightToCamera = render('meal-estimate (start=camera)', MealEstimateScreen, {
+      start: 'camera',
+    });
+    expect('meal-estimate (start=camera)', straightToCamera, [
+      // The camera phase, entered from the param rather than from a tap.
+      'The camera needs the next app build',
+      'Describe it instead',
+    ]);
+    // Never the spinner: `permission` stays null forever without the module, so
+    // "Preparing the camera…" here would be a lie that never resolves.
+    refute('meal-estimate (start=camera)', straightToCamera, ['Preparing the camera']);
+    await apiKeyStore.clearKey();
+
+    // d. HOME — regression cover for the safe-area round, which rewrapped
+    //    src/components/home/mode-control.tsx. This is as close as a server
+    //    render gets: RN's `Modal` returns null while `visible` is false, so the
+    //    picker's BODY (and every other modal's) cannot be rendered here at all
+    //    — nothing can set the flag. What this does prove is that the mode chip
+    //    and banner still mount around the rewrapped modal.
+    expect('home (after the ModalScreen rewrap)', render('home', HomeScreen), ['Today']);
+  }
 
   // -------------------------------------------------------------------------
   console.log('8b. Folders (0035) — the filter strip, the drawer, and the unfiled place');

@@ -10,10 +10,9 @@ import {
   type TextInputProps,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Block, Divider } from '@/components/ui/block';
-import { PaperGrid } from '@/components/ui/screen';
+import { ModalScreen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -350,88 +349,97 @@ export function LogSheet({ visible, onClose, onSaved }: Props) {
       onDismiss={afterDismiss}
       transparent={false}>
       {/* A native Modal builds its own root, so it never passes through
-          `Screen` — it prints the sheet and the paper grid itself. */}
-      <View className="flex-1 bg-paper">
-        <PaperGrid />
-        <SafeAreaView edges={['top', 'bottom']} className="flex-1">
-          <View className="flex-row items-center justify-between px-5 pt-2">
-            <Text className="font-serif text-[19px] font-semibold text-ink">Log</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-              onPress={onClose}
-              hitSlop={8}
-              className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn active:bg-paper-deep">
-              <Ionicons name="close" size={22} color={palette.inkSecondary} />
-            </Pressable>
+          `Screen` — `ModalScreen` prints the sheet, the paper grid and the
+          safe-area PROVIDER this hierarchy has to carry itself. Without that
+          provider the inset below resolves to zero and the close control lands
+          eight points from the physical top of the screen, behind the status
+          bar: the owner's *"the back button is not accessible because it is too
+          high up"*. The native reason is in ModalScreen's own header. */}
+      <ModalScreen>
+        <View className="flex-row items-center gap-1 px-5 pt-2">
+          {/* Close sits at the LEADING edge, where a pushed screen puts its back
+              chevron (src/components/ui/stack-header.tsx) and where the exercise
+              picker already put it. This sheet is the one the owner named, and
+              they called the control "the back button" — so it should be under
+              the thumb that reaches for one, not in the far corner. The −12
+              margin is StackHeader's, so the glyph lands on the same optical x
+              as every other screen's back control. */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+            onPress={onClose}
+            hitSlop={8}
+            className="-ml-3 h-11 w-11 items-center justify-center active:opacity-60">
+            <Ionicons name="close" size={22} color={palette.ink} />
+          </Pressable>
+          <Text className="flex-1 font-serif text-[19px] font-semibold text-ink">Log</Text>
+        </View>
+
+        <ScrollView
+          className="flex-1"
+          contentContainerClassName="grow px-5 pb-10"
+          keyboardShouldPersistTaps="handled"
+          // Without this the manual form's lower fields and Save sit under the
+          // keyboard: the sheet's content is short, so there is nothing to
+          // scroll and contentInset never grows. Same prop, same reason, as
+          // app/workout-log.tsx and app/appointment-form.tsx.
+          automaticallyAdjustKeyboardInsets>
+          <View className="mt-5">
+            <Block device="plate">
+              <LogRow
+                icon="camera-outline"
+                label="Describe or photograph"
+                chevron="chevron-forward"
+                first
+                onPress={() => go('/meal-estimate')}
+              />
+              <LogRow
+                icon="search-outline"
+                label="Add food"
+                chevron="chevron-forward"
+                first={false}
+                onPress={() => go('/food-search')}
+              />
+              <LogRow
+                icon="barcode-outline"
+                label="Scan a barcode"
+                chevron="chevron-forward"
+                first={false}
+                onPress={() => go('/barcode-scan')}
+              />
+              <LogRow
+                icon="albums-outline"
+                label="From a template"
+                chevron="chevron-forward"
+                first={false}
+                onPress={() => go('/meal-templates')}
+              />
+              <LogRow
+                icon="restaurant-outline"
+                label="Cook a recipe"
+                chevron="chevron-forward"
+                first={false}
+                onPress={() => go('/recipes')}
+              />
+              <LogRow
+                icon="create-outline"
+                label="Enter it manually"
+                chevron={manualOpen ? 'chevron-up' : 'chevron-down'}
+                first={false}
+                expanded={manualOpen}
+                onPress={() => setManualOpen((open) => !open)}
+              />
+            </Block>
           </View>
 
-          <ScrollView
-            className="flex-1"
-            contentContainerClassName="grow px-5 pb-10"
-            keyboardShouldPersistTaps="handled"
-            // Without this the manual form's lower fields and Save sit under the
-            // keyboard: the sheet's content is short, so there is nothing to
-            // scroll and contentInset never grows. Same prop, same reason, as
-            // app/workout-log.tsx and app/appointment-form.tsx.
-            automaticallyAdjustKeyboardInsets>
+          {manualOpen ? (
             <View className="mt-5">
-              <Block device="plate">
-                <LogRow
-                  icon="camera-outline"
-                  label="Describe or photograph"
-                  chevron="chevron-forward"
-                  first
-                  onPress={() => go('/meal-estimate')}
-                />
-                <LogRow
-                  icon="search-outline"
-                  label="Add food"
-                  chevron="chevron-forward"
-                  first={false}
-                  onPress={() => go('/food-search')}
-                />
-                <LogRow
-                  icon="barcode-outline"
-                  label="Scan a barcode"
-                  chevron="chevron-forward"
-                  first={false}
-                  onPress={() => go('/barcode-scan')}
-                />
-                <LogRow
-                  icon="albums-outline"
-                  label="From a template"
-                  chevron="chevron-forward"
-                  first={false}
-                  onPress={() => go('/meal-templates')}
-                />
-                <LogRow
-                  icon="restaurant-outline"
-                  label="Cook a recipe"
-                  chevron="chevron-forward"
-                  first={false}
-                  onPress={() => go('/recipes')}
-                />
-                <LogRow
-                  icon="create-outline"
-                  label="Enter it manually"
-                  chevron={manualOpen ? 'chevron-up' : 'chevron-down'}
-                  first={false}
-                  expanded={manualOpen}
-                  onPress={() => setManualOpen((open) => !open)}
-                />
-              </Block>
+              <SectionLabel label="The meal" />
+              <AddMealForm onSaved={saved} />
             </View>
-
-            {manualOpen ? (
-              <View className="mt-5">
-                <SectionLabel label="The meal" />
-                <AddMealForm onSaved={saved} />
-              </View>
-            ) : null}
-          </ScrollView>
-        </SafeAreaView>
-      </View>
+          ) : null}
+        </ScrollView>
+      </ModalScreen>
     </Modal>
   );
 }
