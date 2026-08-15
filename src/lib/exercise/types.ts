@@ -53,7 +53,14 @@ export type WorkoutSetRow = {
 /** Input for logging one session. Weight on sets is CANONICAL kg. */
 export type LogWorkoutInput = {
   date: DateString;
-  name: string;
+  /**
+   * Optional since 2026-08-14 — *"Workouts dont need names, remove this"*
+   * (owner). Nothing in the app asks for one any more and nothing displays one.
+   * `workouts.name` is still `text NOT NULL` in the schema, so the repository
+   * writes `''` when no caller supplies a value; see {@link logWorkout} for why
+   * the column was left dormant rather than rebuilt out of the table.
+   */
+  name?: string;
   kind: WorkoutKind;
   durationMin?: number | null;
   notes?: string | null;
@@ -81,11 +88,50 @@ export type SetInput = {
 export type RecentSession = {
   id: string;
   date: DateString;
+  /**
+   * The stored `workouts.name`. Retained on the type because sessions logged
+   * before 2026-08-14 (and any the Coach names) still carry one, but NOTHING
+   * renders it — the list titles itself off {@link RecentSession.movements},
+   * which is what a session actually was. See `sessionTitle` in
+   * src/lib/exercise/format.ts.
+   */
   name: string;
   kind: WorkoutKind;
   durationMin: number | null;
   setCount: number;
+  /**
+   * The distinct movements in the session, in the order they were performed —
+   * the honest answer to "what was this workout", now that no one names them.
+   * Empty for a session with no sets (cardio, mobility).
+   */
+  movements: string[];
   createdAt: Timestamp;
+};
+
+/** One stored set, as the past-workout editor loads it back. */
+export type StoredSet = {
+  id: string;
+  exercise: string;
+  exerciseId: string | null;
+  setIndex: number | null;
+  reps: number | null;
+  weightKg: number | null;
+  rpe: number | null;
+  setType: SetType;
+  durationSec: number | null;
+  supersetGroup: number | null;
+};
+
+/** A past session opened for viewing or editing: its row plus its sets, in order. */
+export type WorkoutDetail = {
+  id: string;
+  date: DateString;
+  kind: WorkoutKind;
+  durationMin: number | null;
+  notes: string | null;
+  routineId: string | null;
+  createdAt: Timestamp;
+  sets: StoredSet[];
 };
 
 /** "This week" aggregates for the Exercise screen's stat strip. */

@@ -5,14 +5,14 @@
  *   roleWeight × effortWeight × e^(−Δhours / τ_muscle)
  * (fractional set counting: primary 1.0, secondary 0.5; effort from proximity
  * to failure; τ from the muscle's recovery window). Freshness is
- *   100 × (1 − min(1, fatigue / FRESH_FULL)).
+ *   100 × e^(−fatigue / FRESH_SCALE)   — see {@link freshnessFromFatigue}.
  * This is FitBod's 0-100% recovery score restated as offline arithmetic
  * (docs/exercise-subapp.md §4.2). `now` is injected so the headless tests are
  * deterministic.
  */
 import {
   FRESHNESS_LOOKBACK_DAYS,
-  FRESH_FULL,
+  FRESH_SCALE,
   FRESH_THRESHOLDS,
   MUSCLE_ORDER,
   effortWeight,
@@ -21,6 +21,85 @@ import {
 import type { FreshnessAnchor, Muscle, MuscleFreshness, MuscleLoad } from './types';
 
 const HOUR_MS = 3_600_000;
+
+/**
+ * Fatigue (in fractional working sets) → freshness percent, and the whole shape
+ * of the model in one line: **100 × e^(−F / FRESH_SCALE)**.
+ *
+ * ## Calibration — what a session of N sets actually reads
+ *
+ * `N` is FRACTIONAL sets on one muscle, counted the way the ledger counts them:
+ * a set of an exercise that lists the muscle *primary* is 1.0, *secondary* is
+ * 0.5, and effort scales it (0.5 submaximal · 1.0 hard · 1.25 to failure). Read
+ * immediately after the session, before any decay:
+ *
+ * | N sets | 1 | 2 | 3 | 4 | 6 | 8 | 10 | 12 | 16 | 20 | 24 |
+ * |--------|---|---|---|---|---|---|----|----|----|----|----|
+ * | fresh% |88 |78 |69 |61 |47 |37 | 29 | 22 | 14 |  8 |  5 |
+ *
+ * So a **hard back day** — say 4×lat pulldown, 3×pull-up, 4×barbell row,
+ * 3×cable row, 3×face pull, 17 working sets — lands lats at **27**, upper back
+ * at **22**, biceps at **42**, rear delts at **44**. A **light accessory day**
+ * (3 sets of lateral raises) leaves side delts at **69**. A **single set**
+ * leaves its muscle at **88** — a dent, not an annihilation. Those four are
+ * pinned as tests in db/training-engine.test.mjs §5b, which is the real
+ * specification: if you retune FRESH_SCALE, that table is what you are moving.
+ *
+ * ## Why exponential and not the old linear ramp
+ *
+ * It used to be `100 × (1 − min(1, F/8))` and the owner's complaint on
+ * 2026-08-14 — *"I just did a whole back day and it only hit related muscles
+ * down to 80%"* — turned out to be two faults, only one of them here. The
+ * loads mostly never arrived (see {@link recentMuscleLoads}); but when they DO
+ * arrive, that `min` clipped, so eight fractional sets and twenty-four both
+ * printed **0**, and a muscle sitting at clipped-zero then stayed frozen at
+ * zero for hours — F had to decay all the way back under 8 before the number
+ * could move at all. A model whose most-fatigued reading is also its least
+ * informative one is the wrong shape, not the wrong constant.
+ *
+ * The exponential fixes all of it with one operator: it is monotone over the
+ * whole range so more work always reads as more spent, it never reaches 0 (a
+ * real muscle never is), it starts moving the instant recovery starts, and it
+ * is the natural conjugate of the exponential decay already applied to fatigue
+ * — freshness(t) = e^(−F₀e^(−t/τ)/C) — so recovery is a smooth S rather than a
+ * plateau and a cliff. Lats at 27% recover to 45 by +12 h, 61 by +24 h, 84 by
+ * +48 h and 94 by +72 h, which is the muscle's published 72 h window.
+ */
+export function freshnessFromFatigue(fatigue: number): number {
+  return Math.round(100 * Math.exp(-Math.max(0, fatigue) / FRESH_SCALE));
+}
+
+/**
+ * The inverse of {@link freshnessFromFatigue} — a freshness percent back into
+ * the fatigue that would have produced it. Only anchors need this (see
+ * {@link anchorFatigue}); it round-trips exactly for every value the adjuster
+ * can write.
+ *
+ * Zero has no exact preimage under an exponential, so it is floored at
+ * {@link ANCHOR_FLOOR_PERCENT}: "spent" means *as spent as the model can
+ * represent*, not infinitely spent.
+ */
+function fatigueForFreshness(percent: number): number {
+  const clamped = Math.max(ANCHOR_FLOOR_PERCENT, Math.min(100, percent));
+  return -FRESH_SCALE * Math.log(clamped / 100);
+}
+
+/**
+ * What a hand-asserted "Spent" (0) actually means to the model, as a percent.
+ *
+ * The floor is set by the DISPLAY, not by taste: the adjuster's Spent button
+ * has to make the row it is attached to read `0%`, and 0.4 is the largest value
+ * that still rounds there. It implies F₀ = −8·ln(0.004) ≈ 44 fatigue units.
+ *
+ * That is deliberately worse than any session can produce (24 fractional sets
+ * is ≈ 24 units), and it makes a hand-asserted wipe recover over about five
+ * days rather than three: for a 72 h muscle (τ = 24 h) it reads 13% at +24 h,
+ * 47% at +48 h, 76% at +72 h, 90% at +96 h. The old linear model let "totally
+ * destroyed" reach 95% in three days — exactly as fast as one ordinary hard
+ * session — which made the assertion meaningless. If the user says a muscle is
+ * at literal zero, he is saying something stronger than "I trained it".
+ */
+const ANCHOR_FLOOR_PERCENT = 0.4;
 
 function bucket(freshness: number): MuscleFreshness['state'] {
   if (freshness >= FRESH_THRESHOLDS.fresh) return 'fresh';
@@ -57,8 +136,8 @@ const SKEW_TOLERANCE_HOURS = 1 / 60;
  * 0037's model in three lines.
  *
  * An anchor asserts a freshness AT AN INSTANT, so it converts straight back into
- * the fatigue units that would have produced it (`FRESH_FULL × (1 − f/100)`) and
- * then decays on the muscle's own τ, exactly as a set does. An assertion of
+ * the fatigue units that would have produced it ({@link fatigueForFreshness})
+ * and then decays on the muscle's own τ, exactly as a set does. An assertion of
  * "spent" therefore recovers over the muscle's window instead of pinning the
  * figure at zero; an assertion of "fresh" contributes nothing at all and simply
  * clears the history before it.
@@ -75,7 +154,7 @@ function anchorFatigue(anchor: FreshnessAnchor, nowMs: number): number | null {
   if (!Number.isFinite(raw) || raw < -SKEW_TOLERANCE_HOURS) return null;
   if (raw > FRESHNESS_LOOKBACK_DAYS * 24) return null;
   const dh = Math.max(0, raw);
-  const f0 = FRESH_FULL * (1 - Math.max(0, Math.min(100, anchor.freshness)) / 100);
+  const f0 = fatigueForFreshness(anchor.freshness);
   return f0 * Math.exp(-dh / recoveryTauHours(anchor.muscle));
 }
 
@@ -137,7 +216,7 @@ export function muscleFreshness(
 
   return MUSCLE_ORDER.map((muscle) => {
     const f = fatigue.get(muscle) ?? 0;
-    const freshness = Math.round(100 * (1 - Math.min(1, f / FRESH_FULL)));
+    const freshness = freshnessFromFatigue(f);
     const lh = lastHours.get(muscle);
     return {
       muscle,

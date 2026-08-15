@@ -22,7 +22,7 @@
 import type { Database } from '@/lib/db/database';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
-import { listExercises } from '@/lib/db/repositories/exercise-catalog';
+import { resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
 import type { WorkoutKind } from './types';
 
 // --- Types -------------------------------------------------------------------
@@ -213,44 +213,22 @@ export function parseWorkoutImport(replyText: string): ImportedWorkout {
 
 // --- Grounding (pure over the Database interface) ----------------------------
 
-const normalize = (s: string) =>
-  s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-
 /**
- * A match confident enough to attach a catalog id: exact normalized name/alias,
- * or the imported name is the catalog name's leading phrase (multi-token only —
- * "bench" alone must not claim "Bench Press"; nutrition's grounding learned the
- * same lesson). Unmatched names stay free text, which the schema supports.
+ * Attach catalog ids where the name match is confident.
+ *
+ * The matcher itself is `resolveExerciseByName` (exercise-catalog.ts) — this
+ * file used to carry a near-identical copy, and on 2026-08-14 the two drifted
+ * in the way duplicated grounding always does: the copy here handled leading
+ * phrases but not plurals, the Coach's copy handled neither, and the badge this
+ * screen shows would have disagreed with the id the row actually got once
+ * `insertSet` grew its backstop. One definition, three callers.
  */
-function confidentMatchId(
-  imported: string,
-  catalog: { id: string; name: string; aliases: string[] }[]
-): string | null {
-  const n = normalize(imported);
-  if (n === '') return null;
-  for (const ex of catalog) {
-    if (normalize(ex.name) === n) return ex.id;
-    if (ex.aliases.some((a) => normalize(a) === n)) return ex.id;
-  }
-  if (n.split(' ').length < 2) return null;
-  for (const ex of catalog) {
-    const cn = normalize(ex.name);
-    if (cn.startsWith(`${n} `) || n.startsWith(`${cn} `)) return ex.id;
-  }
-  return null;
-}
-
-/** Attach catalog ids where the name match is confident. */
 export function groundWorkoutImport(db: Database, imported: ImportedWorkout): ImportedWorkout {
-  const catalog = listExercises(db).map((e) => ({ id: e.id, name: e.name, aliases: e.aliases }));
   return {
     ...imported,
     exercises: imported.exercises.map((e) => ({
       ...e,
-      exerciseId: confidentMatchId(e.name, catalog),
+      exerciseId: resolveExerciseByName(db, e.name),
     })),
   };
 }

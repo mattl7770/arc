@@ -26,7 +26,11 @@ import {
   effectiveReps,
   weightForReps,
 } from '../src/lib/exercise/e1rm.ts';
-import { meanFreshness, muscleFreshness } from '../src/lib/exercise/freshness.ts';
+import {
+  freshnessFromFatigue,
+  meanFreshness,
+  muscleFreshness,
+} from '../src/lib/exercise/freshness.ts';
 import { suggestProgression } from '../src/lib/exercise/progression.ts';
 import { recommendToday } from '../src/lib/exercise/recommend.ts';
 
@@ -134,8 +138,12 @@ console.log('2. freshness: fresh when rested, depleted right after, decays back'
   ];
   const ledger = muscleFreshness(loads, NOW);
   const chest = ledger.find((m) => m.muscle === 'chest');
-  chest.freshness < 50 && chest.state === 'fatigued'
-    ? ok('5 hard chest sets just now → chest reads fatigued (< 50)')
+  // 5 fractional sets → 100·e^(−5/8) = 54. Under the retired linear ramp this
+  // read 38/"fatigued"; the exponential says a five-set chest session is an
+  // ordinary session, not a wipeout, and reserves the bottom of the scale for
+  // the sessions that earn it (see §5b).
+  chest.freshness === 54 && chest.state === 'recovering'
+    ? ok('5 hard chest sets just now → chest reads 54 / recovering')
     : bad('chest fresh now', JSON.stringify(chest));
   ledger.find((m) => m.muscle === 'quads').freshness === 100
     ? ok('an untrained muscle reads 100 / fresh')
@@ -322,6 +330,85 @@ console.log('5. weeklyMuscleSets: fractional weekly volume per muscle');
   chest.sets === 2 && tri.sets === 1
     ? ok('2 bench sets → chest 2.0 (primary), triceps 1.0 (2 × 0.5 secondary)')
     : bad('weekly volume', JSON.stringify({ chest, tri }));
+}
+
+// ---------------------------------------------------------------------------
+// The calibration IS the specification. The owner's 2026-08-14 report — "I just
+// did a whole back day and it only hit related muscles down to 80%, they should
+// have gone to like 20 or 30" — is the reason this block exists: three real
+// sessions, logged the way the app logs them, pinned to the bands they should
+// read. Retuning FRESH_SCALE or the shape of freshnessFromFatigue moves these
+// numbers, and that is the point — you have to come here and say so.
+console.log('5b. freshness calibration: a hard back day, an accessory day, one set');
+{
+  const { db, raw } = freshDb();
+  const sets = (exerciseId, name, n) =>
+    Array.from({ length: n }, () => ({ exercise: name, exerciseId, reps: 9, weightKg: 60 }));
+
+  // A whole back day: 17 working sets over five movements. Nothing exotic —
+  // this is what the seeded catalog's back exercises look like in a real log.
+  const backDay = [
+    ...sets('lat-pulldown', 'Lat Pulldown', 4),
+    ...sets('pull-up', 'Pull-Up', 3),
+    ...sets('barbell-row', 'Barbell Row', 4),
+    ...sets('seated-cable-row', 'Seated Cable Row', 3),
+    ...sets('face-pull', 'Face Pull', 3),
+  ];
+  logAt(db, raw, hoursAgo(0.5), '2026-07-26', 'Back', 'strength', backDay);
+  const back = muscleFreshness(recentMuscleLoads(db, 14, NOW), NOW);
+  const f = (m) => back.find((e) => e.muscle === m).freshness;
+
+  f('lats') >= 20 && f('lats') <= 40
+    ? ok(`hard back day → lats ${f('lats')} (owner's 20-40 band)`)
+    : bad('back day lats', f('lats'));
+  f('upper_back') >= 15 && f('upper_back') <= 40
+    ? ok(`hard back day → upper back ${f('upper_back')}`)
+    : bad('back day upper_back', f('upper_back'));
+  // Synergists take real load but must not read as though they were the focus.
+  f('biceps') > f('lats') && f('biceps') <= 60 && f('rear_delts') <= 60
+    ? ok(`its synergists land mid-scale — biceps ${f('biceps')}, rear delts ${f('rear_delts')}`)
+    : bad('synergists', JSON.stringify({ b: f('biceps'), r: f('rear_delts') }));
+  // Nothing clips. The retired linear model printed 0 for lats AND upper back
+  // AND biceps here, which is three muscles wearing one number.
+  new Set([f('lats'), f('upper_back'), f('biceps')]).size === 3
+    ? ok('three different volumes read as three different numbers — no clipping at zero')
+    : bad('clipped', JSON.stringify([f('lats'), f('upper_back'), f('biceps')]));
+
+  // A light accessory day: three sets of lateral raises and nothing else.
+  const { db: db2, raw: raw2 } = freshDb();
+  logAt(
+    db2,
+    raw2,
+    hoursAgo(0.5),
+    '2026-07-26',
+    'Accessories',
+    'strength',
+    sets('lateral-raise', 'Lateral Raise', 3)
+  );
+  const acc = muscleFreshness(recentMuscleLoads(db2, 14, NOW), NOW).find(
+    (e) => e.muscle === 'side_delts'
+  );
+  acc.freshness >= 60 && acc.freshness <= 80
+    ? ok(`light accessory day (3 sets) → side delts ${acc.freshness}, dented not spent`)
+    : bad('accessory day', JSON.stringify(acc));
+
+  // One set. The floor of the model has to stay quiet, or every reading below
+  // it is noise: a single set is a dent, and the muscle is still fresh.
+  const { db: db3, raw: raw3 } = freshDb();
+  logAt(db3, raw3, hoursAgo(0.5), '2026-07-26', 'One', 'strength', sets('barbell-curl', 'Curl', 1));
+  const one = muscleFreshness(recentMuscleLoads(db3, 14, NOW), NOW).find(
+    (e) => e.muscle === 'biceps'
+  );
+  one.freshness >= 85 && one.freshness <= 90 && one.state === 'fresh'
+    ? ok(`a single hard set → ${one.freshness} / fresh (a dent, not an annihilation)`)
+    : bad('single set', JSON.stringify(one));
+
+  // Monotone and unclipped over the whole realistic range — the property the
+  // `min(1, F/8)` clamp broke.
+  const curve = [1, 2, 4, 8, 12, 16, 24, 32].map((n) => freshnessFromFatigue(n));
+  curve.every((v, i) => i === 0 || v < curve[i - 1]) && curve[curve.length - 1] > 0
+    ? ok(`freshness is strictly monotone in volume and never reaches 0: ${curve.join(' → ')}`)
+    : bad('curve', curve.join(','));
 }
 
 // ---------------------------------------------------------------------------

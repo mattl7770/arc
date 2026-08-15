@@ -14,6 +14,7 @@ import {
   getExercise,
   listExercises,
   musclesByExercise,
+  resolveExerciseByName,
 } from '../src/lib/db/repositories/exercise-catalog.ts';
 
 let pass = 0;
@@ -288,6 +289,60 @@ console.log('6. musclesByExercise batches the mapping for many ids');
     ? ok('returns primary/secondary per id, skips unknown ids')
     : bad('musclesByExercise', JSON.stringify([...map]));
   musclesByExercise(db, []).size === 0 ? ok('empty input → empty map') : bad('empty batch');
+}
+
+// ---------------------------------------------------------------------------
+// The 2026-08-14 freshness fix. A set whose exercise_id is NULL is invisible to
+// muscle freshness, e1RM, PRs and volume alike, and three of the four write
+// paths could produce one — so every path now backstops through this resolver
+// (src/lib/db/repositories/exercise.ts, insertSet).
+console.log('7. resolveExerciseByName: plurals resolve, ambiguity never guesses');
+{
+  const { db } = freshDb();
+  const r = (n) => resolveExerciseByName(db, n);
+
+  r('Lat Pulldown') === 'lat-pulldown' && r('barbell row') === 'barbell-row'
+    ? ok('exact catalog name resolves, case-insensitively')
+    : bad('exact', `${r('Lat Pulldown')} / ${r('barbell row')}`);
+  // The plural is how anyone actually writes a log, and the whole reason the
+  // Coach's strict matcher resolved almost nothing.
+  r('lat pulldowns') === 'lat-pulldown' &&
+  r('Barbell Rows') === 'barbell-row' &&
+  r('face pulls') === 'face-pull' &&
+  r('seated cable rows') === 'seated-cable-row'
+    ? ok('plurals resolve — "lat pulldowns", "Barbell Rows", "face pulls", "seated cable rows"')
+    : bad('plurals', [r('lat pulldowns'), r('Barbell Rows'), r('face pulls')].join());
+  r('Bench Press') === 'barbell-bench-press' && r('bench presses') === 'barbell-bench-press'
+    ? ok('aliases resolve, and "press" does not stem into nonsense')
+    : bad('alias', `${r('Bench Press')} / ${r('bench presses')}`);
+  r('RDL') === 'romanian-deadlift' && r('Pullups') === 'pull-up'
+    ? ok('abbreviations and squashed spellings resolve through aliases')
+    : bad('abbrev', `${r('RDL')} / ${r('Pullups')}`);
+
+  // Confidence discipline: ambiguous stays null rather than guessing. Pinned
+  // the same way db/coach-tools.test.mjs §27 pins it for the Coach.
+  r('Press') === null && r('Bench') === null && r('curls') === null && r('row') === null
+    ? ok('a single ambiguous token never resolves — no guessing')
+    : bad('ambiguity', [r('Press'), r('Bench'), r('curls'), r('row')].join());
+  r('') === null && r('   ') === null && r('Zercher Yoke Carry') === null
+    ? ok('empty and genuinely unknown names stay free text')
+    : bad('unknown', r('Zercher Yoke Carry'));
+
+  // A custom movement joins the same namespace the moment it is created.
+  const id = createCustomExercise(db, {
+    name: 'Meadows Row',
+    equipment: 'barbell',
+    loggingType: 'weight_reps',
+    unilateral: true,
+    primaryMuscles: ['upper_back'],
+  });
+  r('meadows rows') === id
+    ? ok('a custom exercise resolves by name too, plural included')
+    : bad('custom', r('meadows rows'));
+  archiveExercise(db, id);
+  r('meadows rows') === null
+    ? ok('an archived exercise stops claiming names')
+    : bad('archived resolves');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

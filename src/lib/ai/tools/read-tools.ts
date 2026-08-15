@@ -536,11 +536,23 @@ const getTodaySnapshot: CoachTool = {
     const modeDef = getModeDefinition(mode);
     const meals = listTodayMeals(db, date);
     const totals = todayTotals(db, date);
-    const workouts = db.all<{
-      name: string;
-      kind: string;
-      duration_min: number | null;
-    }>('SELECT name, kind, duration_min FROM workouts WHERE date = ? ORDER BY created_at', [date]);
+    // Movements, not a name: sessions have no names since 2026-08-14 (owner),
+    // and "Lat Pulldown, Barbell Row" tells the model far more about the day
+    // than "Back A" ever did. `group_concat(DISTINCT …)` uses SQLite's default
+    // comma separator, which is why the result is split rather than passed on.
+    const workouts = db
+      .all<{ movements: string | null; kind: string; duration_min: number | null }>(
+        `SELECT w.kind, w.duration_min,
+                (SELECT group_concat(DISTINCT s.exercise) FROM workout_sets s
+                  WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS movements
+         FROM workouts w WHERE w.date = ? ORDER BY w.created_at`,
+        [date]
+      )
+      .map((w) => ({
+        kind: w.kind,
+        duration_min: w.duration_min,
+        movements: (w.movements ?? '').split(',').filter((m) => m.trim() !== ''),
+      }));
 
     // Ranked today-first (dueRemindersFor), so the cap below drops the stalest
     // tail FIRST. It is not a guarantee today's own items survive: with more
@@ -1043,16 +1055,27 @@ const getTrainingSummary: CoachTool = {
     const cardioMinutes = daily.reduce((a, d) => a + d.cardio_min, 0);
     const weeks = days / 7;
 
-    const recent = db.all<{
-      date: string;
-      name: string;
-      kind: string;
-      duration_min: number | null;
-    }>(
-      `SELECT date, name, kind, duration_min FROM workouts
-       WHERE date >= ? ORDER BY date DESC, created_at DESC LIMIT 10`,
-      [since]
-    );
+    // Movements rather than a name — see the note in get_today_snapshot.
+    const recent = db
+      .all<{
+        date: string;
+        movements: string | null;
+        kind: string;
+        duration_min: number | null;
+      }>(
+        `SELECT w.date, w.kind, w.duration_min,
+                (SELECT group_concat(DISTINCT s.exercise) FROM workout_sets s
+                  WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS movements
+         FROM workouts w
+         WHERE w.date >= ? ORDER BY w.date DESC, w.created_at DESC LIMIT 10`,
+        [since]
+      )
+      .map((w) => ({
+        date: w.date,
+        kind: w.kind,
+        duration_min: w.duration_min,
+        movements: (w.movements ?? '').split(',').filter((m) => m.trim() !== ''),
+      }));
 
     return json({
       days,

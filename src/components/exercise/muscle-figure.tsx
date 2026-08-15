@@ -12,12 +12,14 @@ import { gaugeTextClass } from '@/components/ui/gauge';
 import { palette } from '@/constants/theme';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
 import {
+  BAR_POINTS,
+  BODY_BAR_POINTS,
   BODY_OUTLINE,
   FIGURE_BODY,
   FIGURE_GRID,
   MUSCLE_OUTLINE,
   barsFor,
-  freshnessAlpha,
+  freshnessFill,
   musclesFor,
   polyBars,
   type Bar,
@@ -53,9 +55,29 @@ import type { Muscle, MuscleFreshness } from '@/lib/exercise/types';
  *      single green, `signalInk.optimal`, the same one `GaugeTrack` already
  *      fills a fresh muscle's bar with, so the figure and the ledger beneath it
  *      speak one language.
- *   3. **Head, hands and feet in neutral grey.** They carry no reading, and
- *      saying so in the drawing is most of why the reference is legible: the eye
- *      learns which regions are data before it reads any of them.
+ *   3. **Head, hands and feet carry no reading**, and the drawing says so.
+ *
+ * ## The fourth round (owner, 2026-08-14)
+ *
+ * *"Muscle freshness still looks a bit wack. Let's try again to make that look
+ * like an actual person with muscles instead of a bunch of odd shaped boxes.
+ * Lets also have spent muscles fade to grey instead of dark green."*
+ *
+ * Both halves are answered in src/lib/exercise/figure.ts and the reasoning
+ * lives there, because both are geometry-and-colour rather than composition:
+ * the **body silhouette is polygons now** (it was the rectangles nobody had
+ * looked at), and the ramp runs **green → grey in colour at full opacity**
+ * rather than one green fading toward the ground. Three consequences reach this
+ * file:
+ *
+ *   - `Mark` draws the body as well as the muscles, since both are polygons.
+ *   - An opaque fill needs no group-opacity wrapper, which is what paid for the
+ *     body's scanline bars inside the view budget. The wrapper still exists and
+ *     is still mandatory below alpha 1 — see the note on `Mark`.
+ *   - Head, hands and feet moved from `hairline` grey to the PLATE colour. They
+ *     had to move: a spent muscle is grey now, and the previous author measured
+ *     the two at 1.32:1. Against the plate it is 3.14:1, and "the page showing
+ *     through" is a stronger way to say "not data" than another grey.
  *
  * ## The ramp cannot be the only carrier, and it is not
  *
@@ -70,10 +92,10 @@ import type { Muscle, MuscleFreshness } from '@/lib/exercise/types';
  *     captions reading "front" and "back" are all VoiceOver can find.
  *   - iOS never descends into an `accessible` ancestor, which is why the hub's
  *     `Pressable` carries that same summary string itself (app/exercise.tsx).
- *   - The fill has a floor (`MUSCLE_ALPHA_FLOOR`, src/lib/exercise/figure.ts,
- *     where the ramp's contrast is measured end to end) so a spent muscle is
- *     still a muscle, and an ink line around every shape so its contour reads at
- *     9.74:1 regardless of how pale the fill has gone.
+ *   - Every reading on the ramp clears WCAG 1.4.11's 3:1 against the plate
+ *     (3.14 spent · 4.82 mid · 7.40 fresh — measured in figure.ts and asserted
+ *     over all 101 values in db/exercise-ai.test.mjs §1), and an ink line rings
+ *     every shape so its contour reads at 9.74:1 whatever the fill is doing.
  *   - {@link FreshnessScale} prints the ramp's ends in words — FRESH at the top,
  *     SPENT at the bottom — so the direction is never inferred.
  *
@@ -143,7 +165,7 @@ function fillFor(props: MuscleFigureProps, muscle: Muscle): Fill {
     // A muscle the ledger does not cover is not a fresh one — it is an unknown,
     // and an unknown draws as an empty contour rather than as a reading.
     if (entry == null) return { color: palette.signalInk.optimal, alpha: 0 };
-    return { color: palette.signalInk.optimal, alpha: freshnessAlpha(entry.freshness) };
+    return freshnessFill(entry.freshness);
   }
   if (props.primary.includes(muscle)) return { color: palette.ink, alpha: 1 };
   if (props.secondary.includes(muscle))
@@ -188,24 +210,41 @@ function barStyle(bar: Bar, i: number, n: number, scale: number, inflate: number
 }
 
 /**
- * One muscle: its ink contour, then its fill.
+ * One shape: its ink contour, then its fill. Used for the muscles and, since
+ * 2026-08-14, for the body silhouette too — the body is polygons now.
  *
  * A blob is one node — its contour is a UNIFORM four-sided `borderWidth`, the
- * legal border shape, and its fill an rgba background, so the line stays at full
- * ink while the fill fades.
+ * legal border shape, and its fill a background colour.
  *
  * A polygon is rasterised once and drawn twice: an inflated copy in ink, then
- * the true-size bars inside a wrapper carrying the alpha. **The alpha belongs on
- * the wrapper, never on the bars.** Consecutive bars deliberately overlap (see
- * `polyBars`'s bleed) so no hairline of ground prints between them; per-bar
- * alpha would composite those overlaps twice and stripe the muscle darker every
- * few points. A group opacity flattens the subtree first, so the overlap is
- * free.
+ * the true-size bars in the fill colour.
  *
- * Returns a Fragment: no wrapper for a blob, exactly one for a poly, and the
- * component itself costs no native view.
+ * **Where the alpha lives.** Consecutive bars deliberately overlap (see
+ * `polyBars`'s bleed) so no hairline of ground prints between them, and a
+ * TRANSLUCENT fill would composite those overlaps twice and stripe the muscle
+ * darker every few points — a bug caught in preview on 2026-08-12. It cannot
+ * happen on the freshness ramp any more, because that ramp is opaque now
+ * (overlapping opaque bars of one colour composite to that colour), but
+ * `muscles` mode still draws translucent ink, so the rule stands and is
+ * enforced structurally: **a fill of alpha < 1 goes on a wrapper `View`, never
+ * on the bars.** At alpha 1 the wrapper is skipped, which is also what pays for
+ * the body's bars.
+ *
+ * Returns a Fragment, so the component itself costs no native view.
  */
-function MuscleMark({ shape, fill, scale }: { shape: Shape; fill: Fill; scale: number }) {
+function Mark({
+  shape,
+  fill,
+  scale,
+  outline,
+  barTarget,
+}: {
+  shape: Shape;
+  fill: Fill;
+  scale: number;
+  outline: number;
+  barTarget: number;
+}) {
   if (shape.kind === 'blob') {
     return (
       <View
@@ -213,38 +252,41 @@ function MuscleMark({ shape, fill, scale }: { shape: Shape; fill: Fill; scale: n
           blobStyle(shape, scale),
           {
             backgroundColor: fill.alpha > 0 ? withAlpha(fill.color, fill.alpha) : 'transparent',
-            borderWidth: MUSCLE_OUTLINE * scale,
+            borderWidth: outline * scale,
             borderColor: palette.ink,
           },
         ]}
       />
     );
   }
-  const n = barsFor(shape, scale);
-  const bars = polyBars(shape.pts, n);
+  const bars = polyBars(shape.pts, barsFor(shape, scale, barTarget));
+  const fillBars =
+    fill.alpha > 0
+      ? bars.map((bar, i) => (
+          <View
+            key={`fill-${i}`}
+            style={[barStyle(bar, i, bars.length, scale, 0), { backgroundColor: fill.color }]}
+          />
+        ))
+      : null;
   return (
     <>
       {bars.map((bar, i) => (
-        <View
-          key={`ink-${i}`}
-          style={[barStyle(bar, i, bars.length, scale, MUSCLE_OUTLINE), INK]}
-        />
+        <View key={`ink-${i}`} style={[barStyle(bar, i, bars.length, scale, outline), INK]} />
       ))}
-      {fill.alpha > 0 ? (
+      {fillBars == null ? null : fill.alpha < 1 ? (
         <View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: fill.alpha }]}>
-          {bars.map((bar, i) => (
-            <View
-              key={`fill-${i}`}
-              style={[barStyle(bar, i, bars.length, scale, 0), { backgroundColor: fill.color }]}
-            />
-          ))}
+          {fillBars}
         </View>
-      ) : null}
+      ) : (
+        fillBars
+      )}
     </>
   );
 }
 
 const INK: ViewStyle = { backgroundColor: palette.ink };
+const INK_FILL: Fill = { color: palette.ink, alpha: 1 };
 
 function Figure({
   side,
@@ -261,30 +303,41 @@ function Figure({
   return (
     <View>
       <View style={{ width, height }}>
-        {/* Pass 1 — the silhouette's contour. Every block inflated, in ink;
+        {/* Pass 1 — the silhouette's contour. Every part inflated, in ink;
             whatever a neighbour does not cover in pass 2 survives as the
             outline, so the joints fuse and only the outside is drawn. */}
         {FIGURE_BODY.map((b) => (
-          <View key={`o-${b.part}`} style={[blobStyle(b.shape, scale, BODY_OUTLINE), INK]} />
+          <Mark
+            key={`o-${b.part}`}
+            shape={b.shape}
+            fill={INK_FILL}
+            scale={scale}
+            outline={BODY_OUTLINE}
+            barTarget={BODY_BAR_POINTS}
+          />
         ))}
         {/* Pass 2 — the body. Muscle ground in `paper-deep`; head, hands and
-            feet in the neutral `hairline`, because they are not data. */}
+            feet in the PLATE colour, because they are not data — see the
+            `neutral` note on FIGURE_BODY for why they are no longer grey. */}
         {FIGURE_BODY.map((b) => (
-          <View
+          <Mark
             key={`b-${b.part}`}
-            style={[
-              blobStyle(b.shape, scale),
-              { backgroundColor: b.neutral ? palette.hairline : palette.paperDeep },
-            ]}
+            shape={b.shape}
+            fill={{ color: b.neutral ? palette.paperHi : palette.paperDeep, alpha: 1 }}
+            scale={scale}
+            outline={0}
+            barTarget={BODY_BAR_POINTS}
           />
         ))}
         {/* Pass 3 — the muscles, every one of them, in declaration order. */}
         {musclesFor(side).map((m, i) => (
-          <MuscleMark
+          <Mark
             key={`${m.muscle}-${i}`}
             shape={m.shape}
             fill={fillFor(props, m.muscle)}
             scale={scale}
+            outline={MUSCLE_OUTLINE}
+            barTarget={BAR_POINTS}
           />
         ))}
       </View>
@@ -304,11 +357,12 @@ function Figure({
  * away; it is printed in the section's own tally on both screens, where a number
  * belongs.)
  *
- * The bands are the SAME composite the muscles are: translucent
- * `signal-optimal-ink` over a `paper-deep` ground, at the same alphas
- * {@link freshnessAlpha} produces. Not an approximation of the ramp — the ramp.
- * A key drawn any other way is a key to something else, which is what condemned
- * the three flat swatches this component used to ship.
+ * The bands are the SAME colours the muscles are — {@link freshnessFill} at
+ * fourteen sampled readings. Not an approximation of the ramp: the ramp. A key
+ * drawn any other way is a key to something else, which is what condemned the
+ * three flat swatches this component used to ship. (Since 2026-08-14 the ramp
+ * runs green → grey rather than green → pale green, so the bar now shows a hue
+ * turning as well as a value dropping.)
  *
  * The track's border is `border border-hairline` — uniform on all four edges,
  * the legal shape. At 2.29:1 on the plate it is under the 3:1 floor; that is the
@@ -328,10 +382,7 @@ function FreshnessScale({ height }: { height: number }) {
             key={band}
             className="w-full flex-1"
             style={{
-              backgroundColor: withAlpha(
-                palette.signalInk.optimal,
-                freshnessAlpha(100 - (band * 100) / (SCALE_BANDS - 1))
-              ),
+              backgroundColor: freshnessFill(100 - (band * 100) / (SCALE_BANDS - 1)).color,
             }}
           />
         ))}

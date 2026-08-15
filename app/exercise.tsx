@@ -18,7 +18,7 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { todayISODate } from '@/lib/db/date';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
-import { dayLabel, sessionDetail } from '@/lib/exercise/format';
+import { dayLabel, sessionDetail, sessionTitle } from '@/lib/exercise/format';
 import { volumeAttention } from '@/lib/exercise/volume';
 import type { MuscleVolume, Recommendation, RoutineListItem } from '@/lib/exercise/types';
 import { useTrainingHub } from '@/hooks/use-training';
@@ -106,7 +106,9 @@ export default function ExerciseScreen() {
     if (recommendation.kind === 'routine') {
       router.push({
         pathname: '/workout-live',
-        params: { routineId: recommendation.routineId, name: recommendation.routineName },
+        // No `name`: the logger stopped seeding a session name in 2026-08-14's
+        // round, because sessions no longer have one.
+        params: { routineId: recommendation.routineId },
       });
     } else if (recommendation.kind === 'muscles') {
       router.push({
@@ -253,7 +255,7 @@ export default function ExerciseScreen() {
                     onStart={() =>
                       router.push({
                         pathname: '/workout-live',
-                        params: { routineId: r.id, name: r.name },
+                        params: { routineId: r.id },
                       })
                     }
                     onEdit={() => router.push({ pathname: '/routine-edit', params: { id: r.id } })}
@@ -318,6 +320,15 @@ export default function ExerciseScreen() {
         Recent sessions. No tally on the label: the hook reads only the latest
         six, so a count here would claim to be the whole history (00-design-spec
         §5 — a number on screen has to be the number it looks like).
+
+        Each row OPENS the session (owner, 2026-08-14: *"Introduce the ability
+        to edit and view past workouts"*). It pushes the same structured logger
+        the session was recorded in, seeded from what was stored — a past
+        workout and a live one are the same object, so they get the same editor
+        rather than a third one.
+
+        The title is the movements, not a name: sessions have no names any more
+        (owner, same round), and `sessionTitle` says why that reads better.
       */}
       <View className="mt-7">
         <Block device="plate">
@@ -331,17 +342,28 @@ export default function ExerciseScreen() {
               {sessions.map((s, index) => (
                 <View key={s.id}>
                   <Divider first={index === 0} />
-                  <View className="flex-row gap-3 py-2.5">
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${dayLabel(s.date, today)}: ${sessionTitle(s)}, ${sessionDetail(
+                      s
+                    )}. Open to view or edit.`}
+                    onPress={() =>
+                      router.push({ pathname: '/workout-live', params: { workoutId: s.id } })
+                    }
+                    className="min-h-[44px] flex-row items-center gap-3 py-2.5 active:opacity-60">
                     <Text className="w-16 pt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
                       {dayLabel(s.date, today)}
                     </Text>
                     <View className="flex-1">
-                      <Text className="font-serif text-[15px] leading-5 text-ink">{s.name}</Text>
+                      <Text className="font-serif text-[15px] leading-5 text-ink">
+                        {sessionTitle(s)}
+                      </Text>
                       <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">
                         {sessionDetail(s)}
                       </Text>
                     </View>
-                  </View>
+                    <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+                  </Pressable>
                 </View>
               ))}
             </View>

@@ -29,10 +29,11 @@ import {
   FIGURE_BODY,
   FIGURE_GRID,
   FIGURE_MUSCLES,
-  MUSCLE_ALPHA_FLOOR,
+  MUSCLE_FRESH,
+  MUSCLE_SPENT,
   coveredByBody,
   figureViewCount,
-  freshnessAlpha,
+  freshnessFill,
   mappedMuscles,
   musclesFor,
   polyBars,
@@ -155,13 +156,15 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
   // The contour is drawn by inflating each block by BODY_OUTLINE, so the
   // INFLATED body — not just its fill — has to stay on the grid, or the
   // silhouette's outline clips against the edge of the figure box.
-  FIGURE_BODY.every(
-    ({ shape: b }) =>
+  FIGURE_BODY.every(({ shape }) => {
+    const b = shapeBounds(shape);
+    return (
       b.x - BODY_OUTLINE >= 0 &&
       b.y - BODY_OUTLINE >= 0 &&
       b.x + b.w + BODY_OUTLINE <= FIGURE_GRID.w &&
       b.y + b.h + BODY_OUTLINE <= FIGURE_GRID.h
-  )
+    );
+  })
     ? ok('the inflated silhouette stays inside the grid (the contour never clips)')
     : bad('body outline clips the grid');
 
@@ -169,10 +172,16 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
   // silently lose a muscle. Rasterised, not bounding-box: the two heads of a
   // quad, and a lat beside its erector column, have overlapping BOXES and share
   // no area — a box test would condemn correct anatomy.
+  //
+  // Shapes of the SAME muscle are exempt, and that is not a loophole: the two
+  // heads of a quadriceps carry ONE reading, so where they touch nothing is
+  // lost. What this guards is a DIFFERENT muscle's reading being painted over,
+  // which is unrecoverable.
   const overlaps = [];
   for (const list of [musclesFor('front'), musclesFor('back')]) {
     for (let a = 0; a < list.length; a++) {
       for (let b = a + 1; b < list.length; b++) {
+        if (list[a].muscle === list[b].muscle) continue;
         if (shapesOverlap(list[a].shape, list[b].shape)) {
           overlaps.push(`${list[a].muscle}/${list[b].muscle}`);
         }
@@ -180,7 +189,7 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     }
   }
   overlaps.length === 0
-    ? ok('no two muscle shapes on a side overlap')
+    ? ok('no two DIFFERENT muscles overlap on a side')
     : bad('overlapping shapes', overlaps.join(' '));
 
   // A polygon has to rasterise into something. An empty bar list is a shape
@@ -192,24 +201,87 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     ? ok('every polygon rasterises to one span on every scanline')
     : bad('degenerate polygons', empty.map((m) => m.muscle).join(' '));
 
+  // The BODY is polygons too since 2026-08-14 — the fix that actually mattered,
+  // because a rectangular torso over a narrower rectangular waist reads as
+  // boxes whatever is drawn on top of it. Same degeneracy check.
+  const emptyBody = FIGURE_BODY.filter(
+    (b) => b.shape.kind === 'poly' && polyBars(b.shape.pts, 8).length < 8
+  );
+  emptyBody.length === 0
+    ? ok('every body polygon rasterises cleanly too')
+    : bad('degenerate body', emptyBody.map((b) => b.part).join(' '));
+
   // The drawing lives inside two scrolling screens, so its node count is a
-  // budget. Counted, never assumed — see figureViewCount.
+  // budget. Counted, never assumed — see figureViewCount. The ceiling rose from
+  // 600 to 900 to pay for the polygonal body and finer muscle bars; what kept it
+  // reachable was making every DOME a blob (skull, shoulder caps, biceps and
+  // triceps, glutes, the inner calf belly, hands, feet), one view each.
   const hub = figureViewCount(118);
   const full = figureViewCount(128);
-  full < 600
-    ? ok(`the figure pair costs ${hub} views at 118pt and ${full} at 128pt (budget 600)`)
+  full <= 900
+    ? ok(`the figure pair costs ${hub} views at 118pt and ${full} at 128pt (ceiling 900)`)
     : bad('view budget blown', String(full));
 
-  // The ramp: full green is FRESH, faded is spent, and the floor is what keeps
-  // a spent muscle a muscle rather than a hole in the body.
-  freshnessAlpha(100) === 1 && freshnessAlpha(0) === MUSCLE_ALPHA_FLOOR
-    ? ok(`the opacity ramp runs ${MUSCLE_ALPHA_FLOOR} (spent) → 1 (fresh)`)
-    : bad('ramp ends', `${freshnessAlpha(0)}..${freshnessAlpha(100)}`);
+  // --- the ramp (owner, 2026-08-14: spent fades to GREY, not to pale green) --
+  const relLum = (h) => {
+    const c = [1, 3, 5]
+      .map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  const ratio = (a, b) => {
+    const x = relLum(a);
+    const y = relLum(b);
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  };
+  // paper-hi — the plate the figure sits on, and (since this round) the colour
+  // the head, hands and feet are drawn in.
+  const PLATE = '#F5F3EC';
+  const at = (f) => freshnessFill(f).color;
+
+  at(100).toLowerCase() === MUSCLE_FRESH.toLowerCase() &&
+  at(0).toLowerCase() === MUSCLE_SPENT.toLowerCase() &&
+  freshnessFill(50).alpha === 1
+    ? ok(`the ramp runs ${MUSCLE_SPENT} spent → ${MUSCLE_FRESH} fresh, opaque throughout`)
+    : bad('ramp ends', JSON.stringify([freshnessFill(0), freshnessFill(100)]));
+
+  // WCAG 1.4.11: a graphical object needs 3:1 against the surface it sits on —
+  // EVERY reading, not just the fresh end. That is what a floor is for.
+  const failing = [];
+  for (let f = 0; f <= 100; f++) if (ratio(at(f), PLATE) < 3) failing.push(f);
+  failing.length === 0
+    ? ok(
+        `every reading clears 3:1 on the plate — 0: ${ratio(at(0), PLATE).toFixed(2)}, ` +
+          `50: ${ratio(at(50), PLATE).toFixed(2)}, 100: ${ratio(at(100), PLATE).toFixed(2)}`
+      )
+    : bad('contrast floor breached at', failing.join(','));
+
+  // Head, hands and feet draw in the PLATE colour precisely so a spent muscle
+  // cannot be mistaken for one of them. Their old `hairline` grey sat 1.32:1
+  // from the spent end, which the previous author flagged and this answers.
+  ratio(at(0), PLATE) >= 3
+    ? ok(`the spent end clears the non-data parts at ${ratio(at(0), PLATE).toFixed(2)}:1`)
+    : bad('spent collides with the neutral parts');
+
+  // Monotone in LUMINANCE the whole way and the two ends measurably apart, so
+  // the reading survives a greyscale render as well as a hue-blind one.
   let monotone = true;
-  for (let f = 1; f <= 100; f++) if (freshnessAlpha(f) <= freshnessAlpha(f - 1)) monotone = false;
-  monotone && freshnessAlpha(-50) === MUSCLE_ALPHA_FLOOR && freshnessAlpha(1e9) === 1
-    ? ok('the ramp is monotone and clamps outside 0-100')
-    : bad('ramp shape');
+  for (let f = 1; f <= 100; f++) if (relLum(at(f)) >= relLum(at(f - 1))) monotone = false;
+  const ends = ratio(at(0), at(100));
+  monotone && ends >= 2
+    ? ok(`it darkens monotonically toward fresh; the ends are ${ends.toFixed(2)}:1 apart`)
+    : bad('ramp shape', `monotone=${monotone} ends=${ends.toFixed(2)}`);
+
+  // Clamped outside 0-100, and no mud in the middle: green stays the leading
+  // channel almost the whole way, so the interpolation never turns olive.
+  const mid = at(50);
+  const midG = parseInt(mid.slice(3, 5), 16);
+  at(-50) === at(0) &&
+  at(1e9) === at(100) &&
+  midG > parseInt(mid.slice(1, 3), 16) &&
+  midG > parseInt(mid.slice(5, 7), 16)
+    ? ok(`the ramp clamps outside 0-100, and its midpoint ${mid} is still a green, not mud`)
+    : bad('ramp clamp/midpoint', mid);
 }
 
 // ---------------------------------------------------------------------------
@@ -519,13 +591,26 @@ console.log('8. hand-set freshness anchors (0037): assert, decay, supersede, cle
     ? ok('an anchor of 55 reads 55')
     : bad('anchor 55');
 
-  // It DECAYS on the muscle's own clock — τ = 72/3 = 24h for quads, so three
-  // days after "fully spent" the muscle is ~95% recovered, not still at zero.
+  // It DECAYS on the muscle's own clock — τ = 72/3 = 24h for quads. A
+  // hand-asserted ZERO is deliberately worse than any session can produce (see
+  // ANCHOR_FLOOR_PERCENT in freshness.ts): it comes back over roughly five
+  // days, not three, so "I am completely wrecked" no longer recovers at exactly
+  // the rate one ordinary hard session did under the retired linear model.
   const later = new Date(2026, 7, 15, 12, 0, 0);
   const decayed = quads([], anchorNow('quads', 0, now), later);
-  decayed.freshness >= 90
+  decayed.freshness >= 70 && decayed.freshness < 90
     ? ok(`a "fully spent" anchor recovers to ${decayed.freshness} after three days`)
     : bad('anchor did not decay', JSON.stringify(decayed));
+  const muchLater = quads([], anchorNow('quads', 0, now), new Date(2026, 7, 17, 12, 0, 0));
+  muchLater.freshness >= 90
+    ? ok(`…and to ${muchLater.freshness} after five`)
+    : bad('anchor never recovers', JSON.stringify(muchLater));
+  // Anything the adjuster can write round-trips exactly through the new
+  // exponential inverse — the contract the screen depends on, since every tap
+  // writes and immediately re-reads.
+  [10, 20, 40, 55, 70, 90, 100].every((v) => quads([], anchorNow('quads', v, now)).freshness === v)
+    ? ok('every value the adjuster can write round-trips through the model exactly')
+    : bad('anchor round-trip');
 
   // Sets BEFORE the anchor are superseded — the assertion already accounts for
   // them, so replaying them would double-count.

@@ -12,7 +12,12 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { getExercise } from '@/lib/db/repositories/exercise-catalog';
-import { logWorkout } from '@/lib/db/repositories/exercise';
+import {
+  deleteWorkout,
+  getWorkoutDetail,
+  logWorkout,
+  replaceWorkout,
+} from '@/lib/db/repositories/exercise';
 import { getRoutine, touchRoutineStarted } from '@/lib/db/repositories/routines';
 import {
   lastSessionSets,
@@ -22,13 +27,14 @@ import {
 import { restSecFor } from '@/lib/exercise/constants';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
 import {
+  dayLabel,
   displayWeight,
   formatClock,
   setTypeTag,
   toCanonicalKg,
   weightSpec,
 } from '@/lib/exercise/format';
-import type { LoggingType, Mechanic, SetType } from '@/lib/exercise/types';
+import type { LoggingType, Mechanic, SetType, WorkoutDetail } from '@/lib/exercise/types';
 import { cancelRestAlert, scheduleRestAlert } from '@/lib/notifications/rest-timer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import type { UnitPreferences } from '@/lib/user/types';
@@ -200,11 +206,74 @@ function buildBlock(
 }
 
 /**
- * Initial blocks: from a saved workout (targets + rest per line), else from an
- * explicit exercise-id list (the hub's freshest-muscle recommendation), else
- * empty (a blank sheet — add exercises as you go).
+ * Rebuild the editor's blocks from a session already in the database — the
+ * whole of "view and edit a past workout" (owner, 2026-08-14).
+ *
+ * Stored sets are a flat, ordered list; the editor's shape is one block per
+ * exercise. They regroup on a RUN of consecutive sets, not on the exercise id,
+ * so a session that went bench → row → bench comes back as three blocks in that
+ * order rather than two with the order destroyed. That matters because the
+ * order is the only record of how the session was actually performed, and a
+ * superset is exactly an interleave.
+ *
+ * Every set comes back `done` — it happened — and carries no PR flag: PRs are
+ * awarded live, against the best e1RM *before* the session, and re-awarding
+ * them while editing a two-week-old workout would be a stamp about the wrong
+ * moment. A set whose exercise has since been deleted from the catalog keeps
+ * its stored name and is dropped from the editor rather than crashing it; the
+ * `prev`/`bestE1rm` lookups are the live logger's and are simply unused here.
  */
-function initialBlocks(routineId: string | undefined, exerciseIds: string[]): LiveBlock[] {
+function blocksFromWorkout(detail: WorkoutDetail, units: UnitPreferences): LiveBlock[] {
+  const blocks: LiveBlock[] = [];
+  for (const s of detail.sets) {
+    const last = blocks[blocks.length - 1];
+    if (!last || last.exerciseId !== s.exerciseId || s.exerciseId == null) {
+      const built = s.exerciseId == null ? null : buildBlock(s.exerciseId, 0, null);
+      if (!built) continue;
+      built.sets = [];
+      built.linkedToNext = false;
+      blocks.push(built);
+    }
+    const block = blocks[blocks.length - 1]!;
+    block.sets.push({
+      key: nextKey(),
+      weight: s.weightKg == null ? '' : String(displayWeight(s.weightKg, units)),
+      reps: s.reps == null ? '' : String(s.reps),
+      rpe: s.rpe == null ? '' : String(s.rpe),
+      setType: s.setType,
+      done: true,
+      pr: false,
+    });
+  }
+  // Restore the superset bind: two adjacent blocks whose sets shared a group id
+  // were one object, and the editor draws them fused again.
+  const groupOf = new Map<string, number | null>();
+  for (const s of detail.sets) {
+    if (s.exerciseId != null && !groupOf.has(s.exerciseId)) {
+      groupOf.set(s.exerciseId, s.supersetGroup);
+    }
+  }
+  for (let i = 0; i < blocks.length - 1; i++) {
+    const a = groupOf.get(blocks[i]!.exerciseId);
+    const b = groupOf.get(blocks[i + 1]!.exerciseId);
+    if (a != null && a === b) blocks[i]!.linkedToNext = true;
+  }
+  return blocks.filter((b) => b.sets.length > 0);
+}
+
+/**
+ * Initial blocks: from a session already logged (view/edit), else from a saved
+ * workout (targets + rest per line), else from an explicit exercise-id list (the
+ * hub's freshest-muscle recommendation), else empty (a blank sheet — add
+ * exercises as you go).
+ */
+function initialBlocks(
+  workout: WorkoutDetail | undefined,
+  routineId: string | undefined,
+  exerciseIds: string[],
+  units: UnitPreferences
+): LiveBlock[] {
+  if (workout) return blocksFromWorkout(workout, units);
   if (routineId) {
     const routine = getRoutine(getDb(), routineId);
     if (routine) {
@@ -219,23 +288,23 @@ function initialBlocks(routineId: string | undefined, exerciseIds: string[]): Li
 export default function WorkoutLiveScreen() {
   const params = useLocalSearchParams<{
     routineId?: string | string[];
-    name?: string;
+    workoutId?: string | string[];
     exerciseIds?: string | string[];
   }>();
   const routineId = Array.isArray(params.routineId) ? params.routineId[0] : params.routineId;
-  const seedName = Array.isArray(params.name) ? params.name[0] : params.name;
+  const workoutId = Array.isArray(params.workoutId) ? params.workoutId[0] : params.workoutId;
   const idsParam = Array.isArray(params.exerciseIds) ? params.exerciseIds[0] : params.exerciseIds;
   const exerciseIds = idsParam ? idsParam.split(',').filter(Boolean) : [];
-  return <WorkoutLive routineId={routineId} seedName={seedName} exerciseIds={exerciseIds} />;
+  return <WorkoutLive routineId={routineId} workoutId={workoutId} exerciseIds={exerciseIds} />;
 }
 
 function WorkoutLive({
   routineId,
-  seedName,
+  workoutId,
   exerciseIds,
 }: {
   routineId?: string;
-  seedName?: string;
+  workoutId?: string;
   exerciseIds: string[];
 }) {
   const router = useRouter();
@@ -243,10 +312,24 @@ function WorkoutLive({
   const { units } = useUnitPreferences();
   const spec = useMemo(() => weightSpec(units), [units]);
 
+  // The session being corrected, read once. `editing` is the whole mode switch:
+  // no elapsed clock, no rest timer, "Save changes" instead of "Finish", and a
+  // Delete. Read in the initializer because op-sqlite is synchronous, so there
+  // is no loading state to render (the pattern of every hook in src/hooks).
+  const [stored] = useState<WorkoutDetail | undefined>(() =>
+    workoutId ? getWorkoutDetail(getDb(), workoutId) : undefined
+  );
+  const editing = stored != null;
+
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(startedAt);
-  const [name, setName] = useState(seedName ?? '');
-  const [blocks, setBlocks] = useState<LiveBlock[]>(() => initialBlocks(routineId, exerciseIds));
+  const [blocks, setBlocks] = useState<LiveBlock[]>(() =>
+    initialBlocks(stored, routineId, exerciseIds, units)
+  );
+  // Editing starts CLEAN. A past session is already full of data, so the live
+  // logger's "anything typed means unsaved" test would prompt to discard on the
+  // way out of a screen that was only ever read.
+  const [dirty, setDirty] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [restEndsAt, setRestEndsAt] = useState<number | null>(null);
   // The id of the pending OS rest-alert (to cancel/replace it). null when none.
@@ -280,26 +363,36 @@ function WorkoutLive({
   const hasData = blocks.some((b) =>
     b.sets.some((s) => s.done || s.reps !== '' || s.weight !== '')
   );
-  const canFinish = name.trim() !== '' && hasData;
+  // A session no longer needs a name to be finishable — workouts have no names
+  // (owner, 2026-08-14). Sets are the whole requirement. When editing, an empty
+  // session is still savable: deleting every set is how you correct a workout
+  // that never happened, and the confirm below asks before it lands.
+  const canFinish = editing || hasData;
+  const unsaved = editing ? dirty : hasData;
 
-  // Guard an accidental back from vaporising an unsaved workout.
+  // Guard an accidental back from vaporising unsaved work.
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', (e) => {
-      if (savedRef.current || (!hasData && name.trim() === '')) return;
+      if (savedRef.current || !unsaved) return;
       e.preventDefault();
-      Alert.alert('Discard this workout?', 'Nothing has been saved yet.', [
-        { text: 'Keep logging', style: 'cancel' },
-        {
-          text: 'Discard',
-          style: 'destructive',
-          onPress: () => navigation.dispatch(e.data.action),
-        },
-      ]);
+      Alert.alert(
+        editing ? 'Discard these changes?' : 'Discard this workout?',
+        editing ? 'The session stays as it was.' : 'Nothing has been saved yet.',
+        [
+          { text: editing ? 'Keep editing' : 'Keep logging', style: 'cancel' },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => navigation.dispatch(e.data.action),
+          },
+        ]
+      );
     });
     return unsub;
-  }, [navigation, hasData, name]);
+  }, [navigation, unsaved, editing]);
 
   const patchSet = (blockKey: number, setKey: number, patch: Partial<Omit<LiveSet, 'key'>>) => {
+    setDirty(true);
     setBlocks((prev) =>
       prev.map((b) =>
         b.key !== blockKey
@@ -310,6 +403,7 @@ function WorkoutLive({
   };
 
   const addSet = (blockKey: number) => {
+    setDirty(true);
     setBlocks((prev) =>
       prev.map((b) =>
         b.key !== blockKey ? b : { ...b, sets: [...b.sets, blankSet(b.sets[b.sets.length - 1])] }
@@ -318,6 +412,7 @@ function WorkoutLive({
   };
 
   const removeSet = (blockKey: number, setKey: number) => {
+    setDirty(true);
     setBlocks((prev) =>
       prev.map((b) =>
         b.key !== blockKey ? b : { ...b, sets: b.sets.filter((s) => s.key !== setKey) }
@@ -332,14 +427,20 @@ function WorkoutLive({
 
   const addExercise = (exerciseId: string) => {
     const block = buildBlock(exerciseId, 1, null);
-    if (block) setBlocks((prev) => [...prev, block]);
+    if (block) {
+      setDirty(true);
+      setBlocks((prev) => [...prev, block]);
+    }
   };
 
-  const removeBlock = (blockKey: number) =>
+  const removeBlock = (blockKey: number) => {
+    setDirty(true);
     setBlocks((prev) => prev.filter((b) => b.key !== blockKey));
+  };
 
   /** Group / ungroup a block with the one below it into a superset. */
   const toggleLink = (blockKey: number) => {
+    setDirty(true);
     setBlocks((prev) =>
       prev.map((b) => (b.key === blockKey ? { ...b, linkedToNext: !b.linkedToNext } : b))
     );
@@ -349,7 +450,9 @@ function WorkoutLive({
   const toggleDone = (block: LiveBlock, set: LiveSet) => {
     const done = !set.done;
     let pr = set.pr;
-    if (done && WEIGHT_LOGGING.has(block.loggingType)) {
+    // Editing a past session awards no PRs and starts no rest timer: both are
+    // claims about right now, and this set happened days ago.
+    if (done && !editing && WEIGHT_LOGGING.has(block.loggingType)) {
       const weightKg = set.weight.trim() === '' ? null : toCanonicalKg(Number(set.weight), units);
       const reps = set.reps.trim() === '' ? null : Number(set.reps);
       const rpe = set.rpe.trim() === '' ? null : Number(set.rpe);
@@ -361,7 +464,7 @@ function WorkoutLive({
       }
     }
     patchSet(block.key, set.key, { done, pr: done ? pr : false });
-    if (done && block.restSec && block.restSec > 0) {
+    if (done && !editing && block.restSec && block.restSec > 0) {
       setRestEndsAt(Date.now() + block.restSec * 1000);
       armRestAlert(block.restSec);
     }
@@ -403,25 +506,68 @@ function WorkoutLive({
     const durationMin = Math.round((Date.now() - startedAt) / 60_000);
     try {
       const db = getDb();
-      logWorkout(
-        db,
-        {
-          date: todayISODate(),
-          name: name.trim(),
-          kind: 'strength',
-          durationMin: durationMin > 0 ? durationMin : null,
-          routineId: routineId ?? null,
-        },
-        sets
-      );
-      if (routineId) touchRoutineStarted(db, routineId, new Date().toISOString());
+      if (stored) {
+        // Correcting a past session: its date, kind and duration are facts
+        // about that day and are left exactly as they were. Only the sets — the
+        // thing the editor edits — are rewritten.
+        replaceWorkout(
+          db,
+          stored.id,
+          { kind: stored.kind, durationMin: stored.durationMin, notes: stored.notes },
+          sets
+        );
+      } else {
+        // No name: workouts don't have them (owner, 2026-08-14). The column
+        // takes '' from the repository and nothing renders it.
+        logWorkout(
+          db,
+          {
+            date: todayISODate(),
+            kind: 'strength',
+            durationMin: durationMin > 0 ? durationMin : null,
+            routineId: routineId ?? null,
+          },
+          sets
+        );
+        if (routineId) touchRoutineStarted(db, routineId, new Date().toISOString());
+      }
       disarmRestAlert();
       savedRef.current = true;
       router.back();
     } catch (error) {
-      console.warn('[exercise] live workout save failed', error);
+      console.warn('[exercise] workout save failed', error);
       Alert.alert('Save failed', 'Nothing was changed. Please try again.');
     }
+  };
+
+  /**
+   * Delete the whole session. Two taps, because the workout log is execution
+   * history with no server copy and no undo — the destructive style plus a named
+   * consequence is the pattern every other delete in the app uses.
+   */
+  const removeWorkout = () => {
+    if (!stored) return;
+    Alert.alert(
+      'Delete this session?',
+      'Its sets go with it, and the freshness and volume it contributed disappear. This cannot be undone.',
+      [
+        { text: 'Keep it', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            try {
+              deleteWorkout(getDb(), stored.id);
+              savedRef.current = true;
+              router.back();
+            } catch (error) {
+              console.warn('[exercise] workout delete failed', error);
+              Alert.alert('Delete failed', 'The session is unchanged. Please try again.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Cancel any pending OS rest alert if the screen is left without finishing.
@@ -438,29 +584,39 @@ function WorkoutLive({
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets>
         <View className="pt-2">
-          <StackHeader title="Workout" />
+          <StackHeader title={editing ? 'Session' : 'Workout'} />
         </View>
 
-        {/* Elapsed — a measurement, so mono; its caption is the label voice. */}
+        {/*
+          The clock line. Live, it is the elapsed timer; editing, it is the day
+          the session happened and how long it took — the same slot, because
+          both answer "when is this workout". The session-name input that used
+          to sit under it is GONE (owner, 2026-08-14: *"Workouts dont need
+          names, remove this"*), and nothing replaced it: the movements below
+          are the session's identity.
+        */}
         <View className="mt-2 flex-row items-baseline gap-2">
-          <Text className="font-mono text-2xl text-ink">
-            {formatClock((now - startedAt) / 1000)}
-          </Text>
-          <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-            elapsed
-          </Text>
-        </View>
-
-        {/* Session name — recessed stock: you write into it. */}
-        <View className="mt-2 min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
-          <TextInput
-            value={name}
-            onChangeText={setName}
-            placeholder="Session name — Upper A…"
-            placeholderTextColor={palette.inkMuted}
-            className="py-2.5 font-serif text-[15px] text-ink"
-            accessibilityLabel="Session name"
-          />
+          {editing ? (
+            <>
+              <Text className="font-mono text-2xl text-ink">
+                {dayLabel(stored.date, todayISODate())}
+              </Text>
+              {stored.durationMin != null ? (
+                <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                  {Math.round(stored.durationMin)} min
+                </Text>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <Text className="font-mono text-2xl text-ink">
+                {formatClock((now - startedAt) / 1000)}
+              </Text>
+              <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                elapsed
+              </Text>
+            </>
+          )}
         </View>
 
         {/*
@@ -483,7 +639,9 @@ function WorkoutLive({
         */}
         {blocks.length === 0 ? (
           <Text className="mt-8 font-serif text-[14px] leading-6 text-ink-secondary">
-            Nothing logged yet. Add the first exercise to start recording sets.
+            {editing
+              ? 'This session has no sets left. Save to keep it empty, or delete it.'
+              : 'Nothing logged yet. Add the first exercise to start recording sets.'}
           </Text>
         ) : (
           <View className="mt-6">
@@ -552,7 +710,7 @@ function WorkoutLive({
         */}
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Finish workout"
+          accessibilityLabel={editing ? 'Save changes' : 'Finish workout'}
           accessibilityState={{ disabled: !canFinish }}
           disabled={!canFinish}
           onPress={finish}
@@ -563,9 +721,25 @@ function WorkoutLive({
             className={`font-label text-[15px] font-semibold ${
               canFinish ? 'text-pine-on' : 'text-ink-muted'
             }`}>
-            Finish workout
+            {editing ? 'Save changes' : 'Finish workout'}
           </Text>
         </Pressable>
+
+        {/* Deleting the session. Muted ink, exactly as protocol-edit and
+            screening-form draw theirs: not the accent, which belongs to the one
+            forward action above, and emphatically not signal `poor` — signal
+            colour marks biological state and never interface chrome (the
+            firewall, 00-design-spec.md §2). The weight of the act lives in the
+            confirm, which is where it can actually be read. */}
+        {editing ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Delete this session"
+            onPress={removeWorkout}
+            className="mt-3 min-h-[44px] items-center justify-center active:opacity-60">
+            <Text className="font-label text-[13px] text-ink-muted">Delete session</Text>
+          </Pressable>
+        ) : null}
       </ScrollView>
 
       {/* Rest timer — a quiet docked line, no modal, no glow. Foreground only. */}

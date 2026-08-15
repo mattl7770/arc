@@ -10,12 +10,17 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
   addSet,
+  deleteWorkout,
+  getWorkoutDetail,
   listRecentSessions,
   localWeekRange,
   logWorkout,
+  replaceWorkout,
   weekSummary,
 } from '../src/lib/db/repositories/exercise.ts';
-import { lbToKg, sessionDetail } from '../src/lib/exercise/format.ts';
+import { recentMuscleLoads, weeklyMuscleSets } from '../src/lib/db/repositories/training-stats.ts';
+import { muscleFreshness } from '../src/lib/exercise/freshness.ts';
+import { lbToKg, sessionDetail, sessionTitle } from '../src/lib/exercise/format.ts';
 
 let pass = 0;
 let fail = 0;
@@ -284,6 +289,138 @@ console.log('7. empty-safe on a fresh database');
   listRecentSessions(db).length === 0
     ? ok('listRecentSessions → empty array')
     : bad('empty sessions');
+}
+
+// ---------------------------------------------------------------------------
+// Owner, 2026-08-14: "Introduce the ability to edit and view past workouts."
+// The whole point of the feature is the LAST assertion in here — a correction
+// has to move everything derived from the session, or the edit is cosmetic.
+console.log('8. view, edit and delete a past session — and the recompute');
+{
+  const { db, raw } = freshDb();
+  const NOW = new Date('2026-07-26T18:00:00.000Z');
+  const set = (exerciseId, exercise, reps) => ({ exercise, exerciseId, reps, weightKg: 70 });
+  const id = logWorkout(db, { date: '2026-07-26', kind: 'strength' }, [
+    set('lat-pulldown', 'Lat Pulldown', 10),
+    set('lat-pulldown', 'Lat Pulldown', 9),
+    set('lat-pulldown', 'Lat Pulldown', 8),
+    set('barbell-row', 'Barbell Row', 8),
+    set('barbell-row', 'Barbell Row', 8),
+    set('barbell-row', 'Barbell Row', 7),
+    set('face-pull', 'Face Pull', 15),
+  ]);
+  raw.prepare('UPDATE workouts SET created_at = ? WHERE id = ?').run(NOW.toISOString(), id);
+
+  // --- view -----------------------------------------------------------------
+  const detail = getWorkoutDetail(db, id);
+  detail && detail.sets.length === 7 && detail.date === '2026-07-26' && detail.kind === 'strength'
+    ? ok('getWorkoutDetail returns the session and every set')
+    : bad('detail', JSON.stringify(detail));
+  detail.sets.map((s) => s.setIndex).join() === '1,2,3,4,5,6,7'
+    ? ok('sets come back in the order they were performed')
+    : bad('order', detail.sets.map((s) => s.setIndex).join());
+  detail.sets[0].exerciseId === 'lat-pulldown' && detail.sets[0].reps === 10
+    ? ok('each set carries its catalog id and its numbers')
+    : bad('set shape', JSON.stringify(detail.sets[0]));
+  getWorkoutDetail(db, 'nope') === undefined
+    ? ok('an unknown id is undefined, not a throw')
+    : bad('unknown id');
+
+  const lats = () =>
+    muscleFreshness(recentMuscleLoads(db, 14, NOW), NOW).find((m) => m.muscle === 'lats').freshness;
+  const before = lats();
+  before < 60 ? ok(`before the edit, lats read ${before}`) : bad('pre-edit freshness', before);
+
+  // --- edit -----------------------------------------------------------------
+  // The owner over-logged: it was one pulldown set, not three, and the rows are
+  // gone entirely. Same call shape the editor uses — the whole set list, rewritten.
+  replaceWorkout(db, id, { kind: 'strength', durationMin: 44 }, [
+    set('lat-pulldown', 'Lat Pulldown', 10),
+    set('face-pull', 'Face Pull', 15),
+  ]);
+  const edited = getWorkoutDetail(db, id);
+  edited.sets.length === 2 && edited.durationMin === 44 && edited.date === '2026-07-26'
+    ? ok('replaceWorkout rewrites the sets and keeps the date it happened on')
+    : bad('edited', JSON.stringify(edited));
+  edited.sets.map((s) => s.setIndex).join() === '1,2'
+    ? ok('set_index is renumbered from 1, so the editor reopens in order')
+    : bad('reindex', edited.sets.map((s) => s.setIndex).join());
+  raw.prepare('SELECT count(*) c FROM workout_sets').get().c === 2
+    ? ok('the replaced rows are gone, not orphaned')
+    : bad('orphans', raw.prepare('SELECT count(*) c FROM workout_sets').get().c);
+
+  // --- THE RECOMPUTE --------------------------------------------------------
+  const after = lats();
+  after > before
+    ? ok(`editing the session moved muscle freshness: lats ${before} → ${after}`)
+    : bad('freshness did not recompute', `${before} → ${after}`);
+  const vol = weeklyMuscleSets(db, NOW).find((v) => v.muscle === 'lats');
+  vol.sets === 1
+    ? ok('weekly volume recomputed too — lats 1.0 set, down from 4.0')
+    : bad('volume', JSON.stringify(vol));
+  const summary = listRecentSessions(db)[0];
+  summary.setCount === 2 && sessionDetail(summary) === '2 sets · 44 min'
+    ? ok('the hub row follows: "2 sets · 44 min"')
+    : bad('summary', sessionDetail(summary));
+  sessionTitle(summary) === 'Lat Pulldown · Face Pull'
+    ? ok('…and titles itself off the movements, since sessions have no names')
+    : bad('title', sessionTitle(summary));
+
+  // A rejected set rolls the whole rewrite back — a bad edit must never leave
+  // the session emptied. 5000 kg trips the schema's fat-finger CHECK.
+  throws(() =>
+    replaceWorkout(db, id, { kind: 'strength' }, [
+      { exercise: 'Lat Pulldown', exerciseId: 'lat-pulldown', reps: 8, weightKg: 5000 },
+    ])
+  )
+    ? ok('an invalid set throws')
+    : bad('bad set accepted');
+  getWorkoutDetail(db, id).sets.length === 2
+    ? ok('…and the session still holds the sets it had — the rewrite is atomic')
+    : bad('rollback', getWorkoutDetail(db, id).sets.length);
+
+  // --- delete ---------------------------------------------------------------
+  deleteWorkout(db, id);
+  getWorkoutDetail(db, id) === undefined && raw.prepare('SELECT count(*) c FROM workout_sets').get().c === 0
+    ? ok('deleting a session takes its sets with it (ON DELETE CASCADE)')
+    : bad('delete');
+  lats() === 100
+    ? ok('and the freshness it contributed disappears with it')
+    : bad('post-delete freshness', lats());
+  deleteWorkout(db, 'nope');
+  ok('deleting an unknown id is a no-op, not a throw');
+}
+
+// ---------------------------------------------------------------------------
+// Owner, 2026-08-14: "Workouts dont need names, remove this."
+console.log('9. sessions have no names');
+{
+  const { db } = freshDb();
+  const id = logWorkout(db, { date: '2026-07-26', kind: 'strength' }, [
+    { exercise: 'Barbell Row', exerciseId: 'barbell-row', reps: 8, weightKg: 60 },
+    { exercise: 'Lat Pulldown', exerciseId: 'lat-pulldown', reps: 10, weightKg: 50 },
+    { exercise: 'Face Pull', exerciseId: 'face-pull', reps: 15, weightKg: 20 },
+    { exercise: 'Barbell Curl', exerciseId: 'barbell-curl', reps: 10, weightKg: 30 },
+  ]);
+  // The column is dormant, not gone: it is still NOT NULL, so the repository
+  // has to satisfy it without asking anyone for a value.
+  db.get('SELECT name FROM workouts WHERE id = ?', [id]).name === ''
+    ? ok("no name supplied → '' in the dormant NOT NULL column, no throw")
+    : bad('default name');
+  const s = listRecentSessions(db)[0];
+  sessionTitle(s) === 'Barbell Row · Lat Pulldown · Face Pull +1 more'
+    ? ok('the list titles a session by its movements, capped at three')
+    : bad('title', sessionTitle(s));
+  const cardio = logWorkout(db, { date: '2026-07-26', kind: 'cardio', durationMin: 40 });
+  sessionTitle(listRecentSessions(db).find((r) => r.id === cardio)) === 'Cardio'
+    ? ok('a session with no movements falls back to its kind')
+    : bad('cardio title');
+  // A name that IS supplied (the Coach still passes one) is stored and simply
+  // not rendered — nothing here reads it.
+  const named = logWorkout(db, { date: '2026-07-26', name: 'Back day', kind: 'strength' });
+  db.get('SELECT name FROM workouts WHERE id = ?', [named]).name === 'Back day'
+    ? ok('a supplied name is still stored — the column keeps working')
+    : bad('supplied name');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
