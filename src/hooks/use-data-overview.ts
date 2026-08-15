@@ -9,7 +9,8 @@ import { missionAdherence, missionDailySeries } from '@/lib/db/repositories/miss
 import { dailyIntakeSeries, todayTotals } from '@/lib/db/repositories/nutrition';
 import { listTodaySymptoms, symptomDailySeries } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
-import { metricByBodyColumn, resolveDisplay, roundToSpec } from '@/lib/log/metrics';
+import { waterDaySeries } from '@/lib/db/repositories/water';
+import { metricByBodyColumn, metricByKey, resolveDisplay, roundToSpec } from '@/lib/log/metrics';
 
 /**
  * The Data tab's "Standing Ledger" view model, backed by the on-device database.
@@ -28,7 +29,7 @@ import { metricByBodyColumn, resolveDisplay, roundToSpec } from '@/lib/log/metri
  */
 
 /** Which sub-app a trend row drills into — the screen maps this to a route. */
-export type TrendKey = 'mission' | 'weight' | 'nutrition' | 'training' | 'symptoms';
+export type TrendKey = 'mission' | 'weight' | 'water' | 'nutrition' | 'training' | 'symptoms';
 
 export interface DataTrend {
   key: TrendKey;
@@ -172,6 +173,43 @@ function read(): DataOverviewState {
     emptyLabel: 'Log weight to start a trend',
   };
 
+  // Water — today's intake is the headline; the last 14 days are the trend.
+  //
+  // The window is 14 to agree with app/water.tsx, which this row opens: a
+  // sparkline over one period drilling into a screen that judges another makes
+  // the two disagree about the same fortnight (the rule mission-history records).
+  //
+  // Rendered in the user's chosen volume unit, never hardcoded ml — storage is
+  // canonical ml and oz/ml is a live setting (app/settings-units.tsx).
+  const waterPoints = waterDaySeries(db, 14, today);
+  const waterToday = waterPoints[waterPoints.length - 1] ?? { date: today, ml: 0, entries: 0 };
+  const waterMetric = metricByKey('water');
+  const waterSpec = waterMetric ? resolveDisplay(waterMetric, units) : null;
+  const water: DataTrend = {
+    key: 'water',
+    name: 'Water',
+    sub: 'Intake today',
+    spark: waterPoints.map((p) => p.ml),
+    sparkBaseline: 'zero',
+    // THREE states, not two, because "nothing yet today" and "0 oz today" are
+    // different facts and only one of them is true. A row that has drawn a
+    // fortnight of bars cannot claim the empty label — the user HAS logged water
+    // — but neither may it print a confident 0 for a day that simply has not
+    // started. So the headline goes to an em-dash and the qualifier says why.
+    value:
+      waterToday.entries > 0 && waterSpec
+        ? fmtInt(roundToSpec(waterSpec, waterSpec.fromCanonical(waterToday.ml)))
+        : '—',
+    unit: waterToday.entries > 0 && waterSpec ? waterSpec.unit : '',
+    qualifier: waterToday.entries === 0 ? 'none logged today' : null,
+    // Keyed on the ENTRY COUNT across the window, not on today's millilitres. A
+    // day can only ever hold captures of a positive amount, so `ml === 0` means
+    // "nothing logged" — and a fortnight of that must say so rather than print a
+    // confident 0 oz beside a flat row of bars.
+    empty: waterPoints.every((p) => p.entries === 0),
+    emptyLabel: 'No water logged yet',
+  };
+
   // Nutrition — today's energy is the headline; the last 7 days are the trend.
   const intakeTotals = todayTotals(db, today);
   const intakePoints = dailyIntakeSeries(db, 7, today);
@@ -226,7 +264,9 @@ function read(): DataOverviewState {
   };
 
   return {
-    trends: [mission, weight, nutrition, training, symptoms],
+    // Water sits beside the other body readings, after Weight: it is a daily
+    // behaviour like Nutrition, and the order runs execution → body → intake.
+    trends: [mission, weight, water, nutrition, training, symptoms],
   };
 }
 

@@ -16,8 +16,8 @@ import { useReportsHistory } from '@/hooks/use-reports';
  *
  * The exploratory surface: never directive — that is Home's job — just a calm,
  * drafted record. Top to bottom: today's folio line and title; **Trends**
- * (Mission, Weight, Nutrition, Training, Symptoms, each with a live sparkline
- * and headline, or an honest first-run invite); **The full file**, the
+ * (Mission, Weight, Water, Nutrition, Training, Symptoms, each with a live
+ * sparkline and headline, or an honest first-run invite); **The full file**, the
  * manage/browse index into everything; and the row into **Settings**.
  *
  * ## Bloodwork lives on the Labs screen — all of it (owner call, 2026-08-11)
@@ -55,10 +55,11 @@ import { useReportsHistory } from '@/hooks/use-reports';
  * markers** (`BIOMARKER_SEED` in src/lib/labs/catalog.ts), every one of them
  * drawn, which before an import was 65 rows of "No reading yet" burying the
  * index and Settings under a long scroll. That section has now left the screen
- * entirely (above), so what remains is Trends (5 rows, Mission added 2026-08-12)
- * and The full file (8 rows), **both open**: together about a screen and a half, which is
- * the tab as it should first read. The fold survives as a way to put a section
- * aside, no longer as the thing that made this screen navigable.
+ * entirely (above), so what remains is Trends (6 rows — Mission added
+ * 2026-08-12, Water 2026-08-14) and The full file (8 rows), **both open**:
+ * together about a screen and a half, which is the tab as it should first read.
+ * The fold survives as a way to put a section aside, no longer as the thing that
+ * made this screen navigable.
  *
  * **A folded section still states what it holds.** Each section header carries a
  * mono tally that is true in both states — `2 of 4 tracked`, `5 of 8 built` — so
@@ -96,9 +97,29 @@ import { useReportsHistory } from '@/hooks/use-reports';
  * rule — including the Settings row at the bottom, neutral like every other row
  * on this sheet.
  *
- * **Signal colours do not appear on this screen's chrome at any point.** The
- * "Set up"/"Later" tags are interface state, not biology, so they are drawn as
- * outlined neutral chips — the firewall rule (00-design-spec.md §2).
+ * **Signal colours do not appear on this screen's chrome at any point** — the
+ * firewall rule (00-design-spec.md §2). Nothing on this sheet is a biological
+ * reading, so nothing on it earns a signal hue.
+ *
+ * ## The "Set up" boxes are gone (owner call, 2026-08-14)
+ *
+ * *"Let's remove the little 'set up' boxes on each of the Full File items."*
+ *
+ * Every one of the eight rows carried a boxed `Set up` tag, and by the time all
+ * eight were built the tag had stopped saying anything: a status column in which
+ * every cell reads the same is not a status column, it is eight copies of a
+ * word. It was informative when the index was half-built and the chip sorted
+ * "ready" from "Later" — the last `Later` retired with the Knowledge base, and
+ * the mark should have gone with it.
+ *
+ * It was also actively misleading. "Set up" reads as an instruction — *this
+ * needs configuring* — on rows that are simply destinations, several of which
+ * already hold real data; the Reports row printed `1 report · last 12 Aug` and a
+ * `Set up` box on the same line. **Nothing was stranded by the removal**: the
+ * chip was a plain `Text` inside the row's own `Pressable`, never a control, so
+ * every row keeps the exact route it already had. What remains is the row's
+ * live `state` line, which is a reading rather than a label — the direction this
+ * tab has been moving in all along.
  *
  * ## No data, no number — and empty is authored
  *
@@ -130,7 +151,6 @@ type FileRow = {
   key: string;
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
-  chip: 'setup' | 'later';
   state?: string;
   onPress?: () => void;
 };
@@ -225,6 +245,13 @@ export default function DataScreen() {
         // to say so, or the control names a destination it will not go to.
         router.push({ pathname: '/metric-entry', params: { from: 'Data' } });
         return;
+      case 'water':
+        // NOT the keypad, unlike Weight above. Water is the one metric whose
+        // record you correct as often as you add to it — the same amount three
+        // times a day, occasionally mis-typed — so its row opens the record
+        // (track, log AND edit) rather than a write-only sheet.
+        router.push('/water');
+        return;
       case 'nutrition':
         router.push('/nutrition');
         return;
@@ -248,49 +275,42 @@ export default function DataScreen() {
       // both redundant with "Labs" and no longer a complete description.
       label: 'Labs',
       icon: 'flask-outline',
-      chip: 'setup',
       onPress: () => router.push('/labs'),
     },
     {
       key: 'protocols',
       label: 'Protocols',
       icon: 'git-branch-outline',
-      chip: 'setup',
       onPress: () => router.push('/protocols'),
     },
     {
       key: 'screenings',
       label: 'Screenings & calendar',
       icon: 'calendar-outline',
-      chip: 'setup',
       onPress: () => router.push('/screenings'),
     },
     {
       key: 'wearables',
       label: 'Wearables & recovery',
       icon: 'watch-outline',
-      chip: 'setup',
       onPress: () => router.push('/wearables'),
     },
     {
       key: 'experiments',
       label: 'Experiments',
       icon: 'beaker-outline',
-      chip: 'setup',
       onPress: () => router.push('/experiments'),
     },
     {
       key: 'photos',
       label: 'Progress photos',
       icon: 'images-outline',
-      chip: 'setup',
       onPress: () => router.push('/progress-photos'),
     },
     {
       key: 'knowledge',
       label: 'Knowledge base',
       icon: 'library-outline',
-      chip: 'setup',
       onPress: () => router.push('/knowledge'),
     },
     {
@@ -304,7 +324,6 @@ export default function DataScreen() {
       key: 'reports',
       label: 'Reports',
       icon: 'document-text-outline',
-      chip: 'setup',
       state: reports.summaryLine,
       onPress: () => router.push('/reports'),
     },
@@ -431,40 +450,6 @@ export default function DataScreen() {
                 const rowClass = 'min-h-[44px] flex-row items-center gap-3 py-3';
                 const iconColor = tappable ? palette.inkSecondary : palette.inkMuted;
 
-                // BOXED, as the sheet draws them: `.cf-lrow-tag` is
-                // `1px solid var(--paper-line)` with `3px 7px` of padding.
-                //
-                // The outline was stripped on 2026-08-10 with the reasoning "a
-                // border around one word encloses nothing". That reasoning is
-                // WITHDRAWN. It was invented during a de-plating sweep whose
-                // governing rule the owner rejected outright ("All the wrong
-                // boxes were removed, bring them back!"), and the noise that
-                // sweep was chasing turned out to be a rendering fault, not a
-                // design one — one-sided border widths paired with a border
-                // colour, which React Native paints as a full rectangle (see the
-                // header of src/components/ui/block.tsx). These tags never had
-                // that shape. A UNIFORM four-sided border is the case that always
-                // drew correctly, and it is what the design asked for: the box is
-                // what makes "Set up" read as a status stamped on the row rather
-                // than as a second, quieter label competing with the first.
-                //
-                // Both tags stay neutral chrome. Signal colours mark biological
-                // state only, and "Set up" / "Later" are interface state — the
-                // firewall was a finding in all six hostile reviews. "Set up"
-                // sits a shade stronger than "Later" via ink weight alone, no
-                // hue, and both wear the same rule so the column reads as one
-                // kind of mark.
-                const chip =
-                  row.chip === 'setup' ? (
-                    <Text className="border border-hairline px-[7px] py-[3px] font-mono text-[10px] tracking-[0.3px] text-ink-secondary">
-                      Set up
-                    </Text>
-                  ) : (
-                    <Text className="border border-hairline px-[7px] py-[3px] font-mono text-[10px] tracking-[0.3px] text-ink-muted">
-                      Later
-                    </Text>
-                  );
-
                 const inner = (
                   <>
                     <Ionicons name={row.icon} size={18} color={iconColor} />
@@ -485,7 +470,6 @@ export default function DataScreen() {
                         </Text>
                       ) : null}
                     </View>
-                    {chip}
                     {tappable ? (
                       <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
                     ) : null}

@@ -54,6 +54,7 @@ import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
 
 import ExerciseScreen from '../app/exercise.tsx';
 import MissionHistoryScreen from '../app/mission-history.tsx';
+import WaterScreen from '../app/water.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
@@ -76,6 +77,8 @@ import ReportsScreen from '../app/reports.tsx';
 import ReportViewScreen from '../app/report-view.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
 
+import { logWater } from '../src/lib/db/repositories/water.ts';
+import { setWaterTarget } from '../src/lib/db/repositories/user.ts';
 import { insertReport } from '../src/lib/db/repositories/reports.ts';
 import { assembleSelfReview } from '../src/lib/reports/assemble-self-review.ts';
 import { periodFromBounds } from '../src/lib/reports/period.ts';
@@ -170,6 +173,35 @@ const db = getDb();
     'Nothing was missed',
     'on record',
     'By day',
+  ]);
+
+  // The water record on a database that has never logged a drop. Like
+  // mission-history above, this render must happen HERE — the never-logged
+  // state exists exactly once, and §14 below is what fills the table.
+  const dry = render('water (never logged)', WaterScreen);
+  expect('water (never logged)', dry, [
+    'Water',
+    'No water logged yet. Tap an amount below and the record starts.',
+    // The stamp takes the accent when there are no bars to spend it on.
+    'No water yet',
+    'The record starts with one glass',
+    // Logging is on the screen itself — that is the whole point of it.
+    'Glass',
+    'Bottle',
+    'Large',
+    // No goal is an authored state, not a guess.
+    'None set — totals show without a target.',
+  ]);
+  // Nothing may imply a record that does not exist, and above all no
+  // plausible-looking zero: a day with nothing logged and a day of 0 oz are
+  // different facts. No goal means no denominator, no percentage, no bar.
+  refute('water (never logged)', dry, [
+    '0 oz',
+    '0 ml',
+    'of goal',
+    'By day',
+    'on record',
+    'average',
   ]);
 
   // 0035: the cabinet before there is anything in it. "Unfiled is a place" is
@@ -801,9 +833,7 @@ const db = getDb();
   ]);
   // The pack ships, so the screen is never globally empty — the first-run state
   // is a reading, not a void.
-  refute('knowledge hub (pack loaded)', withPack, [
-    'ARC’s reference hasn’t loaded yet',
-  ]);
+  refute('knowledge hub (pack loaded)', withPack, ['ARC’s reference hasn’t loaded yet']);
 
   const entryId = saveKnowledgeEntry(db, {
     title: 'Render entry: my own magnesium stance',
@@ -857,16 +887,20 @@ const db = getDb();
     ['That entry is no longer here']
   );
 
-  expect('knowledge-entry-edit (new)', render('knowledge-entry-edit (new)', KnowledgeEntryEditScreen), [
-    'Write an entry',
-    'Topic',
-    'supplements', // the vocabulary chips
-    'Save entry',
-  ]);
+  expect(
+    'knowledge-entry-edit (new)',
+    render('knowledge-entry-edit (new)', KnowledgeEntryEditScreen),
+    [
+      'Write an entry',
+      'Topic',
+      'supplements', // the vocabulary chips
+      'Save entry',
+    ]
+  );
   expect(
     'knowledge-entry-edit (editing)',
     render('knowledge-entry-edit (editing)', KnowledgeEntryEditScreen, { id: entryId }),
-    ['Edit entry', 'Save changes'],
+    ['Edit entry', 'Save changes']
   );
 
   expect('knowledge-import', render('knowledge-import', KnowledgeImportScreen), [
@@ -897,7 +931,12 @@ const db = getDb();
   refute('reports (empty)', emptyReports, ['Export data', 'Reports & export']);
 
   // b. A draft self-review over a real period, assembled for real.
-  const period = { kind: 'self_review', periodKind: 'custom', start: '2026-08-01', end: '2026-08-07' };
+  const period = {
+    kind: 'self_review',
+    periodKind: 'custom',
+    start: '2026-08-01',
+    end: '2026-08-07',
+  };
   const draft = render('report-view (draft self-review)', ReportViewScreen, period);
   expect('report-view (draft self-review)', draft, [
     'Draft report',
@@ -953,12 +992,16 @@ const db = getDb();
     fileName: 'arc-report-self-review-20260812-143308.html',
     filePath: 'reports/arc-report-self-review-20260812-143308.html',
   });
-  expect('report-view (persisted)', render('report-view (persisted)', ReportViewScreen, { id: storedId }), [
-    'Last week',
-    '3 – 9 Aug 2026',
-    // A saved report offers the file again rather than a second save.
-    'Share again',
-  ]);
+  expect(
+    'report-view (persisted)',
+    render('report-view (persisted)', ReportViewScreen, { id: storedId }),
+    [
+      'Last week',
+      '3 – 9 Aug 2026',
+      // A saved report offers the file again rather than a second save.
+      'Share again',
+    ]
+  );
 
   // f. The history now has a row, and the Data tab's index row carries it.
   expect('reports (with history)', render('reports (with history)', ReportsScreen), [
@@ -974,6 +1017,83 @@ const db = getDb();
     '1 report · last ',
   ]);
   refute('data tab', dataTab, ['Reports &amp; export', 'Reports & export']);
+}
+
+// ---------------------------------------------------------------------------
+// 14. The water record — the one screen that tracks, LOGS and EDITS a metric.
+//
+// Its never-logged state is asserted up in §0, before any fixture exists. What
+// is left is the pair this codebase keeps confusing: a YOUNG record that must
+// say it is young, and a full one that may finally state a trend. Water is
+// stored one row per capture (db/water.test.mjs §1), which is the fact that
+// makes the Entries block — and therefore "edit" — expressible at all.
+{
+  console.log('14. Water — track, log and edit');
+  const db = getDb();
+  const now = todayISODate();
+  const day = (n) => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return todayISODate(d);
+  };
+
+  // Three days of record, two captures today. Deliberately under TREND_FLOOR.
+  logWater(db, day(2), 500);
+  logWater(db, day(1), 750);
+  logWater(db, now, 500);
+  logWater(db, now, 250);
+
+  const young = render('water (3-day record)', WaterScreen);
+  expect('water (3-day record)', young, [
+    'Water',
+    '3 days on record', // the record's true extent, stated...
+    'too little to read as a trend', // ...and disclaimed, because it is 3 days
+    'By day', // the record itself
+    'Entries', // the editable half
+    '2 entries', // today's two captures, counted
+    'today, still open',
+  ]);
+  // 750 ml is 25 oz and the default unit is oz, so the day rows read in oz.
+  // Nothing may print a stand-in zero for the eleven days with no capture, and
+  // with no goal set there is still no denominator anywhere.
+  refute('water (3-day record)', young, [
+    'No water logged yet', // there IS a record now — a different fact
+    'of goal',
+    '0 oz',
+    'No water yet', // the stamp retires the moment a record exists
+  ]);
+
+  // A goal turns the denominator on — and ONLY a goal does. 100 oz ≈ 2957 ml.
+  setWaterTarget(db, 2957);
+  const withGoal = render('water (with goal)', WaterScreen);
+  expect('water (with goal)', withGoal, [
+    'of 100 oz', // the denominator the user chose, in the user's unit
+    '% of goal',
+  ]);
+  refute('water (with goal)', withGoal, ['None set']);
+
+  // Eleven more days, taking the record past TREND_FLOOR: the disclaimer must
+  // retire on its own rather than becoming permanent furniture.
+  for (let n = 3; n <= 13; n++) logWater(db, day(n), 500);
+  const full = render('water (14-day record)', WaterScreen);
+  expect('water (14-day record)', full, ['14 days on record', 'average', '14 of 14 days logged']);
+  refute('water (14-day record)', full, ['too little to read as a trend']);
+
+  // ---------------------------------------------------------------------
+  // The Data tab now carries a Water trend row — and no longer carries a
+  // single "Set up" box (owner, 2026-08-14). The chips were never controls,
+  // so their removal strands nothing; this is what keeps them removed.
+  const dataWithWater = render('data tab (water + no chips)', DataScreen);
+  expect('data tab (water + no chips)', dataWithWater, [
+    'Water',
+    'Intake today',
+    // The tally counts the very array it renders, so the denominator proves
+    // Water joined the strip. The NUMERATOR is deliberately not asserted: it
+    // counts whichever domains happen to be populated by this point in the
+    // shared fixture DB, which is a fact about test ordering, not about Water.
+    ' of 6 tracked',
+  ]);
+  refute('data tab (water + no chips)', dataWithWater, ['Set up', 'Later']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
