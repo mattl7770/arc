@@ -88,7 +88,7 @@ import type { Muscle, MuscleFreshness } from '@/lib/exercise/types';
  *     recovering or fatigued, grouped by state. That is the answer to "which
  *     one is that" and it needs no colour at all.
  *   - The figure collapses into ONE `accessible` element carrying
- *     `freshnessSummary` — otherwise ~490 unlabelled views and two stray
+ *     `freshnessSummary` — otherwise ~1,060 unlabelled views and two stray
  *     captions reading "front" and "back" are all VoiceOver can find.
  *   - iOS never descends into an `accessible` ancestor, which is why the hub's
  *     `Pressable` carries that same summary string itself (app/exercise.tsx).
