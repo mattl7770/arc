@@ -319,3 +319,26 @@ export function landedWriteCalls(
 ): CoachToolCall[] {
   return toolCalls.filter((call) => !call.declined && !call.isError && isWrite(call.name));
 }
+
+/**
+ * The RECEIPT LINES for a turn's landed writes — what the thread prints under a
+ * reply to say what actually changed.
+ *
+ * Each is the summary the user approved on the confirmation card, recorded past
+ * the point of no return in coach-service.ts (`CoachToolCall.receipt`). Rows
+ * written before receipts existed carry none, so the tool name stands in:
+ * degraded, but never a blank where a change happened.
+ *
+ * `fallback` rather than a hardcoded humanizer because that vocabulary belongs
+ * to the AI layer, and this module deliberately does not import from it — the
+ * same reason `isWrite` is a parameter.
+ */
+export function landedWriteReceipts(
+  toolCalls: CoachToolCall[],
+  isWrite: (name: string) => boolean,
+  fallback: (name: string) => string
+): string[] {
+  return landedWriteCalls(toolCalls, isWrite).map(
+    (call) => call.receipt?.trim() || fallback(call.name)
+  );
+}

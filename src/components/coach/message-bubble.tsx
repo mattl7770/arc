@@ -250,6 +250,32 @@ function turnDate(createdAt: number, now: Date = new Date()): TurnDate | null {
  * signal-* palette is reserved for biological readings; a stalled network
  * request is not a health signal, and colouring it like one would devalue the
  * colours that are.
+ *
+ * ## What changed is reported by the RECORD, not by the reply
+ *
+ * Owner report, 2026-08-14: the Coach *"frequently thinks it has done something
+ * but not actually called the tool, i.e. saying that a recipe has been saved
+ * when the tool was not called and not actually saved."* A phantom write is the
+ * most corrosive thing this app can do, because the owner finds out days later,
+ * and by then every other claim the Coach has made is in doubt.
+ *
+ * The answer here is a drawing decision, not a prompt one. Two lines under the
+ * bubble are derived from `ai_messages.tool_calls` and are unreachable from
+ * anything the model writes:
+ *
+ *   - **The receipt** — one mono line per write that actually executed, each
+ *     the summary the owner approved on the confirmation card. It now prints on
+ *     EVERY writing turn, not only on a cut-off one as it did before. That is
+ *     the point: when a real save always shows a receipt, a save with no
+ *     receipt is a save that did not happen, and the owner reads the difference
+ *     without being told.
+ *   - **"Nothing saved"** — the contradiction, stated plainly. Absence alone
+ *     asks the reader to notice something missing, which is exactly what nobody
+ *     does; so when the prose claims a change and the record holds none, the
+ *     thread says so rather than leaving a gap.
+ *
+ * Both are neutral ink for the reason above. A phantom write is a workflow
+ * fault, not a reading about the owner's body.
  */
 export function MessageBubble({ message, onRetry }: Props) {
   const clock = turnClock(message.createdAt);
@@ -289,6 +315,10 @@ export function MessageBubble({ message, onRetry }: Props) {
   // The load-bearing combination: the turn broke off, but writes already
   // committed. Silence here would let an approved change look like it never ran.
   const showWritesLanded = unfinished && writes.length > 0;
+  // The receipt on an ordinary, finished turn. Same facts, different sentence:
+  // there is no incomplete reply to explain, just a record of what changed.
+  const showReceipt = !message.streaming && !unfinished && writes.length > 0;
+  const showPhantom = !message.streaming && (message.phantomWrite ?? false);
   const canRetry = !message.streaming && !message.superseded && isRetryableOutcome(outcome);
 
   return (
@@ -374,6 +404,44 @@ export function MessageBubble({ message, onRetry }: Props) {
               '. Those changes are already in your record — only the reply is incomplete, so don’t log them again.'
             }
           </Text>
+        ) : null}
+
+        {/*
+          THE RECEIPT. Drawn from the turn's tool record — one line per write
+          that actually executed, in the words the owner approved on the card.
+          A reply cannot produce one by describing a change, which is the whole
+          point: prose is the model's, this is the database's.
+        */}
+        {showReceipt ? (
+          <View className="mt-1.5">
+            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+              Saved to your record
+            </Text>
+            {writes.map((line, index) => (
+              <Text
+                key={`${line}-${index}`}
+                className="mt-0.5 font-mono text-[11px] leading-4 text-ink">
+                {line}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
+        {/*
+          The inverse, said out loud. The reply claims a change and the tool
+          record holds none, so the turn is contradicting itself and the thread
+          takes the record's side.
+        */}
+        {showPhantom ? (
+          <View className="mt-1.5">
+            <View className="flex-row">
+              <StateChip label="Nothing saved" />
+            </View>
+            <Text className="mt-1 font-serif text-[12px] leading-5 text-ink">
+              This reply describes a change the Coach never made. No tool ran and nothing was written
+              to your record. Ask again if you still want it.
+            </Text>
+          </View>
         ) : null}
 
         {message.superseded ? (

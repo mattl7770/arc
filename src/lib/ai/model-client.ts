@@ -192,6 +192,13 @@ export type ToolExecutionOutcome = {
   isError?: boolean;
   /** True when a confirmation gate declined the call (recorded, not an error). */
   declined?: boolean;
+  /**
+   * The approved line for a write that actually executed — see
+   * `CoachToolCall.receipt`. The loop only carries it through to the record; the
+   * caller decides when one is earned, because only the caller knows whether a
+   * tool wrote anything.
+   */
+  receipt?: string;
 };
 
 export type CoachTurnHandlers = {
@@ -736,6 +743,7 @@ export async function runCoachTurn(
         result: outcome.content,
         ...(outcome.isError ? { isError: true } : {}),
         ...(outcome.declined ? { declined: true } : {}),
+        ...(outcome.receipt ? { receipt: outcome.receipt } : {}),
       });
       results.push({
         type: 'tool_result',

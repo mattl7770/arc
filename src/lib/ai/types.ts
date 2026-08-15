@@ -49,6 +49,22 @@ export type CoachToolCall = {
   isError?: boolean;
   /** True when the user declined the write at the confirmation gate. */
   declined?: boolean;
+  /**
+   * THE RECEIPT: the human line the user approved on the confirmation card
+   * ("Save recipe "Chicken bowl" — 6 ingredients, 4 servings"), recorded ONLY
+   * after `execute` returned without throwing (coach-service.ts).
+   *
+   * Its whole value is what it cannot do. A receipt is unforgeable by prose:
+   * the model writes text, the service writes this, and the thread prints this.
+   * So a turn that claims a save without calling the tool has no receipt to
+   * show, and the owner's report — "saying that a recipe has been saved when
+   * the tool was not called" — stops being invisible.
+   *
+   * Absent on reads (nothing to receipt), on declines and on errors (nothing
+   * landed). Rides the existing `tool_calls` JSON, so it needed no migration
+   * and old rows simply have none.
+   */
+  receipt?: string;
 };
 
 /** Why a Coach turn stopped — the subset of wire stop reasons callers act on. */
