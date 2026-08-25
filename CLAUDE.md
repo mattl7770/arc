@@ -46,7 +46,8 @@ It is **not** a consumer wellness app. It is closer to a personal command center
 - **Frontier LLM called directly from the app**, key in the iOS Keychain (`expo-secure-store`), provider/model swappable in Settings. RAG + tools run client-side.
 - **Apple Health** as the wearable hub (on-device; the vendor app does the cloud sync). Direct vendor API only where HealthKit lacks fidelity. *(Terra dropped — a cloud aggregator needs a server.)*
 - Function Health as primary lab backend (PDF → on-device parse)
-- **Backup:** encrypted iCloud snapshot; media referenced from iOS Photos (PhotoKit)
+- **Backup:** encrypted iCloud snapshot (Phase 4). **Interim (2026-08-23 privacy ADR): the DB and photo dirs are EXCLUDED from the iCloud device backup** via the `ArcBackup` native seam — no cloud copy at all until the encrypted snapshot exists, since an unencrypted one would violate §2. Media referenced from iOS Photos (PhotoKit).
+- **No OTA / analytics.** `expo-updates` was removed (2026-08-23) — it phoned home per-launch with an install id and ARC used no OTA. The only sanctioned egress remains the AI model call plus user-initiated lookups (OpenFoodFacts barcode, pasted recipe/article URLs, the last two SSRF-guarded).
 
 **Long-term consideration:** Native SwiftUI port once UX and data model are proven. (Local-first + on-device SQLite makes that port *easier*, not harder — no server contract to reproduce.)
 

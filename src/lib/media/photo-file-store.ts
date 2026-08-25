@@ -28,6 +28,8 @@
  * the headless suites import these files.
  */
 
+import { excludeFromBackup } from '@/lib/files/backup-exclusion';
+
 /**
  * Every method is best-effort and total: no method throws, because a failure to
  * touch one file must never take down an app-open sweep.
@@ -97,6 +99,22 @@ export function nativeStoreIn(directory: string): PhotoFileStore | null {
   const dir = (): DirectoryHandle => new fs.Directory(fs.Paths.document, directory);
   const file = (name: string): FileHandle => new fs.File(fs.Paths.document, directory, name);
 
+  // Body-composition, meal and recipe photos are the most sensitive imagery ARC
+  // holds and live under Documents, which iOS backs up to iCloud by default.
+  // Exclude the directory from the device backup (best-effort native seam; no-op
+  // until the ArcBackup module ships). Applied once per session on first ensure,
+  // which also catches installs whose directory predates this.
+  let excluded = false;
+  const ensureDir = (): DirectoryHandle => {
+    const d = dir();
+    if (!d.exists) d.create({ intermediates: true, idempotent: true });
+    if (!excluded) {
+      excludeFromBackup(d.uri);
+      excluded = true;
+    }
+    return d;
+  };
+
   return {
     list() {
       try {
@@ -132,8 +150,7 @@ export function nativeStoreIn(directory: string): PhotoFileStore | null {
     },
     write(name, base64Jpeg) {
       try {
-        const d = dir();
-        if (!d.exists) d.create({ intermediates: true, idempotent: true });
+        ensureDir();
         const f = file(name);
         if (!f.exists) f.create({ intermediates: true });
         // `encoding: 'base64'` writes the DECODED bytes; without it the base64

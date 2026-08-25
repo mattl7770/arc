@@ -1,5 +1,75 @@
 # Architecture Decision Records (ADR)
 
+## 2026-08-23 — At-rest personal data must not ride the iCloud backup (privacy audit)
+
+**Context.** A privacy audit (after the exhaustive code review) found the "nothing personal sits at rest in any cloud" principle (CLAUDE.md §2) was violated in several places that the offline-except-AI framing had hidden — the network was quiet, but the *device backup* was carrying everything to iCloud. Decisions below were taken with owner sign-off (2026-08-23).
+
+**Decisions:**
+
+1. **`arc.db` and all photo directories are excluded from the iCloud/iTunes device backup.** op-sqlite stores `arc.db` under the app's Library directory and the progress/meal/recipe photos live under Documents — both backed up by default, which put the entire health record and the most sensitive imagery ARC holds into iCloud. There is no JS API for `NSURLIsExcludedFromBackupKey` in this stack, so it rides a tiny native module, `ArcBackup`, called through a guarded seam (`src/lib/files/backup-exclusion.ts`, `requireOptionalNativeModule` → no-op until linked). Wired at the DB open path (`client.ts`, main file + `-wal`/`-shm`) and at photo-directory creation (`photo-file-store.ts`, one seam covering all three photo types). **This supersedes, for the interim, the Phase-4 "encrypted iCloud snapshot" intent: until that managed encrypted backup exists, the correct posture is no cloud copy at all, not an unencrypted one.** The trade-off the owner accepted: no automatic backup of health data until Phase 4 ships.
+
+2. **`expo-updates` is removed entirely.** It contacted `u.expo.dev` on every cold launch carrying a persistent per-install identifier — unsanctioned third-party egress that broke offline-except-AI, for an OTA capability ARC does not use (zero runtime references). Removed from `app.json` (`updates` + `runtimeVersion` blocks) and `package.json`. (`eas.json` `channel` labels are inert without it and left in place.)
+
+3. **Whole-DB exports and doctor/self-review reports are written to `Library/Caches`, not Documents, and deleted after a successful share.** Caches is never in the device backup; a share-sheet hand-off copies the bytes to wherever the user chose, after which the on-device plaintext copy is removed. Both are safe because every such artifact regenerates on demand from the DB (reports carry `data_json`), so `reports.file_path` is now a record, never a read path. (`share-file.ts`, `report-file.ts`.)
+
+4. **The API key is bound to this device** (`keychainAccessible: WHEN_UNLOCKED_THIS_DEVICE_ONLY`) so the one secret ARC holds never rides an encrypted backup to another device. (`api-key-store.ts`.)
+
+5. **User-pasted import URLs (recipe/article) are SSRF-guarded** — loopback, RFC-1918, link-local (incl. `169.254.169.254`), CGNAT and IPv6 ULA/link-local hosts are refused before any fetch. (`src/lib/net/safe-url.ts`, wired into both import normalizers.)
+
+6. **Pre-migration `.bak` copies are pruned and excluded from backup** — previously they accumulated unboundedly (one full-DB copy per migration) in a backed-up location. (`client.ts`.)
+
+7. **Owner PII scrubbed from the repo** — a real email in `docs/nutrition-subapp.md` and a real name+DOB in `db/reports.test.mjs` (a fixture) replaced with non-identifying values.
+
+**The `ArcBackup` native module (decision 1) — UNVERIFIED, add + verify on the next EAS build.** The reviewing environment has no iOS toolchain, so this was NOT compiled. The JS seam is inert (a safe no-op) until these files exist under `modules/arc-backup/`; if the build fails to compile them, **delete `modules/arc-backup/` and rebuild** — the app returns to the no-op state. Verify on device with: enable iCloud backup, add a weight + a progress photo, and confirm `arc.db` and the photo dirs report `isExcludedFromBackup == true` (or inspect the backup does not contain them).
+
+```jsonc
+// modules/arc-backup/expo-module.config.json
+{ "platforms": ["apple"], "apple": { "modules": ["ArcBackupModule"] } }
+```
+```ts
+// modules/arc-backup/index.ts
+import { requireOptionalNativeModule } from 'expo-modules-core';
+export default requireOptionalNativeModule('ArcBackup');
+```
+```ruby
+# modules/arc-backup/ios/ArcBackup.podspec
+Pod::Spec.new do |s|
+  s.name = 'ArcBackup'
+  s.version = '1.0.0'
+  s.summary = 'Exclude a file/dir from the iOS device backup.'
+  s.author = 'ARC'
+  s.homepage = 'https://localhost'
+  s.platforms = { :ios => '15.1' }
+  s.source = { :git => '' }
+  s.static_framework = true
+  s.dependency 'ExpoModulesCore'
+  s.source_files = '**/*.{h,m,swift}'
+end
+```
+```swift
+// modules/arc-backup/ios/ArcBackupModule.swift
+import ExpoModulesCore
+import Foundation
+
+public class ArcBackupModule: Module {
+  public func definition() -> ModuleDefinition {
+    Name("ArcBackup")
+    Function("excludeFromBackup") { (pathOrUri: String) -> Bool in
+      let path = pathOrUri.hasPrefix("file://")
+        ? (URL(string: pathOrUri)?.path ?? pathOrUri)
+        : pathOrUri
+      guard FileManager.default.fileExists(atPath: path) else { return false }
+      var url = URL(fileURLWithPath: path)
+      var values = URLResourceValues()
+      values.isExcludedFromBackup = true
+      do { try url.setResourceValues(values); return true } catch { return false }
+    }
+  }
+}
+```
+
+---
+
 ## 2026-08-12 — The recipe-source fetch exception extends to article URLs (knowledge import)
 
 **Decision (owner sign-off, 2026-08-12):** knowledge import extends the 2026-08-08 user-initiated import-fetch exception from recipe sources to **article URLs**: single-shot, at import time only, the URL the user explicitly pasted or shared, **HTML text only**, never media, never background. Failure degrades to paste-the-text, which stays first-class UI.

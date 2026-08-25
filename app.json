@@ -87,12 +87,6 @@
         "projectId": "57331eea-ba13-41cc-898f-43194a21aae3"
       }
     },
-    "owner": "architecture-for-resilience-and-continuity",
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
-    "updates": {
-      "url": "https://u.expo.dev/57331eea-ba13-41cc-898f-43194a21aae3"
-    }
+    "owner": "architecture-for-resilience-and-continuity"
   }
 }

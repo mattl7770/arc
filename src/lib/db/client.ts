@@ -9,9 +9,11 @@
  */
 import { open } from '@op-engineering/op-sqlite';
 
+import { excludeFromBackup } from '@/lib/files/backup-exclusion';
 import type { Database, Scalar } from './database';
 import { migrate, type MigrationExecutor, pendingMigrations } from './migrate';
 import { MIGRATIONS } from './migrations.generated';
+import { applyConnectionPragmas } from './pragmas';
 import { seedReferenceData } from './seed';
 
 const DB_NAME = 'arc.db';
@@ -66,10 +68,13 @@ export function getDb(): Database {
 
   const raw = open({ name: DB_NAME });
   try {
-    // SQLite defaults foreign_keys OFF; the schema relies on FK enforcement.
-    raw.executeSync('PRAGMA foreign_keys = ON');
-    // recursive_triggers is left at its default OFF — the updated_at triggers
-    // depend on that (see 0001_init.sql). Never enable it.
+    // The connection pragmas the schema depends on — FK enforcement ON,
+    // recursive_triggers left at its default OFF. Shared with the headless
+    // harnesses via one helper so a regression here is caught by a test rather
+    // than only on a device (see ./pragmas).
+    applyConnectionPragmas((sql) => {
+      raw.executeSync(sql);
+    });
 
     const db = wrap(raw);
 
@@ -79,6 +84,17 @@ export function getDb(): Database {
     }
     migrate(db, MIGRATIONS);
     seedReferenceData(db);
+
+    // Keep the health database OUT of the iCloud/iTunes device backup: op-sqlite
+    // stores arc.db under the app's Library directory, which iOS backs up by
+    // default, and the whole personal health record must never sit at rest in the
+    // cloud (CLAUDE.md §2). Best-effort native seam — a no-op until the ArcBackup
+    // module ships (see @/lib/files/backup-exclusion). The -wal/-shm sidecars
+    // carry recent, not-yet-checkpointed writes, so they are excluded too.
+    const dbPath = raw.getDbPath();
+    excludeFromBackup(dbPath);
+    excludeFromBackup(`${dbPath}-wal`);
+    excludeFromBackup(`${dbPath}-shm`);
 
     cached = db;
     return db;
@@ -98,13 +114,53 @@ export function getDb(): Database {
  * warns and proceeds rather than blocking boot: a pre-release, single-user,
  * re-seedable app must never brick on a backup hiccup. Phase 4 (encrypted
  * iCloud backup) supersedes this with a managed snapshot + retention.
+ *
+ * Two privacy/hygiene guards (2026-08-23): prior `.bak` copies are pruned first
+ * so full-DB snapshots do not accumulate for the life of the install, and the
+ * new copy is marked excluded-from-backup so this rescue file — itself the whole
+ * health record — never rides the iCloud device backup.
  */
 function backupBeforeMigrate(raw: OpDb): void {
+  const dbPath = raw.getDbPath();
   try {
-    const backupPath = `${raw.getDbPath()}.pre-migrate-${Date.now()}.bak`;
+    pruneOldBackups(dbPath);
+    const backupPath = `${dbPath}.pre-migrate-${Date.now()}.bak`;
     raw.executeSync(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+    excludeFromBackup(backupPath);
     console.log(`[db] pre-migration backup written: ${backupPath}`);
   } catch (error) {
     console.warn('[db] pre-migration backup failed; proceeding with migration', error);
+  }
+}
+
+/**
+ * Delete prior `.pre-migrate-*.bak` copies next to the DB so they do not pile up
+ * (each is a full copy of the database). Best-effort via expo-file-system, which
+ * is native — absent in the headless suites and the web preview, where this is a
+ * silent no-op. A leftover backup is a disk-space matter, never a correctness
+ * one, so any failure here is swallowed rather than allowed to touch boot.
+ */
+function pruneOldBackups(dbPath: string): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('expo-file-system') as {
+      Directory: new (path: string) => { list(): { name: string; delete(): void }[] };
+    };
+    const cut = Math.max(dbPath.lastIndexOf('/'), dbPath.lastIndexOf('\\'));
+    if (cut < 0) return;
+    const dirPath = dbPath.slice(0, cut);
+    const dbName = dbPath.slice(cut + 1);
+    for (const entry of new fs.Directory(dirPath).list()) {
+      if (entry.name.startsWith(`${dbName}.pre-migrate-`) && entry.name.endsWith('.bak')) {
+        try {
+          entry.delete();
+        } catch {
+          // keep this one; a single stubborn file is not worth failing over
+        }
+      }
+    }
+  } catch {
+    // expo-file-system unreachable or the path did not resolve — leave the .bak
+    // files in place; the exclusion above still keeps them out of the cloud.
   }
 }
