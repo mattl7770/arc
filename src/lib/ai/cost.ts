@@ -89,8 +89,16 @@ export function usageCaption(
   if (usage.outputTokens > 0) parts.push(`${compactTokens(usage.outputTokens)} out`);
 
   if (cost !== null) {
+    // Floor the tiny bucket rather than round it: a turn that billed a warm
+    // cache read costs a real fraction of a cent, and toFixed(3) would round it
+    // to "0.000" — presenting a nonzero cost as exactly zero, the very thing
+    // this module exists to avoid. Below the three-decimal floor, say "<$0.001".
     parts.push(
-      cost < 0.01 ? `~$${cost.toFixed(3)}` : `~$${(Math.round(cost * 100) / 100).toFixed(2)}`
+      cost > 0 && cost < 0.0005
+        ? '~<$0.001'
+        : cost < 0.01
+          ? `~$${cost.toFixed(3)}`
+          : `~$${(Math.round(cost * 100) / 100).toFixed(2)}`
     );
   }
   return parts.length > 0 ? parts.join(' · ') : null;

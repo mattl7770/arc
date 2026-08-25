@@ -121,7 +121,7 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 /** The Today grid's three counted-down macros. Fiber is deliberately absent —
  *  it is summed from meal items, so a manually-entered meal contributes none by
  *  construction and it can never be honestly counted down. It lives on the
- *  micronutrients screen, read against a reference. */
+ *  micronutrients screen, read against its daily target. */
 const MACROS: { metric: DayMetric; label: string }[] = [
   { metric: 'protein_g', label: 'Protein' },
   { metric: 'carbs_g', label: 'Carbs' },

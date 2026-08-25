@@ -7,6 +7,7 @@ import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { todayISODate } from '@/lib/db/date';
 import { useExperiments, type ActiveExperiment } from '@/hooks/use-experiments';
 import type { Experiment } from '@/lib/db/repositories/experiments';
 import { progressPhrase, windowLabel } from '@/lib/experiments/format';
@@ -45,16 +46,31 @@ function Tag({ children }: { children: string }) {
   );
 }
 
+/**
+ * A not-yet-started experiment's countdown. `daysLeft` on an ActiveExperiment is
+ * measured to end_date, so it would read as "N days left" for a window that has
+ * not opened; this measures to start_date instead and says so.
+ */
+function startsInPhrase(startDate: string, today: string): string {
+  const days = Math.max(0, Math.round((Date.parse(startDate) - Date.parse(today)) / 86_400_000));
+  if (days === 0) return 'Starts today';
+  return `Starts in ${days} ${days === 1 ? 'day' : 'days'}`;
+}
+
 function RunningRow({
   experiment,
   first,
   onPress,
+  phrase: phraseOverride,
 }: {
   experiment: ActiveExperiment;
   first: boolean;
   onPress: () => void;
+  /** Overrides the countdown — used for scheduled rows whose window is not open,
+   *  where progressPhrase's end_date-based "days left" would misrepresent. */
+  phrase?: string;
 }) {
-  const phrase = progressPhrase(experiment);
+  const phrase = phraseOverride ?? progressPhrase(experiment);
   return (
     <View>
       <Divider first={first} />
@@ -126,8 +142,19 @@ export default function ExperimentsScreen() {
   const { active, concluded, abandoned, isEmpty } = useExperiments();
   const open = (id: string) => router.push({ pathname: '/experiment-detail', params: { id } });
 
+  // 'active' spans three states — not-started, running, finished-but-unread
+  // (experiments.ts documents this). Only a window that has OPENED is being run
+  // today; a future start is scheduled, and showing it under "Running" with an
+  // end_date-based "days left" implies the user should already be intervening.
+  const today = todayISODate();
   // Ready-to-read-out first: they're the ones asking for a decision.
-  const running = [...active].sort((a, b) => Number(b.ready) - Number(a.ready));
+  const running = active
+    .filter((e) => e.start_date <= today)
+    .sort((a, b) => Number(b.ready) - Number(a.ready));
+  // Soonest to begin first — a scheduled list reads as a countdown.
+  const scheduled = active
+    .filter((e) => e.start_date > today)
+    .sort((a, b) => (a.start_date < b.start_date ? -1 : 1));
 
   return (
     <Screen scroll>
@@ -166,6 +193,25 @@ export default function ExperimentsScreen() {
             <Block device="plate">
               {running.map((e, i) => (
                 <RunningRow key={e.id} experiment={e} first={i === 0} onPress={() => open(e.id)} />
+              ))}
+            </Block>
+          </View>
+        </View>
+      ) : null}
+
+      {scheduled.length > 0 ? (
+        <View className="mt-8">
+          <SectionLabel label="Scheduled" note={String(scheduled.length)} />
+          <View className="mt-3">
+            <Block device="plate">
+              {scheduled.map((e, i) => (
+                <RunningRow
+                  key={e.id}
+                  experiment={e}
+                  first={i === 0}
+                  onPress={() => open(e.id)}
+                  phrase={startsInPhrase(e.start_date, today)}
+                />
               ))}
             </Block>
           </View>

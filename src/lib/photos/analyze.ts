@@ -387,5 +387,13 @@ export async function readPhotos(
       'The reading was cut off before it finished. Try again, or read one photo at a time.'
     );
   }
-  return { reading: parsePhotoReading(text.length > 0 ? text : result.text), model };
+  const reading = parsePhotoReading(text.length > 0 ? text : result.text);
+  // The single-vs-pair rule enforced in code, not just in the prompt. A single
+  // photo has nothing to compare against, so any `changes` a model volunteered
+  // are directions ('leaner'/'fuller') against a comparison that never happened
+  // — and would be saved on a row with `compare_photo_id = null`, contradicting
+  // the types.ts contract that changes are pair-only. Drop them here where the
+  // kind is known; parsePhotoReading cannot see it.
+  if (input.kind === 'single') reading.changes = [];
+  return { reading, model };
 }

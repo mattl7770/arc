@@ -212,14 +212,25 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
       rows.push(asHit(row));
     }
 
-    // The user's entries: a wider window because one entry is several passages,
-    // then deduped to the best-scoring passage per entry so one long document
-    // cannot spend the hit budget saying the same thing five ways.
+    // The user's entries: deduped to the best-scoring passage per entry so one
+    // long document cannot spend the hit budget saying the same thing five ways.
+    //
+    // No global LIMIT here, and that is deliberate. chunk_index is PER ENTRY, so
+    // `ORDER BY chunk_index LIMIT 60` grouped every entry's index-0 passage
+    // first, then all the index-1s, and truncated — an entry whose ONLY matching
+    // passage sat at a high chunk_index was cut before it was ever seen, and
+    // dropped from recall entirely rather than merely represented by a weaker
+    // passage. That defeats the block's intent that every matching entry be
+    // represented. The dedupe runs in JS AFTER SQL, so it cannot recover a row
+    // the LIMIT already discarded; the only fix is to feed it the full match set.
+    // At single-user scale a scan of the matching chunks is cheap — the same
+    // LIKE-scan rationale this whole module rests on. ORDER BY chunk_index only
+    // makes ties deterministic (earliest passage wins), never truncates.
     const bestByEntry = new Map<string, { score: number; hit: ChunkHit }>();
     for (const row of db.all<ChunkHit>(
       `SELECT entry_id, title, topic, body FROM knowledge_chunks
        WHERE entry_id IS NOT NULL AND ((${clause('body')}) OR (${clause('title')}))
-       ORDER BY chunk_index LIMIT 60`,
+       ORDER BY entry_id, chunk_index`,
       [...params, ...params]
     )) {
       const haystack = `${row.title ?? ''} ${row.body}`.toLowerCase();

@@ -90,6 +90,10 @@ export const coachPassStore = {
     if (!trigger) return 'skipped';
 
     running = true;
+    // Wrap the whole body: maybeRun is invoked fire-and-forget from a boot /
+    // foreground effect, so any throw here would surface as an unhandled promise
+    // rejection. An unexpected failure is treated like an offline morning — the
+    // day is left unconsumed so the next foreground event tries again.
     try {
       const result = await runCoachPass(db, {
         trigger,
@@ -104,12 +108,18 @@ export const coachPassStore = {
 
       // Silence was a JUDGMENT, so it consumes the day either way — a signal the
       // Coach weighed and set aside must not re-ask an hour later.
-      markPassRan(db, options.now);
-      if (result.message === null) return 'silent';
+      if (result.message === null) {
+        markPassRan(db, options.now);
+        return 'silent';
+      }
 
-      // Persist into the thread before publishing it. What the Coach says
+      // Persist into the thread BEFORE consuming the day. What the Coach says
       // unprompted is a normal assistant turn: it shows up in the Coach tab in
-      // context, survives the app closing, and is auditable like any other.
+      // context, survives the app closing, and is auditable like any other. If
+      // the write fails (DB locked, transaction error) the observation would be
+      // lost — so mark the day ran only after the append succeeds, leaving the
+      // day unconsumed on failure so the pass is retried rather than silently
+      // dropped for good.
       const conversation = getOrCreateActiveConversation(db);
       appendMessage(
         db,
@@ -119,9 +129,12 @@ export const coachPassStore = {
         result.toolCalls.length > 0 ? result.toolCalls : null
       );
 
+      markPassRan(db, options.now);
       message = result.message;
       emit();
       return 'ran';
+    } catch {
+      return 'offline';
     } finally {
       running = false;
     }

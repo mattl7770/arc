@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../../src/lib/db/migrations.generated.ts';
+import { applyConnectionPragmas } from '../../src/lib/db/pragmas.ts';
 
 let cached = null;
 
@@ -34,7 +35,7 @@ function makeDb(raw) {
 export function getDb() {
   if (cached) return cached;
   const raw = new DatabaseSync(':memory:');
-  raw.exec('PRAGMA foreign_keys = ON;');
+  applyConnectionPragmas((sql) => raw.exec(sql));
   const db = makeDb(raw);
   migrate(
     {

@@ -71,11 +71,15 @@ export function decodeHtmlEntities(text: string): string {
   return text
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => {
       const code = parseInt(hex, 16);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+      // String.fromCodePoint throws RangeError above U+10FFFF — a value that is
+      // still finite, so Number.isFinite lets it through. A malformed entity on
+      // an untrusted page must be dropped, never thrown, per this module's
+      // defensive contract.
+      return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
     })
     .replace(/&#(\d+);/g, (_, dec: string) => {
       const code = parseInt(dec, 10);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+      return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
     })
     .replace(/&([a-zA-Z0-9]+);/g, (whole, name: string) => NAMED_ENTITIES[name] ?? whole);
 }

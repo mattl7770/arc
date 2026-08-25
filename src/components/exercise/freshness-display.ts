@@ -77,12 +77,18 @@ export type FreshnessTally = {
   /** How many muscles the ledger covers — the denominator, never a literal 16. */
   total: number;
   /**
-   * True when NOTHING has ever been logged against any muscle.
-   * `muscleFreshness` scores a never-trained muscle 100 / fresh by
-   * construction, so a fresh install draws a full body and a full bar. The
-   * number is right under the model; what is wrong is that it renders
-   * identically to a genuinely recovered body. Same defect the Train-today
-   * gauge states with its `qualifier` (app/exercise.tsx), same fix: say so.
+   * True when no muscle carries a load inside the freshness window
+   * (FRESHNESS_LOOKBACK_DAYS = 14) — `hoursSinceLast` is null for every muscle.
+   * Despite the name this is "no RECENT training", NOT "never trained": older
+   * history ages out of the 14-day window, and a cardio/mobility-only user logs
+   * no `exercise_muscles` rows at all, so both read true here even with a long
+   * history. `muscleFreshness` scores an unloaded muscle 100 / fresh by
+   * construction, so the body draws full and the bar reads full; the flag exists
+   * so a caller can say WHY rather than render that identically to a genuinely
+   * recovered body. It cannot see a hand-set freshness anchor (a 'Spent' muscle,
+   * migration 0037) that has no windowed load, so a caller must never turn this
+   * flag alone into an "all fresh" claim — see {@link freshnessSummary}. The
+   * name is kept because other consumers read it (muscle-figure.tsx).
    */
   neverTrained: boolean;
 };
@@ -123,9 +129,21 @@ export function freshnessSummary(ledger: MuscleFreshness[]): string {
   if (t.total === 0) return 'No muscle readings yet.';
   const spoken = (muscles: Muscle[]) =>
     muscles.map((m) => MUSCLE_LABEL[m].toLowerCase()).join(', ');
-  if (t.neverTrained) return `No sessions logged yet, so all ${t.total} muscles read fresh.`;
+  // Compose the non-fresh parts BEFORE letting `neverTrained` speak. A muscle
+  // can read fatigued/recovering through a hand-set freshness anchor ('Spent',
+  // migration 0037) with no logged sets in the 14-day window, so `neverTrained`
+  // — which only sees windowed loads — can be true while a muscle is plainly not
+  // fresh. Emitting the all-fresh sentence there would have VoiceOver announce
+  // every muscle fresh while the visible legend and figure show one fatigued.
   const parts: string[] = [`${t.fresh.length} of ${t.total} muscles fresh.`];
   if (t.fatigued.length > 0) parts.push(`Fatigued: ${spoken(t.fatigued)}.`);
   if (t.recovering.length > 0) parts.push(`Recovering: ${spoken(t.recovering)}.`);
+  // Only when nothing is fatigued or recovering may the unloaded state stand in,
+  // and then it says what the ledger actually knows: no training IN THE WINDOW,
+  // not "never" — a fortnight layoff or a cardio-only user has simply logged
+  // nothing the freshness window can see (see the `neverTrained` docblock).
+  if (t.neverTrained && t.fatigued.length === 0 && t.recovering.length === 0) {
+    return `No training in the last 14 days, so all ${t.total} muscles read fresh.`;
+  }
   return parts.join(' ');
 }

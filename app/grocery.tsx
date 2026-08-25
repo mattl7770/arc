@@ -12,6 +12,7 @@ import { getDb } from '@/lib/db/client';
 import { normalizeFoodName } from '@/lib/db/repositories/foods';
 import {
   addGroceryItems,
+  cartCutoff,
   cartSections,
   checkGroceryItem,
   clearCartSection,
@@ -175,6 +176,13 @@ type Loaded = {
   /** Checked before that — previous shops. */
   oldCart: GroceryItemRow[];
   recipeTitles: Record<string, string>;
+  /**
+   * The exact boundary this load SPLIT the cart on. Handed back to
+   * {@link clearCartSection} so Clear deletes precisely the rows the user saw
+   * under a section — not a boundary re-derived at tap time, which could
+   * include or drop a line sitting on the 24h edge between render and tap.
+   */
+  cutoff: string;
 };
 
 function load(): Loaded {
@@ -189,9 +197,11 @@ function load(): Loaded {
     }
   }
   // Effectively unbounded for one household — the two tallies and each Clear's
-  // scope must match what its section actually shows.
-  const { cart, old } = cartSections(db, new Date(), 500);
-  return { lines, staples: listStaples(db), cart, oldCart: old, recipeTitles };
+  // scope must match what its section actually shows. One `now` splits the cart
+  // and yields the cutoff Clear will act on, so both agree on one boundary.
+  const now = new Date();
+  const { cart, old } = cartSections(db, now, 500);
+  return { lines, staples: listStaples(db), cart, oldCart: old, recipeTitles, cutoff: cartCutoff(now) };
 }
 
 /** Which cart section is folded open. */
@@ -243,7 +253,16 @@ export default function GroceryScreen() {
       timers.current.delete(key);
     }
     const db = getDb();
-    for (const id of ids) checkGroceryItem(db, id);
+    // Re-derive the ids to check off from the CURRENT consolidated line rather
+    // than the set captured when the row was tapped. A same-name item added
+    // during the undo window joins this line and is drawn struck-through with
+    // it (its name_norm is pending), so it must be checked off too — otherwise
+    // the line reappears open right after commit, having flickered from checked
+    // to on-the-list with no user action. Fall back to the captured ids if the
+    // line is no longer open (its members already left the list).
+    const current = consolidatedOpenList(db).find((line) => line.name_norm === key);
+    const toCheck = current ? current.items.map((item) => item.id) : ids;
+    for (const id of toCheck) checkGroceryItem(db, id);
     setPending((prev) => {
       if (!(key in prev)) return prev;
       const next = { ...prev };
@@ -331,7 +350,7 @@ export default function GroceryScreen() {
       setClearArmed(scope);
       return;
     }
-    clearCartSection(getDb(), scope);
+    clearCartSection(getDb(), scope, data.cutoff);
     setOpenCart((prev) => ({ ...prev, [scope]: false }));
     reload();
   };
@@ -973,6 +992,21 @@ function GroceryEntryRow({
   onChanged: () => void;
 }) {
   const [qty, setQty] = useState(item.qty_text ?? '');
+
+  /**
+   * Resync the field when the DATABASE's own quantity for this entry changes,
+   * the same render-phase pattern {@link GroceryLineEditor} uses. This row is
+   * keyed by `item.id`, so a line-level edit (which rewrites the members'
+   * qty_text) refreshes the `item` prop WITHOUT remounting the row — leaving
+   * `qty` holding the old string. The next blur then compared stale-against-
+   * fresh and wrote the old value back, silently reverting the edit. The seed is
+   * tracked apart from the value so in-flight typing is never clobbered.
+   */
+  const [seed, setSeed] = useState(item.qty_text ?? '');
+  if (seed !== (item.qty_text ?? '')) {
+    setSeed(item.qty_text ?? '');
+    setQty(item.qty_text ?? '');
+  }
 
   const saveQty = () => {
     const trimmed = qty.trim();

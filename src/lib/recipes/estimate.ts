@@ -322,11 +322,17 @@ export async function resolveRecipeWithModel(
 
   const priced = parseRecipePricing(text.length > 0 ? text : result.text);
   const notes: string[] = [];
+  // parseRecipePricing validates each index independently and never de-dupes, so
+  // a model that repeats a line arrives as two entries with the same index. Each
+  // would write and count the same line, inflating `resolved` past the distinct
+  // lines priced — so a line already written is skipped here.
+  const applied = new Set<number>();
   let resolved = 0;
   for (const entry of priced) {
     const line = pending[entry.index];
     if (!line) continue; // an index outside the set it was sent
     if (entry.grams === null || entry.kcal === null) continue; // honestly unpriced
+    if (applied.has(entry.index)) continue; // a repeated index — the line is done
     try {
       resolveIngredientByModel(db, line.id, {
         grams: entry.grams,
@@ -336,6 +342,7 @@ export async function resolveRecipeWithModel(
         fat_g: entry.fat_g,
         fiber_g: entry.fiber_g,
       });
+      applied.add(entry.index);
       resolved += 1;
       if (entry.note) notes.push(entry.note);
     } catch {

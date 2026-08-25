@@ -98,5 +98,16 @@ export function duePass(db: Database, now: Date = new Date()): PassTrigger | nul
  * ask again an hour later).
  */
 export function markPassRan(db: Database, now: Date = new Date()): void {
-  setPassState(db, { lastDate: todayISODate(now), seenSignals: currentSignals(db, now) });
+  // lastDate only ever advances, never regresses. duePass leaves a stored date
+  // "ahead" of today alone so a rolled-back clock cannot re-fire the daily pass;
+  // writing today unconditionally here would defeat that — a signal pass that
+  // ran after westbound date-line travel would overwrite the future date with an
+  // earlier one, and the daily pass would fire a second time once the clock
+  // caught back up. Keep the later of the two (string comparison on YYYY-MM-DD).
+  // seenSignals is always the current set: a signal weighed and set aside must
+  // not re-trigger regardless of which date wins.
+  const today = todayISODate(now);
+  const stored = getPassState(db).lastDate;
+  const lastDate = stored !== null && stored > today ? stored : today;
+  setPassState(db, { lastDate, seenSignals: currentSignals(db, now) });
 }

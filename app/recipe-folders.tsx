@@ -170,9 +170,15 @@ export default function RecipeFoldersScreen() {
                   first={index === 0}
                   editing={editingId === summary.folder.id}
                   armed={deleteArmed === summary.folder.id}
-                  onToggleEdit={() =>
-                    setEditingId(editingId === summary.folder.id ? null : summary.folder.id)
-                  }
+                  onToggleEdit={() => {
+                    setEditingId(editingId === summary.folder.id ? null : summary.folder.id);
+                    // Collapsing a row disarms its pending delete: the row is
+                    // remounted on the next expand (the key embeds editingId),
+                    // and a surviving deleteArmed would bring it back already
+                    // reading "Confirm delete" — one tap from deleting, past the
+                    // two-tap safety this screen documents.
+                    setDeleteArmed(null);
+                  }}
                   onArm={() =>
                     setDeleteArmed(deleteArmed === summary.folder.id ? null : summary.folder.id)
                   }

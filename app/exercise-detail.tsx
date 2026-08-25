@@ -12,9 +12,10 @@ import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { getExercise } from '@/lib/db/repositories/exercise-catalog';
 import {
-  e1rmSeries,
-  exerciseSessionTops,
-  personalRecords,
+  e1rmSeriesFrom,
+  exerciseSessionTopsFrom,
+  personalRecordsFrom,
+  workingSets,
 } from '@/lib/db/repositories/training-stats';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
 import { dayLabel, formatWeight, setLineKg } from '@/lib/exercise/format';
@@ -63,12 +64,14 @@ const EMPTY_PRS: PersonalRecords = { maxWeightKg: null, bestE1rmKg: null, bestSe
 function read(id: string | undefined): Detail {
   const db = getDb();
   if (!id) return { exercise: undefined, prs: EMPTY_PRS, series: [], sessions: [] };
+  // One scan of workout_sets feeds all three stats, instead of a re-query each.
+  const rows = workingSets(db, id);
   return {
     exercise: getExercise(db, id),
-    prs: personalRecords(db, id),
-    series: e1rmSeries(db, id),
+    prs: personalRecordsFrom(rows),
+    series: e1rmSeriesFrom(rows),
     // newest-first for the history list
-    sessions: exerciseSessionTops(db, id, 12).slice().reverse(),
+    sessions: exerciseSessionTopsFrom(rows, 12).slice().reverse(),
   };
 }
 

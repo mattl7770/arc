@@ -140,9 +140,18 @@ function normalizeExerciseName(s: string): string {
  * Three tiers, each tried only if the one above found nothing:
  *
  *   1. exact on the folded catalog name or a folded alias;
- *   2. one name is the other's leading phrase ("incline dumbbell press" for
- *      "incline dumbbell press machine"), multi-token only;
+ *   2. the typed name is a catalog name's leading phrase — the input is shorter
+ *      and exactly one catalog movement extends it ("bulgarian split squat"
+ *      resolving to its one dumbbell variant), multi-token only;
  *   3. nothing.
+ *
+ * Only the shorter-input direction is safe. The reverse — a longer input folding
+ * onto a shorter catalog name because the catalog name is its leading phrase —
+ * pulls a distinct movement onto an unrelated one whenever the trailing token
+ * discriminates rather than qualifies: "deadlift sumo" is not conventional
+ * "Deadlift", and "bench press close grip" is not plain "Bench Press". Natural
+ * word order ("sumo deadlift", "close grip bench press") leads with the
+ * qualifier and matches exactly at tier 1, so nothing is lost by refusing it.
  *
  * Single-token needles never reach tier 2, which is what keeps "Bench" from
  * claiming "Bench Press" while "Bench Dip" also exists, and "Press" — pinned by
@@ -169,9 +178,7 @@ export function resolveExerciseByName(db: Database, name: string): string | null
   if (exact.length > 1) return null;
 
   if (needle.split(' ').length < 2) return null;
-  const prefix = folded.filter((e) =>
-    e.names.some((n) => n.startsWith(`${needle} `) || needle.startsWith(`${n} `))
-  );
+  const prefix = folded.filter((e) => e.names.some((n) => n.startsWith(`${needle} `)));
   return prefix.length === 1 ? prefix[0]!.id : null;
 }
 
@@ -236,12 +243,20 @@ export function createCustomExercise(db: Database, input: NewExercise): string {
         muscle,
         role,
       ]);
-    for (const m of input.primaryMuscles) insertMuscle(m, 'primary');
-    // A muscle can't be both primary and secondary (UNIQUE(exercise, muscle)) —
-    // drop any secondary that's already primary so the insert can't trip it.
+    // UNIQUE(exercise_id, muscle) (0011) means a muscle repeated anywhere — in
+    // the same list, or a secondary already listed primary — trips the second
+    // INSERT and rolls the whole exercise back. An LLM-authored "New exercise"
+    // can easily return primaryMuscles: ['chest','chest'], so dedupe every list
+    // before inserting: primaries against themselves, secondaries against
+    // themselves and against the primaries.
     const primarySet = new Set(input.primaryMuscles);
+    for (const m of primarySet) insertMuscle(m, 'primary');
+    const seenSecondary = new Set<Muscle>();
     for (const m of input.secondaryMuscles ?? [])
-      if (!primarySet.has(m)) insertMuscle(m, 'secondary');
+      if (!primarySet.has(m) && !seenSecondary.has(m)) {
+        seenSecondary.add(m);
+        insertMuscle(m, 'secondary');
+      }
   });
   return id;
 }

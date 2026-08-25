@@ -8,7 +8,11 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
-import { dayMicroTotals } from '@/lib/db/repositories/nutrition';
+import {
+  activeNutritionTargets,
+  dayFiberTotal,
+  dayMicroTotals,
+} from '@/lib/db/repositories/nutrition';
 import { fmtMicro } from '@/lib/nutrition/format';
 import { MICROS, type Micros } from '@/lib/nutrition/micros';
 
@@ -32,18 +36,47 @@ import { MICROS, type Micros } from '@/lib/nutrition/micros';
  * no rule — no data, no number. A PARTIAL one still draws a figure and a filled
  * rule, because the sum cannot tell which foods were missing from it; the
  * caveat above the rows is what keeps that figure honest.
+ *
+ * Fiber is the one figure here read against a **personal target**, not a
+ * reference — `nutrition_targets.fiber_g`, the same value the Coach reads. It is
+ * summed from meal items (manual meals record none) and lives in its own plate
+ * so the reference-value firewall stays intact: the micros plate's closing
+ * annotation says "not personal targets", and fiber is exactly that, so it must
+ * not sit under it. The plate appears only when a fiber target has been set,
+ * matching `dayFiberTotal`'s contract — a day with no target isn't scolded over
+ * data it never captured. (The Today grid deliberately omits fiber for the same
+ * reason it can't count it down; see the MACROS note in app/nutrition.tsx.)
  */
 
-function readMicros(): Micros {
-  return dayMicroTotals(getDb(), todayISODate());
+type MicrosData = {
+  micros: Micros;
+  /** Fiber eaten today, summed from meal items (0 when none recorded). */
+  fiberEaten: number;
+  /** The active fiber target in grams, or null until one is set. */
+  fiberTarget: number | null;
+};
+
+function readMicros(): MicrosData {
+  const db = getDb();
+  const date = todayISODate();
+  return {
+    micros: dayMicroTotals(db, date),
+    fiberEaten: dayFiberTotal(db, date),
+    fiberTarget: activeNutritionTargets(db, date)?.fiber_g ?? null,
+  };
 }
 
 export default function NutritionMicrosScreen() {
-  const [micros, setMicros] = useState<Micros>(readMicros);
-  const reload = useCallback(() => setMicros(readMicros()), []);
+  const [data, setData] = useState<MicrosData>(readMicros);
+  const reload = useCallback(() => setData(readMicros()), []);
   useFocusEffect(reload);
 
+  const { micros, fiberEaten, fiberTarget } = data;
   const recorded = MICROS.filter((m) => micros[m.key] != null).length;
+  const fiberPct =
+    fiberTarget !== null && fiberTarget > 0
+      ? Math.min(100, (fiberEaten / fiberTarget) * 100)
+      : 0;
 
   return (
     <Screen scroll>
@@ -135,6 +168,32 @@ export default function NutritionMicrosScreen() {
           </View>
         </>
       )}
+
+      {/* Fiber stands apart from the micros above: it is read against the
+          user's own target, not a general reference, so it cannot sit under the
+          "not personal targets" annotation and gets its own plate. Shown only
+          when a target exists (dayFiberTotal's contract). */}
+      {fiberTarget !== null ? (
+        <View className="mt-3">
+          <Block device="plate">
+            <SectionLabel label="Fiber" note="daily target" />
+            <View className="mt-1 py-3">
+              <View className="flex-row items-baseline justify-between gap-3">
+                <Text className="flex-1 font-serif text-[14px] text-ink">Eaten today</Text>
+                <View className="flex-row items-baseline gap-1">
+                  <Text className="font-mono text-[14px] text-ink">{fmtMicro(fiberEaten, 0)}</Text>
+                  <Text className="font-mono text-[10px] text-ink-muted">
+                    g of {fmtMicro(fiberTarget, 0)} g
+                  </Text>
+                </View>
+              </View>
+              <View className="mt-1.5 h-[3px] bg-paper-deep">
+                <View className="h-[3px] bg-ink-secondary" style={{ width: `${fiberPct}%` }} />
+              </View>
+            </View>
+          </Block>
+        </View>
+      ) : null}
     </Screen>
   );
 }

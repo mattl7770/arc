@@ -130,7 +130,7 @@ function readToday(): Omit<NutritionDay, 'reload'> {
       protein,
       avgKcal: meanPositive(kcal),
       avgProtein: meanPositive(protein),
-      daysRecorded: series.filter((p: DayIntakePoint) => p.kcal > 0).length,
+      daysRecorded: series.filter((p: DayIntakePoint) => p.mealCount > 0).length,
     },
   };
 }

@@ -130,6 +130,13 @@ export default function AppointmentFormScreen() {
   const markCompleted = () => {
     if (!editingId) return;
     try {
+      // Persist any unsaved edits first. completeAppointment re-reads
+      // scheduled_at from the row and stamps the linked screening done as of
+      // that day, so a date corrected in the form but not yet saved would be
+      // both ignored (completion recorded against the stale stored day, next_due
+      // rolled from it) and lost. Only when the form is valid — invalid edits
+      // fall back to completing against the stored booking.
+      if (canSave) updateAppointment(getDb(), editingId, input());
       completeAppointment(getDb(), editingId);
       router.back();
     } catch (error) {

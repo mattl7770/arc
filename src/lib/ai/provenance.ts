@@ -36,9 +36,17 @@ export type NumberMention = {
 function isIgnorable(literal: string, value: number, context: string): boolean {
   if (Number.isInteger(value) && value >= 0 && value <= 12) return true;
   if (Number.isInteger(value) && value >= 1900 && value <= 2100) return true;
-  // Inside an ISO date or a clock time.
-  if (/\d{4}-\d{2}-\d{2}/.test(context) && /^\d{1,4}$/.test(literal)) return true;
-  if (new RegExp(`\\d{1,2}:\\d{2}`).test(context) && /^\d{1,2}$/.test(literal)) return true;
+  // Inside an ISO date or a clock time. A date (2026-01-15) or a clock time
+  // (06:30) contributes its own component digits — a day of 15, a minute of 52 —
+  // which are never claims about the user's data. But a real value written NEAR
+  // one is: "ApoB on 2026-01-15 was 130", "HRV at 06:30 was 52". Testing the
+  // whole ~40-char window swept those up and let fabricated clinical figures
+  // pass the lint clean — the exact phrasing lab and wearable values most often
+  // take. So strip the date/time TOKENS themselves and exempt the literal only
+  // when it no longer survives: i.e. it existed SOLELY as a component of one.
+  const stripped = context.replace(/\d{4}-\d{2}-\d{2}/g, ' ').replace(/\d{1,2}:\d{2}/g, ' ');
+  const surviving: string[] = stripped.match(/\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g) ?? [];
+  if (!surviving.includes(literal)) return true;
   return false;
 }
 

@@ -96,7 +96,16 @@ export default function RootLayout() {
     void syncHealthIfEnabled(getDb());
     const stopHealthSync = registerForegroundHealthSync(getDb());
     const stopRouting = registerNotificationRouting((route) => {
-      router.push(route.kind === 'coach' ? '/coach' : '/(tabs)/coach');
+      // Active reminders live on the Coach tab (its RemindersCard), so both
+      // kinds land there — but a reminder tap carries its id so the specific
+      // reminder can be surfaced rather than dropped, which is the whole point
+      // of routing the tap at all (reminders.ts §registerNotificationRouting).
+      // A check-in tap opens the tab as a plain conversation.
+      if (route.kind === 'reminder') {
+        router.push({ pathname: '/(tabs)/coach', params: { reminderId: route.id } });
+      } else {
+        router.push('/(tabs)/coach');
+      }
     });
     return () => {
       stopHealthSync();

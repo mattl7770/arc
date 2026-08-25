@@ -37,8 +37,16 @@ const nowISO = () => new Date().toISOString();
 /**
  * A UTC ISO instant at LOCAL noon of a `YYYY-MM-DD` — how a backdated body
  * metric gets stamped onto its intended day. Noon (not midnight) keeps the
- * reading safely inside the local day so it never flips to an adjacent day at a
- * timezone boundary.
+ * reading inside the local day for any UTC offset within ±12h, so a consumer
+ * that reads it back through a LOCAL-day window (localDayUtcRange) always lands
+ * it on `date`.
+ *
+ * It is NOT flip-proof for its own UTC-date portion: at an offset beyond +12h
+ * (New Zealand DST +13, Chatham +13:45, Kiribati +14) local noon falls on the
+ * PREVIOUS UTC date, and at exactly −12h on the NEXT. A consumer that buckets by
+ * substr(measured_at,1,10) instead of a local window therefore attributes the
+ * reading to the wrong calendar day at those extremes. Bucket backdated body
+ * readings through a local window, not the raw UTC date. (See logMetric.)
  */
 function dayInstant(date: string): string {
   const [y, m, d] = date.split('-').map(Number);
@@ -78,9 +86,12 @@ export function logMetric(
     // body_metrics has no `date` column — only a UTC `measured_at`. For TODAY we
     // stamp the real instant (preserves time-of-day + ordering); for a BACKDATE
     // (the Coach forwards one when the user reports a past event) we stamp local
-    // noon of that day, so the reading lands on the intended day in both the
-    // Data-tab window read and the Coach's substr(measured_at,1,10) bucket — not
-    // silently on today, which would corrupt the daily series.
+    // noon of that day, so a LOCAL-day window read (localDayUtcRange) lands the
+    // reading on the intended day for any timezone — not silently on today,
+    // which would corrupt the daily series. A consumer that instead slices
+    // substr(measured_at,1,10) only agrees within ±12h of UTC; beyond that local
+    // noon flips to an adjacent UTC date (see dayInstant), so day-bucket readers
+    // should go through a local window rather than the raw UTC date.
     const measuredAt = date === todayISODate() ? nowISO() : dayInstant(date);
     db.run(
       `INSERT INTO body_metrics (id, measured_at, ${target.column}, source) VALUES (?, ?, ?, 'manual')`,

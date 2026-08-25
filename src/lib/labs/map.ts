@@ -205,9 +205,13 @@ function resolveSlug(printedName: string, byName: Map<string, string>): string |
   const key = normalizeBiomarkerName(printedName);
   if (key === '') return null;
   // A different specimen is a different analyte; never fold it into the serum
-  // marker of the same name.
+  // catalog marker of the same name. But a marker whose canonical identity IS a
+  // foreign specimen — urine ACR, folded onto slug 'uacr' — is canonicalized by
+  // the curated alias table on purpose. Consult that table before the guard so
+  // those aliases aren't dead code; the guard then only blocks a specimen name
+  // from reaching the serum catalog lookup below.
   if (FOREIGN_SPECIMENS.some((word) => key.split(' ').includes(word) || key.includes(word))) {
-    return null;
+    return BIOMARKER_ALIASES[key] ?? null;
   }
   return byName.get(key) ?? BIOMARKER_ALIASES[key] ?? null;
 }

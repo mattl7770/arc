@@ -197,9 +197,21 @@ export function cartSections(db: Database, now: Date = new Date(), limit: number
 
 /**
  * Empty ONE of the two cart sections. `scope: 'cart'` deletes what was checked
- * since the cutoff, `'old'` deletes what was checked before it — never both, so
- * clearing the current cart can't take last week's history with it and vice
+ * at or after `cutoff`, `'old'` deletes what was checked before it — never both,
+ * so clearing the current cart can't take last week's history with it and vice
  * versa. Returns how many rows went.
+ *
+ * **`cutoff` is the boundary the caller SPLIT on, not one re-derived here.** The
+ * screen partitions the cart with `cartCutoff(now)` at render time
+ * ({@link cartSections}); it must hand that SAME cutoff back here so the delete
+ * acts on exactly the rows it drew. When this function computed its own fresh
+ * `cartCutoff(now)` at tap time instead, the two 'now's differed by the
+ * render-to-tap interval, so an item sitting on the {@link CART_AGE_HOURS}
+ * boundary could be shown under "In cart" yet fall into "Old carts" (or vice
+ * versa) by the moment Clear was pressed — a "Clear cart" that silently left
+ * behind a row the user had just seen. Sharing one boundary across the
+ * render/act pair is what makes the button mean what the heading above it says.
+ * The default is only for callers with no split on screen (the headless tests).
  *
  * This replaced a single `clearCheckedItems` that took every checked row at
  * once. With two sections on screen that function had no honest button to sit
@@ -213,9 +225,8 @@ export function cartSections(db: Database, now: Date = new Date(), limit: number
 export function clearCartSection(
   db: Database,
   scope: 'cart' | 'old',
-  now: Date = new Date()
+  cutoff: string = cartCutoff()
 ): number {
-  const cutoff = cartCutoff(now);
   const op = scope === 'cart' ? '>=' : '<';
   const row = db.get<{ n: number }>(
     `SELECT count(*) AS n FROM grocery_items WHERE checked_at IS NOT NULL AND checked_at ${op} ?`,

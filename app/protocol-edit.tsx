@@ -236,6 +236,33 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
 
   const nextVersion = (detail?.version?.version_number ?? 0) + 1;
 
+  // The content a save would write, built once here so save() and the render can
+  // share one definition — and so the render can tell whether a new version will
+  // actually be written (below) before it promises one.
+  const content: ProtocolContent = {
+    items: items
+      .filter((it) => it.title.trim() !== '')
+      .map((it) =>
+        normalizeItem({
+          title: it.title,
+          scheduled_time: it.time.trim() === '' ? null : normalizeTime(it.time),
+          dose: it.dose,
+          notes: it.notes,
+        })
+      ),
+  };
+
+  // Whether saving writes a NEW protocol_versions row. An identity-only edit
+  // (rename, pause/activate) that leaves the items untouched and the change-note
+  // box empty updates the protocols row in place and writes no version — so a
+  // "Save as v{n+1}" label or a "→ v{n+1}" note there would promise a version
+  // the history then contradicts. A new protocol, a first version, changed items
+  // or a typed change note all write. Inverse of `unchanged` in save().
+  const wouldWriteVersion =
+    detail?.version == null ||
+    changeNotes.trim() !== '' ||
+    JSON.stringify(content) !== JSON.stringify(detail.content);
+
   // Items with a blank title are dropped at save; a titled item may leave its
   // time blank, but a typed time must read as a real clock time.
   const timesValid = items.every(
@@ -261,35 +288,21 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
   const save = () => {
     if (inFlight.current || !canSave) return;
     inFlight.current = true;
-    const content: ProtocolContent = {
-      items: items
-        .filter((it) => it.title.trim() !== '')
-        .map((it) =>
-          normalizeItem({
-            title: it.title,
-            scheduled_time: it.time.trim() === '' ? null : normalizeTime(it.time),
-            dose: it.dose,
-            notes: it.notes,
-          })
-        ),
-    };
     try {
       const db = getDb();
       if (detail) {
-        // normalizeItem gives both sides one canonical shape, so a plain
-        // string compare detects "nothing changed" — no no-op versions. Typed
-        // change notes force a version anyway: they're user data, and skipping
-        // would silently discard them.
-        const unchanged =
-          detail.version !== null &&
-          changeNotes.trim() === '' &&
-          JSON.stringify(content) === JSON.stringify(detail.content);
+        // normalizeItem gives both sides one canonical shape, so `wouldWriteVersion`
+        // (a plain string compare, computed in render) detects "nothing changed"
+        // — no no-op versions. Passing content: null then leaves the versioned
+        // content alone and updates only the identity row. Typed change notes
+        // force a version anyway: they're user data, and skipping would silently
+        // discard them.
         reviseProtocol(db, detail.protocol.id, {
           name: name.trim(),
           type,
           description: description.trim() || null,
           active,
-          content: unchanged ? null : content,
+          content: wouldWriteVersion ? content : null,
           changeNotes: changeNotes.trim() || null,
         });
       } else {
@@ -506,8 +519,13 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
           ) : null}
 
           <View className="mt-8">
-            {/* The version number is a measured value — mono, in the note slot. */}
-            <SectionLabel label="What changed (optional)" note={`→ v${nextVersion}`} />
+            {/* The version number is a measured value — mono, in the note slot.
+                Shown only when a version will actually be written: an
+                identity-only edit writes none, so the arrow would lie. */}
+            <SectionLabel
+              label="What changed (optional)"
+              note={wouldWriteVersion ? `→ v${nextVersion}` : undefined}
+            />
             <View className="mt-2">
               <FormField
                 value={changeNotes}
@@ -545,10 +563,15 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
             canSave ? 'text-pine-on' : 'text-ink-muted'
           }`}>
           {editing ? (
-            <>
-              {'Save as '}
-              <Text className="font-mono">{`v${nextVersion}`}</Text>
-            </>
+            wouldWriteVersion ? (
+              <>
+                {'Save as '}
+                <Text className="font-mono">{`v${nextVersion}`}</Text>
+              </>
+            ) : (
+              // Identity-only edit — no new version, so don't promise one.
+              'Save changes'
+            )
           ) : (
             'Create protocol'
           )}

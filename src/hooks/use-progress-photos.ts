@@ -123,7 +123,14 @@ export function useWeightFormatter(): (kg: number) => string {
   // Built by a module-level factory rather than inline: a `useMemo` whose
   // callback both branches AND returns a function is one the React Compiler
   // refuses to preserve, and the lint rule that catches that is an error here.
-  return useMemo(() => weightFormatter(), []);
+  //
+  // Keyed on the current unit preference, not `[]`: an empty-deps formatter is
+  // built once per mount and never recomputes, so switching kg→lb in Settings
+  // and popping back to a still-mounted detail rendered the caption in the old
+  // unit until remount. The preference change flows through the dep, which also
+  // re-keys `reload` and re-reads. Found by adversarial review.
+  const units = getPreferences(getDb()).units;
+  return useMemo(() => weightFormatter(), [units]);
 }
 
 function weightFormatter(): (kg: number) => string {

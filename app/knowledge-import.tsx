@@ -124,6 +124,11 @@ export default function KnowledgeImportScreen() {
     setPhase({ kind: 'working', label });
     try {
       const draft = await importKnowledge(input, { signal: controller.signal });
+      // A cancel (button) or unmount can win the race against a resolving turn —
+      // the catch branch already guards on this, and the success branch must too,
+      // or a cancelled import resurrects the review screen (or setStates a dead
+      // component).
+      if (controller.signal.aborted) return;
       setTitle(draft.title);
       setTopic(draft.topic);
       setBody(draft.body);
@@ -143,7 +148,11 @@ export default function KnowledgeImportScreen() {
     // The URL rides along when the user came down the URL rung, so the spec's
     // "URL into provenance" holds on the floor too (2026-08-13 review fix).
     stashKnowledgeDraft(text, mode === 'url' ? url : null);
-    router.replace('/knowledge-entry-edit');
+    // `draft: '1'` is a nav flag, not content — content rides memory. It tells
+    // the editor THIS mount is the stash's intended recipient, so the handoff's
+    // replay window (which survives React's double-invoked initializer) can't
+    // leak an abandoned paste into a later, unrelated "Write an entry" mount.
+    router.replace({ pathname: '/knowledge-entry-edit', params: { draft: '1' } });
   };
 
   const save = () => {
