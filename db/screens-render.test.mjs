@@ -57,6 +57,7 @@ import ExerciseScreen from '../app/exercise.tsx';
 import MissionHistoryScreen from '../app/mission-history.tsx';
 import WaterScreen from '../app/water.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
+import ExerciseDetailScreen from '../app/exercise-detail.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
 import RecipeEditScreen from '../app/recipe-edit.tsx';
@@ -122,6 +123,38 @@ function refute(name, html, substrings) {
     if (html.includes(sub)) bad(`${name} must NOT show "${sub}"`);
     else ok(`${name} does not show "${sub}"`);
   }
+}
+
+/**
+ * The body figure actually DREW — the check that came in with the SVG rewrite
+ * (2026-08-25), when the figure stopped being `View`s and became `<Path>`
+ * elements with gradient fills.
+ *
+ * The render stub maps every react-native-svg element to its real DOM tag, so a
+ * server render emits genuine markup and three silent failures become visible
+ * here: a figure that mounted no paths at all, a `url(#…)` fill pointing at a
+ * gradient id that is not in the document (which paints the muscle BLACK on
+ * iOS and nothing at all on web), and a NaN in any coordinate — all of which a
+ * text assertion walks straight past.
+ *
+ * It says nothing about how the drawing LOOKS. That stays db/figure-preview.mjs
+ * and the device (memory: verify on device, not web).
+ */
+function figureDrew(name, html) {
+  if (html === null) return;
+  const paths = (html.match(/<path/g) || []).length;
+  const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+  const refs = [...html.matchAll(/url\(#([^)]+)\)/g)].map((m) => m[1]);
+  const dangling = refs.filter((r) => !ids.has(r));
+  paths >= 100
+    ? ok(`${name}: the figure pair drew ${paths} paths`)
+    : bad(`${name}: figure drew only ${paths} paths`);
+  refs.length > 0 && dangling.length === 0
+    ? ok(`${name}: all ${refs.length} gradient references resolve inside the document`)
+    : bad(`${name}: dangling gradient refs`, dangling.join(' ') || 'no gradients at all');
+  html.includes('NaN')
+    ? bad(`${name}: NaN in the rendered markup`)
+    : ok(`${name}: no NaN reached the path data`);
 }
 
 function expect(name, html, substrings) {
@@ -658,6 +691,7 @@ const db = getDb();
     );
 
     const worked = render('exercise hub (after a session)', ExerciseScreen);
+    figureDrew('exercise hub', worked);
     expect('exercise hub (after a session)', worked, [
       'Fatigued', // the WORD is the primary carrier: the two fills are 1.03:1
       'Chest', // ...and the muscle is NAMED, which the old figure never did
@@ -669,6 +703,7 @@ const db = getDb();
     ]);
 
     const pushed = render('muscle-freshness', MuscleFreshnessScreen);
+    figureDrew('muscle-freshness', pushed);
     expect('muscle-freshness (pushed)', pushed, [
       'Muscle freshness',
       'Per muscle',
@@ -690,6 +725,19 @@ const db = getDb();
       render('muscle-freshness (cleared)', MuscleFreshnessScreen),
       ['Set by hand']
     );
+
+    // exercise-detail is the figure's ONLY `mode: 'muscles'` consumer, and the
+    // one screen in this area carrying a design firewall: which muscles a
+    // MOVEMENT works is a fact about an exercise, never a biological state, so
+    // it must never wear the signal green (00-design-spec.md §2). It joined the
+    // walk on 2026-08-25 — see db/render-stubs/exercise-images.mjs for the
+    // static-require blocker that had kept it off.
+    const detail = render('exercise detail', ExerciseDetailScreen, { id: 'barbell-bench-press' });
+    figureDrew('exercise detail', detail);
+    expect('exercise detail', detail, ['Muscles worked', 'Primary', 'Assists', 'Chest']);
+    // The firewall, asserted rather than asserted-about: the freshness green
+    // must not appear anywhere in this screen's markup.
+    refute('exercise detail', detail, ['#185A36', '#185a36']);
   }
 
   // -------------------------------------------------------------------------

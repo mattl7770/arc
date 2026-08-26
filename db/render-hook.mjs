@@ -8,8 +8,10 @@
  *  - 'react-native' → 'react-native-web' (installed; the repo's web target),
  *  - stubs for the native/runtime modules a server render can't load:
  *    expo-router (params/router/focus-effect), expo-keep-awake, Ionicons,
- *    react-native-safe-area-context, expo-constants, and '@/lib/db/client'
- *    (swapped for a node:sqlite-backed database running the REAL migrations).
+ *    react-native-safe-area-context, expo-constants, '@/lib/db/client'
+ *    (swapped for a node:sqlite-backed database running the REAL migrations),
+ *    and react-native-svg (the body figure's `<Path>` elements, mapped to real
+ *    DOM SVG tags — see the stub for why not the package's own web build).
  *
  * Test-harness only — app source is untouched.
  */
@@ -35,6 +37,17 @@ const STUBS = {
   // merely to run.
   'expo-constants': pathToFileURL(path.join(HERE, 'render-stubs', 'expo-constants.mjs')).href,
   '@/lib/db/client': pathToFileURL(path.join(HERE, 'render-stubs', 'db-client.mjs')).href,
+  // The body figure is <Path> elements since 2026-08-25. The package's own web
+  // build needs Metro's platform-extension resolution AND resolves into
+  // @react-native/assets-registry, which has no web entry; the stub maps every
+  // element to its real DOM tag instead, so a render emits genuine SVG markup.
+  'react-native-svg': pathToFileURL(path.join(HERE, 'render-stubs', 'react-native-svg.mjs')).href,
+  // 69 static require('…jpg') calls — the only form Metro resolves, and a
+  // ReferenceError under ESM. Stubbing it is what puts app/exercise-detail.tsx
+  // (the figure's only `mode: 'muscles'` consumer) on the render walk.
+  '@/lib/exercise/images.generated': pathToFileURL(
+    path.join(HERE, 'render-stubs', 'exercise-images.mjs')
+  ).href,
 };
 
 async function resolveWithExtensions(base, context, nextResolve) {
