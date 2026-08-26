@@ -21,11 +21,25 @@ const DB_NAME = 'arc.db';
 type OpDb = ReturnType<typeof open>;
 
 let cached: Database | null = null;
+/**
+ * The raw op-sqlite handle behind {@link cached}. Retained (the wrapper alone
+ * used to be) because {@link replaceDatabaseFile} has to CLOSE the connection
+ * before the file underneath it is swapped, and `getDbPath()` lives here too.
+ */
+let rawCached: OpDb | null = null;
 
 /** Adapt an op-sqlite handle to the Database + MigrationExecutor surfaces. */
 function wrap(db: OpDb): Database & MigrationExecutor {
-  const q = (sql: string, params?: Scalar[]) =>
-    db.executeSync(sql, params as Parameters<OpDb['executeSync']>[1]);
+  const q = (sql: string, params?: Scalar[]) => {
+    // A wrapper that outlives its connection — every hook and screen mounted
+    // before a restore holds one — would otherwise reach op-sqlite's freed
+    // handle and die with an inscrutable "out of memory". Refuse with the one
+    // sentence that names the actual fix instead.
+    if (db !== rawCached) {
+      throw new Error('ARC’s database was restored — close and reopen ARC to finish.');
+    }
+    return db.executeSync(sql, params as Parameters<OpDb['executeSync']>[1]);
+  };
 
   return {
     run: (sql, params) => {
@@ -35,26 +49,25 @@ function wrap(db: OpDb): Database & MigrationExecutor {
     get: (sql, params) => q(sql, params).rows[0] as never,
     // op-sqlite has no synchronous transaction wrapper; BEGIN/COMMIT/ROLLBACK
     // via executeSync is the documented equivalent (it's what db.transaction
-    // runs internally).
+    // runs internally). Routed through `q` like everything else so the
+    // stale-after-restore guard covers every entry point.
     transaction: (fn) => {
-      db.executeSync('BEGIN');
+      q('BEGIN');
       try {
         fn();
-        db.executeSync('COMMIT');
+        q('COMMIT');
       } catch (error) {
-        db.executeSync('ROLLBACK');
+        q('ROLLBACK');
         throw error;
       }
     },
     exec: (sql) => {
-      db.executeSync(sql);
+      q(sql);
     },
     getUserVersion: () =>
-      Number(
-        (db.executeSync('PRAGMA user_version').rows[0] as { user_version: number }).user_version
-      ),
+      Number((q('PRAGMA user_version').rows[0] as { user_version: number }).user_version),
     setUserVersion: (version) => {
-      db.executeSync(`PRAGMA user_version = ${version}`);
+      q(`PRAGMA user_version = ${version}`);
     },
   };
 }
@@ -76,6 +89,9 @@ export function getDb(): Database {
       raw.executeSync(sql);
     });
 
+    // Assigned BEFORE the wrapper is used: `wrap`'s stale-after-restore guard
+    // compares against this, and the migrations below run through the wrapper.
+    rawCached = raw;
     const db = wrap(raw);
 
     const from = db.getUserVersion();
@@ -101,8 +117,122 @@ export function getDb(): Database {
   } catch (error) {
     // Don't leave a half-initialised handle open and uncached — a retry would
     // otherwise re-open the same DB. Close it so getDb() can start clean.
+    rawCached = null;
     raw.close();
     throw error;
+  }
+}
+
+/**
+ * Put the plaintext bytes of a decrypted snapshot in place of the live database
+ * (the restore half of src/lib/backup/snapshot.ts).
+ *
+ * This is the ONE place that may overwrite `arc.db`, and it lives here because
+ * this is the only module holding the open connection: the file cannot be
+ * swapped while a handle is reading it, and only this file knows where it is.
+ *
+ * Three things it deliberately does not do. It does not try to reopen — the
+ * cached handles are simply dropped, and the UI tells the user to close and
+ * reopen ARC, because a relaunch is the only way to be certain nothing else in
+ * the process is still holding a page of the old database. It does not care
+ * which schema era the snapshot came from: the next `getDb()` runs the pending
+ * migrations forward over it, which is exactly the runner's job (the
+ * NEWER-than-this-build case is refused upstream in restoreFromSnapshot). And
+ * it is never clever on failure — on any throw it returns 'failed' and stops.
+ *
+ * The ORDER is the safety property (2026-08-25 review): the replacement is
+ * written IN FULL to a scratch path first, so every failure before the final
+ * move leaves the live database untouched. Only once the scratch is proven on
+ * disk are the connection closed, the `-wal`/`-shm` sidecars removed (a WAL
+ * describing the OLD database must never be replayed over the restored one),
+ * and the scratch moved over `arc.db`. The exclusion flag is re-applied at the
+ * end because the move creates a new inode: without it the restored plaintext
+ * health record would ride the next iCloud backup during the very window the
+ * user is told to background the app and relaunch.
+ */
+export function replaceDatabaseFile(bytes: Uint8Array): 'replaced' | 'failed' {
+  type FileHandle = {
+    exists: boolean;
+    create(options?: { intermediates?: boolean; overwrite?: boolean }): void;
+    write(content: Uint8Array): void;
+    moveSync(destination: unknown, options?: { overwrite?: boolean }): void;
+    delete(): void;
+  };
+
+  // An empty snapshot is never a legitimate database; refuse before anything
+  // on disk is touched.
+  if (bytes.length === 0) return 'failed';
+
+  // Guarded even though this file is already native-only (op-sqlite is a
+  // static import above): the same total posture as `pruneOldBackups`, so a
+  // missing file-system module is a refusal rather than a throw mid-restore.
+  let FileCtor: (new (uri: string) => FileHandle) | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('expo-file-system') as Partial<{ File: new (uri: string) => FileHandle }>;
+    FileCtor = typeof fs.File === 'function' ? fs.File : undefined;
+  } catch {
+    FileCtor = undefined;
+  }
+  if (!FileCtor) return 'failed';
+
+  // op-sqlite hands back a bare filesystem path; expo-file-system takes a
+  // `file:///` URI. Both halves of the app container path are ASCII, so no
+  // percent-encoding is involved.
+  const uriFor = (path: string): string => (path.startsWith('file://') ? path : `file://${path}`);
+
+  // Phase 1 — everything here leaves the live database fully intact.
+  let dbPath: string;
+  let scratch: FileHandle;
+  try {
+    // Resolve the path without disturbing the open connection; a throwaway
+    // handle is opened (and closed at once) only when nothing is cached yet.
+    if (rawCached) {
+      dbPath = rawCached.getDbPath();
+    } else {
+      const probe = open({ name: DB_NAME });
+      dbPath = probe.getDbPath();
+      probe.close();
+    }
+
+    scratch = new FileCtor(uriFor(`${dbPath}.restoring`));
+    if (scratch.exists) scratch.delete();
+    scratch.create({ intermediates: true, overwrite: true });
+    scratch.write(bytes);
+    if (!scratch.exists) return 'failed';
+  } catch (error) {
+    console.warn('[db] restore failed before touching the database; nothing changed', error);
+    return 'failed';
+  }
+
+  // Phase 2 — the swap. The only dangerous instant is the move itself, and the
+  // replacement is already whole on the same volume.
+  try {
+    rawCached?.close();
+    rawCached = null;
+    cached = null;
+
+    for (const suffix of ['-wal', '-shm']) {
+      const sidecar = new FileCtor(uriFor(`${dbPath}${suffix}`));
+      if (sidecar.exists) sidecar.delete();
+    }
+
+    scratch.moveSync(new FileCtor(uriFor(dbPath)), { overwrite: true });
+
+    // The move minted a new inode, which does not inherit the old file's
+    // backup-exclusion xattr — re-apply it now rather than waiting for the next
+    // getDb() (see the getDb() comment; CLAUDE.md §2).
+    excludeFromBackup(dbPath);
+
+    return new FileCtor(uriFor(dbPath)).exists ? 'replaced' : 'failed';
+  } catch (error) {
+    console.warn('[db] restore failed mid-swap; the next open will use whatever is on disk', error);
+    try {
+      if (scratch.exists) scratch.delete();
+    } catch {
+      // Best-effort; a stray scratch file is recoverable, a throw here is not.
+    }
+    return 'failed';
   }
 }
 

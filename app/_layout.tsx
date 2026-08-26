@@ -4,13 +4,14 @@ import '../global.css';
 import { DefaultTheme, Stack, useRouter, type Theme, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
-import { Modal } from 'react-native';
+import { AppState, Modal } from 'react-native';
 
 import { AppLockScreen } from '@/components/ui/app-lock-screen';
 import { ErrorBoundary } from '@/components/ui/error-boundary';
 import { navColors } from '@/constants/theme';
 import { useAppLock } from '@/hooks/use-app-lock';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
+import { autoBackupIfDue } from '@/lib/backup/snapshot';
 import { getDb } from '@/lib/db/client';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
 import { runMealPhotoSweep } from '@/lib/media/meal-photo-store';
@@ -74,7 +75,14 @@ export default function RootLayout() {
   //    the next launch, which costs a few hundred kilobytes and saves running a
   //    timer against the file system for the life of the process. Synchronous
   //    (the expo-file-system File API is) and total: it swallows everything,
-  //    including a database that has not reached 0033.
+  //    including a database that has not reached 0033;
+  //  - write the encrypted database snapshot if the last one is more than a day
+  //    old, and again on every foreground — same shape as the health sync above
+  //    and for the same reason: a durability net that needs a visit to Settings
+  //    is a net nobody is under. Silent, throttled and re-entrancy-guarded
+  //    inside `autoBackupIfDue`; the ciphertext lands in `Documents/backups/`,
+  //    which deliberately DOES ride the iCloud device backup
+  //    (docs/backups-subapp.md).
   useEffect(() => {
     void apiKeyStore.hydrate();
     runMealPhotoSweep(getDb());
@@ -94,7 +102,23 @@ export default function RootLayout() {
     configureNotificationPresentation();
     void syncReminderNotifications(getDb());
     void syncHealthIfEnabled(getDb());
+    // Deferred off the first frames: the pass VACUUMs and encrypts the whole
+    // database, and even with the seal yielding between chunks, boot is the one
+    // moment the JS thread has no slack to give. Four seconds is past the
+    // splash, past the first Home paint, and far inside the throttle's 24h
+    // tolerance. The foreground listener below stays immediate — by then the
+    // app is idle-resumed, not racing to first paint.
+    const backupTimer = setTimeout(() => void autoBackupIfDue(getDb()), 4000);
     const stopHealthSync = registerForegroundHealthSync(getDb());
+    // The backup's own foreground listener. It is written out here rather than
+    // hidden behind a `registerForegroundBackup` helper because
+    // `src/lib/backup/snapshot.ts` is imported by the headless suites, and the
+    // health module only owns its AppState seam by paying for a guarded require
+    // to keep react-native out of node. One subscription at the root costs
+    // nothing and keeps that cost from being paid twice.
+    const backupSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void autoBackupIfDue(getDb());
+    });
     const stopRouting = registerNotificationRouting((route) => {
       // Active reminders live on the Coach tab (its RemindersCard), so both
       // kinds land there — but a reminder tap carries its id so the specific
@@ -108,7 +132,9 @@ export default function RootLayout() {
       }
     });
     return () => {
+      clearTimeout(backupTimer);
       stopHealthSync();
+      backupSub.remove();
       stopRouting();
     };
   }, [router]);
@@ -194,6 +220,10 @@ export default function RootLayout() {
           <Stack.Screen name="settings-profile" />
           <Stack.Screen name="settings-units" />
           <Stack.Screen name="settings-coach" />
+          {/* The encrypted snapshot's own surface (docs/backups-subapp.md):
+              status, the automatic-backup toggle, the recovery code, and the
+              restore that replaces the database. */}
+          <Stack.Screen name="settings-backups" />
           {/* What the Coach durably knows about you — inspectable and deletable
               (0030 coach_memories). Memory the user cannot read is memory the
               user cannot trust. */}

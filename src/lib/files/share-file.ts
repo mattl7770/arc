@@ -190,3 +190,43 @@ export async function writeAndShareFile(request: ShareFileRequest): Promise<File
   // out of iCloud regardless.
   return { status: 'saved', fileName: request.fileName, uri };
 }
+
+/**
+ * Offer a file that ALREADY EXISTS to the share sheet — no write, and **no
+ * delete afterwards**.
+ *
+ * Added for the encrypted backup snapshot (docs/backups-subapp.md), which is
+ * the one artifact in this module's world that is not regenerated on demand.
+ * Everything `writeAndShareFile` handles is a derived document: an export or a
+ * report can be rebuilt from the database at any time, so deleting the on-device
+ * copy after a successful hand-off costs nothing and keeps plaintext health data
+ * from lingering in Caches. The snapshot is the opposite on both counts — it IS
+ * the durable copy (`Documents/backups/arc-current.arcb`, deliberately riding the
+ * device backup), and it is ciphertext, so there is nothing to keep from
+ * lingering. Deleting it after a share would destroy the very thing the feature
+ * exists to preserve.
+ *
+ * Two outcomes, not four: nothing is written here, so `saved` and `failed` have
+ * no meaning. Either the sheet took it or the sheet is not in this binary
+ * (`expo-sharing` rides the next EAS build) — and a hiccup mid-sheet is reported
+ * as `unavailable` rather than as a failure, because the file is untouched
+ * either way.
+ */
+export async function shareExistingFile(
+  uri: string,
+  opts: { mimeType: string; uti: string; dialogTitle: string }
+): Promise<'shared' | 'unavailable'> {
+  const share = sharing;
+  if (!share || typeof share.isAvailableAsync !== 'function') return 'unavailable';
+  try {
+    if (!(await share.isAvailableAsync())) return 'unavailable';
+    await share.shareAsync(uri, {
+      mimeType: opts.mimeType,
+      UTI: opts.uti,
+      dialogTitle: opts.dialogTitle,
+    });
+    return 'shared';
+  } catch {
+    return 'unavailable';
+  }
+}
