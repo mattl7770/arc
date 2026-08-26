@@ -58,7 +58,7 @@ Prioritized order for implementation:
 
 1. **Biomarkers / Labs** (Function Health PDFs + manual entry)
 2. **Daily Logs & Habits** (the execution layer)
-3. **Protocols** (versioned stacks, routines, meal templates, training blocks)
+3. **Protocols** (versioned stacks, routines, meal templates, training blocks) — a protocol is **ordered phases**, each with a duration and its own items, and every item carries a **cadence** (daily · specific weekdays · every-N-days · an N-per-week flexible quota). That document is `protocol_versions.content`, schema **2**, and it is the ONLY thing that puts anything on a day; the phase clock is `protocols.started_on` (migration 0043). Older versions are v1 (`{items:[…]}`) and immutable, so `parseProtocolContent` normalises them on read and must keep doing so forever. See `src/lib/protocols/types.ts`.
 4. **Wearables** (sleep, HRV, recovery, strain, activity, temperature, etc.)
 5. **Nutrition** (meals, templates, grocery lists, micronutrients)
 6. **Supplements / Medications / Therapies**
@@ -173,6 +173,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 4. ~~Authenticated app shell~~ — **cut.** No accounts in a single-user local app; a Face ID app lock replaces it (Phase 2). `useSession` / `app/login.tsx` are removed.
 5. ~~First version of directive Home Screen~~ — **done** on mock data (chronological mission).
 6. ~~Minimal AI Coach chat~~ — **done** as UX on a mock model; the real on-device model call is Phase 3.
+7. ~~Protocols usable as the day's plan~~ — **done** (2026-08-25). The model was the hole: an item had no frequency, so every item of every active protocol landed on every day. Content schema 2 (phases + cadence, migration 0043) fixed it, and Protocols graduated to its own hub linked from Home. An edit now reaches TODAY. `docs/project-status.md` §1 carries the full account.
 
 **Infrastructure:** none required — local-first. The previously-created Supabase project is vestigial (delete whenever). The lab PDF becomes a local/iCloud file at `lab_reports.file_path`.
 
