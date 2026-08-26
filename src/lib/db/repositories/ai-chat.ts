@@ -245,7 +245,7 @@ export const DECLINE_HORIZON_DAYS = 30;
 
 /**
  * What the user has recently DECLINED at the confirmation gate, newest first,
- * as human lines ("set_mode deload").
+ * as human lines ("update_protocol morning-stack").
  *
  * Without this, a decline lives exactly one turn: the "user declined" string
  * goes back to the model mid-turn and is then stripped with the rest of the
@@ -295,7 +295,7 @@ function describeDeclinedInput(input: unknown): string {
   if (input == null || typeof input !== 'object' || Array.isArray(input)) return '';
   const record = input as Record<string, unknown>;
   // Prefer the fields that identify WHAT was proposed, not every argument.
-  for (const key of ['title', 'name', 'content', 'mode', 'metric', 'protocol_slug']) {
+  for (const key of ['title', 'name', 'content', 'metric', 'protocol_slug']) {
     const value = record[key];
     if (typeof value === 'string' && value.trim().length > 0) {
       return ` "${value.trim().slice(0, 60)}"`;

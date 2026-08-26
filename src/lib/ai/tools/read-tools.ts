@@ -12,7 +12,6 @@ import { listMission } from '@/lib/db/repositories/mission';
 import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
 import { biomarkerSeries } from '@/lib/db/repositories/labs';
 import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
-import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/experiments';
 import { weekSummary } from '@/lib/db/repositories/exercise';
 import {
@@ -37,7 +36,6 @@ import { deviceLabel, pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { SAMPLE_METRICS, STATISTIC_METRICS } from '@/lib/health/mapping';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
-import { getModeDefinition } from '@/lib/modes/registry';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import type { BiomarkerRow } from '@/lib/db/types';
 import {
@@ -532,8 +530,6 @@ const getTodaySnapshot: CoachTool = {
   readOnly: true,
   execute: (db, _input, context) => {
     const date = todayISODate(context.now);
-    const mode = getActiveMode(db, date);
-    const modeDef = getModeDefinition(mode);
     const meals = listTodayMeals(db, date);
     const totals = todayTotals(db, date);
     // Movements, not a name: sessions have no names since 2026-08-14 (owner),
@@ -634,16 +630,6 @@ const getTodaySnapshot: CoachTool = {
       // Age and sex, so age-dependent reasoning (and every reference range) is
       // right from the first token instead of after a question.
       profile: { age: ageOn(user.date_of_birth, date), sex: user.biological_sex },
-      // The day's mode adapts plan/priorities/tone/adherence. When not Normal,
-      // heroFocus + toneGuidance tell the Coach how to lead and speak, and
-      // excusesSkips means a skipped item is the RIGHT call, not a miss.
-      mode: {
-        key: mode,
-        label: modeDef.label,
-        ...(modeDef.heroFocus ? { heroFocus: modeDef.heroFocus } : {}),
-        ...(modeDef.coachTone ? { toneGuidance: modeDef.coachTone } : {}),
-        excusesSkips: modeDef.excusesSkips,
-      },
       // The id rides along because adjust_today addresses rows BY id — without
       // it the Coach can see the day but cannot change it. The user still only
       // ever sees titles.
@@ -1694,7 +1680,7 @@ const searchHistory: CoachTool = {
     // owners and the user's own entries rank ABOVE it. How to read a conflict
     // between them lives once in the system prompt's cached
     // Memory-and-knowledge bullet, so it is not restated here.
-    "Keyword search over everything the user has written — past turns, day-log notes, " +
+    'Keyword search over everything the user has written — past turns, day-log notes, ' +
     'protocol change notes, experiments, your memories — AND the knowledge base: their own ' +
     'entries plus ARC’s shipped reference. Use it to recall something specific ("have we ' +
     'tried magnesium?") or to ground an explanation. Literal matching, not semantic: try ' +

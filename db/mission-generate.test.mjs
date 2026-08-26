@@ -14,16 +14,23 @@ import { DatabaseSync } from 'node:sqlite';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
+  addVersion,
   createProtocol,
   createProtocolWithVersion,
   setActive,
 } from '../src/lib/db/repositories/protocols.ts';
-import { listMission } from '../src/lib/db/repositories/mission.ts';
+import {
+  getOrCreateDailyLog,
+  insertMissionItem,
+  listMission,
+  setMissionStatus,
+} from '../src/lib/db/repositories/mission.ts';
 import {
   generateMissionForDay,
   rederiveMissionForDay,
 } from '../src/lib/db/repositories/mission-generate.ts';
-import { setMode } from '../src/lib/db/repositories/day-modes.ts';
+import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
+import { logNote } from '../src/lib/db/repositories/logs.ts';
 import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
 
 let pass = 0;
@@ -276,8 +283,9 @@ console.log('6. an ad-hoc capture does not fabricate around itself');
 console.log('7. seed:true rows are still honoured (existing devices hold them)');
 {
   // The fabrication is gone, but devices that ran the old build still contain
-  // `seed: true` rows, and the mode re-derive keys off that marker to avoid
-  // deleting them. The fixture path proves the marker still round-trips.
+  // `seed: true` rows, and the re-derive keys off that marker to avoid
+  // deleting them: planForDay knows only protocols + experiments, so a row it
+  // doesn't recognise is never evidence the row is unwanted.
   const { db, raw } = freshDb();
   const fixture = [
     { id: 'm1', title: 'Cold shower', status: 'pending', category: 'Morning', why: 'demo' },
@@ -292,14 +300,184 @@ console.log('7. seed:true rows are still honoured (existing devices hold them)')
     ? ok('explicit fixture items plant as seed:true with no protocol_id')
     : bad('fixture path', JSON.stringify(entries.map((e) => e.title)));
 
-  // Sick drops the TYPE 'workout'; every other seed row must survive the
-  // re-derive, or a mode tap would permanently empty an old device's day.
-  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  // A protocol arrives later and the day re-derives: every seed row survives,
+  // or the first protocol edit would permanently empty an old device's day.
+  createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack' },
+    { items: [{ title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null }] }
+  );
   rederiveMissionForDay(db, DATE);
   const after = rows(raw, DATE).map((r) => r.title);
-  after.includes('Cold shower') && after.includes('Creatine') && !after.includes('Zone 2 ride')
-    ? ok('re-derive keeps untouched seed rows, pulls only the dropped type')
+  after.includes('Cold shower') &&
+  after.includes('Creatine') &&
+  after.includes('Zone 2 ride') &&
+  after.includes('Magnesium')
+    ? ok('re-derive keeps every seed row and adds the protocol item beside them')
     : bad('re-derive damaged seed rows', JSON.stringify(after));
+}
+
+// Cases 8–12 are the preserve-work fence around rederiveMissionForDay, ported
+// from the retired Modes suite (the feature that first drove the diff). Its
+// surviving production caller is update_protocol's `apply_today`, so every case
+// drives it the same way: a NEW protocol version, then a re-derive.
+
+console.log('8. re-derive reshapes the day WITHOUT destroying work');
+{
+  const { db, raw } = freshDb();
+  const trainingId = createProtocolWithVersion(
+    db,
+    { name: 'Strength Block', type: 'training_block' },
+    {
+      items: [
+        { title: 'Squats 5x5', scheduled_time: '17:00', dose: null, notes: null },
+        { title: 'Rows 3x10', scheduled_time: '17:30', dose: null, notes: null },
+      ],
+    }
+  );
+  createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack' },
+    { items: [{ title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null }] }
+  );
+
+  generateMissionForDay(db, DATE);
+  const morning = rows(raw, DATE);
+  morning.length === 3 ? ok('the day generated 3 protocol items') : bad('setup', morning.length);
+
+  // The user completes one workout, part-finishes the other, logs an ad-hoc
+  // note — THEN revises the block to a single mobility session, applied today.
+  const idOf = (title) => raw.prepare('SELECT id FROM log_entries WHERE title = ?').get(title).id;
+  setMissionStatus(db, idOf('Squats 5x5'), 'completed');
+  setMissionStatus(db, idOf('Rows 3x10'), 'partial'); // real progress — must NOT be deleted
+  logNote(db, DATE, 'Knee felt off, cutting it short');
+
+  addVersion(db, trainingId, {
+    items: [{ title: 'Mobility flow', scheduled_time: '17:00', dose: null, notes: null }],
+  });
+  const res = rederiveMissionForDay(db, DATE);
+
+  const titles = rows(raw, DATE).map((r) => r.title);
+  titles.includes('Squats 5x5') && titles.includes('Rows 3x10')
+    ? ok('completed AND partial rows survive a version that no longer lists them')
+    : bad('destroyed real work', JSON.stringify(titles));
+  raw.prepare("SELECT status FROM log_entries WHERE title = 'Squats 5x5'").get().status ===
+    'completed' &&
+  raw.prepare("SELECT status FROM log_entries WHERE title = 'Rows 3x10'").get().status === 'partial'
+    ? ok('their statuses are untouched')
+    : bad('status changed');
+  titles.includes('Magnesium') ? ok('the still-wanted supplement is kept') : bad('lost supplement');
+  titles.includes('Mobility flow') && res.added === 1
+    ? ok(`the new version's item is inserted (added ${res.added})`)
+    : bad('new item missing', JSON.stringify(res));
+  res.preserved >= 2
+    ? ok(`re-derive reports ${res.preserved} preserved rows (acted-on work)`)
+    : bad('preserved count', JSON.stringify(res));
+
+  raw.prepare("SELECT count(*) c FROM log_entries WHERE json_extract(value,'$.adhoc') = 1").get()
+    .c === 1
+    ? ok('the ad-hoc Log-tab note is untouched (never in the mission diff)')
+    : bad('AD-HOC CAPTURE DESTROYED');
+
+  const again = rederiveMissionForDay(db, DATE);
+  again.added === 0 && again.removed === 0
+    ? ok('a second re-derive is a no-op')
+    : bad('not idempotent', JSON.stringify(again));
+}
+
+console.log('9. re-derive removes an UNTOUCHED item the new version drops');
+{
+  const { db, raw } = freshDb();
+  const id = createProtocolWithVersion(
+    db,
+    { name: 'Strength Block', type: 'training_block' },
+    { items: [{ title: 'Squats 5x5', scheduled_time: '17:00', dose: null, notes: null }] }
+  );
+  generateMissionForDay(db, DATE);
+  addVersion(db, id, {
+    items: [{ title: 'Deadlifts 3x5', scheduled_time: '17:00', dose: null, notes: null }],
+  });
+  const res = rederiveMissionForDay(db, DATE);
+  const titles = rows(raw, DATE).map((r) => r.title);
+  !titles.includes('Squats 5x5') && titles.includes('Deadlifts 3x5') && res.removed === 1
+    ? ok("an untouched pending item is swapped for the new version's item")
+    : bad('should have removed', JSON.stringify({ titles, res }));
+}
+
+console.log('10. re-derive on an ungenerated day just generates it');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack' },
+    { items: [{ title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null }] }
+  );
+  const res = rederiveMissionForDay(db, DATE);
+  res.added === 1 && rows(raw, DATE).length === 1
+    ? ok('a day with no planned rows delegates to generateMissionForDay')
+    : bad('delegate', JSON.stringify(res));
+}
+
+console.log('11. duplicate titles in one protocol survive a re-derive round trip');
+{
+  // A protocol legitimately listing the same item twice (two doses). Keying by
+  // title alone collapsed these and lost the second dose permanently.
+  const { db, raw } = freshDb();
+  const original = {
+    items: [
+      { title: 'Magnesium', scheduled_time: '08:00', dose: '200 mg', notes: null },
+      { title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null },
+      { title: 'Creatine', scheduled_time: '08:00', dose: '5 g', notes: null },
+    ],
+  };
+  const id = createProtocolWithVersion(db, { name: 'Stack', type: 'supplement_stack' }, original);
+  generateMissionForDay(db, DATE);
+  const doses = () => rows(raw, DATE).filter((r) => r.title === 'Magnesium').length;
+  doses() === 2 ? ok('both Magnesium doses generated') : bad('dose fixture', doses());
+
+  addVersion(db, id, {
+    items: [
+      ...original.items,
+      { title: 'Zinc', scheduled_time: '21:00', dose: '15 mg', notes: null },
+    ],
+  });
+  rederiveMissionForDay(db, DATE);
+  doses() === 2 ? ok('both doses survive an additive revision') : bad('dose lost', doses());
+
+  addVersion(db, id, original);
+  rederiveMissionForDay(db, DATE);
+  doses() === 2 && rows(raw, DATE).length === 3
+    ? ok('reverting the revision restores exactly the original 3-item plan')
+    : bad('round trip lost a dose', JSON.stringify(rows(raw, DATE).map((r) => r.title)));
+}
+
+console.log('12. a preserved PENDING non-generated row is not duplicated by the plan');
+{
+  const { db, raw } = freshDb();
+  const log = getOrCreateDailyLog(db, DATE);
+  // A hand-added pending row whose title matches the plan's own next entry —
+  // here, a running experiment's intervention (protocol_id null on both sides,
+  // so the multiset diff must count the preserved row as already satisfying it).
+  insertMissionItem(db, log.id, 'habit', {
+    id: 'x1',
+    title: 'Extra fluids',
+    status: 'pending',
+    category: 'Morning',
+    why: 'hand-added',
+  });
+  createExperiment(db, {
+    title: 'Hydration test',
+    hypothesis: 'More water, fewer headaches',
+    intervention: 'Extra fluids',
+    metrics: ['headaches'],
+    startDate: DATE,
+    durationDays: 7,
+  });
+  rederiveMissionForDay(db, DATE);
+  const fluids = rows(raw, DATE).filter((r) => r.title === 'Extra fluids').length;
+  fluids === 1
+    ? ok('the plan does not duplicate an existing pending row of the same name')
+    : bad('duplicated a preserved pending row', fluids);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

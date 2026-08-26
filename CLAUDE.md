@@ -186,7 +186,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `/docs/design-research/implementation/00-design-spec.md` — **The visual spec in full**: the surface devices, the palette's two cuts per biological state, the three type voices, the accent budget, the honesty rules. Its sibling `02-migration-plan.md` records what actually shipped and what was skipped.
 - `/docs/design-directions.md` — Every visual direction ARC has explored and which is current. **Read before proposing a new one.**
 - `/docs/data-model.md` — Detailed schema + what is actually shipped
-- `/docs/information-architecture.md` — **Where every feature lives** (5 tabs + pushed sub-screens), the Log-tab spec, and the Modes model (locked 2026-07-25)
+- `/docs/information-architecture.md` — **Where every feature lives** (6 tabs + pushed sub-screens) and the Log-tab spec (locked 2026-07-25; §Modes is now the record of that feature's 2026-08-25 removal)
 - `/docs/labs-subapp.md` — **the Function Health PDF → biomarkers pipeline**: what the report actually is, the mapping rules that refuse to guess, and why migration 0024 rebuilds a table
 - `/docs/home-screen.md` — Home screen information architecture (detail)
 - `/docs/ai-coach.md` — System prompt, tools, memory design

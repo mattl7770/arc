@@ -124,7 +124,7 @@ export function buildRollingSummary(db: Database, conversationId: string): strin
       const input = call.input as Record<string, unknown> | null;
       const label =
         input && typeof input === 'object' && !Array.isArray(input)
-          ? ['title', 'name', 'content', 'mode', 'metric', 'protocol_slug']
+          ? ['title', 'name', 'content', 'metric', 'protocol_slug']
               .map((k) => input[k])
               .find((v): v is string => typeof v === 'string' && v.trim().length > 0)
           : undefined;

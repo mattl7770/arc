@@ -124,7 +124,7 @@ export async function streamCoachReply(
       // STATIC, and takes no arguments — it is the cached prefix, so anything
       // per-turn interpolated here would bust the cache on every request.
       system: buildCoachSystemPrompt(),
-      // Everything per-turn (date, profile, mode, readiness, today's wearable
+      // Everything per-turn (date, profile, readiness, today's wearable
       // numbers, mission, experiments, memory, declines, the brief) rides an
       // UNCACHED second system block after the breakpoint. Read at turn start,
       // which is when the prompt is built and sent; a tool call minutes later
@@ -161,8 +161,7 @@ export async function streamCoachReply(
         // The next tool call reads the clock again.
         //
         // The card VALIDATES against this same instant too, so a knowable
-        // failure (a log date in the future, a mode window that ends before it
-        // begins) throws before the user spends an Approve tap on it.
+        // failure (e.g. a log date in the future) throws before the user spends an Approve tap on it.
         const context: CoachToolContext = { now: clock() };
 
         // The line the user approved, held for the receipt below. Stays

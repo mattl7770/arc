@@ -56,7 +56,7 @@ export type CoachTool = {
    * A summary that doesn't need the clock simply omits the parameter.
    *
    * The same shared clock is what lets a summary VALIDATE. A knowable failure —
-   * a log date in the future, a mode window that ends before it begins — must
+   * a log date in the future — must
    * throw HERE, judged against the same instant execute will use, rather than
    * costing the user an Approve tap on a write that can only error.
    */

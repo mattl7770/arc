@@ -53,7 +53,7 @@ Only the highest-signal current numbers:
 ### 6. Quick Actions Dock — ~~cut 2026-07-24~~
 Originally: log something, chat with Coach, override modes, jump to Dashboard.
 
-**Removed** (owner call). Three of its four buttons — Log, Coach, Data — were the tab bar sitting two inches above itself, and the fourth (Mode) was inert. The home screen ends at the metrics strip. Mode override needs a real home when the override model exists; it is not a dock button.
+**Removed** (owner call). Three of its four buttons — Log, Coach, Data — were the tab bar sitting two inches above itself, and the fourth (Mode) was inert. The home screen ends at the metrics strip. *(The Mode override later got its real home beside the date — built 2026-08-01, and the whole Modes feature was **removed 2026-08-25**; see below.)*
 
 ---
 
@@ -61,7 +61,7 @@ Originally: log something, chat with Coach, override modes, jump to Dashboard.
 
 - The checklist must be achievable. Ruthlessly prioritize.
 - Incomplete items from earlier in the day should surface intelligently.
-- Support “imperfect days” gracefully (partial credit, mode switches).
+- Support “imperfect days” gracefully (partial credit; the mode-switch mechanism was removed 2026-08-25 — imperfect days are stated to the Coach).
 - Everything on this screen should be completable or actionable in ≤ 2 taps when possible.
 - Never turn this screen into a dashboard.
 
@@ -71,8 +71,8 @@ Originally: log something, chat with Coach, override modes, jump to Dashboard.
 
 - Perfect execution day
 - Low recovery day
-- Travel day
-- Sick / deload day
+- Travel day *(was a Mode — removed 2026-08-25; the Coach carries it now)*
+- Sick / deload day *(same)*
 - Data-gappy day (missing wearables or labs)
 - First-time / onboarding day
 
@@ -97,7 +97,7 @@ Originally: log something, chat with Coach, override modes, jump to Dashboard.
 
 Components live in `src/components/home/`; the pure mission derivation (sort + fold + hero) is in `src/lib/home/derive-mission.ts`.
 
-> **`src/lib/home/mock-day.ts` was deleted (2026-08-07).** It was the last mock on this screen, surviving as the "no protocols yet" seed — and it was actively harmful: it planted six invented protocol names into the user's real `log_entries`, **two of them pre-marked completed**, so a fresh install opened on work that had never happened and `get_today_snapshot` reported that invented work to the Coach as genuinely done. The day is now only ever the user's own protocols, their mode, and their own entries. Devices that already ran the old build still hold the planted rows; purging them is an owner call.
+> **`src/lib/home/mock-day.ts` was deleted (2026-08-07).** It was the last mock on this screen, surviving as the "no protocols yet" seed — and it was actively harmful: it planted six invented protocol names into the user's real `log_entries`, **two of them pre-marked completed**, so a fresh install opened on work that had never happened and `get_today_snapshot` reported that invented work to the Coach as genuinely done. The day is now only ever the user's own protocols, their experiments, and their own entries. Devices that already ran the old build still hold the planted rows; purging them is an owner call.
 
 **Section order revised (2026-07-24, owner decision — supersedes the Layout order above for v1):** only the **date eyebrow** sits above the hero, so the first real element on screen is the action. The readiness block (verdict + pillar **segment bar**, option D from the mock-up round) moved **below** the hero as supporting evidence. Reviewed on a real device via the dev build.
 
@@ -113,10 +113,10 @@ Key design decisions:
 - **Chronological, with history that auto-collapses.** The mission is one time-sorted list (see §3); the only thing that ever folds is the run of already-finished items at the top, so the screen opens at *now*. Pending work is never hidden. `deriveMissionView` owns the sort and the fold; the list is dumb.
 - **An empty day is stated, not disguised.** When the mission has no items, the hero slot renders `src/components/home/mission-empty.tsx` and the Mission section is omitted entirely — rather than the hero's "Today is handled" (a lie on a fresh install) or a "0 of 0" progress bar over nothing. Two variants: *no active protocols* → "Today has no plan yet" → **Build your first protocol** (`/protocol-edit`); *protocols exist but expand to nothing today* → "Your protocols put nothing on today" → **Open your protocols**. It takes over the hero's pine slot, so the screen's one-pine budget is unchanged.
 
-**Mode control — BUILT 2026-08-01.** It found its real home beside the date, not in the dead dock: the folio line is now a `flex-row justify-between` holding `DateEyebrow` on the left and `ModeControl` on the right (`src/components/home/mode-control.tsx`). Deliberately neutral — the indicator is the standard paper-deep/mono status chip when a mode is on, and a bare muted "Set mode" when it isn't; Home's one pine stays with the hero, and a mode is a state, not an action. Choosing a mode calls `applyMode` (`src/lib/modes/store.ts`), which writes the `day_modes` row, **re-derives today's mission** (`rederiveMissionForDay` — a diff that keeps completed/partial work and ad-hoc captures), and broadcasts so the indicator and the mission list both re-read (focus alone can't: the picker is a modal over Home, so Home never loses focus).
+**Mode control — BUILT 2026-08-01, REMOVED 2026-08-25** (owner call; the ADR in decisions.md and `docs/information-architecture.md` §Modes are the record). The folio line is the date alone again. Off-normal days are stated to the Coach, which re-tones from the stated fact and reshapes the plan via the gated `adjust_today`.
 
 **First-run state — BUILT 2026-08-07** (`mission-empty.tsx`, above). `useTodayMission` also gained `useFocusEffect(refresh)`, so creating a first protocol and coming back to Home fills the day immediately instead of waiting for a background/foreground cycle. ⚠️ **Verified by typecheck, lint and headless tests only — it has never been rendered on a device.** Per the project's standing rule (verify on device, not web), check it on hardware before calling it done.
 
-**Travel / sick / deload** are handled by **Modes**, not by bespoke Home states — see the mode control above.
+**Travel / sick / deload** have no bespoke Home states and no mode switch (Modes removed 2026-08-25) — the Coach handles a stated off-normal day.
 
-**Not yet built:** the **data-gappy** state; and the Home brief is not yet re-toned by mode (the Coach itself is, via `get_today_snapshot`).
+**Not yet built:** the **data-gappy** state.

@@ -137,16 +137,18 @@ console.log('0b. the three empty states are distinguished honestly');
     ? ok('a data-rich stable user is told things are steady, not accused of under-logging')
     : bad('stable brief', stableBrief);
 
-  // MODE-AWARE — a Sick day must not get cadence-nagging (home-screen.md:110).
-  const sick = freshDb();
-  sick.db.run(
+  // A historical day_modes row must NOT change the brief — the mode-aware
+  // branch retired with the Modes feature (2026-08-25), and the brief judges
+  // today on the data alone.
+  const withRow = freshDb();
+  withRow.db.run(
     `INSERT INTO day_modes (id, mode, start_date, end_date) VALUES ('dm1', 'sick', ?, ?)`,
     [isoDaysAgo(NOW, 0), isoDaysAgo(NOW, 0)]
   );
-  const sickBrief = generateDailyBrief(sick.db, NOW);
-  sickBrief.includes('Sick day') && !/Start with today|Baseline building/.test(sickBrief)
-    ? ok('a Sick day is not nagged about logging cadence')
-    : bad('sick brief', sickBrief);
+  const rowBrief = generateDailyBrief(withRow.db, NOW);
+  !rowBrief.includes('Sick day')
+    ? ok('a leftover day_modes row no longer re-tones the brief (Modes removed)')
+    : bad('mode branch resurfaced', rowBrief);
 }
 
 console.log('1. HRV down vs baseline → watch trend with real numbers');

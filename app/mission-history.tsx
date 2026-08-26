@@ -35,8 +35,9 @@ import { daysBetween } from '@/lib/screenings/format';
  *
  * 1. **Execution** (`field` — a verdict, and the only verdict here): the rate,
  *    its four-way ledger, and how much history it is drawn from.
- * 2. **Where it's failing** (`plate`): one row per SOURCE — a protocol, a mode,
- *    an experiment — worst first, each naming its own worst item and each
+ * 2. **Where it's failing** (`plate`): one row per SOURCE — a protocol, an
+ *    experiment, or a retired mode's historical items — worst first, each
+ *    naming its own worst item and each
  *    tapping through to the protocol that keeps generating it. This sits
  *    ABOVE the day-by-day record deliberately: actionability beats information
  *    density (CLAUDE.md §5), and the protocol is the thing you can change.
@@ -57,11 +58,12 @@ import { daysBetween } from '@/lib/screenings/format';
  * entirely on a day with no plan.
  *
  * **No streak.** A streak needs a rule about what breaks it, and every
- * candidate rule here is currently a lie: modes are supposed to EXCUSE skips
- * (docs/information-architecture.md §Modes) and nothing downstream reads that
- * back, so a streak would punish the user for correctly resting while sick.
- * When mode-aware adherence accounting is built, a streak becomes possible;
- * until then it would be a moralising number the data cannot support.
+ * candidate rule here is currently a lie: with Modes removed (2026-08-25,
+ * docs/information-architecture.md §Modes) there is no excusal mechanism for
+ * future days at all, so a streak would punish the user for correctly resting
+ * while sick. If excusal is ever redesigned (per-item skip reasons were the
+ * evaluation's candidate), a streak becomes possible; until then it would be
+ * a moralising number the data cannot support.
  *
  * ## Today is not a miss, and a young install is not a failing one
  *

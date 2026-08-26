@@ -34,8 +34,8 @@ import { PaperGrid } from '@/components/ui/screen';
  * not as a measured region, and the device's inset would sit a chip out of line
  * with the sheet. So the badge is explicit and local: a hairline box with its
  * own padding, `self-center` to shrink-wrap the word. It is the same badge the
- * app draws for the "Custom" tag in exercise-picker.tsx and the mode chip in
- * mode-control.tsx — chip-scale status is chrome, and chrome carries no device.
+ * app draws for the "Custom" tag in exercise-picker.tsx — chip-scale status is
+ * chrome, and chrome carries no device.
  *
  * Both voices in use are used correctly: serif speaks (the wordmark), label
  * marks (LOCKED, the button, the caption). Nothing here is a measurement, so

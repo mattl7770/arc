@@ -95,7 +95,7 @@ export function getOrCreateDailyLog(db: Database, date: string): DailyLogRow {
  * The SQL predicate separating a PLANNED mission row from an ad-hoc Log-tab
  * capture (`value.adhoc`, written by repositories/logs.ts). EVERY query that
  * reasons about "the day's mission" must carry it — {@link listMission},
- * {@link countMissionEntries}, and the mode re-derive (mission-generate.ts)
+ * {@link countMissionEntries}, and the re-derive (mission-generate.ts)
  * all interpolate this one string so the three can never drift apart. Omitting
  * it from a DELETE would destroy the user's Log-tab captures.
  */
@@ -104,7 +104,7 @@ export const PLANNED_ROW_SQL = "json_extract(value, '$.adhoc') IS NULL";
 /**
  * A row the user removed from the day. It stays in the table as a TOMBSTONE
  * (see {@link removeMissionItem}) and must be invisible everywhere the mission
- * is shown — but visible to the mode re-derive, which is the whole point.
+ * is shown — but visible to the re-derive, which is the whole point.
  */
 export const NOT_REMOVED_SQL = "json_extract(value, '$.removed') IS NULL";
 
@@ -215,7 +215,7 @@ export function moveMissionItem(
  * isn't eligible (already acted on, an ad-hoc capture, or not on this day).
  *
  * A TOMBSTONE, not a DELETE. Deleting the row worked exactly until the next
- * mode change: `rederiveMissionForDay` recomputes the day from the protocols,
+ * re-derive (update_protocol's apply_today): `rederiveMissionForDay` recomputes the day from the protocols,
  * finds the removed item still in the plan and nothing on the day matching it,
  * and dutifully puts it back. The user's approved removal was undone by an
  * unrelated action, with no message either way.

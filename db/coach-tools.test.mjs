@@ -1706,7 +1706,7 @@ console.log('27. log_workout resolves catalog exercise ids — exact match only'
     : bad('unmatched note', JSON.stringify(result));
 }
 
-console.log('28. future log dates are rejected; set_mode "until" may still be future');
+console.log('28. future log dates are rejected');
 {
   const { db } = freshDb();
   const future = isoDaysAgo(NOW, -2);
@@ -1718,10 +1718,6 @@ console.log('28. future log dates are rejected; set_mode "until" may still be fu
     : bad('future meal accepted');
   const past = run('log_metric', db, { metric: 'weight', value: 178, date: isoDaysAgo(NOW, 1) });
   past.logged ? ok('a real backdate still logs') : bad('backdate broken');
-  const mode = run('set_mode', db, { mode: 'travel', until: future });
-  mode.set && mode.until === future
-    ? ok('set_mode "until" legitimately reaches into the future')
-    : bad('set_mode until', JSON.stringify(mode));
 
   // The rejection must fire at CARD time too — a knowable failure must never
   // cost the user an Approve tap (card shows, user approves, execute throws).

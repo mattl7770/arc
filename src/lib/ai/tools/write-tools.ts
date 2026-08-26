@@ -49,7 +49,6 @@ import {
   listActiveReminders,
   resolveOneOffDay,
 } from '@/lib/db/repositories/reminders';
-import { modesSupersededFrom, setMode } from '@/lib/db/repositories/day-modes';
 import {
   addGroceryItems,
   addRecipeToGroceryList,
@@ -92,7 +91,6 @@ import {
 } from '@/lib/db/repositories/mission';
 import { logSymptom } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
-import { getModeDefinition, MODE_KEYS, type ModeKey } from '@/lib/modes/registry';
 import { syncAndReportForReminder } from '@/lib/notifications/reminders';
 import { lbToKg, setLineKg } from '@/lib/exercise/format';
 import {
@@ -1149,119 +1147,6 @@ const CATEGORY_FOR_TYPE: Record<LogEntryType, string> = {
   note: 'Notes',
 };
 
-// --- set_mode (Normal / Travel / Sick / Deload / Social / Custom) ------------
-
-/**
- * Validate and resolve a set_mode call into the window it will actually write.
- *
- * Shared by `confirmSummary` and `execute` deliberately: when only execute
- * validated, an out-of-range window produced a perfectly reasonable-looking
- * confirmation card that threw the moment the user approved it. Whatever the
- * card says must be what happens — including the case where it can't.
- */
-function resolveModeWindow(
-  args: Record<string, unknown>,
-  today: string
-): { mode: ModeKey; startDate: string; endDate: string | null } {
-  const mode = reqEnum(args, 'mode', MODE_KEYS);
-  const from = optDate(args, 'from');
-  if (from !== undefined && from < today) {
-    throw new Error(
-      `"from" (${from}) is in the past — a mode can only be set for today or a future day.`
-    );
-  }
-  const startDate = from ?? today;
-  const until = optDate(args, 'until');
-  if (until !== undefined && until < startDate) {
-    throw new Error(
-      `"until" (${until}) is before the start (${startDate}) — a mode can't end before it begins.`
-    );
-  }
-  // 'normal' is a RESET: open-ended (endDate null) so it ends an earlier
-  // range/open-ended mode for today AND every following day, not just today.
-  // Any other mode: omitted `until` = just today; an explicit `until` bounds a
-  // range. Open-ended non-normal ("until turned off") stays a Home-control
-  // affordance — the model always bounds a mode it sets.
-  return { mode, startDate, endDate: mode === 'normal' ? null : (until ?? startDate) };
-}
-
-const setModeTool: CoachTool = {
-  name: 'set_mode',
-  description:
-    "Set a day's mode so the plan, priorities, tone and adherence adapt — it reshapes the " +
-    'mission and excuses skips the mode expects. Use when the user says a day is off-normal ' +
-    '("traveling next week", "coming down with something", "deload week", "night out"). ' +
-    "'normal' resets, and also cancels any mode already scheduled from that day on.",
-  inputSchema: {
-    type: 'object',
-    properties: {
-      mode: { type: 'string', enum: [...MODE_KEYS] },
-      from: { type: 'string', description: '"YYYY-MM-DD"; omit for today. Never past.' },
-      until: { type: 'string', description: '"YYYY-MM-DD" inclusive; omit for one day.' },
-      note: { type: 'string', description: 'e.g. "red-eye to Tokyo".' },
-    },
-    required: ['mode'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  confirmSummary: (input, db, context) => {
-    // Resolve through the SAME function execute uses, so a window the tool will
-    // refuse can never reach a card the user is invited to approve. (A card is
-    // a promise: "press yes and this happens".)
-    const args = asRecord(input);
-    const { mode, startDate, endDate } = resolveModeWindow(
-      args,
-      todayISODate(context?.now ?? new Date())
-    );
-    const today = todayISODate(context?.now ?? new Date());
-    const ahead = startDate > today;
-
-    if (mode === 'normal') {
-      // Name what the reset CANCELS. Stored open-ended and newest-wins, it also
-      // clears modes scheduled for days that haven't arrived — the user has to
-      // see that before approving, not discover it next Monday at the airport.
-      const superseded = modesSupersededFrom(db, startDate).filter((r) => r.mode !== 'normal');
-      const cancelled =
-        superseded.length > 0
-          ? ` — also cancels ${superseded
-              .map((r) => `${getModeDefinition(r.mode).label} (${r.start_date})`)
-              .join(', ')}`
-          : '';
-      return `Reset to Normal mode${ahead ? ` from ${startDate}` : ''}${cancelled}`;
-    }
-
-    const label = getModeDefinition(mode).label;
-    // Name the actual span — approving "Travel mode" must never silently mean
-    // "starting right now" when the user meant Monday.
-    if (ahead) return `Set ${label} mode ${startDate}${endDate ? ` through ${endDate}` : ''}`;
-    return `Set ${label} mode${endDate && endDate !== startDate ? ` through ${endDate}` : ' for today'}`;
-  },
-  execute: (db, input, context) => {
-    const args = asRecord(input);
-    const today = todayISODate(context.now);
-    const { mode, startDate, endDate } = resolveModeWindow(args, today);
-    const id = setMode(db, { mode, startDate, endDate, note: optString(args, 'note') ?? null });
-    // Re-shape today to match, exactly as the Home control does — otherwise the
-    // same intent through two surfaces gives two outcomes: the user says "I'm
-    // coming down with something", the Coach sets Sick, and today's workout
-    // stays on the mission with no rest/fluids items. Preserves logged work.
-    //
-    // A FUTURE-dated mode has nothing to reshape yet: that day generates under
-    // the mode when it seeds (planForDay reads getActiveMode for its own date).
-    const rederived = startDate === today ? rederiveMissionForDay(db, startDate) : undefined;
-    return json({
-      set: true,
-      mode,
-      from: startDate,
-      until: endDate,
-      id,
-      ...(rederived
-        ? { missionAdded: rederived.added, missionRemoved: rederived.removed }
-        : { note: `Scheduled — ${startDate}'s mission will generate under this mode.` }),
-    });
-  },
-};
-
 // --- create_experiment / complete_experiment (n-of-1) ------------------------
 
 /** Validate the metrics-to-watch: a non-empty array of non-empty strings. */
@@ -2108,7 +1993,6 @@ export const WRITE_TOOLS: CoachTool[] = [
   forgetTool,
   adjustTodayTool,
   updateProtocolTool,
-  setModeTool,
   createExperimentTool,
   completeExperimentTool,
   abandonExperimentTool,

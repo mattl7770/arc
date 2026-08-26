@@ -278,7 +278,7 @@ No bulk database ships on-device beyond the seed: the full OFF/FDC dumps are ser
 
 ## 8. Deliberately out (and why)
 
-- **Streaks / badges / celebration** — retention theater; adherence lives with Modes and the Coach's accounting (excused ≠ missed).
+- **Streaks / badges / celebration** — retention theater; adherence judgment lives with the Coach. (This line used to cite Modes' excused-≠-missed accounting; that feature was removed 2026-08-25 and only historical days keep its verdicts.)
 - **Red over-target states** — adherence-neutral by design (MacroFactor's cited reasoning; ARC's calm).
 - **Auto-adjusting targets** — replaced by Coach-proposed versioned targets (§3).
 - **A second nutrition dashboard competing with the Data tab** — the Data tab keeps its single-row glance (`dailyIntakeSeries`, untouched). Round 2's `app/nutrition-history.tsx` is the *domain's own* drill-down (per-day totals, macro averages, per-day adherence vs each day's targets), reached from within Nutrition — not a duplicate of the Data hub and not an edit to `data.tsx`.

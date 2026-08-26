@@ -212,7 +212,13 @@ console.log('3. memories and declines ride the per-turn context block');
   // A decline must outlive the turn it happened in.
   const conversation = getOrCreateActiveConversation(db);
   appendMessage(db, conversation.id, 'assistant', 'Proposed a deload.', [
-    { id: 't1', name: 'set_mode', input: { mode: 'deload' }, result: 'declined', declined: true },
+    {
+      id: 't1',
+      name: 'update_protocol',
+      input: { protocol_slug: 'training-block' },
+      result: 'declined',
+      declined: true,
+    },
   ]);
   recentDeclines(db).length === 1
     ? ok('recentDeclines reads the persisted refusal')
@@ -444,7 +450,14 @@ console.log('R6. a decline expires — it is not a permanent veto');
 {
   const { db } = freshDb();
   const conversation = getOrCreateActiveConversation(db);
-  const declined = [{ id: 't1', name: 'set_mode', input: { mode: 'deload' }, declined: true }];
+  const declined = [
+    {
+      id: 't1',
+      name: 'update_protocol',
+      input: { protocol_slug: 'training-block' },
+      declined: true,
+    },
+  ];
   const id = appendMessage(db, conversation.id, 'assistant', 'Proposed a deload.', declined);
 
   recentDeclines(db).length === 1

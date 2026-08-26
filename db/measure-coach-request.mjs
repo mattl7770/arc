@@ -42,7 +42,6 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { updateProfile } from '../src/lib/db/repositories/user.ts';
-import { setMode } from '../src/lib/db/repositories/day-modes.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { getOrCreateDailyLog, insertMissionItem } from '../src/lib/db/repositories/mission.ts';
 import { rememberFact, MEMORY_PROMPT_LIMIT } from '../src/lib/db/repositories/coach-memory.ts';
@@ -143,7 +142,6 @@ function seedDb(memoryCount) {
   );
 
   updateProfile(db, { dateOfBirth: '1988-04-02', biologicalSex: 'male' });
-  setMode(db, { mode: 'travel', startDate: TODAY, endDate: TODAY });
 
   const wearable = (metricType, value, daysAgo = 0) => {
     const d = new Date(NOW);

@@ -5,7 +5,6 @@
  *   - adjust_today — batch mission surgery behind one confirmation, with the
  *     defence-in-depth guards that make acted-on and ad-hoc rows untouchable
  *   - update_protocol's honest today/tomorrow semantics (+ apply_today)
- *   - set_mode's schedulable start date
  *   - the training engine's caller-supplied volume dial (never auto-derived)
  *   - the readiness insight (states the verdict; prescribes nothing)
  *
@@ -16,7 +15,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { getActiveMode } from '../src/lib/db/repositories/day-modes.ts';
 import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
 import { logNote } from '../src/lib/db/repositories/logs.ts';
 import {
@@ -248,40 +246,8 @@ console.log('4. update_protocol states WHICH day it changes, and can apply today
     : bad('versioning', JSON.stringify(listProtocols(db)));
 }
 
-console.log('5. set_mode schedules ahead; a past start is refused');
-{
-  const { db } = freshDb();
-  const monday = isoDaysAgo(NOW, -3);
-  const friday = isoDaysAgo(NOW, -7);
-  const scheduledCard = card('set_mode', db, { mode: 'travel', from: monday, until: friday });
-  scheduledCard.includes(monday) && scheduledCard.includes(friday)
-    ? ok('the card names the real span, not "for today"')
-    : bad('scheduled card', scheduledCard);
-
-  const result = run('set_mode', db, { mode: 'travel', from: monday, until: friday });
-  result.set && result.from === monday && result.until === friday
-    ? ok('a future-dated mode is stored for its own span')
-    : bad('scheduled set', JSON.stringify(result));
-  getActiveMode(db, TODAY) === 'normal' && getActiveMode(db, monday) === 'travel'
-    ? ok('today is untouched; the mode is active on its start date')
-    : bad('active mode', `${getActiveMode(db, TODAY)} / ${getActiveMode(db, monday)}`);
-  typeof result.note === 'string' && result.note.includes('will generate')
-    ? ok('the result explains that the day generates under the mode later')
-    : bad('scheduled note', JSON.stringify(result));
-
-  throws(() => run('set_mode', db, { mode: 'sick', from: isoDaysAgo(NOW, 2) }))
-    ? ok('a past start date is refused')
-    : bad('past start accepted');
-  throws(() => run('set_mode', db, { mode: 'travel', from: friday, until: monday }))
-    ? ok('an end before the start is refused')
-    : bad('inverted range accepted');
-
-  // Today still re-derives immediately (the pre-existing behavior).
-  const todayResult = run('set_mode', db, { mode: 'sick' });
-  typeof todayResult.missionAdded === 'number' && getActiveMode(db, TODAY) === 'sick'
-    ? ok('a mode set for today still reshapes today immediately')
-    : bad('today mode', JSON.stringify(todayResult));
-}
+// (Case 5 tested set_mode's schedulable window. The tool retired with the
+// Modes feature on 2026-08-25 — src/lib/modes/registry.ts header.)
 
 console.log('6. the volume dial is caller-supplied, clamped, and compiles to real sets');
 {
@@ -431,7 +397,7 @@ console.log('R2. complete/skip never rewrite work already recorded');
     : bad('silent refusal', JSON.stringify(out));
 }
 
-console.log('R3. an approved removal survives a later mode change');
+console.log('R3. an approved removal survives a later re-derive');
 {
   const { db } = freshDb();
   createProtocolWithVersion(
@@ -453,13 +419,24 @@ console.log('R3. an approved removal survives a later mode change');
     ? ok('the removal takes effect immediately')
     : bad('remove did nothing');
 
-  // The user now says they are travelling. Re-derive recomputes the day from
-  // the protocol — and used to resurrect exactly what they just removed.
-  run('set_mode', db, { mode: 'travel' });
+  // The protocol is now revised and applied to today. The re-derive recomputes
+  // the day from the live version — and while its plan still lists the walk,
+  // it used to resurrect exactly what the user just removed.
+  run('update_protocol', db, {
+    protocol_slug: listProtocols(db)[0].slug,
+    items: [
+      { title: 'Zone 2 — 45m', scheduled_time: '06:30' },
+      { title: 'Evening walk', scheduled_time: '20:00' },
+      { title: 'Wind-down reading', scheduled_time: '21:30' },
+    ],
+    apply_today: true,
+  });
   !listMission(db, TODAY).some((m) => m.title === 'Evening walk')
-    ? ok('…and it stays removed after a mode change re-derives the day')
-    : bad('the mode change resurrected an approved removal');
-  getActiveMode(db, TODAY) === 'travel' ? ok('the mode itself did apply') : bad('mode not set');
+    ? ok('…and it stays removed after apply_today re-derives the day')
+    : bad('the re-derive resurrected an approved removal');
+  listMission(db, TODAY).some((m) => m.title === 'Wind-down reading')
+    ? ok('the revision itself did apply (the new item landed)')
+    : bad('apply_today did nothing');
 }
 
 console.log('R4. an experiment only occupies the days it actually runs');

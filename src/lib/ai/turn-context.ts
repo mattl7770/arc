@@ -3,7 +3,7 @@
  * where the user is right now, injected into every Coach turn as the second
  * (UNCACHED) system block (model-client.ts buildMessagesRequest).
  *
- * This exists so the model never starts a turn blind: readiness, mode, mission
+ * This exists so the model never starts a turn blind: readiness, mission
  * progress, running experiments, unit preferences, and the daily brief are all
  * already computed for the UI by pure functions — this composes them into a
  * few lines of prompt text. It PERCEIVES and GROUNDS only; it never decides.
@@ -21,14 +21,12 @@ import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 import { recentDeclines } from '@/lib/db/repositories/ai-chat';
 import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
-import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { consolidatedOpenList } from '@/lib/db/repositories/grocery';
 import { activeExperiments } from '@/lib/db/repositories/experiments';
 import { listMission } from '@/lib/db/repositories/mission';
 import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { deriveReadiness } from '@/lib/home/readiness';
-import { getModeDefinition } from '@/lib/modes/registry';
 
 import { generateDailyBrief } from './insights';
 
@@ -78,16 +76,6 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
   lines.push(
     `User: ${who.length > 0 ? who.join(', ') : 'profile not filled in'} · units: ` +
       `weight ${units.weight}, volume ${units.volume}, length ${units.length}`
-  );
-
-  // --- Mode — tone/plan context before the first word is generated.
-  const mode = getActiveMode(db, today);
-  const modeDef = getModeDefinition(mode);
-  lines.push(
-    mode === 'normal'
-      ? 'Mode: Normal'
-      : `Mode: ${modeDef.label}${modeDef.heroFocus ? ` — ${modeDef.heroFocus}` : ''}` +
-          `${modeDef.excusesSkips ? ' (skipped items are excused today)' : ''}`
   );
 
   // --- Readiness — the same derivation Home renders, so the two surfaces can

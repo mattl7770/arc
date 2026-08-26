@@ -148,8 +148,8 @@ export const PaperGrid = memo(function PaperGrid() {
  * app's insets rather than flashing at zero. Nothing here is a magic number, and
  * the value stays correct across rotation and a keyboard.
  *
- * All three of ARC's chooser modals had this — the Log sheet the owner reported,
- * Home's mode picker, and the exercise picker — so it lives here once. The app
+ * ARC's chooser modals all had this — the Log sheet the owner reported and the
+ * exercise picker (and the since-removed mode picker) — so it lives here once. The app
  * lock's Modal is immune only by accident: it centres its content and asks for
  * no inset at all.
  *
@@ -160,8 +160,8 @@ export const PaperGrid = memo(function PaperGrid() {
  * ## The close control goes on the LEADING edge (owner, 2026-08-25)
  *
  * *"Make them match on the leading edge."* The Log sheet and the exercise picker
- * put dismissal on the left; Home's mode picker put it in the trailing corner,
- * so the two modals a reader is most likely to open in one session disagreed
+ * put dismissal on the left; the (since-removed) mode picker put it in the
+ * trailing corner, so two modals a reader might open in one session disagreed
  * about where the way out is. The leading edge wins because that is where every
  * pushed screen in the app already puts its back chevron
  * ({@link StackHeader}) — and the owner, reporting the Log sheet's inset bug,

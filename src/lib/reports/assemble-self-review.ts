@@ -242,9 +242,11 @@ function assembleAdherence(
       totals.unmarked += row.n;
     } else {
       // The one bucket the DAY decides, not the period: a skip under Sick,
-      // Travel or Social is the right call and is excused; under Normal or
+      // Travel or Social was the right call and is excused; under Normal or
       // Deload it is a miss. `accountForDay` is the single definition of that
-      // judgment (src/lib/modes/registry.ts) and Home already renders it.
+      // judgment, frozen with the retired Modes feature
+      // (src/lib/modes/registry.ts) — past days keep the verdict they were
+      // lived under; days after the removal all resolve Normal (0043).
       const mode = modeByDate.get(row.date) ?? 'normal';
       const accounting = accountForDay(mode, { skipped: row.n });
       t.excused += accounting.excused;

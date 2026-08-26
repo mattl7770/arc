@@ -10,7 +10,6 @@ import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { getOrCreateDailyLog, insertMissionItem } from '../src/lib/db/repositories/mission.ts';
-import { setMode } from '../src/lib/db/repositories/day-modes.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { updateProfile } from '../src/lib/db/repositories/user.ts';
 import { addGroceryItems } from '../src/lib/db/repositories/grocery.ts';
@@ -106,7 +105,9 @@ console.log('2. empty database: every line is honest, nothing invented');
   context.includes('profile not filled in')
     ? ok('no profile → says so')
     : bad('profile line', context);
-  context.includes('Mode: Normal') ? ok('mode defaults to Normal') : bad('mode line', context);
+  !context.includes('Mode:')
+    ? ok('no Mode line on an empty day either (Modes removed)')
+    : bad('mode line', context);
   context.includes('Readiness: no wearable signal yet')
     ? ok('no wearables → honest no-signal line')
     : bad('readiness line', context);
@@ -119,11 +120,10 @@ console.log('2. empty database: every line is honest, nothing invented');
     : bad('phantom experiment', context);
 }
 
-console.log('3. seeded database: profile, mode, readiness, mission, experiments');
+console.log('3. seeded database: profile, readiness, mission, experiments');
 {
   const { db, raw } = freshDb();
   updateProfile(db, { dateOfBirth: '1992-01-15', biologicalSex: 'male' });
-  setMode(db, { mode: 'sick', startDate: TODAY, endDate: TODAY });
 
   // 6 baseline days + today, HRV suppressed today → a real readiness verdict.
   for (let d = 1; d <= 6; d++) seedWearable(raw, 'hrv', d, 50);
@@ -165,9 +165,9 @@ console.log('3. seeded database: profile, mode, readiness, mission, experiments'
   context.includes('male') && context.includes('units: weight lb')
     ? ok('profile line carries sex + unit preferences')
     : bad('profile', context);
-  context.includes('Mode: Sick') && context.includes('skipped items are excused today')
-    ? ok('sick mode line carries the excusal semantics')
-    : bad('mode', context);
+  !context.includes('Mode:')
+    ? ok('no Mode line — the Modes feature is removed (2026-08-25)')
+    : bad('mode line resurfaced', context);
   context.includes('Readiness: ') && context.includes('Pillars: ')
     ? ok('readiness verdict + pillars present with wearable data')
     : bad('readiness', context);

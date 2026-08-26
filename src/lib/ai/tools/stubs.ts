@@ -38,9 +38,9 @@ const unavailable = (feature: string): never => {
 // (write-tools.ts), backed by the experiments repository (0027). They lived here
 // as a stub until the experiments table landed.
 
-// set_mode has shipped — it is a real write tool now (write-tools.ts), backed
-// by the day_modes repository (0026) and the mode registry. It lived here as a
-// stub until Modes landed.
+// set_mode shipped 2026-08-01 and was REMOVED with the Modes feature on
+// 2026-08-25 (owner call; src/lib/modes/registry.ts header). It does not come
+// back as a stub — historical day_modes rows are read-only.
 
 /** Complete a mission item by id. Needs: Home integration decision (item ids
  * must be surfaced to the Coach; today the mission is integrator-owned). */

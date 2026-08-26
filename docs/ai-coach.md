@@ -2,7 +2,7 @@
 
 **Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, and protocol write-back (2026-07-27)
 **Last updated:** 2026-08-14 (§5 write receipts + phantom-write detection; §4 day-stamped thread history)
-**Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, protocol write-back (2026-07-27); Modes + Experiments tools shipped (2026-07-31/08-01); **perception layer shipped (2026-08-08** — per-turn "Current state" context block, readiness/sleep/training-engine/lab-trend visibility; see `docs/coach-intelligence-review.md` for the review that drove it and the phases that follow**)**
+**Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, protocol write-back (2026-07-27); Experiments tools shipped (2026-07-31/08-01; the Modes tool shipped then and retired 2026-08-25 with the feature); **perception layer shipped (2026-08-08** — per-turn "Current state" context block, readiness/sleep/training-engine/lab-trend visibility; see `docs/coach-intelligence-review.md` for the review that drove it and the phases that follow**)**
 **Last updated:** 2026-08-08
 
 > **Governing principle (owner call, 2026-08-08):** deterministic code **detects and grounds**; the **model decides**; tools **enact**; the user **confirms**. No pure function may encode a clinical judgment ("low HRV → cut volume") — detection can surface a signal, but what to do about it is always the model's call, weighed with the user. The review doc's §4 table is the reference.
@@ -45,18 +45,18 @@ Everything runs on-device except the model call itself (local-first, offline-exc
 
 Every tool the model can call. **Read tools run freely; every write suspends the loop until the user approves it in the UI** (see §5). Inputs are validated at the tool layer — bad input becomes an `is_error` tool result the model can correct, and never reaches a repository.
 
-> **The registry today: 43 tools — 18 read + 25 write.** `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the ones added since are in **§2c** (modes, experiments, knowledge, nutrition targets, screenings) and **§2f** (recipes + grocery, 3 read + 5 write), and the deliberately withheld ones are in **§2d**. Counted 2026-08-12 by importing the registry, not by adding up this document.
+> **The registry today: 42 tools — 18 read + 24 write** (43 until 2026-08-25, when `set_mode` retired with the Modes feature — see the ADR). `COACH_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS]` (`src/lib/ai/tools/index.ts`) is the single source of truth; this doc is the spec. §2a and §2b below list the original slice (9 read + 10 write); the ones added since are in **§2c** (experiments, knowledge, nutrition targets, screenings — and, until 2026-08-25, modes) and **§2f** (recipes + grocery, 3 read + 5 write), and the deliberately withheld ones are in **§2d**. Counted 2026-08-25 by importing the registry, not by adding up this document.
 >
-> ⚠️ **Both prompt-token ceilings are at their limit and were raised once, at 43** (`db/coach-eval.test.mjs` §6: schema 9,000 → 9,250, prompt 3,500 → 3,700). The standing rule holds and is stricter than it looks: **the next tool added must trim duplication before it may raise anything again**, and the accounting for any raise goes in that file. The measured place to find that trim is the four schema-heavy tools — `log_workout`, `update_protocol`, `adjust_today`, `create_experiment` — carrying ~1,000 tok of per-property prose that has never been swept.
+> ⚠️ **Both prompt-token ceilings were raised once, at 43 tools** (`db/coach-eval.test.mjs` §6: schema 9,000 → 9,250, prompt 3,500 → 3,700); the 2026-08-25 `set_mode` removal bought headroom back under both (that suite now measures ~8.9k/9,250 and ~3.6k/3,700). The standing rule holds and is stricter than it looks: **the next tool added must trim duplication before it may raise anything again**, and the accounting for any raise goes in that file. The measured place to find that trim is the four schema-heavy tools — `log_workout`, `update_protocol`, `adjust_today`, `create_experiment` — carrying ~1,000 tok of per-property prose that has never been swept.
 
 ### 2a. Shipped — read (execute immediately)
 
 | Tool | Input | Reads | Returns |
 | --- | --- | --- | --- |
-| `get_today_snapshot` | — | mission (`log_entries`), `meals`, `workouts`, `symptoms`, ad-hoc captures, the day's mode, reminders due today, **the whole wearables plane**, readiness | Today's full picture in one call. `remindersDueToday` is **ranked today-first** and each item carries its pinned `date` + `daysOverdue`; capped at 10 with a sibling `remindersDueTodayOmitted` count — see "Reminder due-ness and ordering" below. `wearables` carries `today` (every metric with a value), `noDataToday` (core metrics **named**, never zeroed), `availableMetrics` (every `metric_type` on this device — all valid `get_metric_series` input) and an honest `note` when nothing has synced. `readiness` is the *same* derivation Home renders (`src/lib/home/readiness.ts`), reused rather than recomputed, so the Coach and Home can never disagree |
+| `get_today_snapshot` | — | mission (`log_entries`), `meals`, `workouts`, `symptoms`, ad-hoc captures, reminders due today, **the whole wearables plane**, readiness | Today's full picture in one call. `remindersDueToday` is **ranked today-first** and each item carries its pinned `date` + `daysOverdue`; capped at 10 with a sibling `remindersDueTodayOmitted` count — see "Reminder due-ness and ordering" below. `wearables` carries `today` (every metric with a value), `noDataToday` (core metrics **named**, never zeroed), `availableMetrics` (every `metric_type` on this device — all valid `get_metric_series` input) and an honest `note` when nothing has synced. `readiness` is the *same* derivation Home renders (`src/lib/home/readiness.ts`), reused rather than recomputed, so the Coach and Home can never disagree |
 | `get_metric_series` | `metric` — **any** body metric or wearable `metric_type`, plus friendly aliases; `days?≤365` | `body_metrics` / `wearable_data` daily series | Daily points + min/avg/max in display units. See "The wearables plane" below |
 | `get_training_summary` | `days?` (28) | `workouts` (+ recent sessions) | Totals, weekly rates, per-day load |
-| `get_today_snapshot` | — | **readiness (`deriveReadiness` — the same verdict Home shows)**, the day's **mode**, mission (`log_entries`, **with item ids**), `meals`, `workouts`, `symptoms`, ad-hoc captures (in the user's units), reminders due today, **running experiments**, **profile (age/sex)** | Today's full picture in one call |
+| `get_today_snapshot` | — | **readiness (`deriveReadiness` — the same verdict Home shows)**, mission (`log_entries`, **with item ids**), `meals`, `workouts`, `symptoms`, ad-hoc captures (in the user's units), reminders due today, **running experiments**, **profile (age/sex)** | Today's full picture in one call |
 | `get_metric_series` | `metric: weight\|body_fat\|waist\|hrv\|rhr\|water\|sleep\|sleep_deep\|steps\|active_energy`, `days?≤365` | `body_metrics` / `wearable_data` daily series, windows closed at today | Daily points + min/avg/max (display units; sleep/steps/energy in fixed min/steps/kcal) |
 | `get_training_summary` | `days?` (28) | `workouts` (+ recent sessions) | Totals, weekly rates, per-day load, `thisWeek` calendar block |
 | `get_training_recommendation` | — | the whole training engine (`buildRecommendation`) | Today's session recommendation + per-exercise progression targets, muscle freshness ledger, program week/deload state, weekly volume vs MEV/MAV/MRV. **Reports state; the tool description tells the model the training decision is its own to make with the user** |
@@ -103,7 +103,6 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 | `complete_reminder` | `id` (one-offs only — refuses recurring) | `completeReminder` | "Mark reminder "Book DEXA" done" |
 | `dismiss_reminder` | `id` | `dismissReminder` | "Dismiss reminder "Take magnesium"" |
 | `update_protocol` | `protocol_slug`, `items[]` (the COMPLETE new list), `change_notes` | `addVersion(…, 'ai')` — writes a NEW immutable version, never edits the live one | "Update "Evening Stack": 3 items (was 2) — added magnesium" |
-| `set_mode` | `mode`, `until?`, `note?` | `setMode` + `rederiveMissionForDay` (today reshapes immediately, work preserved) | "Set Sick mode for today" |
 | `create_experiment` | `name`, `hypothesis`, `intervention`, `metrics[]`, `duration_days`, `success_criteria?` | `createExperiment` (starts today, computed end date) | "Start experiment "Magnesium PM" — 14 days" |
 | `complete_experiment` | `id`, `conclusion`, `outcome_notes?` | `completeExperiment` (active-only guard) | "Conclude experiment "Magnesium PM"" |
 
@@ -117,13 +116,12 @@ That last rule covers a day the tool **derives** as well as one the user passes.
 
 **Protocol edits are versioned, not patched.** `update_protocol` never mutates the live version: the model reads the current items with `get_protocols`, submits the COMPLETE new item list (kept items + the change), and the tool writes a new immutable `protocol_versions` row via `addVersion(…, 'ai')`, bumping `current_version_id`. The confirmation line shows the item-count delta (`3 items (was 2)`) so a destructive replace can't be approved as an innocent add; the old version is preserved. This is the concrete form of "add magnesium to my evening stack → the stack actually updates."
 
-### 2c. Shipped since — modes, experiments, knowledge, nutrition targets, screenings
+### 2c. Shipped since — experiments, knowledge, nutrition targets, screenings
 
-Earlier revisions of this doc listed `set_mode` and `create_experiment` as unregistered stubs. **Every tool below is registered.**
+Earlier revisions of this doc listed `set_mode` and `create_experiment` as unregistered stubs; `create_experiment` shipped, and `set_mode` shipped then retired with the Modes feature (2026-08-25). **Every tool below is registered.**
 
 | Tool | Kind | Notes |
 | --- | --- | --- |
-| `set_mode` | write | Sets today's mode (Normal/Travel/Sick/Deload/Social/Custom) so plan, priorities, tone and adherence adapt. Shipped with `day_modes` (**0026**); mid-day changes re-derive the mission as a diff that preserves completed work. The active mode also appears in `get_today_snapshot`. |
 | `create_experiment` | write | n-of-1: hypothesis, intervention, watched metrics, duration, success criteria. Shipped with `experiments` (**0027**). Rejects empty metrics and durations under 3 days. |
 | `complete_experiment` | write | Concludes a running experiment with a verdict. Refuses an unknown id, and refuses to re-conclude one that already has a verdict. |
 | `abandon_experiment` | write | Drops a running experiment without a verdict. |
@@ -241,7 +239,7 @@ What it says is written into the thread as a normal assistant turn (auditable, i
 2. **Self-initiated reminders (shipped):** the Coach can propose a nudge for a logging gap ("want a daily nudge?") → `set_reminder`, still user-confirmed.
 3. **Evening accountability (shipped as a trigger):** `PassTrigger.checkin` carries a morning/evening part, and the evening directive compares what the day planned against what happened. `⚑ MATT`: cadence and quiet hours are still yours to set — it is off by default.
 4. **Predictive alerts** — "3 poor sleeps + rising RHR: historically your next 2 days trend sick." Needs more history. Note the phrasing: the *detector* surfaces the pattern; whether it means a deload is the model's call, not a rule's.
-5. **Mid-day corrections (shipped):** `adjust_today` + `set_mode`'s re-derive give the Coach real levers on the current day, behind one confirmation.
+5. **Mid-day corrections (shipped):** `adjust_today` (+ `update_protocol apply_today`) gives the Coach real levers on the current day, behind one confirmation.
 
 ---
 
@@ -419,8 +417,8 @@ Neither `isDueOn` nor the notification path changed; only ranking, labelling and
 - Home reads `generateDailyBrief` ✅. Mission-id exposure for `complete_mission_item` is still undecided — that tool remains withheld (§2d).
 - Row types remain slice-local per convention (`src/lib/ai/types.ts`, `src/lib/reminders/types.ts`).
 
-**Feature deps — status:** Protocols ✅ (`update_protocol` live) · Modes ✅ (`set_mode` live, 0026) · `experiments` ✅ (0027, four tools live) · sqlite-vec + chunking ✅ (0025; `search_knowledge` written but **deliberately unregistered** — see §2c) — **the on-device embedder model is still missing**, so *semantic* retrieval degrades to an honest "not available yet" and `explain_metric` waits on it. The **corpus is no longer empty and no longer read-only**: the knowledge base shipped 2026-08-12 (0038), so the user writes entries and `search_history` retrieves them by keyword today. Navigation seam ✗ → `navigate_to` still withheld. `propose_today_adjustment` and `generate_grocery_list` are unblocked but unbuilt.
-**Feature deps (updated 2026-08-08):** ~~Protocols → `update_protocol`~~, ~~Modes → `set_mode`~~, ~~experiments migration → `create_experiment`~~ — all shipped. Still dependent: mission write access → `adjust_today` (design in coach-intelligence-review.md §4 Phase 2) · protocol-derived targets → target-adherence signals (Phase 5) · knowledge base + on-device embedder → working RAG + `explain_metric` (Phase 6) · navigation seam → `navigate_to`.
+**Feature deps — status:** Protocols ✅ (`update_protocol` live) · Modes ❌ (removed 2026-08-25 — `set_mode` retired; historical `day_modes` rows stay readable) · `experiments` ✅ (0027, four tools live) · sqlite-vec + chunking ✅ (0025; `search_knowledge` written but **deliberately unregistered** — see §2c) — **the on-device embedder model is still missing**, so *semantic* retrieval degrades to an honest "not available yet" and `explain_metric` waits on it. The **corpus is no longer empty and no longer read-only**: the knowledge base shipped 2026-08-12 (0038), so the user writes entries and `search_history` retrieves them by keyword today. Navigation seam ✗ → `navigate_to` still withheld. `propose_today_adjustment` and `generate_grocery_list` are unblocked but unbuilt.
+**Feature deps (updated 2026-08-08):** ~~Protocols → `update_protocol`~~, ~~Modes → `set_mode`~~ (later removed with Modes, 2026-08-25), ~~experiments migration → `create_experiment`~~ — all shipped. Still dependent: mission write access → `adjust_today` (design in coach-intelligence-review.md §4 Phase 2) · protocol-derived targets → target-adherence signals (Phase 5) · knowledge base + on-device embedder → working RAG + `explain_metric` (Phase 6) · navigation seam → `navigate_to`.
 
 **Known approximations (reviewed 2026-07-26, accepted for now):**
 - `body_metrics` daily series group by the **UTC** day of `measured_at` while window boundaries are local days — an evening weigh-in near the boundary can land on the adjacent day. Weight thresholds are conservative and the tone is info; the clean fix (store a local `date` alongside, like every other table) is a future migration.
@@ -440,7 +438,7 @@ Neither `isDueOn` nor the notification path changed; only ranking, labelling and
 
 **v1.5 — SHIPPED:** Keychain key + provider/model Settings screen ✅ · OS notification delivery ✅ · Home brief wiring ✅ · prompt-cached system+tool prefix ✅. *Conversation history UX (browsing past threads) is still unbuilt — a reload resumes the current thread, but there is no thread list.*
 
-**v2 — SHIPPED:** protocol tools + versioning ✅ · modes tool ✅ · model-voiced brief ✗ (the brief is still the deterministic skeleton) · Coach notes memory ~ (`memory_chunks` + `ingestMemory` exist at 0025, gated on the embedder) · evening accountability ✗.
+**v2 — SHIPPED:** protocol tools + versioning ✅ · modes tool ✅-then-removed (2026-08-25) · model-voiced brief ✗ (the brief is still the deterministic skeleton) · Coach notes memory ~ (`memory_chunks` + `ingestMemory` exist at 0025, gated on the embedder) · evening accountability ✗.
 
 **v3 — PARTLY SHIPPED:** experiment engine ✅ (0027) · photo meal logging ✅ · **writable knowledge base ✅ (0038** — browse, author, article import, `save_knowledge_entry`) · RAG ~ (schema, chunker, retrieval and `search_knowledge` all *written* at 0025, the tool held back until **the embedder model**, which is the missing piece) · predictive alerts ✗ · correlations at scale ✗ · voice-first ✗ · navigation ✗.
 

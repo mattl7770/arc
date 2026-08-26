@@ -7,12 +7,10 @@ import { HeroCard } from '@/components/home/hero-card';
 import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
 import { MissionEmpty } from '@/components/home/mission-empty';
-import { ModeBanner, ModeControl } from '@/components/home/mode-control';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
 import { useCoachPassMessage } from '@/hooks/use-coach-pass';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
-import { useMode } from '@/hooks/use-mode';
 import { useReadiness } from '@/hooks/use-readiness';
 import { useTodayMission } from '@/hooks/use-today-mission';
 
@@ -37,7 +35,6 @@ import { useTodayMission } from '@/hooks/use-today-mission';
  *
  *   hero-card       stamp   the one next action, in the accent — drawn
  *   mission         plate   a record, ruled — drawn
- *   mode-banner     field   what today's mode is — unmarked, only when set
  *   readiness-strip field   a verdict — unmarked
  *   coach-brief     margin  prose — unmarked
  *   metrics-strip   grid    metrics — unmarked
@@ -58,22 +55,9 @@ import { useTodayMission } from '@/hooks/use-today-mission';
  * Each component still declares its own device, so nothing here nests one
  * inside another; the Views below are layout and spacing only.
  *
- * ## The day's mode (2026-08-09)
- *
- * When a mode is set, a banner sits between the folio line and the hero stating
- * what today IS ("Recover: sleep, fluids, rest. No training today.") and, under
- * a mode that excuses skips, how the day is being judged. Under Normal it
- * renders nothing at all, so the default Home is byte-for-byte the screen
- * above.
- *
- * It exists because the mode was previously invisible: `heroFocus` reached only
- * the Coach's tool snapshot, and the injected mission items carried no
- * scheduled time, so they sorted to the BOTTOM of the day and the hero kept
- * leading with a protocol item. Setting Sick removed a workout and changed
- * nothing else you could see — which is exactly what the owner reported. The
- * fix is in two halves: the banner here says what the mode means, and
- * src/lib/modes/registry.ts times each mode's lead item at 07:00 so the mode
- * wins the hero slot on the clock, with no special-casing in HeroCard.
+ * *(The mode chip and banner that sat on the folio line 2026-08-01 → 2026-08-25
+ * are gone with the Modes feature — owner call; ADR in docs/decisions.md and
+ * the frozen remnant's header, src/lib/modes/registry.ts.)*
  *
  * Two things hold the design to its principles:
  *   - The hero is *derived* from the mission, not authored separately, so
@@ -105,7 +89,6 @@ export default function HomeScreen() {
   const mission = useTodayMission();
   const brief = useDailyBrief();
   const readiness = useReadiness();
-  const modeView = useMode();
   const planned = mission.total > 0;
   // The one thing here the user did not ask for: the Coach's own daily pass,
   // shown only when it judged the day worth a word (it usually says nothing).
@@ -113,27 +96,10 @@ export default function HomeScreen() {
 
   return (
     <Screen scroll>
-      {/* The folio line: today on the left, the mode control on the right — a
-          mode is a fact about today, so it belongs beside the date (§Modes).
-          Still unruled; the row is alignment only, not a box. */}
-      <View className="flex-row items-center justify-between pt-2">
+      {/* The folio line. Still unruled — alignment only, not a box. */}
+      <View className="pt-2">
         <DateEyebrow />
-        <ModeControl mode={modeView.mode} onSelect={modeView.setMode} />
       </View>
-
-      {/*
-          What the mode DID, stated above the hero — see ModeBanner. It renders
-          nothing under Normal, so the default day is unchanged and the section
-          costs no vertical space. `skipped` is derived here rather than in the
-          banner because `settled` (completed + skipped) and `completed` are
-          both already computed by deriveMissionView; recomputing it downstream
-          would be a second definition of the same number.
-      */}
-      {modeView.isActive ? (
-        <View className="mt-4">
-          <ModeBanner mode={modeView.mode} skipped={mission.settled - mission.completed} />
-        </View>
-      ) : null}
 
       <View className="mt-5">
         {planned ? (

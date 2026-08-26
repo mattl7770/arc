@@ -4,9 +4,9 @@
  *  - `seedReferenceData` fills the biomarker catalogue (app-shipped reference
  *    data, idempotent via INSERT OR IGNORE on the unique slug). Runs on boot.
  *  - `ensureTodaySeeded` makes sure a day has its mission, expanded from the
- *    user's OWN active protocols (plus the day's mode). It fabricates nothing:
- *    a user with no protocols gets a genuinely empty day, and Home renders its
- *    honest first-run state over that.
+ *    user's OWN active protocols. It fabricates nothing: a user with no
+ *    protocols gets a genuinely empty day, and Home renders its honest
+ *    first-run state over that.
  *
  * Both are safe to call repeatedly.
  */
@@ -18,11 +18,9 @@ import {
   getOrCreateDailyLog,
   insertMissionItem,
 } from './repositories/mission';
-import { getActiveMode } from './repositories/day-modes';
 import { generateMissionForDay } from './repositories/mission-generate';
 import type { LogEntryType } from './types';
 import { BIOMARKER_SEED } from '@/lib/labs/catalog';
-import { modeChangesPlan } from '@/lib/modes/registry';
 import type { MissionItem } from '@/types/home';
 
 /** Mission category label → a real log_entry.type for stored entries. */
@@ -72,8 +70,8 @@ export function seedReferenceData(db: Database): void {
 
 /**
  * Ensure `date` has its mission. The user's ACTIVE protocols are the only plan:
- * {@link generateMissionForDay} expands their live versions (adapted by the
- * day's mode) into `log_entries`. **Nothing is invented.** A user with no
+ * {@link generateMissionForDay} expands their live versions into
+ * `log_entries`. **Nothing is invented.** A user with no
  * protocols gets an empty day, which is the truth — Home renders its first-run
  * state (`src/components/home/mission-empty.tsx`) rather than a demo mission.
  *
@@ -92,7 +90,7 @@ export function seedReferenceData(db: Database): void {
  * them (marked `seed: true`) when the day is otherwise empty, so the headless
  * db suites can build a deterministic hand-made day. No app code passes it, and
  * the `seed: true` marking must stay supported regardless — devices that ran
- * the old build still hold seed rows, and the mode re-derive
+ * the old build still hold seed rows, and the re-derive
  * (`mission-generate.ts`) keys off it to avoid deleting them.
  *
  * The guard is on *planned* entries (`countMissionEntries`), not ad-hoc Log-tab
@@ -104,21 +102,16 @@ export function ensureTodaySeeded(
   date: string,
   fallbackMission: MissionItem[] = []
 ): void {
-  // Protocols, the day's mode, and any RUNNING experiment drive the day; if
-  // they produced entries, done. The experiment's intervention is a real
-  // mission row (mission-generate.ts) so adherence is visible and the readout
-  // can tell "it didn't work" from "he didn't do it" — which also means a user
-  // with an experiment and no protocols has a genuine one-item day, not an
-  // empty one.
+  // Protocols and any RUNNING experiment drive the day; if they produced
+  // entries, done. The experiment's intervention is a real mission row
+  // (mission-generate.ts) so adherence is visible and the readout can tell "it
+  // didn't work" from "he didn't do it" — which also means a user with an
+  // experiment and no protocols has a genuine one-item day, not an empty one.
   if (generateMissionForDay(db, date) > 0) return;
   if (fallbackMission.length === 0) return;
 
   const log = getOrCreateDailyLog(db, date);
   if (countMissionEntries(db, log.id) > 0) return;
-  // A plan-changing mode that produced no entries (e.g. a future Fasting mode
-  // dropping all meals with no additions) has still HANDLED the day — never
-  // paper a fixture over an intentionally-spare mode day.
-  if (modeChangesPlan(getActiveMode(db, date))) return;
   db.transaction(() => {
     for (const item of fallbackMission) {
       const type = TYPE_BY_CATEGORY[item.category] ?? 'habit';

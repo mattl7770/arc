@@ -590,12 +590,9 @@ const db = getDb();
     refute('meal-estimate (start=camera)', straightToCamera, ['Preparing the camera']);
     await apiKeyStore.clearKey();
 
-    // d. HOME — regression cover for the safe-area round, which rewrapped
-    //    src/components/home/mode-control.tsx. This is as close as a server
-    //    render gets: RN's `Modal` returns null while `visible` is false, so the
-    //    picker's BODY (and every other modal's) cannot be rendered here at all
-    //    — nothing can set the flag. What this does prove is that the mode chip
-    //    and banner still mount around the rewrapped modal.
+    // d. HOME — regression cover from the safe-area round. The mode chip and
+    //    banner this once exercised retired with the Modes feature
+    //    (2026-08-25); the render still proves the screen mounts clean.
     expect('home (after the ModalScreen rewrap)', render('home', HomeScreen), ['Today']);
   }
 

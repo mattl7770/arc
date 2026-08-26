@@ -1,5 +1,31 @@
 # Architecture Decision Records (ADR)
 
+## 2026-08-25 — Modes is removed; off-normal days belong to the Coach
+
+**Decision (owner call, 2026-08-25):** the Modes feature — the six-key day-state switcher (Normal/Travel/Sick/Deload/Social/Custom) locked 2026-07-25 and built 2026-07-31/08-01 — is **removed**. No deterministic switch replaces it: an off-normal day is stated to the Coach in conversation, and the model adjusts its tone from the stated fact and reshapes the plan through the existing confirmation-gated `adjust_today`. The system prompt says exactly this and forbids nagging about a skip the user already explained.
+
+**Context.** The owner used Modes on hardware and twice judged it thin — 2026-08-09 (*"the modes switcher right now doesn't do much"*, answered by wiring three dormant levers) and 2026-08-10 (still thin; both docs flagged the feature ⚠️ OPEN with the diagnosis "conceptual, not mechanical"). A full evaluation on 2026-08-25 argued four positions to a verdict — remove it · make modes user-authored versioned profiles · replace the registry with Coach-owned free-text day context · keep the registry and finish its reach into Train/Eat/history — each position adversarially critiqued. The evaluation's own recommendation was to keep a deterministic substrate and extend its reach; the owner heard it and chose removal. This ADR records the removal as decided, and the evaluation's findings as context for whoever revisits the territory.
+
+**What was removed:** the Home mode chip + banner + picker (`src/components/home/mode-control.tsx`), `src/lib/modes/store.ts`, `src/hooks/use-mode.ts`, the six `ModeDefinition` behaviors (drop-types, injected items, `heroFocus`, `coachTone`), the mode intercepts in `planForDay`, the `set_mode` Coach tool (registry 43 → 42; both prompt-token ceilings gain headroom), the turn-context `Mode:` line, the `mode` object in `get_today_snapshot`, the system-prompt Modes doctrine, the deterministic brief's excusing-mode branch, and the seed guard's `modeChangesPlan`.
+
+**What deliberately survives, and why:**
+
+- **`rederiveMissionForDay`** — the preserve-work diff was built for mid-day mode changes but was never mode-specific; it is the machinery behind `update_protocol apply_today` and the empty-day recovery path. Its preserve-work test fence moved to `db/mission-generate.test.mjs`, driven by protocol edits.
+- **History.** `day_modes` rows already on the device keep deciding how PAST days are judged: the reports adherence ledger still excuses a skip lived under Sick/Travel/Social, and "What changed" still names mode runs. The six keys' labels + excusal flags are **frozen** in `src/lib/modes/registry.ts` (now a read-only shim) — changing them would silently rewrite verdicts on days already lived, the same immutability rule protocol versions carry. `db/reports.test.mjs` exercises the ledger against raw historical rows.
+- **Migration 0026 and the `day_modes` table** (forward-only numbering; the generic export dumps it with everything else).
+
+**Migration 0043 is part of the decision.** Every mode ever set from Home was open-ended (`end_date` NULL), and the surface that could clear one is gone — a forgotten open-ended Sick row would otherwise keep excusing every future day's skips in reports, forever, invisibly. 0043 appends **one open-ended `normal` row at the removal date**: under the existing newest-covering-row resolution it out-ranks every earlier open-ended or future-scheduled row for all dates from the removal on, while covering no date before it — so history is untouched by construction. (`date('now')` is UTC; a west-of-Greenwich evening install can leave the local *today* resolvable to an old mode for a few hours. Accepted: the alternative could re-judge an already-lived local yesterday, and preserving history outranks a one-day shutdown lag.) The production ordering — rows planted before 0043, retirement applied by an app update — is asserted headlessly in `db/modes.test.mjs` §2.
+
+**Consequences:**
+
+- Home's folio line returns to the date alone; the default day renders exactly as before, since Normal always drew nothing.
+- Already-generated mode items on the device (a pending "Rest — no training today") are ordinary rows; they age out with their day and are preserved like any other row if the day re-derives.
+- **The streak stays blocked, for a new reason.** The old blocker ("modes excuse skips and nothing downstream reads it back") is moot, but with Modes gone there is no excusal mechanism for future days at all, so a streak would still punish correctly resting while sick. If one is ever wanted, excusal must be redesigned first — the evaluation's leading candidate was **per-item skip-with-reason** (a `skip_reason` in `log_entries.extras`: offline, retroactive-capable, finer-grained than day-blanket excusal). That design is recorded there, not decided here.
+- The Coach path is online-only, and that trade was made knowingly: on an airplane-mode morning the plan no longer reshapes deterministically — the user edits the mission by hand or waits for connectivity. If this grates in practice, the evaluation's other positions are the map of the alternatives.
+
+---
+
+
 ## 2026-08-12 — The recipe-source fetch exception extends to article URLs (knowledge import)
 
 **Decision (owner sign-off, 2026-08-12):** knowledge import extends the 2026-08-08 user-initiated import-fetch exception from recipe sources to **article URLs**: single-shot, at import time only, the URL the user explicitly pasted or shared, **HTML text only**, never media, never background. Failure degrades to paste-the-text, which stays first-class UI.

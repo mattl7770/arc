@@ -183,7 +183,7 @@ console.log('3. create_experiment Coach tool (was a stub) creates + validates');
   const now = new Date(2026, 7, 1); // 2026-08-01
   const ctx = { now };
   const tool = toolByName('create_experiment');
-  tool && !tool.readOnly && toolByName('set_mode')
+  tool && !tool.readOnly
     ? ok('create_experiment is a registered write tool (no longer a stub)')
     : bad('not registered');
 

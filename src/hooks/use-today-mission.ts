@@ -8,7 +8,6 @@ import { listMission, setMissionStatus, toggleMission } from '@/lib/db/repositor
 import { listProtocols } from '@/lib/db/repositories/protocols';
 import { ensureTodaySeeded } from '@/lib/db/seed';
 import { deriveMissionView, type MissionView } from '@/lib/home/derive-mission';
-import { subscribeModeChange } from '@/lib/modes/store';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
 export type TodayMission = MissionView & {
@@ -44,7 +43,7 @@ type DayState = {
  * the "do you have protocols" answer can never disagree within a render.
  *
  * `ensureTodaySeeded` is deliberately called with no fallback: the day is
- * whatever the user's active protocols and the day's mode produce, and nothing
+ * whatever the user's active protocols and experiments produce, and nothing
  * else. It is idempotent, so running it on every read is safe.
  */
 function readDay(day: string): DayState {
@@ -110,11 +109,6 @@ export function useTodayMission(): TodayMission {
   // `ensureTodaySeeded` no-ops once the day has planned entries, so this stays
   // cheap and never re-shapes a day already committed.
   useFocusEffect(refresh);
-
-  // Setting a mode re-derives today's rows (mission-generate.rederiveMissionForDay),
-  // so the list must re-read. Focus alone can't cover it: the mode is set from a
-  // modal presented OVER Home, so Home never loses (or regains) focus.
-  useEffect(() => subscribeModeChange(reload), [reload]);
 
   const setStatus = useCallback(
     (id: string, status: MissionStatus) => {

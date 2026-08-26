@@ -32,7 +32,6 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { newId } from '../src/lib/db/id.ts';
 import { TREND_GATES } from '../src/lib/ai/insights.ts';
-import { setMode } from '../src/lib/db/repositories/day-modes.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { updateProfile } from '../src/lib/db/repositories/user.ts';
 import { addScreening } from '../src/lib/db/repositories/screenings.ts';
@@ -73,7 +72,9 @@ const bad = (n, e) => {
   console.log(`  FAIL ${n}${e ? ' — ' + e : ''}`);
 };
 const is = (name, actual, expected) =>
-  actual === expected ? ok(name) : bad(name, `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+  actual === expected
+    ? ok(name)
+    : bad(name, `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
 const yes = (name, condition, detail) => (condition ? ok(name) : bad(name, detail));
 
 function makeDb(raw) {
@@ -116,6 +117,20 @@ function freshDb() {
 const NOW = new Date(2026, 7, 12, 10, 30, 0); // 2026-08-12 local
 const PERIOD = periodFromBounds('custom', '2026-08-01', '2026-08-07', NOW);
 
+/**
+ * Plant a HISTORICAL day_modes row. The Modes feature's writers retired with
+ * the feature (2026-08-25); reports still resolve these rows per past day, so
+ * the excusal ledger below is exercised against rows a real device holds.
+ */
+let modeSeq = 0;
+function insertDayMode(db, { mode, startDate, endDate = null }) {
+  db.run(
+    `INSERT INTO day_modes (id, mode, start_date, end_date, label, note)
+     VALUES (?, ?, ?, ?, NULL, NULL)`,
+    [`rep-dm-${++modeSeq}`, mode, startDate, endDate]
+  );
+}
+
 /** Add a daily_log + one protocol log entry with a given status. */
 function logEntry(db, date, protocolId, status, title = 'Creatine') {
   let log = db.get('SELECT id FROM daily_logs WHERE date = ?', [date]);
@@ -133,10 +148,12 @@ function logEntry(db, date, protocolId, status, title = 'Creatine') {
 
 function addMeal(db, date, kcal, protein) {
   const id = newId(db);
-  db.run(
-    `INSERT INTO meals (id, date, name, kcal, protein_g) VALUES (?, ?, 'Meal', ?, ?)`,
-    [id, date, kcal, protein]
-  );
+  db.run(`INSERT INTO meals (id, date, name, kcal, protein_g) VALUES (?, ?, 'Meal', ?, ?)`, [
+    id,
+    date,
+    kcal,
+    protein,
+  ]);
   return id;
 }
 
@@ -220,7 +237,10 @@ console.log('1. period.ts — the calendar, and the cap');
     formatRange('2025-12-30', '2026-01-02'),
     '30 Dec 2025 – 2 Jan 2026'
   );
-  yes('periodFromBounds rejects a malformed range', periodFromBounds('custom', 'nope', 'x') === null);
+  yes(
+    'periodFromBounds rejects a malformed range',
+    periodFromBounds('custom', 'nope', 'x') === null
+  );
 }
 
 // ============================================================================
@@ -234,7 +254,7 @@ console.log('2. The adherence ledger SUMS, and the mode decides `excused`');
   );
 
   // Aug 1–7. Two skips land on a Travel day (excused) and two on normal days.
-  setMode(db, { mode: 'travel', startDate: '2026-08-04', endDate: '2026-08-05' });
+  insertDayMode(db, { mode: 'travel', startDate: '2026-08-04', endDate: '2026-08-05' });
   logEntry(db, '2026-08-01', protocolId, 'completed');
   logEntry(db, '2026-08-02', protocolId, 'completed');
   logEntry(db, '2026-08-03', protocolId, 'partial');
@@ -315,7 +335,7 @@ console.log('2. The adherence ledger SUMS, and the mode decides `excused`');
     { name: 'Deload block', type: 'training_block' },
     { items: [] }
   );
-  setMode(db2, { mode: 'deload', startDate: '2026-08-01', endDate: '2026-08-07' });
+  insertDayMode(db2, { mode: 'deload', startDate: '2026-08-01', endDate: '2026-08-07' });
   logEntry(db2, '2026-08-02', p2, 'skipped');
   const deload = assembleSelfReview(db2, PERIOD, { now: NOW });
   is('Deload does NOT excuse a skip', deload.adherence.rows[0].excused, 0);
@@ -340,9 +360,10 @@ console.log('3. Nutrition — averages exclude un-priced days AND count them');
   addMeal(db, '2026-08-02', 2200, 170);
   // A day with a meal whose kcal was never recorded — honest as a ledger row,
   // dishonest as a term in an average.
-  db.run(`INSERT INTO meals (id, date, name, protein_g) VALUES (?, '2026-08-03', 'Dinner out', 40)`, [
-    newId(db),
-  ]);
+  db.run(
+    `INSERT INTO meals (id, date, name, protein_g) VALUES (?, '2026-08-03', 'Dinner out', 40)`,
+    [newId(db)]
+  );
 
   const report = assembleSelfReview(db, PERIOD, { now: NOW });
   const kcal = report.nutrition.figures.find((f) => f.label === 'Energy');
@@ -356,7 +377,8 @@ console.log('3. Nutrition — averages exclude un-priced days AND count them');
   is('protein averages all three days (all recorded)', protein.value, '120');
   yes(
     'the exclusion is counted in prose',
-    report.nutrition.exclusionNote != null && report.nutrition.exclusionNote.includes('1 logged day'),
+    report.nutrition.exclusionNote != null &&
+      report.nutrition.exclusionNote.includes('1 logged day'),
     String(report.nutrition.exclusionNote)
   );
   yes(
@@ -367,7 +389,11 @@ console.log('3. Nutrition — averages exclude un-priced days AND count them');
 
   const { db: empty } = freshDb();
   const none = assembleSelfReview(empty, PERIOD, { now: NOW });
-  is('an unlogged period says so', none.nutrition.empty, 'No meals logged this period, so there is nothing to average.');
+  is(
+    'an unlogged period says so',
+    none.nutrition.empty,
+    'No meals logged this period, so there is nothing to average.'
+  );
   yes('…and prints no figures', none.nutrition.figures.length === 0);
   yes(
     '…and still states the coverage',
@@ -418,7 +444,11 @@ console.log('4. Recovery — the significance gate is insights.ts’s own');
 console.log('5. Labs in-period are ABSENT by rule, and the self-review has no name');
 {
   const { db } = freshDb();
-  updateProfile(db, { fullName: 'Matt Lawrence', dateOfBirth: '1990-04-11', biologicalSex: 'male' });
+  updateProfile(db, {
+    fullName: 'Matt Lawrence',
+    dateOfBirth: '1990-04-11',
+    biologicalSex: 'male',
+  });
   const noLabs = assembleSelfReview(db, PERIOD, { now: NOW });
   is('no draw in-period → the section is absent entirely', noLabs.labs, null);
 
@@ -453,14 +483,27 @@ console.log('5. Labs in-period are ABSENT by rule, and the self-review has no na
 console.log('6. Doctor pack — measured markers only, no BP, no BMI');
 {
   const { db } = freshDb();
-  updateProfile(db, { fullName: 'Matt Lawrence', dateOfBirth: '1990-04-11', biologicalSex: 'male' });
+  updateProfile(db, {
+    fullName: 'Matt Lawrence',
+    dateOfBirth: '1990-04-11',
+    biologicalSex: 'male',
+  });
   createProtocolWithVersion(
     db,
     { name: 'Evening stack', type: 'supplement_stack' },
-    { items: [{ title: 'Magnesium glycinate', scheduled_time: '21:00', dose: '400 mg', notes: null }] }
+    {
+      items: [
+        { title: 'Magnesium glycinate', scheduled_time: '21:00', dose: '400 mg', notes: null },
+      ],
+    }
   );
   // Decennial, last done 2010 → next due 2020-01-01, which is overdue as of NOW.
-  addScreening(db, { name: 'Colonoscopy', category: 'exam', intervalMonths: 120, lastCompleted: '2010-01-01' });
+  addScreening(db, {
+    name: 'Colonoscopy',
+    category: 'exam',
+    intervalMonths: 120,
+    lastCompleted: '2010-01-01',
+  });
   addWearable(db, '2026-08-11', 'rhr', 52, 'bpm');
   addBody(db, '2026-08-01', 80);
 
@@ -498,11 +541,7 @@ console.log('6. Doctor pack — measured markers only, no BP, no BMI');
     pack.labs.optimalRangeLabel
   );
   yes('the regimen lists the active protocol', pack.regimen.groups.length === 1);
-  is(
-    '…with its item',
-    pack.regimen.groups[0].protocols[0].items[0].title,
-    'Magnesium glycinate'
-  );
+  is('…with its item', pack.regimen.groups[0].protocols[0].items[0].title, 'Magnesium glycinate');
   yes(
     'no blood pressure is claimed',
     pack.vitals.notMeasured.includes('does not record blood pressure'),
@@ -562,7 +601,11 @@ console.log('7. Render — verbatim figures, authored empties, tripwires, determ
   const full = assembleSelfReview(db, PERIOD, { now: NOW, appVersion: '0.2.0' });
   const html = renderReportHtml(full);
 
-  yes('the document is self-contained (no external fetch)', !/src=|href=|@import|<script/i.test(html), 'found an external reference');
+  yes(
+    'the document is self-contained (no external fetch)',
+    !/src=|href=|@import|<script/i.test(html),
+    'found an external reference'
+  );
   yes('it carries a print stylesheet', html.includes('@media print'));
   yes('the period is printed', html.includes(formatRange('2026-08-01', '2026-08-07')));
   yes('the coverage preamble is printed', html.includes(full.coverageLine));
@@ -573,7 +616,11 @@ console.log('7. Render — verbatim figures, authored empties, tripwires, determ
     html.includes(`>${row.planned}<`) && html.includes(`>${row.completed}<`),
     `planned=${row.planned} completed=${row.completed}`
   );
-  yes('an authored empty is printed, not a zero', html.includes('None logged.'), 'symptoms empty missing');
+  yes(
+    'an authored empty is printed, not a zero',
+    html.includes('None logged.'),
+    'symptoms empty missing'
+  );
   yes('the experiment is printed', html.includes('Magnesium at night'));
   yes('the disclaimer is printed', html.includes('not a medical record'));
 
@@ -668,12 +715,24 @@ console.log('8. Persistence — the migration, the CHECKs, and re-render from th
 {
   const { db, raw } = freshDb();
   is('the migration applied', raw.prepare('PRAGMA user_version').get().user_version >= 39, true);
-  const cols = raw.prepare('PRAGMA table_info(reports)').all().map((c) => c.name);
+  const cols = raw
+    .prepare('PRAGMA table_info(reports)')
+    .all()
+    .map((c) => c.name);
   yes(
     'the table has the specified shape',
-    ['id', 'report_type', 'period_start', 'period_end', 'generated_at', 'file_name', 'file_path', 'data_json', 'narrative_text', 'app_version'].every(
-      (c) => cols.includes(c)
-    ),
+    [
+      'id',
+      'report_type',
+      'period_start',
+      'period_end',
+      'generated_at',
+      'file_name',
+      'file_path',
+      'data_json',
+      'narrative_text',
+      'app_version',
+    ].every((c) => cols.includes(c)),
     JSON.stringify(cols)
   );
 
@@ -756,7 +815,10 @@ console.log('8. Persistence — the migration, the CHECKs, and re-render from th
 
   // The generic export picks the table up with no new code (spec §5).
   const { listExportTables, readAllRows } = await import('../src/lib/export/serializer.ts');
-  yes('the table rides the whole-DB export automatically', listExportTables(db).includes('reports'));
+  yes(
+    'the table rides the whole-DB export automatically',
+    listExportTables(db).includes('reports')
+  );
   is('…with every row, scalar-safe', readAllRows(db, 'reports').length, 2);
 
   deleteReport(db, id);

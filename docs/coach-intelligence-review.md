@@ -2,6 +2,8 @@
 
 **Date:** 2026-08-07
 **Method:** 11-agent adversarial review (7 subsystem mappers + 4 hostile critics), every claim verified against code at `file:line`.
+> *(Historical document — it reviews the code as of its date. Notably, the Modes feature and its `set_mode` tool discussed below were **removed 2026-08-25**; see the ADR in decisions.md.)*
+
 **Question asked:** does the Coach *feel actually intelligent* — does it do things (almost) on its own, e.g. detect low recovery and adjust the day's workout?
 
 ---
