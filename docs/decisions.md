@@ -129,6 +129,15 @@ decrypts to garbage and reports "wrong key or corrupt", which is indistinguishab
 file and would send a user to delete a perfectly good backup. It is shown reveal-on-tap, never at
 boot, never logged, with one line of warning above it — it is the whole key in transcribable form.
 
+**Owner call (2026-08-25): the Keychain-through-backup path is the operative story; the code is
+optional.** The key rides the encrypted device backup inside the Keychain (that is what the
+non-device-bound accessibility buys), so the normal disaster — phone dies, new phone restored
+from iCloud — needs no code at all, and the UI does not stage a "write this down" ceremony. The
+code stays available in Settings as an extra copy for the paths that genuinely drop Keychain
+items (an unencrypted computer backup, keychain corruption); the accepted trade is that a user
+who never revealed it has no way in on exactly those paths. All the mechanics stand unchanged:
+minted once, never re-minted over ciphertext, adoption session-first.
+
 **Entropy comes from SQLite's `randomblob`**, injected as `random(n)`, the same source as ARC's
 row ids (`src/lib/db/id.ts`) and for the same reason: Hermes has no `crypto` global and Expo's
 runtime does not add one. SQLite's PRNG is ChaCha20 seeded from OS entropy — a real CSPRNG, not

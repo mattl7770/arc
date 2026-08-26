@@ -640,9 +640,11 @@ export default function SettingsBackupsScreen() {
         <View className="mt-4">
           <Block device="margin">
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-              The key normally travels with your iPhone&rsquo;s Keychain, so restoring a new phone
-              from an iCloud backup brings it along and you never need this. Write it down anyway:
-              it is the only way into your backup if the Keychain does not survive the trip.
+              Nothing to write down: the key lives in your iPhone&rsquo;s Keychain and travels
+              inside your iCloud backup, so a restored phone opens its own snapshot automatically
+              (owner call, 2026-08-25). This code is the same key in typeable form — an optional
+              extra copy for the unusual case, like an unencrypted computer backup, where the
+              Keychain can&rsquo;t make the trip.
             </Text>
           </Block>
         </View>
