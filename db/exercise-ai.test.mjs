@@ -25,21 +25,26 @@ import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import { createCustomExercise, getExercise } from '../src/lib/db/repositories/exercise-catalog.ts';
 import { attributedInstant, recentMuscleLoads } from '../src/lib/db/repositories/training-stats.ts';
 import {
-  BODY_OUTLINE,
+  BODY_STROKE_PT,
   FIGURE_BODY,
   FIGURE_GRID,
   FIGURE_MUSCLES,
   MUSCLE_FRESH,
   MUSCLE_SPENT,
+  SHADE_LIFT,
+  SHADE_MAX,
+  brightestFill,
   coveredByBody,
-  figureViewCount,
+  figureNodeCount,
+  flatten,
   freshnessFill,
+  insideShape,
   mappedMuscles,
   musclesFor,
-  polyBars,
-  insideShape,
+  pathD,
   shapeBounds,
   shapesOverlap,
+  strokeUnits,
 } from '../src/lib/exercise/figure.ts';
 import {
   clearMuscleAnchor,
@@ -144,31 +149,37 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     ? ok('posterior chain lives on the back view')
     : bad('back coverage');
 
-  // --- the invariants the 2026-08-12 contoured rewrite inherits -------------
+  // --- the invariants the contoured rewrite inherits, now over BEZIERS ------
   // A muscle means "quads" only because of where it sits ON A PERSON, so the
-  // silhouette is load-bearing and every shape has to ride on it. Now sampled
-  // against the ROUNDED body blocks rather than their bounding rects, so a
-  // muscle hanging off a curved shoulder fails here instead of on the phone.
+  // silhouette is load-bearing and every shape has to ride on it. Sampled over
+  // the FLATTENED curve, not the anchors: a bezier bows outward between its
+  // anchors, so an anchor-only test would pass a calf whose belly hangs a unit
+  // off the shin — which it did, in the fifth preview of the SVG round.
   const offBody = FIGURE_MUSCLES.filter((m) => !coveredByBody(m.shape));
   offBody.length === 0
     ? ok('every muscle shape is fully covered by the body silhouette')
     : bad('shapes off the body', offBody.map((m) => `${m.muscle}@${m.side}`).join(' '));
 
-  // ...and the COMPLEMENT of that, which is the 2026-08-14 (b) round's whole
-  // point. Containment alone is satisfied by sixteen pills floating in the
-  // middle of a body — that is exactly what three rejected rounds shipped, and
+  // ...and the COMPLEMENT of that, which is the invariant added in 2026-08-14's
+  // second round and CARRIED THROUGH the SVG port unchanged in intent.
+  // Containment alone is satisfied by sixteen pills floating in the middle of a
+  // body — that is exactly what four rejected rounds shipped, and
   // `coveredByBody` passed every one of them. The muscles have to TILE: fill the
   // regions that carry muscle, share edges with their neighbours, and leave
   // ground only at joints, at the midline and as a hairline between groups.
   //
-  // Measured by rasterising each band of the NON-NEUTRAL body ground and asking
-  // what fraction of it a muscle covers. The floors sit above what the pill
-  // version scored (trunk 58/62, thigh 62/59), so shrinking back toward islands
-  // fails here instead of on the owner's phone. They are deliberately not near
-  // 100: the neck, the pelvis, the elbow, the knee and the ankle are inside
-  // these bands and correctly carry nothing.
-  const BANDS = { trunk: [44, 120], thigh: [128, 178] };
-  const FLOOR = { trunk: 62, thigh: 65 };
+  // Measured by sampling each band of the NON-NEUTRAL body ground and asking
+  // what fraction of it a muscle covers. Paths did not cost this check anything:
+  // `insideShape` runs even-odd over `flatten`, which is the same predicate the
+  // polygon version used, over a denser polygon.
+  //
+  // **The floors went UP with the port** — trunk 62 → 74, thigh 65 → 74, and two
+  // new bands — because the port added `MUSCLE_GROW` and a floor that a
+  // regression can walk under is not a floor. They are deliberately not near
+  // 100: the neck, the clavicle, the pelvis, the elbow, the knee and the ankle
+  // are inside these bands and correctly carry nothing.
+  const BANDS = { shoulder: [38, 66], trunk: [44, 120], arm: [62, 120], thigh: [128, 178] };
+  const FLOOR = { shoulder: 78, trunk: 74, arm: 70, thigh: 74 };
   const thin = [];
   const scores = [];
   for (const side of ['front', 'back']) {
@@ -176,8 +187,8 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     for (const [band, [y0, y1]] of Object.entries(BANDS)) {
       let ground = 0;
       let inked = 0;
-      for (let y = y0; y < y1; y += 0.25) {
-        for (let x = 0; x < FIGURE_GRID.w; x += 0.25) {
+      for (let y = y0; y < y1; y += 0.3) {
+        for (let x = 0; x < FIGURE_GRID.w; x += 0.3) {
           if (!FIGURE_BODY.some((b) => !b.neutral && insideShape(b.shape, x, y))) continue;
           ground++;
           if (shapes.some((m) => insideShape(m.shape, x, y))) inked++;
@@ -192,25 +203,30 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     ? ok(`the muscles tile the body — ${scores.join(', ')}`)
     : bad('muscles have shrunk back into islands', thin.join(' '));
 
-  // The contour is drawn by inflating each block by BODY_OUTLINE, so the
-  // INFLATED body — not just its fill — has to stay on the grid, or the
-  // silhouette's outline clips against the edge of the figure box.
+  // The silhouette is drawn as a STROKE centred on its own path, so half of
+  // BODY_STROKE_PT lands outside the fill, and the stroke is specified in
+  // rendered POINTS — which means it is widest in grid units at the SMALLEST
+  // render size. 72pt (app/exercise-detail.tsx) is therefore the case that has
+  // to fit, or the contour clips against the edge of the SVG viewBox.
+  const halfStroke = strokeUnits(BODY_STROKE_PT, 72 / FIGURE_GRID.w) / 2;
   FIGURE_BODY.every(({ shape }) => {
     const b = shapeBounds(shape);
     return (
-      b.x - BODY_OUTLINE >= 0 &&
-      b.y - BODY_OUTLINE >= 0 &&
-      b.x + b.w + BODY_OUTLINE <= FIGURE_GRID.w &&
-      b.y + b.h + BODY_OUTLINE <= FIGURE_GRID.h
+      b.x - halfStroke >= 0 &&
+      b.y - halfStroke >= 0 &&
+      b.x + b.w + halfStroke <= FIGURE_GRID.w &&
+      b.y + b.h + halfStroke <= FIGURE_GRID.h
     );
   })
-    ? ok('the inflated silhouette stays inside the grid (the contour never clips)')
+    ? ok(
+        `the silhouette plus its ${halfStroke.toFixed(2)}-unit stroke stays inside the grid at 72pt`
+      )
     : bad('body outline clips the grid');
 
   // Two overlapping shapes on one side would paint one reading over another and
-  // silently lose a muscle. Rasterised, not bounding-box: the two heads of a
-  // quad, and a lat beside its erector column, have overlapping BOXES and share
-  // no area — a box test would condemn correct anatomy.
+  // silently lose a muscle. Sampled, not bounding-box: the two heads of a quad,
+  // and a lat beside its erector column, have overlapping BOXES and share no
+  // area — a box test would condemn correct anatomy.
   //
   // Shapes of the SAME muscle are exempt, and that is not a loophole: the two
   // heads of a quadriceps carry ONE reading, so where they touch nothing is
@@ -231,43 +247,61 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     ? ok('no two DIFFERENT muscles overlap on a side')
     : bad('overlapping shapes', overlaps.join(' '));
 
-  // A polygon has to rasterise into something. An empty bar list is a shape
-  // wound wrong or degenerate, and it draws as nothing at all.
-  const empty = FIGURE_MUSCLES.filter(
-    (m) => m.shape.kind === 'poly' && polyBars(m.shape.pts, 8).length < 8
-  );
-  empty.length === 0
-    ? ok('every polygon rasterises to one span on every scanline')
-    : bad('degenerate polygons', empty.map((m) => m.muscle).join(' '));
+  // Every contour has to become a real SVG path: one `M`, one cubic per anchor,
+  // one `Z`, no NaN anywhere in it. This replaces the polygon version's
+  // "rasterises to one span on every scanline" — a shape wound wrong now draws a
+  // self-intersecting path rather than nothing at all, so the degeneracy that
+  // matters is a path that is empty, malformed or vanishingly small.
+  const shapes = [
+    ...FIGURE_BODY.map((b) => ({ name: b.part, s: b.shape })),
+    ...FIGURE_MUSCLES.map((m) => ({ name: `${m.muscle}@${m.side}`, s: m.shape })),
+  ];
+  const malformed = shapes.filter(({ s }) => {
+    const d = pathD(s);
+    return (
+      d.includes('NaN') ||
+      !d.startsWith('M') ||
+      !d.endsWith('Z') ||
+      (d.match(/C/g) || []).length !== s.pts.length
+    );
+  });
+  malformed.length === 0
+    ? ok(`all ${shapes.length} contours emit a closed cubic path, one C per anchor`)
+    : bad('malformed path data', malformed.map((x) => x.name).join(' '));
 
-  // The BODY is polygons too since 2026-08-14 — the fix that actually mattered,
-  // because a rectangular torso over a narrower rectangular waist reads as
-  // boxes whatever is drawn on top of it. Same degeneracy check.
-  const emptyBody = FIGURE_BODY.filter(
-    (b) => b.shape.kind === 'poly' && polyBars(b.shape.pts, 8).length < 8
-  );
-  emptyBody.length === 0
-    ? ok('every body polygon rasterises cleanly too')
-    : bad('degenerate body', emptyBody.map((b) => b.part).join(' '));
-
-  // The drawing lives inside two scrolling screens, so its node count is a
-  // budget. Counted, never assumed — see figureViewCount. The ceiling rose 600 →
-  // 900 → 1200: 900 paid for the polygonal body, and 1200 pays for the muscles
-  // TILING that body instead of sitting on it as pills, which is bars on every
-  // grown region. What holds it down is still the primitive split — every dome
-  // is a blob (skull, shoulder caps, biceps/triceps, forearms, ab segments, the
-  // medial calf belly, hands, feet), one view each.
-  const detail = figureViewCount(72);
-  const hub = figureViewCount(118);
-  const full = figureViewCount(128);
-  full <= 1200
+  // ...and each one encloses a real area. A contour wound back on itself has a
+  // shoelace area near zero and would draw as a crease.
+  const area = (s) => {
+    const pts = flatten(s);
+    let a2 = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const q = pts[(i + 1) % pts.length];
+      a2 += p[0] * q[1] - q[0] * p[1];
+    }
+    return Math.abs(a2) / 2;
+  };
+  const degenerate = shapes.filter(({ s }) => area(s) < 4);
+  degenerate.length === 0
     ? ok(
-        `the figure pair costs ${detail} views at 72pt, ${hub} at 118pt and ` +
-          `${full} at 128pt (ceiling 1200)`
+        'every contour encloses real area (smallest ' +
+          Math.min(...shapes.map((x) => area(x.s))).toFixed(0) +
+          ' sq units)'
       )
-    : bad('view budget blown', String(full));
+    : bad('degenerate contours', degenerate.map((x) => x.name).join(' '));
 
-  // --- the ramp (owner, 2026-08-14: spent fades to GREY, not to pale green) --
+  // The drawing lives inside two scrolling screens, so its node count is still a
+  // budget — just a very different one. The `View` version cost 1,168 native
+  // views at 128pt against a ceiling of 1,200, and the count MOVED with the
+  // render size because a rasterised polygon's bar count did. This is a constant.
+  const nodes = figureNodeCount();
+  nodes <= 260
+    ? ok(
+        `the figure pair costs ${nodes} SVG nodes at every size (ceiling 260; the View version cost 1,168 at 128pt)`
+      )
+    : bad('node budget blown', String(nodes));
+
+  // --- the ramp -------------------------------------------------------------
   const relLum = (h) => {
     const c = [1, 3, 5]
       .map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
@@ -279,10 +313,11 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     const y = relLum(b);
     return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
   };
-  // paper-hi — the plate the figure sits on, and (since this round) the colour
-  // the head, hands and feet are drawn in.
+  // paper-hi — the plate the figure sits on, and the colour the head, hands and
+  // feet are drawn in.
   const PLATE = '#F5F3EC';
   const at = (f) => freshnessFill(f).color;
+  const lit = (f) => brightestFill(f);
 
   at(100).toLowerCase() === MUSCLE_FRESH.toLowerCase() &&
   at(0).toLowerCase() === MUSCLE_SPENT.toLowerCase() &&
@@ -290,35 +325,43 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
     ? ok(`the ramp runs ${MUSCLE_SPENT} spent → ${MUSCLE_FRESH} fresh, opaque throughout`)
     : bad('ramp ends', JSON.stringify([freshnessFill(0), freshnessFill(100)]));
 
-  // WCAG 1.4.11: a graphical object needs 3:1 against the surface it sits on —
-  // EVERY reading, not just the fresh end. That is what a floor is for.
+  // WCAG 1.4.11: a graphical object needs 3:1 against the surface it sits on.
+  // Measured at the muscle's LIGHTEST PIXEL, not at its nominal fill — which is
+  // what the gradient made necessary and is a strictly stronger check than the
+  // flat version could make. Every other pixel of every muscle is darker than
+  // the one measured here, so the floor holds over the whole drawing.
   const failing = [];
-  for (let f = 0; f <= 100; f++) if (ratio(at(f), PLATE) < 3) failing.push(f);
+  for (let f = 0; f <= 100; f++) if (ratio(lit(f), PLATE) < 3) failing.push(f);
   failing.length === 0
     ? ok(
-        `every reading clears 3:1 on the plate — 0: ${ratio(at(0), PLATE).toFixed(2)}, ` +
-          `50: ${ratio(at(50), PLATE).toFixed(2)}, 100: ${ratio(at(100), PLATE).toFixed(2)}`
+        `every reading clears 3:1 on the plate at its brightest pixel — 0: ${ratio(lit(0), PLATE).toFixed(2)}, ` +
+          `50: ${ratio(lit(50), PLATE).toFixed(2)}, 100: ${ratio(lit(100), PLATE).toFixed(2)}`
       )
     : bad('contrast floor breached at', failing.join(','));
 
   // Head, hands and feet draw in the PLATE colour precisely so a spent muscle
-  // cannot be mistaken for one of them. Their old `hairline` grey sat 1.32:1
-  // from the spent end, which the previous author flagged and this answers.
-  ratio(at(0), PLATE) >= 3
-    ? ok(`the spent end clears the non-data parts at ${ratio(at(0), PLATE).toFixed(2)}:1`)
-    : bad('spent collides with the neutral parts');
+  // cannot be mistaken for one of them, and the separation is measured against
+  // the spent muscle's brightest pixel for the same reason. 3.14:1 is the number
+  // the flat version published; MUSCLE_SPENT was re-cut in the SVG round
+  // specifically to hold it while gaining a highlight.
+  ratio(lit(0), PLATE) >= 3.14
+    ? ok(`the spent end clears the non-data parts at ${ratio(lit(0), PLATE).toFixed(2)}:1`)
+    : bad('spent collides with the neutral parts', ratio(lit(0), PLATE).toFixed(2));
 
   // Monotone in LUMINANCE the whole way and the two ends measurably apart, so
   // the reading survives a greyscale render as well as a hue-blind one.
+  // Non-INCREASING, not strictly decreasing: the ramp is 8-bit, so a channel
+  // that moves less than one step per reading repeats a value here and there.
+  // What would be a bug is the luminance turning back up.
   let monotone = true;
-  for (let f = 1; f <= 100; f++) if (relLum(at(f)) >= relLum(at(f - 1))) monotone = false;
+  for (let f = 1; f <= 100; f++) if (relLum(at(f)) > relLum(at(f - 1))) monotone = false;
   const ends = ratio(at(0), at(100));
   monotone && ends >= 2
     ? ok(`it darkens monotonically toward fresh; the ends are ${ends.toFixed(2)}:1 apart`)
     : bad('ramp shape', `monotone=${monotone} ends=${ends.toFixed(2)}`);
 
   // Clamped outside 0-100, and no mud in the middle: green stays the leading
-  // channel almost the whole way, so the interpolation never turns olive.
+  // channel the whole way, so the interpolation never turns olive.
   const mid = at(50);
   const midG = parseInt(mid.slice(3, 5), 16);
   at(-50) === at(0) &&
@@ -327,6 +370,64 @@ console.log('1. figure map: complete over the 16 muscles, sane geometry');
   midG > parseInt(mid.slice(5, 7), 16)
     ? ok(`the ramp clamps outside 0-100, and its midpoint ${mid} is still a green, not mud`)
     : bad('ramp clamp/midpoint', mid);
+
+  // --- the shading ----------------------------------------------------------
+  // Every muscle carries a gradient, and it is not decoration: a flat fill inside
+  // an ink line is what five rejected rounds looked like. A muscle whose shade
+  // has one stop, or whose stops are all zero, has quietly gone back to being a
+  // sticker.
+  const flatShades = FIGURE_MUSCLES.filter(
+    (m) => m.shade.stops.length < 3 || m.shade.stops.every(([, d]) => d === 0)
+  );
+  flatShades.length === 0
+    ? ok(
+        `all ${FIGURE_MUSCLES.length} muscle shapes carry a modelled gradient (${new Set(FIGURE_MUSCLES.map((m) => m.shade.kind)).size} kinds)`
+      )
+    : bad('flat-filled muscles', flatShades.map((m) => m.shade.kind).join(' '));
+
+  // The whole contrast argument above rests on SHADE_LIFT being the most any
+  // pixel is lightened, so no stop may ask for more than the clamp allows. (The
+  // clamp in `shadeColor` would silently swallow it; this makes the data honest
+  // rather than merely safe.)
+  const overLift = [];
+  for (const m of FIGURE_MUSCLES) {
+    for (const [, d] of m.shade.stops) {
+      if (d < -SHADE_LIFT - 1e-9 || d > SHADE_MAX + 1e-9) overLift.push(`${m.muscle}:${d}`);
+    }
+  }
+  overLift.length === 0
+    ? ok(
+        `no stop exceeds the ±(${SHADE_LIFT}, ${SHADE_MAX}) shading budget the contrast floor assumes`
+      )
+    : bad('shade stop out of budget', overLift.join(' '));
+
+  // A mirrored pair must be mirror-symmetric in its SHADING as well as its
+  // outline: lighting the left quadriceps from the groove and the right one from
+  // the flank makes one leg look twisted, and only the outline is obviously
+  // wrong when that happens.
+  const asym = [];
+  for (const m of FIGURE_MUSCLES) {
+    const twin = FIGURE_MUSCLES.find(
+      (o) =>
+        o !== m &&
+        o.muscle === m.muscle &&
+        o.side === m.side &&
+        Math.abs(
+          shapeBounds(o.shape).x + shapeBounds(o.shape).w - (FIGURE_GRID.w - shapeBounds(m.shape).x)
+        ) < 0.01
+    );
+    if (twin == null) continue;
+    const key = (s) =>
+      (s.kind === 'linear' ? [s.a[0], s.b[0]] : [s.c[0]]).map((v) => v.toFixed(3)).join();
+    const flip = (s) =>
+      (s.kind === 'linear' ? [1 - s.a[0], 1 - s.b[0]] : [1 - s.c[0]])
+        .map((v) => v.toFixed(3))
+        .join();
+    if (key(twin.shade) !== flip(m.shade)) asym.push(`${m.muscle}@${m.side}`);
+  }
+  asym.length === 0
+    ? ok('every mirrored pair has mirrored shading, so neither side reads as twisted')
+    : bad('shading not mirrored', [...new Set(asym)].join(' '));
 }
 
 // ---------------------------------------------------------------------------

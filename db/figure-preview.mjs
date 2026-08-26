@@ -1,21 +1,39 @@
 /**
  * Render the body figure to a PNG so a human (or a model with eyes) can LOOK at
- * it — the only tool in this repo that catches the thing the fourth attempt at
- * this drawing exists because of.
+ * it — the only tool in this repo that catches the thing five rejected attempts
+ * at this drawing exist because of.
  *
- * Three versions of the figure were rejected on hardware. Every one of them was
- * defensible in the numbers and wrong on the screen, because "does this read as
- * a person" is not a property any assertion in db/exercise-ai.test.mjs can hold.
- * This script closes that loop offline: it re-implements the component's paint
- * order over a software rasteriser, at 4× supersampling, and writes a PNG with
- * `node:zlib` (no image dependency, and none is going in).
+ * Every rejected version was defensible in the numbers and wrong on the screen,
+ * because "does this read as a person" is not a property any assertion in
+ * db/exercise-ai.test.mjs can hold. This script closes that loop offline: it
+ * re-implements the component's paint order over a software rasteriser, at 3×
+ * supersampling, and writes a PNG with `node:zlib` (no image dependency, and
+ * none is going in).
+ *
+ * ## Rewritten for SVG (2026-08-25)
+ *
+ * The figure is `<Path>` elements with gradient fills now, not stacks of filled
+ * `View`s, so the old scanline-of-rounded-rects rasteriser modelled nothing that
+ * exists any more. This version does the three things the real renderer does:
+ *
+ *   1. **Flattens each bezier contour** through `flatten()` — the SAME function
+ *      the test suite's geometry predicates use, so the preview and the
+ *      assertions cannot disagree about where a shape is.
+ *   2. **Fills by even-odd scanline with a per-pixel gradient**, evaluating the
+ *      shape's {@link Shade} in object-bounding-box units exactly as SVG defines
+ *      it. Without this the preview would show flat fills and would be blind to
+ *      the entire point of the round.
+ *   3. **Strokes by distance-to-edge**, at the same rendered point weight the
+ *      component asks for, so the preview shows what a 0.62pt muscle line
+ *      actually looks like at 72pt.
  *
  * It is a DEV TOOL, not a test — nothing in `npm run db:test` runs it, and it
  * asserts nothing. It is kept in the tree because the next person to touch the
- * geometry will need it, and rebuilding it from scratch is an afternoon.
+ * geometry will need it.
  *
  *   node --import ./db/register-ts-hooks.mjs db/figure-preview.mjs
  *   node --import ./db/register-ts-hooks.mjs db/figure-preview.mjs --width 240
+ *   node --import ./db/register-ts-hooks.mjs db/figure-preview.mjs --crop 20,34,26,34
  *
  * Writes .omc/figure-preview/*.png (gitignored scratch).
  */
@@ -26,16 +44,16 @@ import { fileURLToPath } from 'node:url';
 
 import { palette } from '../src/constants/theme.ts';
 import {
-  BAR_POINTS,
-  BODY_BAR_POINTS,
-  BODY_OUTLINE,
+  BODY_STROKE_PT,
   FIGURE_BODY,
   FIGURE_GRID,
-  MUSCLE_OUTLINE,
-  barsFor,
+  MUSCLE_STROKE_PT,
+  NEUTRAL_STROKE_PT,
+  flatten,
   freshnessFill,
   musclesFor,
-  polyBars,
+  shadeColor,
+  shapeBounds,
 } from '../src/lib/exercise/figure.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -61,14 +79,12 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc]);
 }
 
-/** rgb Uint8Array (w*h*3) → PNG buffer. */
+/** rgb Buffer (w*h*3) → PNG buffer. */
 function encodePng(rgb, w, h) {
   const raw = Buffer.alloc(h * (w * 3 + 1));
   for (let y = 0; y < h; y++) {
     raw[y * (w * 3 + 1)] = 0; // filter: none
-    rgb.copy
-      ? rgb.copy(raw, y * (w * 3 + 1) + 1, y * w * 3, (y + 1) * w * 3)
-      : Buffer.from(rgb.subarray(y * w * 3, (y + 1) * w * 3)).copy(raw, y * (w * 3 + 1) + 1);
+    rgb.copy(raw, y * (w * 3 + 1) + 1, y * w * 3, (y + 1) * w * 3);
   }
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(w, 0);
@@ -83,7 +99,7 @@ function encodePng(rgb, w, h) {
   ]);
 }
 
-// --- geometry helpers (mirrors of the component's, in device px) -------------
+// --- colour ------------------------------------------------------------------
 
 const hex = (s) => [
   parseInt(s.slice(1, 3), 16),
@@ -91,106 +107,148 @@ const hex = (s) => [
   parseInt(s.slice(5, 7), 16),
 ];
 
-/** Rounded-rect hit test in the SAME units the style props use. */
-function inBlobPx(b, x, y, scale, inflate) {
-  const left = (b.x - inflate) * scale;
-  const top = (b.y - inflate) * scale;
-  const w = (b.w + inflate * 2) * scale;
-  const h = (b.h + inflate * 2) * scale;
-  if (x < left || x > left + w || y < top || y > top + h) return false;
-  const cap = Math.min(w, h) / 2;
-  const r = b.r.map((v) => Math.min((v + inflate) * scale, cap));
-  const near = (cx, cy, rr) => (x - cx) ** 2 + (y - cy) ** 2 <= rr * rr;
-  if (x < left + r[0] && y < top + r[0]) return near(left + r[0], top + r[0], r[0]);
-  if (x > left + w - r[1] && y < top + r[1]) return near(left + w - r[1], top + r[1], r[1]);
-  if (x > left + w - r[2] && y > top + h - r[2]) return near(left + w - r[2], top + h - r[2], r[2]);
-  if (x < left + r[3] && y > top + h - r[3]) return near(left + r[3], top + h - r[3], r[3]);
-  return true;
-}
-
-/** One rasterised bar as the component positions it, with its end caps. */
-function inBarPx(bar, i, n, x, y, scale, inflate) {
-  const left = (bar.x - inflate) * scale;
-  const top = (bar.y - inflate) * scale;
-  const w = (bar.w + inflate * 2) * scale;
-  const h = (bar.h + inflate * 2) * scale;
-  if (x < left || x > left + w || y < top || y > top + h) return false;
-  const cap = Math.min(w, h) / 2;
-  const near = (cx, cy, rr) => (x - cx) ** 2 + (y - cy) ** 2 <= rr * rr;
-  if (i === 0 && y < top + cap) {
-    if (x < left + cap) return near(left + cap, top + cap, cap);
-    if (x > left + w - cap) return near(left + w - cap, top + cap, cap);
-  }
-  if (i === n - 1 && y > top + h - cap) {
-    if (x < left + cap) return near(left + cap, top + h - cap, cap);
-    if (x > left + w - cap) return near(left + w - cap, top + h - cap, cap);
-  }
-  return true;
-}
-
-function inShapePx(shape, x, y, scale, inflate, target = BAR_POINTS) {
-  if (shape.kind === 'blob') return inBlobPx(shape, x, y, scale, inflate);
-  const n = barsFor(shape, scale, target);
-  const bars = polyBars(shape.pts, n);
-  for (let i = 0; i < bars.length; i++) {
-    if (inBarPx(bars[i], i, bars.length, x, y, scale, inflate)) return true;
-  }
-  return false;
-}
-
-// --- the paint ---------------------------------------------------------------
-
-const SS = 4; // supersampling factor
-
 /**
- * A shape flattened to the primitives the component actually mounts: a list of
- * rounded rectangles in device pixels. A blob is one; a poly is one per bar,
- * with the end caps the component applies. Done ONCE per shape so the paint
- * loop touches only each primitive's own bounding box — the pixel-major version
- * was O(pixels × shapes × bars) and did not finish.
+ * The gradient's depth at a point, in the shape's own bounding box — SVG's
+ * `objectBoundingBox` semantics, which is what makes one radial `dome` stretch
+ * to fit both a glute and a calf.
  */
-function primitives(shape, scale, inflate, target) {
-  if (shape.kind === 'blob') {
-    const cap = Math.min((shape.w + inflate * 2) * scale, (shape.h + inflate * 2) * scale) / 2;
-    return [
-      {
-        left: (shape.x - inflate) * scale,
-        top: (shape.y - inflate) * scale,
-        w: (shape.w + inflate * 2) * scale,
-        h: (shape.h + inflate * 2) * scale,
-        r: shape.r.map((v) => Math.min((v + inflate) * scale, cap)),
-      },
-    ];
+function depthAt(shade, box, x, y) {
+  const u = box.w > 0 ? (x - box.x) / box.w : 0.5;
+  const v = box.h > 0 ? (y - box.y) / box.h : 0.5;
+  let t;
+  if (shade.kind === 'linear') {
+    const dx = shade.b[0] - shade.a[0];
+    const dy = shade.b[1] - shade.a[1];
+    const len = dx * dx + dy * dy;
+    t = len === 0 ? 0 : ((u - shade.a[0]) * dx + (v - shade.a[1]) * dy) / len;
+  } else {
+    const dx = u - shade.c[0];
+    const dy = v - shade.c[1];
+    t = Math.sqrt(dx * dx + dy * dy) / shade.r;
   }
-  const bars = polyBars(shape.pts, barsFor(shape, scale, target));
-  return bars.map((bar, i) => {
-    const w = (bar.w + inflate * 2) * scale;
-    const h = (bar.h + inflate * 2) * scale;
-    const cap = Math.min(w, h) / 2;
-    const top = i === 0 ? cap : 0;
-    const bot = i === bars.length - 1 ? cap : 0;
-    return { left: (bar.x - inflate) * scale, top: (bar.y - inflate) * scale, w, h, r: [top, top, bot, bot] };
-  });
+  t = Math.max(0, Math.min(1, t));
+  const stops = shade.stops;
+  if (t <= stops[0][0]) return stops[0][1];
+  for (let i = 1; i < stops.length; i++) {
+    if (t <= stops[i][0]) {
+      const [a0, d0] = stops[i - 1];
+      const [a1, d1] = stops[i];
+      const k = a1 === a0 ? 0 : (t - a0) / (a1 - a0);
+      return d0 + (d1 - d0) * k;
+    }
+  }
+  return stops[stops.length - 1][1];
 }
 
-function inPrim(p, x, y) {
-  if (x < p.left || x > p.left + p.w || y < p.top || y > p.top + p.h) return false;
-  const near = (cx, cy, rr) => (x - cx) ** 2 + (y - cy) ** 2 <= rr * rr;
-  const [tl, tr, br, bl] = p.r;
-  if (tl > 0 && x < p.left + tl && y < p.top + tl) return near(p.left + tl, p.top + tl, tl);
-  if (tr > 0 && x > p.left + p.w - tr && y < p.top + tr)
-    return near(p.left + p.w - tr, p.top + tr, tr);
-  if (br > 0 && x > p.left + p.w - br && y > p.top + p.h - br)
-    return near(p.left + p.w - br, p.top + p.h - br, br);
-  if (bl > 0 && x < p.left + bl && y > p.top + p.h - bl)
-    return near(p.left + bl, p.top + p.h - bl, bl);
-  return true;
+// --- the rasteriser ----------------------------------------------------------
+
+const SS = 3; // supersampling factor
+
+/** A shape's flattened outline in device pixels. */
+function outlinePx(shape, scale) {
+  return flatten(shape).map(([x, y]) => [x * scale * SS, y * scale * SS]);
 }
 
 /**
- * Paint one figure exactly as `Figure` in muscle-figure.tsx does: the inflated
- * contour pass, the body pass, then the muscles in declaration order, each as
- * an ink contour followed by its fill.
+ * Even-odd scanline fill of a closed polygon. `colorOf(x, y)` is called per
+ * covered pixel and returns an `[r, g, b]`, which is what carries the gradient.
+ */
+function fillPoly(buf, W, H, poly, colorOf) {
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  for (const [, y] of poly) {
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  const r0 = Math.max(0, Math.floor(y0));
+  const r1 = Math.min(H - 1, Math.ceil(y1));
+  const xs = [];
+  for (let py = r0; py <= r1; py++) {
+    const yc = py + 0.5;
+    xs.length = 0;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i];
+      const [xj, yj] = poly[j];
+      if (yi === yj) continue;
+      if (yc < Math.min(yi, yj) || yc >= Math.max(yi, yj)) continue;
+      xs.push(xi + ((yc - yi) / (yj - yi)) * (xj - xi));
+    }
+    xs.sort((a, b) => a - b);
+    for (let s = 0; s + 1 < xs.length; s += 2) {
+      const a = Math.max(0, Math.ceil(xs[s] - 0.5));
+      const b = Math.min(W - 1, Math.floor(xs[s + 1] - 0.5));
+      for (let px = a; px <= b; px++) {
+        const rgb = colorOf(px + 0.5, yc);
+        const o = (py * W + px) * 3;
+        buf[o] = rgb[0];
+        buf[o + 1] = rgb[1];
+        buf[o + 2] = rgb[2];
+      }
+    }
+  }
+}
+
+/** Stroke a closed polygon at `width` device pixels, centred on the outline. */
+function strokePoly(buf, W, H, poly, width, rgb) {
+  const h = width / 2;
+  const hh = h * h;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [ax, ay] = poly[j];
+    const [bx, by] = poly[i];
+    const x0 = Math.max(0, Math.floor(Math.min(ax, bx) - h));
+    const x1 = Math.min(W - 1, Math.ceil(Math.max(ax, bx) + h));
+    const y0 = Math.max(0, Math.floor(Math.min(ay, by) - h));
+    const y1 = Math.min(H - 1, Math.ceil(Math.max(ay, by) + h));
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = dx * dx + dy * dy;
+    for (let py = y0; py <= y1; py++) {
+      for (let px = x0; px <= x1; px++) {
+        const cx = px + 0.5;
+        const cy = py + 0.5;
+        let t = len === 0 ? 0 : ((cx - ax) * dx + (cy - ay) * dy) / len;
+        t = Math.max(0, Math.min(1, t));
+        const ex = cx - (ax + t * dx);
+        const ey = cy - (ay + t * dy);
+        if (ex * ex + ey * ey > hh) continue;
+        const o = (py * W + px) * 3;
+        buf[o] = rgb[0];
+        buf[o + 1] = rgb[1];
+        buf[o + 2] = rgb[2];
+      }
+    }
+  }
+}
+
+/** A flat-colour `colorOf`. */
+const flat = (rgb) => () => rgb;
+
+/** A gradient `colorOf` over one shape's bounding box, in device pixels. */
+function shaded(shade, shape, base, scale) {
+  const b = shapeBounds(shape);
+  const box = {
+    x: b.x * scale * SS,
+    y: b.y * scale * SS,
+    w: b.w * scale * SS,
+    h: b.h * scale * SS,
+  };
+  const cache = new Map();
+  return (x, y) => {
+    const d = depthAt(shade, box, x, y);
+    const key = Math.round(d * 255);
+    let rgb = cache.get(key);
+    if (!rgb) {
+      rgb = hex(shadeColor(base, key / 255));
+      cache.set(key, rgb);
+    }
+    return rgb;
+  };
+}
+
+/**
+ * Paint one figure exactly as `Figure` in muscle-figure.tsx does: the contour
+ * pass over the whole body, the fill pass over the whole body, then the muscles
+ * in declaration order, each a gradient fill inside an ink hairline.
  */
 function paintFigure(side, freshnessOf, width, plate) {
   const scale = width / FIGURE_GRID.w;
@@ -201,38 +259,33 @@ function paintFigure(side, freshnessOf, width, plate) {
   for (let i = 0; i < W * H; i++) buf.set(bg, i * 3);
 
   const ink = hex(palette.ink);
-  const ground = hex(palette.paperDeep);
+  const ground = palette.paperDeep;
   const neutral = hex(palette.paperHi);
+  const px = (pt) => pt * SS; // one rendered point, in supersampled device px
 
-  /** Blit one primitive list in a flat colour. */
-  const draw = (prims, rgb, alpha) => {
-    for (const p of prims) {
-      const x0 = Math.max(0, Math.floor(p.left * SS));
-      const x1 = Math.min(W - 1, Math.ceil((p.left + p.w) * SS));
-      const y0 = Math.max(0, Math.floor(p.top * SS));
-      const y1 = Math.min(H - 1, Math.ceil((p.top + p.h) * SS));
-      for (let py = y0; py <= y1; py++) {
-        for (let px = x0; px <= x1; px++) {
-          if (!inPrim(p, (px + 0.5) / SS, (py + 0.5) / SS)) continue;
-          const o = (py * W + px) * 3;
-          for (let c = 0; c < 3; c++) {
-            buf[o + c] = Math.round(buf[o + c] * (1 - alpha) + rgb[c] * alpha);
-          }
-        }
-      }
-    }
-  };
-
-  for (const b of FIGURE_BODY) draw(primitives(b.shape, scale, BODY_OUTLINE, BODY_BAR_POINTS), ink, 1);
+  // Pass 1 — the silhouette's contour. Stroked at DOUBLE weight so that after
+  // the fills over-paint the inner half, one BODY_STROKE_PT line survives on the
+  // outside and every internal seam is gone.
   for (const b of FIGURE_BODY) {
-    draw(primitives(b.shape, scale, 0, BODY_BAR_POINTS), b.neutral ? neutral : ground, 1);
+    strokePoly(buf, W, H, outlinePx(b.shape, scale), px(BODY_STROKE_PT * 2), ink);
   }
+  // Pass 2 — the body. Muscle ground shaded as a soft cylinder; head, hands and
+  // feet FLAT in the plate colour, because they are not data — and outlined in
+  // this pass too, which is what puts a wrist, an ankle and a jaw line in.
+  for (const b of FIGURE_BODY) {
+    const poly = outlinePx(b.shape, scale);
+    fillPoly(buf, W, H, poly, b.neutral ? flat(neutral) : shaded(b.shade, b.shape, ground, scale));
+    if (b.neutral) strokePoly(buf, W, H, poly, px(NEUTRAL_STROKE_PT), ink);
+  }
+
+  // Pass 3 — the muscles, every one of them, in declaration order.
   for (const m of musclesFor(side)) {
-    draw(primitives(m.shape, scale, MUSCLE_OUTLINE, BAR_POINTS), ink, 1);
+    const poly = outlinePx(m.shape, scale);
     const f = freshnessOf(m.muscle);
-    if (f == null) continue;
-    const fill = freshnessFill(f);
-    draw(primitives(m.shape, scale, 0, BAR_POINTS), hex(fill.color), fill.alpha);
+    if (f != null) {
+      fillPoly(buf, W, H, poly, shaded(m.shade, m.shape, freshnessFill(f).color, scale));
+    }
+    strokePoly(buf, W, H, poly, px(MUSCLE_STROKE_PT), ink);
   }
   return { buf, W, H };
 }
@@ -300,7 +353,7 @@ const WIDTH = widthArg > -1 ? Number(process.argv[widthArg + 1]) : 128;
 const cropArg = process.argv.indexOf('--crop');
 const CROP = cropArg > -1 ? process.argv[cropArg + 1].split(',').map(Number) : null;
 
-/** Nearest-neighbour blow-up of a region, so the bars stay countable. */
+/** Nearest-neighbour blow-up of a region. */
 function cropZoom({ buf, W, H }, rect, scale, zoom) {
   const x0 = Math.max(0, Math.round(rect[0] * scale) + 14);
   const y0 = Math.max(0, Math.round(rect[1] * scale) + 14);
@@ -326,7 +379,7 @@ const SCENES = {
   'all-fresh': () => 100,
   'back-day': (m) =>
     ({ lats: 27, upper_back: 22, biceps: 42, rear_delts: 44, traps: 60, forearms: 70 })[m] ?? 100,
-  'mixed': (m) =>
+  mixed: (m) =>
     ({
       chest: 12,
       front_delts: 35,
