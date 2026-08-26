@@ -20,6 +20,7 @@ import {
   MUSCLE_SPENT,
   MUSCLE_FRESH,
   NEUTRAL_STROKE_PT,
+  NON_DATA_FILL,
   freshnessFill,
   musclesFor,
   pathD,
@@ -253,7 +254,7 @@ function Figure({
           <Path
             key={`b-${b.part}`}
             d={pathD(b.shape)}
-            fill={b.neutral ? palette.paperHi : `url(#${ns}-b${i})`}
+            fill={b.neutral ? NON_DATA_FILL : `url(#${ns}-b${i})`}
             stroke={b.neutral ? palette.ink : 'none'}
             strokeWidth={b.neutral ? strokeUnits(NEUTRAL_STROKE_PT, scale) : 0}
             strokeLinejoin="round"

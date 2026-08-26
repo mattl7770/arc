@@ -1768,3 +1768,30 @@ export function figureNodeCount(): number {
   const perFigure = FIGURE_BODY.length * 2 + FIGURE_BODY.filter((b) => b.shade != null).length;
   return perFigure * 2 + (musclesFor('front').length + musclesFor('back').length) * 2;
 }
+
+/**
+ * The fill for the parts of the body that carry no reading — skull, hands,
+ * feet. **A tone, not the plate.**
+ *
+ * They were `paper-hi`, i.e. the plate the figure sits on, which made them
+ * holes: an ink contour around nothing, so the drawing read as a mannequin
+ * with a blank head rather than a person. The owner's reference image fills
+ * its non-data parts with a distinct neutral for exactly this reason.
+ *
+ * **What it costs, stated plainly.** Non-data separation from a fully spent
+ * muscle falls from 3.14:1 (which was reached *precisely* because the fill was
+ * the plate) to **2.38:1**. That is below the 3:1 of WCAG 1.4.11 — and 1.4.11
+ * does not apply here: it governs "graphical objects required to understand
+ * the content", and these three are defined by NOT carrying content. Nothing
+ * about the reading depends on telling a hand from a spent forearm, and two
+ * things separate them anyway: the ink contour every shape already has, and
+ * position, which is absolute (hands are at the ends of arms).
+ *
+ * `paper-dim` rather than `paper-deep`: deep sits 1.94:1 from spent, close
+ * enough that a spent calf and a foot start to read as one mass, which is the
+ * failure this change exists to avoid in the other direction.
+ *
+ * {@link CONTRAST_FLOOR} is untouched — that governs every MUSCLE pixel
+ * against the plate and has nothing to do with this.
+ */
+export const NON_DATA_FILL = palette.paperDim;

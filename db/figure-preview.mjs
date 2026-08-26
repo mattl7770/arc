@@ -54,6 +54,7 @@ import {
   musclesFor,
   shadeColor,
   shapeBounds,
+  NON_DATA_FILL,
 } from '../src/lib/exercise/figure.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -260,7 +261,7 @@ function paintFigure(side, freshnessOf, width, plate) {
 
   const ink = hex(palette.ink);
   const ground = palette.paperDeep;
-  const neutral = hex(palette.paperHi);
+  const neutral = hex(NON_DATA_FILL);
   const px = (pt) => pt * SS; // one rendered point, in supersampled device px
 
   // Pass 1 — the silhouette's contour. Stroked at DOUBLE weight so that after
