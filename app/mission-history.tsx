@@ -425,7 +425,7 @@ export default function MissionHistoryScreen() {
                           accessibilityLabel={`${source.name}. ${missed} of ${owed} owed items missed${source.excused > 0 ? `, ${source.excused} excused by the day’s mode` : ''}. Open the protocol.`}
                           onPress={() =>
                             router.push({
-                              pathname: '/protocol-edit',
+                              pathname: '/protocol-detail',
                               params: { id: source.protocolId! },
                             })
                           }

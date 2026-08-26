@@ -340,6 +340,8 @@ console.log('8. no tracked text file carries a literal NUL byte (the unsearchabl
   planKey('Creatine', 'p1') === `p1${NUL}Creatine`
     ? ok('the escape still produces U+0000 — the delimiter is byte-for-byte unchanged')
     : bad('planKey delimiter changed', JSON.stringify(planKey('Creatine', 'p1')));
+}
+
 // ---------------------------------------------------------------------------
 // content schema 2: CADENCE and PHASES. Before this, every item of every active
 // protocol landed on EVERY day — "creatine daily", "3× a week lower body" and
