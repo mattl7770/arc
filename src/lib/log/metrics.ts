@@ -91,7 +91,16 @@ export const METRICS: MetricDescriptor[] = [
     fromCanonical: (ml) => ml / ML_PER_OZ,
     target: { kind: 'wearable', metricType: 'water_ml', canonicalUnit: 'ml' },
     keywords: ['water', 'h2o'],
-    units: { oz: (v) => v * ML_PER_OZ, ml: id, l: (v) => v * 1000 },
+    units: {
+      oz: (v) => v * ML_PER_OZ,
+      ounces: (v) => v * ML_PER_OZ,
+      ml: id,
+      l: (v) => v * 1000,
+      liter: (v) => v * 1000,
+      liters: (v) => v * 1000,
+      litre: (v) => v * 1000,
+      litres: (v) => v * 1000,
+    },
   },
   {
     key: 'body_fat',
@@ -112,7 +121,12 @@ export const METRICS: MetricDescriptor[] = [
     fromCanonical: (cm) => cm / CM_PER_IN,
     target: { kind: 'body', column: 'waist_cm' },
     keywords: ['waist'],
-    units: { in: (v) => v * CM_PER_IN, inch: (v) => v * CM_PER_IN, cm: id },
+    units: {
+      in: (v) => v * CM_PER_IN,
+      inch: (v) => v * CM_PER_IN,
+      inches: (v) => v * CM_PER_IN,
+      cm: id,
+    },
   },
   {
     key: 'hrv',

@@ -40,6 +40,7 @@
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
 import { pageTextForModel } from '@/lib/html/readable';
+import { isPrivateHost } from '@/lib/net/safe-url';
 import { PACK_TOPICS } from '@/lib/db/repositories/knowledge';
 import { attributionFrom, extractArticleMeta } from './extract';
 
@@ -133,6 +134,10 @@ export function normalizeArticleUrl(rawUrl: string): string {
   if (!/^https?:\/\/[^/?#\s]+\.[^/?#\s]+/i.test(url)) {
     throw new KnowledgeFetchError('not-found', 'That doesn’t look like a URL.');
   }
+  const host = /^https?:\/\/([^/?#]+)/i.exec(url)?.[1]?.toLowerCase() ?? '';
+  if (isPrivateHost(host)) {
+    throw new KnowledgeFetchError('blocked', 'That URL points to a private or local address ARC won’t fetch.');
+  }
   return url;
 }
 
@@ -194,14 +199,27 @@ export async function fetchArticle(
       throw new KnowledgeFetchError('offline', 'The connection dropped mid-download.');
     }
 
-    const text = pageTextForModel(body);
+    // Defence in depth: the parsers are meant to be non-throwing, but a raw
+    // throw here (e.g. a pathological entity slipping past the decoder) would
+    // escape as an untyped error and defeat the degrade-to-paste ladder. Any
+    // non-typed failure to read the page IS a no-content case — route it there.
+    let text: string;
+    let meta: ReturnType<typeof extractArticleMeta>;
+    try {
+      text = pageTextForModel(body);
+      meta = extractArticleMeta(body);
+    } catch {
+      throw new KnowledgeFetchError(
+        'no-content',
+        'The page couldn’t be read into article text — paste the text instead.'
+      );
+    }
     if (text.length < MIN_ARTICLE_CHARS) {
       throw new KnowledgeFetchError(
         'no-content',
         'The page had no readable article text — it may be paywalled or behind a consent wall.'
       );
     }
-    const meta = extractArticleMeta(body);
     return { text, url: response.url || url, title: meta.title, author: attributionFrom(meta) };
   } finally {
     clearTimeout(timer);

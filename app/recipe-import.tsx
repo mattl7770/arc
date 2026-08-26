@@ -113,6 +113,11 @@ export default function RecipeImportScreen() {
     setPhase({ kind: 'working', label });
     try {
       const draft = await importRecipe(input, { signal: controller.signal });
+      // Mirror the catch guard: a model turn is often not cancellable mid-stream,
+      // so an aborted run #1 (superseded by a screenshot pick, or the screen
+      // unmounted) can still resolve — and unguarded it would land its now-stale
+      // draft on the review screen, or set state after unmount.
+      if (controller.signal.aborted) return;
       setPhase({ kind: 'review', draft });
     } catch (e) {
       if (!controller.signal.aborted) fail(e);

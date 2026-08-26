@@ -55,7 +55,12 @@ export function deriveMissionView(
 
   const firstOpen = sorted.findIndex((item) => !isSettled(item));
   const splitAt = firstOpen === -1 ? sorted.length : firstOpen;
-  const pending = sorted.filter((item) => item.status === 'pending');
+  // The hero pool is every OPEN item, not just 'pending'. A 'partial' item is
+  // started-but-unfinished — real progress that still needs action — so it must
+  // still claim the hero: were the pool 'pending'-only, a lone partial would
+  // leave `next` null and Home would read as done while the day's last task was
+  // half-finished. `!isSettled` matches `firstOpen` above, so hero and list agree.
+  const open = sorted.filter((item) => !isSettled(item));
 
   return {
     items: sorted,
@@ -63,7 +68,7 @@ export function deriveMissionView(
     rest: sorted.slice(splitAt),
     // Snoozed items yield the hero slot, but if everything left is snoozed they
     // come back rather than leaving the screen with nothing to say.
-    next: pending.find((item) => !item.snoozed) ?? pending[0] ?? null,
+    next: open.find((item) => !item.snoozed) ?? open[0] ?? null,
     completed: sorted.filter((item) => item.status === 'completed').length,
     settled: sorted.filter(isSettled).length,
     total: sorted.length,

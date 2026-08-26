@@ -241,11 +241,20 @@ export default function WaterScreen() {
 
   // op-sqlite is synchronous, so the first read already ran in the initializers
   // above; this re-reads on return from Settings (a unit or goal may have
-  // changed) and rolls the day over if midnight passed while backgrounded.
+  // changed). It also rolls the selected day forward when the calendar day
+  // changed while the screen was away — but ONLY when the user was tracking
+  // "today" (day still equals the day that was current at the last read). A
+  // deliberately selected past day is a correction in progress and stays put.
+  // The no-focus case (the screen simply left open across midnight, no event to
+  // run this) is handled at write time in `add`, where the log day is resolved
+  // fresh — so a stale `day` can never backdate the new day's first glass.
   useFocusEffect(
     useCallback(() => {
-      refresh(day);
-    }, [refresh, day])
+      const freshToday = todayISODate();
+      const nextDay = day === view.today ? freshToday : day;
+      if (nextDay !== day) setDay(nextDay);
+      refresh(nextDay);
+    }, [refresh, day, view.today])
   );
 
   const { today, recordStart, daysOnRecord, days, targetMl, spec, volumeUnit } = view;
@@ -260,10 +269,17 @@ export default function WaterScreen() {
   const add = (displayAmount: number) => {
     if (!Number.isFinite(displayAmount) || displayAmount <= 0) return;
     if (displayAmount > MAX_DISPLAY) return;
+    // Resolve the log day fresh when the user is tracking "today". If the screen
+    // sat open across midnight no focus event fires to roll `day` over, so
+    // trusting it would backdate the new day's first glass to yesterday; a
+    // deliberately selected past day (day !== today) is honoured as-is.
+    const writeDay = day === today ? todayISODate() : day;
     try {
-      logWater(getDb(), day, spec.toCanonical(displayAmount));
+      logWater(getDb(), writeDay, spec.toCanonical(displayAmount));
       setAddText('');
-      refresh(day);
+      // Follow a rollover so Today/Add/Entries all show the day just written to.
+      if (writeDay !== day) setDay(writeDay);
+      refresh(writeDay);
     } catch (error) {
       console.warn('[water] log failed', error);
     }

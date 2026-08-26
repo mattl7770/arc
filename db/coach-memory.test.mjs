@@ -421,7 +421,7 @@ console.log('R5. the prompt says so when it is not showing every memory');
   /6 older memories are not shown/.test(context)
     ? ok('…but the context block SAYS six are hidden, instead of pretending it knows all 46')
     : bad('silent truncation', context.slice(0, 400));
-  /recall or get_memories/.test(context)
+  /search_history or get_memories/.test(context)
     ? ok('…and points at the tool that can reach them')
     : bad('no escape hatch named');
 

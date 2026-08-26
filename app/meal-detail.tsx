@@ -298,15 +298,29 @@ export default function MealDetailScreen() {
     // A food-less item with no grams has no portion to re-scale — leave it be.
     if (!food && item.grams == null) return;
     const canServing = food?.serving_grams != null;
+    const mode: 'serving' | 'grams' = canServing && item.serving_qty != null ? 'serving' : 'grams';
+    const qty = item.serving_qty ?? 1;
     // One editor at a time — that is what keeps the accent budget a ceiling.
     setTimeEdit(null);
     setNameEdit(null);
+    // Seed the grams readout from what Save will actually persist, so the field
+    // never shows one number while Save writes another. In serving mode Save
+    // re-derives grams from the food's CURRENT serving_grams, so seed from that
+    // same live computation — not the stored snapshot, which drifts once the
+    // catalog serving_grams changes under an already-logged item. In grams mode
+    // seed the EXACT stored grams (not fmtQty's 1-dp rendering): tapping Save
+    // unedited then re-scales by a factor of exactly 1, instead of nudging a
+    // fractional grams value and every macro by the rounding delta.
+    const servingGrams = mode === 'serving' && food ? gramsForQty(food, qty) : null;
     setEditing({
       itemId: item.id,
       food,
-      mode: canServing && item.serving_qty != null ? 'serving' : 'grams',
-      qty: item.serving_qty ?? 1,
-      gramsText: fmtQty(item.grams ?? food?.serving_grams ?? 100),
+      mode,
+      qty,
+      gramsText:
+        mode === 'serving'
+          ? fmtQty(servingGrams ?? item.grams ?? food?.serving_grams ?? 100)
+          : String(item.grams ?? food?.serving_grams ?? 100),
     });
   };
 
@@ -332,6 +346,12 @@ export default function MealDetailScreen() {
     if (editing.mode === 'serving' && editing.food) {
       if (editing.qty <= 0) return;
       update = rescaleLoggedItem(item, editing.food, { servingQty: editing.qty });
+      // The serving-derived grams (qty × serving_grams) bypasses the grams
+      // field's ceiling: qty is clamped to 50 but serving_grams is unbounded,
+      // so a 500 g serving stepped to 50 would write 25 000 g. Enforce the same
+      // finite/positive/≤5000 guard parseGrams applies below, so one ceiling
+      // governs both entry modes.
+      if (update && !(update.grams != null && update.grams > 0 && update.grams <= 5000)) return;
     } else {
       const grams = parseGrams(editing.gramsText);
       if (grams === null) return;

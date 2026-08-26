@@ -226,7 +226,7 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
         memories.map((m) => `- [${m.category}] ${m.content} (id: ${m.id})`).join('\n') +
         (hidden > 0
           ? `\n- (${hidden} older ${hidden === 1 ? 'memory is' : 'memories are'} not shown here — ` +
-            `use recall or get_memories if the user refers to something you cannot see)`
+            `use search_history or get_memories if the user refers to something you cannot see)`
           : '')
     );
   }

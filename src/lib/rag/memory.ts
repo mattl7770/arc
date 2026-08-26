@@ -58,31 +58,45 @@ export async function ingestMemory(db: Database, input: MemoryInput): Promise<In
   // memory (clearing is a separate, explicit operation).
   if (chunks.length === 0) return { chunkIds: [], embedded: 0 };
 
-  if (input.originTable && input.originId) {
-    const prior = memoryChunkIdsForOrigin(db, input.originTable, input.originId);
-    if (prior.length > 0) {
-      deleteVectors(db, prior);
-      deleteMemoryChunks(db, prior);
-    }
+  // Embed BEFORE opening the transaction: embedDocument is async and a
+  // transaction body must stay synchronous, so all vectors are gathered up front
+  // (null where the embedder hasn't shipped) and the write below is one atomic,
+  // synchronous step.
+  const vectors: (number[] | null)[] = [];
+  for (const chunk of chunks) {
+    vectors.push(await embedDocument(chunk.text));
   }
 
   const chunkIds: string[] = [];
   let embedded = 0;
-  for (const chunk of chunks) {
-    const id = insertMemoryChunk(db, {
-      kind: input.kind,
-      originTable: input.originTable ?? null,
-      originId: input.originId ?? null,
-      refDate: input.refDate ?? null,
-      body: chunk.text,
-      tokenEstimate: estimateTokens(chunk.text),
-    });
-    chunkIds.push(id);
-    const vec = await embedDocument(chunk.text);
-    if (vec) {
-      upsertVector(db, { chunkId: id, corpus: 'memory', source: input.kind, embedding: vec });
-      embedded += 1;
+  // Replace-prior + insert-new in ONE transaction: a mid-loop failure must never
+  // leave the origin's prior memory deleted with only some new chunks written
+  // (and vec_chunks inconsistent with content). Either the whole re-ingest lands
+  // or it rolls back and the old memory survives intact.
+  db.transaction(() => {
+    if (input.originTable && input.originId) {
+      const prior = memoryChunkIdsForOrigin(db, input.originTable, input.originId);
+      if (prior.length > 0) {
+        deleteVectors(db, prior);
+        deleteMemoryChunks(db, prior);
+      }
     }
-  }
+    chunks.forEach((chunk, i) => {
+      const id = insertMemoryChunk(db, {
+        kind: input.kind,
+        originTable: input.originTable ?? null,
+        originId: input.originId ?? null,
+        refDate: input.refDate ?? null,
+        body: chunk.text,
+        tokenEstimate: estimateTokens(chunk.text),
+      });
+      chunkIds.push(id);
+      const vec = vectors[i];
+      if (vec) {
+        upsertVector(db, { chunkId: id, corpus: 'memory', source: input.kind, embedding: vec });
+        embedded += 1;
+      }
+    });
+  });
   return { chunkIds, embedded };
 }

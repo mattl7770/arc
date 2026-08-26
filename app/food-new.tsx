@@ -152,11 +152,18 @@ export default function FoodNewScreen() {
   const servingPaired = (servingName.trim() === '') === !servingUsable;
   const basisOk = basis === 'per100' || servingUsable;
 
-  // Per-serving entries convert to canonical per-100 g on save.
+  // Per-serving entries convert to canonical per-100 g on save. Only that path
+  // multiplies by a non-integer factor, and IEEE-754 overshoots on it: 14 g of
+  // fat in a 14 g serving yields 100.00000000000001, which reads as >100 and
+  // trips both the macro-cap guard below and the DB CHECK — so a 100%-macro
+  // staple (olive oil, sugar, an isolate) could not be saved. Round the
+  // converted value to 2 dp; a per-100 g entry is factor 1 and stored verbatim.
+  const round2 = (v: number): number => Math.round(v * 100) / 100;
   const factor = basis === 'serving' && servingUsable ? 100 / servingGramsNum : 1;
   const per100 = (text: string): number | null => {
     const n = toNumber(text);
-    return n === null ? null : n * factor;
+    if (n === null) return null;
+    return basis === 'serving' ? round2(n * factor) : n;
   };
   const kcal100 = per100(kcal);
   const macros100 = [per100(protein), per100(carbs), per100(fat), per100(fiber)];

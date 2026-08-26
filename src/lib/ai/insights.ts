@@ -350,8 +350,14 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
   // --- Metric trends ---------------------------------------------------------
   // Closed windows [since, today]: a future-dated row (clock skew, a
   // mis-entered backdate) must never contaminate the recent averages.
-  const hrv = wearableDailySeries(db, 'hrv', since, 'avg', today);
-  const rhr = wearableDailySeries(db, 'rhr', since, 'avg', today);
+  // HRV and RHR are HealthKit day buckets, so two devices reporting the same
+  // day must arbitrate to one winner (richest device first), not be pooled with
+  // avg — pooling would blur two devices' nights together and make the Coach
+  // disagree with the value Home shows for the same day. Read them the same way
+  // WEARABLE_TRENDS reads steps/energy/sleep, and feed the arbitrated hrv into
+  // the correlation below.
+  const hrv = wearableArbitratedSeries(db, 'hrv', since, today);
+  const rhr = wearableArbitratedSeries(db, 'rhr', since, today);
   // body_metrics is bounded on the INSTANT (see bodyDailySeries) — a local-day
   // date string would drop an evening weigh-in west of UTC.
   const weight = bodyDailySeries(db, 'weight_kg', since, endOfLocalDayUtc(now));
@@ -659,7 +665,15 @@ function hrvTrainingCorrelation(
   // zeros lets one hard day drive the whole correlation.
   if (xs.filter((minutes) => minutes > 0).length < 3) return null;
   const r = pearson(xs, ys);
-  if (r === null || Math.abs(r) < rCritical(xs.length)) return null;
+  // Two bars, like every other detector: statistical significance is not enough
+  // on its own. At a few hundred pairs rCritical falls to ~0.14, so a
+  // practically meaningless r = -0.15 would clear it and be surfaced as "worth
+  // watching" — the exact over-claiming the practical-bar gate exists to
+  // prevent. Require a real magnitude too.
+  const MIN_CORRELATION = 0.3;
+  if (r === null || Math.abs(r) < MIN_CORRELATION || Math.abs(r) < rCritical(xs.length)) {
+    return null;
+  }
 
   const negative = r < 0;
   return {

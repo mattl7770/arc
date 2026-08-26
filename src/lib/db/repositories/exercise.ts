@@ -208,13 +208,31 @@ export function deleteWorkout(db: Database, id: string): void {
   db.run('DELETE FROM workouts WHERE id = ?', [id]);
 }
 
-/** Append one set to an existing workout, continuing its 1-based set_index. */
+/**
+ * Append one set to an existing workout, continuing its 1-based set_index.
+ *
+ * A session logged before the 0013 structured logger has every set at
+ * `set_index = NULL`, and `getWorkoutDetail` orders `set_index IS NULL,
+ * set_index, rowid` — so a NOT-NULL index (which is what `max(set_index)+1`
+ * would produce, since `max` of all-NULLs is NULL → 1) sorts AHEAD of those
+ * NULL rows and the "append" visually prepends. So reindex the whole session
+ * to 1..n by its current performed order first, the way `replaceWorkout` does,
+ * then the new set lands at n+1 and reads last. All in one transaction.
+ */
 export function addSet(db: Database, workoutId: string, set: SetInput): string {
-  const row = db.get<{ next: number }>(
-    'SELECT coalesce(max(set_index), 0) + 1 AS next FROM workout_sets WHERE workout_id = ?',
-    [workoutId]
-  );
-  return insertSet(db, workoutId, set, row?.next ?? 1);
+  let id = '';
+  db.transaction(() => {
+    const existing = db.all<{ id: string }>(
+      `SELECT id FROM workout_sets WHERE workout_id = ?
+       ORDER BY set_index IS NULL, set_index, rowid`,
+      [workoutId]
+    );
+    existing.forEach((r, i) => {
+      db.run('UPDATE workout_sets SET set_index = ? WHERE id = ?', [i + 1, r.id]);
+    });
+    id = insertSet(db, workoutId, set, existing.length + 1);
+  });
+  return id;
 }
 
 // `localWeekRange` (the Monday-start "this week" definition) now lives in the

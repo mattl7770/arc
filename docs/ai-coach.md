@@ -444,4 +444,4 @@ Neither `isDueOn` nor the notification path changed; only ranking, labelling and
 
 **v3 — PARTLY SHIPPED:** experiment engine ✅ (0027) · photo meal logging ✅ · **writable knowledge base ✅ (0038** — browse, author, article import, `save_knowledge_entry`) · RAG ~ (schema, chunker, retrieval and `search_knowledge` all *written* at 0025, the tool held back until **the embedder model**, which is the missing piece) · predictive alerts ✗ · correlations at scale ✗ · voice-first ✗ · navigation ✗.
 
-**Current tool total: 24 registered (11 read + 13 write)**, plus 2 written-but-withheld (§2d).
+**Current tool total: 43 registered (18 read + 25 write)**, plus 2 written-but-withheld (§2d).

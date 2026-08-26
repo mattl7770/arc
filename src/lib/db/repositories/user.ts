@@ -140,6 +140,34 @@ export function setHealthSyncEnabled(db: Database, enabled: boolean): void {
 }
 
 /**
+ * Whether automatic encrypted backups are enabled (Settings › Backups).
+ *
+ * **Default ON**, and the `!== false` is what says so: a safety net that has to
+ * be switched on is a safety net most people find out about on the day they
+ * needed it. This is the opposite reading from the Apple Health toggle two
+ * functions up (`=== true`, default OFF) and deliberately so — that one grants
+ * an app access to data it does not have, while this one only writes ciphertext
+ * the user already owns to the user's own device. The only thing that turns it
+ * off is the user turning it off.
+ *
+ * A user choice, so it lives in the preferences blob beside units and the
+ * hydration goal; machine state (when the last snapshot was taken) is the
+ * modification time of the snapshot file itself, not a stored cursor.
+ */
+export function isBackupEnabled(db: Database): boolean {
+  const obj = parseObject(getOrCreateUser(db).preferences);
+  return readSection(obj, 'backup').enabled !== false;
+}
+
+/** Flip the automatic-backup toggle, preserving unrelated preference keys. */
+export function setBackupEnabled(db: Database, enabled: boolean): void {
+  const user = getOrCreateUser(db);
+  const obj = parseObject(user.preferences);
+  obj.backup = { ...readSection(obj, 'backup'), enabled };
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+}
+
+/**
  * The daily hydration goal in canonical **ml**, or `null` when the user has
  * never set one — which is the default, and stays the default.
  *

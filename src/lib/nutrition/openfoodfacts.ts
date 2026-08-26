@@ -25,8 +25,10 @@ import type { NewFood } from './types';
 const OFF_BASE = 'https://world.openfoodfacts.org/api/v2/product';
 const OFF_FIELDS = 'product_name,product_name_en,brands,nutriments,serving_size,serving_quantity';
 
-/** OFF etiquette: identify the app. Not a secret; safe to ship. */
-export const OFF_USER_AGENT = 'ARC/0.1 (matt.lawrence2@gmail.com)';
+/** OFF etiquette: identify the app — no personal data. Nothing that leaves the
+ * device may carry PII except the AI call (local-first stance), so the contact
+ * names the app, not the owner. */
+export const OFF_USER_AGENT = 'ARC/0.1 (personal longevity app)';
 
 /** The minimal fetch surface — global fetch and expo/fetch both satisfy it. */
 export type OffFetch = (
@@ -90,10 +92,12 @@ export function parseOffProduct(response: unknown, barcode: string): NewFood | n
     '';
   if (name === '') return null; // a nameless product is useless to log
 
-  const brand =
-    typeof product.brands === 'string' && product.brands.trim() !== ''
-      ? product.brands.split(',')[0]!.trim()
-      : null;
+  // A leading comma/blank makes split(',')[0] an empty segment even though the
+  // whole string trims non-empty — coalesce that back to null (not recorded is
+  // NULL, never a placeholder).
+  const firstBrand =
+    typeof product.brands === 'string' ? product.brands.split(',')[0]?.trim() : undefined;
+  const brand = firstBrand ? firstBrand : null;
 
   const nutriments: OffNutriments =
     typeof product.nutriments === 'object' && product.nutriments !== null

@@ -140,16 +140,46 @@ export type PublishDeps = {
 const NATIVE_DEPS: PublishDeps = { isAvailable: isHealthKitAvailable, save: saveHealthQuantity };
 
 /**
+ * The single in-flight publish pass, shared across every caller.
+ *
+ * A publish is irreversible (rule 1) and its safety rests entirely on the walk
+ * running once against an un-advanced cursor: two overlapping passes — a boot or
+ * foreground auto-sync racing a manual Settings "Sync now" (which bypasses the
+ * throttle) — each read the SAME cursor, walk the SAME pending rows, and call
+ * `save` for every sample twice, landing permanent duplicates in Apple Health
+ * that ARC has no UUID to delete. So overlapping callers await the ONE pass
+ * already running instead of starting a second; the awaited result is honest for
+ * every caller because the running pass did all the work. The inbound upsert is
+ * idempotent and needs no such guard — this protects only the outbound walk.
+ */
+let inFlight: Promise<HealthPublishResult> | null = null;
+
+/**
  * One publish pass: arm if needed, then walk forward from the cursor writing
  * samples until the batch is exhausted or a save is refused.
  *
  * Gated on the SAME preference as ingestion. One Apple Health switch, both
  * directions — "Turn off" that left ARC still writing would be a lie.
+ *
+ * Serialized behind {@link inFlight}: a call that arrives while a pass is running
+ * joins that pass rather than opening a concurrent one (see the note above).
  */
-export async function publishBodyMetrics(
+export function publishBodyMetrics(
   db: Database,
   now: Date = new Date(),
   deps: PublishDeps = NATIVE_DEPS
+): Promise<HealthPublishResult> {
+  if (inFlight) return inFlight;
+  inFlight = runPublishPass(db, now, deps).finally(() => {
+    inFlight = null;
+  });
+  return inFlight;
+}
+
+async function runPublishPass(
+  db: Database,
+  now: Date,
+  deps: PublishDeps
 ): Promise<HealthPublishResult> {
   if (!isHealthSyncEnabled(db)) {
     return { status: 'disabled', samplesWritten: 0, armed: false, stalled: false };

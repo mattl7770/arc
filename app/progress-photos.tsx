@@ -190,7 +190,21 @@ export default function ProgressPhotosScreen() {
   selected
     .map((id) => photos.find((p) => p.id === id))
     .filter((p): p is GalleryPhoto => p != null)
-    .sort((x, y) => (x.taken_on < y.taken_on ? -1 : x.taken_on > y.taken_on ? 1 : 0))
+    // Same tiebreak as openCompare: on an equal day, order by id ascending. Two
+    // same-day photos otherwise get their badges in tap order while the compare
+    // screen shows them id-order, so the cell marked "1" could appear on the
+    // right under a banner promising oldest-first. Found by adversarial review.
+    .sort((x, y) =>
+      x.taken_on < y.taken_on
+        ? -1
+        : x.taken_on > y.taken_on
+          ? 1
+          : x.id < y.id
+            ? -1
+            : x.id > y.id
+              ? 1
+              : 0
+    )
     .forEach((photo, index) => selectionRank.set(photo.id, index + 1));
 
   const openCompare = () => {

@@ -30,6 +30,7 @@ import {
 import type {
   ScreeningCategory,
   ScreeningInput,
+  ScreeningRow,
   UpcomingAppointment,
 } from '@/lib/screenings/types';
 
@@ -89,13 +90,34 @@ const INTERVAL_CHIPS: { label: string; months: number }[] = [
 const FIELD =
   'mt-2 border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] text-ink';
 
+/**
+ * The next_due to show in the override field: blank when the stored value merely
+ * equals what the cadence would derive (so later edits keep re-deriving), the
+ * stored value otherwise (a real, doctor-told-you override). Shared by the
+ * mount initializer and the on-focus rehydrate so both read a row the same way.
+ */
+function overrideFromRow(row: ScreeningRow): string {
+  if (!row.next_due) return '';
+  const derived = resolveNextDue({
+    name: row.name,
+    category: row.category,
+    intervalMonths: row.interval_months,
+    lastCompleted: row.last_completed,
+  });
+  return row.next_due === derived ? '' : row.next_due;
+}
+
 export default function ScreeningFormScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id?: string }>();
   const editingId = typeof id === 'string' && id.length > 0 ? id : null;
 
-  // Load once in the initializer (op-sqlite is synchronous) — the row can't
-  // change underneath an open form in a single-user app.
+  // Load once in the initializer (op-sqlite is synchronous). NOT immutable while
+  // open, though: booking an appointment for this screening and marking it
+  // completed rolls this row's last_completed/next_due from a different screen
+  // (completeAppointment). So the row is re-read on focus below and the fields
+  // rehydrated — otherwise a Save here would write back the pre-completion
+  // snapshot and silently revert the just-rolled cadence.
   const [initial] = useState(() => (editingId ? getScreening(getDb(), editingId) : undefined));
 
   const [name, setName] = useState(initial?.name ?? '');
@@ -106,16 +128,9 @@ export default function ScreeningFormScreen() {
   const [lastCompleted, setLastCompleted] = useState(initial?.last_completed ?? '');
   // Only surface the stored next_due as an override when it differs from what
   // the cadence would derive — otherwise leave it deriving.
-  const [nextDueOverride, setNextDueOverride] = useState(() => {
-    if (!initial?.next_due) return '';
-    const derived = resolveNextDue({
-      name: initial.name,
-      category: initial.category,
-      intervalMonths: initial.interval_months,
-      lastCompleted: initial.last_completed,
-    });
-    return initial.next_due === derived ? '' : initial.next_due;
-  });
+  const [nextDueOverride, setNextDueOverride] = useState(() =>
+    initial ? overrideFromRow(initial) : ''
+  );
   const [notes, setNotes] = useState(initial?.notes ?? '');
 
   // This screening's live bookings. Re-read on focus so returning from the
@@ -127,6 +142,19 @@ export default function ScreeningFormScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!editingId) return;
+      // Re-read the row itself, not just the bookings: marking a linked
+      // appointment completed rolls this screening's last_completed/next_due
+      // from the appointment form, and a Save must then write the rolled values,
+      // not the snapshot this form mounted with (see the `initial` note above).
+      const row = getScreening(getDb(), editingId);
+      if (row) {
+        setName(row.name);
+        setCategory(row.category);
+        setIntervalText(row.interval_months != null ? String(row.interval_months) : '');
+        setLastCompleted(row.last_completed ?? '');
+        setNextDueOverride(overrideFromRow(row));
+        setNotes(row.notes ?? '');
+      }
       const { startUtc } = localDayUtcRange();
       setBookings(
         upcomingAppointments(getDb(), startUtc).filter((a) => a.screening_id === editingId)

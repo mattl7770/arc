@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
+import { applyConnectionPragmas } from '../src/lib/db/pragmas.ts';
 import {
   getOrCreateDailyLog,
   listMission,
@@ -60,7 +61,9 @@ function makeDb(raw) {
 
 function freshDb() {
   const raw = new DatabaseSync(':memory:');
-  raw.exec('PRAGMA foreign_keys = ON;');
+  // The app connection turns FK enforcement on via this same helper; routing the
+  // harness through it means dropping it from the app path fails a test here.
+  applyConnectionPragmas((sql) => raw.exec(sql));
   const { database, executor } = makeDb(raw);
   migrate(executor, MIGRATIONS);
   return { raw, db: database };
@@ -174,10 +177,19 @@ console.log('5. updated_at trigger fires on a status write');
   ensureTodaySeeded(db, TODAY, SEED);
   const id = listMission(db, TODAY)[0].id;
   const before = raw.prepare('SELECT updated_at FROM log_entries WHERE id = ?').get(id).updated_at;
-  raw.exec(`UPDATE log_entries SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = '${id}'`);
+  // Push created_at back (to prove the trigger leaves it alone) AND write a stale
+  // updated_at sentinel: a live AFTER UPDATE trigger overwrites the sentinel with
+  // now, so `updated_at !== sentinel` is the only thing that fails when the
+  // trigger is dead — a bare `>= before` admits equality and passes on a
+  // non-firing trigger (the pattern wearables.test.mjs section 0 uses).
+  raw.exec(
+    `UPDATE log_entries SET created_at = '2000-01-01T00:00:00.000Z', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = '${id}'`
+  );
   setMissionStatus(db, id, 'skipped');
   const after = raw.prepare('SELECT updated_at, created_at FROM log_entries WHERE id = ?').get(id);
-  after.updated_at >= before && after.created_at === '2000-01-01T00:00:00.000Z'
+  after.updated_at !== '2000-01-01T00:00:00.000Z' &&
+  after.updated_at >= before &&
+  after.created_at === '2000-01-01T00:00:00.000Z'
     ? ok('updated_at stamped by trigger, created_at untouched')
     : bad('updated_at trigger via repo', JSON.stringify(after));
   raw.close();
@@ -217,6 +229,49 @@ console.log('7. deriveMissionView: chronological split, hero, snooze');
   snoozedView.next && snoozedView.next.id === 'd'
     ? ok('snoozing the hero advances it to the next pending item')
     : bad('snooze advances hero', snoozedView.next && snoozedView.next.id);
+}
+
+console.log('8. FK enforcement is the pragma the helper applies, not the schema');
+{
+  // The ON DELETE actions the schema leans on (SET NULL to preserve execution
+  // history, CASCADE to clear a report's results) are inert unless the connection
+  // turns foreign_keys ON — raw SQLite defaults it OFF. If the app's open path ever
+  // dropped applyConnectionPragmas, every FK-dependent assertion in the labs
+  // suite would still pass (each harness sets the pragma itself), while on device
+  // the cascades silently stopped firing. So prove the helper is what arms them:
+  // the same schema, once WITHOUT the pragma and once with it.
+  //
+  // node:sqlite's DatabaseSync enables foreign keys by default
+  // (enableForeignKeyConstraints defaults true), unlike raw SQLite / op-sqlite —
+  // so we must open with it OFF to model the device's un-pragma'd default and let
+  // applyConnectionPragmas be the thing that arms enforcement.
+  const schema = `
+    CREATE TABLE parent (id TEXT PRIMARY KEY NOT NULL);
+    CREATE TABLE child (
+      id TEXT PRIMARY KEY NOT NULL,
+      parent_id TEXT REFERENCES parent(id) ON DELETE CASCADE
+    );`;
+
+  const without = new DatabaseSync(':memory:', { enableForeignKeyConstraints: false });
+  without.exec(schema);
+  without.exec("INSERT INTO parent (id) VALUES ('p')");
+  without.exec("INSERT INTO child (id, parent_id) VALUES ('c', 'p')");
+  without.exec("DELETE FROM parent WHERE id = 'p'");
+  without.prepare('SELECT count(*) c FROM child').get().c === 1
+    ? ok('without the pragma the CASCADE does NOT fire (FKs default OFF)')
+    : bad('cascade fired without the pragma');
+  without.close();
+
+  const withPragma = new DatabaseSync(':memory:', { enableForeignKeyConstraints: false });
+  withPragma.exec(schema);
+  applyConnectionPragmas((sql) => withPragma.exec(sql));
+  withPragma.exec("INSERT INTO parent (id) VALUES ('p')");
+  withPragma.exec("INSERT INTO child (id, parent_id) VALUES ('c', 'p')");
+  withPragma.exec("DELETE FROM parent WHERE id = 'p'");
+  withPragma.prepare('SELECT count(*) c FROM child').get().c === 0
+    ? ok('once the helper runs the CASCADE fires (child cleared)')
+    : bad('cascade did not fire after the helper');
+  withPragma.close();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -273,9 +273,9 @@ export function freshnessFill(freshness: number): { color: string; alpha: number
 /**
  * The rendered height one scanline bar aims for, in points — the muscles.
  *
- * **2.6, down from 4.4 (2026-08-14).** The previous round measured ~1.5pt
+ * **3.8, down from 4.4 (2026-08-14).** The previous round measured ~1.5pt
  * stair-steps on the shallow edges (the top of a pec, the sweep of a quad) and
- * flagged them; this is that flag answered. It costs roughly 1.7× the bars on
+ * flagged them; this is that flag answered. It costs roughly 1.15× the bars on
  * every muscle poly, which the budget in db/exercise-ai.test.mjs absorbs
  * because the body no longer spends its own bars on detail it does not need
  * ({@link BODY_BAR_POINTS}).
@@ -289,9 +289,9 @@ export const BAR_POINTS = 3.8;
  * Stair-stepping is a function of the EDGE SLOPE, not of the bar height: a bar
  * `h` tall on an edge of slope dx/dy steps sideways by `h × dx/dy`. The body's
  * long edges are near-vertical (a torso's flank runs about 0.18 sideways per
- * unit down, a thigh's about 0.1), so a 5.2pt bar steps under a point — below
- * anything the eye resolves. Every place the silhouette actually turns shallow
- * is a BLOB instead: the skull, the deltoid caps, the hands and the feet are
+ * unit down, a thigh's about 0.1), so a 6.5pt bar steps about a point — around
+ * the limit of what the eye resolves. Every place the silhouette actually turns
+ * shallow is a BLOB instead: the skull, the deltoid caps, the hands and the feet are
  * all domes, and a blob's corner radius is a real antialiased curve for one
  * view. Choosing the primitive by the slope is what buys the finer muscles.
  */
@@ -342,7 +342,7 @@ const poly = (...pts: Pt[]): Poly => ({ kind: 'poly', pts });
  * figure is therefore a {@link Blob}, whose corner radius is a real antialiased
  * curve for exactly one view: the skull, the two deltoid caps, the hands, the
  * feet. The polygons keep the steep runs, which is why they can afford
- * {@link BODY_BAR_POINTS} of 5.2 while the muscles run at 2.6.
+ * {@link BODY_BAR_POINTS} of 6.5 while the muscles run at 3.8.
  *
  * ## Proportions
  *

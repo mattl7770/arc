@@ -11,6 +11,7 @@ import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { listMission } from '@/lib/db/repositories/mission';
 import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
 import { biomarkerSeries } from '@/lib/db/repositories/labs';
+import { latestBody } from '@/lib/db/repositories/body';
 import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/experiments';
@@ -820,6 +821,12 @@ const getMetricSeries: CoachTool = {
           aggregation: 'daily average of that day’s measurements',
           days,
           points,
+          // A body metric with older readings than the window is missing IN THIS
+          // WINDOW, not never recorded. Sourced from the true last row (same
+          // date derivation bodyDailySeries uses, substr(measured_at,1,10)) so
+          // an empty-but-historied window yields the softer "most recent value
+          // on record is from <date>" note, matching the wearable branch.
+          lastRecorded: latestBody(db, target.column)?.measuredAt.slice(0, 10) ?? null,
         })
       );
     }
@@ -1669,7 +1676,7 @@ const getMemories: CoachTool = {
       showing: memories.length,
       note:
         total > memories.length
-          ? `Only the ${memories.length} most recent of ${total} are listed; use recall to search the rest by text.`
+          ? `Only the ${memories.length} most recent of ${total} are listed; use search_history to search the rest by text.`
           : undefined,
       memories: memories.map((m) => ({
         id: m.id,

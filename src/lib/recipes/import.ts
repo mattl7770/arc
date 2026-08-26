@@ -20,6 +20,7 @@
  */
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
+import { isPrivateHost } from '@/lib/net/safe-url';
 import {
   extractInstagramAuthor,
   extractInstagramCaption,
@@ -128,6 +129,8 @@ export function normalizeSourceUrl(rawUrl: string): NormalizedSource {
   if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
   const host = hostOf(url);
   if (!host) throw new RecipeFetchError('not-found', 'That doesn’t look like a URL.');
+  if (isPrivateHost(host))
+    throw new RecipeFetchError('blocked', 'That URL points to a private or local address ARC won’t fetch.');
 
   if (host === 'youtu.be') {
     const m = /^https?:\/\/[^/]+\/([A-Za-z0-9_-]{5,})/.exec(url);
@@ -437,11 +440,60 @@ function str(value: unknown): string | null {
 }
 
 /**
+ * The brace-balanced object that begins at `from`, or null. Tracks string
+ * literals and escapes so a brace INSIDE a JSON string doesn't close the object
+ * early — a `lastIndexOf('}')` slice cannot, and would span the wrong braces
+ * when prose either side of the object contains any.
+ */
+function balancedObjectFrom(text: string, from: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = from; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(from, i + 1);
+    }
+  }
+  return null;
+}
+
+/**
+ * The first embedded JSON object that actually parses, or undefined. Walks each
+ * `{` in turn — a preamble like `the {found:...} format:` gives a balanced but
+ * unparseable slice, so we skip it and try the next `{`, landing on the real
+ * object. JSON.parse never yields undefined, so undefined is an unambiguous
+ * "nothing parsed" signal.
+ */
+function parseEmbeddedJsonObject(replyText: string): unknown {
+  for (let i = replyText.indexOf('{'); i !== -1; i = replyText.indexOf('{', i + 1)) {
+    const candidate = balancedObjectFrom(replyText, i);
+    if (candidate === null) continue;
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // This `{` opened prose, not the object — try the next one.
+    }
+  }
+  return undefined;
+}
+
+/**
  * Parse the model's extraction reply. Never trusts the shape: unknown fields
  * drop, a `found:false` throws {@link NoRecipeFoundError} (the UI routes to
  * the paste/screenshot rungs), and a "found" reply with no usable ingredients
  * AND no steps is treated as not-found — an empty recipe is a fabrication with
- * extra steps. Tolerant of ```json fences / stray prose around the object.
+ * extra steps. Tolerant of ```json fences / stray prose around the object, even
+ * when that prose itself contains braces.
  */
 export function parseRecipeExtraction(replyText: string): {
   title: string;
@@ -452,15 +504,11 @@ export function parseRecipeExtraction(replyText: string): {
   steps: string[];
   notes: string | null;
 } {
-  const start = replyText.indexOf('{');
-  const end = replyText.lastIndexOf('}');
-  if (start === -1 || end <= start) {
+  if (replyText.indexOf('{') === -1) {
     throw new Error('Recipe extraction reply contained no JSON object.');
   }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(replyText.slice(start, end + 1));
-  } catch {
+  const raw = parseEmbeddedJsonObject(replyText);
+  if (raw === undefined) {
     throw new Error('Recipe extraction reply was not valid JSON.');
   }
   if (raw === null || typeof raw !== 'object') {

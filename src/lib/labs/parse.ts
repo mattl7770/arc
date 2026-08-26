@@ -211,9 +211,22 @@ const CATEGORIES: BiomarkerCategory[] = [
 ];
 
 /** A finite number, or null. Lab values may legitimately be 0 or negative
- * (base excess), so no sign constraint — only finiteness. */
+ * (base excess), so no sign constraint — only finiteness.
+ *
+ * Also recovers a finite number emitted as a JSON STRING ("5.4", "92"): despite
+ * the prompt's "value is a plain number", frontier models intermittently
+ * stringify numeric fields, and dropping "5.4" would be real data loss — the
+ * recovery is exact, not a guess. A non-numeric string ("Negative") stays null
+ * so it still routes to value_text. */
 function num(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function text(value: unknown): string | null {
@@ -252,8 +265,46 @@ export function validCollectedOn(value: unknown, today: string): string | null {
  */
 export function isolateJsonObject(replyText: string): string {
   const start = replyText.indexOf('{');
+  if (start === -1) {
+    throw new Error('Lab extraction reply contained no JSON object.');
+  }
+
+  // Balanced-brace scan from the first '{': stop at the matching close, so a
+  // trailing note that itself contains a brace ("could not read {marker X}")
+  // doesn't drag the slice past the object. String-aware, because a brace inside
+  // a JSON string value must not shift the depth. This is the whole tolerance
+  // the docstring promises; the first-'{'-to-last-'}' fallback below only runs
+  // when the scan finds nothing parseable.
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < replyText.length; i++) {
+    const ch = replyText[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const scanned = replyText.slice(start, i + 1);
+        try {
+          JSON.parse(scanned);
+          return scanned;
+        } catch {
+          break;
+        }
+      }
+    }
+  }
+
+  // Fallback: the widest slice, for a reply the scan couldn't balance.
   const end = replyText.lastIndexOf('}');
-  if (start === -1 || end <= start) {
+  if (end <= start) {
     throw new Error('Lab extraction reply contained no JSON object.');
   }
   const slice = replyText.slice(start, end + 1);

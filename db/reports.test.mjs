@@ -418,14 +418,14 @@ console.log('4. Recovery — the significance gate is insights.ts’s own');
 console.log('5. Labs in-period are ABSENT by rule, and the self-review has no name');
 {
   const { db } = freshDb();
-  updateProfile(db, { fullName: 'Matt Lawrence', dateOfBirth: '1990-04-11', biologicalSex: 'male' });
+  updateProfile(db, { fullName: 'Test Patient', dateOfBirth: '2000-01-01', biologicalSex: 'male' });
   const noLabs = assembleSelfReview(db, PERIOD, { now: NOW });
   is('no draw in-period → the section is absent entirely', noLabs.labs, null);
 
   const serialized = JSON.stringify(noLabs);
   yes(
     'the self-review never carries full_name (⛑ MATT #3)',
-    !serialized.includes('Matt Lawrence'),
+    !serialized.includes('Test Patient'),
     'the name appeared in the serialized self-review'
   );
 
@@ -453,7 +453,7 @@ console.log('5. Labs in-period are ABSENT by rule, and the self-review has no na
 console.log('6. Doctor pack — measured markers only, no BP, no BMI');
 {
   const { db } = freshDb();
-  updateProfile(db, { fullName: 'Matt Lawrence', dateOfBirth: '1990-04-11', biologicalSex: 'male' });
+  updateProfile(db, { fullName: 'Test Patient', dateOfBirth: '2000-01-01', biologicalSex: 'male' });
   createProtocolWithVersion(
     db,
     { name: 'Evening stack', type: 'supplement_stack' },
@@ -480,7 +480,7 @@ console.log('6. Doctor pack — measured markers only, no BP, no BMI');
   yes('the patient header is complete', pack.patient.incomplete === false);
   yes(
     'and it carries the name (unlike the self-review)',
-    pack.patient.fields.some((f) => f.value === 'Matt Lawrence')
+    pack.patient.fields.some((f) => f.value === 'Test Patient')
   );
 
   const shownMarkers = pack.labs.groups.flatMap((g) => g.rows);

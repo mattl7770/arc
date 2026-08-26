@@ -68,20 +68,27 @@ export function latestBody(db: Database, column: BodyColumn): LatestBody | null 
 
 // --- Outbound publishing feed (Apple Health, docs/wearables-subapp.md §10) ---
 //
-// Rows are walked in (created_at, id) order, NOT measured_at order. That choice
-// is what makes the publish cursor honest about backdating: `logMetric` stamps a
-// backdated reading at local noon of its intended day, so a weight logged today
-// for last Tuesday has a measured_at in the past. A measured_at watermark would
-// step straight over it and that reading would never reach Apple Health.
-// `created_at` is stamped by SQLite at INSERT and is therefore monotonic in
-// insertion order regardless of what the reading claims about when it happened.
+// Rows are walked in (created_at, rowid) order, NOT measured_at order. That
+// choice is what makes the publish cursor honest about backdating: `logMetric`
+// stamps a backdated reading at local noon of its intended day, so a weight
+// logged today for last Tuesday has a measured_at in the past. A measured_at
+// watermark would step straight over it and that reading would never reach Apple
+// Health. `created_at` is stamped by SQLite at INSERT and is therefore monotonic
+// in insertion order regardless of what the reading claims about when it
+// happened.
 //
-// The `id` half of the key is not decoration: `created_at` has millisecond
-// resolution, so two rows written in the same millisecond (an import writing
-// weight and waist together) share a value, and a bare `created_at > ?` would
-// drop whichever lost the tie. Ids are random rather than ordered, which is
-// fine — keyset pagination only needs a TOTAL order, not a chronological one,
-// and ORDER BY matches the WHERE exactly.
+// The tie-break is `rowid`, NOT `id`: `created_at` has millisecond resolution,
+// so two rows written in the same millisecond (an import writing weight and
+// waist together, or a manual reading landing in the same ms the cursor was
+// armed) share a value, and a bare `created_at > ?` would drop whichever lost
+// the tie. `id` cannot serve — ids are random v4 UUIDs (`randomblob`), not
+// monotonic with insertion, so a same-millisecond row whose random id sorts
+// below the parked cursor's id satisfies neither cursor branch and is silently
+// never published. `rowid` is SQLite's own insertion counter and the only column
+// here that records the order the inserts actually happened in — the same fix
+// water.ts's listWaterEntries already applies. The cursor still carries the
+// row's `id` (that is what the publish state persists), and the walk resolves
+// that id to its rowid, so the persisted cursor shape is unchanged.
 
 /** One `body_metrics` row, as the publisher sees it. */
 export type PublishableBody = {
@@ -93,7 +100,11 @@ export type PublishableBody = {
   waistCm: number | null;
 };
 
-/** A position in the (created_at, id) walk. */
+/**
+ * A position in the (created_at, rowid) walk, carried as the row's `id` (the
+ * value the publish state persists). {@link publishableBodyAfter} resolves the
+ * id to its rowid for the tie-break, so this shape stays stable across the seam.
+ */
 export type BodyCursor = { createdAt: string; id: string };
 
 /**
@@ -130,10 +141,15 @@ export function publishableBodyAfter(
         body_fat_pct: number | null;
         waist_cm: number | null;
       }>(
+        // The tie-break resolves the cursor's id to its rowid (monotonic with
+        // insertion) rather than comparing the random id directly — see the
+        // header note. The subquery yields exactly one rowid (id is the PK).
         `SELECT id, created_at, measured_at, weight_kg, body_fat_pct, waist_cm
          FROM body_metrics
-         WHERE ${publishable} AND (created_at > ? OR (created_at = ? AND id > ?))
-         ORDER BY created_at ASC, id ASC LIMIT ?`,
+         WHERE ${publishable}
+           AND (created_at > ?
+                OR (created_at = ? AND rowid > (SELECT rowid FROM body_metrics WHERE id = ?)))
+         ORDER BY created_at ASC, rowid ASC LIMIT ?`,
         [cursor.createdAt, cursor.createdAt, cursor.id, limit]
       )
     : db.all<{
@@ -147,7 +163,7 @@ export function publishableBodyAfter(
         `SELECT id, created_at, measured_at, weight_kg, body_fat_pct, waist_cm
          FROM body_metrics
          WHERE ${publishable}
-         ORDER BY created_at ASC, id ASC LIMIT ?`,
+         ORDER BY created_at ASC, rowid ASC LIMIT ?`,
         [limit]
       );
   return rows.map((r) => ({
@@ -161,14 +177,16 @@ export function publishableBodyAfter(
 }
 
 /**
- * The last row in the (created_at, id) walk — where arming parks the cursor so
- * that pre-existing history is never published. Every row counts here, not just
- * publishable ones: the cursor is a position in the table, and skipping past a
- * hip-only row is exactly as correct as stopping on it.
+ * The last row in the (created_at, rowid) walk — where arming parks the cursor
+ * so that pre-existing history is never published. Every row counts here, not
+ * just publishable ones: the cursor is a position in the table, and skipping past
+ * a hip-only row is exactly as correct as stopping on it. The tie-break is
+ * `rowid` so the parked position matches {@link publishableBodyAfter}'s walk; the
+ * returned cursor still carries the row's `id`.
  */
 export function newestBodyCursor(db: Database): BodyCursor | null {
   const row = db.get<{ id: string; created_at: string }>(
-    `SELECT id, created_at FROM body_metrics ORDER BY created_at DESC, id DESC LIMIT 1`
+    `SELECT id, created_at FROM body_metrics ORDER BY created_at DESC, rowid DESC LIMIT 1`
   );
   return row ? { createdAt: row.created_at, id: row.id } : null;
 }

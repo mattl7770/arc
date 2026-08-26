@@ -101,9 +101,29 @@ function parseValue(row: ReviewRow): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Lab values carry at most a couple of decimals; conversions produce more. */
+/**
+ * Trim conversion noise off a CONVERTED value without flattening small
+ * magnitudes. A fixed 2-decimal round zeroed sub-0.005 readings (an
+ * ultrasensitive PSA converting to 0.003 became a literal 0 on the trend); this
+ * keeps at least 2 decimals AND at least 3 significant figures, so small values
+ * survive. Only converted rows are rounded — a matched/new value is the printed
+ * number and is seeded verbatim.
+ */
 function round(n: number): number {
-  return Math.round(n * 100) / 100;
+  if (!Number.isFinite(n) || n === 0) return n;
+  const decimals = Math.max(2, 2 - Math.floor(Math.log10(Math.abs(n))));
+  const factor = 10 ** decimals;
+  return Math.round(n * factor) / factor;
+}
+
+/**
+ * Seed the editable value for a review row. A matched or new row's value is the
+ * number the model transcribed from the PDF — store it verbatim so review never
+ * silently truncates it. Only a converted value carries conversion noise worth
+ * trimming, so only it is rounded.
+ */
+function seedValueText(m: MappedResult): string {
+  return String(m.status === 'converted' ? round(m.value) : m.value);
 }
 
 /** A YYYY-MM-DD that the schema's GLOB and the CHECK will both accept. */
@@ -160,7 +180,7 @@ export default function LabImportScreen() {
         mapped.map((m) => ({
           mapped: m,
           include: defaultIncluded(m),
-          valueText: String(round(m.value)),
+          valueText: seedValueText(m),
         }))
       );
       setExistingDates(new Set(listLabReportDates(getDb())));
@@ -470,7 +490,7 @@ export default function LabImportScreen() {
                         {m.status === 'converted' ? (
                           <Text className="mt-1.5 font-mono text-[10px] text-ink-muted">
                             printed {m.qualifier ?? ''}
-                            {round(m.reportedValue)} {m.reportedUnit}
+                            {String(m.reportedValue)} {m.reportedUnit}
                           </Text>
                         ) : null}
                         {m.status === 'unit_conflict' ? (
@@ -488,7 +508,7 @@ export default function LabImportScreen() {
                         {m.qualifier && m.status !== 'converted' ? (
                           <Text className="mt-1.5 font-mono text-[10px] text-ink-muted">
                             printed as {m.qualifier}
-                            {round(m.reportedValue)} {m.reportedUnit}
+                            {String(m.reportedValue)} {m.reportedUnit}
                           </Text>
                         ) : null}
                         {value === null ? (
