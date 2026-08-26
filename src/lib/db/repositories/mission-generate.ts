@@ -259,8 +259,23 @@ export type RederiveResult = {
   preserved: number;
 };
 
-/** Identity of a plan entry for diffing: the same title under the same protocol. */
-const planKey = (title: string, protocolId: string | null): string =>
+/**
+ * Identity of a plan entry for diffing: the same title under the same protocol.
+ *
+ * The delimiter is U+0000, chosen because it can occur in NEITHER half — a
+ * protocol id is a UUID and a title is user text — so no title can forge a
+ * collision with another protocol's entry. It is written as the six-character
+ * ESCAPE below and must stay that way: this file was committed with the RAW
+ * 0x00 byte, which made the whole blob binary to ripgrep and therefore
+ * invisible to every recursive search over src/ — silently, exit 1, on the
+ * file that generates Home's entire mission. Runtime-identical either way, and
+ * db/mission-generate.test.mjs §8 asserts both halves of that: the delimiter is
+ * still U+0000, and no tracked text file carries the byte again.
+ *
+ * The key is in-memory only — a Map key inside one call, never persisted, never
+ * logged — so nothing ever depended on the byte reaching a screen or a row.
+ */
+export const planKey = (title: string, protocolId: string | null): string =>
   `${protocolId ?? '-'}\u0000${title}`;
 
 /**

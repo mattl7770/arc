@@ -5,7 +5,11 @@ import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { bodySeries, latestBody } from '@/lib/db/repositories/body';
 import { weeklyTrainingSeries, weekSummary } from '@/lib/db/repositories/exercise';
-import { missionAdherence, missionDailySeries } from '@/lib/db/repositories/mission';
+import {
+  missionAdherence,
+  missionDailySeries,
+  type MissionDayPoint,
+} from '@/lib/db/repositories/mission';
 import { dailyIntakeSeries, todayTotals } from '@/lib/db/repositories/nutrition';
 import { listTodaySymptoms, symptomDailySeries } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
@@ -116,14 +120,17 @@ function read(): DataOverviewState {
   // like every other count series here.
   //
   // The headline is today's `done of planned`, and the qualifier carries the
-  // window's adherence — computed over days that HAD a plan (missionAdherence),
-  // so it is the same refusal one level up.
+  // window's adherence — computed over days that OWED something
+  // (missionAdherence, which now discounts skips the day's mode excused), so it
+  // is the same refusal one level up.
   const missionPoints = missionDailySeries(db, 14, today);
-  const missionToday = missionPoints[missionPoints.length - 1] ?? {
+  const missionToday: MissionDayPoint = missionPoints[missionPoints.length - 1] ?? {
     date: today,
+    mode: 'normal',
     planned: 0,
     completed: 0,
     skipped: 0,
+    excused: 0,
   };
   const adherence = missionAdherence(missionPoints);
   const mission: DataTrend = {

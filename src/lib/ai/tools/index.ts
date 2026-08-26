@@ -28,6 +28,32 @@ export function toolByName(name: string): CoachTool | undefined {
   return BY_NAME.get(name);
 }
 
+/**
+ * "get_metric_series" → "metric series"; "set_reminder" → "set reminder".
+ *
+ * The vocabulary of the transparency chips under a reply, of the tool line on
+ * an un-brief confirmation card, and — the one that is not cosmetic — of the
+ * RECEIPT FALLBACK for writes recorded before `CoachToolCall.receipt` existed
+ * (`landedWriteReceipts`, repositories/ai-chat.ts). It therefore has to be
+ * INJECTIVE over {@link COACH_TOOLS}: two tools rendering as one string makes
+ * the audit trail unreadable exactly where the audit trail is the only record.
+ *
+ * It used to strip `get|list|log|set|complete|dismiss`, which collided three
+ * ways on `reminder` (`set_`/`complete_`/`dismiss_reminder`) and twice on
+ * `recipe` (`get_`/`log_recipe`) — and setting a nudge, closing one out and
+ * throwing one away are three different things to have done to the record.
+ * Only the READ verbs are stripped now, which leaves a rule better than "drop
+ * the verb": **a read chip is a noun** (what was consulted), **a write chip is
+ * a verb phrase** (what was done). `save_recipe` already read that way; it is
+ * the rest of the writes that were wrong.
+ *
+ * Injectivity is asserted over the live registry in db/coach-tools.test.mjs §0,
+ * so the next colliding pair fails the suite instead of being found on a device.
+ */
+export function humanizeToolName(name: string): string {
+  return name.replace(/^(get|list)_/, '').replace(/_/g, ' ');
+}
+
 /** The registry in Messages API `tools` shape. */
 export function toWireTools(tools: CoachTool[] = COACH_TOOLS): WireTool[] {
   return tools.map((tool) => ({

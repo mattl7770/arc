@@ -12,6 +12,8 @@ import type { Database } from '../database';
 import { localDaysList, todayISODate } from '../date';
 import { newId } from '../id';
 import type { DailyLogRow, LogEntryRow, LogEntryStatus, LogEntryType } from '../types';
+import { activeModesIn } from './day-modes';
+import { getModeDefinition, type ModeKey } from '@/lib/modes/registry';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
 /**
@@ -265,16 +267,77 @@ export function countMissionEntries(db: Database, dailyLogId: string): number {
   return row?.c ?? 0;
 }
 
+/**
+ * Skips are judged by the day's MODE, and the mode is a fact about the day.
+ *
+ * `excusesSkips` (lib/modes/registry.ts) says a skip under Sick / Travel /
+ * Social is the right call, not a miss — the Coach has honoured that since
+ * 0026 and nothing downstream did, so a protocol correctly rested from during
+ * an illness was ranked on mission-history's "Where it's failing" list as one
+ * the user was failing. These two helpers are how every adherence figure in
+ * this file reads the mode instead of ignoring it.
+ *
+ * ## The denominator: EXCLUDED, not counted as met
+ *
+ * Both are defensible and they give different rates. An excused skip is
+ * **removed from the denominator** — it is not owed, so it is neither a
+ * completion nor a miss — for three reasons, in order of weight:
+ *
+ *   1. **It is the call this file already made once.** A row the user removed
+ *     from the day is tombstoned and excluded by `NOT_REMOVED_SQL` on exactly
+ *     that reasoning ("was never owed"). A mode excusing a skip is the same
+ *     fact arriving by a different route; giving it a different answer would
+ *     make "what did the day owe me" mean two things in one module.
+ *   2. **Counting it as met makes `completed` a lie.** `completed` is printed
+ *     as "N done" and drawn as the completion bar, and a Sick week in which
+ *     everything was skipped would render as 100% done — the honesty rule
+ *     broken from the generous side. "I rested correctly" and "I did it" are
+ *     different facts and must never render identically.
+ *   3. **A fully-excused day falls out cleanly.** Its `owed` is 0, which this
+ *     file already knows how to state: a day that asked nothing of you has no
+ *     rate, and gets no bar and no zero (see {@link missionDailySeries}).
+ *
+ * The cost is that an excused day carries less weight in the window's rate
+ * rather than pulling it up, which is correct: it is less evidence, not more
+ * success.
+ */
+export function modeExcusesSkips(mode: ModeKey): boolean {
+  return getModeDefinition(mode).excusesSkips;
+}
+
+/**
+ * What a day actually OWED — planned items minus the ones its mode excused.
+ * The denominator of every rate here; see {@link modeExcusesSkips} for why the
+ * excused ones leave rather than count as met.
+ */
+export function missionOwed(point: { planned: number; excused: number }): number {
+  return point.planned - point.excused;
+}
+
 /** One day of mission history — what was planned, and what was actually done. */
 export interface MissionDayPoint {
   date: string;
+  /**
+   * The day's mode, from `day_modes` (0026). `normal` for a day with no
+   * covering row, which is most days.
+   */
+  mode: ModeKey;
   /** Planned items that stood on the day (tombstoned removals excluded). */
   planned: number;
   /** Of those, the ones marked completed. */
   completed: number;
-  /** Marked skipped by hand. `planned - completed - skipped` is what was left
-   *  pending or partial — stated as three numbers rather than one score. */
+  /**
+   * Skipped by hand AND counted against the day — i.e. skips under a mode that
+   * does not excuse them (Normal, Deload). `planned - completed - skipped -
+   * excused` is what was left pending or partial.
+   */
   skipped: number;
+  /**
+   * Skipped by hand and EXCUSED by the day's mode: rest while sick, a gym
+   * session missed in a foreign city. Never a miss, and never a completion —
+   * held out of the rate's denominator entirely ({@link missionOwed}).
+   */
+  excused: number;
 }
 
 /**
@@ -290,11 +353,16 @@ export interface MissionDayPoint {
  * constants above, so this can never drift from {@link listMission}.
  *
  * **A day with no plan is planned: 0, not adherence: 0.** The distinction is
- * the whole reason this returns three counts instead of a percentage: a rate
- * over a day that asked nothing of you is undefined, and zero-filling it would
- * drag every average down for days the user was owed nothing. Callers that want
- * a rate compute it over days where `planned > 0` — see
+ * the whole reason this returns counts instead of a percentage: a rate over a
+ * day that asked nothing of you is undefined, and zero-filling it would drag
+ * every average down for days the user was owed nothing. Callers that want a
+ * rate compute it over days where {@link missionOwed} is positive — see
  * {@link missionAdherence}.
+ *
+ * **Each day carries its mode**, and skips under an excusing mode are split
+ * out as `excused` rather than counted as `skipped` — see
+ * {@link modeExcusesSkips}. One extra query for the whole window, not one per
+ * day.
  *
  * `today` is injectable so the headless tests are deterministic.
  */
@@ -324,32 +392,45 @@ export function missionDailySeries(
     [dates[0] ?? today, today]
   );
   const byDate = new Map(rows.map((r) => [r.date, r]));
+  const modes = activeModesIn(db, dates[0] ?? today, today);
   return dates.map((date) => {
     const row = byDate.get(date);
+    const mode = modes.get(date) ?? 'normal';
+    const skipped = row?.skipped ?? 0;
+    // A skip is either excused or a miss — never both, and never neither.
+    const excused = modeExcusesSkips(mode) ? skipped : 0;
     return {
       date,
+      mode,
       planned: row?.planned ?? 0,
       completed: row?.completed ?? 0,
-      skipped: row?.skipped ?? 0,
+      skipped: skipped - excused,
+      excused,
     };
   });
 }
 
 /**
- * Completed ÷ planned across a series, counting **only days that had a plan**.
- * Returns null when no day in the window planned anything — there is no rate to
- * state, and "0%" for a fortnight nobody was asked to do anything is a lie the
- * §5 honesty rules exist to prevent.
+ * Completed ÷ OWED across a series, counting **only days that owed something**.
+ * Returns null when no day in the window did — there is no rate to state, and
+ * "0%" for a fortnight nobody was asked to do anything is a lie the §5 honesty
+ * rules exist to prevent.
+ *
+ * Owed, not planned: a skip the day's mode excused was never owed, so it leaves
+ * the denominator rather than counting as a miss OR as a completion
+ * ({@link modeExcusesSkips}). A day whose every item was excused therefore owes
+ * nothing and is skipped here exactly like a day with no plan.
  */
 export function missionAdherence(points: MissionDayPoint[]): number | null {
-  let planned = 0;
+  let owed = 0;
   let completed = 0;
   for (const point of points) {
-    if (point.planned === 0) continue;
-    planned += point.planned;
+    const dayOwed = missionOwed(point);
+    if (dayOwed <= 0) continue;
+    owed += dayOwed;
     completed += point.completed;
   }
-  return planned === 0 ? null : completed / planned;
+  return owed === 0 ? null : completed / owed;
 }
 
 /**
@@ -399,8 +480,10 @@ export interface MissionItemRecord {
   /** Days in the window this item stood on the plan. */
   planned: number;
   completed: number;
-  /** Explicitly marked skipped. */
+  /** Marked skipped on a day whose mode does NOT excuse skips — a real miss. */
   skipped: number;
+  /** Marked skipped on a Sick/Travel/Social day: the right call, not a miss. */
+  excused: number;
   /** Marked partial — real progress, so it is neither a completion nor a miss. */
   partial: number;
 }
@@ -420,7 +503,10 @@ export interface MissionSourceRecord {
   kind: MissionSourceKind;
   planned: number;
   completed: number;
+  /** Skips counted against the record — see {@link MissionItemRecord}. */
   skipped: number;
+  /** Skips a mode excused. Held out of the miss count AND of `planned - excused`. */
+  excused: number;
   partial: number;
   /** This source's items, worst (most missed) first. */
   items: MissionItemRecord[];
@@ -438,23 +524,35 @@ type SourceQueryRow = {
   storedCategory: string | null;
   planned: number;
   completed: number;
+  /** ALL skips, excused or not. The split happens below, from `excusedCount`. */
   skipped: number;
+  /** Skips that fell on a day whose mode excuses them. */
+  excusedCount: number;
   /** Aliased away from `partial` — SQL-standard `MATCH PARTIAL` makes the bare
    *  word a parser hazard not worth taking for a column alias. */
   partialCount: number;
 };
 
-/** How many of a record's planned days ended without a completion. */
-const missedOf = (r: { planned: number; completed: number }): number => r.planned - r.completed;
+/**
+ * How many of a record's days ended without a completion **and were owed**.
+ *
+ * The mode-aware definition, and the reason "Where it's failing" no longer
+ * ranks a protocol you correctly rested from during a sick week as one you are
+ * failing: an excused skip leaves the denominator instead of counting as a
+ * miss ({@link modeExcusesSkips}).
+ */
+const missedOf = (r: { planned: number; completed: number; excused: number }): number =>
+  r.planned - r.completed - r.excused;
 
 /** Worst first, then the larger sample, then alphabetical — fully deterministic. */
-function byMissedDesc<T extends { planned: number; completed: number }>(
+function byMissedDesc<T extends { planned: number; completed: number; excused: number }>(
   label: (r: T) => string
 ): (a: T, b: T) => number {
   return (a, b) => {
     const missed = missedOf(b) - missedOf(a);
     if (missed !== 0) return missed;
-    const size = b.planned - a.planned;
+    // Larger sample next — the sample is what was OWED, not what was listed.
+    const size = missionOwed(b) - missionOwed(a);
     if (size !== 0) return size;
     return label(a) < label(b) ? -1 : label(a) > label(b) ? 1 : 0;
   };
@@ -513,6 +611,20 @@ function attribute(
  */
 export function missionBySource(db: Database, from: string, to: string): MissionSourceRecord[] {
   if (to < from) return [];
+
+  // The days in this window whose mode EXCUSES a skip. Resolved once in JS from
+  // the registry (`excusesSkips`) rather than restated in SQL, so the rule has
+  // exactly one definition; bound as values, never interpolated. `'0'` — a
+  // false literal — covers the ordinary case of no excusing day in the window,
+  // and keeps the sum in the query rather than folding a per-day breakdown in
+  // JS afterwards. The list is bounded by the caller's range (14 days on
+  // app/mission-history.tsx).
+  const excusedDates = [...activeModesIn(db, from, to)]
+    .filter(([, mode]) => modeExcusesSkips(mode))
+    .map(([date]) => date);
+  const isExcusedDay =
+    excusedDates.length > 0 ? `d.date IN (${excusedDates.map(() => '?').join(', ')})` : '0';
+
   const rows = db.all<SourceQueryRow>(
     `SELECT e.protocol_id AS protocolId,
             e.title AS title,
@@ -522,6 +634,8 @@ export function missionBySource(db: Database, from: string, to: string): Mission
             count(*) AS planned,
             sum(CASE WHEN e.status = 'completed' THEN 1 ELSE 0 END) AS completed,
             sum(CASE WHEN e.status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
+            sum(CASE WHEN e.status = 'skipped' AND ${isExcusedDay} THEN 1 ELSE 0 END)
+              AS excusedCount,
             sum(CASE WHEN e.status = 'partial' THEN 1 ELSE 0 END) AS partialCount
        FROM log_entries e
        JOIN daily_logs d ON d.id = e.daily_log_id
@@ -533,7 +647,9 @@ export function missionBySource(db: Database, from: string, to: string): Mission
       -- mid-window is one protocol, and grouping on its name would split its
       -- record in two at the moment it was renamed.
       GROUP BY e.protocol_id, e.title`,
-    [from, to]
+    // Bound in TEXTUAL order: the excused-day list sits in the SELECT list,
+    // which precedes the WHERE clause.
+    [...excusedDates, from, to]
   );
 
   const byKey = new Map<string, MissionSourceRecord>();
@@ -541,18 +657,32 @@ export function missionBySource(db: Database, from: string, to: string): Mission
     const source = attribute(row);
     let record = byKey.get(source.key);
     if (!record) {
-      record = { ...source, planned: 0, completed: 0, skipped: 0, partial: 0, items: [] };
+      record = {
+        ...source,
+        planned: 0,
+        completed: 0,
+        skipped: 0,
+        excused: 0,
+        partial: 0,
+        items: [],
+      };
       byKey.set(source.key, record);
     }
+    // `skipped` arrives from SQL as ALL skips; the excused ones move out of it
+    // into their own bucket so `completed + skipped + excused + partial +
+    // untouched` still sums to `planned` with one more, truer term.
+    const skipped = row.skipped - row.excusedCount;
     record.planned += row.planned;
     record.completed += row.completed;
-    record.skipped += row.skipped;
+    record.skipped += skipped;
+    record.excused += row.excusedCount;
     record.partial += row.partialCount;
     record.items.push({
       title: row.title,
       planned: row.planned,
       completed: row.completed,
-      skipped: row.skipped,
+      skipped,
+      excused: row.excusedCount,
       partial: row.partialCount,
     });
   }

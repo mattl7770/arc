@@ -9,6 +9,8 @@
  * pre-marked `completed`) into the user's health database on every day that had
  * no active protocol. A day with nothing to plan must now stay EMPTY.
  */
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
@@ -21,6 +23,7 @@ import {
 import { listMission } from '../src/lib/db/repositories/mission.ts';
 import {
   generateMissionForDay,
+  planKey,
   rederiveMissionForDay,
 } from '../src/lib/db/repositories/mission-generate.ts';
 import { setMode } from '../src/lib/db/repositories/day-modes.ts';
@@ -300,6 +303,41 @@ console.log('7. seed:true rows are still honoured (existing devices hold them)')
   after.includes('Cold shower') && after.includes('Creatine') && !after.includes('Zone 2 ride')
     ? ok('re-derive keeps untouched seed rows, pulls only the dropped type')
     : bad('re-derive damaged seed rows', JSON.stringify(after));
+}
+
+console.log('8. no tracked text file carries a literal NUL byte (the unsearchable-file trap)');
+{
+  // mission-generate.ts was committed with a RAW 0x00 as planKey's delimiter.
+  // It RAN correctly — U+0000 is the ideal separator between a protocol id and
+  // an item title, since it can occur in neither — but ripgrep classifies a
+  // blob containing 0x00 as BINARY and skips it, so a recursive search over
+  // src/ returned zero matches, silently, exit 1. Every grep-based sweep
+  // quietly skipped the file that generates Home's entire mission. The fix was
+  // to write the six-character escape instead of the byte: identical at
+  // runtime inside a template literal, and searchable.
+  //
+  // The guard is repo-wide rather than about that one file, because the failure
+  // mode is "a recursive search lies about a file" and any file can acquire it.
+  const NUL = String.fromCharCode(0);
+  const BINARY = /\.(jpe?g|png|gif|webp|ico|pdf|ttf|otf|woff2?|zip|mp4|mov|db|sqlite)$/i;
+  const root = new URL('../', import.meta.url);
+  const tracked = execSync('git ls-files', { cwd: root, maxBuffer: 64 * 1024 * 1024 })
+    .toString()
+    .split('\n')
+    .filter((f) => f.length > 0 && !BINARY.test(f));
+  const tainted = tracked.filter((f) => readFileSync(new URL(f, root)).includes(0));
+  tainted.length === 0
+    ? ok(`${tracked.length} tracked text files, none containing a 0x00 byte`)
+    : bad('a source file is invisible to recursive search', tainted.join(', '));
+  // The scan has to be able to fail, or "none found" proves nothing.
+  Buffer.from(`a${NUL}b`).includes(0) && !Buffer.from('a\\u0000b').includes(0)
+    ? ok('…and it catches the raw byte while ignoring the escape that replaced it')
+    : bad('NUL scan does not scan');
+  // And the replacement is not a workaround with a caveat — it is the same
+  // value, so nothing that used the delimiter had to change.
+  planKey('Creatine', 'p1') === `p1${NUL}Creatine`
+    ? ok('the escape still produces U+0000 — the delimiter is byte-for-byte unchanged')
+    : bad('planKey delimiter changed', JSON.stringify(planKey('Creatine', 'p1')));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -1,7 +1,7 @@
 import { Pressable, Text, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
-import { humanizeToolName } from '@/lib/ai/coach-service';
+import { humanizeToolName } from '@/lib/ai/tools';
 import type { PendingWrite } from '@/types/coach';
 
 /**

@@ -17,10 +17,12 @@ import {
   missionAdherence,
   missionBySource,
   missionDailySeries,
+  missionOwed,
   missionRecordStart,
   removeMissionItem,
   setMissionStatus,
 } from '../src/lib/db/repositories/mission.ts';
+import { activeModesIn, getActiveMode, setMode } from '../src/lib/db/repositories/day-modes.ts';
 import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
 import { createProtocolWithVersion, deleteProtocol } from '../src/lib/db/repositories/protocols.ts';
 import { logSymptom, symptomDailySeries } from '../src/lib/db/repositories/symptoms.ts';
@@ -413,25 +415,140 @@ console.log('\n13b. missionDailySeries: ad-hoc captures and removed items are NO
   void doomed;
 }
 
-console.log('\n13c. missionAdherence: rate over PLANNED days only, null when none');
+console.log('\n13c. missionAdherence: rate over OWED days only, null when none');
 {
-  const empty = missionAdherence([
-    { date: 'd1', planned: 0, completed: 0, skipped: 0 },
-    { date: 'd2', planned: 0, completed: 0, skipped: 0 },
-  ]);
+  const day = (date, planned, completed, skipped, excused = 0, mode = 'normal') => ({
+    date,
+    mode,
+    planned,
+    completed,
+    skipped,
+    excused,
+  });
+  const empty = missionAdherence([day('d1', 0, 0, 0), day('d2', 0, 0, 0)]);
   empty === null
     ? ok('a window that planned nothing has no rate (null, never 0%)')
     : bad('empty window', String(empty));
 
   const rate = missionAdherence([
-    { date: 'd1', planned: 4, completed: 3, skipped: 1 },
+    day('d1', 4, 3, 1),
     // A no-plan day must not drag the average down.
-    { date: 'd2', planned: 0, completed: 0, skipped: 0 },
-    { date: 'd3', planned: 6, completed: 3, skipped: 0 },
+    day('d2', 0, 0, 0),
+    day('d3', 6, 3, 0),
   ]);
   near(rate, 6 / 10)
     ? ok('6 of 10 planned = 60%, the empty day ignored')
     : bad('rate', String(rate));
+
+  // The denominator choice, asserted as a number rather than left to prose:
+  // an excused skip LEAVES the denominator. Counted as met it would read 4/4;
+  // counted as a miss, 3/4; excluded, 3/3.
+  const excusedRate = missionAdherence([day('d1', 4, 3, 0, 1, 'sick')]);
+  near(excusedRate, 1)
+    ? ok('an excused skip leaves the denominator (3 of 3, not 3 of 4 or 4 of 4)')
+    : bad('excused denominator', String(excusedRate));
+  missionOwed(day('d1', 4, 3, 0, 1, 'sick')) === 3
+    ? ok('missionOwed is planned − excused')
+    : bad('missionOwed');
+  missionAdherence([day('d1', 3, 0, 0, 3, 'sick')]) === null
+    ? ok('a day the mode excused ENTIRELY owes nothing and has no rate')
+    : bad('fully excused day', String(missionAdherence([day('d1', 3, 0, 0, 3, 'sick')])));
+}
+
+console.log('\n13d. mode-aware adherence: a skip while Sick is the right call, not a miss');
+{
+  const { db } = freshDb();
+  const SICK = '2026-07-22';
+  const NORMAL = '2026-07-23';
+
+  // The same day twice over, once under each mode: 3 planned, 1 completed,
+  // 1 skipped, 1 untouched. Only the mode differs, so any difference in the
+  // numbers below is the mode doing its job.
+  for (const date of [SICK, NORMAL]) {
+    const log = getOrCreateDailyLog(db, date);
+    for (const [title, status] of [
+      ['Creatine', 'completed'],
+      ['Zone 2', 'skipped'],
+      ['Magnesium', 'pending'],
+    ]) {
+      insertMissionItem(db, log.id, 'habit', { id: '', title, status, category: 'Routine' });
+    }
+  }
+  // Sick for one day only. Deload is the control that must NOT excuse: it is a
+  // plan you are still meant to execute (registry.excusesSkips === false).
+  setMode(db, { mode: 'sick', startDate: SICK, endDate: SICK });
+  setMode(db, { mode: 'deload', startDate: NORMAL, endDate: NORMAL });
+
+  const series = missionDailySeries(db, 14, TODAY);
+  const sick = series.find((p) => p.date === SICK);
+  const deload = series.find((p) => p.date === NORMAL);
+  sick && sick.mode === 'sick' && deload && deload.mode === 'deload'
+    ? ok('each day carries its own mode')
+    : bad('day modes', JSON.stringify([sick?.mode, deload?.mode]));
+  sick && sick.excused === 1 && sick.skipped === 0
+    ? ok('the Sick day’s skip is EXCUSED, not counted against it')
+    : bad('sick day split', JSON.stringify(sick));
+  deload && deload.excused === 0 && deload.skipped === 1
+    ? ok('the Deload day’s skip is still a miss — a deload is a plan, not a pass')
+    : bad('deload day split', JSON.stringify(deload));
+  sick && sick.planned === 3 && missionOwed(sick) === 2
+    ? ok('planned still says 3 — the day’s plan is a fact, only the denominator moves')
+    : bad('planned preserved', JSON.stringify(sick));
+
+  // The headline. Excused-excluded: 1/2 + 1/3 → 2 of 5 = 40%.
+  // Counted as a miss it would be 2 of 6 = 33%; counted as met, 3 of 6 = 50%.
+  near(missionAdherence([sick, deload]), 2 / 5)
+    ? ok('the rate is 2 of 5 owed, not 2 of 6 planned')
+    : bad('rate', String(missionAdherence([sick, deload])));
+
+  // …and the same rule reaches "Where it's failing", which is the half of the
+  // screen that names a protocol to go and change.
+  const sources = missionBySource(db, SICK, NORMAL);
+  const record = sources.find((s) => s.name === 'Routine');
+  record && record.excused === 1 && record.skipped === 1
+    ? ok('by-source splits the two skips the same way the day series does')
+    : bad('source split', JSON.stringify(record));
+  const zone2 = record?.items.find((i) => i.title === 'Zone 2');
+  zone2 && zone2.planned === 2 && zone2.excused === 1 && zone2.skipped === 1
+    ? ok('the item that was rested from carries the excuse, per day')
+    : bad('item split', JSON.stringify(zone2));
+  // 6 planned − 2 completed − 1 excused = 3 missed. Before this change it was 4,
+  // and Zone 2 outranked Magnesium on a list of "what you are failing at".
+  record && record.planned - record.completed - record.excused === 3
+    ? ok('the miss count drops by exactly the excused skip')
+    : bad('miss count', JSON.stringify(record));
+  record?.items[0]?.title === 'Magnesium'
+    ? ok('…so the never-touched item outranks the one correctly rested from')
+    : bad('failing order', JSON.stringify(record?.items.map((i) => i.title)));
+}
+
+console.log('\n13e. activeModesIn matches getActiveMode day-for-day');
+{
+  const { db } = freshDb();
+  // Overlapping, out-of-order, open-ended, and a reset — the four shapes the
+  // "most recently SET covering row wins" rule has to arbitrate.
+  setMode(db, { mode: 'travel', startDate: '2026-07-20', endDate: '2026-07-26' });
+  setMode(db, { mode: 'sick', startDate: '2026-07-22', endDate: '2026-07-24' });
+  setMode(db, { mode: 'social', startDate: '2026-07-23', endDate: '2026-07-23' });
+  setMode(db, { mode: 'normal', startDate: '2026-07-25' });
+  const from = '2026-07-18';
+  const to = '2026-07-28';
+  const bulk = activeModesIn(db, from, to);
+  const dates = [];
+  for (let d = 18; d <= 28; d++) dates.push(`2026-07-${d}`);
+  const drift = dates.filter((date) => (bulk.get(date) ?? 'normal') !== getActiveMode(db, date));
+  drift.length === 0
+    ? ok(`the window read agrees with the per-day read on all ${dates.length} days`)
+    : bad('mode resolution drift', drift.join(', '));
+  bulk.get('2026-07-23') === 'social' && bulk.get('2026-07-22') === 'sick'
+    ? ok('the most-recently-set covering row wins, day by day')
+    : bad('winner', JSON.stringify([...bulk]));
+  !bulk.has('2026-07-25') && !bulk.has('2026-07-19')
+    ? ok('Normal days are omitted — the reset and the uncovered day both read normal')
+    : bad('normal leaked into the map', JSON.stringify([...bulk]));
+  activeModesIn(db, to, from).size === 0
+    ? ok('an inverted range is empty, not an error')
+    : bad('inverted range');
 }
 
 // ============================================================================

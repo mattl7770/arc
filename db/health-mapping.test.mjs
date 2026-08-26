@@ -50,6 +50,8 @@ import {
   requestHealthPermissions,
   saveHealthQuantity,
 } from '../src/lib/health/healthkit.ts';
+import { ACCUMULATING_METRIC_TYPES, isAccumulatingMetric } from '../src/lib/health/accumulating.ts';
+import { readFileSync } from 'node:fs';
 
 let pass = 0;
 let fail = 0;
@@ -1049,6 +1051,92 @@ console.log('12. inbound body mapping — the percent trap, in reverse');
     : bad('bounds', JSON.stringify(outOfRange));
 
   bodyIngestRows([]).length === 0 ? ok('no input → no rows') : bad('empty input');
+}
+
+console.log('13. accumulating metrics — ONE list, and it cannot quietly grow a second');
+{
+  // The question "is today finished?" had four answers in four files
+  // (read-tools' WearableMetricSpec.accumulating, insights' WEARABLE_TRENDS and
+  // BRIEF_FLOOR_METRICS, the self-review's RecoverySpec). They agreed, which is
+  // the only reason nothing was visibly wrong; a metric classified accumulating
+  // in one and level in another makes the Coach average a two-hour-old day into
+  // one tool's answer and not the other's. There is now one declaration
+  // (src/lib/health/accumulating.ts) and these are its invariants.
+
+  // (a) A HealthKit *statistic* is a cumulative day total by construction, so
+  //     adding one to the ingest pipeline must classify it with no edit
+  //     anywhere else. This is the assertion that makes that true.
+  const missingStats = STATISTIC_METRICS.map((s) => s.metricType).filter(
+    (m) => !isAccumulatingMetric(m)
+  );
+  missingStats.length === 0
+    ? ok(`every HealthKit statistic is accumulating (${STATISTIC_METRICS.length})`)
+    : bad('a statistic is not accumulating', missingStats.join(', '));
+
+  // (b) …and a point-in-time SAMPLE never is: an HRV reading, a resting heart
+  //     rate, a VO2max estimate are each whole the moment they are written.
+  const wrongSamples = SAMPLE_METRICS.map((s) => s.metricType).filter((m) =>
+    isAccumulatingMetric(m)
+  );
+  wrongSamples.length === 0
+    ? ok(`no point-in-time sample is accumulating (${SAMPLE_METRICS.length})`)
+    : bad('a sample was marked accumulating', wrongSamples.join(', '));
+
+  // (c) The exact membership, as a regression lock. Sleep is the one that has
+  //     to be argued for: a night is written once against the WAKE day, so it
+  //     is a whole fact, not a running total.
+  const expected = ['steps', 'active_energy_kcal', 'resting_energy_kcal', 'workout', 'water_ml'];
+  const actual = [...ACCUMULATING_METRIC_TYPES].sort();
+  actual.join(',') === [...expected].sort().join(',')
+    ? ok(`the accumulating set is exactly {${expected.join(', ')}}`)
+    : bad('accumulating set drifted', actual.join(', '));
+  ['sleep_duration_min', 'sleep_deep_min', 'hrv', 'rhr', 'vo2max', 'wrist_temp_c'].every(
+    (m) => !isAccumulatingMetric(m)
+  )
+    ? ok('a night’s sleep and every level reading stay complete-on-write')
+    : bad('a level metric was marked accumulating');
+
+  // (d) The invariant that used to live in read-tools as a second rule:
+  //     `accumulatesThroughDay` read `spec.agg === 'sum' || spec.accumulating`,
+  //     and the `agg === 'sum'` half is TRUE — folding many rows into a day is
+  //     accumulation. Deleting the disjunct is only safe if every `agg: 'sum'`
+  //     spec is on the shared list, so that is asserted instead of assumed.
+  const readTools = readFileSync(new URL('../src/lib/ai/tools/read-tools.ts', import.meta.url), 'utf8'); // prettier-ignore
+  // Only real declarations — `\n<indent>agg: 'sum',` — so a mention of the
+  // shape inside a doc comment is not read as a spec.
+  const sumSpecs = [];
+  for (const m of readTools.matchAll(/\n[ \t]+agg: 'sum',/g)) {
+    const open = readTools.lastIndexOf("metricType: '", m.index);
+    if (open < 0) continue;
+    sumSpecs.push(readTools.slice(open + 13, readTools.indexOf("'", open + 13)));
+  }
+  sumSpecs.length >= 2 && sumSpecs.every((m) => isAccumulatingMetric(m))
+    ? ok(`every agg:'sum' spec is on the list (${sumSpecs.join(', ')})`)
+    : bad('an agg:sum spec is not accumulating', sumSpecs.join(', ') || 'none found');
+
+  // (e) The drift alarm itself. The four consumers no longer carry the field —
+  //     the types dropped it, so re-declaring one is a deliberate act — and a
+  //     stray `accumulating:` literal in any of them means the second list is
+  //     back. Cheap to check, and it is the exact failure this section exists
+  //     to make impossible.
+  const CONSUMERS = [
+    'src/lib/ai/tools/read-tools.ts',
+    'src/lib/ai/insights.ts',
+    'src/lib/reports/assemble-self-review.ts',
+    'src/lib/home/readiness.ts',
+  ];
+  const redeclared = CONSUMERS.filter((path) =>
+    /\baccumulating\s*\??\s*:/.test(readFileSync(new URL('../' + path, import.meta.url), 'utf8'))
+  );
+  redeclared.length === 0
+    ? ok(`no consumer re-declares an accumulating flag (${CONSUMERS.length} scanned)`)
+    : bad('a second accumulating list is back', redeclared.join(', '));
+  // The scan has to be able to fail, or "0 problems" proves nothing.
+  /\baccumulating\s*\??\s*:/.test('  accumulating: true,') &&
+  /\baccumulating\s*\??\s*:/.test('  accumulating?: boolean;') &&
+  !/\baccumulating\s*\??\s*:/.test('const x = accumulating ? a : b;')
+    ? ok('…and the scan catches both declaration shapes without firing on a ternary')
+    : bad('drift scan does not scan');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
