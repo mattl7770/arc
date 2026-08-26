@@ -245,9 +245,21 @@ export default function RecipeImportScreen() {
                   keyboardType="url"
                   className="mt-3 min-h-[46px] border border-paper-deep bg-paper-dim px-3.5 py-3 font-mono text-[13px] text-ink"
                 />
+                {/* This read "(needs the next app build)" until 2026-08-25, and
+                    it was the one build caveat in the app that nothing gated —
+                    every other sits behind a runtime capability check and is
+                    therefore true whenever it renders, while this was flat prose
+                    that went stale the moment a build shipped. The share-extension
+                    target has been configured since 2026-08-08 (`expo-sharing`'s
+                    plugin in app.json, `ios.enabled` + an activation rule) and the
+                    owner's binary was cut after it, so the caveat is false and is
+                    gone. There is nothing to gate it on from here: whether the
+                    extension exists is a property of the binary that no JS check
+                    can read, which is exactly why the sentence should not have
+                    claimed anything about it. */}
                 <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                  Or share straight from Instagram/TikTok/Safari to ARC (needs the next app build).
-                  Recipe sites import without any AI; social captions run through the Coach’s model.
+                  Or share straight from Instagram/TikTok/Safari to ARC. Recipe sites import without
+                  any AI; social captions run through the Coach’s model.
                 </Text>
               </View>
             ) : (

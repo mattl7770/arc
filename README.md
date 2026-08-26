@@ -12,7 +12,7 @@ The full product brief lives in [CLAUDE.md](CLAUDE.md). Architecture and specs l
 
 **Phase: Foundation.** ARC is **local-first, no-server, iOS-only**: all data lives in on-device SQLite (21 migrations, 36 tables, 25 repositories), and the app works with the network unplugged except for AI features. **All five tabs are real and read/write live data** — Home (a directive mission generated from your own protocols), Coach (an agentic assistant with 24 tools, confirmation-gated writes, and persisted threads), Log, Data, and Settings — plus 33 pushed sub-screens. There are no accounts and no `/login`; a Face ID app lock is the security boundary.
 
-Still to come: the on-device RAG embedder, media + encrypted iCloud backup, an app-level test runner and CI, and the EAS rebuild that activates the remaining native modules.
+Still to come: the on-device RAG embedder, media + encrypted iCloud backup, an app-level test runner and CI, and a further EAS build for `react-native-svg`.
 
 For the running to-do list, status board, and design system, see [docs/project-status.md](docs/project-status.md).
 

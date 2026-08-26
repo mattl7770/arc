@@ -46,8 +46,10 @@ import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
  * estimate is a labelled estimate (≈, per-item confidence), never a measurement.
  *
  * ONLINE-EXCEPT-AI: the model call is the exception; grounding, editing and
- * logging are offline. Photo capture is NATIVE (expo-camera + image-manipulator)
- * → needs the EAS rebuild; describe-in-words works as soon as a key is set.
+ * logging are offline. Photo capture is NATIVE (expo-camera + image-manipulator,
+ * both in the binary since the owner's 2026-08-25 EAS build) and falls back
+ * honestly on a build predating them; describe-in-words works as soon as a
+ * key is set.
  *
  * ## The photo is kept now (owner, 2026-08-12)
  *
@@ -269,8 +271,8 @@ export default function MealEstimateScreen() {
    * estimate → ground → editable review as the camera and the description. A
    * typed description, if there is one, rides along as context.
    *
-   * Like the camera, it is native and therefore dormant until the next EAS
-   * build; unlike a crash, `unavailable` is a sentence.
+   * Like the camera, it is native and therefore falls back honestly on a
+   * build predating the module; unlike a crash, `unavailable` is a sentence.
    */
   const choosePhoto = async () => {
     const picked = await pickPhotoBase64();

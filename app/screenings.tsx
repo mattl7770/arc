@@ -67,10 +67,13 @@ const GROUP_ORDER: GroupKey[] = ['overdue', 'dueSoon', 'scheduled', 'untracked']
 
    A measured 0 → 6wk+ timeline sitting above the ledger, so "what is coming
    and when" is read off a horizon rather than out of a list. Everything below
-   is drawn with bordered Views: there is no react-native-svg in this app and
-   that stays true (01-rn-port-guide.md §5 names this exact screen — "a
-   positioned row of Views, diamond = a rotated square View"). Positions are
-   percentages in a `style` prop, never a built Tailwind class.
+   is drawn with bordered Views: `react-native-svg` is declared in
+   package.json (added 2026-08-25, after the owner's EAS rebuild) but is NOT
+   in the owner's current binary — using it would need a further EAS build —
+   so this View-based drawing stays as it is (01-rn-port-guide.md §5 names
+   this exact screen — "a positioned row of Views, diamond = a rotated square
+   View"). Positions are percentages in a `style` prop, never a built
+   Tailwind class.
 
    Six weeks, not the ledger's thirty days: the two answer different questions
    and both say which they are. The axis is captioned NEXT 6 WK; the group

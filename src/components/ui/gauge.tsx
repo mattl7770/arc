@@ -15,10 +15,11 @@ import { Text, View, type LayoutChangeEvent } from 'react-native';
  *
  * ## Plain Views, no new dependency
  *
- * There is no `react-native-svg` and no `expo-linear-gradient` in this project
- * and neither is going in: a native module costs the owner a fresh EAS cloud
- * build (01-rn-port-guide.md §5). Every mark here is a filled `View` or a
- * `Text`, which is also what makes them safe — see the rule below.
+ * `react-native-svg` is declared in package.json (added 2026-08-25, after the
+ * owner's EAS rebuild) but is NOT in the owner's current binary — using it
+ * would need a further EAS build — and there is no `expo-linear-gradient` in
+ * this project at all. Every mark here is a filled `View` or a `Text`, which
+ * is also what makes them safe to ship over the air — see the rule below.
  *
  * ## The one hard rule: no one-sided border width beside a border colour
  *

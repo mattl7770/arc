@@ -65,10 +65,11 @@ import type { UnitPreferences } from '@/lib/user/types';
  * and never a signal green — signal colours mark biological state only, and
  * that firewall was a finding in all six hostile reviews.
  *
- * FLAG (native, deferred): the rest timer is foreground-only. Background
- * delivery (a notification at zero) needs expo-notifications and a dev rebuild.
- * It counts from a target instant, so it stays correct across backgrounding —
- * it just can't alert while the app is closed.
+ * FLAG (native): the rest timer is foreground-only. Background delivery (a
+ * notification at zero) needs expo-notifications, which is in the binary as
+ * of the owner's 2026-08-25 EAS build — whether it actually alerts while the
+ * app is closed is still the owner's to confirm. It counts from a target
+ * instant, so it stays correct across backgrounding either way.
  */
 
 const SET_TYPES: SetType[] = ['normal', 'warmup', 'failure', 'drop'];

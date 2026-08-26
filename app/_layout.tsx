@@ -67,7 +67,8 @@ export default function RootLayout() {
   //    isn't granted, and the in-app reminders list stands on its own either way;
   //  - pull fresh Apple Health data (throttled), and again whenever the app
   //    returns to the foreground — wearables written while ARC was closed are
-  //    waiting in HealthKit. No-ops until enabled + the native module ships;
+  //    waiting in HealthKit. No-ops until enabled, and (on web/node, or a
+  //    build predating the module) while the native module is absent;
   //  - sweep expired meal photos off disk and reconcile the rows against the
   //    files (0033). Once per app open is the right cadence for a disk-space
   //    policy — a session left in the foreground for days defers its sweep to

@@ -151,16 +151,20 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
           and the close control lands under the status bar. */}
       <ModalScreen>
         <View className="flex-1 px-5">
-          {/* Header */}
+          {/* Header — the modal close rule in ModalScreen's docblock. This one
+              already led; the margin was −8, which put the glyph two points
+              inside every other leading control in the app. −12 is
+              StackHeader's, and is now the same number in all three modals. */}
           <View className="flex-row items-center gap-1 pb-1 pt-2">
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Close"
               onPress={close}
-              className="-ml-2 h-11 w-11 items-center justify-center active:opacity-60">
+              hitSlop={8}
+              className="-ml-3 h-11 w-11 items-center justify-center active:opacity-60">
               <Ionicons name="close" size={22} color={palette.ink} />
             </Pressable>
-            <Text className="font-serif text-lg font-semibold text-ink">
+            <Text className="flex-1 font-serif text-lg font-semibold text-ink">
               {mode === 'create' ? 'New exercise' : mode === 'ai' ? 'Find with AI' : 'Add exercise'}
             </Text>
           </View>

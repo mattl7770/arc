@@ -2,8 +2,9 @@
  * The share-sheet receive seam (docs/recipes-grocery.md §8): expo-sharing's
  * experimental share-INTO-app payload APIs, behind the guarded-require pattern
  * (healthkit.ts / pick-pdf.ts). On a binary without the share-extension target
- * — every build until the next EAS one — the module functions are absent and
- * everything here no-ops to null, so the paste-URL path stays the entry.
+ * — any build predating it, which shipped in the owner's 2026-08-25 EAS build
+ * — the module functions are absent and everything here no-ops to null, so
+ * the paste-URL path stays the entry.
  *
  * Delivery model: iOS opens/foregrounds the app via an `expo-sharing` deep
  * link (app/+native-intent.ts redirects it to /recipe-import); the payloads

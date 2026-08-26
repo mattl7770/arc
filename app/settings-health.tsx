@@ -31,8 +31,9 @@ import { syncHealthData } from '@/lib/health/sync';
  * Settings › Apple Health — the wearables hub toggle (docs/wearables-subapp.md §7).
  *
  * Honesty rules this screen lives by:
- *   - The native module rides the NEXT EAS build; until then the screen says so
- *     plainly (same posture as the Coach key screen's memory-only state).
+ *   - The screen is honest about whether the native module is in this binary —
+ *     on web/node, or a build predating the module, it says so plainly (same
+ *     posture as the Coach key screen's memory-only state).
  *   - iOS never reveals whether READ access was granted — after enabling we say
  *     "connected" but point at Settings → Privacy → Health when data looks
  *     missing, and never render a granted/denied matrix (it's unknowable).

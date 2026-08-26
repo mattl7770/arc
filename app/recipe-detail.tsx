@@ -184,9 +184,9 @@ function load(id: string): Loaded | null {
 }
 
 export default function RecipeDetailScreen() {
-  // Cook mode: the screen stays on while a recipe is open. Guarded — the module
-  // is not in this binary, and a static import here was a startup error for the
-  // WHOLE app, not just this screen (src/lib/media/keep-awake.ts).
+  // Cook mode: the screen stays on while a recipe is open. Guarded — on a
+  // binary predating the module, a static import here was a startup error for
+  // the WHOLE app, not just this screen (src/lib/media/keep-awake.ts).
   useKeepScreenAwake('recipe-detail');
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();

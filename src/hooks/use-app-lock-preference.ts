@@ -10,7 +10,8 @@ export type AppLockToggleResult =
   | 'auth-failed'
   /** No device passcode/biometrics to lock against — preference unchanged. */
   | 'no-credentials'
-  /** Native module absent (web preview / pre-rebuild) — preference unchanged. */
+  /** Native module absent (web preview, or a build predating the module) —
+   * preference unchanged. */
   | 'unsupported';
 
 /**

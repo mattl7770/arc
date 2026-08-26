@@ -46,8 +46,9 @@ import type { CoachRead, PeriodKind, ReportData } from '@/lib/reports/types';
  *
  * ## Degraded states, all four enumerated
  *
- *   - **No sharing** (`expo-sharing` rides the next EAS build): the file is
- *     still written and the outcome is `saved` with the full path in an alert.
+ *   - **No sharing** (`expo-sharing` absent — a build predating it, or
+ *     web/node): the file is still written and the outcome is `saved` with
+ *     the full path in an alert.
  *   - **No file system at all** (web logic-check preview): the action is
  *     disabled up front and says so, rather than offering a tap that can only
  *     report `unavailable`.

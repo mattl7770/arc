@@ -48,7 +48,9 @@ export interface WearableSection {
 }
 
 export interface WearablesOverview {
-  /** Native module in this binary (false until the next EAS build). */
+  /** Whether the native module is in this binary. False on web/node, and on
+   * any build predating the module — it landed in the owner's 2026-08-25 EAS
+   * build. */
   supported: boolean;
   enabled: boolean;
   lastSyncedAt: string | null;

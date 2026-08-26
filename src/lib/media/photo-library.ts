@@ -6,11 +6,12 @@
  * (`app/recipe-import.tsx`, docs/recipes-grocery.md §5 rung 7).
  *
  * **Guarded require, the healthkit.ts seam.** `expo-image-picker` is a native
- * module: it is in `package.json` and in `app.json`'s plugin list, but it does
- * not exist in the binary until the next EAS build. A static import would make
- * this module unloadable on the current app — so the require is wrapped, the
- * shape is checked, and the absence is a `null` the caller explains in words.
- * Never a crash, never a silently dead button.
+ * module: it is in `package.json` and in `app.json`'s plugin list, and (having
+ * been there before the owner's 2026-08-25 EAS rebuild) it is in the binary
+ * now. The require stays wrapped anyway — a static import would make this
+ * module unloadable on any build predating it (or on web/node), so the
+ * require is wrapped, the shape is checked, and the absence is a `null` the
+ * caller explains in words. Never a crash, never a silently dead button.
  *
  * **The downscale is not optional.** A modern iPhone screenshot base64s to
  * several megabytes; sending that to a vision model is slow, expensive, and

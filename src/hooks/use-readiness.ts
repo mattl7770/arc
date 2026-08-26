@@ -18,7 +18,9 @@ import { deriveReadiness, type HealthLink, type ReadinessView } from '@/lib/home
  * This hook is where the LINK STATE is established — the impure half the pure
  * derivation refuses to look at itself. It is the difference between a pillar
  * that says "no signal yet" and one that says "nothing can arrive in this
- * build", and until the pending EAS rebuild lands it is always the latter.
+ * build". It was always the latter until the owner's EAS rebuild (2026-08-25)
+ * put the HealthKit module in the binary; `isHealthKitSupported()` is the only
+ * authority on which it is, and is left to answer for itself on every read.
  */
 function healthLink(db: ReturnType<typeof getDb>): HealthLink {
   if (!isHealthKitSupported()) return 'unsupported';

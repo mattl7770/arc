@@ -12,10 +12,12 @@
  * in the background. The model preference is not a secret but rides along here
  * so "which model, is a key set" is one store the Coach service reads.
  *
- * GRACEFUL DEGRADATION: the native module is absent until the next EAS dev build
- * (expo-secure-store is a native dep) and on the web logic-check preview. When
- * it can't be reached, the store silently falls back to memory-only — exactly
- * the previous session-only behavior — so nothing crashes; {@link isPersistent}
+ * GRACEFUL DEGRADATION: the native module (expo-secure-store is a native dep)
+ * is absent on the web logic-check preview, and would be absent on any build
+ * predating it — it was already in the owner's package.json before the
+ * 2026-08-25 EAS rebuild, so it is in the binary now. When it can't be
+ * reached, the store silently falls back to memory-only — exactly the
+ * previous session-only behavior — so nothing crashes; {@link isPersistent}
  * reports which mode is live so the UI can be honest about it.
  */
 import { DEFAULT_MODEL, isCoachModel } from './model-client';
@@ -30,8 +32,9 @@ type SecureStoreModule = {
   deleteItemAsync(key: string): Promise<void>;
 };
 
-// Required in a try/catch so a missing native module (pre-rebuild) or the web
-// shim throwing at load never takes down the bundle — we degrade to memory-only.
+// Required in a try/catch so a missing native module (a build predating the
+// module, or the web shim throwing at load) never takes down the bundle — we
+// degrade to memory-only.
 let secureStore: SecureStoreModule | null = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports

@@ -8,8 +8,9 @@
  * relationship with ARC; anything fetched is a broken document, and anything
  * scripted is a security question nobody should have to ask about a medical
  * handout. The `@media print` block is what makes Safari/Files → Print → Save
- * as PDF produce clean paged output, which is the v1 PDF path until
- * `expo-print` lands with the next build (⚑ MATT #1, decided yes 2026-08-12).
+ * as PDF produce clean paged output, which is the v1 PDF path. `expo-print`
+ * is in the binary as of the owner's 2026-08-25 EAS build, but nothing here
+ * uses it yet (⚑ MATT #1, decided yes 2026-08-12).
  *
  * ## THIS FILE COMPUTES NOTHING
  *

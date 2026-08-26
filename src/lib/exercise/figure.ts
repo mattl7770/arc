@@ -70,10 +70,11 @@
  *
  * ## Still no SVG. Two primitives instead.
  *
- * `react-native-svg` is not installed and is not going in — a native module
- * costs the owner a fresh EAS cloud build (01-rn-port-guide.md §5), and the
- * entire value of this change is that it ships over-the-air onto the binary he
- * already has. So every mark is a filled `View`, and contour comes from two
+ * `react-native-svg` is declared in package.json (added 2026-08-25, after the
+ * owner's EAS rebuild) but is NOT in the owner's current binary — using it
+ * would need a further EAS build — and the entire value of this change is
+ * that it ships over-the-air onto the binary he already has. So every mark is
+ * a filled `View`, and contour comes from two
  * primitives chosen per shape by which one draws it better, not by which one is
  * more elegant:
  *
