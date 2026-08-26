@@ -23,8 +23,11 @@ import { protocolTypeLabel } from '@/lib/protocols/format';
  *
  * Conformed Set treatment — one **plate**: a version list is a record, and a
  * record is a table. The rail down the left is drawn with bordered and filled
- * Views (there is no react-native-svg in this app and that stays true —
- * 01-rn-port-guide.md §5). The closing caption is a **margin annotation**,
+ * Views: `react-native-svg` is declared in package.json (added 2026-08-25,
+ * after the owner's EAS rebuild) but is NOT in the owner's current binary —
+ * using it would need a further EAS build — so this View-based drawing stays
+ * as it is (01-rn-port-guide.md §5). The closing caption is a **margin
+ * annotation**,
  * outside the plate, because devices never nest. (The sheet draws it inside,
  * under a dashed rule — `.cf-vhist-cap`. This app has never had that rule here,
  * and reinstating it is not what restoring the caption needed.)

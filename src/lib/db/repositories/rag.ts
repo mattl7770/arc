@@ -170,8 +170,9 @@ let vectorTableReady: boolean | undefined;
 
 /**
  * Create the vec0 table if it doesn't exist. Returns true where vec0 is
- * available (on device), false where it isn't (node/tests/pre-rebuild) — never
- * throws. Call once at RAG init before any vector op.
+ * available (on device), false where it isn't (node/tests, or a build
+ * predating op-sqlite) — never throws. Call once at RAG init before any
+ * vector op.
  */
 export function ensureVectorTable(db: Database): boolean {
   if (vectorTableReady !== undefined) return vectorTableReady;

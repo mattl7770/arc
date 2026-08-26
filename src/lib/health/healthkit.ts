@@ -4,8 +4,9 @@
  * GRACEFUL DEGRADATION (the api-key-store / reminders pattern): the native
  * library is required in try/catch. `@kingstinct/react-native-healthkit` is a
  * Nitro module and creates its hybrid objects at module top level, so when the
- * native side is absent — the current dev build (until the next EAS build) and
- * node — the require throws a synchronous, catchable JS Error and this module
+ * native side is absent — web/node, and any build predating the module (it
+ * landed in the owner's 2026-08-25 EAS build) — the require throws a
+ * synchronous, catchable JS Error and this module
  * degrades to `hk = null`: every reader returns an empty result, availability
  * reports false, and nothing crashes. On the web logic-check preview Metro
  * resolves the library's inert non-iOS stub instead.
@@ -109,8 +110,9 @@ type HealthKitModule = {
   }): Promise<unknown[]>;
 };
 
-// Required in a try/catch so a missing native module (pre-rebuild) or node
-// never takes down the bundle — we degrade to "HealthKit absent".
+// Required in a try/catch so a missing native module (web/node, or any build
+// predating the 2026-08-25 EAS rebuild) never takes down the bundle — we
+// degrade to "HealthKit absent".
 let hk: HealthKitModule | null = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -120,9 +122,10 @@ try {
   hk = null;
 }
 
-/** Whether the native module made it into this binary (false until the next
- * EAS build, and always false on web/node). The Settings screen keys off this
- * to say "rides the next build" honestly. */
+/** Whether the native module is in this binary. False on web/node, and on any
+ * build predating the module — it landed in the owner's 2026-08-25 EAS build.
+ * The Settings screen keys off this to report the module's presence
+ * honestly. */
 export function isHealthKitSupported(): boolean {
   return hk !== null;
 }
@@ -177,7 +180,8 @@ export async function requestHealthPermissions(): Promise<boolean> {
  * describes sharing only, and Apple answers it honestly. So a denied publish is
  * detectable and gets said out loud rather than silently swallowed.
  *
- *   - `unsupported` — no native module (pre-rebuild, web, node);
+ *   - `unsupported` — no native module (web, node, or a build predating the
+ *                     module's 2026-08-25 EAS landing);
  *   - `unknown`     — the module is here but the status API isn't, or threw;
  *   - `undetermined`— the share sheet hasn't been answered for these types (the
  *                     state an already-connected user lands in after this update

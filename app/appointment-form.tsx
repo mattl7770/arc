@@ -24,8 +24,8 @@ import type { AppointmentInput } from '@/lib/screenings/types';
 
 /**
  * Add / edit one calendar appointment (pushed from /screenings). Date and time
- * are typed (YYYY-MM-DD + 24-hour HH:MM) — a native picker is a new native
- * dep, which waits for the batched rebuild. The pair is stored as one ISO-8601
+ * are typed (YYYY-MM-DD + 24-hour HH:MM) — a native picker would be a new
+ * native dep, which would need its own EAS build. The pair is stored as one ISO-8601
  * UTC instant (appointments.scheduled_at), decomposed back to local wall-clock
  * on edit.
  *

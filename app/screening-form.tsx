@@ -36,8 +36,8 @@ import type {
 /**
  * Add / edit one standing screening (pushed from /screenings). Cadence is
  * whole months (quick chips for the common intervals, a mono field for the
- * rest); dates are typed YYYY-MM-DD — a native date picker is a new native
- * dep, which waits for the batched rebuild (docs/project-status.md caveats).
+ * rest); dates are typed YYYY-MM-DD — a native date picker would be a new
+ * native dep, which would need its own EAS build (docs/project-status.md caveats).
  *
  * The "next due" field is an explicit override (a doctor's told-you date).
  * Left blank, the repository derives it from last done + cadence — the

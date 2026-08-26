@@ -14,6 +14,7 @@ import {
   rhrLevel,
   sleepLevel,
   strainLevel,
+  strainVerdict,
 } from '../src/lib/home/readiness.ts';
 
 let pass = 0;
@@ -90,6 +91,54 @@ function plantBaseline(db, metricType, unit, value, days = 10) {
   }
   upsertWearableRows(db, rows);
 }
+
+/**
+ * One session of `sets` working sets of the bench press — chosen because its
+ * seeded mapping is one primary + two secondaries, so every set is exactly
+ * **2.0 role-weighted units** and the arithmetic in §6 is checkable by eye.
+ */
+function plantSession(db, date, sets, exerciseId = 'barbell-bench-press') {
+  const workoutId = `w-${date}-${exerciseId}`;
+  db.run(`INSERT INTO workouts (id, date, name, kind) VALUES (?, ?, '', 'strength')`, [
+    workoutId,
+    date,
+  ]);
+  for (let i = 0; i < sets; i++) {
+    db.run(
+      `INSERT INTO workout_sets (id, workout_id, exercise, exercise_id, set_index, set_type, reps, weight_kg)
+       VALUES (?, ?, 'Barbell Bench Press', ?, ?, 'normal', 8, 80)`,
+      [`${workoutId}-${i}`, workoutId, exerciseId, i]
+    );
+  }
+}
+
+/** Five prior sessions of 12 sets — a 24.0-unit "usual session" baseline. */
+function plantUsualBaseline(db, sets = 12) {
+  for (let i = 2; i <= 6; i++) plantSession(db, daysAgo(i), sets);
+}
+
+function plantEnergy(db, date, value) {
+  upsertWearableRows(db, [
+    {
+      date,
+      metricType: 'active_energy_kcal',
+      value,
+      unit: 'kcal',
+      sourceDevice: 'apple_health',
+      sourceRawId: `hk:active_energy_kcal:${date}`,
+      startTime: null,
+      endTime: null,
+      metadata: {},
+    },
+  ]);
+}
+
+/** 500 kcal on each of days 2..11 ago — the denominator for an energy ratio. */
+function plantEnergyBaseline(db, value = 500) {
+  for (let i = 2; i <= 11; i++) plantEnergy(db, daysAgo(i), value);
+}
+
+const strainOf = (db) => deriveReadiness(db, TODAY).pillars.find((p) => p.label === 'Strain');
 
 function plantToday(db, metricType, unit, value, sourceDevice = 'apple_watch') {
   upsertWearableRows(db, [
@@ -241,41 +290,184 @@ console.log('5. RHR-only fallback when HRV is absent');
     : bad('rhr detail', view.readiness.detail);
 }
 
-console.log('6. strain reads yesterday against its 28-day baseline');
+console.log("6. strain is ARC's OWN logged volume — the calibration, pinned");
 {
-  const db = freshDb();
-  // Baseline ~500 kcal for days 2..11 ago; yesterday 900 → ratio 1.8 → poor.
-  for (let i = 2; i <= 11; i++) {
-    upsertWearableRows(db, [
-      {
-        date: daysAgo(i),
-        metricType: 'active_energy_kcal',
-        value: 500,
-        unit: 'kcal',
-        sourceDevice: 'apple_health',
-        sourceRawId: `hk:active_energy_kcal:${daysAgo(i)}`,
-        startTime: null,
-        endTime: null,
-        metadata: {},
-      },
-    ]);
+  // Owner, 2026-08-25: "switch to ARC computing". The retired rule was
+  // yesterday's active energy over its own mean, and a hard resistance session
+  // burns few calories — so the morning after a back day this pillar read
+  // `optimal / fresh` while the muscle figure on the same screen reported lats
+  // at 27%. Every case below is a representative day pinned to a level: this
+  // block is the SPECIFICATION of strainLevel's bands, not a sample of them.
+  //
+  // Baseline throughout: five prior sessions of 12 bench sets = 24.0 units each,
+  // so 1.0 is exactly "your usual session".
+
+  // (a) A rest day is a legitimate zero, and reads fresh.
+  {
+    const db = freshDb();
+    plantUsualBaseline(db);
+    const strain = strainOf(db);
+    strain.level === 'optimal' && strain.note === 'no training logged yesterday'
+      ? ok('rest day → optimal, and says nothing was LOGGED rather than "you rested"')
+      : bad('rest day', JSON.stringify(strain));
   }
-  upsertWearableRows(db, [
-    {
-      date: daysAgo(1),
-      metricType: 'active_energy_kcal',
-      value: 900,
-      unit: 'kcal',
-      sourceDevice: 'apple_health',
-      sourceRawId: `hk:active_energy_kcal:${daysAgo(1)}`,
-      startTime: null,
-      endTime: null,
-      metadata: {},
-    },
-  ]);
-  const view = deriveReadiness(db, TODAY);
-  const strain = view.pillars.find((p) => p.label === 'Strain');
-  strain.level === 'poor' ? ok('1.8× yesterday → poor (big day)') : bad('strain', strain.level);
+
+  // (b) A light accessory day: 5 sets = 10 units = 0.42× → still fresh.
+  {
+    const db = freshDb();
+    plantUsualBaseline(db);
+    plantSession(db, daysAgo(1), 5);
+    const strain = strainOf(db);
+    strain.level === 'optimal' && strain.note === '0.4× your usual session'
+      ? ok('5-set accessory day → 0.4× → optimal')
+      : bad('light day', JSON.stringify(strain));
+  }
+
+  // (c) A usual session is the middle of the scale, by construction.
+  {
+    const db = freshDb();
+    plantUsualBaseline(db);
+    plantSession(db, daysAgo(1), 12);
+    const strain = strainOf(db);
+    strain.level === 'good' && strain.note === '1.0× your usual session'
+      ? ok('a typical 12-set session → 1.0× → good')
+      : bad('usual day', JSON.stringify(strain));
+  }
+
+  // (d) THE DEFECT, pinned. A 17-set back day that burned almost nothing.
+  // Active energy well BELOW baseline must not be able to talk the reading back
+  // down: `max` is one-directional.
+  {
+    const db = freshDb();
+    plantUsualBaseline(db);
+    plantSession(db, daysAgo(1), 17);
+    plantEnergyBaseline(db, 500);
+    plantEnergy(db, daysAgo(1), 300); // 0.6× — a quiet day by calories
+    const strain = strainOf(db);
+    strain.level === 'caution' && strain.note === '1.4× your usual session'
+      ? ok('17-set back day with LOW calories → caution (energy cannot lower it)')
+      : bad('the defect', JSON.stringify(strain));
+  }
+
+  // (e) The far end: 25 sets = 50 units = 2.08×.
+  {
+    const db = freshDb();
+    plantUsualBaseline(db);
+    plantSession(db, daysAgo(1), 25);
+    strainOf(db).level === 'poor'
+      ? ok('a 25-set marathon → 2.1× → poor')
+      : bad('marathon', JSON.stringify(strainOf(db)));
+  }
+
+  // (f) Sets cannot see a two-hour hike; energy can. It may RAISE the reading,
+  // and when it does the note names which instrument spoke.
+  {
+    const db = freshDb();
+    plantUsualBaseline(db);
+    plantEnergyBaseline(db, 500);
+    plantEnergy(db, daysAgo(1), 950); // 1.9×
+    const strain = strainOf(db);
+    strain.level === 'poor' && strain.note === 'active energy 90% above your 30-day baseline'
+      ? ok('nothing logged but a huge energy day → poor, credited to energy')
+      : bad('hike day', JSON.stringify(strain));
+  }
+
+  // (g) A rest day whose calories are also quiet stays optimal — energy only
+  // moves the reading when it has something of its own to report.
+  {
+    const db = freshDb();
+    plantUsualBaseline(db);
+    plantEnergyBaseline(db, 500);
+    plantEnergy(db, daysAgo(1), 350); // 0.7× — outranks a zero it AGREES with
+    const strain = strainOf(db);
+    strain.level === 'optimal' && strain.note === 'no training logged yesterday'
+      ? ok('a quiet rest day stays optimal, and the note is the plain fact')
+      : bad('quiet rest day', JSON.stringify(strain));
+  }
+
+  // (h) The baseline is over TRAINING days, not calendar days. These five
+  // sessions sit inside a 30-day window that is otherwise empty; if rest days
+  // were averaged in, the denominator would collapse and a usual session would
+  // read `poor` every time it happened.
+  {
+    const db = freshDb();
+    plantUsualBaseline(db);
+    plantSession(db, daysAgo(1), 12);
+    strainOf(db).level === 'good'
+      ? ok('25 untrained days in the window do not deflate the baseline')
+      : bad('training-day baseline', JSON.stringify(strainOf(db)));
+  }
+}
+
+console.log('6b. the strain evidence gate — sessions, and never blamed on Apple Health');
+{
+  // A first-week install: some sessions logged, not yet five.
+  {
+    const db = freshDb();
+    plantSession(db, daysAgo(2), 12);
+    plantSession(db, daysAgo(4), 12);
+    plantSession(db, daysAgo(1), 30); // a huge day it must still refuse to grade
+    const strain = strainOf(db);
+    strain.level === 'unknown' && strain.note === '3 more logged sessions before a baseline'
+      ? ok('2 prior sessions → unknown, and says how many more')
+      : bad('first-week install', JSON.stringify(strain));
+  }
+
+  // One short reads "session", not "sessions".
+  {
+    const db = freshDb();
+    for (let i = 2; i <= 5; i++) plantSession(db, daysAgo(i), 12);
+    strainOf(db).note === '1 more logged session before a baseline'
+      ? ok('singular session is not "1 more sessions"')
+      : bad('plural', strainOf(db).note);
+  }
+
+  // Nothing logged ever.
+  {
+    const db = freshDb();
+    const strain = strainOf(db);
+    strain.level === 'unknown' && strain.note === 'no training logged in ARC yet'
+      ? ok('an empty training history says so')
+      : bad('never trained', JSON.stringify(strain));
+  }
+
+  // A full YEAR of active energy cannot buy a verdict on its own: ARC's volume
+  // is primary in the strict sense, and energy alone is the reading the owner
+  // rejected.
+  {
+    const db = freshDb();
+    plantEnergyBaseline(db, 500);
+    plantEnergy(db, daysAgo(1), 900);
+    strainOf(db).level === 'unknown'
+      ? ok('energy alone never grades strain')
+      : bad('energy-only', JSON.stringify(strainOf(db)));
+  }
+
+  // Sets need no HealthKit, so an absent module is not a reason strain is blank
+  // and must never be offered as one.
+  {
+    const db = freshDb();
+    const note = deriveReadiness(db, TODAY, { link: 'unsupported' }).pillars.find(
+      (p) => p.label === 'Strain'
+    ).note;
+    !note.includes('Apple Health') && !note.includes('build')
+      ? ok('strain never sends the reader to the Apple Health switch')
+      : bad('strain blames Apple Health', note);
+  }
+}
+
+console.log('6c. strainVerdict composition rules');
+{
+  const base = { setsYesterday: 24, setsBaseline: 24, priorSessions: 8, energyRatio: null };
+  strainVerdict({ ...base, energyRatio: 0.2 }).level === 'good'
+    ? ok('a low energy ratio cannot pull a 1.0× session below good')
+    : bad('max is one-directional');
+  strainVerdict({ ...base, energyRatio: 1.9 }).level === 'poor'
+    ? ok('a high energy ratio can raise a 1.0× session to poor')
+    : bad('energy raises');
+  strainVerdict({ ...base, setsBaseline: 0 }).level === 'unknown'
+    ? ok('a zero baseline is refused, never divided by')
+    : bad('zero baseline');
 }
 
 console.log('7. verdict = worst of Recovery and Sleep');
@@ -301,18 +493,19 @@ console.log('8. the link state — three different reasons a pillar is blank');
   off.readiness.detail.includes('cannot be read in this build')
     ? ok('unsupported → says the module is not in this build')
     : bad('unsupported detail', off.readiness.detail);
+  // Sleep and Recovery only — Nutrition never read a wearable, and Strain
+  // stopped reading one on 2026-08-25 (§6b asserts it never blames the link).
   off.pillars
-    .filter((p) => p.label !== 'Nutrition')
+    .filter((p) => p.label === 'Sleep' || p.label === 'Recovery')
     .every((p) => p.note === 'Apple Health is not connected in this build')
-    ? ok('and every wearable pillar carries that reason, not a blank')
+    ? ok('and every wearable-derived pillar carries that reason, not a blank')
     : bad('unsupported notes', JSON.stringify(off.pillars));
 
   const disconnected = deriveReadiness(db, TODAY, { link: 'disconnected' });
   disconnected.readiness.detail.includes('Connect Apple Health')
     ? ok('disconnected → points at the Settings toggle')
     : bad('disconnected detail', disconnected.readiness.detail);
-  disconnected.pillars.find((p) => p.label === 'Sleep').note ===
-  'Apple Health sync is switched off'
+  disconnected.pillars.find((p) => p.label === 'Sleep').note === 'Apple Health sync is switched off'
     ? ok('a switched-off link reads differently from an absent module')
     : bad('disconnected note');
 
@@ -322,7 +515,7 @@ console.log('8. the link state — three different reasons a pillar is blank');
     : bad('connected detail', connected.readiness.detail);
 }
 
-console.log("9. \"how many more days?\" — the answer to the owner's question");
+console.log('9. "how many more days?" — the answer to the owner\'s question');
 {
   // Three prior days of HRV is under the 5-day gate, so Recovery is CORRECTLY
   // unknown. The defect was never the unknown — it was the screen not saying

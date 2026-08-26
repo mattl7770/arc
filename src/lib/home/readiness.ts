@@ -10,7 +10,10 @@
  *
  * Data comes through the wearables repo's source-arbitrated day picks, so a
  * manual keypad HRV counts when it is all there is, and an Apple Watch (or a
- * future ring) wins when both exist.
+ * future ring) wins when both exist. **Strain is the exception and reads ARC's
+ * own logged sets** (2026-08-25, owner: *"switch to ARC computing"*) — see
+ * {@link strainVerdict}. Sleep and recovery still need a wearable; strain does
+ * not need one at all.
  */
 import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
@@ -21,12 +24,23 @@ import {
   type DailyMetricPoint,
 } from '@/lib/db/repositories/wearables';
 import { activeNutritionTargets, todayTotals } from '@/lib/db/repositories/nutrition';
+import { dailyMuscleSetLoad } from '@/lib/db/repositories/training-stats';
 import type { Metric, Pillar, Readiness, SignalLevel } from '@/types/home';
 
 /** Days of history a baseline is computed over (today excluded). */
 export const BASELINE_WINDOW_DAYS = 30;
 /** Minimum baseline days before any verdict — n=2 baselines are noise. */
 export const BASELINE_MIN_DAYS = 5;
+/**
+ * Prior LOGGED SESSIONS strain needs before it grades anything.
+ *
+ * Sessions, not days, because strain's baseline is "your usual session" and a
+ * rest day teaches it nothing about that. Five is {@link BASELINE_MIN_DAYS}'s
+ * argument applied to the right population: an n=2 idea of a usual session is
+ * noise, and on a four-day-a-week split five sessions is a little over a
+ * fortnight from a standing start.
+ */
+export const STRAIN_MIN_SESSIONS = 5;
 
 /**
  * What Apple Health can deliver **in this binary** — three different facts that
@@ -35,9 +49,12 @@ export const BASELINE_MIN_DAYS = 5;
  * not the same state).
  *
  *   - `unsupported` — the native module is not in this build. NOTHING can
- *     arrive, however well the vendor app is syncing into Apple Health. This is
- *     the state ARC has actually been in since the pipeline was written: the
- *     module rides an EAS rebuild that has not happened.
+ *     arrive, however well the vendor app is syncing into Apple Health. ARC was
+ *     in this state from the pipeline being written (2026-07-29) until the
+ *     owner's EAS rebuild (2026-08-25), which put `@kingstinct/react-native-
+ *     healthkit` in the binary. It remains reachable — a dev client or a
+ *     simulator build predating the module still lands here — so the state and
+ *     its copy stay, but it should no longer be what the owner's phone reports.
  *   - `disconnected` — the module is here, the user has not switched sync on.
  *   - `connected` — sync is on; an empty metric is a real gap, not a wiring one.
  *
@@ -109,12 +126,133 @@ export function sleepLevel(minutes: number): SignalLevel {
   return 'poor';
 }
 
-/** Yesterday's load vs its baseline → strain level (low load = fresh). */
+// --- Strain -------------------------------------------------------------------
+//
+// Until 2026-08-25 this pillar was `yesterday's active_energy_kcal ÷ the mean of
+// the prior 29 days`, and the owner's fix is one sentence: *"switch to ARC
+// computing"*. Active energy is a CALORIE-BURN proxy, and a hard resistance
+// session burns few calories — so on the morning after a back day the muscle
+// figure reported lats at 27% freshness while this pillar, three inches above it
+// on the same screen, read `optimal / fresh`. Two readings of one body
+// contradicting each other, and the wrong one was the one made of calories.
+//
+// Strain now reads ARC's own logged training volume (`dailyMuscleSetLoad`) —
+// the SAME substrate the freshness engine reads, which is precisely why the two
+// can no longer disagree. It needs no HealthKit and no network.
+
+/**
+ * Yesterday's load vs a usual day → strain level (low load = fresh).
+ *
+ * ## What the ratio is, and why the bands did not move
+ *
+ * The input is now `yesterday's role-weighted sets ÷ the mean over PRIOR
+ * TRAINING DAYS in the window` (see {@link strainVerdict}), possibly raised by
+ * the active-energy ratio. Training days, not calendar days: a mean that
+ * averages rest days in makes every session look enormous — on a four-day split
+ * a typical session would land at ~1.75× and read `poor` every single time it
+ * happened, which is a thermometer that only knows one temperature. Over
+ * training days the ratio has the property the bands were written for: **1.0 is
+ * your average session.**
+ *
+ * That is what the retired energy ratio also meant, so these thresholds are
+ * unchanged from the ones they were tuned to. The calibration below is the
+ * specification — retuning means coming here and saying so — and the
+ * representative days are pinned in db/readiness.test.mjs §6.
+ *
+ * At ~2.0 units per compound set (one primary + two secondaries), against a
+ * baseline of a 12-set / 24-unit usual session:
+ *
+ *   - rest day, nothing logged .............. 0.00 → `optimal`
+ *   - 6-set accessory day (9 units) ......... 0.38 → `optimal`
+ *   - 12-set usual session (24 units) ....... 1.00 → `good`
+ *   - 17-set back day (34 units) ............ 1.42 → `caution`
+ *   - 25-set marathon (50 units) ............ 2.08 → `poor`
+ *
+ * The floor is genuinely reachable now in a way it never was for calories — a
+ * rest day is exactly 0, where a resting body still burns half its average
+ * active energy. That is the intended reading: a rest day IS low strain, and
+ * accumulated fatigue is the muscle-freshness figure's job, not this pillar's.
+ */
 export function strainLevel(ratio: number): SignalLevel {
   if (ratio <= 0.75) return 'optimal';
   if (ratio <= 1.3) return 'good';
   if (ratio <= 1.7) return 'caution';
   return 'poor';
+}
+
+export type StrainInputs = {
+  /** Role-weighted working sets logged for the graded day. 0 = nothing logged. */
+  setsYesterday: number;
+  /** Mean role-weighted sets over PRIOR training days; null under the gate. */
+  setsBaseline: number | null;
+  /** Prior training days inside the window — drives the evidence note. */
+  priorSessions: number;
+  /** Yesterday's active energy ÷ its own 30-day mean; null without a baseline. */
+  energyRatio: number | null;
+};
+
+/**
+ * The strain pillar — graded on ARC's logged volume, with active energy allowed
+ * to RAISE the reading and never to lower it.
+ *
+ * ## Why energy is still here, and exactly what it may do
+ *
+ * Sets cannot see a two-hour hike; calories cannot see a heavy triple. Each
+ * instrument sees part of the load and neither sees all of it, so the honest
+ * composite of the two is the LARGER — `max(setsRatio, energyRatio)` — not a
+ * blend. A blend would average a hard lifting day's 1.0 against its unremarkable
+ * 0.85 of calories and report 0.93, which is the retired defect wearing a new
+ * coat.
+ *
+ * The `max` is one-directional by construction: it can only ever add strain the
+ * sets could not see, and can never subtract strain the sets did see. That is
+ * the whole argument for admitting it. It also quietly covers the session
+ * someone trained and forgot to log — an unlogged hour in a gym is still a
+ * calorie spike, so the pillar does not confidently report `optimal` at it.
+ *
+ * **ARC's volume is primary in the strict sense**: without a sets baseline
+ * there is no verdict, even when a full year of active energy is sitting there.
+ * Energy alone is the reading the owner rejected; it is a second opinion here,
+ * never the first.
+ */
+export function strainVerdict(inputs: StrainInputs): { level: SignalLevel; note?: string } {
+  const { setsYesterday, setsBaseline, priorSessions, energyRatio } = inputs;
+
+  if (setsBaseline === null || setsBaseline <= 0) {
+    // Deliberately never mentions Apple Health. Strain reads ARC's own sets, so
+    // an absent HealthKit module is not why this is blank, and saying it was
+    // would send the reader to a switch that would change nothing.
+    if (priorSessions === 0) return { level: 'unknown', note: 'no training logged in ARC yet' };
+    const remaining = Math.max(0, STRAIN_MIN_SESSIONS - priorSessions);
+    const sessions = remaining === 1 ? 'session' : 'sessions';
+    return { level: 'unknown', note: `${remaining} more logged ${sessions} before a baseline` };
+  }
+
+  const setsRatio = setsYesterday / setsBaseline;
+  const ratio = energyRatio === null ? setsRatio : Math.max(setsRatio, energyRatio);
+  return { level: strainLevel(ratio), note: strainNote(setsYesterday, setsRatio, energyRatio) };
+}
+
+/**
+ * What the strain reading rests on, in one clause — naming the input that
+ * DECIDED the level, not merely the larger of the two.
+ *
+ * Energy takes the line only when it actually moved the verdict. Otherwise a
+ * quiet rest day would read "active energy 30% below your 30-day baseline"
+ * purely because 0.70 outranks a zero it agrees with, which explains a number
+ * nobody asked about instead of the plain fact that nothing was trained.
+ */
+function strainNote(setsYesterday: number, setsRatio: number, energyRatio: number | null): string {
+  if (
+    energyRatio !== null &&
+    energyRatio > setsRatio &&
+    strainLevel(energyRatio) !== strainLevel(setsRatio)
+  ) {
+    return `active energy ${baselineSentence(energyRatio)}`;
+  }
+  // Not "a rest day": ARC knows nothing was LOGGED, which is a different fact.
+  if (setsYesterday === 0) return 'no training logged yesterday';
+  return `${fmtRatio(setsRatio)}× your usual session`;
 }
 
 // --- Nutrition ----------------------------------------------------------------
@@ -206,7 +344,10 @@ export function nutritionVerdict(
     };
   }
   if (protein === 'optimal') {
-    return { level: 'optimal', note: `protein target met · ${nutritionProgressNote(totals, targets)}` };
+    return {
+      level: 'optimal',
+      note: `protein target met · ${nutritionProgressNote(totals, targets)}`,
+    };
   }
   return { level: 'unknown', note: `${nutritionProgressNote(totals, targets)} · day in progress` };
 }
@@ -254,6 +395,11 @@ function fmtDelta(delta: number): string {
   return rounded >= 0 ? `+${rounded}` : `−${Math.abs(rounded)}`;
 }
 
+/** 1.4166 → "1.4". `toFixed`, not `Intl` — Hermes has no `Intl`. */
+function fmtRatio(ratio: number): string {
+  return ratio.toFixed(1);
+}
+
 /** "14% below your 30-day baseline" | "at your 30-day baseline" | above. */
 function baselineSentence(ratio: number): string {
   const pct = Math.round(Math.abs(1 - ratio) * 100);
@@ -261,13 +407,18 @@ function baselineSentence(ratio: number): string {
   return ratio < 1 ? `${pct}% below your 30-day baseline` : `${pct}% above your 30-day baseline`;
 }
 
-/** The local day before a YYYY-MM-DD, parsed componentwise (never UTC-shifted). */
-function dayBefore(date: string): string {
+/** `n` local days before a YYYY-MM-DD, componentwise (never UTC-shifted). */
+function daysBefore(date: string, n: number): string {
   const [y, m, d] = date.split('-').map(Number) as [number, number, number];
-  const prev = new Date(y, m - 1, d - 1);
+  const prev = new Date(y, m - 1, d - n);
   const mm = String(prev.getMonth() + 1).padStart(2, '0');
   const dd = String(prev.getDate()).padStart(2, '0');
   return `${prev.getFullYear()}-${mm}-${dd}`;
+}
+
+/** The local day before a YYYY-MM-DD. */
+function dayBefore(date: string): string {
+  return daysBefore(date, 1);
 }
 
 const VERDICT_LABEL: Record<SignalLevel, string> = {
@@ -283,11 +434,14 @@ const VERDICT_LABEL: Record<SignalLevel, string> = {
  * {@link BASELINE_MIN_DAYS} gate is cleared.
  *
  * This is the direct answer to the owner's *"do some of them just need a week or
- * two of data before they start transmitting?"* — no metric here needs a
- * fortnight. A baseline needs five prior days, so a verdict appears on the SIXTH
- * day of readings, and strain's sixth day is counted to yesterday rather than
- * today (it grades the load already completed), making it a seven-day wait from
- * a standing start.
+ * two of data before they start transmitting?"* — no wearable metric here needs
+ * a fortnight. A baseline needs five prior days, so a verdict appears on the
+ * SIXTH day of readings.
+ *
+ * Strain is no longer one of these: it counts SESSIONS, not days
+ * ({@link STRAIN_MIN_SESSIONS}), so on a four-day split it is a little over a
+ * fortnight — the one place the answer to that question is now "yes, about
+ * two weeks", and only because a rest day genuinely teaches it nothing.
  */
 export function baselineDaysRemaining(points: DailyMetricPoint[], date: string): number {
   const prior = points.filter((p) => p.date < date).length;
@@ -343,13 +497,35 @@ export function deriveReadiness(
   const sleepToday = pickDailyMetric(db, 'sleep_duration_min', today);
   const deepToday = pickDailyMetric(db, 'sleep_deep_min', today);
 
+  // Strain grades the day already COMPLETED, so its whole window ends
+  // yesterday: both halves read the same BASELINE_WINDOW_DAYS days.
   const yesterday = dayBefore(today);
-  const energySeries = dailyMetricSeries(db, 'active_energy_kcal', 29, yesterday);
+  const energySeries = dailyMetricSeries(db, 'active_energy_kcal', BASELINE_WINDOW_DAYS, yesterday);
   const energyYesterday = pointOn(energySeries, yesterday);
   const energyBaseline = baselineBefore(energySeries, yesterday);
 
+  const setLoad = dailyMuscleSetLoad(
+    db,
+    daysBefore(yesterday, BASELINE_WINDOW_DAYS - 1),
+    yesterday
+  );
+  // Only trained days have a row, so this IS the session population.
+  const priorSessions = setLoad.filter((d) => d.date < yesterday);
+  const setsYesterday = setLoad.find((d) => d.date === yesterday)?.sets ?? 0;
+  const setsBaseline =
+    priorSessions.length >= STRAIN_MIN_SESSIONS
+      ? priorSessions.reduce((sum, d) => sum + d.sets, 0) / priorSessions.length
+      : null;
+
   const stepsToday = pickDailyMetric(db, 'steps', today);
 
+  // WEARABLE signals only, and logged sets are deliberately not among them even
+  // though strain now derives from them: this flag is what
+  // `turn-context.ts`/`read-tools.ts` read to say "no wearable signal yet", and
+  // flipping it true for someone with no watch would make Home's `detail`
+  // ("Apple Health is connected but no readings have arrived") ride along beside
+  // a strain reading that never wanted a wearable. The Coach reads training load
+  // through `get_training_recommendation`, which is the fuller version of it.
   const hasSignal =
     hrvSeries.length > 0 ||
     rhrSeries.length > 0 ||
@@ -371,10 +547,15 @@ export function deriveReadiness(
   }
 
   const sleep: SignalLevel = sleepToday ? sleepLevel(sleepToday.value) : 'unknown';
-  const strain: SignalLevel =
-    energyYesterday && energyBaseline !== null && energyBaseline > 0
-      ? strainLevel(energyYesterday.value / energyBaseline)
-      : 'unknown';
+  const strain = strainVerdict({
+    setsYesterday,
+    setsBaseline,
+    priorSessions: priorSessions.length,
+    energyRatio:
+      energyYesterday && energyBaseline !== null && energyBaseline > 0
+        ? energyYesterday.value / energyBaseline
+        : null,
+  });
 
   const targets = activeNutritionTargets(db, today);
   const nutrition = nutritionVerdict(
@@ -423,21 +604,7 @@ export function deriveReadiness(
           : undefined,
     },
     { label: 'Nutrition', level: nutrition.level, note: nutrition.note },
-    {
-      label: 'Strain',
-      level: strain,
-      note:
-        strain === 'unknown'
-          ? evidenceNote({
-              link,
-              hasHistory: energySeries.length > 0,
-              daysRemaining: baselineDaysRemaining(energySeries, yesterday),
-              hasCurrent: energyYesterday !== null,
-              signal: 'active energy',
-              period: 'yesterday',
-            })
-          : undefined,
-    },
+    { label: 'Strain', level: strain.level, note: strain.note },
   ];
 
   // --- Verdict -----------------------------------------------------------------
@@ -450,10 +617,11 @@ export function deriveReadiness(
   } else if (sleepToday) {
     detail = `${fmtSleep(sleepToday.value)} asleep last night`;
   } else if (link === 'unsupported') {
-    // The state ARC has actually been in the whole time this pipeline has
-    // existed. Pointing at the Settings toggle here would be a lie the user
-    // could act on and get nothing from: the switch is there, the native module
-    // is not, so no amount of vendor syncing into Apple Health can reach ARC.
+    // Runtime-derived, so it is true whenever it renders — but after the owner's
+    // 2026-08-25 rebuild it should no longer render on his phone. Pointing at
+    // the Settings toggle here would be a lie the user could act on and get
+    // nothing from: the switch is there, the native module is not, so no amount
+    // of vendor syncing into Apple Health can reach ARC.
     detail =
       'Apple Health cannot be read in this build — the HealthKit module rides the next app build. Whatever your watch or ring is syncing into Apple Health is safe there and will land here once it does.';
   } else if (link === 'disconnected') {

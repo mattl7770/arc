@@ -51,9 +51,10 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  * ## This screen broke app STARTUP, and the fix is where the picker is loaded
  *
  * It opened with `import * as ImagePicker from 'expo-image-picker'` at module
- * scope. `expo-image-picker` is in package.json and in app.json's plugin list
- * but is NOT in the current binary — it rides the next EAS build — so that
- * import throws the moment the module is evaluated. Two symptoms, one cause:
+ * scope. `expo-image-picker` was in package.json and in app.json's plugin
+ * list before it was in the binary — it landed only in the owner's
+ * 2026-08-25 EAS build — so on every build before that, the import threw the
+ * moment the module was evaluated. Two symptoms, one cause:
  *
  *   - Opening this screen gave *"cannot read property 'ErrorBoundary' of
  *     undefined"*. That is Expo Router reporting that a route module failed to

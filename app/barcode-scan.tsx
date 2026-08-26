@@ -37,8 +37,9 @@ import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
  * NATIVE DEP: expo-camera, reached through the guarded seam in
  * src/lib/media/camera.ts — never a static import in a route file, because Expo
  * Router requires every one of them to build its manifest and a missing native
- * module is then an app-LAUNCH crash. Absence is drawn in words here; the
- * scanner needs the pending EAS build. Pushed with an optional `mealId` (add to
+ * module is then an app-LAUNCH crash. Absence is drawn in words here — on
+ * web/node, or a build predating expo-camera (it landed in the owner's
+ * 2026-08-25 EAS build). Pushed with an optional `mealId` (add to
  * that meal) or from Nutrition (creates a day-part meal on the first add, like
  * food search), and with an optional `code` — see below.
  *

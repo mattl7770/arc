@@ -207,16 +207,25 @@ export function ModeControl({
           {/* Direct children of the inset, exactly as before — a `flex-1`
               wrapper here would be a second column stretcher inside the one
               ModalScreen already provides, for nothing. */}
-          <View className="flex-row items-center justify-between px-5 pt-2">
-            <Text className="font-serif text-lg font-semibold text-ink">Today&rsquo;s mode</Text>
+          {/* Close LEADS, per the rule in ModalScreen's docblock (owner,
+              2026-08-25: *"make them match on the leading edge"*). It sat in the
+              trailing corner until then, so the two modals a reader is most
+              likely to open in one session disagreed about where dismissal
+              lives. −12 and a 44×44 square is StackHeader's back control
+              verbatim, so the glyph lands on the same optical x as every pushed
+              screen's. */}
+          <View className="flex-row items-center gap-1 px-5 pt-2">
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Close"
               onPress={() => setOpen(false)}
-              // A 20px glyph in p-2 measures 36pt square; the floor is 44 on both axes.
-              className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn active:bg-paper-deep">
-              <Ionicons name="close" size={20} color={palette.inkSecondary} />
+              hitSlop={8}
+              className="-ml-3 h-11 w-11 items-center justify-center active:opacity-60">
+              <Ionicons name="close" size={22} color={palette.ink} />
             </Pressable>
+            <Text className="flex-1 font-serif text-lg font-semibold text-ink">
+              Today&rsquo;s mode
+            </Text>
           </View>
           {/* One operative sentence. The line that opened this — "A mode
                 reshapes today's plan, changes what Home leads with, and changes

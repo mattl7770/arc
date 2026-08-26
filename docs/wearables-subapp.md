@@ -3,6 +3,10 @@
 **Spec date:** 2026-07-29 · **Status:** Phase 1 spec → built in the same window
 **Amended:** 2026-08-12 — the link is **two-way**: ARC publishes three body measurements
 outward (**§10**) and reads the same three back in (**§11**).
+**Amended:** 2026-08-25 — **the EAS rebuild happened**, so every "rides the next build" claim
+here is re-trued (the runtime guards are untouched); and **Strain left this sub-app** — it is
+derived from ARC's own logged sets now, with active energy demoted to a one-directional second
+opinion (**§6**).
 **Read first:** CLAUDE.md §8 (wearables strategy) and §9 (DB conventions), `docs/project-status.md`.
 
 Apple Health is the decided ingestion hub (2026-07-24 ADR): it is on-device, every vendor's
@@ -49,9 +53,17 @@ provisioning-profile regeneration** — and no entitlements block belongs in app
 Everything else in §10 is JS and ships OTA, **with one hard exception noted in §10**: this JS
 must not reach a binary built before that key existed.
 
-**Native-dep reality:** the module is NOT in the current dev build. It rides the next
-`eas build` (batched with expo-secure-store & co., docs/dev-build.md). Until then the guarded
-seam (§5) makes everything compile and no-op: the library's `modules.ts` calls Nitro's
+**Native-dep reality (re-trued 2026-08-25):** the module **is in the owner's binary.** The EAS
+rebuild this section waited on from 2026-07-31 has happened; `@kingstinct/react-native-healthkit`
+and `react-native-nitro-modules` were in `package.json` long before it was cut, and so was the
+`NSHealthUpdateUsageDescription` string (2026-08-12), so that build carries both halves and
+§10's OTA hazard does not apply to it. That is a statement about what is *present* in the
+binary and nothing more — whether Apple Health is actually handing rows over is the owner's
+observation to make, and no claim about it is made anywhere in this document.
+
+The guarded seam (§5) is unchanged and stays: it is what keeps node, the web preview, and any
+dev client or simulator build predating the module from crashing. The library's `modules.ts`
+calls Nitro's
 `createHybridObject(...)` at module top level, and both it and nitro's own
 `TurboModuleRegistry.getEnforcing` throw a *synchronous, catchable JS Error* at `require()`
 time when the native side is absent — exactly what the try/catch-require pattern handles. On
@@ -67,7 +79,7 @@ Requested lazily — only when the user flips Settings › Apple Health on, neve
 | `HKQuantityTypeIdentifierRestingHeartRate` | Recovery |
 | `HKCategoryTypeIdentifierSleepAnalysis` | Sleep duration + stages |
 | `HKQuantityTypeIdentifierStepCount` | Activity |
-| `HKQuantityTypeIdentifierActiveEnergyBurned` | Strain |
+| `HKQuantityTypeIdentifierActiveEnergyBurned` | Raises Strain; cardio/NEAT the sets cannot see |
 | `HKQuantityTypeIdentifierBasalEnergyBurned` | Energy context |
 | `HKQuantityTypeIdentifierRespiratoryRate` | Sleep-time vitals |
 | `HKQuantityTypeIdentifierOxygenSaturation` | Sleep-time vitals |
@@ -265,10 +277,25 @@ is, e.g. keypad HRV).
   else poor; degraded one level when RHR is ≥ +5 bpm over its baseline. RHR-only fallback
   when HRV is absent.
 - **Sleep:** asleep minutes → ≥450 optimal · ≥390 good · ≥330 caution · else poor.
-- **Strain:** yesterday's active energy vs its 28-day baseline → ≤0.75 optimal (fresh) ·
-  ≤1.30 good · ≤1.70 caution · else poor.
-- **Nutrition pillar:** presence-only for now (meals logged today → good, none → unknown);
-  target-aware grading is the nutrition sub-app's future call.
+- **Strain (rewritten 2026-08-25 — it is no longer a wearable derivation):** yesterday's
+  **role-weighted working sets, logged in ARC**, ÷ the mean over prior **training days** in
+  the 30 days ending yesterday, then raised — never lowered — by the active-energy ratio when
+  energy has its own baseline. Bands unchanged: ≤0.75 optimal (fresh) · ≤1.30 good ·
+  ≤1.70 caution · else poor. Gate: **5 prior logged sessions**, not 5 days.
+
+  Owner: *"switch to ARC computing"*. Active energy is a calorie-burn proxy and a hard
+  resistance session burns few calories, so the morning after a back day this pillar read
+  `optimal / fresh` while the muscle figure on the same screen reported lats at 27%. It now
+  reads the SAME substrate the freshness engine reads (`dailyMuscleSetLoad`, over
+  `workout_sets`), which is why the two can no longer contradict each other — and it needs no
+  HealthKit at all. Energy stays as a second opinion under `max()` because sets cannot see a
+  two-hour hike; `max` is one-directional by construction, so energy can add strain the sets
+  missed and can never talk a hard lifting day back down. Calibration table and pinned
+  representative days: the `strainLevel` docblock and `db/readiness.test.mjs` §6.
+- **Nutrition pillar:** graded against the versioned `nutrition_targets` since 2026-08-14 —
+  calories symmetric within band, protein one-sided, worst-of wins once the day closes at
+  20:00, and before then only completed facts grade it. (This bullet read "presence-only for
+  now" until then; it was already stale when strain was rewritten beside it.)
 - **Verdict** = worst of Recovery & Sleep (unknowns ignored); labels: optimal "Primed" ·
   good "Ready" · caution "Recovery low" · poor "Back off today". Detail line prefers the
   HRV sentence ("HRV 42 ms · 14% below your 30-day baseline"), then RHR, then sleep. With
@@ -283,8 +310,10 @@ instead of wiring HealthKit straight into screens.
 ## 7. What lands where (UI)
 
 - **Settings › Apple Health** (`/settings-health`, replaces the "Needs a build" chip row):
-  module-absent state says "rides the next dev build" honestly (same posture as the Coach
-  key screen); enable flow = flip → `requestHealthPermissions()` (lazy, first time only) →
+  the module-absent state says "rides the next dev build" honestly — it is keyed off
+  `isHealthKitSupported()` at runtime, so it is true whenever it renders and, since the
+  owner's 2026-08-25 build, should not render on his phone; enable flow = flip →
+  `requestHealthPermissions()` (lazy, first time only) →
   first 90-day sync with progress; then last-synced line, per-domain latest values, the
   read-permission caveat, Sync now, and the toggle off (which stops syncing; rows keep —
   they're the user's data).
@@ -452,9 +481,11 @@ re-present a sheet the user has already answered).
 > ⚠️ **Ship the app.json string in the same binary.** iOS *terminates* an app that requests
 > share types without `NSHealthUpdateUsageDescription`, at the ObjC level, where no JS
 > try/catch can hold it. This JS must therefore never be delivered OTA to a build made before
-> that key existed. Today that is not reachable — the HealthKit module is in no shipped
-> binary at all (§1), so the first build containing it will also contain the key — but a
-> build cut from `main` before this branch merges would create exactly that binary.
+> that key existed. **The window is real but historical:** the module landed 2026-07-31 and
+> the string on 2026-08-12, so a binary cut in those twelve days has one and not the other.
+> The owner's build is 2026-08-25 and carries both, and any build cut from `main` since
+> 2026-08-12 does too. Keep the rule anyway — it costs nothing and the next person to install
+> an old dev client is the one it protects.
 
 **Still out of scope, and why each one stays out** — every candidate was re-checked when the
 link went two-way:
@@ -529,11 +560,15 @@ Answering the owner's *"quickly check over all the metrics we are trying to read
 wearable — which are not able to be acquired from our Garmin CIRQA + Apple HealthKit setup?
 Do some of them just need a week or two of data before they start transmitting?"*
 
-**The headline is not in the table.** As of this writing the HealthKit native module is **not
-in the app binary** — `@kingstinct/react-native-healthkit` is in `package.json` and `app.json`
-but rides an EAS rebuild that has not happened, so `isHealthKitSupported()` returns false and
-every read is a no-op. Garmin CIRQA is syncing into Apple Health perfectly well; ARC cannot
-see any of it. Nothing below changes until that build ships.
+**The headline used to be that none of this could run** — when this audit was written
+(2026-08-14) the HealthKit native module was not in the app binary, `isHealthKitSupported()`
+returned false, every read was a no-op, and Garmin CIRQA was syncing into Apple Health where
+ARC could not see any of it. **The owner rebuilt on 2026-08-25 and the module is now in his
+binary,** so that blocker is gone. What this section can honestly claim stops there: the
+module is present. Whether Apple Health is handing rows over, and whether the per-metric
+findings below hold in practice, is a device observation nobody has recorded yet — the table
+is still assembled from documentation and from Garmin's published behaviour, and its four
+`unverified` rows are still unverified.
 
 The table's source of truth is **`src/lib/health/coverage.ts`**, not this file — it is what the
 Settings screen renders, and `db/health-coverage.test.mjs` asserts that every read scope has a
@@ -545,7 +580,7 @@ row and every row names a real read scope, so the two cannot drift apart.
 |---|---|---|---|
 | `HeartRateVariabilitySDNN` | Home **Recovery**, today vs 30-day baseline | NEVER | 6 (moot) |
 | `RestingHeartRate` | Corroborates HRV; **becomes Recovery on its own** | Sends | 6 |
-| `ActiveEnergyBurned` | Home **Strain**, yesterday vs baseline | Sends | 7 |
+| `ActiveEnergyBurned` | **Raises** Home Strain (never lowers it); ledger | Sends | 6 |
 | `SleepAnalysis` (+ stages) | Home **Sleep**; stages in the ledger | Sends | 1 |
 | `StepCount` | Metrics strip, ledger | Sends | 1 |
 | `HKWorkoutType` | Wearables workout list; Coach reads daily minutes | Sends | 1 |
@@ -589,8 +624,12 @@ No — nothing needs a fortnight, and the wait is shorter than it looks:
   workouts and the ledger metrics show a number the day they arrive.
 - Anything **graded against a baseline** needs `BASELINE_MIN_DAYS` = **5 prior days**, so the
   verdict appears on the **6th day** of readings. That is Recovery.
-- **Strain** grades *yesterday* against a baseline of the days before it, so from a standing
-  start it is the **7th day**.
+- **Strain is the one exception, and since 2026-08-25 it does not wait on a wearable at all.**
+  It grades *yesterday* against your usual SESSION, so its gate counts sessions, not days:
+  `STRAIN_MIN_SESSIONS` = **5 prior logged workouts**. On a four-day split that is a little
+  over a fortnight — the only place in this document where the answer to the owner's question
+  is "yes, about two weeks", and only because a rest day genuinely teaches a session baseline
+  nothing. The pillar says how many sessions are left while it fills.
 
 Before 2026-08-14 the screens did not say any of this: a pillar with a half-filled baseline
 drew the same blank as a pillar with no data and the same blank as a pillar that could never
@@ -668,6 +707,8 @@ already merged to `main` before the work started, and 0040/0041 are held by bran
 parallel. Numbering is forward-only — `pendingMigrations` filters `version > user_version`, so
 a file numbered at or below a device's stamp is skipped silently, with no error and no tables.
 
-⚠️ **Neither fix has been observed working**, because no workout has ever been ingested — the
-HealthKit module is not in the binary (§12). On the owner's device 0042's `DELETE` will affect
-zero rows. It is written for correctness after the pending EAS build.
+⚠️ **Neither fix has been observed working**, because at the time it was written no workout
+had ever been ingested — the module was not in the binary. It is in the owner's binary as of
+2026-08-25, so ingestion is now *possible*; nothing here has been watched happening. On the
+owner's device 0042's `DELETE` still affects zero rows, because the duplicates it removes
+could only have been created by passes that never ran.

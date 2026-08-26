@@ -141,7 +141,7 @@ Recommended: **option 2**, then option 1 as a follow-up. The migration plan sequ
 
 ## 5. Things that would need a new native dependency (avoid for v1)
 
-The current app has **no `react-native-svg`**, no `expo-linear-gradient`, and no shadows — deliberately (`ui/sparkline.tsx`: *"react-native-svg is not installed, and this intentionally stays that way"*). Adding one means an **EAS rebuild**.
+The app draws with **no `react-native-svg`**, no `expo-linear-gradient`, and no shadows — deliberately (`react-native-svg` was added to `package.json` on 2026-08-25 for work on another branch; nothing imports it, and it is **not** in the owner’s binary, so using it still costs a build) (`ui/sparkline.tsx`: *"react-native-svg is not installed, and this intentionally stays that way"*). Adding one means an **EAS rebuild**.
 
 Everything in this design can ship without one:
 - ~~corner ticks → bordered Views (§1.2)~~ — moot: the ticks were cut entirely (§1.2, `00-design-spec.md` §1)

@@ -1,15 +1,17 @@
 import { useEffect } from 'react';
 
 /**
- * Keep the screen on — guarded, because `expo-keep-awake` is a native module
- * that is **not in the current binary**.
+ * Keep the screen on — guarded, because `expo-keep-awake` is a native module,
+ * and the guard must hold on any build predating it (or on web/node) even
+ * though it is in the owner's binary as of the 2026-08-25 EAS rebuild.
  *
  * ## Why this file exists at all
  *
  * `app/recipe-detail.tsx` opened with `import { useKeepAwake } from
  * 'expo-keep-awake'` at module scope. That module arrived in the same commit as
- * `expo-image-picker` (`c0a5e1a`, the recipe-book round) and rides the same
- * pending EAS build, so it throws on evaluation exactly as the picker does.
+ * `expo-image-picker` (`c0a5e1a`, the recipe-book round) and rode the same
+ * EAS build the picker did, so before that build it threw on evaluation
+ * exactly as the picker did.
  *
  * That matters far more than one screen, because **Expo Router eagerly requires
  * every file under `app/` to build its route manifest**. One unguarded native

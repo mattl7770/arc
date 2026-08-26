@@ -207,7 +207,7 @@ Four sub-decisions were made at adoption, and each is recorded here because none
 - **Biological signals now carry two cuts per state** — `signal-{state}` is the **swatch** (fills and icons, 3:1) and `signal-{state}-ink` is the **text cut** (4.5:1). They are not interchangeable: as text on `paper-hi` the swatches measure 3.82 / 5.13 / 3.41 / 5.44, so two of the four fail outright and the two that pass do so by luck of hue.
 - The firewall is now stated in both directions and holds in the nav theme too: React Navigation's `notification` slot (tab-bar badges — pure chrome) takes the accent, not `signal.caution` as it previously did.
 - **The rules do not clear WCAG 1.4.11's 3:1 non-text floor, and that was accepted — recorded 2026-08-09, having gone unmeasured at adoption.** `hairline` `#A9A28E` draws every plate edge and row separator and measures **2.29:1 on `paper-hi`, 2.00:1 on `paper`** (1.73 on paper-dim, 1.41 on paper-deep). **Accepted for plate borders, row separators and the `margin` rule**, which enclose text that is itself ≥5.97:1: nothing there is *required* to identify a control or read a value, and a rule dark enough to pass is the heavy furniture the 2026-07-24 de-boxing pass removed. **Not accepted, and left open, for the `well` device** — a well marks an *input*, which 1.4.11 covers by name, and its `paper-deep` border reads **1.42:1** against the page. Both go to the first device review rather than being changed sight-unseen. If a change is needed the answer is a darker hairline, not a heavier one: `#7E7767` clears 3:1 on both real surfaces (4.01 / 3.50) at the same 1px weight. Numbers and reasoning in `docs/project-status.md` §3, "Contrast, measured".
-- No new dependency was added, so **this restyle needs no EAS rebuild of its own** — but see below for why it still needs the *pending* build to be judged.
+- No new dependency was added, so **this restyle needs no EAS rebuild of its own** — but see below for why it needed a build to be judged.
 - The mockup's desk background, registration marks, sheet numbers and title blocks are presentation chrome and deliberately **do not ship**. Inside the phone every mark must pay rent.
 - Docs updated in the same change (CLAUDE.md §9 convention): `docs/project-status.md` §3, `docs/design-directions.md`, `02-migration-plan.md`, CLAUDE.md, and the header comments of `tailwind.config.js` + `src/constants/theme.ts`.
 
@@ -216,7 +216,7 @@ Four sub-decisions were made at adoption, and each is recorded here because none
 - **`border-dashed`** (`app/protocol-versions.tsx`) — the proposed/suspended version marker. First use of a dashed border anywhere in the app.
 - **Rotated-square diamond markers** (`app/screenings.tsx`, `transform: [{ rotate: '45deg' }]`) — the horizon-axis terminals. First use of a transform for a visual mark.
 
-None of these throws when unsupported; each just quietly renders as something else. **This needs the next EAS build to be judged**, and until then every claim in `project-status.md` §3 about how the app *looks* is unverified.
+None of these throws when unsupported; each just quietly renders as something else. **This needed an EAS build to be judged.** That build shipped 2026-08-25; the styling claims in `project-status.md` §3 were in fact judgable before it either way, since the build gated dormant native modules and not the stylesheet.
 
 ---
 

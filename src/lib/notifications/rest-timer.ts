@@ -5,9 +5,9 @@
  * Mirrors src/lib/notifications/reminders.ts: the schedulable-request shape is a
  * PURE, headless-tested builder ({@link buildRestAlert}), and the only impure
  * part — talking to `expo-notifications` — is `require`d in a try/catch and
- * no-ops when the native module is absent (the current dev build until the next
- * EAS rebuild, and the web logic-check preview). So nothing here crashes
- * off-device.
+ * no-ops when the native module is absent (the web logic-check preview, and
+ * any build predating the module — it landed in the owner's 2026-08-25 EAS
+ * rebuild). So nothing here crashes off-device.
  *
  * Unlike reminders (which cancel-all-then-reschedule), a rest alert is a single
  * one-shot the workout screen owns: schedule returns an id, and the screen
@@ -16,9 +16,10 @@
  * reminder resync's cancel-all would also clear a pending rest alert; a boot or
  * Coach reminder-edit mid-rest is rare and only costs one missed buzz.)
  *
- * FLAG (native, deferred): expo-notifications is a native module. It's a
- * configured plugin, but delivery needs the next EAS dev rebuild — batched with
- * the Coach's while-closed reminders, which already depend on it.
+ * FLAG (native): expo-notifications is a native module. It's a configured
+ * plugin and, along with the Coach's while-closed reminders that already
+ * depend on it, landed in the owner's 2026-08-25 EAS build — whether delivery
+ * actually fires on device is still the owner's to confirm.
  */
 
 /** A one-shot time-interval trigger (SchedulableTriggerInputTypes.TIME_INTERVAL). */

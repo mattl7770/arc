@@ -15,10 +15,12 @@ type SparklineProps = {
 };
 
 /**
- * Dependency-free mini bar chart (react-native-svg is not installed, and this
- * intentionally stays that way — a new native module would force an EAS
- * rebuild, 01-rn-port-guide.md §5). A flex row of thin bars: a glance-able
- * trend, not a chart meant to be read closely.
+ * Dependency-free mini bar chart. `react-native-svg` is now declared in
+ * package.json (added 2026-08-25, after the owner's EAS rebuild), so it is
+ * NOT in the owner's current binary — using it would need a further EAS
+ * build. This View-based drawing therefore still ships over the air and
+ * stays as it is. A flex row of thin bars: a glance-able trend, not a chart
+ * meant to be read closely.
  *
  * Conformed Set re-ink — nothing structural changed, only the drawing:
  *  - **Square bars.** The 1px radius is gone; corners are square across this

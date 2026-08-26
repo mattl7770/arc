@@ -6,7 +6,7 @@
 
 **Gate:** `db/reports.test.mjs` **136 assertions**, `db/screens-render.test.mjs` grew to **156** (the reports screens joined it), `npm run db:test` **2,430 assertions / 47 suites, 0 failed**, `db:validate` 20/20, `tsc` 0, `eslint app src` 0 errors, `npx expo export --platform ios` clean.
 
-⚠️ **Headless-verified only — none of this has been seen on a device.** Two things ride the pending EAS build: the **share sheet** (`expo-sharing`; until then the file is written and the outcome is `saved` with its full path) and **PDF** (`expo-print`, added to `package.json` on the owner's call — ⚑ #1 below). The manual path is stated in the UI: open the HTML in Safari → Print → Save as PDF.
+⚠️ **Headless-verified only — none of this has been seen on a device.** Two things needed the EAS build that has since happened (2026-08-25), and neither has been observed running: the **share sheet** (`expo-sharing`; until then the file is written and the outcome is `saved` with its full path) and **PDF** (`expo-print`, added to `package.json` on the owner's call — ⚑ #1 below). The manual path is stated in the UI: open the HTML in Safari → Print → Save as PDF.
 
 **Owner decisions (2026-08-12):** all six ⚑ questions in §11 were asked in one round at the start of the build and answered — every recommendation taken, plus `expo-print` on the next build. The table in §11 records each one and where it landed in the code.
 **What this is NOT:** the whole-database JSON **export**, which already ships (2026-07-29, Settings › Security & data, `src/lib/export/serializer.ts`, 42 headless tests). A report is a *document assembled for a reader*; the export is *the data, all of it, for a machine or a migration*. They stay on different screens (§7).
@@ -224,7 +224,7 @@ Asked as one batched round at the start of the build session; every recommendati
 
 | # | The call | **Decided** | Where it lands in the code |
 | --- | --- | --- | --- |
-| 1 | `expo-print` on the next build? | **Yes — joins the next EAS build.** v1 still ships HTML either way; PDF becomes the one-function rider. | `package.json` (`expo-print ~57.0.1`) + the two-build ledger in `docs/project-status.md` Known caveats. **No `app.json` plugin entry** — `expo-print` ships no config plugin and needs no purpose string; naming it in `plugins` would fail prebuild. |
+| 1 | `expo-print` on the next build? | **Yes — joined the 2026-08-25 build.** v1 still ships HTML either way; PDF becomes the one-function rider. | `package.json` (`expo-print ~57.0.1`) + the two-build ledger in `docs/project-status.md` Known caveats. **No `app.json` plugin entry** — `expo-print` ships no config plugin and needs no purpose string; naming it in `plugins` would fail prebuild. |
 | 2 | Optimal ranges in the doctor pack? | **Include**, beside the clinical reference range, explicitly labeled *"personal target — longevity-oriented, not a clinical range"*. | `assemble-doctor-pack.ts` → `LabMarkerRow.optimalLow/High`; the label is authored once in `render-html.ts` and the native row. |
 | 3 | The self-review and your name? | **Omit `full_name` by default.** The self-review is the report most casually shared; the doctor pack is unaffected and always carries the patient header. | `assembleSelfReview` never reads `users.full_name`. Asserted in `db/reports.test.mjs`. |
 | 4 | The Data-row relabel? | **Relabel to "Reports"; export stays Settings-only**, with a margin footer pointing at its real home. | `app/(tabs)/data.tsx` (`reports` key, live state in the row body) + the footer on `app/reports.tsx`. |

@@ -18,8 +18,8 @@
  *     of the `expo` package), so writing works today; if it is somehow absent
  *     (the web logic-check preview, the headless suites), the outcome is
  *     `unavailable` and NOTHING was written — distinct from a failure.
- *   - `expo-sharing` is NOT in the current binary — it rides the next EAS build
- *     (docs/project-status.md, Known caveats). Until then the file is still
+ *   - `expo-sharing` degrades the same way: on a binary predating it — every
+ *     build before the owner's 2026-08-25 EAS build — the file is still
  *     written and the outcome is `saved` WITH THE FULL PATH, so the document is
  *     usable (Finder / Xcode container download) rather than silently
  *     unshareable. That distinction is the whole reason `saved` exists: "we
@@ -83,7 +83,8 @@ try {
 export type FileOutcome =
   /** Written AND handed to the share sheet. */
   | { status: 'shared'; fileName: string; uri: string }
-  /** Written to Documents; share sheet unavailable until the next build. */
+  /** Written to Documents; share sheet unavailable (no `expo-sharing` module —
+   * web/node, or a build predating it). */
   | { status: 'saved'; fileName: string; uri: string }
   /** No file system module at all (web preview) — nothing was written. */
   | { status: 'unavailable' }

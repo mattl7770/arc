@@ -15,8 +15,9 @@
  * late-arriving Watch data, the Watch's delete-and-replace of resting-HR
  * estimates, and timezone shifts all converge on the next pass instead of
  * duplicating. No anchors, no background delivery — foreground windows are
- * enough for a daily operating system, and the whole flow no-ops until the
- * native module ships in the next EAS build.
+ * enough for a daily operating system, and the whole flow no-ops whenever the
+ * native module isn't in the binary — web/node, or a build predating the
+ * module's 2026-08-25 EAS landing.
  *
  * The window/day maths ({@link syncDayWindows}, {@link shouldAutoSync}) is pure
  * and exported for the headless tests; the entry points just glue the guarded

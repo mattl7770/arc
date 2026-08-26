@@ -156,6 +156,40 @@ export const PaperGrid = memo(function PaperGrid() {
  * **What it does NOT supply:** the `px-5` gutter. A modal's header and its
  * scroll body take the gutter separately (the paper must run edge to edge behind
  * both), so imposing one here would double it at every call site.
+ *
+ * ## The close control goes on the LEADING edge (owner, 2026-08-25)
+ *
+ * *"Make them match on the leading edge."* The Log sheet and the exercise picker
+ * put dismissal on the left; Home's mode picker put it in the trailing corner,
+ * so the two modals a reader is most likely to open in one session disagreed
+ * about where the way out is. The leading edge wins because that is where every
+ * pushed screen in the app already puts its back chevron
+ * ({@link StackHeader}) — and the owner, reporting the Log sheet's inset bug,
+ * called the control *"the back button"*. It should be under the thumb that
+ * reaches for one.
+ *
+ * The control is {@link StackHeader}'s, verbatim, so the glyph lands on the same
+ * optical x as every other screen's:
+ *
+ * ```tsx
+ * <View className="flex-row items-center gap-1 px-5 pt-2">
+ *   <Pressable accessibilityRole="button" accessibilityLabel="Close"
+ *     onPress={close} hitSlop={8}
+ *     className="-ml-3 h-11 w-11 items-center justify-center active:opacity-60">
+ *     <Ionicons name="close" size={22} color={palette.ink} />
+ *   </Pressable>
+ *   <Text className="flex-1 font-serif text-lg font-semibold text-ink">Title</Text>
+ * </View>
+ * ```
+ *
+ * `-ml-3` is load-bearing and is not a taste call: the 44×44 target is grown
+ * around a 22pt glyph, and −12 is what keeps the glyph where a 36pt target used
+ * to put it. The title takes `flex-1` so a long one wraps beside the control
+ * instead of pushing it off the gutter.
+ *
+ * **A modal that cannot be dismissed has no such control, correctly** — the app
+ * lock (`app/_layout.tsx`) centres its content and offers no way out but the
+ * state machine, and must not grow one.
  */
 export function ModalScreen({
   children,

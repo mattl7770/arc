@@ -226,6 +226,26 @@ export function attributedInstant(date: string, createdAtIso: string): string {
 }
 
 /**
+ * What "a working set" IS, held once: non-warmup, resolved to a catalog
+ * movement, expanded to one row per muscle it works, inside an inclusive
+ * `[start, end]` range on the workout's own calendar **date** (not its write
+ * time — a backdated session belongs to the day it happened).
+ *
+ * Two readers share it for the reason {@link muscleSetsInRange} already gives
+ * about its own move out of the reports module: two definitions of "sets
+ * worked" agree right up until one of them learns about a new set type. Both
+ * take the same two bound parameters in the same order.
+ */
+const WORKING_SETS_IN_RANGE = `FROM workout_sets s
+     JOIN workouts w ON w.id = s.workout_id
+     JOIN exercise_muscles m ON m.exercise_id = s.exercise_id
+     WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup'
+       AND w.date >= ? AND w.date <= ?`;
+
+/** The primary-1.0 / secondary-0.5 weighting, in SQL — mirrors {@link ROLE_WEIGHT}. */
+const ROLE_WEIGHTED_SETS = `sum(CASE WHEN m.role = 'primary' THEN 1.0 ELSE 0.5 END)`;
+
+/**
  * Fractional set count per muscle (primary 1.0, secondary 0.5) over an
  * arbitrary inclusive `[start, end]` day range. Empty-safe.
  *
@@ -247,17 +267,44 @@ export function muscleSetsInRange(
   end: DateString
 ): { muscle: Muscle; sets: number }[] {
   const rows = db.all<{ muscle: Muscle; sets: number }>(
-    `SELECT m.muscle AS muscle,
-            sum(CASE WHEN m.role = 'primary' THEN 1.0 ELSE 0.5 END) AS sets
-     FROM workout_sets s
-     JOIN workouts w ON w.id = s.workout_id
-     JOIN exercise_muscles m ON m.exercise_id = s.exercise_id
-     WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup'
-       AND w.date >= ? AND w.date <= ?
+    `SELECT m.muscle AS muscle, ${ROLE_WEIGHTED_SETS} AS sets
+     ${WORKING_SETS_IN_RANGE}
      GROUP BY m.muscle`,
     [start, end]
   );
   return rows.map((r) => ({ muscle: r.muscle, sets: Math.round(r.sets * 10) / 10 }));
+}
+
+/**
+ * Role-weighted working sets **per day**, over the same substrate as
+ * {@link muscleSetsInRange} — the training-volume input to Home's strain pillar
+ * (`src/lib/home/readiness.ts`).
+ *
+ * One unit is one set of one muscle at its role weight, so a compound (one
+ * primary + two secondaries) costs 2.0 and a single-joint isolation 1.0–1.5:
+ * the number is *tissue loaded*, not sets performed, which is what a systemic
+ * strain reading wants and is why it must never be printed to the user as a set
+ * count.
+ *
+ * **A day with no logged training has no row.** That absence is load-bearing:
+ * it is what lets the caller average over TRAINING days rather than over
+ * calendar days, and it is the only thing separating a rest day from a day
+ * before ARC was installed at the point where the caller decides whether it has
+ * evidence at all.
+ */
+export function dailyMuscleSetLoad(
+  db: Database,
+  start: DateString,
+  end: DateString
+): { date: DateString; sets: number }[] {
+  const rows = db.all<{ date: DateString; sets: number }>(
+    `SELECT w.date AS date, ${ROLE_WEIGHTED_SETS} AS sets
+     ${WORKING_SETS_IN_RANGE}
+     GROUP BY w.date
+     ORDER BY w.date`,
+    [start, end]
+  );
+  return rows.map((r) => ({ date: r.date, sets: Math.round(r.sets * 10) / 10 }));
 }
 
 /**

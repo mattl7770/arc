@@ -56,7 +56,8 @@ export type AppLockAuthOutcome =
   | 'failed'
   /** No device passcode set — open by the rationale in the module docblock. */
   | 'no_credentials'
-  /** Native module absent (web preview / pre-rebuild) — nothing to ask. */
+  /** Native module absent (web preview, or a build predating the module) —
+   * nothing to ask. */
   | 'unavailable';
 
 /** Whether the native module is present, i.e. the lock can actually gate. */

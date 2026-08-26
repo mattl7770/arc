@@ -10,7 +10,7 @@
 >
 > A **second adversarial pass** over the Phase 2–6 diff then found **22 confirmed defects, none refuted** — including two that made the flagship feature (the coach pass) non-functional. All 22 are fixed with reproduction tests; see **§4b**.
 >
-> **Still unproven on device.** Everything here is verified headlessly against `node:sqlite`. The pass has never made a real API call, the notification and Health seams no-op until the next EAS build, and the labs pipeline has never seen a real Function PDF. Headless green is necessary, not sufficient.
+> **Still unproven on device.** Everything here is verified headlessly against `node:sqlite`. The pass has never made a real API call, the notification and Health seams no-op on any binary without their modules (both are in the owner’s since the 2026-08-25 rebuild), and the labs pipeline has never seen a real Function PDF. Headless green is necessary, not sufficient.
 
 ## 1. Verdict
 
@@ -69,7 +69,7 @@ The docs' own example voice line — *"Recovery is meaningfully down (HRV −14%
 - The two deferred trend-math items are still live and worse than recorded: future-dated rows (which the Coach's own `date` params can create — no upper-bound validation) poison every subsequent window, silence the weight-gap detector (negative `daysBetween`), and appear in `stats.last`.
 - Truncated replies (`max_tokens`, 8-round-trip cap) are computed into `stopReason` and then **ignored by the UI** — half-answers render and persist as complete (`use-coach-chat.ts:165-183`; contrast the labs parser, which handles this correctly).
 - Cost is a black box: Opus 5 default with adaptive thinking ON (no `thinking` param sent), usage fields discarded, nothing surfaced — and `model-client.ts:44` cites a "per-interaction cost analysis in docs/ai-coach.md" **that does not exist**. Realistic "how am I doing" turn: ~$0.10–0.20 and 20–45 s.
-- The prompt contains a latent lie: "OS push notifications aren't wired yet" (`system-prompt.ts:43`) becomes false the moment the pending EAS build ships, and nothing flags the string.
+- The prompt contains a latent lie: "OS push notifications aren't wired yet" (`system-prompt.ts:43`) became false the moment that EAS build shipped, and nothing flagged the string.
 - Doc drift in both directions: `docs/ai-coach.md` still lists `set_mode`/`create_experiment` as stubs and `search_knowledge` as undesigned (all shipped); `project-status.md` §1/§2 still call the Coach "a mock" in two places its own later rows refute.
 
 ---
