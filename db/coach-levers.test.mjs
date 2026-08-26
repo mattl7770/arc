@@ -194,58 +194,90 @@ console.log('3. adjust_today validates the whole batch before applying any of it
     : bad('empty ops');
 }
 
-console.log('4. update_protocol states WHICH day it changes, and can apply today on request');
+// A protocol edit reaches TODAY, always. `apply_today` is gone (owner call,
+// 2026-08-25): the flag had one defensible value, and the asymmetry it encoded
+// — mode changes re-derived, protocol edits did not — was never explained
+// anywhere the user would meet it.
+console.log('4. update_protocol lands on TODAY and versions like code');
 {
   const { db } = freshDb();
   createProtocolWithVersion(
     db,
     { name: 'Evening Stack', type: 'supplement_stack' },
-    { items: [{ title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg' }] }
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'i-mag',
+              title: 'Magnesium',
+              scheduled_time: '21:00',
+              dose: '400 mg',
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
   );
-  const items = [
-    { title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg' },
-    { title: 'Zinc', scheduled_time: '21:00', dose: '15 mg' },
+  const phases = [
+    {
+      items: [
+        { title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg' },
+        { title: 'Zinc', scheduled_time: '21:00', dose: '15 mg' },
+      ],
+    },
   ];
-  const tomorrowCard = card('update_protocol', db, {
+  const summary = card('update_protocol', db, {
     protocol_slug: 'evening_stack',
-    items,
+    phases,
     change_notes: 'added zinc',
   });
-  tomorrowCard.includes('takes effect tomorrow') && tomorrowCard.includes('(was 1)')
-    ? ok('default card says it takes effect tomorrow, and shows the item-count delta')
-    : bad('tomorrow card', tomorrowCard);
-
-  const todayCard = card('update_protocol', db, {
-    protocol_slug: 'evening_stack',
-    items,
-    change_notes: 'added zinc',
-    apply_today: true,
-  });
-  todayCard.includes("applies to today's plan now")
-    ? ok('apply_today card says the change lands today')
-    : bad('today card', todayCard);
-
-  const deferred = run('update_protocol', db, {
-    protocol_slug: 'evening_stack',
-    items,
-    change_notes: 'added zinc',
-  });
-  deferred.effective === 'tomorrow' && typeof deferred.note === 'string'
-    ? ok("the tool result tells the model the change is not on today's mission")
-    : bad('deferred result', JSON.stringify(deferred));
+  summary.includes("applies to today's plan now") && summary.includes('(was 1)')
+    ? ok('the card says it lands today, and shows the item-count delta')
+    : bad('update card', summary);
 
   const applied = run('update_protocol', db, {
     protocol_slug: 'evening_stack',
-    items: [...items, { title: 'Glycine', scheduled_time: '21:00', dose: '3 g' }],
-    change_notes: 'added glycine',
-    apply_today: true,
+    phases,
+    change_notes: 'added zinc',
   });
   applied.effective === 'today' && typeof applied.missionAdded === 'number'
-    ? ok('apply_today re-derives the day and reports the diff')
+    ? ok('the tool re-derives the day and reports the diff')
     : bad('applied result', JSON.stringify(applied));
+
+  run('update_protocol', db, {
+    protocol_slug: 'evening_stack',
+    phases: [{ items: [...phases[0].items, { title: 'Glycine', dose: '3 g', cadence: '3/week' }] }],
+    change_notes: 'added glycine, three a week',
+  });
   listProtocols(db)[0].versionNumber === 3
     ? ok('each save is a new immutable version (v3), never an edit')
     : bad('versioning', JSON.stringify(listProtocols(db)));
+
+  // The cadence vocabulary is validated at the boundary: a model that writes
+  // something else gets a message it can act on, not a broken protocol.
+  let message = '';
+  try {
+    run('update_protocol', db, {
+      protocol_slug: 'evening_stack',
+      phases: [{ items: [{ title: 'Magnesium', cadence: 'fortnightly-ish' }] }],
+      change_notes: 'nope',
+    });
+  } catch (e) {
+    message = String(e.message);
+  }
+  message.includes('3/week')
+    ? ok('an unreadable cadence is refused at the tool boundary, naming the vocabulary')
+    : bad('bad cadence accepted', message);
+  listProtocols(db)[0].versionNumber === 3
+    ? ok('…and nothing was written — the version count is unchanged')
+    : bad('a rejected call still wrote', JSON.stringify(listProtocols(db)));
 }
 
 console.log('5. set_mode schedules ahead; a past start is refused');

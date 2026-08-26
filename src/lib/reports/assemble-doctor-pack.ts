@@ -34,6 +34,9 @@ import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { deviceLabel, latestMetric } from '@/lib/db/repositories/wearables';
 import { metricByKey, resolveDisplay } from '@/lib/log/metrics';
 import type { ProtocolType } from '@/lib/db/types';
+import { parseProtocolContent } from '@/lib/protocols/content';
+import { cadenceLabel } from '@/lib/protocols/format';
+import { phaseOn } from '@/lib/protocols/phase';
 
 import {
   EM_DASH,
@@ -174,34 +177,37 @@ export function assemblePatientHeader(db: Database, today: string): PatientHeade
 // --- 2. Current regimen -------------------------------------------------------
 
 /**
- * Parse a version's content defensively — a foreign shape yields no items,
- * never a throw.
+ * What the protocol asks for TODAY, for a clinician's list.
  *
- * Deliberately typed through `unknown` rather than asserted to
- * {@link ProtocolContent}: the column is free JSON guarded only by
- * `json_valid`, so a version written by an older build, by the Coach, or by a
- * hand-edited export can hold anything. Trusting the declared shape here would
- * put `undefined` into a clinician's medication list.
+ * It reads the phase that is live on `today`, not the whole document: a
+ * titration's loading phase is not what the patient is taking in week six, and
+ * printing every phase's items together would hand a doctor two doses of the
+ * same compound with nothing saying which one is current.
+ *
+ * `schedule` carries the CADENCE as well as the clock time, because "how often"
+ * is the clinically load-bearing half — "400 mg" three times a week is a
+ * different prescription from "400 mg" daily, and the old field could not say
+ * which. Everything before content schema 2 normalises to `daily`, which is
+ * what those items always were.
+ *
+ * `parseProtocolContent` is deliberately forgiving and never throws (see its
+ * header), which is the property this needed from the hand-rolled reader it
+ * replaces: a version written by an older build, by the Coach, or by a
+ * hand-edited export can hold anything, and no shape of it may put `undefined`
+ * into a clinician's medication list.
  */
-function parseItems(content: string): RegimenItem[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    return [];
-  }
-  const items = (parsed as { items?: unknown } | null)?.items;
-  if (!Array.isArray(items)) return [];
-  return items
-    .filter((item): item is Record<string, unknown> => item != null && typeof item === 'object')
-    .map((item) => ({
-      title: typeof item.title === 'string' ? item.title : EM_DASH,
-      dose: typeof item.dose === 'string' && item.dose.trim() !== '' ? item.dose.trim() : null,
-      schedule:
-        typeof item.scheduled_time === 'string' && item.scheduled_time.trim() !== ''
-          ? item.scheduled_time.trim()
-          : null,
-    }));
+function regimenItems(content: string, startedOn: string | null, today: string): RegimenItem[] {
+  const parsed = parseProtocolContent(content);
+  const state = phaseOn(parsed, startedOn ?? today, today);
+  if (state.kind !== 'running') return [];
+  return state.window.phase.items.map((item) => ({
+    title: item.title.trim() === '' ? EM_DASH : item.title,
+    dose: item.dose,
+    schedule:
+      item.scheduled_time === null
+        ? cadenceLabel(item.cadence)
+        : `${item.scheduled_time} · ${cadenceLabel(item.cadence)}`,
+  }));
 }
 
 function assembleRegimen(db: Database, today: string): RegimenSection {
@@ -219,24 +225,36 @@ function assembleRegimen(db: Database, today: string): RegimenSection {
   const byType = new Map<ProtocolType, RegimenProtocol[]>();
   for (const protocol of active) {
     const version = getCurrentVersion(db, protocol.id);
-    const items = version ? parseItems(version.content) : [];
+    const items = version ? regimenItems(version.content, protocol.startedOn, today) : [];
     const started = db.get<{ createdAt: string }>(
       'SELECT created_at AS createdAt FROM protocols WHERE id = ?',
       [protocol.id]
     );
+    // `started_on` is the day the protocol's plan began, which is what a
+    // clinician means by "since when"; `created_at` is when the record was
+    // typed, and it is the fallback for a protocol never anchored (0043).
+    const startedDate = protocol.startedOn ?? started?.createdAt.slice(0, 10) ?? null;
+    // "Active but ended" is a real state and a dangerous one to print silently:
+    // a protocol past its last phase lists nothing, and a blank list under an
+    // active heading reads as "takes nothing" rather than "this has finished".
+    const ended =
+      version !== undefined &&
+      phaseOn(parseProtocolContent(version.content), startedDate ?? today, today).kind === 'ended';
     const entry: RegimenProtocol = {
       name: protocol.name,
       type: REGIMEN_ORDER.find((g) => g.type === protocol.type)?.label ?? 'Other',
-      started: started ? formatDate(started.createdAt.slice(0, 10)) : EM_DASH,
+      started: startedDate ? formatDate(startedDate) : EM_DASH,
       lastRevised: version ? formatDate(version.created_at.slice(0, 10)) : EM_DASH,
       version: version ? `v${count(version.version_number)}` : EM_DASH,
       items,
       note:
         version == null
           ? 'Active, but no version has been written yet — there is no content to list.'
-          : items.length === 0
-            ? 'Active, and its current version lists no items.'
-            : null,
+          : ended
+            ? 'Its course has finished — nothing from it is currently scheduled.'
+            : items.length === 0
+              ? 'Active, and its current phase lists no items.'
+              : null,
     };
     const list = byType.get(protocol.type) ?? [];
     list.push(entry);

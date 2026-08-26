@@ -1,90 +1,83 @@
 import { useLocalSearchParams } from 'expo-router';
-import { Text, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 
 import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
-import { useProtocolVersions } from '@/hooks/use-protocol-versions';
+import { getDb } from '@/lib/db/client';
+import { todayISODate } from '@/lib/db/date';
+import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
+import { restoreVersion } from '@/lib/db/repositories/protocols';
+import { diffContent, diffLines } from '@/lib/protocols/diff';
 import { protocolTypeLabel } from '@/lib/protocols/format';
+import { useProtocolVersions } from '@/hooks/use-protocol-versions';
 
 /**
  * Protocol version history — the timeline behind "versioned like code",
- * pushed from the protocol editor.
+ * pushed from the protocol detail screen.
  *
  * Every content save writes a NEW immutable `protocol_versions` row and moves
- * `protocols.current_version_id` to it; the row it replaced is kept. Until now
- * the app wrote that history and never showed it. This screen is the read.
+ * `protocols.current_version_id` to it; the row it replaced is kept.
  *
- * The read runs screen → hook → repository like every other screen in the app:
- * `listVersions` in repositories/protocols.ts owns the SQL (and shares its item
- * count expression with `listProtocols`, so the two can never drift), and
- * useProtocolVersions owns the focus refresh. Nothing here touches getDb.
+ * ## The two halves that were missing, and now are not
+ *
+ * The history was real, immutable and drawn — and paid nothing back. There was
+ * **no diff and no way back**, so "versioned like code" was the storage half
+ * with none of the payoff: you could not see what a version changed, and
+ * `change_notes` was the author's unchecked word for it.
+ *
+ *   - **The diff** (src/lib/protocols/diff.ts) is computed between each version
+ *     and the one below it and drawn directly under that version's note, so the
+ *     sentence the author wrote and the change they actually made are read
+ *     together. It works across the schema turnover: both sides are normalised
+ *     before comparison, so a v1 version diffs against a v2 one exactly like
+ *     two v2 versions do.
+ *   - **Restore** is a NEW version carrying the old content, never a move of
+ *     the live pointer — reverting a commit, not deleting one. History is
+ *     append-only and stays that way, and the restored version's note says
+ *     which version it came from. It re-derives today straight afterwards, so
+ *     the mission follows the way it does for any other save.
  *
  * Conformed Set treatment — one **plate**: a version list is a record, and a
  * record is a table. The rail down the left is drawn with bordered and filled
- * Views: `react-native-svg` is declared in package.json (added 2026-08-25,
- * after the owner's EAS rebuild) but is NOT in the owner's current binary —
- * using it would need a further EAS build — so this View-based drawing stays
- * as it is (01-rn-port-guide.md §5). The closing caption is a **margin
- * annotation**,
- * outside the plate, because devices never nest. (The sheet draws it inside,
- * under a dashed rule — `.cf-vhist-cap`. This app has never had that rule here,
- * and reinstating it is not what restoring the caption needed.)
+ * Views: `react-native-svg` is declared in package.json but is NOT in the
+ * owner's current binary, so this View-based drawing stays (01-rn-port-guide.md
+ * §5). The closing caption is a **margin annotation**, outside the plate,
+ * because devices never nest.
  *
  * The rows are deliberately NOT ruled, unlike every other plate in the app. The
  * rail already runs the full height of the list and separates one node from the
  * next; a hairline across each boundary would cut the rail it crosses and draw
- * the same separation twice. Rules are how a plate separates rows when nothing
- * else does — here something else does.
+ * the same separation twice.
  *
  * Type voices: version numbers, dates and item counts are measurements, so they
- * are mono. Change notes are the author speaking, so they are serif. State
- * words ("Current", "Coach") are the label voice.
+ * are mono. Change notes are the author speaking, so they are serif. The diff
+ * lines are the record of a change — measured, terse, and set in mono so they
+ * cannot be mistaken for the author's own sentence above them. State words
+ * ("Current", "Coach") and the Restore control are the label voice.
  *
- * **Accent budget: ZERO.** This is a reference surface — like Screenings and
- * Experiments, it is something you read, not something you act on — and §2's
- * budget list (Home hero, one primary action per screen, completion stamps,
- * user chat bubbles, the active tab, the Coach presence dot) has no slot for
- * "the live row of a list". An earlier pass marked the current version with a
- * filled accent node on the argument that it is the same kind of state as the
- * active tab; the ruling was not to widen the budget, because that list is the
- * one thing the whole tree is checked against. So the live/superseded split is
- * carried entirely by FORM and WEIGHT, which is where it belonged anyway: the
- * current version is a SOLID ink node with a bold version number, every
- * superseded one a hollow dashed muted square with a lighter number. Fill,
- * rule style and weight all disagree — three axes, none of them hue, which is
- * the tick-ladder rule from home/mission.tsx applied to a timeline. No signal-*
- * anywhere either: a version is workflow, not biology.
+ * **Accent budget: ZERO.** This is a reference surface, and §2's budget list has
+ * no slot for "the live row of a list". The live/superseded split is carried
+ * entirely by FORM and WEIGHT: the current version is a SOLID ink node with a
+ * bold version number, every superseded one a hollow dashed muted square with a
+ * lighter number. Fill, rule style and weight all disagree — three axes, none of
+ * them hue. No `signal-*` anywhere either: a version is workflow, not biology.
  *
  * ## The state this screen does NOT draw, and why
  *
  * The mockup draws a suspended moment — v2 dashed and labelled
  * "proposed · awaiting your OK" above a solid current v1. **The data model
- * cannot produce that row today, so it is not drawn.** Every writer of
- * `protocol_versions` (repositories/protocols.ts) bumps `current_version_id` in
- * the same transaction, and the Coach's `update_protocol` tool only reaches
- * that writer *after* the user approves — the proposal itself lives in
- * `PendingWrite`, which is React state in use-coach-chat.ts and is never
- * persisted. So an unapproved version has no row, no id and no lifetime beyond
- * the open chat turn. Drawing one here would be a picture of a record that does
- * not exist. What the data can say is said: current, superseded, and who wrote
- * each one.
+ * cannot produce that row, so it is not drawn.** Every writer of
+ * `protocol_versions` bumps `current_version_id` in the same transaction, and
+ * the Coach's `update_protocol` only reaches that writer *after* the user
+ * approves — the proposal itself lives in `PendingWrite`, React state in
+ * use-coach-chat.ts, never persisted. Drawing one here would be a picture of a
+ * record that does not exist.
  */
 
 /** Hermes ships no Intl, so the stamp is hand-rolled (see home/date-eyebrow.tsx). */
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/**
- * The screen the back control returns to. This one is unambiguous: exactly one
- * caller pushes `/protocol-versions` (app/protocol-edit.tsx, the "version
- * history" row), and that screen's own `StackHeader` title is "Edit Protocol" —
- * so the word here is the title of the sheet underneath, not a guess. The mockup
- * writes `‹ Data` because its version history is drawn hanging off the Protocols
- * sheet; in the app it hangs off the editor, and the control names where it
- * actually goes.
- */
-const PARENT = 'Edit Protocol';
 
 /**
  * ISO instant -> "3 Jul 26 · 14:20" in local time. The clock time is not
@@ -125,6 +118,9 @@ const VERSION_TEXT: Record<'current' | 'prior', string> = {
   prior: 'font-mono text-[13px] text-ink-secondary',
 };
 
+/** How many diff lines a row prints before it summarises the rest. */
+const DIFF_LINE_LIMIT = 6;
+
 export default function ProtocolVersionsScreen() {
   // A deep link can repeat the param (?id=a&id=b), which expo-router delivers
   // as string[] despite the generic — coerce so a malformed link degrades to
@@ -138,7 +134,7 @@ export default function ProtocolVersionsScreen() {
     return (
       <Screen>
         <View className="pt-2">
-          <StackHeader title="Version History" parent={PARENT} />
+          <StackHeader title="Version History" parent="Protocols" />
         </View>
         <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-muted">
           This protocol no longer exists.
@@ -149,10 +145,38 @@ export default function ProtocolVersionsScreen() {
 
   const { protocol, versions, currentVersionId } = history;
 
+  /**
+   * Make an old version live again. A confirmation first, because it changes
+   * what lands on today — and the summary says what it will contain, so a
+   * restore cannot be approved as a smaller thing than it is.
+   */
+  const confirmRestore = (versionId: string, versionNumber: number, itemCount: number | null) => {
+    Alert.alert(
+      `Restore v${versionNumber}?`,
+      `This saves its contents as a new version — ${itemsText(itemCount)} — and leaves every version already here exactly as it is. Today's mission follows; anything already done or skipped keeps its record.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Restore',
+          onPress: () => {
+            try {
+              const db = getDb();
+              restoreVersion(db, protocol.id, versionId);
+              rederiveMissionForDay(db, todayISODate());
+            } catch (error) {
+              console.warn('[protocols] restore failed', error);
+              Alert.alert('Restore failed', 'Nothing was changed. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <Screen scroll>
       <View className="pt-2">
-        <StackHeader title="Version History" parent={PARENT} />
+        <StackHeader title="Version History" parent={protocol.name} />
       </View>
 
       {/* Which protocol this is the history of. The name is speech, the type is
@@ -188,6 +212,15 @@ export default function ProtocolVersionsScreen() {
               versions.map((v, index) => {
                 const current = v.id === currentVersionId;
                 const last = index === versions.length - 1;
+                // Newest first, so the version BELOW this one in the list is
+                // the one it replaced. The oldest has nothing under it, which
+                // is why it prints no diff — v1 is not a change, it is a start.
+                const previous = versions[index + 1];
+                const lines = previous
+                  ? diffLines(diffContent(previous.content, v.content))
+                  : [];
+                const shown = lines.slice(0, DIFF_LINE_LIMIT);
+                const rest = lines.length - shown.length;
                 return (
                   <View
                     key={v.id}
@@ -197,7 +230,8 @@ export default function ProtocolVersionsScreen() {
                       `Version ${v.versionNumber}, ${current ? 'current' : 'superseded'}. ` +
                       `Saved ${stamp(v.createdAt)}. ${itemsText(v.itemCount)}. ` +
                       `${v.createdBy === 'ai' ? 'Written by Coach. ' : ''}` +
-                      `${v.changeNotes ? `Note: ${v.changeNotes}` : 'No change note.'}`
+                      `${v.changeNotes ? `Note: ${v.changeNotes}. ` : 'No change note. '}` +
+                      `${previous ? (lines.length === 0 ? 'No change to the items.' : `Changes: ${lines.join('; ')}.`) : ''}`
                     }
                     className="flex-row gap-2.5">
                     {/* The rail. Two Views: the node, then a 1px column that
@@ -241,9 +275,39 @@ export default function ProtocolVersionsScreen() {
                         {v.changeNotes ?? 'No change note.'}
                       </Text>
 
-                      <View className="mt-1.5 flex-row items-baseline gap-2">
+                      {/* What the save ACTUALLY did, under what its author said
+                          it did. Mono, because each line is a record of a
+                          change rather than prose — and because the two must
+                          never be mistaken for one another. */}
+                      {previous ? (
+                        <View className="mt-1.5">
+                          {lines.length === 0 ? (
+                            <Text className="font-mono text-[10.5px] leading-4 text-ink-muted">
+                              no change to the items
+                            </Text>
+                          ) : (
+                            <>
+                              {shown.map((line, i) => (
+                                <Text
+                                  key={`${v.id}-${i}`}
+                                  className="font-mono text-[10.5px] leading-4 text-ink-secondary">
+                                  {line}
+                                </Text>
+                              ))}
+                              {rest > 0 ? (
+                                <Text className="font-mono text-[10.5px] leading-4 text-ink-muted">
+                                  {`+ ${rest} more`}
+                                </Text>
+                              ) : null}
+                            </>
+                          )}
+                        </View>
+                      ) : null}
+
+                      <View className="mt-1.5 flex-row items-center gap-2">
                         <Text className="flex-1 font-mono text-[10px] text-ink-muted">
                           {itemsText(v.itemCount)}
+                          {v.phaseCount > 1 ? ` · ${v.phaseCount} phases` : ''}
                         </Text>
                         {/* Authorship is stamped on the row (`created_by`), so
                             a Coach-written version is named. User-written is
@@ -254,6 +318,20 @@ export default function ProtocolVersionsScreen() {
                             Coach
                           </Text>
                         ) : null}
+                        {/* Only on a superseded row: "restore what is already
+                            live" is a control with nothing to do. Label voice,
+                            no accent — this screen spends none. */}
+                        {current ? null : (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Restore version ${v.versionNumber}`}
+                            onPress={() => confirmRestore(v.id, v.versionNumber, v.itemCount)}
+                            className="min-h-[44px] justify-center px-1 active:opacity-60">
+                            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1px] text-ink">
+                              Restore
+                            </Text>
+                          </Pressable>
+                        )}
                       </View>
                     </View>
                   </View>
@@ -264,17 +342,14 @@ export default function ProtocolVersionsScreen() {
         </View>
       </View>
 
-      {/* The whole closing caption went on 2026-08-11 as explanatory copy. Most
-          of it deserved to: "every save keeps the version before it" is what
-          the timeline draws, and "history is never lost" is reassurance. One
-          clause was neither. Deleting a protocol takes its versions with it,
-          and that is a consequence the user cannot discover before triggering
-          it — nothing on this screen, or on the editor holding the delete,
-          says so. Just that clause is back. */}
+      {/* The one consequence the user cannot discover before triggering it:
+          deleting a protocol takes its versions with it, and nothing on the
+          editor holding that delete says so. */}
       <View className="mt-8">
         <Block device="margin">
           <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-            Deleting a protocol deletes its version history.
+            Restoring writes a new version; nothing here is ever overwritten. Deleting a protocol
+            deletes its version history.
           </Text>
         </Block>
       </View>

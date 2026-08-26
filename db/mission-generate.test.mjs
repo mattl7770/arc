@@ -16,11 +16,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
+  addVersion,
   createProtocol,
   createProtocolWithVersion,
   setActive,
 } from '../src/lib/db/repositories/protocols.ts';
-import { listMission } from '../src/lib/db/repositories/mission.ts';
+import { listMission, setMissionStatus } from '../src/lib/db/repositories/mission.ts';
+import { isoWeekday, weekStart } from '../src/lib/protocols/cadence.ts';
 import {
   generateMissionForDay,
   planKey,
@@ -338,6 +340,318 @@ console.log('8. no tracked text file carries a literal NUL byte (the unsearchabl
   planKey('Creatine', 'p1') === `p1${NUL}Creatine`
     ? ok('the escape still produces U+0000 — the delimiter is byte-for-byte unchanged')
     : bad('planKey delimiter changed', JSON.stringify(planKey('Creatine', 'p1')));
+// ---------------------------------------------------------------------------
+// content schema 2: CADENCE and PHASES. Before this, every item of every active
+// protocol landed on EVERY day — "creatine daily", "3× a week lower body" and
+// "8-week course, then stop" were one shape and all three ran seven days a
+// week. Everything below is the fence around that being fixed.
+//
+// The dates are chosen and stated: 2026-08-01 is a SATURDAY, so 08-03 is the
+// Monday that starts the following week. The weekday arithmetic is hand-rolled
+// (Hermes has no Intl), so it is pinned against known dates rather than trusted.
+// ---------------------------------------------------------------------------
+
+/** A schema-2 content document, built the way the editor builds one. */
+const content = (phases) => ({
+  schema: 2,
+  phases: phases.map((p, i) => ({
+    id: p.id ?? `phase-${i}`,
+    title: p.title ?? null,
+    duration_days: p.days ?? null,
+    items: p.items.map((it, j) => ({
+      id: it.id ?? `item-${i}-${j}`,
+      title: it.title,
+      scheduled_time: it.time ?? null,
+      dose: it.dose ?? null,
+      notes: it.notes ?? null,
+      cadence: it.cadence ?? { kind: 'daily' },
+    })),
+  })),
+});
+
+const titlesOn = (db, raw, date) => {
+  generateMissionForDay(db, date);
+  return rows(raw, date).map((r) => r.title);
+};
+
+console.log('8. the weekday arithmetic, pinned against known dates');
+{
+  // 1970-01-01 was a Thursday, which is what the epoch-day formula has to
+  // reproduce; the rest are dates a person can check on a calendar.
+  const cases = [
+    ['1970-01-01', 4],
+    ['2026-08-01', 6], // Saturday
+    ['2026-08-02', 7], // Sunday
+    ['2026-08-03', 1], // Monday
+    ['2024-02-29', 4], // a leap day (Thursday)
+    ['2026-12-31', 4],
+  ];
+  cases.every(([date, day]) => isoWeekday(date) === day)
+    ? ok('isoWeekday: 1 = Monday … 7 = Sunday, across a leap day and a year boundary')
+    : bad('isoWeekday', JSON.stringify(cases.map(([d]) => [d, isoWeekday(d)])));
+  weekStart('2026-08-02') === '2026-07-27' && weekStart('2026-08-03') === '2026-08-03'
+    ? ok('a week starts on MONDAY — Sunday belongs to the week before it')
+    : bad('weekStart', `${weekStart('2026-08-02')} / ${weekStart('2026-08-03')}`);
+}
+
+console.log('9. cadence: daily, weekdays, every-N-days');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Mixed', type: 'daily_routine', startedOn: '2026-08-01' },
+    content([
+      {
+        items: [
+          { title: 'Creatine' },
+          { title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 3, 5] } },
+          { title: 'Sauna', cadence: { kind: 'every_n_days', n: 3 } },
+        ],
+      },
+    ])
+  );
+  // 08-01 Sat = phase day 0 → every_n lands; not a Mon/Wed/Fri.
+  const sat = titlesOn(db, raw, '2026-08-01');
+  sat.includes('Creatine') && !sat.includes('Lower body') && sat.includes('Sauna')
+    ? ok('Saturday: daily lands, Mon/Wed/Fri does not, every-3-days lands on phase day 0')
+    : bad('saturday', JSON.stringify(sat));
+
+  const sun = titlesOn(db, raw, '2026-08-02');
+  sun.includes('Creatine') && !sun.includes('Lower body') && !sun.includes('Sauna')
+    ? ok('Sunday: only the daily item — day 1 is not a multiple of 3')
+    : bad('sunday', JSON.stringify(sun));
+
+  const mon = titlesOn(db, raw, '2026-08-03');
+  mon.includes('Lower body')
+    ? ok('Monday: the weekday item comes round')
+    : bad('monday', JSON.stringify(mon));
+
+  const tue = titlesOn(db, raw, '2026-08-04');
+  tue.includes('Sauna') && !tue.includes('Lower body')
+    ? ok('Tuesday: phase day 3 → every-3-days lands; the weekday item does not')
+    : bad('tuesday', JSON.stringify(tue));
+}
+
+console.log('10. an N-per-week quota: surfaced until met, and a skip does not spend it');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03' },
+    content([{ items: [{ id: 'lift', title: 'Lift', cadence: { kind: 'quota', per_week: 3 } }] }])
+  );
+  // Monday 08-03 → Sunday 08-09 is ONE Monday-start week.
+  const settle = (date, status) => {
+    const row = rows(raw, date).find((r) => r.title === 'Lift');
+    setMissionStatus(db, row.id, status);
+  };
+
+  titlesOn(db, raw, '2026-08-03').includes('Lift')
+    ? ok('Monday: nothing done yet, so it is on the plan')
+    : bad('mon');
+  settle('2026-08-03', 'completed');
+  titlesOn(db, raw, '2026-08-04').includes('Lift')
+    ? ok('Tuesday: 1 of 3 done, still on the plan')
+    : bad('tue');
+  settle('2026-08-04', 'skipped');
+  titlesOn(db, raw, '2026-08-05').includes('Lift')
+    ? ok('Wednesday: the SKIP did not consume quota — still 1 of 3, still on the plan')
+    : bad('skip consumed quota');
+  settle('2026-08-05', 'completed');
+  titlesOn(db, raw, '2026-08-06');
+  settle('2026-08-06', 'completed');
+
+  const fri = titlesOn(db, raw, '2026-08-07');
+  !fri.includes('Lift')
+    ? ok('Friday: the third session is done, so it stops being asked for')
+    : bad('quota met but still planned', JSON.stringify(fri));
+
+  // The week boundary: Sunday still shows nothing, Monday starts over.
+  const sun = titlesOn(db, raw, '2026-08-09');
+  !sun.includes('Lift')
+    ? ok('Sunday closes the week still met')
+    : bad('sunday', JSON.stringify(sun));
+  const nextMon = titlesOn(db, raw, '2026-08-10');
+  nextMon.includes('Lift')
+    ? ok('the next MONDAY starts a fresh quota — the week rolls, the count does not carry')
+    : bad('new week did not reset', JSON.stringify(nextMon));
+}
+
+console.log('11. quota counting joins on ITEM IDENTITY, not on the title');
+{
+  const { db, raw } = freshDb();
+  const id = createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03' },
+    content([{ items: [{ id: 'lift', title: 'Lift', cadence: { kind: 'quota', per_week: 2 } }] }])
+  );
+  titlesOn(db, raw, '2026-08-03');
+  const row = rows(raw, '2026-08-03').find((r) => r.title === 'Lift');
+  JSON.parse(row.value).item === 'lift'
+    ? ok('a generated row stamps the item id it came from')
+    : bad('no item stamp', row.value);
+  setMissionStatus(db, row.id, 'completed');
+
+  // Rename the item — same id, new text. A title-keyed count would forget the
+  // Monday session and start the week over.
+  addVersion(
+    db,
+    id,
+    content([
+      { items: [{ id: 'lift', title: 'Lift heavy', cadence: { kind: 'quota', per_week: 2 } }] },
+    ]),
+    'renamed'
+  );
+  titlesOn(db, raw, '2026-08-04');
+  const tue = rows(raw, '2026-08-04').find((r) => r.title === 'Lift heavy');
+  tue ? ok('Tuesday: 1 of 2 done, the renamed item is still asked for') : bad('tue missing');
+  setMissionStatus(db, tue.id, 'completed');
+  const wed = titlesOn(db, raw, '2026-08-05');
+  !wed.includes('Lift heavy')
+    ? ok('Wednesday: the rename did not reset the quota — 2 of 2 counted across the change')
+    : bad('rename reset the quota', JSON.stringify(wed));
+}
+
+console.log('12. phases: the generator picks the phase by date, and an ended protocol stops');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Creatine', type: 'supplement_stack', startedOn: '2026-08-01' },
+    content([
+      { title: 'Loading', days: 7, items: [{ title: 'Creatine', dose: '20 g' }] },
+      { title: 'Maintenance', items: [{ title: 'Creatine', dose: '5 g' }] },
+    ])
+  );
+  const doseOn = (date) => {
+    generateMissionForDay(db, date);
+    const row = rows(raw, date).find((r) => r.title === 'Creatine');
+    return row ? JSON.parse(row.value).dose : null;
+  };
+  doseOn('2026-08-01') === '20 g' && doseOn('2026-08-07') === '20 g'
+    ? ok('the loading phase runs its seven days at 20 g')
+    : bad('loading dose', doseOn('2026-08-07'));
+  doseOn('2026-08-08') === '5 g'
+    ? ok('the transition day switches to maintenance — "20 g for a week, then 5" is expressible')
+    : bad('transition dose', doseOn('2026-08-08'));
+
+  const { db: db2, raw: raw2 } = freshDb();
+  createProtocolWithVersion(
+    db2,
+    { name: 'Course', type: 'therapy_protocol', startedOn: '2026-08-01' },
+    content([{ days: 7, items: [{ title: 'Peptide' }] }])
+  );
+  titlesOn(db2, raw2, '2026-08-07').includes('Peptide')
+    ? ok('a bounded protocol runs to its last day')
+    : bad('last day missing');
+  generateMissionForDay(db2, '2026-08-08');
+  rows(raw2, '2026-08-08').length === 0
+    ? ok('…and then ENDS — an eight-week course that stops is expressible too')
+    : bad('ended protocol still generating', JSON.stringify(rows(raw2, '2026-08-08')));
+
+  const { db: db3, raw: raw3 } = freshDb();
+  createProtocolWithVersion(
+    db3,
+    { name: 'Later', type: 'daily_routine', startedOn: '2026-09-01' },
+    content([{ items: [{ title: 'Not yet' }] }])
+  );
+  generateMissionForDay(db3, '2026-08-15');
+  rows(raw3, '2026-08-15').length === 0
+    ? ok('a protocol anchored in the future puts nothing on a day before it starts')
+    : bad('future protocol generated', JSON.stringify(rows(raw3, '2026-08-15')));
+}
+
+console.log('13. a mid-day edit reaches TODAY through the re-derive, preserving work');
+{
+  const { db, raw } = freshDb();
+  const id = createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: DATE },
+    content([
+      {
+        items: [
+          { id: 'a', title: 'Creatine', dose: '5 g' },
+          { id: 'b', title: 'Omega-3' },
+        ],
+      },
+    ])
+  );
+  generateMissionForDay(db, DATE);
+  const creatine = rows(raw, DATE).find((r) => r.title === 'Creatine');
+  setMissionStatus(db, creatine.id, 'completed');
+
+  // The edit: drop Omega-3, add Zinc, and re-dose the item already taken.
+  addVersion(
+    db,
+    id,
+    content([
+      {
+        items: [
+          { id: 'a', title: 'Creatine', dose: '10 g' },
+          { id: 'c', title: 'Zinc' },
+        ],
+      },
+    ]),
+    'dropped omega, added zinc'
+  );
+  const result = rederiveMissionForDay(db, DATE);
+  const after = rows(raw, DATE);
+  const stillCreatine = after.find((r) => r.title === 'Creatine');
+  stillCreatine &&
+  stillCreatine.id === creatine.id &&
+  stillCreatine.status === 'completed' &&
+  after.some((r) => r.title === 'Zinc') &&
+  !after.some((r) => r.title === 'Omega-3')
+    ? ok('the edit lands today: the untouched item goes, the new one arrives, the DONE one stays')
+    : bad('mid-day edit', JSON.stringify({ result, after: after.map((r) => [r.title, r.status]) }));
+
+  // And an item whose quota is already met this week must not be re-added by
+  // the re-derive — the diff and the cadence have to agree.
+  const { db: db2, raw: raw2 } = freshDb();
+  const qid = createProtocolWithVersion(
+    db2,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03' },
+    content([{ items: [{ id: 'lift', title: 'Lift', cadence: { kind: 'quota', per_week: 1 } }] }])
+  );
+  generateMissionForDay(db2, '2026-08-03');
+  setMissionStatus(db2, rows(raw2, '2026-08-03').find((r) => r.title === 'Lift').id, 'completed');
+  generateMissionForDay(db2, '2026-08-04');
+  addVersion(
+    db2,
+    qid,
+    content([{ items: [{ id: 'lift', title: 'Lift', cadence: { kind: 'quota', per_week: 1 } }] }]),
+    'no-op edit'
+  );
+  rederiveMissionForDay(db2, '2026-08-04');
+  !rows(raw2, '2026-08-04').some((r) => r.title === 'Lift')
+    ? ok('a quota already met this week is not re-added by an edit later in the week')
+    : bad('quota item resurrected', JSON.stringify(rows(raw2, '2026-08-04').map((r) => r.title)));
+}
+
+console.log('14. an UNANCHORED active protocol is anchored by the first generation');
+{
+  const { db, raw } = freshDb();
+  // Exactly the state a protocol is created in: active, with a version, and no
+  // phase clock. The generator reads NULL as "starts today" and stamps it, so
+  // phase 1 begins on the first day it actually plans something.
+  createProtocolWithVersion(
+    db,
+    { name: 'Titrated', type: 'supplement_stack' },
+    content([
+      { title: 'Ramp', days: 2, items: [{ title: 'Peptide', dose: '0.5 mg' }] },
+      { title: 'Full', items: [{ title: 'Peptide', dose: '1 mg' }] },
+    ])
+  );
+  raw.prepare('SELECT started_on FROM protocols').get().started_on === null
+    ? ok('it starts unanchored')
+    : bad('anchored at creation');
+  generateMissionForDay(db, DATE);
+  raw.prepare('SELECT started_on FROM protocols').get().started_on === DATE
+    ? ok('the generation anchors it to the day it first planned something')
+    : bad('not anchored by generation');
+  JSON.parse(rows(raw, DATE).find((r) => r.title === 'Peptide').value).dose === '0.5 mg'
+    ? ok('…and that day is day 0 of phase 1, so the user starts at the bottom of the ramp')
+    : bad('wrong phase on first day');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

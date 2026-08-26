@@ -5,15 +5,21 @@
  * the Coach reads via get_today_snapshot).
  *
  * Design:
- *  - Each protocol item (`{title, scheduled_time, dose, notes}`) becomes one
- *    log_entry, `type` mapped from the protocol's type, linked back to its
- *    source via `protocol_id` (ON DELETE SET NULL — deleting a protocol never
- *    destroys the day's execution history). The dose (or notes) rides the
- *    mission `why` line; the protocol name rides `protocol`.
+ *  - A protocol's live version is ORDERED PHASES of items; the phase live on
+ *    `date` is picked from `protocols.started_on` (0043, see
+ *    src/lib/protocols/phase.ts). A protocol past its last bounded phase has
+ *    ENDED and generates nothing.
+ *  - Each item of that phase becomes one log_entry **if its CADENCE puts it on
+ *    this day** — daily, specific weekdays, every N days, or an N-per-week
+ *    flexible quota. `type` is mapped from the protocol's type, and the row is
+ *    linked back to its source via `protocol_id` (ON DELETE SET NULL — deleting
+ *    a protocol never destroys the day's execution history) and to the ITEM via
+ *    `value.item`, which is what quota counting joins on. The dose rides the
+ *    mission `dose`, the notes ride `why`, the protocol name rides `protocol`.
  *  - Idempotent per day: it does nothing if the day already has planned entries,
- *    so it is safe to call on every open. A protocol edited *today* therefore
- *    reshapes only TOMORROW's mission — protocols are versioned like code, and
- *    today's plan is already committed the moment it was generated.
+ *    so it is safe to call on every open. Committing today's plan once is what
+ *    makes the day stable; a protocol edit is applied to today deliberately, by
+ *    re-deriving (see {@link rederiveMissionForDay}), which preserves work.
  *  - Only ACTIVE protocols with a live version contribute; a paused or
  *    version-less protocol is skipped.
  *
@@ -23,13 +29,21 @@
 import type { Database } from '../database';
 import { newId } from '../id';
 import type { LogEntryType, ProtocolType } from '../types';
+import { cadenceLandsOn, weekStart } from '@/lib/protocols/cadence';
 import { parseProtocolContent } from '@/lib/protocols/content';
+import { phaseOn } from '@/lib/protocols/phase';
+import type { ProtocolItem } from '@/lib/protocols/types';
 import { getModeDefinition, type ModeItem, type ModeKey } from '@/lib/modes/registry';
 
 import { getActiveMode } from './day-modes';
 import { experimentsRunningOn } from './experiments';
-import { countMissionEntries, getOrCreateDailyLog, PLANNED_ROW_SQL } from './mission';
-import { getCurrentVersion, listProtocols } from './protocols';
+import {
+  countMissionEntries,
+  getOrCreateDailyLog,
+  NOT_REMOVED_SQL,
+  PLANNED_ROW_SQL,
+} from './mission';
+import { ensureStartedOn, getCurrentVersion, listProtocols } from './protocols';
 
 /** How each protocol kind lands as a mission entry type (log_entries CHECK). */
 const LOG_TYPE_BY_PROTOCOL: Record<ProtocolType, LogEntryType> = {
@@ -72,6 +86,16 @@ type GeneratedExtras = {
   /** Rationale prose. Serif italic. Never a quantity — that is `dose`. */
   why?: string;
   generated: true;
+  /**
+   * The `ProtocolItem.id` this row came from. Present on protocol items only.
+   *
+   * It is what makes an N-per-week QUOTA countable: "how many times has this
+   * item been done this week" has to join on the item's IDENTITY, not on its
+   * title, because a title is editable and a retitled item would restart its
+   * own quota mid-week. `protocol_id` alone is not enough either — a stack has
+   * many items and they hold separate quotas.
+   */
+  item?: string;
   /** Present on mode-injected items, absent on protocol items. */
   mode?: ModeKey;
   /** Present on a running experiment's intervention row (its experiment id). */
@@ -116,23 +140,104 @@ type PlannedEntry = {
 };
 
 /**
+ * Identity of one quota-bearing item: its protocol AND its item id, because a
+ * stack's items each hold their own quota. Same `\u0000` join as {@link planKey}
+ * — written as an ESCAPE, never as a literal NUL byte in the source, which is a
+ * mistake this file has had to have cleaned out of it before.
+ */
+const quotaKey = (protocolId: string | null, itemId: string): string =>
+  `${protocolId ?? '-'}\u0000${itemId}`;
+
+/**
+ * How many times each protocol item has been COMPLETED so far in the calendar
+ * week containing `date`, counting days strictly BEFORE `date`.
+ *
+ * Three deliberate choices:
+ *   - **completed only.** A skip does not consume quota — that is the point of
+ *     a flexible quota, and the owner said so in as many words. Neither does a
+ *     `partial`: real progress, but not the session.
+ *   - **before `date`, not up to and including it.** A row already standing on
+ *     `date` is preserved by the re-derive whatever this says, so counting it
+ *     would let a completed item be judged "quota met" and removed from its own
+ *     day.
+ *   - **the two shared mission predicates**, so "a planned row" means exactly
+ *     what it means everywhere else (mission.ts owns both constants).
+ *
+ * One query per day, not one per item.
+ */
+function quotaCompletionsThisWeek(db: Database, date: string): Map<string, number> {
+  const rows = db.all<{ protocolId: string | null; item: string | null; done: number }>(
+    `SELECT e.protocol_id AS protocolId,
+            json_extract(e.value, '$.item') AS item,
+            count(*) AS done
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date >= ? AND d.date < ?
+        AND e.status = 'completed'
+        AND json_extract(e.value, '$.item') IS NOT NULL
+        AND ${PLANNED_ROW_SQL}
+        AND ${NOT_REMOVED_SQL}
+      GROUP BY e.protocol_id, json_extract(e.value, '$.item')`,
+    [weekStart(date), date]
+  );
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.item === null) continue;
+    counts.set(quotaKey(row.protocolId, row.item), row.done);
+  }
+  return counts;
+}
+
+/**
+ * Whether an item's cadence puts it on `date`. Everything except a quota is
+ * decided by pure arithmetic in src/lib/protocols/cadence.ts; a quota needs the
+ * week's completions, which is why this one lives here.
+ *
+ * A quota item lands on EVERY remaining day of the week until its quota is met,
+ * then stops appearing — which also means that if the days left equal the quota
+ * left, it is on every one of them. That is the whole behaviour: ARC surfaces
+ * it, the user picks the days.
+ */
+function landsOn(
+  item: ProtocolItem,
+  date: string,
+  dayInPhase: number,
+  protocolId: string,
+  quotaDone: Map<string, number>
+): boolean {
+  const pure = cadenceLandsOn(item.cadence, date, dayInPhase);
+  if (pure !== null) return pure;
+  const done = quotaDone.get(quotaKey(protocolId, item.id)) ?? 0;
+  return item.cadence.kind === 'quota' ? done < item.cadence.per_week : true;
+}
+
+/**
  * What `date` SHOULD contain under its currently-active mode: every active
- * protocol's live-version items MINUS the types the mode drops, PLUS the mode's
- * own standard items. Pure computation — reads, never writes — so the first
- * generation and the mid-day re-derive share ONE definition of the day's plan
- * and can't drift.
+ * protocol's live PHASE's items whose CADENCE lands on this day, MINUS the
+ * types the mode drops, PLUS the mode's own standard items. Pure computation —
+ * reads, never writes — so the first generation and the mid-day re-derive share
+ * ONE definition of the day's plan and can't drift.
  */
 function planForDay(db: Database, date: string): PlannedEntry[] {
   const def = getModeDefinition(getActiveMode(db, date));
   const active = listProtocols(db).filter((p) => p.isActive && p.versionNumber !== null);
   const plan: PlannedEntry[] = [];
+  const quotaDone = quotaCompletionsThisWeek(db, date);
 
   for (const protocol of active) {
     const type = LOG_TYPE_BY_PROTOCOL[protocol.type];
     // Mode can pull a whole protocol type for the day (e.g. Sick drops workouts).
     if (def.dropTypes.includes(type)) continue;
-    const items = parseProtocolContent(getCurrentVersion(db, protocol.id)?.content ?? null).items;
-    for (const item of items) {
+    const content = parseProtocolContent(getCurrentVersion(db, protocol.id)?.content ?? null);
+    // A NULL anchor is read as "starts today" — the same reading ensureStartedOn
+    // then makes permanent. Doing it here as well keeps planForDay a pure
+    // function of the database it is handed, so a caller that skipped the
+    // anchoring step still gets phase 1 rather than a crash or an ended protocol.
+    const state = phaseOn(content, protocol.startedOn ?? date, date);
+    if (state.kind !== 'running') continue; // ended, or not started yet
+    const { phase, dayInPhase } = state.window;
+    for (const item of phase.items) {
+      if (!landsOn(item, date, dayInPhase, protocol.id, quotaDone)) continue;
       // Carried apart, not flattened. `dose ?? notes` threw away which one this
       // was one line before the hero had to know, and the hero guessed it back
       // from the string's shape.
@@ -148,6 +253,7 @@ function planForDay(db: Database, date: string): PlannedEntry[] {
           ...(dose ? { dose } : {}),
           ...(why ? { why } : {}),
           generated: true,
+          item: item.id,
         },
       });
     }
@@ -238,6 +344,11 @@ export function generateMissionForDay(db: Database, date: string): number {
   const log = getOrCreateDailyLog(db, date);
   if (countMissionEntries(db, log.id) > 0) return 0;
 
+  // Anchor any active protocol whose phase clock has never been set, BEFORE
+  // reading the plan: the first day a protocol plans something is day 0 of its
+  // phase 1, and stamping it here is what makes that permanent. Outside
+  // planForDay deliberately — that stays a pure read.
+  ensureStartedOn(db, date);
   const plan = planForDay(db, date);
   if (plan.length === 0) return 0;
 
@@ -306,15 +417,20 @@ export const planKey = (title: string, protocolId: string | null): string =>
  * Safe to call repeatedly — a second call with no mode change is a no-op. On a
  * day with no planned rows yet it delegates to {@link generateMissionForDay}.
  *
- * KNOWN, ACCEPTED: this reads each protocol's LIVE version, so if a protocol was
- * edited earlier today, a mode change commits that edit to today too — the one
- * exception to "a protocol edited today reshapes only tomorrow". Pending rows
- * only; nothing logged is touched. Recording the generating version id on each
- * row would remove the exception, and is the fix if it ever bites.
+ * This reads each protocol's LIVE version, which is now the POINT rather than a
+ * caveat: **a protocol edit applies to today's mission immediately** (owner
+ * call, 2026-08-25), and it applies through exactly this machinery, so an edit
+ * and a mode change are one mechanism. Pending machine-made rows only; anything
+ * completed, skipped, partial or ad-hoc is preserved untouched. An item whose
+ * quota is already met today is therefore not re-added, and an item the edit
+ * removed does not take its completed row with it.
  */
 export function rederiveMissionForDay(db: Database, date: string): RederiveResult {
   const log = getOrCreateDailyLog(db, date);
   const mode = getActiveMode(db, date);
+  // Same anchoring as the first generation — a protocol activated today and
+  // edited an hour later must not be read as never having started.
+  ensureStartedOn(db, date);
 
   type Row = {
     id: string;

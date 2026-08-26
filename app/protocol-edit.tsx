@@ -8,24 +8,52 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
+import { todayISODate } from '@/lib/db/date';
+import { newId } from '@/lib/db/id';
+import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
 import {
   createProtocolWithVersion,
   deleteProtocol,
   reviseProtocol,
 } from '@/lib/db/repositories/protocols';
 import type { ProtocolType } from '@/lib/db/types';
-import { normalizeItem } from '@/lib/protocols/content';
-import { PROTOCOL_TYPES } from '@/lib/protocols/format';
-import type { ProtocolContent } from '@/lib/protocols/types';
+import { WEEKDAY_LABELS } from '@/lib/protocols/cadence';
+import { normalizeContent, validateContent } from '@/lib/protocols/content';
+import { cadenceLabel, PROTOCOL_TYPES } from '@/lib/protocols/format';
+import type { Cadence, CadenceKind, ProtocolContent } from '@/lib/protocols/types';
 import { type ProtocolDetail, useProtocol } from '@/hooks/use-protocols';
 
 /**
- * Protocol editor — create/edit, pushed from the Protocols list.
+ * Protocol editor — create/edit, pushed from the Protocols hub.
  *
  * Versioning discipline: the identity fields (name, type, description, paused
- * state) update the `protocols` row in place; the ITEMS are the versioned
- * content — saving writes a NEW immutable `protocol_versions` row and moves
- * the live pointer, unless the items are unchanged (no no-op versions).
+ * state, start date) update the `protocols` row in place; the PHASES and their
+ * ITEMS are the versioned content — saving writes a NEW immutable
+ * `protocol_versions` row and moves the live pointer, unless the content is
+ * unchanged (no no-op versions).
+ *
+ * **A save applies to TODAY.** After the version lands, this re-derives today's
+ * mission through the same diff a mode change uses: untouched machine-made rows
+ * follow the edit, and anything completed, skipped, partial or captured by hand
+ * is preserved exactly. That is the owner's call of 2026-08-25, and it replaces
+ * the old rule ("an edit made today shapes tomorrow's mission") that had to be
+ * explained in fine print at the bottom of a list screen.
+ *
+ * ## What schema 2 added to this form, and what it deliberately did not
+ *
+ * Two things: a **cadence** per item, and **ordered phases**. Everything else
+ * is as it was.
+ *
+ * The simple case must cost nothing. A new protocol opens as ONE open-ended
+ * phase with no phase chrome at all — no phase header, no length field, no
+ * start date — so "creatine, daily" is still a name and a title. Phase controls
+ * appear only once a second phase exists, which is the only point at which they
+ * carry information. Cadence is one collapsed row per item that STATES the
+ * cadence in words; it opens to the controls on a tap, so nothing is hidden and
+ * the default costs one line rather than four chips.
+ *
+ * There is **no wizard**. The Conformed Set has no vocabulary for one, and a
+ * protocol is a document being drafted, not a flow being completed.
  *
  * Conformed Set treatment: every field is **recessed stock** (a capture surface
  * is a well — paper-dim on a paper-deep edge, square) and NOTHING on this screen
@@ -40,15 +68,7 @@ import { type ProtocolDetail, useProtocol } from '@/hooks/use-protocols';
  * reading was right: a plate is `border-hairline` on RAISED paper-hi, every
  * field inside it is `border-paper-deep` on RECESSED paper-dim, so the block
  * drew a raised box whose entire contents were recessed boxes — the surface
- * inversion block.tsx exists to stop, pointing the other way. The rules BETWEEN
- * the item rows went with it: a rule separates rows inside an enclosure, and
- * with the enclosure gone they are strokes floating on the sheet, which is the
- * artefact reading that cost the grid and margin devices their marks.
- *
- * The `<Block>` nesting guard could not catch this: the inner surfaces are plain
- * `TextInput`s, not blocks, so nothing was nested as far as the runtime could
- * see. capture.tsx, symptom.tsx, screening-form.tsx and appointment-form.tsx are
- * the reference form and always were.
+ * inversion block.tsx exists to stop, pointing the other way.
  *
  * **This screen is the ONE de-plating of 2026-08-10 that survives.** The plate
  * rule that sweep invented — "no plate around one row or an empty state" — was
@@ -58,35 +78,63 @@ import { type ProtocolDetail, useProtocol } from '@/hooks/use-protocols';
  * this exact screen as "boxes on top of other boxes". Do not restore it, and do
  * not cite it as precedent for de-plating anything that is not a form.
  *
- * Accent budget: exactly one — Save. It is the single primary action on the
- * screen and the one sanctioned accent here; the type chips, the status chips,
- * "Add item" and "Delete protocol" are all neutral ink. The version number is a
- * measured value, so it is set in mono wherever it appears.
+ * Accent budget: exactly one — Save. The type chips, the status chips, the
+ * cadence chips, "Add item", "Add a phase" and "Delete protocol" are all
+ * neutral ink. Version numbers are measured values, so they are set in mono.
  */
 
 /** One item row under edit. `key` is a mount-local id for React lists only. */
 type EditItem = {
   key: number;
+  /**
+   * The stored item id, carried through a save so the version diff and the
+   * quota counter still recognise this item afterwards. Empty on a row the user
+   * just added; minted at save, where a `db` is in hand.
+   */
+  id: string;
   title: string;
   time: string;
   dose: string;
-  /** Not edited here yet (Coach territory) — carried through so a saved
-   *  version never silently drops notes an earlier author wrote. */
+  /** Not edited here (Coach territory) — carried so a save never drops it. */
   notes: string;
+  cadence: Cadence;
 };
 
+/** One phase under edit. `days` is text so the field can be empty = open-ended. */
+type EditPhase = {
+  key: number;
+  id: string;
+  title: string;
+  days: string;
+  items: EditItem[];
+};
+
+const DAILY: Cadence = { kind: 'daily' };
+
 function blankItem(key: number): EditItem {
-  return { key, title: '', time: '', dose: '', notes: '' };
+  return { key, id: '', title: '', time: '', dose: '', notes: '', cadence: DAILY };
 }
 
-function initialItems(detail: ProtocolDetail | null): EditItem[] {
-  if (!detail || detail.content.items.length === 0) return [blankItem(0)];
-  return detail.content.items.map((it, i) => ({
-    key: i,
-    title: it.title,
-    time: it.scheduled_time ?? '',
-    dose: it.dose ?? '',
-    notes: it.notes ?? '',
+function initialPhases(detail: ProtocolDetail | null): EditPhase[] {
+  if (!detail) return [{ key: 0, id: '', title: '', days: '', items: [blankItem(1)] }];
+  let key = 100;
+  return detail.content.phases.map((phase, p) => ({
+    key: p,
+    id: phase.id,
+    title: phase.title ?? '',
+    days: phase.duration_days === null ? '' : String(phase.duration_days),
+    items:
+      phase.items.length === 0
+        ? [blankItem(key++)]
+        : phase.items.map((it) => ({
+            key: key++,
+            id: it.id,
+            title: it.title,
+            time: it.scheduled_time ?? '',
+            dose: it.dose ?? '',
+            notes: it.notes ?? '',
+            cadence: it.cadence,
+          })),
   }));
 }
 
@@ -100,17 +148,33 @@ function normalizeTime(text: string): string | null {
   return `${String(hours).padStart(2, '0')}:${m[2]}`;
 }
 
+/** A whole number of days ≥ 1, or null for "not a length". */
+function parseDays(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  return n >= 1 ? n : null;
+}
+
+/** "2026-08-25" and nothing else. Blank is not a date; the caller decides. */
+function isDate(text: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(text.trim());
+}
+
 /** A neutral selection chip — the label voice, square-ish, no hue. */
 function Chip({
   label,
   on,
   onPress,
   accessibilityLabel,
+  compact,
 }: {
   label: string;
   on: boolean;
   onPress: () => void;
   accessibilityLabel?: string;
+  /** Tighter padding for the cadence controls, where seven sit on one row. */
+  compact?: boolean;
 }) {
   return (
     <Pressable
@@ -118,11 +182,13 @@ function Chip({
       accessibilityState={{ selected: on }}
       accessibilityLabel={accessibilityLabel ?? label}
       onPress={onPress}
-      className={`min-h-[44px] justify-center rounded-btn border px-3 py-2 active:bg-paper-dim ${
-        on ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'
-      }`}>
+      className={`min-h-[44px] justify-center rounded-btn border py-2 active:bg-paper-dim ${
+        compact ? 'px-2' : 'px-3'
+      } ${on ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'}`}>
       <Text
-        className={`font-label text-[13px] ${on ? 'font-semibold text-ink' : 'text-ink-secondary'}`}>
+        className={`font-label ${compact ? 'text-[12px]' : 'text-[13px]'} ${
+          on ? 'font-semibold text-ink' : 'text-ink-secondary'
+        }`}>
         {label}
       </Text>
     </Pressable>
@@ -152,9 +218,7 @@ type FieldProps = {
  * ## `flex-1` in a column is what drew "boxes covering other boxes"
  *
  * Every field used to be wrapped in `<View className="flex-1">`, unconditionally
- * — and four of this screen's six fields are children of a **column**, not a
- * row: the protocol name, the description, the time (inside a `w-24`) and the
- * change note.
+ * — and most of this screen's fields are children of a **column**, not a row.
  *
  * In a column container the main axis is vertical, so `flex-1` resolves to
  * `flexBasis: 0%` **on the height**. The parent (`<View className="mt-2">`) has
@@ -167,11 +231,7 @@ type FieldProps = {
  *
  * That is the report, exactly: boxes covering other boxes, on the New Protocol
  * screen specifically — which is the path where the fields are empty and the
- * collapse is total. It survived the 2026-08-10 pass because that pass read the
- * complaint as a *surface* problem and answered it by removing the plate around
- * the item list. The plate was a real second issue (a raised box full of
- * recessed boxes, and it stays off — see the screen docblock above); it was
- * simply not this one. Nothing about de-plating could fix a collapsed wrapper.
+ * collapse is total.
  *
  * So the flex is opt-in and named for what it is: `fill` belongs to a field
  * sharing a **row**, and nowhere else. The wrapper view is gone entirely — a
@@ -205,6 +265,154 @@ function FormField({
   );
 }
 
+/** The cadence kinds, in the order the control presents them. */
+const CADENCE_KINDS: { kind: CadenceKind; label: string }[] = [
+  { kind: 'daily', label: 'Every day' },
+  { kind: 'weekdays', label: 'Certain days' },
+  { kind: 'every_n_days', label: 'Every N days' },
+  { kind: 'quota', label: 'N a week' },
+];
+
+/** Switching kind keeps a sensible default rather than an empty control. */
+function cadenceOfKind(kind: CadenceKind, previous: Cadence): Cadence {
+  switch (kind) {
+    case 'daily':
+      return { kind: 'daily' };
+    case 'weekdays':
+      return previous.kind === 'weekdays' ? previous : { kind: 'weekdays', days: [1, 3, 5] };
+    case 'every_n_days':
+      return previous.kind === 'every_n_days' ? previous : { kind: 'every_n_days', n: 2 };
+    case 'quota':
+      return previous.kind === 'quota' ? previous : { kind: 'quota', per_week: 3 };
+  }
+}
+
+/**
+ * How often one item comes round.
+ *
+ * Collapsed to a single label-voice line that STATES the cadence, so nothing is
+ * hidden and the default — every day — costs one line rather than a row of
+ * chips per item. A supplement stack of eight items would otherwise open on
+ * thirty-two chips the user never touches.
+ */
+function CadenceControl({
+  cadence,
+  onChange,
+  itemLabel,
+}: {
+  cadence: Cadence;
+  onChange: (next: Cadence) => void;
+  itemLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <View className="mt-2">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`Cadence for ${itemLabel}: ${cadenceLabel(cadence)}. ${
+          open ? 'Hide options' : 'Change'
+        }`}
+        onPress={() => setOpen((shown) => !shown)}
+        className="min-h-[44px] flex-row items-center gap-2 py-2 active:opacity-60">
+        <Ionicons name="repeat-outline" size={15} color={palette.inkMuted} />
+        <Text className="flex-1 font-label text-[12px] text-ink-secondary">
+          {cadenceLabel(cadence)}
+        </Text>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={13} color={palette.inkMuted} />
+      </Pressable>
+
+      {open ? (
+        <View className="mt-1">
+          <View className="flex-row flex-wrap gap-2">
+            {CADENCE_KINDS.map((k) => (
+              <Chip
+                key={k.kind}
+                label={k.label}
+                compact
+                on={cadence.kind === k.kind}
+                onPress={() => onChange(cadenceOfKind(k.kind, cadence))}
+              />
+            ))}
+          </View>
+
+          {cadence.kind === 'weekdays' ? (
+            <View className="mt-2 flex-row flex-wrap gap-1.5">
+              {WEEKDAY_LABELS.map((label, index) => {
+                const day = index + 1;
+                const on = cadence.days.includes(day);
+                return (
+                  <Chip
+                    key={label}
+                    label={label}
+                    compact
+                    on={on}
+                    accessibilityLabel={`${label}${on ? ', on' : ', off'}`}
+                    onPress={() =>
+                      onChange({
+                        kind: 'weekdays',
+                        days: (on
+                          ? cadence.days.filter((d) => d !== day)
+                          : [...cadence.days, day]
+                        ).sort((a, b) => a - b),
+                      })
+                    }
+                  />
+                );
+              })}
+            </View>
+          ) : null}
+
+          {cadence.kind === 'every_n_days' ? (
+            <View className="mt-2 flex-row items-center gap-2">
+              <View className="w-20">
+                <FormField
+                  value={String(cadence.n)}
+                  onChange={(text) => {
+                    const n = parseDays(text);
+                    onChange({ kind: 'every_n_days', n: n !== null && n >= 2 ? n : 2 });
+                  }}
+                  keyboardType="number-pad"
+                  maxLength={3}
+                  mono
+                  accessibilityLabel="Every how many days"
+                />
+              </View>
+              <Text className="font-label text-[12px] text-ink-secondary">days apart</Text>
+            </View>
+          ) : null}
+
+          {cadence.kind === 'quota' ? (
+            <View className="mt-2 flex-row items-center gap-2">
+              <View className="w-20">
+                <FormField
+                  value={String(cadence.per_week)}
+                  onChange={(text) => {
+                    const n = parseDays(text);
+                    onChange({ kind: 'quota', per_week: n !== null && n <= 7 ? n : 3 });
+                  }}
+                  keyboardType="number-pad"
+                  maxLength={1}
+                  mono
+                  accessibilityLabel="How many times a week"
+                />
+              </View>
+              {/* The whole point of a quota, said once where it is chosen: ARC
+                  surfaces it until the week's count is met, and the user picks
+                  which days. Without this the control reads like a weekday list
+                  with the days left blank. */}
+              <Text className="flex-1 font-label text-[12px] text-ink-secondary">
+                times a week — any days
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 export default function ProtocolEditScreen() {
   // A deep link can repeat the param (?id=a&id=b) and expo-router then delivers
   // string[] despite the generic — coerce so a malformed link degrades to the
@@ -226,57 +434,124 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
   const [type, setType] = useState<ProtocolType>(detail?.protocol.type ?? 'daily_routine');
   const [description, setDescription] = useState(detail?.protocol.description ?? '');
   const [active, setActiveState] = useState(detail ? detail.protocol.is_active === 1 : true);
-  const [items, setItems] = useState<EditItem[]>(() => initialItems(detail));
+  const [phases, setPhases] = useState<EditPhase[]>(() => initialPhases(detail));
+  const [startedOn, setStartedOn] = useState(detail?.protocol.started_on ?? todayISODate());
   const [changeNotes, setChangeNotes] = useState('');
-  const nextKey = useRef(items.length);
+  const nextKey = useRef(1000);
   // Re-entrancy guard: the screen stays touchable during the pop transition,
   // and a double-tap would otherwise run the whole save twice (duplicate
   // protocol / duplicate version). Reset only on failure so a retry can save.
   const inFlight = useRef(false);
 
   const nextVersion = (detail?.version?.version_number ?? 0) + 1;
+  const phased = phases.length > 1;
+
+  const takeKey = () => {
+    const key = nextKey.current;
+    nextKey.current += 1;
+    return key;
+  };
 
   // Items with a blank title are dropped at save; a titled item may leave its
   // time blank, but a typed time must read as a real clock time.
-  const timesValid = items.every(
-    (it) => it.title.trim() === '' || it.time.trim() === '' || normalizeTime(it.time) !== null
+  const timesValid = phases.every((phase) =>
+    phase.items.every(
+      (it) => it.title.trim() === '' || it.time.trim() === '' || normalizeTime(it.time) !== null
+    )
   );
-  const canSave = name.trim() !== '' && timesValid;
-  const problem = timesValid ? null : 'Times read as HH:MM, e.g. 07:30 — or leave them blank.';
+  // Every phase but the last needs a length. The last may be open-ended, which
+  // is what a protocol that simply runs looks like.
+  const lengthsValid = phases.every(
+    (phase, index) => index === phases.length - 1 || parseDays(phase.days) !== null
+  );
+  const startValid = !phased || isDate(startedOn);
+  const canSave = name.trim() !== '' && timesValid && lengthsValid && startValid;
+  const problem = !timesValid
+    ? 'Times read as HH:MM, e.g. 07:30 — or leave them blank.'
+    : !lengthsValid
+      ? 'Every phase but the last needs a length in whole days.'
+      : !startValid
+        ? 'The start date reads as YYYY-MM-DD, e.g. 2026-09-01.'
+        : null;
 
-  const addItem = () => {
-    const key = nextKey.current;
-    nextKey.current += 1;
-    setItems((prev) => [...prev, blankItem(key)]);
-  };
+  const patchPhase = (key: number, patch: Partial<Omit<EditPhase, 'key'>>) =>
+    setPhases((prev) => prev.map((p) => (p.key === key ? { ...p, ...patch } : p)));
 
-  const updateItem = (key: number, patch: Partial<Omit<EditItem, 'key'>>) => {
-    setItems((prev) => prev.map((it) => (it.key === key ? { ...it, ...patch } : it)));
-  };
+  const addItem = (phaseKey: number) =>
+    setPhases((prev) =>
+      prev.map((p) => (p.key === phaseKey ? { ...p, items: [...p.items, blankItem(takeKey())] } : p))
+    );
 
-  const removeItem = (key: number) => {
-    setItems((prev) => prev.filter((it) => it.key !== key));
-  };
+  const updateItem = (phaseKey: number, itemKey: number, patch: Partial<Omit<EditItem, 'key'>>) =>
+    setPhases((prev) =>
+      prev.map((p) =>
+        p.key === phaseKey
+          ? { ...p, items: p.items.map((it) => (it.key === itemKey ? { ...it, ...patch } : it)) }
+          : p
+      )
+    );
+
+  const removeItem = (phaseKey: number, itemKey: number) =>
+    setPhases((prev) =>
+      prev.map((p) =>
+        p.key === phaseKey ? { ...p, items: p.items.filter((it) => it.key !== itemKey) } : p
+      )
+    );
+
+  /**
+   * Adding a phase gives the phase BEFORE it a length, because an open-ended
+   * phase in the middle would make everything after it unreachable — the one
+   * rule `validateContent` refuses outright. Four weeks is the shape of nearly
+   * every titration and is the least surprising number to start from.
+   */
+  const addPhase = () =>
+    setPhases((prev) => [
+      ...prev.map((p, i) =>
+        i === prev.length - 1 && parseDays(p.days) === null ? { ...p, days: '28' } : p
+      ),
+      { key: takeKey(), id: '', title: '', days: '', items: [blankItem(takeKey())] },
+    ]);
+
+  const removePhase = (key: number) =>
+    setPhases((prev) => (prev.length <= 1 ? prev : prev.filter((p) => p.key !== key)));
 
   const save = () => {
     if (inFlight.current || !canSave) return;
     inFlight.current = true;
-    const content: ProtocolContent = {
-      items: items
-        .filter((it) => it.title.trim() !== '')
-        .map((it) =>
-          normalizeItem({
+    const db = getDb();
+    const content: ProtocolContent = normalizeContent({
+      phases: phases.map((phase, index) => ({
+        // Minted here, not at "Add phase": a `db` is in hand at save and
+        // nowhere else on this screen, and an id only has to be stable from the
+        // moment it is stored.
+        id: phase.id || newId(db),
+        title: phase.title.trim() || null,
+        // A blank length on the LAST phase means open-ended; every earlier one
+        // is validated above, so a parse failure cannot reach storage.
+        duration_days: index === phases.length - 1 ? parseDays(phase.days) : parseDays(phase.days),
+        items: phase.items
+          .filter((it) => it.title.trim() !== '')
+          .map((it) => ({
+            id: it.id || newId(db),
             title: it.title,
             scheduled_time: it.time.trim() === '' ? null : normalizeTime(it.time),
             dose: it.dose,
             notes: it.notes,
-          })
-        ),
-    };
+            cadence: it.cadence,
+          })),
+      })),
+    });
+    // The same gate the Coach's tool passes through, so a document the model
+    // could not write cannot be hand-authored either.
+    const invalid = validateContent(content);
+    if (invalid) {
+      inFlight.current = false;
+      Alert.alert('Not saved', invalid);
+      return;
+    }
     try {
-      const db = getDb();
       if (detail) {
-        // normalizeItem gives both sides one canonical shape, so a plain
+        // normalizeContent gives both sides one canonical shape, so a plain
         // string compare detects "nothing changed" — no no-op versions. Typed
         // change notes force a version anyway: they're user data, and skipping
         // would silently discard them.
@@ -290,15 +565,30 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
           description: description.trim() || null,
           active,
           content: unchanged ? null : content,
+          // Only a phased protocol writes a start date: with one open-ended
+          // phase the anchor changes nothing that lands on a day, and passing
+          // null leaves whatever anchor the protocol already had.
+          startedOn: phased ? startedOn.trim() : null,
           changeNotes: changeNotes.trim() || null,
         });
       } else {
         createProtocolWithVersion(
           db,
-          { name: name.trim(), type, description: description.trim() || null },
+          {
+            name: name.trim(),
+            type,
+            description: description.trim() || null,
+            // Only a phased protocol names its own start; an unphased one is
+            // anchored by the first generation, which the save triggers below.
+            startedOn: phased ? startedOn.trim() : null,
+          },
           content
         );
       }
+      // The edit lands on TODAY (owner call, 2026-08-25), through the same diff
+      // a mode change uses: untouched machine-made rows follow the new content,
+      // and anything completed / skipped / partial / ad-hoc is preserved.
+      rederiveMissionForDay(db, todayISODate());
       router.back();
     } catch (error) {
       // Atomic writes: nothing partial persisted. Keep the form, say so, and
@@ -395,64 +685,137 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
       {/* The versioned content — every save of these becomes a new version.
           No plate and no rules: a form is controls, and one item is separated
           from the next by air (the gap between items is deliberately wider than
-          the gap between the two rows WITHIN an item, which is what groups
-          them). */}
-      <View className="mt-8">
-        {/* No tally here on purpose: blank rows are dropped at save, so a count
-            of the rows on screen would not be the count that gets written. */}
-        <SectionLabel label="Items" />
-        {items.map((it, index) => (
-          <View key={it.key} className={index === 0 ? 'mt-2' : 'mt-5'}>
-            <View className="flex-row items-center gap-2">
-              {/* `fill` because this shares a row with the remove button. */}
+          the gap between the rows WITHIN an item, which is what groups them). */}
+      {phases.map((phase, phaseIndex) => (
+        <View key={phase.key} className="mt-8">
+          {/* No tally on the items label on purpose: blank rows are dropped at
+              save, so a count of the rows on screen would not be the count that
+              gets written. */}
+          <SectionLabel
+            label={phased ? `Phase ${phaseIndex + 1}` : 'Items'}
+            note={phased && phaseIndex === phases.length - 1 ? 'runs on' : undefined}
+          />
+
+          {/* Phase chrome exists only once there is more than one phase. With a
+              single phase there is nothing to name and nothing to time, and the
+              controls would be furniture on the common case. */}
+          {phased ? (
+            <View className="mt-2 flex-row items-center gap-2">
               <FormField
-                value={it.title}
-                onChange={(title) => updateItem(it.key, { title })}
-                placeholder="e.g. Creatine"
+                value={phase.title}
+                onChange={(title) => patchPhase(phase.key, { title })}
+                placeholder={phaseIndex === 0 ? 'e.g. Loading' : 'e.g. Maintenance'}
                 fill
-                accessibilityLabel="Item title"
+                accessibilityLabel={`Phase ${phaseIndex + 1} name`}
               />
+              <View className="w-20">
+                <FormField
+                  value={phase.days}
+                  onChange={(days) => patchPhase(phase.key, { days })}
+                  placeholder="28"
+                  keyboardType="number-pad"
+                  maxLength={4}
+                  mono
+                  accessibilityLabel={`Phase ${phaseIndex + 1} length in days`}
+                />
+              </View>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Remove item"
-                onPress={() => removeItem(it.key)}
+                accessibilityLabel={`Remove phase ${phaseIndex + 1}`}
+                onPress={() => removePhase(phase.key)}
                 className="h-11 w-11 items-center justify-center rounded-btn active:bg-paper-dim">
                 <Ionicons name="close" size={18} color={palette.inkMuted} />
               </Pressable>
             </View>
-            <View className="mt-2 flex-row gap-2">
-              <View className="w-24">
+          ) : null}
+
+          {phase.items.map((it, index) => (
+            <View key={it.key} className={index === 0 && !phased ? 'mt-2' : 'mt-5'}>
+              <View className="flex-row items-center gap-2">
+                {/* `fill` because this shares a row with the remove button. */}
                 <FormField
-                  value={it.time}
-                  onChange={(time) => updateItem(it.key, { time })}
-                  placeholder="07:30"
-                  keyboardType="numbers-and-punctuation"
-                  maxLength={5}
-                  mono
-                  accessibilityLabel="Item time"
+                  value={it.title}
+                  onChange={(title) => updateItem(phase.key, it.key, { title })}
+                  placeholder="e.g. Creatine"
+                  fill
+                  accessibilityLabel="Item title"
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove item"
+                  onPress={() => removeItem(phase.key, it.key)}
+                  className="h-11 w-11 items-center justify-center rounded-btn active:bg-paper-dim">
+                  <Ionicons name="close" size={18} color={palette.inkMuted} />
+                </Pressable>
+              </View>
+              <View className="mt-2 flex-row gap-2">
+                <View className="w-24">
+                  <FormField
+                    value={it.time}
+                    onChange={(time) => updateItem(phase.key, it.key, { time })}
+                    placeholder="07:30"
+                    keyboardType="numbers-and-punctuation"
+                    maxLength={5}
+                    mono
+                    accessibilityLabel="Item time"
+                  />
+                </View>
+                {/* `fill` because this shares a row with the fixed-width time. */}
+                <FormField
+                  value={it.dose}
+                  onChange={(dose) => updateItem(phase.key, it.key, { dose })}
+                  placeholder="Dose or note — 5 g, with food…"
+                  fill
+                  accessibilityLabel="Item dose or note"
                 />
               </View>
-              {/* `fill` because this shares a row with the fixed-width time. */}
-              <FormField
-                value={it.dose}
-                onChange={(dose) => updateItem(it.key, { dose })}
-                placeholder="Dose or note — 5 g, with food…"
-                fill
-                accessibilityLabel="Item dose or note"
+              <CadenceControl
+                cadence={it.cadence}
+                itemLabel={it.title.trim() || 'this item'}
+                onChange={(cadence) => updateItem(phase.key, it.key, { cadence })}
               />
             </View>
-          </View>
-        ))}
+          ))}
 
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Add item"
-          onPress={addItem}
-          className="mt-5 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
-          <Ionicons name="add" size={17} color={palette.inkSecondary} />
-          <Text className="font-label text-[13px] font-medium text-ink">Add item</Text>
-        </Pressable>
-      </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={phased ? `Add item to phase ${phaseIndex + 1}` : 'Add item'}
+            onPress={() => addItem(phase.key)}
+            className="mt-5 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+            <Ionicons name="add" size={17} color={palette.inkSecondary} />
+            <Text className="font-label text-[13px] font-medium text-ink">Add item</Text>
+          </Pressable>
+        </View>
+      ))}
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Add a phase"
+        onPress={addPhase}
+        className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn active:bg-paper-dim">
+        <Ionicons name="git-commit-outline" size={16} color={palette.inkSecondary} />
+        <Text className="font-label text-[13px] text-ink-secondary">Add a phase</Text>
+      </Pressable>
+
+      {/* The phase clock. Drawn only when there are phases to clock — with one
+          open-ended phase the start date changes nothing that lands on a day,
+          and a field that cannot matter is furniture. */}
+      {phased ? (
+        <View className="mt-8">
+          <SectionLabel label="Phase 1 starts" />
+          <View className="mt-2 w-40">
+            <FormField
+              value={startedOn}
+              onChange={setStartedOn}
+              placeholder="2026-09-01"
+              keyboardType="numbers-and-punctuation"
+              maxLength={10}
+              mono
+              accessibilityLabel="Start date"
+            />
+          </View>
+        </View>
+      ) : null}
 
       {editing ? (
         <>
@@ -475,35 +838,6 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
               ))}
             </View>
           </View>
-
-          {/* The way into the history the versioning has been writing all
-              along (app/protocol-versions.tsx). Neutral ink, not accent: Save
-              is the one accent on this screen, and a link to a read-only
-              record is not a primary action. Drawn only once a version exists
-              — a protocol with nothing saved has no history to open, and a row
-              that leads to an authored "no versions yet" is a wasted tap. */}
-          {detail?.version ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Version history, currently at version ${detail.version.version_number}`}
-              onPress={() =>
-                router.push({
-                  pathname: '/protocol-versions',
-                  params: { id: detail.protocol.id },
-                })
-              }
-              className="mt-8 min-h-[44px] flex-row items-center gap-2.5 rounded-btn border border-hairline px-3.5 py-3 active:bg-paper-dim">
-              <Ionicons name="time-outline" size={17} color={palette.inkSecondary} />
-              <Text className="flex-1 font-label text-[13px] font-medium text-ink">
-                Version history
-              </Text>
-              {/* The live version number is a measurement — mono. */}
-              <Text className="font-mono text-[11px] text-ink-muted">
-                {`now v${detail.version.version_number}`}
-              </Text>
-              <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
-            </Pressable>
-          ) : null}
 
           <View className="mt-8">
             {/* The version number is a measured value — mono, in the note slot. */}
@@ -554,6 +888,13 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
           )}
         </Text>
       </Pressable>
+
+      {/* Where a save lands. One sentence, because it is now one rule — the
+          asymmetry that needed explaining (mode changes re-derived, protocol
+          edits did not) is gone. */}
+      <Text className="mt-3 text-center font-serif text-[11.5px] leading-4 text-ink-muted">
+        Saving updates today&rsquo;s mission. Anything already done or skipped stays as it is.
+      </Text>
 
       {editing ? (
         <Pressable

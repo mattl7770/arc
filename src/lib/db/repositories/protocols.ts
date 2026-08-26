@@ -8,17 +8,18 @@
  * versions but SET-NULLs `log_entries.protocol_id`, so execution history is
  * never destroyed.
  *
- * THE MISSION-GENERATOR SEAM (not built here, integrator territory): turning
- * the active protocols' live versions into a day's `log_entries` belongs next
- * to mission.ts / seed.ts and Home. This repo only owns the protocol records;
- * `ProtocolItem.scheduled_time` already matches `log_entries.scheduled_time`
- * so the generator is a mapping, not a migration.
+ * THE MISSION-GENERATOR SEAM lives next door, in mission-generate.ts: it turns
+ * the active protocols' live versions into a day's `log_entries`, picking each
+ * protocol's live PHASE from `started_on` and each item's day from its cadence.
+ * This repo owns the protocol records and the phase clock; it does not decide
+ * what a day contains.
  *
  * Like every repository, this depends only on the {@link Database} interface —
  * never op-sqlite — so the same code runs on device and against node:sqlite in
  * db/protocols.test.mjs.
  */
 import type { Database } from '../database';
+import { todayISODate } from '../date';
 import { newId } from '../id';
 import type {
   Authorship,
@@ -28,6 +29,7 @@ import type {
   SqliteBool,
   Timestamp,
 } from '../types';
+import { allItems, parseProtocolContent } from '@/lib/protocols/content';
 import type { NewProtocol, ProtocolContent, ProtocolListItem } from '@/lib/protocols/types';
 
 /**
@@ -60,9 +62,23 @@ function uniqueSlug(db: Database, name: string): string {
  */
 function insertProtocolRow(db: Database, id: string, input: NewProtocol): void {
   db.run(
-    `INSERT INTO protocols (id, slug, name, description, type)
-     VALUES (?, ?, ?, ?, ?)`,
-    [id, uniqueSlug(db, input.name), input.name.trim(), input.description ?? null, input.type]
+    `INSERT INTO protocols (id, slug, name, description, type, started_on)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      uniqueSlug(db, input.name),
+      input.name.trim(),
+      input.description ?? null,
+      input.type,
+      // Deliberately NULL unless the caller names a day: there is exactly ONE
+      // place a phase clock gets anchored, {@link ensureStartedOn}, and it runs
+      // at the top of every mission generation. So a protocol's phase 1 begins
+      // on the first day it actually plans something, not on the day its record
+      // was typed — which is the only reading that cannot start the user
+      // mid-titration after a gap between creating a protocol and running it.
+      // Only the editor passes a date, and only for a phased protocol.
+      input.startedOn ?? null,
+    ]
   );
 }
 
@@ -148,6 +164,13 @@ export type ProtocolRevision = {
   active: boolean;
   /** New version content, or null to leave the live version untouched. */
   content: ProtocolContent | null;
+  /**
+   * Where the phase clock is anchored (0043). Only the editor sets it, and only
+   * for a protocol with more than one phase — that is the sole case where being
+   * wrong about the start date changes what lands on a day. Omit to leave the
+   * existing anchor alone.
+   */
+  startedOn?: string | null;
   changeNotes?: string | null;
   createdBy?: Authorship;
 };
@@ -172,6 +195,18 @@ export function reviseProtocol(
       revision.active ? 1 : 0,
       id,
     ]);
+    // Anchoring is separate from the identity UPDATE so that omitting it means
+    // "leave it alone" rather than "clear it" — clearing would restart a
+    // titration on the next generation, which is the one thing a rename must
+    // never do.
+    if (revision.startedOn != null) {
+      db.run('UPDATE protocols SET started_on = ? WHERE id = ?', [revision.startedOn, id]);
+    } else if (revision.active) {
+      db.run('UPDATE protocols SET started_on = ? WHERE id = ? AND started_on IS NULL', [
+        todayISODate(),
+        id,
+      ]);
+    }
     if (revision.content !== null) {
       versionId = insertVersionRow(
         db,
@@ -209,22 +244,32 @@ export function getCurrentVersion(
 }
 
 /**
- * How many items a version's content holds, counted by json1 **in SQL** so no
- * caller has to parse a content blob just to size it. Requires the
- * `protocol_versions` table to be aliased `v`.
+ * Whether a version's content is a document this app can read AT ALL — i.e. it
+ * carries a `phases` array (schema 2) or an `items` array (schema 1). Requires
+ * the `protocol_versions` table to be aliased `v`.
  *
- * NULL — not 0 — when content carries no `items` array at all, which is the
- * honest answer for a foreign-shaped version and reads as an em-dash rather
- * than a fabricated zero. One expression, shared by every reader, so two
- * screens can never disagree about a count.
+ * It exists so an item count can stay NULL — not 0 — for a foreign-shaped
+ * version, which reads as an em-dash rather than as a fabricated zero. The
+ * count itself is no longer a SQL expression: `parseProtocolContent` has to run
+ * anyway to normalise a v1 document into phases, and a second, SQL-shaped
+ * definition of "how many items" would be a second answer to the same question
+ * the moment either schema moves again.
+ *
+ * `coalesce` on each side because `json_type` returns NULL for an absent path,
+ * and `NULL OR 0` is NULL — which would make an ordinary v1 row look illegible.
  */
-const ITEM_COUNT_COLUMN = `json_array_length(v.content, '$.items') AS item_count`;
+const CONTENT_LEGIBLE_COLUMN = `(coalesce(json_type(v.content, '$.phases') = 'array', 0)
+             + coalesce(json_type(v.content, '$.items') = 'array', 0)) AS legible`;
 
 /**
- * One row of the version-history screen: the immutable version record minus its
- * `content` blob, plus the item count that blob would have yielded. The blob
- * itself never crosses this boundary — the history screen reads the shape of
- * each version, never its contents.
+ * One row of the version-history screen: the immutable version record, its item
+ * count, and its PARSED content.
+ *
+ * The content used to be withheld here on the argument that the history screen
+ * reads the shape of each version and never its contents. That stopped being
+ * true when the screen gained a diff between adjacent versions — which is the
+ * whole payoff of keeping history — so the blob crosses the boundary now, once,
+ * already normalised.
  */
 export type ProtocolVersionListItem = {
   id: string;
@@ -233,11 +278,15 @@ export type ProtocolVersionListItem = {
   createdBy: Authorship;
   createdAt: Timestamp;
   /**
-   * Items in that version's content, or null when the content holds no `items`
-   * array. Deliberately NOT coalesced to 0: an absent count is not a count of
-   * none, and the screen draws the difference.
+   * Items in that version's content across all phases, or null when the content
+   * is not a document this app can read. Deliberately NOT coalesced to 0: an
+   * absent count is not a count of none, and the screen draws the difference.
    */
   itemCount: number | null;
+  /** Phases in that version — 1 for everything written before schema 2. */
+  phaseCount: number;
+  /** The normalised document, ready to diff against its neighbour. */
+  content: ProtocolContent;
 };
 
 /**
@@ -255,48 +304,59 @@ export function listVersions(db: Database, protocolId: string): ProtocolVersionL
     change_notes: string | null;
     created_by: Authorship;
     created_at: Timestamp;
-    item_count: number | null;
+    content: string;
+    legible: number;
   }>(
-    `SELECT v.id, v.version_number, v.change_notes, v.created_by, v.created_at,
-            ${ITEM_COUNT_COLUMN}
+    `SELECT v.id, v.version_number, v.change_notes, v.created_by, v.created_at, v.content,
+            ${CONTENT_LEGIBLE_COLUMN}
      FROM protocol_versions v
      WHERE v.protocol_id = ?
      ORDER BY v.version_number DESC, v.created_at DESC`,
     [protocolId]
   );
-  return rows.map((r) => ({
-    id: r.id,
-    versionNumber: r.version_number,
-    changeNotes: r.change_notes,
-    createdBy: r.created_by,
-    createdAt: r.created_at,
-    itemCount: r.item_count,
-  }));
+  return rows.map((r) => {
+    const content = parseProtocolContent(r.content);
+    return {
+      id: r.id,
+      versionNumber: r.version_number,
+      changeNotes: r.change_notes,
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+      itemCount: r.legible > 0 ? allItems(content).length : null,
+      phaseCount: content.phases.length,
+      content,
+    };
+  });
 }
 
 /**
- * Every protocol for the list screen — active first, then by name — each with
- * its live version number and item count. Empty-safe.
+ * Every protocol for the hub — active first, then by name — each with its live
+ * version number, item and phase counts, and the day its phase clock started.
+ * Empty-safe.
  */
 export function listProtocols(db: Database): ProtocolListItem[] {
-  const rows = db.all<ProtocolRow & { version_number: number | null; item_count: number | null }>(
-    `SELECT p.*, v.version_number AS version_number,
-            ${ITEM_COUNT_COLUMN}
+  const rows = db.all<ProtocolRow & { version_number: number | null; content: string | null }>(
+    `SELECT p.*, v.version_number AS version_number, v.content AS content
      FROM protocols p
      LEFT JOIN protocol_versions v ON v.id = p.current_version_id
      ORDER BY p.is_active DESC, p.name COLLATE NOCASE, p.id`
   );
-  return rows.map((r) => ({
-    id: r.id,
-    slug: r.slug,
-    name: r.name,
-    description: r.description,
-    type: r.type,
-    isActive: r.is_active === 1,
-    versionNumber: r.version_number,
-    itemCount: r.item_count ?? 0,
-    updatedAt: r.updated_at,
-  }));
+  return rows.map((r) => {
+    const content = r.content === null ? null : parseProtocolContent(r.content);
+    return {
+      id: r.id,
+      slug: r.slug,
+      name: r.name,
+      description: r.description,
+      type: r.type,
+      isActive: r.is_active === 1,
+      versionNumber: r.version_number,
+      itemCount: content === null ? 0 : allItems(content).length,
+      phaseCount: content === null ? 0 : content.phases.length,
+      startedOn: r.started_on,
+      updatedAt: r.updated_at,
+    };
+  });
 }
 
 /**
@@ -317,10 +377,85 @@ export function updateProtocolMeta(
   ]);
 }
 
-/** Pause / resume a protocol. Paused protocols keep every version. */
-export function setActive(db: Database, id: string, active: boolean): void {
+/**
+ * Pause / resume a protocol. Paused protocols keep every version.
+ *
+ * Resuming ANCHORS the phase clock if it has never been anchored (0043), and
+ * deliberately leaves an existing anchor alone: pausing a titration for a
+ * fortnight and resuming it must not put the user back on week 1 of a course
+ * they are six weeks into. Restarting a phase clock is a start-date edit, and
+ * the editor is where that lives.
+ */
+export function setActive(
+  db: Database,
+  id: string,
+  active: boolean,
+  today: string = todayISODate()
+): void {
   const flag: SqliteBool = active ? 1 : 0;
   db.run('UPDATE protocols SET is_active = ? WHERE id = ?', [flag, id]);
+  if (active) {
+    db.run('UPDATE protocols SET started_on = ? WHERE id = ? AND started_on IS NULL', [today, id]);
+  }
+}
+
+/** Move a protocol's phase clock. The editor's Start date field writes this. */
+export function setStartedOn(db: Database, id: string, date: string): void {
+  db.run('UPDATE protocols SET started_on = ? WHERE id = ?', [date, id]);
+}
+
+/**
+ * Anchor every ACTIVE protocol whose phase clock has never been set, to `date`.
+ *
+ * Called at the top of both mission generation paths, so an active protocol's
+ * phase 1 begins on the first day it actually plans something. That is the only
+ * reading of a NULL anchor that cannot silently skip a phase: dating the clock
+ * to a creation or an import the user never ran would start them mid-titration.
+ *
+ * Idempotent, and never touches a protocol that already has an anchor.
+ */
+export function ensureStartedOn(db: Database, date: string): void {
+  db.run(
+    'UPDATE protocols SET started_on = ? WHERE is_active = 1 AND started_on IS NULL',
+    [date]
+  );
+}
+
+/**
+ * Make an OLD version live again, as a NEW version carrying its content.
+ *
+ * History is immutable, so "restore" cannot mean "move the pointer back": that
+ * would leave the versions written since dangling above a live pointer that had
+ * moved down, and the next save would collide with their numbers. It means
+ * exactly what reverting a commit means — a new revision whose content is the
+ * old content, authored by the user, with the note filled in.
+ *
+ * Content is re-normalised on the way through, so a restored v1 lands as a
+ * canonical schema-2 document. That is lossless (v1 items are daily items in a
+ * single open-ended phase, which is what they always were) and it keeps one
+ * shape going forward.
+ *
+ * Returns the new version id, or null when the named version does not belong to
+ * this protocol.
+ */
+export function restoreVersion(
+  db: Database,
+  protocolId: string,
+  versionId: string,
+  changeNotes?: string | null
+): string | null {
+  const target = db.get<{ version_number: number; content: string }>(
+    'SELECT version_number, content FROM protocol_versions WHERE id = ? AND protocol_id = ?',
+    [versionId, protocolId]
+  );
+  if (!target) return null;
+  return addVersion(
+    db,
+    protocolId,
+    parseProtocolContent(target.content),
+    changeNotes ?? `Restored v${target.version_number}`,
+    'user'
+  );
 }
 
 /**

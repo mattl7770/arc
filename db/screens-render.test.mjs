@@ -45,7 +45,7 @@ import {
 
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import { importProgressPhotos } from '../src/lib/media/progress-photo-store.ts';
-import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
+import { addVersion, createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
 import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
 import { clearMuscleAnchor, setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
@@ -83,6 +83,10 @@ import KnowledgeEntryEditScreen from '../app/knowledge-entry-edit.tsx';
 import KnowledgeImportScreen from '../app/knowledge-import.tsx';
 import ReportsScreen from '../app/reports.tsx';
 import ReportViewScreen from '../app/report-view.tsx';
+import ProtocolsScreen from '../app/protocols.tsx';
+import ProtocolDetailScreen from '../app/protocol-detail.tsx';
+import ProtocolEditScreen from '../app/protocol-edit.tsx';
+import ProtocolVersionsScreen from '../app/protocol-versions.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
 import HomeScreen from '../app/(tabs)/index.tsx';
 
@@ -193,6 +197,54 @@ const db = getDb();
     'From a link',
     'Paste text',
     'No model key is set', // honest no-key state under node
+  ]);
+
+  // The Protocols sub-app on a database that has never held one. This has to
+  // happen HERE, before any fixture creates a protocol: the empty hub is the
+  // first screen a fresh install reaches from Home's mission area, and it is a
+  // state the owner's own device can never show (their device has data).
+  const emptyHub = render('protocols (empty)', ProtocolsScreen);
+  expect('protocols (empty)', emptyHub, [
+    'Protocols',
+    'New protocol',
+    'No protocols yet',
+    // Both first-run routes: build it yourself, or have the Coach draft one.
+    // There is deliberately no template library — the Coach is the template
+    // engine, and it can read a record a canned "Morning Stack" cannot.
+    'Ask the Coach to draft one',
+  ]);
+  // Nothing may claim a rate, a phase or a group on a database with none.
+  // ("Running" itself is not refutable — the closing margin note says *running
+  //  protocols build Today's Mission*, which is true of an empty hub too.)
+  refute('protocols (empty)', emptyHub, ['Ended', 'Paused', '0%', 'no record yet', 'no version yet']);
+
+  expect(
+    'protocol-detail (missing id)',
+    render('protocol-detail (missing id)', ProtocolDetailScreen, { id: 'nope' }),
+    ['This protocol no longer exists.']
+  );
+  expect(
+    'protocol-versions (missing id)',
+    render('protocol-versions (missing id)', ProtocolVersionsScreen, { id: 'nope' }),
+    ['This protocol no longer exists.']
+  );
+
+  // The CREATE path — the one the owner reported as "boxes covering other
+  // boxes", and the path where every field is empty so a collapsed wrapper is
+  // total. It must open on ONE open-ended phase with no phase chrome at all.
+  const newProtocol = render('protocol-edit (new)', ProtocolEditScreen);
+  expect('protocol-edit (new)', newProtocol, [
+    'New Protocol',
+    'Items',
+    'Add item',
+    'Add a phase',
+    'Every day', // the cadence control, collapsed, stating the default
+    'Create protocol',
+  ]);
+  refute('protocol-edit (new)', newProtocol, [
+    'Phase 1', // no phase chrome until a second phase exists
+    'Save as', // that is the edit path's label
+    'Delete protocol',
   ]);
 
   // The execution record on a database that has never planned a day. This
@@ -1273,6 +1325,178 @@ const db = getDb();
     ' of 6 tracked',
   ]);
   refute('data tab (water + no chips)', dataWithWater, ['Set up', 'Later']);
+}
+
+// ---------------------------------------------------------------------------
+// The Protocols sub-app, populated (docs/project-status.md §1 › PROTOCOLS).
+// The empty states are up in §0, before any fixture existed; these are the four
+// screens with a real phased, cadenced protocol and a real execution record
+// behind them.
+// ---------------------------------------------------------------------------
+{
+  console.log('15. Protocols — the hub, the detail, the editor and the diff');
+
+  // A titration with two phases and three cadences, anchored in the past so a
+  // phase is genuinely live and the record has settled days behind it.
+  const day = (n) => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return todayISODate(d);
+  };
+  const phasedId = createProtocolWithVersion(
+    db,
+    { name: 'Creatine loading', type: 'supplement_stack', startedOn: day(10) },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'load',
+          title: 'Loading',
+          duration_days: 7,
+          items: [
+            {
+              id: 'c-load',
+              title: 'Creatine',
+              scheduled_time: '07:00',
+              dose: '20 g',
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+        {
+          id: 'maint',
+          title: 'Maintenance',
+          duration_days: null,
+          items: [
+            {
+              id: 'c-maint',
+              title: 'Creatine',
+              scheduled_time: '07:00',
+              dose: '5 g',
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+            {
+              id: 'lift',
+              title: 'Lower body',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'weekdays', days: [1, 3, 5] },
+            },
+          ],
+        },
+      ],
+    },
+    'Split into a loading week and maintenance'
+  );
+
+  const hub = render('protocols (populated)', ProtocolsScreen);
+  expect('protocols (populated)', hub, [
+    'Running',
+    'Creatine loading',
+    // The row carries LIVE STATE, not a file description: which phase, and how
+    // often. On day 10 of a 7-day loading phase it is in Maintenance.
+    'Maintenance of 2',
+    'Morning stack', // the §10 fixture, still running
+  ]);
+
+  const detail = render('protocol-detail', ProtocolDetailScreen, { id: phasedId });
+  expect('protocol-detail', detail, [
+    'Creatine loading',
+    'Supplement stack',
+    'Maintenance of 2', // where it is up to, as the verdict
+    '5 g', // the live phase's dose, not the loading one's
+    'Mon · Wed · Fri', // the cadence, in words
+    'How it is going',
+    'The document',
+    'Version history',
+  ]);
+  // The loading dose belongs to a phase that is over. Printing it beside the
+  // live one would hand the reader two doses of the same compound with nothing
+  // saying which is current.
+  refute('protocol-detail', detail, ['20 g']);
+
+  // A protocol whose live version landed today has NO record — which is a
+  // different fact from a record of nothing done, and neither is 0%.
+  expect('protocol-detail (no record yet)', detail, ['landed today']);
+  refute('protocol-detail (no record yet)', detail, ['0%']);
+
+  // The EDIT path on a phased protocol: phase chrome appears, the start date
+  // appears with it, and the save is labelled with the version it will write.
+  const editPhased = render('protocol-edit (phased)', ProtocolEditScreen, { id: phasedId });
+  expect('protocol-edit (phased)', editPhased, [
+    'Edit Protocol',
+    'Phase 1',
+    'Phase 2',
+    'Phase 1 starts',
+    'Loading',
+    'Maintenance',
+    'Mon · Wed · Fri',
+    'Save as',
+    'Delete protocol',
+  ]);
+
+  // A second version, so the history has an adjacent pair to diff.
+  addVersion(
+    db,
+    phasedId,
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'load',
+          title: 'Loading',
+          duration_days: 7,
+          items: [
+            {
+              id: 'c-load',
+              title: 'Creatine',
+              scheduled_time: '07:00',
+              dose: '20 g',
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+        {
+          id: 'maint',
+          title: 'Maintenance',
+          duration_days: null,
+          items: [
+            {
+              id: 'c-maint',
+              title: 'Creatine',
+              scheduled_time: '07:00',
+              dose: '10 g',
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    },
+    'Doubled maintenance, dropped the lift',
+    'ai'
+  );
+
+  const versions = render('protocol-versions', ProtocolVersionsScreen, { id: phasedId });
+  expect('protocol-versions', versions, [
+    'Version History',
+    'Creatine loading',
+    'Current',
+    'Coach', // authorship is stamped per version
+    'Doubled maintenance, dropped the lift', // what the author SAID
+    // …and what the save actually DID, under it. This is the payoff the
+    // history never paid: `change_notes` was write-only, and there was no way
+    // to see what a version changed or to go back to one.
+    'dose 5 g → 10 g',
+    'removed Lower body',
+    'Restore', // …and the way back, on the superseded row only
+  ]);
+  // v1 is the start of the record, not a change, so it prints no diff.
+  refute('protocol-versions', versions, ['no change to the items']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
