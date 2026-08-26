@@ -8,7 +8,13 @@ import { apiKeyStore } from './api-key-store';
 import { buildCoachSystemPrompt } from './system-prompt';
 import { buildTurnContext } from './turn-context';
 import { buildWireHistory } from './history-window';
-import { COACH_TOOLS, toolByName, toWireTools, type CoachToolContext } from './tools';
+import {
+  COACH_TOOLS,
+  humanizeToolName,
+  toolByName,
+  toWireTools,
+  type CoachToolContext,
+} from './tools';
 import type { CoachTurnResult } from './types';
 
 /**
@@ -76,11 +82,6 @@ export type StreamOptions = {
    */
   now?: () => Date;
 };
-
-/** "get_metric_series" → "metric series" — the caption chips' vocabulary. */
-export function humanizeToolName(name: string): string {
-  return name.replace(/^(get|list|log|set|complete|dismiss)_/, '').replace(/_/g, ' ');
-}
 
 /**
  * Streams the Coach's reply to the latest user message, emitting text chunks

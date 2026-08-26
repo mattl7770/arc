@@ -30,6 +30,7 @@ import { metricByKey, resolveDisplay } from '@/lib/log/metrics';
 import { listActiveReminders, isDueOn } from '@/lib/db/repositories/reminders';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { todayISODate } from '@/lib/db/date';
+import { isAccumulatingMetric } from '@/lib/health/accumulating';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { getModeDefinition } from '@/lib/modes/registry';
@@ -174,18 +175,18 @@ type WearableTrend = {
   spec: TrendSpec;
   /** The `wearable_data.metric_type` to read. */
   metricType: string;
-  /**
-   * True when the value ACCUMULATES through the day (steps, energy burned).
-   * Today is then a partial total and must be dropped, or every morning reads
-   * as a collapse. False for whole-fact metrics like a night's sleep.
-   */
-  accumulating: boolean;
+  // Whether the value ACCUMULATES through the day — today a partial total that
+  // must be dropped, or every morning reads as a collapse — is NOT declared
+  // here. It is asked of {@link isAccumulatingMetric}, the app's one
+  // declaration (lib/health/accumulating.ts). This list used to carry its own
+  // copy, as did BRIEF_FLOOR_METRICS below, read-tools.ts's WearableMetricSpec
+  // and reports/assemble-self-review.ts's RecoverySpec: four answers to one
+  // question, agreeing only by luck.
 };
 
 const WEARABLE_TRENDS: readonly WearableTrend[] = [
   {
     metricType: 'steps',
-    accumulating: true,
     spec: {
       metric: 'steps',
       label: 'Daily steps',
@@ -197,7 +198,6 @@ const WEARABLE_TRENDS: readonly WearableTrend[] = [
   },
   {
     metricType: 'active_energy_kcal',
-    accumulating: true,
     spec: {
       metric: 'active_energy',
       label: 'Active energy',
@@ -209,7 +209,6 @@ const WEARABLE_TRENDS: readonly WearableTrend[] = [
   },
   {
     metricType: 'resting_energy_kcal',
-    accumulating: true,
     spec: {
       metric: 'resting_energy',
       // Info, not watch: this is an estimate the user does not control (see the
@@ -222,10 +221,10 @@ const WEARABLE_TRENDS: readonly WearableTrend[] = [
     },
   },
   {
-    metricType: 'sleep_duration_min',
     // A night is written once, against the wake day: a whole fact, not a
-    // running total, so today's value counts like an HRV reading does.
-    accumulating: false,
+    // running total, so today's value counts like an HRV reading does — which
+    // is what isAccumulatingMetric says about it, by omission from the list.
+    metricType: 'sleep_duration_min',
     spec: {
       metric: 'sleep',
       label: 'Sleep',
@@ -402,7 +401,8 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
   // Keyed by spec.metric, in WEARABLE_TRENDS order, so the fold below is
   // deterministic and does not depend on sort stability.
   const wearableTrends = new Map<string, TrendResult>();
-  for (const { spec, metricType, accumulating } of WEARABLE_TRENDS) {
+  for (const { spec, metricType } of WEARABLE_TRENDS) {
+    const accumulating = isAccumulatingMetric(metricType);
     const series = wearableArbitratedSeries(db, metricType, since, today);
     const points = accumulating ? series.filter((p) => p.date < today) : series;
     const result = trendResult(spec, points, accumulating ? accNow : now);
@@ -775,38 +775,25 @@ function joinNamed(items: string[], limit: number): string {
  * reads. Each clause is a plain average over the reading window — not an
  * insight, deliberately, just proof that the data is being read.
  *
- * `accumulating` carries the same meaning and the same consequence as it does
- * on {@link WearableTrend}: today's steps are a running total, not a day, so
- * they are excluded from BOTH the average and the day count. A stated daily
+ * Accumulation carries the same meaning and the same consequence here as it
+ * does on {@link WearableTrend}: today's steps are a running total, not a day,
+ * so they are excluded from BOTH the average and the day count. A stated daily
  * average that silently includes a two-hour-old day is a fabricated number —
- * the "no data, no number" rule broken from the other direction.
+ * the "no data, no number" rule broken from the other direction. Which metrics
+ * those are is {@link isAccumulatingMetric}'s answer, not this list's.
  */
 const BRIEF_FLOOR_METRICS: readonly {
   metricType: string;
-  accumulating: boolean;
   describe: (avg: number) => string;
 }[] = [
-  {
-    metricType: 'steps',
-    accumulating: true,
-    describe: (v) => `steps averaged ${Math.round(v)} a day`,
-  },
-  {
-    metricType: 'sleep_duration_min',
-    accumulating: false,
-    describe: (v) => `sleep averaged ${formatMinutes(v)}`,
-  },
+  { metricType: 'steps', describe: (v) => `steps averaged ${Math.round(v)} a day` },
+  { metricType: 'sleep_duration_min', describe: (v) => `sleep averaged ${formatMinutes(v)}` },
   {
     metricType: 'active_energy_kcal',
-    accumulating: true,
     describe: (v) => `active energy averaged ${Math.round(v)} kcal a day`,
   },
-  { metricType: 'hrv', accumulating: false, describe: (v) => `HRV averaged ${round1(v)} ms` },
-  {
-    metricType: 'rhr',
-    accumulating: false,
-    describe: (v) => `resting HR averaged ${round1(v)} bpm`,
-  },
+  { metricType: 'hrv', describe: (v) => `HRV averaged ${round1(v)} ms` },
+  { metricType: 'rhr', describe: (v) => `resting HR averaged ${round1(v)} bpm` },
 ];
 
 /**
@@ -828,16 +815,17 @@ function wearableFloorLine(db: Database, now: Date): string | null {
   const completeSince = isoDaysAgo(now, RECENT_DAYS);
   const clauses: string[] = [];
   for (const metric of BRIEF_FLOOR_METRICS) {
+    const accumulating = isAccumulatingMetric(metric.metricType);
     const series = wearableArbitratedSeries(
       db,
       metric.metricType,
-      metric.accumulating ? completeSince : levelSince,
+      accumulating ? completeSince : levelSince,
       today
     );
-    const points = metric.accumulating ? series.filter((p) => p.date < today) : series;
+    const points = accumulating ? series.filter((p) => p.date < today) : series;
     if (points.length === 0) continue;
     const avg = mean(points.map((p) => p.value))!;
-    const window = metric.accumulating ? 'full days' : 'days';
+    const window = accumulating ? 'full days' : 'days';
     clauses.push(`${metric.describe(avg)} (${points.length} of the last ${RECENT_DAYS} ${window})`);
   }
   if (clauses.length > 0) return clauses.join(' · ');

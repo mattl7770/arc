@@ -34,6 +34,7 @@ import {
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
 import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { deviceLabel, pickDailyMetric } from '@/lib/db/repositories/wearables';
+import { isAccumulatingMetric } from '@/lib/health/accumulating';
 import { SAMPLE_METRICS, STATISTIC_METRICS } from '@/lib/health/mapping';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
@@ -111,7 +112,7 @@ const json = (value: unknown): string => JSON.stringify(value);
 type WearableAgg =
   /** One winning source per day — the rule Home and the Data tab use. */
   | 'arbitrated'
-  /** Genuinely accumulating: many rows a day that must be added up. */
+  /** Many rows a day that must be added up (sips logged, sessions logged). */
   | 'sum';
 
 type WearableMetricSpec = {
@@ -123,20 +124,11 @@ type WearableMetricSpec = {
   decimals: number;
   /** Minutes-valued: also rendered "7h 11m", never left as a raw minute count. */
   isDuration?: boolean;
-  /**
-   * True when today's value is a RUNNING TOTAL that keeps growing until
-   * midnight (steps, energy burned, water). The same distinction insights.ts
-   * calls `accumulating` — and it is NOT the same axis as {@link WearableAgg}.
-   * `agg` says how to fold MANY ROWS into one day; this says whether that day,
-   * once folded, is finished. Steps arbitrate to one source (agg 'arbitrated')
-   * and still accumulate all day, which is exactly how a two-hour-old today of
-   * 900 steps got averaged in beside seven complete 8,000-step days.
-   *
-   * False for whole-fact readings: an HRV sample, a night's sleep, a VO2max
-   * estimate are each complete the moment they are written and must keep
-   * counting today.
-   */
-  accumulating?: boolean;
+  // NO `accumulating` FLAG HERE, deliberately. Whether a folded day is
+  // FINISHED is a different axis from `agg` (which folds it), and it is
+  // answered by {@link isAccumulatingMetric} — the app's one declaration, in
+  // lib/health/accumulating.ts. This spec used to be one of four places each
+  // holding its own copy of that answer.
   /** Dimensions the user has a Settings preference for. */
   display?: 'volume' | 'temperature';
   /** True when the spec was guessed from the rows, not declared by the pipeline. */
@@ -202,10 +194,6 @@ const DECLARED_WEARABLE_METRICS: readonly WearableMetricSpec[] = [
     canonicalUnit: spec.unit,
     agg: 'arbitrated',
     decimals: spec.decimals,
-    // A HealthKit *statistic* is a cumulative sum over the day (steps, active
-    // energy, resting energy). One row per day, rewritten as the day grows, so
-    // arbitration picks a single source — but today's number is still partial.
-    accumulating: true,
   })),
   ...SLEEP_METRICS.map(([metricType, label]): WearableMetricSpec => ({
     metricType,
@@ -348,16 +336,17 @@ function reportValue(
 /**
  * Does today's value for this metric keep growing until midnight?
  *
- * Summing many rows into a day (agg 'sum': water sipped, workouts logged) is
- * accumulation by construction, so it needs no declaration. The declared flag
- * covers the day-bucketed totals that still arbitrate to one source — steps and
- * the energy metrics. A DISCOVERED metric (layer 2) declares neither and is
- * treated as a level reading: its cadence is unknown, and holding a real
- * same-day reading out of the statistics is the more damaging guess of the two,
- * given `inferred: true` already tells the model the semantics were assumed.
+ * Delegated, not decided: {@link isAccumulatingMetric} is the app's one
+ * declaration (lib/health/accumulating.ts), shared with the insight trends, the
+ * brief's floor line and the self-review. This used to read
+ * `spec.agg === 'sum' || spec.accumulating === true`, i.e. it re-derived half
+ * the answer from a flag only this file set. The `agg === 'sum'` half was true
+ * and remains true — summing many rows into a day IS accumulation — so it is
+ * preserved as an assertion (db/health-mapping.test.mjs §13) rather than as a
+ * second rule that a new `agg: 'sum'` spec could satisfy here and nowhere else.
  */
 function accumulatesThroughDay(spec: WearableMetricSpec): boolean {
-  return spec.agg === 'sum' || spec.accumulating === true;
+  return isAccumulatingMetric(spec.metricType);
 }
 
 /** Everything get_metric_series will accept right now, for error text + discovery. */
@@ -1694,7 +1683,7 @@ const searchHistory: CoachTool = {
     // owners and the user's own entries rank ABOVE it. How to read a conflict
     // between them lives once in the system prompt's cached
     // Memory-and-knowledge bullet, so it is not restated here.
-    "Keyword search over everything the user has written — past turns, day-log notes, " +
+    'Keyword search over everything the user has written — past turns, day-log notes, ' +
     'protocol change notes, experiments, your memories — AND the knowledge base: their own ' +
     'entries plus ARC’s shipped reference. Use it to recall something specific ("have we ' +
     'tried magnesium?") or to ground an explanation. Literal matching, not semantic: try ' +

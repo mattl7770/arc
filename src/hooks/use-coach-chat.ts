@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { humanizeToolName, streamCoachReply } from '@/lib/ai/coach-service';
+import { streamCoachReply } from '@/lib/ai/coach-service';
 import { CoachTurnError } from '@/lib/ai/model-client';
-import { toolByName } from '@/lib/ai/tools';
+import { humanizeToolName, toolByName } from '@/lib/ai/tools';
 import { claimsCompletedWrite } from '@/lib/ai/write-claim';
 import type { CoachToolCall } from '@/lib/ai/types';
 import { usageCaption } from '@/lib/ai/cost';

@@ -14,11 +14,13 @@ import {
   missionAdherence,
   missionBySource,
   missionDailySeries,
+  missionOwed,
   missionRecordStart,
   type MissionDayPoint,
   type MissionSourceRecord,
 } from '@/lib/db/repositories/mission';
 import { listProtocols } from '@/lib/db/repositories/protocols';
+import { getModeDefinition } from '@/lib/modes/registry';
 import { shortDate, windowLabel } from '@/lib/experiments/format';
 import { daysBetween } from '@/lib/screenings/format';
 
@@ -56,12 +58,23 @@ import { daysBetween } from '@/lib/screenings/format';
  * as app/nutrition-history.tsx's target bar, per day, labelled, and absent
  * entirely on a day with no plan.
  *
- * **No streak.** A streak needs a rule about what breaks it, and every
- * candidate rule here is currently a lie: modes are supposed to EXCUSE skips
- * (docs/information-architecture.md §Modes) and nothing downstream reads that
- * back, so a streak would punish the user for correctly resting while sick.
- * When mode-aware adherence accounting is built, a streak becomes possible;
- * until then it would be a moralising number the data cannot support.
+ * **No streak.** A streak needs a rule about what breaks it, and the rule would
+ * still have to answer what a partially-excused day does to it, what a day with
+ * no plan does to it, and what a `partial` does — three product decisions, none
+ * of them forced by the data. The blocker it USED to have is gone: adherence is
+ * mode-aware as of 2026-08-25, so a streak would no longer punish the user for
+ * correctly resting while sick. It remains unbuilt because nobody has asked for
+ * it, not because it would lie.
+ *
+ * ## Modes, and what a skip means
+ *
+ * `excusesSkips` (lib/modes/registry.ts) says a skip under Sick / Travel /
+ * Social is the right call. Every figure on this screen honours that: an
+ * excused skip leaves the DENOMINATOR (it was never owed) rather than counting
+ * as a miss or — worse — as a completion, so the rate reads `of N owed`, the
+ * ledger names the excused ones as their own term, and a day that was entirely
+ * excused says "All excused" instead of `0 of 0`. The reasoning is recorded
+ * once, at `modeExcusesSkips` in lib/db/repositories/mission.ts.
  *
  * ## Today is not a miss, and a young install is not a failing one
  *
@@ -86,7 +99,9 @@ import { daysBetween } from '@/lib/screenings/format';
  * | The record starts today | "The record starts today. Nothing has finished yet." |
  * | Days on record, none planned | "No plan was generated on any of the last 14 days." |
  * | Planned, nothing missed | "Nothing was missed. All N planned items were completed." |
+ * | Planned, every item excused | "Every planned item on these days was excused by the day's mode." |
  * | A day inside the record with no plan | the row reads "No plan" and an em-dash — never `0 of 0` |
+ * | A day the mode excused entirely | the row reads "All excused" — a different fact from "No plan" |
  *
  * The last two are the pair this codebase has already confused twice: *nothing
  * was skipped* and *nothing was ever logged* are different facts.
@@ -126,11 +141,17 @@ type MissionRecordView = {
   /** Of those, the days that are over. Every judgement is made on these. */
   settled: MissionDayPoint[];
   adherence: number | null;
-  /** Over `settled`. `completed + skipped + partial + untouched === planned`. */
+  /**
+   * Over `settled`. `completed + skipped + excused + partial + untouched ===
+   * planned`, and `owed === planned - excused` is the rate's denominator.
+   */
   totals: {
     planned: number;
+    /** What was actually owed: planned minus the skips the day's mode excused. */
+    owed: number;
     completed: number;
     skipped: number;
+    excused: number;
     partial: number;
     untouched: number;
   };
@@ -164,11 +185,13 @@ function read(): MissionRecordView {
   let planned = 0;
   let completed = 0;
   let skipped = 0;
+  let excused = 0;
   let partial = 0;
   for (const source of sources) {
     planned += source.planned;
     completed += source.completed;
     skipped += source.skipped;
+    excused += source.excused;
     partial += source.partial;
   }
 
@@ -186,10 +209,12 @@ function read(): MissionRecordView {
     adherence: missionAdherence(settled),
     totals: {
       planned,
+      owed: planned - excused,
       completed,
       skipped,
+      excused,
       partial,
-      untouched: planned - completed - skipped - partial,
+      untouched: planned - completed - skipped - excused - partial,
     },
     sources,
     activeProtocols: listProtocols(db).filter((p) => p.isActive && p.versionNumber !== null).length,
@@ -215,17 +240,27 @@ export default function MissionHistoryScreen() {
   } else if (settled.length === 0) {
     verdict = 'The record starts today. Nothing has finished yet.';
   } else if (adherence === null) {
-    verdict = `No plan was generated on any of the last ${WINDOW_DAYS} days.`;
+    // Two different nothings. A window where every planned item was excused by
+    // its mode is not a window with no plan — a sick fortnight is a fact about
+    // the fortnight, and saying "no plan was generated" about it would be false.
+    verdict =
+      totals.planned > 0
+        ? 'Every planned item on these days was excused by the day’s mode. There is nothing to rate.'
+        : `No plan was generated on any of the last ${WINDOW_DAYS} days.`;
   } else if (settled.length < TREND_FLOOR) {
     verdict = `Only ${plural(settled.length, 'finished day')} on record — too little to read as a trend.`;
   }
 
-  // Sums to `totals.planned`, which is the denominator printed beside the rate.
+  // The four judged terms sum to `totals.owed` — the denominator printed beside
+  // the rate — and adding `excused` gets back to `planned`. That is why excused
+  // sits directly after skipped: they are the two halves of "was skipped", and
+  // only one of them is a miss (lib/db/repositories/mission.ts).
   const ledger =
     totals.planned > 0
       ? [
           `${totals.completed} done`,
           `${totals.skipped} skipped`,
+          ...(totals.excused > 0 ? [`${totals.excused} excused`] : []),
           ...(totals.partial > 0 ? [`${totals.partial} partial`] : []),
           `${totals.untouched} untouched`,
         ].join(' · ')
@@ -249,7 +284,9 @@ export default function MissionHistoryScreen() {
   // whose whole job is to be read in one pass.
   const extent = settledWindow !== null ? `Judged ${settledWindow}` : null;
 
-  const failing = sources.filter((s) => s.planned - s.completed > 0);
+  // Mode-aware: a protocol you correctly rested from during a sick week is not
+  // a protocol you are failing, and it used to be ranked as one here.
+  const failing = sources.filter((s) => s.planned - s.completed - s.excused > 0);
   const newestFirst = [...days].reverse();
 
   return (
@@ -277,7 +314,12 @@ export default function MissionHistoryScreen() {
               {rate}
             </Text>
             {adherence !== null ? (
-              <Text className="font-mono text-sm text-ink-muted">{`of ${totals.planned} planned`}</Text>
+              // "Owed", not "planned", once a mode has excused something: the
+              // rate's denominator is what the days actually asked of you, and
+              // printing `planned` beside it would not reconcile.
+              <Text className="font-mono text-sm text-ink-muted">
+                {totals.excused > 0 ? `of ${totals.owed} owed` : `of ${totals.planned} planned`}
+              </Text>
             ) : null}
           </View>
           {ledger ? (
@@ -310,14 +352,19 @@ export default function MissionHistoryScreen() {
               <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
                 {totals.planned === 0
                   ? 'No plan was generated on any of these days.'
-                  : `Nothing was missed. All ${totals.planned} planned items were completed.`}
+                  : totals.owed === 0
+                    ? 'Every planned item on these days was excused by the day’s mode.'
+                    : totals.excused > 0
+                      ? `Nothing was missed. All ${totals.owed} owed items were completed.`
+                      : `Nothing was missed. All ${totals.planned} planned items were completed.`}
               </Text>
             ) : (
               <View className="mt-1">
                 {failing.map((source, index) => {
-                  const missed = source.planned - source.completed;
+                  const missed = source.planned - source.completed - source.excused;
+                  const owed = missionOwed(source);
                   const worst = source.items[0];
-                  const worstMissed = worst ? worst.planned - worst.completed : 0;
+                  const worstMissed = worst ? worst.planned - worst.completed - worst.excused : 0;
                   const navigable = source.protocolId !== null;
 
                   const body = (
@@ -339,7 +386,7 @@ export default function MissionHistoryScreen() {
                               {worst.title}
                             </Text>
                             <Text className="font-mono text-[10px] text-ink-muted">
-                              {`${worstMissed} of ${worst.planned} missed`}
+                              {`${worstMissed} of ${missionOwed(worst)} missed`}
                             </Text>
                           </View>
                         ) : null}
@@ -352,8 +399,14 @@ export default function MissionHistoryScreen() {
                           failing" the failure is the headline. */}
                       <View className="items-end">
                         <Text className="font-mono text-[15px] text-ink">{`${missed} missed`}</Text>
+                        {/* Owed, not planned, once a mode has excused some of
+                            them — the miss count above is over the owed set,
+                            and the excused ones are named rather than
+                            disappearing into a smaller denominator. */}
                         <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                          {`of ${source.planned} planned`}
+                          {source.excused > 0
+                            ? `of ${owed} owed · ${source.excused} excused`
+                            : `of ${source.planned} planned`}
                         </Text>
                       </View>
                       {navigable ? (
@@ -369,7 +422,7 @@ export default function MissionHistoryScreen() {
                       {navigable ? (
                         <Pressable
                           accessibilityRole="button"
-                          accessibilityLabel={`${source.name}. ${missed} of ${source.planned} planned items missed. Open the protocol.`}
+                          accessibilityLabel={`${source.name}. ${missed} of ${owed} owed items missed${source.excused > 0 ? `, ${source.excused} excused by the day’s mode` : ''}. Open the protocol.`}
                           onPress={() =>
                             router.push({
                               pathname: '/protocol-edit',
@@ -406,8 +459,14 @@ export default function MissionHistoryScreen() {
             />
             <View className="mt-1">
               {newestFirst.map((point, index) => {
-                const planned = point.planned > 0;
-                const pct = planned ? Math.round((point.completed / point.planned) * 100) : 0;
+                // Three states, and they must not collapse into each other:
+                // a day with a plan, a day whose plan the mode entirely excused
+                // ("I rested correctly", NOT "I did it" and NOT "0 of 0"), and
+                // a day with no plan at all.
+                const owed = missionOwed(point);
+                const judged = owed > 0;
+                const allExcused = owed === 0 && point.planned > 0;
+                const pct = judged ? Math.round((point.completed / owed) * 100) : 0;
                 return (
                   <View key={point.date}>
                     <Divider first={index === 0} />
@@ -416,7 +475,7 @@ export default function MissionHistoryScreen() {
                         {shortDate(point.date)}
                       </Text>
                       <View className="flex-1">
-                        {planned ? (
+                        {judged ? (
                           // The completion mark. Behaviour, so the accent —
                           // never a signal colour. A filled track and a filled
                           // fill: no borders anywhere near a rule this thin.
@@ -424,18 +483,29 @@ export default function MissionHistoryScreen() {
                             <View className="h-[3px] bg-pine" style={{ width: `${pct}%` }} />
                           </View>
                         ) : (
-                          <Text className="font-serif text-[13px] text-ink-muted">No plan</Text>
+                          <Text className="font-serif text-[13px] text-ink-muted">
+                            {allExcused ? 'All excused' : 'No plan'}
+                          </Text>
                         )}
                       </View>
                       <View className="items-end">
                         <Text
                           className={
-                            planned
+                            judged
                               ? 'font-mono text-[13px] text-ink'
                               : 'font-mono text-[13px] text-ink-muted'
                           }>
-                          {planned ? `${point.completed} of ${point.planned}` : '—'}
+                          {judged ? `${point.completed} of ${owed}` : '—'}
                         </Text>
+                        {/* The day says WHY it was judged the way it was. A
+                            skip under Sick is the right call, and the row has
+                            to be able to say that rather than silently
+                            reclassify it as work done. */}
+                        {point.excused > 0 ? (
+                          <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                            {`${point.excused} excused · ${getModeDefinition(point.mode).label}`}
+                          </Text>
+                        ) : null}
                         {point.date === today ? (
                           <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
                             today, still open

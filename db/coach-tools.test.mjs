@@ -30,6 +30,7 @@ import {
   READ_TOOLS,
   STUB_TOOLS,
   WRITE_TOOLS,
+  humanizeToolName,
   toolByName,
   toWireTools,
 } from '../src/lib/ai/tools/index.ts';
@@ -125,6 +126,38 @@ console.log('0. registry shape: unique names, read/write split, wire mapping');
   wire.every((t) => t.name && t.description && t.input_schema && t.input_schema.type === 'object')
     ? ok('toWireTools maps name/description/input_schema')
     : bad('wire shape');
+
+  // humanizeToolName must be INJECTIVE over the registry. It is the chip
+  // vocabulary AND the receipt fallback for writes recorded before receipts
+  // existed, so a collision is not cosmetic: it is two different things having
+  // happened to the record and one line of audit trail for both. It stripped
+  // `get|list|log|set|complete|dismiss` until 2026-08-25, which rendered
+  // set_/complete_/dismiss_reminder identically as "reminder" and get_/log_recipe
+  // as "recipe". Asserted here rather than eyeballed, because the next collision
+  // arrives with the next tool.
+  const byLabel = new Map();
+  for (const name of names) {
+    const label = humanizeToolName(name);
+    byLabel.set(label, [...(byLabel.get(label) ?? []), name]);
+  }
+  const collisions = [...byLabel.entries()].filter(([, tools]) => tools.length > 1);
+  collisions.length === 0
+    ? ok(`humanizeToolName is injective over all ${names.length} tools`)
+    : bad(
+        'tool label collision',
+        collisions.map(([label, tools]) => `"${label}" ← ${tools.join(' + ')}`).join('; ')
+      );
+  // …and it still earns its keep: a read chip is a NOUN (the verb is noise on
+  // "get_metric_series"), a write chip is a VERB PHRASE (the verb is the fact).
+  humanizeToolName('get_metric_series') === 'metric series' &&
+  humanizeToolName('list_reminders') === 'reminders' &&
+  humanizeToolName('set_reminder') === 'set reminder' &&
+  humanizeToolName('complete_reminder') === 'complete reminder'
+    ? ok('reads render as nouns, writes as verb phrases')
+    : bad('humanize shape', humanizeToolName('set_reminder'));
+  READ_TOOLS.every((t) => !/^(get|list)[ _]/.test(humanizeToolName(t.name)))
+    ? ok('no read chip still carries its get_/list_ verb')
+    : bad('read verb survived stripping');
 }
 
 console.log('1. get_today_snapshot: empty day is zeros, then reflects writes');

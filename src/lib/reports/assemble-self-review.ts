@@ -42,6 +42,7 @@ import {
 } from '@/lib/ai/series';
 import { compareWindows } from '@/lib/ai/stats';
 import { TREND_GATES } from '@/lib/ai/insights';
+import { isAccumulatingMetric } from '@/lib/health/accumulating';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { accountForDay, getModeDefinition, type ModeKey } from '@/lib/modes/registry';
 import { e1rmSeries, muscleSetsInRange } from '@/lib/db/repositories/training-stats';
@@ -535,8 +536,11 @@ type RecoverySpec = {
   metricType: string;
   label: string;
   gate: { thresholdPct: number; minPerWindow: number };
-  /** True when the value ACCUMULATES through the day (steps): today is partial. */
-  accumulating: boolean;
+  // Whether the value ACCUMULATES through the day — steps: today is partial;
+  // a night's sleep: written once against the wake day, a whole fact — is NOT
+  // declared here. {@link isAccumulatingMetric} answers it for the whole app
+  // (lib/health/accumulating.ts); this was one of four lists holding a private
+  // copy of that answer.
   format: (value: number) => string;
   unit: string;
   /** Which direction is the good one, for the verdict's wording. */
@@ -551,7 +555,6 @@ function recoverySpecs(units: UnitPreferences): RecoverySpec[] {
       metricType: 'hrv',
       label: 'HRV',
       gate: TREND_GATES.hrv,
-      accumulating: false,
       format: (v) => toDisplay(hrv, v) ?? EM_DASH,
       unit: hrv?.unit ?? 'ms',
       upIsGood: true,
@@ -560,7 +563,6 @@ function recoverySpecs(units: UnitPreferences): RecoverySpec[] {
       metricType: 'rhr',
       label: 'Resting heart rate',
       gate: TREND_GATES.rhr,
-      accumulating: false,
       format: (v) => toDisplay(rhr, v) ?? EM_DASH,
       unit: rhr?.unit ?? 'bpm',
       upIsGood: false,
@@ -569,9 +571,6 @@ function recoverySpecs(units: UnitPreferences): RecoverySpec[] {
       metricType: 'sleep_duration_min',
       label: 'Sleep',
       gate: TREND_GATES.sleep,
-      // A night is written once against the wake day — a whole fact, not a
-      // running total (the same call insights.ts makes).
-      accumulating: false,
       format: (v) => fmtMinutes(v),
       unit: '',
       upIsGood: true,
@@ -580,7 +579,6 @@ function recoverySpecs(units: UnitPreferences): RecoverySpec[] {
       metricType: 'steps',
       label: 'Daily steps',
       gate: TREND_GATES.steps,
-      accumulating: true,
       format: (v) => count(v),
       unit: '',
       upIsGood: true,
@@ -594,7 +592,7 @@ function assembleRecovery(db: Database, period: Period, accEnd: string): Recover
   const rows: RecoveryRow[] = [];
 
   for (const spec of recoverySpecs(units)) {
-    const end = spec.accumulating ? accEnd : period.end;
+    const end = isAccumulatingMetric(spec.metricType) ? accEnd : period.end;
     const current: SeriesPoint[] =
       end >= period.start ? wearableArbitratedSeries(db, spec.metricType, period.start, end) : [];
     const before = wearableArbitratedSeries(

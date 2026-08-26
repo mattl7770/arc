@@ -8,6 +8,7 @@
  * {@link Database} interface, headless-tested in db/modes.test.mjs.
  */
 import type { Database } from '../database';
+import { localDaysList } from '../date';
 import { newId } from '../id';
 import type { ModeKey } from '@/lib/modes/registry';
 
@@ -41,6 +42,60 @@ export function getActiveModeRow(db: Database, date: string): DayModeRow | null 
 /** The active mode key for `date` — 'normal' when nothing covers it. */
 export function getActiveMode(db: Database, date: string): ModeKey {
   return getActiveModeRow(db, date)?.mode ?? 'normal';
+}
+
+/**
+ * The active mode for EVERY day in the inclusive range `from … to`, as one
+ * read — {@link getActiveMode} answered for a window instead of a day.
+ *
+ * A mode spans a range, so anything that judges a stretch of days (mission
+ * adherence over a fortnight) needs the mode PER DAY, and calling
+ * `getActiveMode` in a loop is one query per day of history. This resolves the
+ * same rule — *the most-recently-SET covering row wins* — over all of them at
+ * once, by replaying the candidate rows in the order they were set and letting
+ * each later row overwrite the days it covers. That is `ORDER BY created_at
+ * DESC, rowid DESC LIMIT 1` read forwards, and db/modes.test.mjs asserts the
+ * two agree day-for-day rather than trusting the restatement.
+ *
+ * **Days that resolve to Normal are OMITTED**, not stored as `'normal'`: the
+ * implicit default is the common case and a Map of it is noise. Read a missing
+ * key as Normal, exactly as `getActiveModeRow` returning null means Normal.
+ * Empty map for an inverted range.
+ */
+export function activeModesIn(db: Database, from: string, to: string): Map<string, ModeKey> {
+  const modes = new Map<string, ModeKey>();
+  if (to < from) return modes;
+
+  // Rows whose window intersects [from, to] at all, oldest-SET first.
+  const rows = db.all<DayModeRow>(
+    `SELECT * FROM day_modes
+     WHERE start_date <= ? AND (end_date IS NULL OR end_date >= ?)
+     ORDER BY created_at, rowid`,
+    [to, from]
+  );
+  if (rows.length === 0) return modes;
+
+  // Day count via Date.UTC on the parsed parts: a pure calendar difference with
+  // no DST hour to round off, which a local-midnight subtraction can produce.
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+  const span =
+    Math.round((Date.UTC(ty!, tm! - 1, td!) - Date.UTC(fy!, fm! - 1, fd!)) / 86_400_000) + 1;
+  if (span <= 0) return modes;
+  const dates = localDaysList(to, span);
+
+  for (const row of rows) {
+    for (const date of dates) {
+      if (row.start_date <= date && (row.end_date === null || row.end_date >= date)) {
+        // Later-set rows land later in this loop and overwrite — including a
+        // `normal` reset, which is how it ends an open-ended Sick without the
+        // old row being edited.
+        if (row.mode === 'normal') modes.delete(date);
+        else modes.set(date, row.mode);
+      }
+    }
+  }
+  return modes;
 }
 
 export type SetModeInput = {
