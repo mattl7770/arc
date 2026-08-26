@@ -104,8 +104,16 @@ import {
 } from '@/lib/log/metrics';
 import type { LogEntryType } from '@/lib/db/types';
 import type { SetInput, WorkoutKind } from '@/lib/exercise/types';
-import { normalizeItem, parseProtocolContent } from '@/lib/protocols/content';
-import type { ProtocolItem } from '@/lib/protocols/types';
+import { newId } from '@/lib/db/id';
+import { parseCadenceText } from '@/lib/protocols/cadence';
+import {
+  allItems,
+  DAILY,
+  normalizeContent,
+  parseProtocolContent,
+  validateContent,
+} from '@/lib/protocols/content';
+import type { Cadence, ProtocolContent } from '@/lib/protocols/types';
 
 import {
   asRecord,
@@ -367,7 +375,7 @@ const logWorkoutTool: CoachTool = {
             weight: {
               type: 'number',
               minimum: 0,
-              description: "In `unit` (default = the user's weight-unit setting).",
+              description: "In `unit`; defaults to the user's weight unit.",
             },
             unit: { type: 'string', enum: [...SET_UNITS] },
           },
@@ -728,28 +736,88 @@ const dismissReminderTool: CoachTool = {
 // --- update_protocol (versioned stack / routine edit) ------------------------
 
 /**
- * The COMPLETE new item list, validated and canonicalized through the same
- * normalizeItem the editor uses (so a Coach-written version is byte-identical
- * to a hand-edited one). Throws with the offending index so the model can fix a
- * bad item rather than silently dropping it.
+ * The COMPLETE new content — ordered phases of items — validated and
+ * canonicalized through the same `normalizeContent` + `validateContent` the
+ * editor uses, so a Coach-written version is byte-identical to a hand-edited
+ * one and a document the editor would refuse cannot arrive by tool instead.
+ *
+ * Every throw names the offending path (`phases[1].items[3].cadence`) and, for
+ * a cadence, the vocabulary — so the model can fix the call rather than have a
+ * broken protocol persisted or an item silently dropped.
+ *
+ * **Item ids are inherited by title from the live content.** The tool contract
+ * is a complete replacement, so the model re-sends every item it is keeping;
+ * minting fresh ids for those would reset each item's identity, which is what
+ * an N-per-week quota counts on and what the version diff matches by. Matched
+ * as a MULTISET, because a stack may legitimately list the same title twice.
  */
-function parseProtocolItems(input: Record<string, unknown>): ProtocolItem[] {
-  const raw = input['items'];
-  if (!Array.isArray(raw)) {
-    throw new Error('"items" must be an array — the COMPLETE new item list for this version.');
+function parseProtocolContentInput(
+  db: Database,
+  input: Record<string, unknown>,
+  live: ProtocolContent
+): ProtocolContent {
+  const raw = input['phases'];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error(
+      '"phases" must be a non-empty array — the COMPLETE new content. One phase is the normal case.'
+    );
   }
-  return raw.map((entry, i) => {
-    const item = asRecord(entry);
-    if (typeof item['title'] !== 'string' || item['title'].trim().length === 0) {
-      throw new Error(`items[${i}].title must be a non-empty string.`);
-    }
-    return normalizeItem({
-      title: item['title'],
-      scheduled_time: optTime(item, 'scheduled_time') ?? null,
-      dose: optString(item, 'dose') ?? null,
-      notes: optString(item, 'notes') ?? null,
-    });
+
+  const inherited = new Map<string, string[]>();
+  for (const item of allItems(live)) {
+    const key = item.title.trim().toLowerCase();
+    inherited.set(key, [...(inherited.get(key) ?? []), item.id]);
+  }
+  const idFor = (title: string): string =>
+    inherited.get(title.trim().toLowerCase())?.shift() ?? newId(db);
+
+  const content = normalizeContent({
+    phases: raw.map((entry, p) => {
+      const phase = asRecord(entry);
+      const items = phase['items'];
+      if (!Array.isArray(items)) {
+        throw new Error(`phases[${p}].items must be an array of items.`);
+      }
+      return {
+        // Phases are matched to the live ones by POSITION, which is the only
+        // stable thing about them — a phase has no natural key, and its title
+        // is optional.
+        id: live.phases[p]?.id ?? newId(db),
+        title: optString(phase, 'title') ?? null,
+        duration_days: optNumber(phase, 'duration_days') ?? null,
+        items: items.map((raw2, i) => {
+          const item = asRecord(raw2);
+          if (typeof item['title'] !== 'string' || item['title'].trim().length === 0) {
+            throw new Error(`phases[${p}].items[${i}].title must be a non-empty string.`);
+          }
+          return {
+            id: idFor(item['title']),
+            title: item['title'],
+            scheduled_time: optTime(item, 'scheduled_time') ?? null,
+            dose: optString(item, 'dose') ?? null,
+            notes: optString(item, 'notes') ?? null,
+            cadence: parseCadence(optString(item, 'cadence'), `phases[${p}].items[${i}]`),
+          };
+        }),
+      };
+    }),
   });
+
+  const invalid = validateContent(content);
+  if (invalid) throw new Error(invalid);
+  return content;
+}
+
+/** A cadence phrase, or the failure the model can act on. Absent means daily. */
+function parseCadence(text: string | undefined, path: string): Cadence {
+  if (text === undefined) return DAILY;
+  const cadence = parseCadenceText(text);
+  if (cadence === null) {
+    throw new Error(
+      `${path}.cadence "${text}" is not readable. Use: daily | mon,wed,fri | every 3 days | 3/week.`
+    );
+  }
+  return cadence;
 }
 
 /** Resolve the slug → protocol, with a message that points the model at the fix. */
@@ -761,91 +829,108 @@ function requireProtocol(db: Database, slug: string) {
   return protocol;
 }
 
+/** The live content of the protocol a call names, for id inheritance + counts. */
+const liveContentOf = (db: Database, protocolId: string): ProtocolContent =>
+  parseProtocolContent(getCurrentVersion(db, protocolId)?.content ?? null);
+
 const updateProtocolTool: CoachTool = {
   name: 'update_protocol',
   description:
     // The COMPLETE-SET rule and its "anything omitted is dropped" consequence
-    // now live once, in the system prompt's VERSIONED SETS bullet, which governs
+    // live once, in the system prompt's VERSIONED SETS bullet, which governs
     // this tool and set_nutrition_targets together (2026-08-11 trim).
-    'Save a new version of a protocol (stack, routine, training block) by its slug from ' +
-    'get_protocols. "items" is the COMPLETE new list. Takes effect TOMORROW unless apply_today ' +
-    'is true; say which you did.',
+    //
+    // `apply_today` is GONE (2026-08-25): a protocol edit now always reaches
+    // today, by the owner's call, so the flag had one legal value and cost the
+    // model a decision it could get wrong in only one direction.
+    'Save a new version of a protocol by its slug from get_protocols. "phases" is the COMPLETE ' +
+    'new content; it takes effect today.',
   inputSchema: {
     type: 'object',
     properties: {
       protocol_slug: { type: 'string', description: 'From get_protocols.' },
-      items: {
+      phases: {
         type: 'array',
-        description: 'Complete new list, not a delta.',
+        description: 'Ordered; usually one.',
         items: {
           type: 'object',
           properties: {
-            title: { type: 'string' },
-            scheduled_time: { type: 'string', description: '"HH:MM" 24h; omit for any time.' },
-            dose: { type: 'string', description: 'e.g. "400 mg".' },
-            notes: { type: 'string' },
+            title: { type: 'string', description: 'e.g. "Loading". Omit if single-phase.' },
+            duration_days: {
+              type: 'integer',
+              description: 'Required except on the LAST phase, which then runs on.',
+            },
+            items: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type: 'string' },
+                  scheduled_time: { type: 'string', description: '"HH:MM" 24h.' },
+                  dose: { type: 'string', description: 'e.g. "400 mg".' },
+                  notes: { type: 'string' },
+                  cadence: {
+                    type: 'string',
+                    description:
+                      'daily (default) | mon,wed,fri | every 3 days | 3/week (any 3 days).',
+                  },
+                },
+                required: ['title'],
+                additionalProperties: false,
+              },
+            },
           },
-          required: ['title'],
+          required: ['items'],
           additionalProperties: false,
         },
       },
-      change_notes: { type: 'string', description: 'One line: what changed and why.' },
-      apply_today: {
-        type: 'boolean',
-        description: 'Also re-derive TODAY (default false). Logged work is preserved.',
-      },
+      change_notes: { type: 'string', description: 'What changed and why.' },
     },
-    required: ['protocol_slug', 'items', 'change_notes'],
+    required: ['protocol_slug', 'phases', 'change_notes'],
     additionalProperties: false,
   },
   readOnly: false,
   confirmSummary: (input, db) => {
     const args = asRecord(input);
     const protocol = requireProtocol(db, reqString(args, 'protocol_slug'));
-    const items = parseProtocolItems(args);
-    const wasCount = parseProtocolContent(getCurrentVersion(db, protocol.id)?.content ?? null).items
-      .length;
+    const live = liveContentOf(db, protocol.id);
+    const count = allItems(parseProtocolContentInput(db, args, live)).length;
+    const wasCount = allItems(live).length;
     const notes = optString(args, 'change_notes');
-    // "(was N)" makes a destructive replace visible — the user must never approve
-    // a stack-wipe thinking it's an add. WHEN it lands is consequential too:
-    // approving "add magnesium" and seeing nothing on today's mission reads as
-    // a broken promise, so the card always says which day it changes.
-    const applyToday = args['apply_today'] === true;
+    // "(was N)" makes a destructive replace visible — the user must never
+    // approve a stack-wipe thinking it is an add. WHEN it lands is
+    // consequential too: approving "add magnesium" and seeing nothing on
+    // today's mission reads as a broken promise, so the card says the day.
     return (
-      `Update "${protocol.name}": ${items.length} item${items.length === 1 ? '' : 's'} ` +
-      `(was ${wasCount})${notes ? ` — ${notes}` : ''} · ` +
-      `${applyToday ? "applies to today's plan now" : 'takes effect tomorrow'}`
+      `Update "${protocol.name}": ${count} item${count === 1 ? '' : 's'} ` +
+      `(was ${wasCount})${notes ? ` — ${notes}` : ''} · applies to today's plan now`
     );
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
     const protocol = requireProtocol(db, reqString(args, 'protocol_slug'));
-    const items = parseProtocolItems(args);
-    const applyToday = args['apply_today'] === true;
+    const content = parseProtocolContentInput(db, args, liveContentOf(db, protocol.id));
     const versionId = addVersion(
       db,
       protocol.id,
-      { items },
+      content,
       optString(args, 'change_notes') ?? null,
       'ai'
     );
     const version = getCurrentVersion(db, protocol.id);
-    // Mission generation is idempotent per day, so a new version normally
-    // reaches TOMORROW only. Re-deriving is the deliberate, user-approved way
-    // to make it count today; the diff preserves everything already acted on.
-    const rederived = applyToday ? rederiveMissionForDay(db, todayISODate(context.now)) : undefined;
+    // The edit reaches TODAY, through the same diff a mode change uses:
+    // untouched machine-made rows follow the new content, and everything the
+    // user has already acted on is preserved.
+    const rederived = rederiveMissionForDay(db, todayISODate(context.now));
     return json({
       updated: true,
       protocol: protocol.slug,
       versionId,
       versionNumber: version?.version_number ?? null,
-      itemCount: items.length,
-      effective: applyToday ? 'today' : 'tomorrow',
-      ...(rederived
-        ? { missionAdded: rederived.added, missionRemoved: rederived.removed }
-        : {
-            note: "Today's mission was already generated and is unchanged; this shapes tomorrow onward.",
-          }),
+      itemCount: allItems(content).length,
+      effective: 'today',
+      missionAdded: rederived.added,
+      missionRemoved: rederived.removed,
     });
   },
 };
@@ -990,8 +1075,8 @@ const adjustTodayTool: CoachTool = {
   name: 'adjust_today',
   description:
     "Restructure TODAY's mission in one batch: complete / skip / move / remove items by their id " +
-    'from get_today_snapshot, and add new ones. The whole batch is ONE confirmation, so send it ' +
-    'as one call. Today only — edit the protocol to change future days.',
+    'from get_today_snapshot, and add new ones. One confirmation covers the batch. Today only — ' +
+    'edit the protocol to change future days.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1002,14 +1087,14 @@ const adjustTodayTool: CoachTool = {
           type: 'object',
           properties: {
             action: { type: 'string', enum: [...ADJUST_ACTIONS] },
-            id: { type: 'string', description: "Item id; every action but 'add'." },
+            id: { type: 'string', description: "Every action but 'add'." },
             title: { type: 'string', description: "'add' only." },
             type: {
               type: 'string',
               enum: [...ADJUST_TYPES],
               description: "'add' only, default habit.",
             },
-            scheduled_time: { type: 'string', description: '"HH:MM" 24h; for move or add.' },
+            scheduled_time: { type: 'string', description: '"HH:MM" 24h; move or add.' },
             why: { type: 'string', description: "One line; 'add' only." },
           },
           required: ['action'],
@@ -1289,10 +1374,7 @@ const createExperimentTool: CoachTool = {
     properties: {
       name: { type: 'string' },
       hypothesis: { type: 'string' },
-      intervention: {
-        type: 'string',
-        description: 'The single change, e.g. "400 mg magnesium glycinate at night".',
-      },
+      intervention: { type: 'string', description: 'e.g. "400 mg magnesium at night".' },
       metrics: {
         type: 'array',
         items: { type: 'string' },
@@ -1300,9 +1382,7 @@ const createExperimentTool: CoachTool = {
         // name, about any metric get_metric_series cannot return (see
         // `unreadableMetrics` below), which is the same information delivered
         // only in the case where it matters.
-        description:
-          'Metrics to watch. Prefer names get_metric_series can read back, so the readout has ' +
-          'numbers; anything else is watched qualitatively.',
+        description: 'Prefer names get_metric_series can read back.',
       },
       duration_days: { type: 'integer', minimum: 3 },
       success_criteria: { type: 'string', description: 'What would confirm the hypothesis.' },

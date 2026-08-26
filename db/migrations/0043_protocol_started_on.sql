@@ -1,0 +1,51 @@
+-- ============================================================================
+-- ARC 0043 — protocols.started_on: the day a protocol's phase clock starts
+--
+-- Content schema 2 (src/lib/protocols/types.ts) gives a protocol ORDERED PHASES
+-- with durations — "2 caps for 4 weeks, then 4", "an 8-week block that changes
+-- at week 5". Picking the phase that is live on a given date needs one fact the
+-- schema never held: WHEN the protocol started. Everything else the generator
+-- needs is already in the versioned JSON.
+--
+-- It is a column on `protocols`, not on `protocol_versions`, because it belongs
+-- to the protocol's IDENTITY and not to any one revision: editing the content
+-- writes a new version and must not restart a titration the user is six weeks
+-- into.
+--
+-- BACKFILL: `date(created_at)` for every currently-ACTIVE protocol. Those
+-- protocols have been generating a mission since the day they were made, so
+-- their clock has in truth been running since then, and phase 1 of a
+-- single-phase document is open-ended anyway — the backfill cannot move an
+-- existing day. Paused protocols are left NULL deliberately: their clock has
+-- not started, and stamping one now would date it to a creation the user has
+-- since stepped away from.
+--
+-- WHAT NULL MEANS ON AN ACTIVE PROTOCOL: "the clock has not been anchored yet",
+-- and the app treats it as TODAY and then stamps it — `ensureStartedOn` in
+-- src/lib/db/repositories/protocols.ts runs before every mission generation and
+-- re-derive, and `setActive(…, true)` stamps on resume. So the NULL is
+-- transient by construction: the first day such a protocol plans anything is
+-- the day its phase 1 begins, which is the only reading that cannot silently
+-- skip a phase the user never ran.
+--
+-- `date(created_at)` reads the UTC date of an ISO-8601 instant while the rest of
+-- the app keys on the LOCAL calendar day. For a protocol created within a few
+-- hours of midnight the backfill can therefore be one day off its local
+-- creation date. That is accepted: every protocol on the device today is
+-- single-phase and open-ended, so a one-day shift in the phase clock changes
+-- nothing that is generated, and any protocol that later gains phases gets its
+-- start date from the editor.
+--
+-- Numbered 0043: 0040/0041 were never used and 0042 is main's head. (0043 was
+-- briefly reserved for a parallel correctness sweep, which then shipped without
+-- a migration.) The runner SILENTLY SKIPS any number at or below a device's
+-- `PRAGMA user_version`, so a collision strands a migration forever — re-check
+-- `git ls-tree main -- db/migrations/` before merging. Conventions per
+-- CLAUDE.md §9: YYYY-MM-DD date text, GLOB-checked; never edit a shipped
+-- migration; `npm run db:bundle` regenerates the bundle.
+-- ============================================================================
+ALTER TABLE protocols ADD COLUMN started_on text CHECK (
+  started_on IS NULL OR started_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+);
+
+UPDATE protocols SET started_on = date(created_at) WHERE is_active = 1 AND started_on IS NULL;

@@ -38,7 +38,9 @@ import { SAMPLE_METRICS, STATISTIC_METRICS } from '@/lib/health/mapping';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
 import { getModeDefinition } from '@/lib/modes/registry';
+import { cadenceText } from '@/lib/protocols/cadence';
 import { parseProtocolContent } from '@/lib/protocols/content';
+import { phaseOn } from '@/lib/protocols/phase';
 import type { BiomarkerRow } from '@/lib/db/types';
 import {
   DAY_METRIC_LABELS,
@@ -1360,29 +1362,47 @@ const getProtocols: CoachTool = {
   name: 'get_protocols',
   description:
     'The user’s protocols — supplement stacks, routines, training blocks — each with its live ' +
-    'version number and current items (title, scheduled_time, dose). Call this before proposing ' +
-    'a change with update_protocol (you must know the current items to submit the complete new ' +
-    'list), and whenever the user asks what is in a stack or routine.',
+    'version number and its phases of items (title, time, dose, cadence). Call this before ' +
+    'proposing a change with update_protocol (you must know the current content to submit the ' +
+    'complete new one), and whenever the user asks what is in a stack or routine.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   readOnly: true,
-  execute: (db) =>
-    json({
+  // The OUTPUT costs nothing against the schema budget, so it carries
+  // everything the model needs to write a correct update back: each item's
+  // cadence in the same terse vocabulary `update_protocol` accepts, and — for a
+  // phased protocol — which phase is live TODAY, so an answer about "what am I
+  // taking" is about now rather than about the whole document.
+  execute: (db, _input, context) => {
+    const today = todayISODate(context.now);
+    return json({
       protocols: listProtocols(db).map((p) => {
-        const version = getCurrentVersion(db, p.id);
+        const content = parseProtocolContent(getCurrentVersion(db, p.id)?.content ?? null);
+        const state = phaseOn(content, p.startedOn ?? today, today);
         return {
           slug: p.slug,
           name: p.name,
           type: p.type,
           isActive: p.isActive,
           versionNumber: p.versionNumber,
-          items: parseProtocolContent(version?.content ?? null).items.map((item) => ({
-            title: item.title,
-            scheduled_time: item.scheduled_time,
-            dose: item.dose,
+          ...(state.kind === 'running'
+            ? content.phases.length > 1
+              ? { livePhase: state.window.index + 1, dayOfPhase: state.window.dayInPhase + 1 }
+              : {}
+            : { status: state.kind === 'ended' ? 'ended' : 'not started yet' }),
+          phases: content.phases.map((phase) => ({
+            ...(phase.title ? { title: phase.title } : {}),
+            ...(phase.duration_days === null ? {} : { duration_days: phase.duration_days }),
+            items: phase.items.map((item) => ({
+              title: item.title,
+              scheduled_time: item.scheduled_time,
+              dose: item.dose,
+              cadence: cadenceText(item.cadence),
+            })),
           })),
         };
       }),
-    }),
+    });
+  },
 };
 
 // --- search_knowledge --------------------------------------------------------

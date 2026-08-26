@@ -19,6 +19,17 @@ type Props = {
    * stops responding without saying why reads as a bug.
    */
   blockedReason?: string;
+  /**
+   * A draft the screen arrives holding — today, only the Protocols hub's empty
+   * state, which routes here asking the Coach to draft a first protocol.
+   *
+   * Seeded, never SENT: arriving to find a question already asked would spend a
+   * model call the user never authorised, on wording they never saw. Read once,
+   * as the initial draft; the field owns its text after that, and the screen
+   * keys this component on the incoming prompt so a second arrival reseeds
+   * rather than being silently ignored.
+   */
+  initialText?: string;
 };
 
 /**
@@ -60,8 +71,8 @@ type Props = {
  *
  * Owns its own draft text so a keystroke doesn't re-render the whole thread.
  */
-export function ChatInput({ onSend, disabled = false, blockedReason }: Props) {
-  const [text, setText] = useState('');
+export function ChatInput({ onSend, disabled = false, blockedReason, initialText }: Props) {
+  const [text, setText] = useState(initialText ?? '');
   const blocked = blockedReason !== undefined;
   const canSend = text.trim().length > 0 && !disabled && !blocked;
 

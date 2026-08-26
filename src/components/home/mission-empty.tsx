@@ -84,7 +84,16 @@ export function MissionEmpty({ hasActiveProtocols }: Props) {
   );
 }
 
-/** No protocols yet — the true first run. */
+/**
+ * No protocols yet — the true first run.
+ *
+ * This used to land straight on `/protocol-edit`: a blank form with a name
+ * field, where the user had to invent both the content and its shape. It lands
+ * on the HUB now, whose empty state offers the two real ways to start — build
+ * it yourself, or have the Coach draft one from what it already knows about
+ * you. There is deliberately no template library: this is a single-user app,
+ * and the Coach is a better template engine than a canned "Morning Stack".
+ */
 const UNBUILT = {
   eyebrow: 'No active protocols',
   headline: 'Today has no plan yet.',
@@ -94,19 +103,27 @@ const UNBUILT = {
     'invented to fill it.',
   action: 'Build your first protocol',
   icon: 'add' as const,
-  href: '/protocol-edit' as const,
+  href: '/protocols' as const,
   footnote: 'Anything you do in the meantime can still be captured from the Log tab.',
 };
 
-/** Protocols exist and are live, but expanded to nothing for this day. */
+/**
+ * Protocols exist and are live, but expanded to nothing for this day.
+ *
+ * Since content schema 2 there are three ways that happens and they are all
+ * true at once here: a live version with no items, every item's CADENCE
+ * skipping today, or every protocol past its last phase. The copy names the
+ * cadence case because it is the new one and the only one the user might not
+ * expect; the hub is where the other two are visible.
+ */
 const IDLE = {
   eyebrow: 'Nothing scheduled',
   headline: 'Your protocols put nothing on today.',
   body:
-    'Your active protocols have no items in their live versions, so there is nothing to run. ' +
-    'Open one and add the items you actually do — every save becomes a new version.',
+    'Nothing your active protocols run falls on today — either their items are set to other days, ' +
+    'or their live versions have no items yet. Open them and see what each one is up to.',
   action: 'Open your protocols',
   icon: 'list-outline' as const,
   href: '/protocols' as const,
-  footnote: 'Paused protocols are skipped. Today fills in as soon as a live version has items.',
+  footnote: 'Paused and ended protocols are skipped. Today fills in as soon as one comes round.',
 };

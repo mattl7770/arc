@@ -178,6 +178,13 @@ export type ProtocolRow = {
   type: ProtocolType;
   is_active: SqliteBool;
   current_version_id: string | null;
+  /**
+   * The day this protocol's PHASE CLOCK starts (0043). Null means it has not
+   * been anchored yet — the app reads that as today and stamps it on the next
+   * mission generation; see the migration header and `ensureStartedOn` in
+   * repositories/protocols.ts.
+   */
+  started_on: DateString | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 };

@@ -203,9 +203,15 @@ export default function RootLayout() {
               stored one row per capture (src/lib/db/repositories/water.ts),
               which is what makes editing a past entry expressible at all. */}
           <Stack.Screen name="water" />
+          {/* Protocols became a sub-app root on 2026-08-25 — Home's mission
+              area links straight to it, and Data keeps its row. The only source
+              of the daily mission had been three taps inside a foldable
+              section. */}
           <Stack.Screen name="protocols" />
+          {/* Pushed from the hub: one protocol's live phase and its adherence. */}
+          <Stack.Screen name="protocol-detail" />
           <Stack.Screen name="protocol-edit" />
-          {/* Pushed from the protocol editor: the version timeline. */}
+          {/* Pushed from the protocol detail screen: the version timeline. */}
           <Stack.Screen name="protocol-versions" />
           <Stack.Screen name="screenings" />
           <Stack.Screen name="screening-form" />

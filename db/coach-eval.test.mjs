@@ -531,6 +531,51 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // NET 3,696 → 3,655, i.e. the branch RETURNED 41 tokens of headroom rather
   // than spending it. The next addition still digs in the four fat SCHEMAS
   // named above: the prompt is now genuinely swept.
+  //
+  // ── 2026-08-25: PROTOCOLS v2. NEITHER CEILING MOVED. The system prompt was
+  // not touched at all (3,655, unchanged). This is the first addition to dig in
+  // the four fat SCHEMAS the note above named, and the digging paid for most of
+  // the feature.
+  //
+  // WHAT IT COST, BEFORE ANY TRIMMING: +95 tok of schema (9,206 → 9,301), which
+  // tripped the 9,250 ceiling. `update_protocol` grew from a flat `items` array
+  // to ordered `phases` of items, each item carrying a `cadence` — content
+  // schema 2 (src/lib/protocols/types.ts). Two design choices held that number
+  // down before any trim was needed:
+  //   · **cadence is a compact STRING**, not a four-branch object union —
+  //     `daily | mon,wed,fri | every 3 days | 3/week` — parsed at the tool
+  //     boundary by `parseCadenceText`. The union would have cost several times
+  //     as much for exactly the same expressiveness, and a model writes the
+  //     phrase more reliably than it fills in a discriminated object.
+  //   · **`apply_today` is GONE** (−~40 tok, and one fewer decision for the
+  //     model to get wrong): a protocol edit now always reaches today, so the
+  //     flag had one legal value.
+  //   · get_protocols carries phases, cadence and the LIVE phase in its OUTPUT,
+  //     which costs nothing against this budget at all.
+  //
+  // PAID FOR BY (−82 tok), every one a duplication rather than a shave:
+  //   · create_experiment.metrics said "Prefer names get_metric_series can read
+  //     back, so the readout has numbers; anything else is watched
+  //     qualitatively." The tool's own RESULT already warns, by name, about any
+  //     metric that cannot be read — the same information delivered only where
+  //     it matters. Cut to the first clause.
+  //   · create_experiment.intervention said "The single change, e.g. …" while
+  //     the tool description's own second clause is "the ONE intervention being
+  //     changed". The example survives; the restatement does not.
+  //   · adjust_today's "The whole batch is ONE confirmation, so send it as one
+  //     call" restates its first clause, "in one batch"; and its `id` property
+  //     said "Item id" under a description that already says "by their id from
+  //     get_today_snapshot".
+  //   · log_workout's weight note spelled out a parenthetical the sentence did
+  //     not need.
+  //   · update_protocol's own description listed "(stack, routine, training
+  //     block)", which get_protocols lists one tool away.
+  //
+  // NET 9,206 → 9,219: **+13 tok for phases, cadence, and a tool that no longer
+  // asks the model which day an edit lands on.** 31 tokens of headroom remain.
+  // The next addition digs in the same place — log_workout (349), adjust_today
+  // (~340) and get_metric_series (354) are now the three fattest, and
+  // update_protocol at 424 is fat for a reason it can defend.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

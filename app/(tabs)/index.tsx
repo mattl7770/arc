@@ -1,4 +1,6 @@
-import { View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { useRouter } from 'expo-router';
+import { Pressable, Text, View } from 'react-native';
 
 import { CoachBrief } from '@/components/home/coach-brief';
 import { CoachNote } from '@/components/home/coach-note';
@@ -10,6 +12,7 @@ import { MissionEmpty } from '@/components/home/mission-empty';
 import { ModeBanner, ModeControl } from '@/components/home/mode-control';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
 import { Screen } from '@/components/ui/screen';
+import { palette } from '@/constants/theme';
 import { useCoachPassMessage } from '@/hooks/use-coach-pass';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
 import { useMode } from '@/hooks/use-mode';
@@ -101,6 +104,37 @@ import { useTodayMission } from '@/hooks/use-today-mission';
  * "0 of 0" progress bar would be noise. See src/lib/db/seed.ts for the demo
  * mission that used to be written into the user's database instead.
  */
+/**
+ * The way from the day to the thing that BUILT the day.
+ *
+ * Home's mission comes from the active protocols and from nothing else, and
+ * until 2026-08-25 the only route to them was three taps inside the Data tab's
+ * foldable "full file" section. This is the affordance the owner asked for when
+ * Protocols graduated to its own hub: a quiet line under the checklist, in the
+ * label voice.
+ *
+ * Deliberately NOT an accent and not a button. Home's accent budget is the
+ * hero's primary action and the mission's completion stamps; a second filled
+ * control under the list would compete with the one thing the screen exists to
+ * make you do. It is the same weight as the mission block's own fold control.
+ */
+function ProtocolsLink() {
+  const router = useRouter();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Protocols — what builds this day"
+      onPress={() => router.push('/protocols')}
+      className="min-h-[44px] flex-row items-center gap-2 self-start px-1 active:opacity-60">
+      <Ionicons name="git-branch-outline" size={14} color={palette.inkMuted} />
+      <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+        Protocols
+      </Text>
+      <Ionicons name="chevron-forward" size={12} color={palette.inkMuted} />
+    </Pressable>
+  );
+}
+
 export default function HomeScreen() {
   const mission = useTodayMission();
   const brief = useDailyBrief();
@@ -173,6 +207,11 @@ export default function HomeScreen() {
             activeId={mission.next?.id ?? null}
             onToggle={mission.toggle}
           />
+          {/* Under the list, not above it: the day comes first, and the plan
+              behind it is where you go when the day is wrong. */}
+          <View className="mt-2">
+            <ProtocolsLink />
+          </View>
         </View>
       ) : null}
 

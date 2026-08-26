@@ -1,3 +1,4 @@
+import { useLocalSearchParams } from 'expo-router';
 import { useCallback, useRef } from 'react';
 import {
   KeyboardAvoidingView,
@@ -118,6 +119,13 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
 export default function CoachScreen() {
   const keySet = useSessionKeySet();
   const { reminders, reload: reloadReminders, complete, dismiss } = useReminders();
+  // A screen may route here holding a question it wants asked — today only the
+  // Protocols hub's empty state ("Ask the Coach to draft one"). It SEEDS the
+  // composer and never sends: a turn the user did not press send on would spend
+  // a model call on wording they never saw. A repeated param arrives as string[]
+  // despite the generic, so it is coerced like every other deep-linked param.
+  const params = useLocalSearchParams<{ prompt?: string | string[] }>();
+  const seededPrompt = Array.isArray(params.prompt) ? params.prompt[0] : params.prompt;
 
   const onTurnComplete = useCallback(() => {
     reloadReminders();
@@ -258,7 +266,12 @@ export default function CoachScreen() {
             <PendingWriteCard pending={chat.pendingWrite} onResolve={chat.resolveWrite} />
           ) : null}
 
+          {/* The React key is the seeded prompt: ChatInput owns its draft, so
+              reseeding it means remounting it. Arriving with no prompt is the
+              ordinary case and mounts exactly as before. */}
           <ChatInput
+            key={seededPrompt ?? 'composer'}
+            initialText={seededPrompt}
             onSend={chat.send}
             disabled={chat.isResponding}
             blockedReason={decisionOpen ? 'Answer the proposed change to continue' : undefined}

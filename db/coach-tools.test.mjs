@@ -522,10 +522,13 @@ console.log('12. sub-week training windows refuse to extrapolate a weekly rate')
     : bad('weekly extrapolation', JSON.stringify(training));
 }
 
-console.log('13. protocols: get_protocols reads live items; update_protocol versions like code');
+console.log('13. protocols: get_protocols reads live content; update_protocol versions like code');
 {
   const { db, raw } = freshDb();
-  // Seed an "evening stack" through the same repo path the editor uses.
+  // Seed an "evening stack" as a LEGACY v1 document, written the way every
+  // version already on the owner's device was. Reading it back through the
+  // schema-2 tools is the point: those rows are immutable and must keep
+  // working forever.
   const protocolId = createProtocolWithVersion(
     db,
     { name: 'Evening Stack', type: 'supplement_stack' },
@@ -541,38 +544,47 @@ console.log('13. protocols: get_protocols reads live items; update_protocol vers
 
   const view = run('get_protocols', db);
   const stack = view.protocols.find((p) => p.slug === slug);
+  const liveItems = stack?.phases?.[0]?.items ?? [];
   stack &&
   stack.name === 'Evening Stack' &&
   stack.versionNumber === 1 &&
-  stack.items.length === 2 &&
-  stack.items[0].title === 'Magnesium Glycinate' &&
-  stack.items[0].dose === '200 mg'
-    ? ok('get_protocols returns the stack with its current items')
+  stack.phases.length === 1 &&
+  liveItems.length === 2 &&
+  liveItems[0].title === 'Magnesium Glycinate' &&
+  liveItems[0].dose === '200 mg' &&
+  liveItems[0].cadence === 'daily'
+    ? ok('get_protocols reads a v1 document as one phase of daily items')
     : bad('get_protocols', JSON.stringify(view));
 
-  // The magnesium scenario: read the current items, resubmit the COMPLETE list
-  // plus the change. The confirmation shows the count delta so a wipe is visible.
+  // The magnesium scenario: read the current content, resubmit the COMPLETE
+  // set plus the change. The confirmation shows the count delta so a wipe is
+  // visible, and says which day it lands on.
   const changeInput = {
     protocol_slug: slug,
-    items: [
-      { title: 'Magnesium Glycinate', scheduled_time: '21:00', dose: '400 mg' },
-      { title: 'Vitamin D3', scheduled_time: '21:00', dose: '5000 IU' },
-      { title: 'Zinc', scheduled_time: '21:00', dose: '15 mg' },
+    phases: [
+      {
+        items: [
+          { title: 'Magnesium Glycinate', scheduled_time: '21:00', dose: '400 mg' },
+          { title: 'Vitamin D3', scheduled_time: '21:00', dose: '5000 IU' },
+          { title: 'Zinc', scheduled_time: '21:00', dose: '15 mg', cadence: 'mon,wed,fri' },
+        ],
+      },
     ],
     change_notes: 'Bumped magnesium to 400 mg, added zinc',
   };
   const summary = toolByName('update_protocol').confirmSummary(changeInput, db, CTX);
-  // The card carries the item-count delta AND which day the change lands on —
-  // approving "added zinc" and seeing nothing on today's mission reads as a
-  // broken promise, so "takes effect tomorrow" is part of the contract.
   summary ===
-  'Update "Evening Stack": 3 items (was 2) — Bumped magnesium to 400 mg, added zinc · takes effect tomorrow'
+  "Update \"Evening Stack\": 3 items (was 2) — Bumped magnesium to 400 mg, added zinc · applies to today's plan now"
     ? ok(`confirmation shows the item-count delta and the effective day ("${summary}")`)
     : bad('update summary', summary);
 
   const out = run('update_protocol', db, changeInput);
-  out.updated === true && out.versionNumber === 2 && out.itemCount === 3 && out.protocol === slug
-    ? ok('update_protocol writes version 2 with 3 items')
+  out.updated === true &&
+  out.versionNumber === 2 &&
+  out.itemCount === 3 &&
+  out.protocol === slug &&
+  out.effective === 'today'
+    ? ok('update_protocol writes version 2 with 3 items, effective today')
     : bad('update result', JSON.stringify(out));
 
   const versionCount = raw
@@ -580,28 +592,46 @@ console.log('13. protocols: get_protocols reads live items; update_protocol vers
     .get(protocolId).c;
   const current = raw
     .prepare(
-      `SELECT v.version_number, v.created_by, json_array_length(v.content, '$.items') n
+      `SELECT v.version_number, v.created_by,
+              json_extract(v.content, '$.schema') schema,
+              json_array_length(v.content, '$.phases[0].items') n
        FROM protocols p JOIN protocol_versions v ON v.id = p.current_version_id WHERE p.id = ?`
     )
     .get(protocolId);
   versionCount === 2 &&
   current.version_number === 2 &&
   current.created_by === 'ai' &&
+  current.schema === 2 &&
   current.n === 3
-    ? ok('v1 preserved; current_version_id points at the ai-authored v2 (3 items)')
+    ? ok('v1 preserved; current_version_id points at the ai-authored schema-2 v2 (3 items)')
     : bad('versioning', JSON.stringify({ versionCount, current }));
 
   const after = run('get_protocols', db).protocols.find((p) => p.slug === slug);
+  const afterItems = after.phases[0].items;
   after.versionNumber === 2 &&
-  after.items.some((it) => it.title === 'Zinc') &&
-  after.items.find((it) => it.title === 'Magnesium Glycinate').dose === '400 mg'
-    ? ok('get_protocols now reads v2 (zinc added, magnesium at 400 mg)')
+  afterItems.some((it) => it.title === 'Zinc') &&
+  afterItems.find((it) => it.title === 'Magnesium Glycinate').dose === '400 mg' &&
+  afterItems.find((it) => it.title === 'Zinc').cadence === 'Mon,Wed,Fri'
+    ? ok('get_protocols now reads v2, cadence in the vocabulary it accepts back')
     : bad('post-update read', JSON.stringify(after));
+
+  // An item the model RE-SENT unchanged keeps its identity, which is what a
+  // quota counts on and what the version diff matches by. Minting a fresh id
+  // for every re-sent item would silently reset both.
+  const v2FirstId = raw
+    .prepare(
+      `SELECT json_extract(v.content, '$.phases[0].items[0].id') id
+         FROM protocol_versions v WHERE v.protocol_id = ? AND v.version_number = 2`
+    )
+    .get(protocolId).id;
+  v2FirstId.startsWith('v1-0-')
+    ? ok("a re-sent item inherits the v1 document's derived id, so its history is continuous")
+    : bad('item identity not inherited', v2FirstId);
 
   throws(() =>
     run('update_protocol', db, {
       protocol_slug: 'no_such_stack',
-      items: [{ title: 'X' }],
+      phases: [{ items: [{ title: 'X' }] }],
       change_notes: 'y',
     })
   )
@@ -610,12 +640,21 @@ console.log('13. protocols: get_protocols reads live items; update_protocol vers
   throws(() =>
     run('update_protocol', db, {
       protocol_slug: slug,
-      items: [{ dose: '5 g' }],
+      phases: [{ items: [{ dose: '5 g' }] }],
       change_notes: 'z',
     })
   )
     ? ok('an item without a title is rejected before any write')
     : bad('titleless item accepted');
+  throws(() =>
+    run('update_protocol', db, {
+      protocol_slug: slug,
+      phases: [{ items: [{ title: 'A' }] }, { items: [{ title: 'B' }] }],
+      change_notes: 'unreachable second phase',
+    })
+  )
+    ? ok('an open-ended phase followed by another is refused — nothing after it could start')
+    : bad('unreachable phase accepted');
 }
 
 console.log('14. unit preferences drive the Coach write + read path (a metric user)');

@@ -14,15 +14,27 @@ import {
   createProtocol,
   createProtocolWithVersion,
   deleteProtocol,
+  ensureStartedOn,
   getCurrentVersion,
   getProtocol,
   listProtocols,
   listVersions,
+  restoreVersion,
   reviseProtocol,
   setActive,
+  setStartedOn,
   updateProtocolMeta,
 } from '../src/lib/db/repositories/protocols.ts';
-import { parseProtocolContent } from '../src/lib/protocols/content.ts';
+import { cadenceText, parseCadenceText } from '../src/lib/protocols/cadence.ts';
+import {
+  emptyContent,
+  legacyItemId,
+  normalizeCadence,
+  parseProtocolContent,
+  validateContent,
+} from '../src/lib/protocols/content.ts';
+import { diffContent, diffLines } from '../src/lib/protocols/diff.ts';
+import { phaseOn, totalDays } from '../src/lib/protocols/phase.ts';
 
 let pass = 0;
 let fail = 0;
@@ -354,14 +366,16 @@ console.log('9. deleting a protocol cascades versions but SET NULLs log history'
 
 console.log('10. parseProtocolContent is forgiving on read');
 {
-  const empty = JSON.stringify({ items: [] });
+  const empty = JSON.stringify(emptyContent());
   JSON.stringify(parseProtocolContent(null)) === empty &&
   JSON.stringify(parseProtocolContent('not json')) === empty &&
   JSON.stringify(parseProtocolContent('"a string"')) === empty &&
   JSON.stringify(parseProtocolContent('{}')) === empty &&
-  JSON.stringify(parseProtocolContent('{"items": 42}')) === empty
-    ? ok('null / malformed / foreign shapes all read as an empty protocol')
+  JSON.stringify(parseProtocolContent('{"items": 42}')) === empty &&
+  JSON.stringify(parseProtocolContent('{"schema":2,"phases":"nope"}')) === empty
+    ? ok('null / malformed / foreign shapes all read as one empty open-ended phase')
     : bad('forgiving parse');
+
   const parsed = parseProtocolContent(
     JSON.stringify({
       items: [
@@ -374,17 +388,332 @@ console.log('10. parseProtocolContent is forgiving on read');
       ],
     })
   );
-  JSON.stringify(parsed) ===
-  JSON.stringify({
-    items: [
-      { title: 'Creatine', scheduled_time: '07:30', dose: '5 g', notes: null },
-      { title: 'Walk', scheduled_time: null, dose: null, notes: null },
-      { title: 'Nap', scheduled_time: null, dose: null, notes: null },
-      { title: 'Lights out', scheduled_time: '23:59', dose: null, notes: null },
-    ],
-  })
+  const titles = parsed.phases[0].items.map((i) => i.title);
+  parsed.schema === 2 &&
+  parsed.phases.length === 1 &&
+  parsed.phases[0].duration_days === null &&
+  titles.join('|') === 'Creatine|Walk|Nap|Lights out' &&
+  parsed.phases[0].items[0].scheduled_time === '07:30' &&
+  parsed.phases[0].items[1].scheduled_time === null &&
+  parsed.phases[0].items[2].scheduled_time === null &&
+  parsed.phases[0].items[3].scheduled_time === '23:59'
     ? ok('titled items normalize; impossible clock times (99:99, 24:15) nulled, 23:59 kept')
     : bad('normalize', JSON.stringify(parsed));
+  parsed.phases[0].items.every((i) => i.cadence.kind === 'daily')
+    ? ok('every legacy item reads as DAILY — exactly what the old generator did with them')
+    : bad('legacy cadence', JSON.stringify(parsed));
+}
+
+// ---------------------------------------------------------------------------
+// content schema 2 — phases + cadence. Everything from here to §11 arrived with
+// the 2026-08-25 rework; §10 above is the legacy read path it must never break.
+// ---------------------------------------------------------------------------
+
+console.log('10a. the legacy read is DETERMINISTIC — the same v1 bytes give the same ids');
+{
+  // `protocol_versions` is immutable, so an old version is re-parsed on every
+  // read. Ids derived from a counter or from randomness would differ each time
+  // and a diff between two v1 versions would read as "everything changed".
+  const json = JSON.stringify({
+    items: [{ title: 'Creatine', dose: '5 g' }, { title: 'Omega-3' }],
+  });
+  const a = parseProtocolContent(json);
+  const b = parseProtocolContent(json);
+  JSON.stringify(a) === JSON.stringify(b)
+    ? ok('two parses of the same bytes are byte-identical')
+    : bad('non-deterministic parse', `${JSON.stringify(a)}\n${JSON.stringify(b)}`);
+  a.phases[0].id === 'v1-phase' && a.phases[0].items[0].id === legacyItemId(0, 'Creatine')
+    ? ok('ids derive from index + title, and the derivation is exported for the diff')
+    : bad('derived ids', JSON.stringify(a.phases[0]));
+  a.phases[0].items[0].id !== a.phases[0].items[1].id
+    ? ok('two items of one document never collide')
+    : bad('id collision', JSON.stringify(a));
+}
+
+console.log('10b. cadence: canonical text, round-trip, and forgiving normalisation');
+{
+  const cases = [
+    [{ kind: 'daily' }, 'daily'],
+    [{ kind: 'weekdays', days: [1, 3, 5] }, 'Mon,Wed,Fri'],
+    [{ kind: 'every_n_days', n: 3 }, 'every 3 days'],
+    [{ kind: 'quota', per_week: 3 }, '3/week'],
+  ];
+  cases.every(([c, text]) => cadenceText(c) === text)
+    ? ok('every cadence kind has one canonical phrase')
+    : bad('cadenceText', JSON.stringify(cases.map(([c]) => cadenceText(c))));
+  cases.every(([c]) => JSON.stringify(parseCadenceText(cadenceText(c))) === JSON.stringify(c))
+    ? ok('…and it round-trips through parseCadenceText — the Coach speaks the same vocabulary')
+    : bad('round trip');
+
+  JSON.stringify(parseCadenceText('MON, wed , fri')) ===
+    JSON.stringify({ kind: 'weekdays', days: [1, 3, 5] }) &&
+  JSON.stringify(parseCadenceText('every 3d')) ===
+    JSON.stringify({ kind: 'every_n_days', n: 3 }) &&
+  JSON.stringify(parseCadenceText('3 per week')) ===
+    JSON.stringify({ kind: 'quota', per_week: 3 }) &&
+  JSON.stringify(parseCadenceText('every 1 day')) === JSON.stringify({ kind: 'daily' })
+    ? ok('spacing, case and "every 1 day" are all read the way a person would mean them')
+    : bad('forgiving parse of cadence text');
+  parseCadenceText('fortnightly') === null &&
+  parseCadenceText('9/week') === null &&
+  parseCadenceText('every 1000 days') === null
+    ? ok('anything outside the vocabulary is null, so the tool boundary can refuse it')
+    : bad('cadence text accepted junk');
+
+  // The STORED shape normalises the other way: unreadable becomes daily,
+  // because an item that lands too often is visible and fixable while one that
+  // silently stops landing is not.
+  normalizeCadence(undefined).kind === 'daily' &&
+  normalizeCadence({ kind: 'weekdays', days: [] }).kind === 'daily' &&
+  normalizeCadence({ kind: 'every_n_days', n: 1 }).kind === 'daily' &&
+  normalizeCadence({ kind: 'quota', per_week: 12 }).kind === 'daily' &&
+  normalizeCadence('nonsense').kind === 'daily'
+    ? ok('a stored cadence that cannot be read degrades to daily, never to "never"')
+    : bad('normalizeCadence');
+  JSON.stringify(normalizeCadence({ kind: 'weekdays', days: [5, 1, 5, 9, 3] })) ===
+  JSON.stringify({ kind: 'weekdays', days: [1, 3, 5] })
+    ? ok('weekday lists are deduped, sorted and cleaned of out-of-range days')
+    : bad('weekday normalisation');
+}
+
+console.log('10c. validateContent refuses the two documents that cannot work');
+{
+  const phase = (id, duration, items) => ({ id, title: null, duration_days: duration, items });
+  const item = (id, title, cadence) => ({
+    id,
+    title,
+    scheduled_time: null,
+    dose: null,
+    notes: null,
+    cadence: cadence ?? { kind: 'daily' },
+  });
+  validateContent({ schema: 2, phases: [phase('a', null, [item('i', 'X')])] }) === null
+    ? ok('one open-ended phase is the ordinary document and passes')
+    : bad('valid content rejected');
+  const midOpen = validateContent({
+    schema: 2,
+    phases: [phase('a', null, []), phase('b', 14, [])],
+  });
+  typeof midOpen === 'string' && midOpen.includes('Phase 1')
+    ? ok('an open-ended phase followed by another is refused, naming the phase')
+    : bad('mid-phase open-ended accepted', String(midOpen));
+  const noDays = validateContent({
+    schema: 2,
+    phases: [phase('a', 7, [item('i', 'X', { kind: 'weekdays', days: [] })])],
+  });
+  typeof noDays === 'string' && noDays.includes('X')
+    ? ok('a weekday cadence naming no days is refused, naming the item')
+    : bad('empty weekday list accepted', String(noDays));
+  validateContent({ schema: 2, phases: [] }) !== null
+    ? ok('a document with no phases at all is refused')
+    : bad('phaseless content accepted');
+}
+
+console.log('10d. phaseOn walks the phase clock');
+{
+  const c = {
+    schema: 2,
+    phases: [
+      { id: 'load', title: 'Loading', duration_days: 7, items: [] },
+      { id: 'main', title: 'Maintenance', duration_days: null, items: [] },
+    ],
+  };
+  const on = (date) => phaseOn(c, '2026-08-01', date);
+  on('2026-08-01').window.index === 0 &&
+  on('2026-08-01').window.dayInPhase === 0 &&
+  on('2026-08-07').window.index === 0 &&
+  on('2026-08-07').window.dayInPhase === 6
+    ? ok('phase 1 owns its whole span, day 0 first')
+    : bad('phase 1 window', JSON.stringify(on('2026-08-07')));
+  on('2026-08-08').window.index === 1 && on('2026-08-08').window.dayInPhase === 0
+    ? ok('the transition day is day 0 of phase 2, not day 8 of phase 1')
+    : bad('transition', JSON.stringify(on('2026-08-08')));
+  on('2027-01-01').window.index === 1
+    ? ok('an open-ended last phase runs forever')
+    : bad('open-ended phase ended', JSON.stringify(on('2027-01-01')));
+  on('2026-07-31').kind === 'not_started'
+    ? ok('a date before the anchor is "not started", never phase 1')
+    : bad('pre-start', JSON.stringify(on('2026-07-31')));
+
+  const bounded = {
+    schema: 2,
+    phases: [{ id: 'course', title: null, duration_days: 56, items: [] }],
+  };
+  const ended = phaseOn(bounded, '2026-08-01', '2026-09-26');
+  ended.kind === 'ended' && ended.endedOn === '2026-09-25'
+    ? ok('a bounded last phase ENDS, and names its last active day')
+    : bad('ended state', JSON.stringify(ended));
+  phaseOn(bounded, '2026-08-01', '2026-09-25').kind === 'running'
+    ? ok('…and the last day itself still runs')
+    : bad('off-by-one at the end');
+  totalDays(bounded) === 56 && totalDays(c) === null
+    ? ok('totalDays is a number for a finite protocol and null for an open-ended one')
+    : bad('totalDays', String(totalDays(c)));
+}
+
+console.log('10e. the version diff — the payoff the history never paid');
+{
+  const item = (id, title, extra = {}) => ({
+    id,
+    title,
+    scheduled_time: null,
+    dose: null,
+    notes: null,
+    cadence: { kind: 'daily' },
+    ...extra,
+  });
+  const one = (items, duration = null) => ({
+    schema: 2,
+    phases: [{ id: 'p', title: null, duration_days: duration, items }],
+  });
+
+  const before = one([item('a', 'Creatine', { dose: '5 g' }), item('b', 'Omega-3')]);
+  const after = one([
+    item('a', 'Creatine', { dose: '10 g' }),
+    item('c', 'Zinc', { cadence: { kind: 'quota', per_week: 3 } }),
+  ]);
+  const d = diffContent(before, after);
+  d.changed === 1 && d.added === 1 && d.removed === 1 && !d.identical
+    ? ok('one changed, one added, one removed — counted separately')
+    : bad('diff counts', JSON.stringify(d));
+  const lines = diffLines(d);
+  lines.some((l) => l.includes('dose 5 g → 10 g')) &&
+  lines.some((l) => l.includes('added Zinc')) &&
+  lines.some((l) => l.includes('removed Omega-3'))
+    ? ok('each change is one line, field-level where a field moved')
+    : bad('diff lines', JSON.stringify(lines));
+
+  diffContent(before, before).identical && diffLines(diffContent(before, before)).length === 0
+    ? ok('a document against itself is identical and prints nothing')
+    : bad('self diff');
+
+  // A version written before schema 2 diffs against one written after it,
+  // which is the version the owner will most want to read.
+  const legacy = parseProtocolContent(
+    JSON.stringify({ items: [{ title: 'Creatine', dose: '5 g' }] })
+  );
+  const modern = {
+    schema: 2,
+    phases: [
+      {
+        id: 'v1-phase',
+        title: null,
+        duration_days: null,
+        items: [
+          {
+            id: legacy.phases[0].items[0].id,
+            title: 'Creatine',
+            scheduled_time: null,
+            dose: '10 g',
+            notes: null,
+            cadence: { kind: 'weekdays', days: [1, 3, 5] },
+          },
+        ],
+      },
+    ],
+  };
+  const cross = diffContent(legacy, modern);
+  cross.changed === 1 && cross.added === 0 && cross.removed === 0
+    ? ok('a v1 version diffs against a v2 one as a CHANGE, not a replacement')
+    : bad('cross-schema diff', JSON.stringify(cross));
+  diffLines(cross).some((l) => l.includes('cadence daily → Mon,Wed,Fri'))
+    ? ok('…and the cadence change is one of the fields it names')
+    : bad('cadence diff line', JSON.stringify(diffLines(cross)));
+
+  // Ids are the primary match; titles are the fallback that makes a diff
+  // legible when a document was rewritten without carrying them.
+  const byTitle = diffContent(
+    one([item('y9', 'Creatine', { dose: '5 g' })]),
+    one([item('x1', 'Creatine', { dose: '10 g' })])
+  );
+  byTitle.changed === 1 && byTitle.added === 0
+    ? ok('two documents sharing no ids still match by title rather than reading as a wipe')
+    : bad('title fallback', JSON.stringify(byTitle));
+
+  // A phase added is a phase added, and it says so.
+  const phased = {
+    schema: 2,
+    phases: [
+      { id: 'p', title: 'Loading', duration_days: 28, items: [item('a', 'Creatine')] },
+      { id: 'q', title: 'Maintenance', duration_days: null, items: [item('b', 'Creatine')] },
+    ],
+  };
+  const grew = diffContent(one([item('a', 'Creatine')]), phased);
+  diffLines(grew).some((l) => l.includes('Maintenance added'))
+    ? ok('adding a second phase reads as a phase added, with its length')
+    : bad('phase-add line', JSON.stringify(diffLines(grew)));
+}
+
+console.log('10f. restoreVersion is a new version, never a rewrite of history');
+{
+  const { db, raw } = freshDb();
+  const id = createProtocolWithVersion(db, { name: 'Stack', type: 'supplement_stack' }, STACK, 'v1');
+  const v1 = getCurrentVersion(db, id);
+  addVersion(db, id, { items: [{ title: 'Only one' }] }, 'v2 — trimmed');
+  addVersion(db, id, { items: [] }, 'v3 — emptied');
+
+  const restored = restoreVersion(db, id, v1.id);
+  typeof restored === 'string' && restored !== v1.id
+    ? ok('restore returns a NEW version id, not the old one')
+    : bad('restore id', String(restored));
+  const count = raw
+    .prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?')
+    .get(id).c;
+  count === 4
+    ? ok('every earlier version is still there — restoring appends, it does not delete')
+    : bad('version count', String(count));
+  const live = getCurrentVersion(db, id);
+  live.version_number === 4 &&
+  live.created_by === 'user' &&
+  live.change_notes === 'Restored v1' &&
+  JSON.stringify(parseProtocolContent(live.content)) ===
+    JSON.stringify(parseProtocolContent(v1.content))
+    ? ok('the new live version carries v1’s content, authored by the user, note auto-filled')
+    : bad('restored content', JSON.stringify(live));
+  restoreVersion(db, id, 'not-a-version') === null
+    ? ok('restoring a version that is not this protocol’s returns null rather than writing')
+    : bad('foreign version restored');
+}
+
+console.log('10g. started_on — the phase clock, and what NULL means');
+{
+  const { db, raw } = freshDb();
+  const anchor = (pid) => raw.prepare('SELECT started_on FROM protocols WHERE id = ?').get(pid).started_on;
+  const id = createProtocolWithVersion(db, { name: 'Clock', type: 'daily_routine' }, STACK);
+  anchor(id) === null
+    ? ok('a new protocol is UNANCHORED — there is one place a clock starts, and this is not it')
+    : bad('created anchored', String(anchor(id)));
+
+  ensureStartedOn(db, '2026-08-01');
+  anchor(id) === '2026-08-01'
+    ? ok('the first mission generation anchors it to that day')
+    : bad('ensureStartedOn did nothing', String(anchor(id)));
+  ensureStartedOn(db, '2026-09-01');
+  anchor(id) === '2026-08-01'
+    ? ok('…and never moves an anchor that already exists')
+    : bad('anchor moved', String(anchor(id)));
+
+  setActive(db, id, false, '2026-09-01');
+  setActive(db, id, true, '2026-09-01');
+  anchor(id) === '2026-08-01'
+    ? ok('pausing and resuming does NOT restart a titration the user is weeks into')
+    : bad('resume restarted the clock', String(anchor(id)));
+
+  const paused = createProtocol(db, { name: 'Paused', type: 'daily_routine' });
+  setActive(db, paused, false);
+  ensureStartedOn(db, '2026-09-02');
+  anchor(paused) === null
+    ? ok('a paused protocol is not anchored by a generation it takes no part in')
+    : bad('paused protocol anchored', String(anchor(paused)));
+  setActive(db, paused, true, '2026-09-03');
+  anchor(paused) === '2026-09-03'
+    ? ok('…and resuming an UNANCHORED protocol starts its clock that day')
+    : bad('resume did not anchor', String(anchor(paused)));
+
+  setStartedOn(db, id, '2026-07-01');
+  listProtocols(db).find((p) => p.id === id).startedOn === '2026-07-01'
+    ? ok('the editor can move the clock, and the hub reads it back')
+    : bad('setStartedOn', String(anchor(id)));
 }
 
 console.log('11. createProtocolWithVersion is one atomic create');
@@ -500,9 +829,14 @@ console.log('13. listVersions: newest first, item counts, honest nulls');
   v1.itemCount === 2
     ? ok('row carries id, version number, notes, authorship, stamp and item count')
     : bad('one-version row', JSON.stringify(v1));
-  v1 && !('content' in v1)
-    ? ok('the content blob never crosses the boundary')
-    : bad('content leaked', JSON.stringify(v1));
+  // The blob USED to be withheld here, on the argument that the history screen
+  // reads the shape of each version and never its contents. That stopped being
+  // true when the screen gained a diff between adjacent versions — which is
+  // the whole payoff of keeping history — so it crosses now, once, already
+  // normalised into phases.
+  v1 && v1.content?.schema === 2 && v1.phaseCount === 1
+    ? ok('each row carries its own parsed content, for the diff the screen draws')
+    : bad('content missing', JSON.stringify(v1));
 
   // Many versions, newest first — and the count tracks each version's OWN
   // content, not the live one's.
