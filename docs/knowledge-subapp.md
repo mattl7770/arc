@@ -13,11 +13,11 @@
 1. A new entry-level table **`knowledge_entries`** is the authoring unit; **`knowledge_chunks`** (0025) stays the retrieval unit. Entries are documents you browse and edit; chunks are derived per entry and replaced on edit (the `ingestMemory` mirror).
 2. **The curated pack stays exactly where it is** — chunk rows under `source='arc-longevity-v1'`, replaced wholesale on a pack-version bump, untouched by this feature. Pack chunks: `entry_id NULL + pack_version NOT NULL`; entry chunks: the reverse. The pack's DELETE-by-source **structurally cannot** eat user content, and a test pins it.
 3. **Pack entries are read-only.** Wholesale replacement makes in-place edits structurally doomed; the honest alternative — *"Write your own entry on this topic"* — is offered right on the pack reader. Your entry outranks the pack in search; conflicts are named by the Coach, never silently resolved.
-4. **Browse is a Data-pushed hub** (`/knowledge`, the `labs.tsx` model): keyword search, "Your entries" first, "ARC reference" grouped by topic beneath; a serif-prose reader with a provenance footer; soft archive with restore (the `coach-memory.tsx` pattern).
+4. **Browse is a Data-pushed hub** (`/knowledge`, the `labs.tsx` model): keyword search, "Your entries" first, "ARC reference" grouped by topic beneath *(0044 split the first run in two — **Personal**, then **Scientific**, then the pack; §2b)*; a serif-prose reader with a provenance footer; soft archive with restore (the `coach-memory.tsx` pattern).
 5. **Import is the recipes ladder cut down for articles**: URL fetch → deterministic readable-text + metadata extraction → **one no-tools model turn** → **editable review, never auto-commit** → one-transaction save. Paste-text is first-class; manual authoring is the floor forever.
 6. **The model produces doctrine, not a book report**: the source's committed claims compressed into ARC's editorial voice, the source's own hedging attributed — and `found: false` when the text isn't substantive. Never an entry synthesized from a title (the Flavorish rule, third application after recipes and labs).
 7. **One new Coach tool: `save_knowledge_entry`** (confirmation-gated write). No new read tool — `search_history` already covers keyword recall, and the tool catalog is ~66–72% of the cached prefix. The registry goes **42 → 43 in one batched change** — one prompt-cache invalidation, not several.
-8. **Memory vs knowledge, the sharp line:** `coach_memories` (0030) = one-sentence durable facts *about you*, injected every turn; `knowledge_entries` = doctrine *about how things work*, retrieved on demand and cited. Litmus: "true about the user" vs "true about the world / the approach."
+8. **Memory vs knowledge, the sharp line:** `coach_memories` (0030) = one-sentence durable facts *about you*, injected every turn; `knowledge_entries` = documents, retrieved on demand and cited. ~~Litmus: "true about the user" vs "true about the world / the approach."~~ **Re-cut by 0044 (§2b): the litmus is LENGTH, not subject.** The knowledge base now has a personal section, so both stores hold facts about the user; what separates them is that a memory is one line carried in every prompt and an entry is a page retrieved when relevant.
 9. **RAG rides along for free:** entry chunks land in the same table the embedder backfill will sweep, so semantic search covers user entries automatically the day the embedder ships. Nothing in this spec waits for it; `search_knowledge` stays unregistered until then, by decree (`read-tools.ts` — "Re-register this the day the embedder ships").
 10. **One network ADR extension** (§7): user-initiated single-shot article-URL fetches at import time. Without sign-off, import ships **paste-only** — still fully functional with a key.
 
@@ -83,9 +83,78 @@ CREATE INDEX knowledge_chunks_entry_idx ON knowledge_chunks (entry_id);
 - **Archive semantics:** archiving deletes the entry's chunks (vectors first, by chunk id) but keeps the entry row; restore re-chunks. Chunks are cheap derived data, and this keeps *every* downstream reader — `searchUserHistory` today, `search_knowledge` later — automatically blind to archived doctrine with zero query changes. Hard delete = arm/confirm; `deleteVectors` by id, then delete the entry (CASCADE takes the chunks).
 - `chunk_index` wrinkle, named: pack rows use it as entry-position-in-pack (`corpus.ts`); entry rows use passage-position-in-entry. Both satisfy 0025's "position within its source document."
 
+> **0044 widened the entry query to a JOIN.** The label now has three values, not two — see §2b. Everything below still holds; "entry rows become *your knowledge*" is true of the scientific section and reads *your record* for the personal one.
+
 **`searchUserHistory` extension** (source 5 of its 6): the knowledge query adds `entry_id` to its SELECT and labels by provenance — pack rows keep **"ARC reference · <topic>"**, entry rows become **"your knowledge · <topic>"**. Both keep the `date: 'reference'` sentinel: a user's *entry* is still reference-shaped doctrine, not an event, so the own-history-outranks-reference tie-break is untouched. Among references, **your entries sort before pack entries** (your committed stance outranks the shipped one). Multi-chunk entries dedupe to the best-scoring chunk per `entry_id` so one long entry can't monopolize the hit budget; knowledge excerpts may run to ~500 chars (vs 300) — a doctrine gist truncates worse than a chat line.
 
 ---
+
+## 2b. The two sections — `scientific` and `personal` (0044, 2026-08-26)
+
+> ✅ **Shipped as `0044_knowledge_sections.sql`.** Head at branch time was `0043_protocol_started_on`, re-measured at commit. `db:validate` 20/20 · `db/knowledge.test.mjs` 63 → 80 assertions (new §§11–12) · `coach-tools` 232 → 246 · `screens-render` +18 · **neither prompt ceiling moved** (see §6).
+
+Owner, verbatim: *"Let's make the knowledge base have 2 sections, one for scientific data and another for personal data about the user that should be remembered."*
+
+```sql
+ALTER TABLE knowledge_entries ADD COLUMN section text NOT NULL
+  DEFAULT 'scientific' CHECK (section IN ('scientific', 'personal'));
+CREATE INDEX knowledge_entries_section_idx
+  ON knowledge_entries (section, updated_at DESC) WHERE archived_at IS NULL;
+```
+
+### The `coach_memories` question, decided
+
+There were two stores that could have absorbed this request, and the answer is **a column on `knowledge_entries`, not a merge with `coach_memories` (0030)** — and not a new table either. The objection is real and worth stating before it is answered: ARC already has a store called "personal data about the user that should be remembered", and it is `coach_memories`. Three reasons it is not the same thing, the first of which is on its own sufficient:
+
+1. **Size and cost.** A memory is ONE SENTENCE and it is injected **verbatim into every single turn**, capped at 40 rows (`MEMORY_PROMPT_LIMIT`) precisely because an unbounded always-on store is a per-turn token tax. A knowledge entry is a **document**, chunked and retrieved on demand. Merge them and one of the two properties has to die: either a multi-paragraph surgical history starts riding in every prompt — the fixed prefix is already at 9,223/9,250 and 3,668/3,700 (`db/coach-eval.test.mjs` §6) — or memories stop being always-present, which is the only reason they work with no embedder, no network and no search.
+2. **Lifecycle and authorship.** `coach_memories` is the **Coach's notebook**: machine-written mid-conversation through `remember`, deduped case-insensitively so a repeating model cannot fill the prompt, forgettable by id from inside a turn. A personal knowledge entry is the **owner's record**: hand-curated, titled, browsable, editable, archivable, permanent until he deletes it. Same subject matter; opposite write paths.
+3. **Shape.** A memory has no title, no topic, no paragraphs, and is whitespace-collapsed on the way in. An entry preserves its blank lines — that is the whole reason the entry table exists above the chunk table (§2.1).
+
+**So the relationship is INDEX and FILE**, and the Coach is told exactly that: a one-line fact it must never have to look up is a memory; a page about the user, too long to carry every turn, is a personal entry. *"Magnesium citrate upsets his stomach"* stays a memory; his full account of how his gut reacts is a personal entry.
+
+**Are the user's two lists nearly-identical with different rules?** No, and deliberately: they are not adjacent. `coach_memories` surfaces in **Settings → Coach memory** (`app/coach-memory.tsx`) as one-line rows; the personal section surfaces in **Data → Knowledge base** as titled documents. Different tabs, different shapes, different rows. The place the ambiguity *does* bite is the model, which now has two write tools for "the user just told me something personal" — and that is resolved in the one place it can be, the cached prompt bullet, with the length rule stated explicitly and pinned by `db/coach-tools.test.mjs` §36.
+
+### Why a column, not a table or a `source` value
+
+A section is one fact **about** an entry, not a different kind of entry: same authoring unit, same chunking, same provenance, same archive/restore, same reader. A second table would fork four screens and the repository to say one word, and **re-filing** — which the owner will do, because the line between "what I believe about sleep" and "what is true of my sleep" is genuinely blurry — would become a move between tables instead of an `UPDATE`. `source` is orthogonal and stays so: where a document came from and what it is about are two questions.
+
+### The backfill is honest, not convenient
+
+`DEFAULT 'scientific'`. Everything that exists today is the pack, an imported article, or doctrine about how the world works; **nothing personal has ever been written, because there was nowhere to put it**. `db/knowledge.test.mjs` §11 proves it rather than asserting it — it inserts a row the 0038 way, mentioning no section at all, and reads back `'scientific'`.
+
+### The pack-protection invariant is untouched, by construction
+
+0038's structural guarantee lives entirely in `knowledge_chunks`: the pack deletes `WHERE source = 'arc-longevity-v1'`, and no entry chunk carries that source. `section` is on `knowledge_entries` and `ingestCorpus` never reads it, so it cannot cut across the split. **§4's test is unchanged and green**; §11 re-runs the version bump with a personal entry in play anyway, because that invariant is checked, never reasoned about. The shipped pack has no section column and needs none — it is scientific by construction.
+
+### Retrieval carries the section — as a JOIN, not a chunk column
+
+`searchUserHistory`'s entry query now `JOIN`s `knowledge_entries` for `section` and labels three ways: **"your record"** (personal) · **"your knowledge"** (scientific) · **"ARC reference"** (pack). No chunk-table migration was needed and none should be added: the section is a property of the entry, a copy on the chunk rows would be data one join away, and a re-file would have to remember to rewrite it. The test that would catch someone "optimising" that join into a column is §12's last assertion — re-file an entry, and its citation label must change *immediately*, with no re-chunk.
+
+The among-references tie-break widened with it: **your record > your knowledge > ARC reference**. A personal constraint changes the answer; a stance only colours it. The top-level tie-break is untouched — a reference still ranks below the user's own dated history, and §10 pins that.
+
+**The semantic path is unchanged and stays a follow-up.** `src/lib/rag/retrieve.ts`'s `knowledgeCitation` still renders `"<title> (<source>)"`, i.e. it does not know about `entry_id` either — §8 already listed *"`retrieve.ts`'s citation label learning `entry_id`"* as one of the two things to do the day the embedder ships. **The section rides that same join**, so it is one change and not two, and nothing here brings it forward: `search_knowledge` is still unregistered, so a label nobody reads is not worth a round today.
+
+### The hub
+
+Three flat runs, no toggle (this screen is BROWSED — a toggle hides half the base behind a tap and makes "what do I have?" a two-state question), counts on each label, no nesting:
+
+| Run | Contents | Empty state |
+| --- | --- | --- |
+| **Personal**, first | his own pages about himself, plus a ghost **Write a personal note** action that preselects the section | *"ARC holds no page about you yet."* + what belongs there and that the Coach reads it back |
+| **Scientific** | his own doctrine | *"Nothing of your own yet. Below is ARC's shipped reference."* (unchanged from 0038) |
+| **ARC reference** | the shipped pack, grouped by topic | unchanged |
+
+**Personal is drawn first, deliberately:** it is the smaller, rarer and more consequential half, and burying it under a run that grows with every imported article would make the section the owner asked for the one he never sees.
+
+**The two empty states are different facts and are written as such.** An empty scientific run sits above a shipped pack, so "nothing of your own yet" is a remark about *authorship*. An empty personal run means ARC holds no page about the user at all, which is a different thing to say. `db/screens-render.test.mjs` §12 pins both, and pins that a scientific entry does not fill the personal run — the failure a dropped `WHERE` would cause, invisible until the day a personal note exists.
+
+**The pack is not a third section.** The two sections partition what the *user writes*; the pack is shipped, unwritable, and scientific by construction, which is why it keeps its own run rather than nesting under Scientific.
+
+### The other screens
+
+- **Editor** (`knowledge-entry-edit.tsx`): a **Section** switch of two neutral chips, first on the screen — it is the most consequential choice and the one that decides where the entry is found again. Shown when editing too: that IS the re-filing path, and getting the section wrong once must not be permanent.
+- **Reader** (`knowledge-entry.tsx`): the header names the section — `Personal` / `Your entry` / `ARC reference`.
+- **Import** (`knowledge-import.tsx`): **states** `section: 'scientific'` rather than asking. An imported article is about the world by construction; a switch there would be a question with one honest answer. Re-file in the editor for the rare exception.
 
 ## 3. Screens
 
@@ -254,6 +323,15 @@ A fourth was caught by the suite rather than by review, and is worth the same no
 7. Import a paywalled article by URL: expect the honest "no readable article text" and the paste affordance, **not** a fabricated entry.
 8. Ask the Coach to save something to the knowledge base: confirm it prints the entry in the message *before* the card appears.
 9. Open a pack entry: confirm there is no Edit, and that "Write your own entry on this topic" prefills the topic.
+
+**Added by 0044 (§2b), also unseen on hardware:**
+
+10. The hub reads **Personal · Scientific · ARC reference**, in that order, with counts. On a fresh install both user runs are empty and their two empty sentences are **different** — check they do not read as the same apology twice.
+11. Tap **Write a personal note**: the Section switch must land on **Personal** already, not on Scientific. Save it and confirm it appears under Personal and NOT under Scientific.
+12. Open it: the header must read **Personal**, not "Your entry".
+13. Edit it, switch the section to Scientific, save. It must move runs — and must not appear in both. (This is the one that would catch a filter written on the wrong side.)
+14. Ask the Coach something the personal entry answers: the citation must read **"your record"**. Ask something the pack answers: **"ARC reference"**. Ask something both touch: the personal one should come first.
+15. Ask the Coach to save a fact about you to the knowledge base: the card must say **"Save personal entry …"**, not "scientific". This is the judgment call the required enum exists to force — if it habitually picks the wrong one, the tool description is where to fix it, not the code.
 
 ---
 

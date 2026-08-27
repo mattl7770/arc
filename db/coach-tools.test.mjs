@@ -2367,9 +2367,23 @@ console.log('35. save_knowledge_entry (docs/knowledge-subapp.md §6, migration 0
   tool.inputSchema.additionalProperties === false
     ? ok('additionalProperties: false')
     : bad('schema is open');
-  ['title', 'topic', 'body'].every((k) => tool.inputSchema.required.includes(k))
-    ? ok('title, topic and body are all required')
+  ['title', 'topic', 'body', 'section'].every((k) => tool.inputSchema.required.includes(k))
+    ? ok('title, topic, body and section are all required')
     : bad('required keys', JSON.stringify(tool.inputSchema.required));
+  // `section` is REQUIRED and not defaulted, deliberately (0044). A model that
+  // omits it has usually just been told something about the USER, so the
+  // convenient default — 'scientific', the DB's — is wrong in exactly the case
+  // that matters: it would file a fact about his knee in with the articles.
+  JSON.stringify(tool.inputSchema.properties.section.enum) ===
+  JSON.stringify(['personal', 'scientific'])
+    ? ok('section is a two-value enum, personal first')
+    : bad('section enum', JSON.stringify(tool.inputSchema.properties.section));
+  tool.inputSchema.properties.section.description === undefined
+    ? ok('…with no per-property description — the two values are defined once, in the tool’s')
+    : bad('section restates its own description (the duplication coach-eval §6 punishes)');
+  /`personal`/.test(tool.description) && /`scientific`/.test(tool.description)
+    ? ok('…and the tool description is where they are defined')
+    : bad('the sections are not explained anywhere the model reads', tool.description);
 
   // The DOCTRINE that makes the compact card safe: the model must present the
   // body before calling. If that ever disappears, the card becomes a one-line
@@ -2391,15 +2405,28 @@ console.log('35. save_knowledge_entry (docs/knowledge-subapp.md §6, migration 0
   const entry = {
     title: 'Magnesium forms differ in absorption',
     topic: 'supplements',
+    section: 'scientific',
     body:
       'Glycinate is generally better tolerated than citrate, which is notably laxative at ' +
       'the doses people actually take. Elemental magnesium per gram differs by form, so a ' +
       'dose stated in milligrams of compound is not a dose of magnesium.',
   };
   const card = summary('save_knowledge_entry', entry);
-  card === 'Save knowledge entry "Magnesium forms differ in absorption" · supplements · 38 words'
-    ? ok('the card is title · topic · word count')
+  // The section is ON THE CARD (0044): it decides which half of the base the
+  // entry can be found in afterwards, and "personal" is the one the user would
+  // want to catch being wrong before approving it.
+  card ===
+  'Save scientific entry "Magnesium forms differ in absorption" · supplements · 38 words'
+    ? ok('the card is section · title · topic · word count')
     : bad('card wording', card);
+  summary('save_knowledge_entry', { ...entry, section: 'personal' }).startsWith(
+    'Save personal entry'
+  )
+    ? ok('…and a personal entry says so on the card')
+    : bad('personal card wording', summary('save_knowledge_entry', { ...entry, section: 'personal' }));
+  throws(() => summary('save_knowledge_entry', { ...entry, section: 'medical' }))
+    ? ok('a section outside the enum fails at the card, not at the DB CHECK')
+    : bad('an unknown section reached the write path');
 
   const result = run('save_knowledge_entry', db, entry);
   result.saved === true && typeof result.id === 'string'
@@ -2411,6 +2438,22 @@ console.log('35. save_knowledge_entry (docs/knowledge-subapp.md §6, migration 0
     ? ok("the row lands with source='coach' — provenance the user can see in the reader")
     : bad('row source', JSON.stringify(row));
   row.body === entry.body ? ok('the body round-trips verbatim') : bad('body altered');
+  // BOTH values land. A section parameter the model can set but that the write
+  // path ignores would be the worst of both — the model would believe it had
+  // filed a personal fact and the user would never find it there.
+  row.section === 'scientific'
+    ? ok('the scientific section reaches the row')
+    : bad('section not written', row.section);
+  const personalRow = db.get('SELECT * FROM knowledge_entries WHERE id = ?', [
+    run('save_knowledge_entry', db, {
+      ...entry,
+      title: 'How his gut reacts to magnesium',
+      section: 'personal',
+    }).id,
+  ]);
+  personalRow.section === 'personal'
+    ? ok('…and so does the personal one')
+    : bad('personal section not written', personalRow.section);
 
   // It goes through the SHARED repository path, so it is chunked and therefore
   // retrievable the moment it lands — a Coach-saved entry is indistinguishable
@@ -2490,6 +2533,16 @@ console.log('36. the coverage manifest: the model is told what it CANNOT see');
   promptText.includes('"Magnesium citrate upsets his stomach" is a memory.')
     ? ok('the memory-vs-knowledge litmus is in the prompt verbatim')
     : bad('memory/knowledge litmus missing');
+  // 0044 gave the model a SECOND place to put a fact about the user, so the
+  // litmus needed its third leg. Without this line the Coach has two tools for
+  // one sentence and picks between them arbitrarily — and the failure is
+  // invisible, because either choice produces a plausible-looking write.
+  /The split is LENGTH, not subject/.test(promptText)
+    ? ok('…and the memory-vs-personal-entry rule is LENGTH, stated explicitly')
+    : bad('the length rule is missing — the model has two tools for one sentence');
+  ['"your record"', '"your knowledge"', '"ARC reference"'].every((l) => promptText.includes(l))
+    ? ok('all three retrieval labels are named, so a citation can be read')
+    : bad('retrieval labels missing from the prompt');
   /BLIND to, never proof the user lacks the feature/.test(manifest)
     ? ok('the rule is stated as a fact about evidence, not as an exhortation')
     : bad('rule missing');

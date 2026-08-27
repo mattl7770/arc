@@ -12,6 +12,7 @@ import {
   listKnowledgeTopics,
   saveKnowledgeEntry,
   updateKnowledgeEntry,
+  type KnowledgeSection,
 } from '@/lib/db/repositories/knowledge';
 import { consumeKnowledgeDraft } from '@/lib/knowledge/draft-handoff';
 
@@ -70,9 +71,21 @@ function wordCount(text: string): number {
 
 export default function KnowledgeEntryEditScreen() {
   const router = useRouter();
-  const { id, topic: topicParam } = useLocalSearchParams<{ id?: string; topic?: string }>();
+  const {
+    id,
+    topic: topicParam,
+    section: sectionParam,
+  } = useLocalSearchParams<{ id?: string; topic?: string; section?: string }>();
   const editing = typeof id === 'string' ? getKnowledgeEntry(getDb(), id) : undefined;
 
+  // Which half of the base this lands in (0044). An existing entry keeps its
+  // own — changing it here IS the re-filing path, which is why the switch is
+  // shown when editing and not only when writing: the line between "what I
+  // believe about sleep" and "what is true of my sleep" is genuinely blurry, and
+  // getting it wrong once must not be permanent.
+  const [section, setSection] = useState<KnowledgeSection>(
+    editing?.section ?? (sectionParam === 'personal' ? 'personal' : 'scientific')
+  );
   const [title, setTitle] = useState(editing?.title ?? '');
   const [topic, setTopic] = useState(
     editing?.topic ?? (typeof topicParam === 'string' ? topicParam : 'other')
@@ -93,7 +106,7 @@ export default function KnowledgeEntryEditScreen() {
     if (!canSave) return;
     const db = getDb();
     if (editing) {
-      updateKnowledgeEntry(db, editing.id, { title, topic, body });
+      updateKnowledgeEntry(db, editing.id, { title, topic, body, section });
       router.back();
       return;
     }
@@ -103,6 +116,7 @@ export default function KnowledgeEntryEditScreen() {
       title,
       topic,
       body,
+      section,
       source: 'user',
       sourceUrl: draft?.sourceUrl ?? undefined,
     });
@@ -117,7 +131,48 @@ export default function KnowledgeEntryEditScreen() {
         <StackHeader title={editing ? 'Edit entry' : 'Write an entry'} parent="Knowledge" />
       </View>
 
+      {/* Which half of the base. First, because it is the most consequential
+          choice on the screen and the one that decides where the entry can be
+          found again. Same neutral chips as Topic — a section is neither biology
+          nor the next action, so no hue. */}
       <View className="mt-5">
+        <SectionLabel label="Section" />
+        <View className="mt-2 flex-row flex-wrap gap-2">
+          {(
+            [
+              ['personal', 'Personal'],
+              ['scientific', 'Scientific'],
+            ] as const
+          ).map(([value, label]) => {
+            const selected = value === section;
+            return (
+              <Pressable
+                key={value}
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+                accessibilityLabel={label}
+                onPress={() => setSection(value)}
+                className={selected ? CHIP_ON : CHIP}>
+                <Text
+                  className={
+                    selected
+                      ? 'font-label text-[13px] font-semibold text-paper-hi'
+                      : 'font-label text-[13px] font-semibold text-ink-secondary'
+                  }>
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
+          {section === 'personal'
+            ? 'A page about you. Longer than a one-line memory, and the Coach reads it back when it bears on what you asked.'
+            : 'How something works, or a stance you commit to. Yours outranks ARC’s shipped reference.'}
+        </Text>
+      </View>
+
+      <View className="mt-7">
         <SectionLabel label="Title" />
         <TextInput
           accessibilityLabel="Title"

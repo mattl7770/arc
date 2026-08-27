@@ -84,11 +84,13 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
 
   /**
    * A hit plus two things the ranker needs and the caller must never see: how
-   * long its excerpt may run, and whether it is the user's OWN reference (0038)
-   * rather than the shipped pack. Both optional so the five sources that want
-   * the defaults push a plain {@link HistoryHit}.
+   * long its excerpt may run, and WHOSE reference it is. `refRank` orders the
+   * three owners of the knowledge base against each other at equal relevance
+   * (0044): the user's own record of himself, then his own doctrine, then ARC's
+   * shipped pack. Both optional so the five sources that want the defaults push
+   * a plain {@link HistoryHit}.
    */
-  type RankedHit = HistoryHit & { cap?: number; userKnowledge?: boolean };
+  type RankedHit = HistoryHit & { cap?: number; refRank?: number };
   const rows: RankedHit[] = [];
 
   // 1) Conversation turns — what was actually said, both sides.
@@ -159,12 +161,25 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
   //      is grounded in what ARC actually commits to rather than the model's
   //      general recall — cited "ARC reference · <topic>";
   //    · the user's OWN entries, written, imported or saved from a Coach turn —
-  //      cited "your knowledge · <topic>".
+  //      cited "your knowledge · <topic>", or "your record · <topic>" when the
+  //      entry sits in the PERSONAL section (0044).
   //
-  // The label is derived from `entry_id`, which is the column that owns that
-  // distinction (pack rows are null there by construction). Archived entries
-  // have no chunks at all, so retracted doctrine is unreachable from here with
-  // no `archived_at` join to remember — see the repository's archive semantics.
+  // The pack/entry split is derived from `entry_id`, which is the column that
+  // owns it (pack rows are null there by construction). The section is a
+  // property of the ENTRY, not of the chunk, so the entry query JOINs back for
+  // it rather than duplicating it onto every chunk row — which also means
+  // re-filing an entry between sections needs no re-chunk and can never leave a
+  // stale label behind. (A chunk-table column would have been the alternative;
+  // it would be a second migration to store data that is one join away.)
+  //
+  // The label matters to the model, not just to the citation: "your record"
+  // says this passage is the user's own account of HIMSELF, which is the
+  // strongest thing the Coach can be holding mid-conversation, and it must not
+  // be weighed the same as an article somebody else wrote.
+  //
+  // Archived entries have no chunks at all, so retracted doctrine is unreachable
+  // from here with no `archived_at` join to remember — see the repository's
+  // archive semantics.
   //
   // Both keep the `date: 'reference'` sentinel. A user's ENTRY is still
   // reference-shaped doctrine — a claim about how something works — not an event
@@ -186,19 +201,22 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
   {
     type ChunkHit = {
       entry_id: string | null;
+      section?: string | null;
       title: string | null;
       topic: string | null;
       body: string;
     };
+    /** 0 = the user's own record of himself, 1 = his doctrine, 2 = the pack. */
+    const rankOf = (row: ChunkHit): number =>
+      row.entry_id === null ? 2 : row.section === 'personal' ? 0 : 1;
+    const OWNER = ['your record', 'your knowledge', 'ARC reference'];
     const asHit = (row: ChunkHit): RankedHit => ({
-      source: `${row.entry_id !== null ? 'your knowledge' : 'ARC reference'}${
-        row.topic ? ` · ${row.topic}` : ''
-      }`,
+      source: `${OWNER[rankOf(row)]}${row.topic ? ` · ${row.topic}` : ''}`,
       // Reference material is not dated like a log entry; it is current doctrine.
       date: 'reference',
       text: row.title ? `${row.title} — ${row.body}` : row.body,
       cap: KNOWLEDGE_EXCERPT_CHARS,
-      userKnowledge: row.entry_id !== null,
+      refRank: rankOf(row),
     });
 
     // The pack: one row per entry by construction (corpus.ts does not chunk),
@@ -217,9 +235,12 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
     // cannot spend the hit budget saying the same thing five ways.
     const bestByEntry = new Map<string, { score: number; hit: ChunkHit }>();
     for (const row of db.all<ChunkHit>(
-      `SELECT entry_id, title, topic, body FROM knowledge_chunks
-       WHERE entry_id IS NOT NULL AND ((${clause('body')}) OR (${clause('title')}))
-       ORDER BY chunk_index LIMIT 60`,
+      `SELECT kc.entry_id AS entry_id, ke.section AS section, kc.title AS title,
+              kc.topic AS topic, kc.body AS body
+       FROM knowledge_chunks kc JOIN knowledge_entries ke ON ke.id = kc.entry_id
+       WHERE kc.entry_id IS NOT NULL
+         AND ((${clause('kc.body')}) OR (${clause('kc.title')}))
+       ORDER BY kc.chunk_index LIMIT 60`,
       [...params, ...params]
     )) {
       const haystack = `${row.title ?? ''} ${row.body}`.toLowerCase();
@@ -257,20 +278,23 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
       const aRef = a.date === 'reference';
       const bRef = b.date === 'reference';
       if (aRef !== bRef) return aRef ? 1 : -1;
-      // Among references, the user's OWN entry outranks the shipped pack (0038):
-      // where both have something to say on a topic, what the user has committed
-      // to is the more binding of the two. They are never silently merged — both
-      // are returned, labelled by provenance, and the Coach's doctrine is to cite
-      // both and name the difference rather than resolve it.
-      if (aRef && bRef && a.userKnowledge !== b.userKnowledge) {
-        return a.userKnowledge ? -1 : 1;
+      // Among references, the three owners rank: the user's own record of
+      // HIMSELF, then his own doctrine, then ARC's shipped pack (0038, widened
+      // by 0044). Where both have something to say on a topic, what the user has
+      // committed to is the more binding — and what is true OF him outranks what
+      // he believes about the world, because a personal constraint changes the
+      // answer while a stance only colours it. They are never silently merged:
+      // all are returned, labelled by provenance, and the Coach's doctrine is to
+      // cite both and name the difference rather than resolve it.
+      if (aRef && bRef && a.refRank !== b.refRank) {
+        return (a.refRank ?? 2) - (b.refRank ?? 2);
       }
       return a.date < b.date ? 1 : a.date > b.date ? -1 : 0;
     })
     .slice(0, limit)
-    // `cap`/`userKnowledge` are ranking inputs, not part of the contract — the
+    // `cap`/`refRank` are ranking inputs, not part of the contract — the
     // returned object is a plain HistoryHit.
-    .map(({ cap, userKnowledge: _userKnowledge, ...hit }) => ({
+    .map(({ cap, refRank: _refRank, ...hit }) => ({
       ...hit,
       text: excerpt(hit.text, terms, cap),
     }));

@@ -56,11 +56,35 @@ export const USER_KNOWLEDGE_SOURCE = 'user-knowledge';
 /** How an entry got here (0038 CHECK vocabulary). */
 export type KnowledgeEntrySource = 'user' | 'import' | 'coach';
 
+/**
+ * Which half of the base an entry belongs to (0044 CHECK vocabulary).
+ *
+ *   'scientific'  how the WORLD works — the shipped pack's subject matter, an
+ *                 imported article, a stance the user commits to.
+ *   'personal'    a page about THE USER — a surgical history, how he reacts to
+ *                 something, a constraint he has settled on.
+ *
+ * Orthogonal to {@link KnowledgeEntrySource}: where a document came from and
+ * what it is about are two questions, and a personal entry can be written,
+ * saved from a Coach turn, or (rarely) imported.
+ *
+ * The relationship to `coach_memories` (0030) is INDEX and FILE, not overlap: a
+ * one-line fact the Coach must never have to look up is a memory, injected into
+ * every turn; a page about the user, too long to carry every turn, is a personal
+ * entry, retrieved when it is relevant. See 0044's header for why merging the
+ * two stores would have to break one of them.
+ */
+export type KnowledgeSection = 'scientific' | 'personal';
+
+/** The two sections, in the order the hub draws them. */
+export const KNOWLEDGE_SECTIONS = ['personal', 'scientific'] as const;
+
 export type KnowledgeEntryRow = {
   id: string;
   title: string;
   topic: string;
   body: string;
+  section: KnowledgeSection;
   source: KnowledgeEntrySource;
   source_url: string | null;
   source_author: string | null;
@@ -74,6 +98,8 @@ export type NewKnowledgeEntry = {
   title: string;
   topic?: string;
   body: string;
+  /** Defaults to 'scientific' — the DB default, and the honest one. */
+  section?: KnowledgeSection;
   source?: KnowledgeEntrySource;
   sourceUrl?: string | null;
   sourceAuthor?: string | null;
@@ -138,6 +164,16 @@ function normalizeBody(body: string): string {
 function normalizeTopic(topic: string | undefined): string {
   const trimmed = (topic ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
   return trimmed === '' ? 'other' : trimmed;
+}
+
+/**
+ * The section, defaulting to 'scientific'. Unlike `topic`, this vocabulary is
+ * CLOSED (a 0044 CHECK), so an unrecognised value falls back rather than
+ * reaching the database — an entry filed under a typo would be invisible in
+ * both sections, which is worse than being filed in the commoner one.
+ */
+function normalizeSection(section: string | undefined): KnowledgeSection {
+  return section === 'personal' ? 'personal' : 'scientific';
 }
 
 function nullable(value: string | null | undefined): string | null {
@@ -215,17 +251,19 @@ export function saveKnowledgeEntry(db: Database, input: NewKnowledgeEntry): stri
   const title = normalizeTitle(input.title);
   const body = normalizeBody(input.body);
   const topic = normalizeTopic(input.topic);
+  const section = normalizeSection(input.section);
   const id = newId(db);
   db.transaction(() => {
     db.run(
       `INSERT INTO knowledge_entries
-         (id, title, topic, body, source, source_url, source_author, source_note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, title, topic, body, section, source, source_url, source_author, source_note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         title,
         topic,
         body,
+        section,
         input.source ?? 'user',
         nullable(input.sourceUrl),
         nullable(input.sourceAuthor),
@@ -241,6 +279,8 @@ export type KnowledgeEntryPatch = {
   title?: string;
   topic?: string;
   body?: string;
+  /** Re-filing an entry from one section to the other (0044). */
+  section?: KnowledgeSection;
 };
 
 /**
@@ -262,14 +302,17 @@ export function updateKnowledgeEntry(
   const title = patch.title === undefined ? existing.title : normalizeTitle(patch.title);
   const body = patch.body === undefined ? existing.body : normalizeBody(patch.body);
   const topic = patch.topic === undefined ? existing.topic : normalizeTopic(patch.topic);
+  // Re-filing is a plain UPDATE and deliberately nothing more: the section is a
+  // property of the ENTRY, and the derived chunks never carry it — retrieval
+  // joins back for it (src/lib/ai/history-search.ts). So moving an entry between
+  // sections cannot leave a stale copy behind in the other one.
+  const section = patch.section === undefined ? existing.section : normalizeSection(patch.section);
 
   db.transaction(() => {
-    db.run(`UPDATE knowledge_entries SET title = ?, topic = ?, body = ? WHERE id = ?`, [
-      title,
-      topic,
-      body,
-      id,
-    ]);
+    db.run(
+      `UPDATE knowledge_entries SET title = ?, topic = ?, body = ?, section = ? WHERE id = ?`,
+      [title, topic, body, section, id]
+    );
     // Archived entries stay chunk-less until restored — editing one must not
     // resurrect it into search behind the user's back.
     if (existing.archived_at === null) rechunkEntry(db, { id, title, topic, body });
@@ -374,17 +417,30 @@ function termScore(terms: string[], ...fields: (string | null)[]): number {
 }
 
 /**
- * Active entries, most recently updated first — the hub's "Your entries" order.
- * `archived` flips it to the collapsed Archived section at the foot; `query`
- * filters and re-ranks by distinct-term count.
+ * Active entries, most recently updated first — the hub's per-section order.
+ * `section` narrows to one half of the base (0044) and is what the hub's two
+ * runs are drawn from; omitting it returns both, which is what the Archived
+ * section at the foot wants — an archived entry is out of every search either
+ * way, so splitting the foot by section would be three headings saying one
+ * thing. `archived` flips to that foot; `query` filters and re-ranks by
+ * distinct-term count.
  */
 export function listKnowledgeEntries(
   db: Database,
-  opts: { archived?: boolean; limit?: number; query?: string } = {}
+  opts: {
+    archived?: boolean;
+    limit?: number;
+    query?: string;
+    section?: KnowledgeSection;
+  } = {}
 ): KnowledgeEntryRow[] {
   const archived = opts.archived ?? false;
   const limit = opts.limit ?? 500;
   const terms = queryTerms(opts.query ?? '');
+  // Parameterised, never interpolated — and narrowed to the closed vocabulary
+  // by the type, so a caller cannot ask for a section the CHECK forbids.
+  const sectionWhere = opts.section ? ' AND section = ?' : '';
+  const sectionParams = opts.section ? [opts.section] : [];
   // `archived` is an internal boolean, never user input — the ternaries below
   // pick between two fixed literals, not between caller-supplied SQL.
   const state = archived ? 'NOT NULL' : 'NULL';
@@ -399,19 +455,19 @@ export function listKnowledgeEntries(
   if (terms.length === 0) {
     return db.all<KnowledgeEntryRow>(
       `SELECT * FROM knowledge_entries
-       WHERE archived_at IS ${state}
+       WHERE archived_at IS ${state}${sectionWhere}
        ORDER BY ${order}, id
        LIMIT ?`,
-      [limit]
+      [...sectionParams, limit]
     );
   }
 
   const { where, params } = termFilter(terms, ['title', 'topic', 'body']);
   const rows = db.all<KnowledgeEntryRow>(
     `SELECT * FROM knowledge_entries
-     WHERE archived_at IS ${state} AND (${where})
+     WHERE archived_at IS ${state}${sectionWhere} AND (${where})
      ORDER BY ${order}, id`,
-    params
+    [...sectionParams, ...params]
   );
   return rows
     .map((row) => ({ row, score: termScore(terms, row.title, row.topic, row.body) }))
