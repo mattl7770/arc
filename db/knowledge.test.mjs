@@ -1,6 +1,14 @@
 /**
- * Headless test of the knowledge base (0038) against real SQLite via
- * node:sqlite — docs/knowledge-subapp.md §10.
+ * Headless test of the knowledge base (0038, sectioned by 0044) against real
+ * SQLite via node:sqlite — docs/knowledge-subapp.md §10.
+ *
+ * §§11–12 cover the two sections: the ALTER's backfill, the CHECK, the hub's
+ * per-section reads, re-filing, and the citation labels retrieval derives by
+ * joining back to the entry. §4 is deliberately UNCHANGED by that work — the
+ * pack-protection invariant lives in `knowledge_chunks` and 0044 is a column on
+ * `knowledge_entries`, so it cannot be cut across; §11 re-checks it anyway with
+ * a personal entry in play, because that invariant is checked, never reasoned
+ * about.
  *
  * The load-bearing assertion in this file is §4's PACK-PROTECTION INVARIANT.
  * SQLite's ALTER TABLE cannot add a CHECK, so the two-owner split of
@@ -103,7 +111,7 @@ const LONG_BODY = Array.from(
     `notably laxative at the doses people actually take it at.`
 ).join(' ');
 
-console.log('0. migration 0038 applied over head');
+console.log('0. migrations 0038 + 0044 applied over head');
 {
   const { raw } = freshDb();
   const cols = raw
@@ -113,8 +121,8 @@ console.log('0. migration 0038 applied over head');
     .sort()
     .join(',');
   cols ===
-  'archived_at,body,created_at,id,source,source_author,source_note,source_url,title,topic,updated_at'
-    ? ok('knowledge_entries has the specified columns')
+  'archived_at,body,created_at,id,section,source,source_author,source_note,source_url,title,topic,updated_at'
+    ? ok('knowledge_entries has the specified columns (incl. 0044 section)')
     : bad('knowledge_entries columns', cols);
 
   const chunkCols = raw
@@ -124,9 +132,16 @@ console.log('0. migration 0038 applied over head');
   chunkCols.includes('entry_id')
     ? ok('knowledge_chunks.entry_id added by ALTER')
     : bad('entry_id missing', chunkCols.join(','));
+  // 0044 is a column on the ENTRY table, deliberately not on the chunk table:
+  // retrieval joins back for it. A `section` here would be a second migration
+  // storing data that is one join away, and a copy that a re-file could leave
+  // stale.
+  !chunkCols.includes('section')
+    ? ok('knowledge_chunks has NO section column — the section is a property of the entry')
+    : bad('section duplicated onto chunks', chunkCols.join(','));
 
   const version = raw.prepare('PRAGMA user_version').get().user_version;
-  version >= 38 ? ok(`user_version stamped ${version}`) : bad('user_version', version);
+  version >= 44 ? ok(`user_version stamped ${version}`) : bad('user_version', version);
 }
 
 console.log('1. CHECKs reject what the repository would never write');
@@ -147,6 +162,15 @@ console.log('1. CHECKs reject what the repository would never write');
   )
     ? ok('bad source rejected by CHECK')
     : bad('bad source accepted');
+  throws(() =>
+    raw
+      .prepare(
+        `INSERT INTO knowledge_entries (id, title, body, section) VALUES ('e2', 't', 'b', 'nope')`
+      )
+      .run()
+  )
+    ? ok('bad section rejected by the 0044 CHECK (an ALTER-added CHECK really binds)')
+    : bad('bad section accepted');
   throws(() =>
     raw
       .prepare(`INSERT INTO knowledge_entries (id, title, body) VALUES (NULL, 't', 'b')`)
@@ -515,6 +539,145 @@ console.log('10. own history still outranks reference at equal relevance');
   hits[0].date !== 'reference'
     ? ok('the user’s own log still comes first — the tie-break above references is unchanged')
     : bad('reference outranked a log entry', JSON.stringify(hits[0]));
+}
+
+console.log('11. THE TWO SECTIONS (0044): backfill, filtering, re-filing, retrieval labels');
+{
+  const { db, raw } = freshDb();
+  ingestCorpus(db);
+
+  // THE BACKFILL, proved rather than asserted: a row written the 0038 way, with
+  // no section column mentioned at all, reads back as 'scientific'. Everything
+  // that existed before this migration is the pack, an imported article, or
+  // doctrine about how the world works — nothing personal was possible, because
+  // there was nowhere to put it.
+  raw
+    .prepare(`INSERT INTO knowledge_entries (id, title, topic, body) VALUES ('old', 'Legacy', 'sleep', 'Body.')`)
+    .run();
+  getKnowledgeEntry(db, 'old').section === 'scientific'
+    ? ok('a pre-0044 row backfills to scientific (the ALTER default, no rewrite)')
+    : bad('backfill wrong', getKnowledgeEntry(db, 'old').section);
+
+  const sci = saveKnowledgeEntry(db, {
+    title: 'Zone 2 is the base',
+    topic: 'training',
+    body: LONG_BODY,
+  });
+  const per = saveKnowledgeEntry(db, {
+    title: 'Left knee, ACL 2019',
+    topic: 'training',
+    section: 'personal',
+    body:
+      'Reconstructed left ACL in 2019. Quad still measures roughly 15% down against the ' +
+      'right under load, and deep loaded knee flexion under fatigue is where it complains. ' +
+      LONG_BODY,
+  });
+  getKnowledgeEntry(db, sci).section === 'scientific' &&
+  getKnowledgeEntry(db, per).section === 'personal'
+    ? ok('saveKnowledgeEntry writes the section; scientific is the default')
+    : bad('section not written');
+
+  // The two hub runs, drawn from one table by one filter.
+  const personalList = listKnowledgeEntries(db, { section: 'personal' });
+  const scientificList = listKnowledgeEntries(db, { section: 'scientific' });
+  personalList.length === 1 && personalList[0].id === per
+    ? ok('listKnowledgeEntries({section:"personal"}) draws only the personal run')
+    : bad('personal run', personalList.map((e) => e.title).join(','));
+  scientificList.length === 2 && scientificList.every((e) => e.section === 'scientific')
+    ? ok('…and the scientific run holds the rest, backfilled row included')
+    : bad('scientific run', scientificList.map((e) => e.title).join(','));
+  listKnowledgeEntries(db).length === 3
+    ? ok('omitting the section returns both — what the Archived foot wants')
+    : bad('unfiltered list', listKnowledgeEntries(db).length);
+  // The section narrows the SEARCH too, or the hub's two runs would both show
+  // every match while claiming to be sections.
+  listKnowledgeEntries(db, { section: 'personal', query: 'zone' }).length === 0
+    ? ok('a section filter and a query compose (a scientific hit stays out of Personal)')
+    : bad('section+query did not compose');
+
+  // RE-FILING. The line between "what I believe about sleep" and "what is true
+  // of my sleep" is genuinely blurry, so getting it wrong once must not be
+  // permanent — and the move must not leave a copy behind in the old section.
+  updateKnowledgeEntry(db, sci, { section: 'personal' });
+  getKnowledgeEntry(db, sci).section === 'personal'
+    ? ok('an entry re-files between sections')
+    : bad('re-file failed');
+  listKnowledgeEntries(db, { section: 'scientific' }).some((e) => e.id === sci)
+    ? bad('a re-filed entry is still in its old section')
+    : ok('…and leaves nothing behind in the section it came from');
+  updateKnowledgeEntry(db, sci, { title: 'Zone 2 is the base' });
+  getKnowledgeEntry(db, sci).section === 'personal'
+    ? ok('an edit that omits the section keeps it (a patch is a patch)')
+    : bad('an unrelated edit reset the section');
+
+  // THE PACK-PROTECTION INVARIANT, re-checked with a section in play. 0044 is a
+  // column on knowledge_entries and ingestCorpus never reads it, so the split
+  // that makes a version bump structurally unable to eat user content cannot be
+  // cut across by it — but the whole point of that invariant is that it is
+  // checked, not reasoned about.
+  const before = db.all(
+    `SELECT id, source, pack_version, entry_id, body FROM knowledge_chunks
+     WHERE entry_id = ? ORDER BY chunk_index`,
+    [per]
+  );
+  db.run(`UPDATE knowledge_chunks SET pack_version = '0' WHERE source = ?`, [CORPUS_SOURCE]);
+  ingestCorpus(db);
+  JSON.stringify(before) ===
+  JSON.stringify(
+    db.all(
+      `SELECT id, source, pack_version, entry_id, body FROM knowledge_chunks
+       WHERE entry_id = ? ORDER BY chunk_index`,
+      [per]
+    )
+  )
+    ? ok('a pack version bump still cannot touch a PERSONAL entry’s chunks')
+    : bad('pack re-ingest disturbed personal chunks');
+}
+
+console.log('12. retrieval carries the section through, and ranks by it');
+{
+  const { db } = freshDb();
+  ingestCorpus(db);
+  saveKnowledgeEntry(db, {
+    title: 'Magnesium forms',
+    topic: 'supplements',
+    body: 'Magnesium glycinate is generally better tolerated than citrate.',
+  });
+  saveKnowledgeEntry(db, {
+    title: 'My magnesium history',
+    topic: 'supplements',
+    section: 'personal',
+    body: 'Magnesium citrate has upset my stomach every time I have taken it since 2021.',
+  });
+
+  const hits = searchUserHistory(db, 'magnesium');
+  const sources = hits.map((h) => h.source);
+  sources.some((s) => s.startsWith('your record'))
+    ? ok('a personal entry is cited "your record" — the user’s own account of himself')
+    : bad('no "your record" label', sources.join(' | '));
+  sources.some((s) => s.startsWith('your knowledge'))
+    ? ok('a scientific entry keeps the 0038 "your knowledge" label')
+    : bad('"your knowledge" label lost', sources.join(' | '));
+  sources.some((s) => s.startsWith('ARC reference'))
+    ? ok('the shipped pack keeps "ARC reference"')
+    : bad('pack label lost', sources.join(' | '));
+
+  // The ranking that matters: at equal relevance, what is true OF the user
+  // outranks what he believes about the world, which outranks the shipped pack.
+  // A personal constraint changes the answer; a stance only colours it.
+  const rank = (prefix) => sources.findIndex((s) => s.startsWith(prefix));
+  rank('your record') < rank('your knowledge') && rank('your knowledge') < rank('ARC reference')
+    ? ok('among references: your record > your knowledge > ARC reference')
+    : bad('reference ranking', sources.join(' | '));
+
+  // …and the label follows a RE-FILE with no re-chunk, because it is joined
+  // rather than copied onto the chunk rows. This is the assertion that would
+  // catch someone "optimising" the join into a chunk column.
+  const personal = listKnowledgeEntries(db, { section: 'personal' })[0];
+  updateKnowledgeEntry(db, personal.id, { section: 'scientific' });
+  searchUserHistory(db, 'magnesium').every((h) => !h.source.startsWith('your record'))
+    ? ok('re-filing an entry changes its citation label immediately')
+    : bad('a stale "your record" label survived a re-file');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

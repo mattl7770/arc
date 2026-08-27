@@ -126,7 +126,13 @@ export default function KnowledgeEntryScreen() {
   return (
     <Screen scroll>
       <View className="pt-2">
-        <StackHeader title={isPack ? 'ARC reference' : 'Your entry'} parent="Knowledge" />
+        {/* The header names which section it came out of (0044) — a page about
+            the user and a page about the world are read differently, and the
+            reader is where that matters most. */}
+        <StackHeader
+          title={isPack ? 'ARC reference' : entry?.section === 'personal' ? 'Personal' : 'Your entry'}
+          parent="Knowledge"
+        />
       </View>
 
       <View className="mt-6">

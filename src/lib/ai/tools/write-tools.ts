@@ -41,7 +41,7 @@ import {
   markScreeningDone,
 } from '@/lib/db/repositories/screenings';
 import { addVersion, getCurrentVersion, getProtocolBySlug } from '@/lib/db/repositories/protocols';
-import { saveKnowledgeEntry } from '@/lib/db/repositories/knowledge';
+import { KNOWLEDGE_SECTIONS, saveKnowledgeEntry } from '@/lib/db/repositories/knowledge';
 import {
   completeReminder,
   createReminder,
@@ -241,10 +241,16 @@ const logMetricTool: CoachTool = {
 
 const logMealTool: CoachTool = {
   name: 'log_meal',
+  // TRIMMED 2026-08-26 to pay for save_knowledge_entry's `section`
+  // (db/coach-eval.test.mjs §6: "the next addition trims"). What went was a
+  // sentence enumerating this schema's OWN property names — "(kcal, protein_g,
+  // carbs_g, fat_g) and wall-clock time" — which the properties directly below
+  // it declare, `time` with its own format description. A description that
+  // recites its schema is the same duplication class as a description that
+  // recites a system-prompt rail.
   description:
-    'Log an eaten meal with optional macros (kcal, protein_g, carbs_g, fat_g) and ' +
-    'wall-clock time. Use when the user describes food they ate; estimate macros only ' +
-    'if asked, and say so.',
+    'Log an eaten meal, macros optional. Use when the user describes food they ate; ' +
+    'estimate macros only if asked, and say so.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -355,9 +361,11 @@ function parseSets(input: Record<string, unknown>, db: Database): ParsedSet[] {
 
 const logWorkoutTool: CoachTool = {
   name: 'log_workout',
-  description:
-    'Log a training session: name, kind (strength/cardio/mobility/other), duration in minutes, ' +
-    'and optional strength sets. Use when the user reports a workout.',
+  // TRIMMED 2026-08-26, same trade and same duplication class as log_meal
+  // above: "name, kind (strength/cardio/mobility/other), duration in minutes,
+  // and optional strength sets" listed four properties the schema declares one
+  // line below, and inlined `kind`'s enum verbatim beside the enum itself.
+  description: 'Log a training session, sets optional. Use when the user reports a workout.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2129,13 +2137,22 @@ const saveKnowledgeEntryTool: CoachTool = {
   // writes, and the topic vocabulary, which is data the prompt has no business
   // carrying.
   description:
-    'Save ONE reference entry to the user’s knowledge base — how something works, or a ' +
-    'stance they commit to. Only on their request or invitation, and present the entry in ' +
-    'your message first.',
+    'Save ONE entry to the user’s knowledge base. `personal` = a durable fact about THEM, too ' +
+    'long for a one-line memory; `scientific` = how something works, or a stance they commit ' +
+    'to. Only on their request or invitation, and present the entry in your message first.',
   inputSchema: {
     type: 'object',
     properties: {
       title: { type: 'string', description: 'One line: what the entry commits to.' },
+      // REQUIRED, with no per-property description of its own (0044). Required
+      // rather than defaulted because the default would be wrong in exactly the
+      // case that matters: a model omitting the field is usually one that has
+      // just been told something about the USER, and silently filing that under
+      // `scientific` puts a fact about his knee in with the articles. The two
+      // enum values are defined once, in the description above — repeating them
+      // here is the eight-descriptions-say-it-eight-times duplication that
+      // db/coach-eval.test.mjs §6 exists to punish.
+      section: { type: 'string', enum: ['personal', 'scientific'] },
       topic: {
         type: 'string',
         description:
@@ -2148,7 +2165,7 @@ const saveKnowledgeEntryTool: CoachTool = {
           'The entry in paragraphs, citable. Blank lines separate paragraphs and are kept.',
       },
     },
-    required: ['title', 'topic', 'body'],
+    required: ['title', 'section', 'topic', 'body'],
     additionalProperties: false,
   },
   readOnly: false,
@@ -2158,7 +2175,11 @@ const saveKnowledgeEntryTool: CoachTool = {
     const topic = reqString(args, 'topic');
     const body = reqString(args, 'body');
     const words = body.trim().split(/\s+/).length;
-    return `Save knowledge entry "${title}" · ${topic} · ${words} words`;
+    // The section is on the CARD because it is a consequence the user is
+    // approving: it decides which half of the base the entry can be found in
+    // afterwards, and "personal" is the one he would want to catch being wrong.
+    const section = reqEnum(args, 'section', KNOWLEDGE_SECTIONS);
+    return `Save ${section} entry "${title}" · ${topic} · ${words} words`;
   },
   execute: (db, input) => {
     const args = asRecord(input);
@@ -2169,6 +2190,7 @@ const saveKnowledgeEntryTool: CoachTool = {
       title: reqString(args, 'title'),
       topic: reqString(args, 'topic'),
       body: reqString(args, 'body'),
+      section: reqEnum(args, 'section', KNOWLEDGE_SECTIONS),
       source: 'coach',
     });
     return json({ saved: true, id });

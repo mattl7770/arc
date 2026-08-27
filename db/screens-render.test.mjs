@@ -1090,15 +1090,22 @@ const db = getDb();
 }
 
 {
-  console.log('12. The knowledge base (0038, docs/knowledge-subapp.md)');
+  console.log('12. The knowledge base (0038 + 0044 sections, docs/knowledge-subapp.md)');
 
   // Before the pack: the hub is honest that the reference has not loaded, and
-  // the "your entries" empty is AUTHORED rather than blank.
+  // BOTH section empties are AUTHORED rather than blank — and they say
+  // DIFFERENT things, because they are different facts. An empty scientific run
+  // sits above a shipped pack, so "nothing of your own yet" is a remark about
+  // authorship; an empty personal run means ARC holds no page about the user at
+  // all.
   const cold = render('knowledge hub (cold)', KnowledgeScreen);
   expect('knowledge hub (cold)', cold, [
     'Knowledge',
     'Import an article',
-    'Your entries',
+    'Personal',
+    'ARC holds no page about you yet',
+    'Write a personal note',
+    'Scientific',
     'Nothing of your own yet',
     'ARC reference',
   ]);
@@ -1129,6 +1136,39 @@ const db = getDb();
     'written by you', // provenance, from the shared provenanceLine
   ]);
   refute('knowledge hub (with an entry)', withEntry, ['Nothing of your own yet']);
+  // …and a scientific entry does NOT fill the personal run. The two sections
+  // read from one table through one filter, so the failure this catches is a
+  // dropped WHERE clause — which would look fine until the day a personal note
+  // exists.
+  expect('knowledge hub (with an entry)', withEntry, ['ARC holds no page about you yet']);
+
+  const personalId = saveKnowledgeEntry(db, {
+    title: 'Render entry: left knee, ACL 2019',
+    topic: 'training',
+    section: 'personal',
+    body:
+      'Reconstructed left ACL in 2019. The quad still measures roughly 15% down against the ' +
+      'right under load, and deep loaded knee flexion under fatigue is where it complains.',
+  });
+  const withPersonal = render('knowledge hub (with a personal entry)', KnowledgeScreen);
+  expect('knowledge hub (with a personal entry)', withPersonal, [
+    'Render entry: left knee, ACL 2019',
+    'Render entry: my own magnesium stance', // the other section still drawn
+  ]);
+  refute('knowledge hub (with a personal entry)', withPersonal, [
+    'ARC holds no page about you yet',
+  ]);
+
+  // The reader names the section it came out of — a page about the user and a
+  // page about the world are read differently.
+  expect(
+    'knowledge-entry (personal)',
+    render('knowledge-entry (personal)', KnowledgeEntryScreen, {
+      id: personalId,
+      kind: 'entry',
+    }),
+    ['Personal', 'Render entry: left knee, ACL 2019', 'Edit', 'Archive']
+  );
 
   // The reader, both kinds behind one route.
   expect(
@@ -1172,15 +1212,30 @@ const db = getDb();
     render('knowledge-entry-edit (new)', KnowledgeEntryEditScreen),
     [
       'Write an entry',
+      'Section',
+      'Personal',
+      'Scientific',
       'Topic',
       'supplements', // the vocabulary chips
       'Save entry',
     ]
   );
+  // The section switch is shown when EDITING too — that is the re-filing path,
+  // and the line between "what I believe about sleep" and "what is true of my
+  // sleep" is blurry enough that getting it wrong once must not be permanent.
   expect(
     'knowledge-entry-edit (editing)',
     render('knowledge-entry-edit (editing)', KnowledgeEntryEditScreen, { id: entryId }),
-    ['Edit entry', 'Save changes']
+    ['Edit entry', 'Section', 'Save changes']
+  );
+  // Arriving from the hub's personal action preselects the section, so filing a
+  // personal note is not two decisions.
+  expect(
+    'knowledge-entry-edit (new, personal)',
+    render('knowledge-entry-edit (new, personal)', KnowledgeEntryEditScreen, {
+      section: 'personal',
+    }),
+    ['A page about you']
   );
 
   expect('knowledge-import', render('knowledge-import', KnowledgeImportScreen), [

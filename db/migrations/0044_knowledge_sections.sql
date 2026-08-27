@@ -1,0 +1,97 @@
+-- ============================================================================
+-- ARC 0044 — the knowledge base gets two sections: scientific and personal
+--
+-- Owner, 2026-08-26: *"Let's make the knowledge base have 2 sections, one for
+-- scientific data and another for personal data about the user that should be
+-- remembered."*
+--
+-- 0038 gave the knowledge base one undifferentiated list of entries. Everything
+-- in it — the shipped pack, imported articles, the user's own doctrine — was
+-- about how the WORLD works. What has never had a home is a page about the
+-- USER: the left-knee surgery and what it still costs him, how he reacts to
+-- caffeine after 2pm, the food he stopped eating and why. This column is that
+-- home.
+--
+-- ## Why this is a column on knowledge_entries and NOT a merge with
+-- ## coach_memories (0030)
+--
+-- The obvious objection is that ARC already has a store of "personal data about
+-- the user that should be remembered": `coach_memories`. It is not the same
+-- thing, and merging them would break the one property each store has that the
+-- other cannot.
+--
+--   SIZE AND COST. A memory is ONE SENTENCE, and it is injected VERBATIM into
+--   every single turn's context block, capped at 40 rows (MEMORY_PROMPT_LIMIT)
+--   precisely because an unbounded always-on store is a per-turn token tax. A
+--   knowledge entry is a DOCUMENT, chunked and retrieved on demand. Merge them
+--   and one of the two properties has to die: either multi-paragraph medical
+--   history starts riding in every prompt (the prefix budget is already at
+--   9,219/9,250 — db/coach-eval.test.mjs §6), or memories stop being
+--   always-present, which is the only reason they work with no embedder, no
+--   network and no search.
+--
+--   LIFECYCLE AND AUTHORSHIP. `coach_memories` is the COACH'S notebook:
+--   machine-written mid-conversation through the `remember` tool, deduped
+--   case-insensitively so a repeating model cannot fill the prompt, forgettable
+--   by id from inside a turn. A personal knowledge entry is the OWNER'S record:
+--   hand-curated, browsable, titled, editable, archivable, permanent until he
+--   deletes it. Same subject matter; opposite write paths.
+--
+-- So the relationship is INDEX and FILE, and that is how the Coach is told to
+-- use them (src/lib/ai/system-prompt.ts): a one-line fact the Coach must never
+-- have to look up is a memory; a page about the user, too long to carry every
+-- turn, is a personal entry. "Magnesium citrate upsets his stomach" stays a
+-- memory. His full gut-reaction record is a personal entry.
+--
+-- ## Why a column and not a new table, or new `source` values
+--
+-- A section is one fact ABOUT an entry, not a different kind of entry. Every
+-- other property already holds: same authoring unit, same chunking, same
+-- provenance, same archive/restore, same reader. A second table would fork four
+-- screens and the repository to say one word, and re-filing an entry from one
+-- section to the other — which the owner will do, because the line between
+-- "what I believe about sleep" and "what is true of my sleep" is genuinely
+-- blurry — would become a move between tables instead of an UPDATE.
+--
+-- `source` is orthogonal and stays so: a personal entry can be written, saved
+-- from a Coach conversation, or (rarely) imported. WHERE it came from and WHAT
+-- it is about are two questions.
+--
+-- ## The pack-protection invariant is untouched, by construction
+--
+-- 0038's structural guarantee lives entirely in `knowledge_chunks`: the pack
+-- deletes `WHERE source = 'arc-longevity-v1'`, and no entry chunk ever carries
+-- that source. This column is on `knowledge_entries` and is not read by
+-- `ingestCorpus` at all, so it cannot cut across that split. The shipped pack
+-- has no `section` column and needs none — it is scientific by construction,
+-- and the hub says so. db/knowledge.test.mjs §4 stays exactly as it was.
+--
+-- ## Backfill
+--
+-- DEFAULT 'scientific', which is an honest backfill rather than a convenient
+-- one: everything that exists today is the curated pack, an imported article,
+-- or doctrine the user wrote about how something works. Nothing personal has
+-- ever been written, because until this migration there was nowhere to put it.
+--
+-- SQLite's ALTER TABLE ADD COLUMN permits a column CHECK, and permits NOT NULL
+-- exactly when a non-NULL default arrives with it — which is the case here, so
+-- existing rows read back 'scientific' with no table rewrite. (This is NOT the
+-- 0034 case: that lesson was about a CHECK spanning two columns, which ALTER
+-- cannot express because the constraint has to be table-level. A single-column
+-- CHECK on the column being added is fine, and `npm run db:validate` plus
+-- db/knowledge.test.mjs §0 prove it against real SQLite rather than asserting
+-- it.)
+--
+-- Numbered 0044: main's head at branch time was 0043_protocol_started_on, and
+-- re-measured at commit. NEVER renumber below a shipped version — the runner
+-- filters `version > user_version` and would skip it SILENTLY.
+-- ============================================================================
+
+ALTER TABLE knowledge_entries ADD COLUMN section text NOT NULL
+  DEFAULT 'scientific' CHECK (section IN ('scientific', 'personal'));
+
+-- The hub draws one section at a time, active only, most-recently-updated
+-- first. Index exactly that read, partial on archived_at like the 0038 index it
+-- sits beside.
+CREATE INDEX knowledge_entries_section_idx
+  ON knowledge_entries (section, updated_at DESC) WHERE archived_at IS NULL;

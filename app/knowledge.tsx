@@ -21,7 +21,7 @@ import { provenanceLine } from '@/lib/knowledge/provenance';
 
 /**
  * The knowledge base (docs/knowledge-subapp.md §3) — the browsable reference the
- * Coach cites, in two halves: **your entries** and **ARC's shipped reference**.
+ * Coach cites.
  *
  * ## What this screen is for
  *
@@ -31,6 +31,33 @@ import { provenanceLine } from '@/lib/knowledge/provenance';
  * user's own doctrine writable. Both land in the same chunk table, both are
  * cited, and yours outranks ARC's — which is the whole reason the second half
  * exists.
+ *
+ * ## The two sections (0044)
+ *
+ * Owner, 2026-08-26: *"two sections, one for scientific data and another for
+ * personal data about the user that should be remembered."* So what the user
+ * writes is partitioned in two, and the screen draws three runs:
+ *
+ *   PERSONAL     pages about HIM — a surgical history, how he reacts to
+ *                something, a constraint he has settled on.
+ *   SCIENTIFIC   his own doctrine about how the world works.
+ *   ARC REFERENCE the shipped pack, which is scientific by construction and is
+ *                not something he writes into — hence its own run rather than a
+ *                nested sub-heading. The sections partition HIS writing; the
+ *                pack is the shipped half of the scientific one.
+ *
+ * Two stacked runs rather than a toggle, because this screen is BROWSED: a
+ * toggle hides half the base behind a tap and makes "what do I have?" a
+ * two-state question. Counts sit on each label.
+ *
+ * Personal is drawn FIRST and deliberately: it is the smaller, rarer and more
+ * consequential half, and burying it under a run that grows with every imported
+ * article would make the section the owner asked for the one he never sees.
+ *
+ * The two empty states are DIFFERENT FACTS and are written as such. An empty
+ * scientific run sits above a shipped pack, so "nothing of your own yet" is a
+ * remark about authorship. An empty personal run means ARC holds no page about
+ * the user at all, which is a different thing to say.
  *
  * ## Search is this screen's, not the Coach's
  *
@@ -93,11 +120,57 @@ function groupByTopic(entries: PackEntry[]): { topic: string; items: PackEntry[]
   return [...groups.entries()].map(([topic, items]) => ({ topic, items }));
 }
 
+/**
+ * One run of the user's own entries, inside a plate the caller owns.
+ *
+ * Extracted when the single "Your entries" run became two (0044) — the two
+ * sections draw the identical row, and two copies of it would be two places for
+ * the provenance line or the 46pt target to drift apart.
+ */
+function EntryRows({
+  entries,
+  onOpen,
+}: {
+  entries: KnowledgeEntryRow[];
+  onOpen: (id: string) => void;
+}) {
+  return (
+    <>
+      {entries.map((entry, index) => (
+        <View key={entry.id}>
+          <Divider first={index === 0} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${entry.title}. ${topicLabel(entry.topic)}. ${provenanceLine(entry)}.`}
+            onPress={() => onOpen(entry.id)}
+            className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
+            <View className="flex-1">
+              <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+                {topicLabel(entry.topic)}
+              </Text>
+              <Text className="mt-1 font-serif text-[16px] leading-5 text-ink">{entry.title}</Text>
+              {/* Provenance is a statement about the document, not a
+                  measurement — serif, muted, not mono. */}
+              <Text className="mt-0.5 font-serif text-[12px] leading-4 text-ink-muted">
+                {provenanceLine(entry)}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={palette.inkSecondary} />
+          </Pressable>
+        </View>
+      ))}
+    </>
+  );
+}
+
 export default function KnowledgeScreen() {
   const router = useRouter();
   const [query, setQuery] = useState('');
+  const [personal, setPersonal] = useState<KnowledgeEntryRow[]>(() =>
+    listKnowledgeEntries(getDb(), { query: '', section: 'personal' })
+  );
   const [entries, setEntries] = useState<KnowledgeEntryRow[]>(() =>
-    listKnowledgeEntries(getDb(), { query: '' })
+    listKnowledgeEntries(getDb(), { query: '', section: 'scientific' })
   );
   const [pack, setPack] = useState<PackEntry[]>(() => listPackEntries(getDb(), ''));
   const [archived, setArchived] = useState<KnowledgeEntryRow[]>(() =>
@@ -107,8 +180,12 @@ export default function KnowledgeScreen() {
 
   const load = useCallback((text: string) => {
     const db = getDb();
-    setEntries(listKnowledgeEntries(db, { query: text }));
+    setPersonal(listKnowledgeEntries(db, { query: text, section: 'personal' }));
+    setEntries(listKnowledgeEntries(db, { query: text, section: 'scientific' }));
     setPack(listPackEntries(db, text));
+    // The archived foot is NOT split by section: an archived entry is out of
+    // every search either way, so two headings there would be one fact told
+    // twice.
     setArchived(listKnowledgeEntries(db, { archived: true }));
   }, []);
 
@@ -200,12 +277,62 @@ export default function KnowledgeScreen() {
         </Block>
       </View>
 
-      {/* YOUR ENTRIES — first, always, even when empty. The plate closes round
-          the rows and never round the empty sentence: a plate encloses a record,
-          and "nothing yet" is a sentence on the bare sheet under its label. */}
+      {/* PERSONAL — the section the owner asked for, drawn first. The plate
+          closes round the rows and never round the empty sentence: a plate
+          encloses a record, and "nothing yet" is a sentence on the bare sheet
+          under its label. */}
       <View className="mt-7">
         <SectionLabel
-          label={searching ? 'Your entries — matches' : 'Your entries'}
+          label={searching ? 'Personal — matches' : 'Personal'}
+          note={personal.length > 0 ? String(personal.length) : undefined}
+        />
+        {personal.length === 0 ? (
+          <View className="mt-2">
+            <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
+              {searching
+                ? 'Nothing personal matches.'
+                : 'ARC holds no page about you yet.'}
+            </Text>
+            {searching ? null : (
+              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+                A surgery and what it still costs you, how you react to something, a constraint
+                you’ve settled on — anything too long to be a one-line memory. The Coach reads these
+                back when they bear on what you asked.
+              </Text>
+            )}
+          </View>
+        ) : (
+          <View className="mt-2">
+            <Block device="plate">
+              <EntryRows entries={personal} onOpen={openEntry} />
+            </Block>
+          </View>
+        )}
+        {searching ? null : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Write a personal note"
+            onPress={() =>
+              router.push({
+                pathname: '/knowledge-entry-edit',
+                params: { section: 'personal' },
+              })
+            }
+            className="mt-3 min-h-[46px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+            <Ionicons name="person-outline" size={17} color={palette.inkSecondary} />
+            <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink">
+              Write a personal note
+            </Text>
+          </Pressable>
+        )}
+      </View>
+
+      {/* SCIENTIFIC — the user's own doctrine about how the world works. The
+          shipped pack is the other half of this section and follows below under
+          its own heading, because it is the half he does not write into. */}
+      <View className="mt-7">
+        <SectionLabel
+          label={searching ? 'Scientific — matches' : 'Scientific'}
           note={entries.length > 0 ? String(entries.length) : undefined}
         />
         {entries.length === 0 ? (
@@ -225,31 +352,7 @@ export default function KnowledgeScreen() {
         ) : (
           <View className="mt-2">
             <Block device="plate">
-              {entries.map((entry, index) => (
-                <View key={entry.id}>
-                  <Divider first={index === 0} />
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`${entry.title}. ${topicLabel(entry.topic)}. ${provenanceLine(entry)}.`}
-                    onPress={() => openEntry(entry.id)}
-                    className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
-                    <View className="flex-1">
-                      <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
-                        {topicLabel(entry.topic)}
-                      </Text>
-                      <Text className="mt-1 font-serif text-[16px] leading-5 text-ink">
-                        {entry.title}
-                      </Text>
-                      {/* Provenance is a statement about the document, not a
-                          measurement — serif, muted, not mono. */}
-                      <Text className="mt-0.5 font-serif text-[12px] leading-4 text-ink-muted">
-                        {provenanceLine(entry)}
-                      </Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={16} color={palette.inkSecondary} />
-                  </Pressable>
-                </View>
-              ))}
+              <EntryRows entries={entries} onOpen={openEntry} />
             </Block>
           </View>
         )}

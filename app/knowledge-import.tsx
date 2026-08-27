@@ -152,6 +152,11 @@ export default function KnowledgeImportScreen() {
       title,
       topic,
       body,
+      // An imported article is about the WORLD by construction, so this screen
+      // STATES the section rather than asking (0044). A switch here would be a
+      // question with one honest answer; if an article turns out to be about the
+      // user, re-file it in the editor.
+      section: 'scientific',
       source: 'import',
       sourceUrl: phase.draft.source_url,
       sourceAuthor: phase.draft.source_author,

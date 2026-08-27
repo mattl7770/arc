@@ -576,6 +576,75 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // The next addition digs in the same place — log_workout (349), adjust_today
   // (~340) and get_metric_series (354) are now the three fattest, and
   // update_protocol at 424 is fat for a reason it can defend.
+  //
+  // ── 2026-08-26: KNOWLEDGE SECTIONS. NEITHER CEILING MOVED, and the trimming
+  // paid for the whole feature on the tool side and more than it on the prompt
+  // side. The knowledge base gained two sections (`scientific` / `personal`,
+  // migration 0044, docs/knowledge-subapp.md §2b), so save_knowledge_entry
+  // gained a REQUIRED `section` enum.
+  //
+  // SCHEMA — WHAT IT COST BEFORE TRIMMING: +53 tok (9,219 → 9,272, over the
+  // 9,250 ceiling). Three parts, measured: the property itself ~21, `"section"`
+  // in `required` ~5, and +27 on the tool's own description, which had to widen
+  // because "reference — how something works" was the definition of ONE of the
+  // two sections and became false for the other.
+  //
+  // Two design choices held that down before any trim was needed:
+  //   · the property carries NO per-property description. The two enum values
+  //     are defined once, in the tool description; a second copy under
+  //     `section.description` is the eight-descriptions-say-it-eight-times
+  //     duplication this comment was written about, and it would have cost ~26.
+  //   · `section` is REQUIRED rather than defaulted. That is a correctness call,
+  //     not a budget one (a model that omits it has usually just been told
+  //     something about the USER, and defaulting to `scientific` files a fact
+  //     about his knee in with the articles) — but it is also the cheap shape:
+  //     a default would need a sentence explaining when it applies.
+  //
+  // PAID FOR BY (−49 tok), and both are the same nameable duplication class —
+  // A DESCRIPTION RECITING ITS OWN SCHEMA, which is the first time that class
+  // has been swept here:
+  //   · log_workout, 56 → 28. "name, kind (strength/cardio/mobility/other),
+  //     duration in minutes, and optional strength sets" listed four properties
+  //     the schema declares one line below, and inlined `kind`'s enum verbatim
+  //     beside the enum itself.
+  //   · log_meal, 65 → 44. "(kcal, protein_g, carbs_g, fat_g) and wall-clock
+  //     time" recited four property names plus `time`, which carries its own
+  //     format description.
+  //
+  // NET 9,219 → 9,223: **+4 tok for a required two-value enum on a write tool.**
+  // 27 tokens of headroom remain. Note that this is the SCHEMA fat the entry
+  // above pointed at, approached from the description side; the four fat
+  // SCHEMAS (update_protocol 424, log_workout, adjust_today, get_metric_series)
+  // are still unswept and are still where the next addition digs.
+  //
+  // PROMPT — WHAT IT COST BEFORE TRIMMING: +57 tok (3,655 → 3,712, over the
+  // 3,700 ceiling). The Memory-and-knowledge bullet had to carry the third leg
+  // of the distinction: the split between a memory and a personal entry is
+  // LENGTH, not subject, and search_history now labels hits three ways ("your
+  // record" / "your knowledge" / "ARC reference") instead of two. Neither has a
+  // cheaper form — without the length rule the model has two tools for one
+  // sentence and picks arbitrarily; without the labels it cannot tell the user's
+  // own account of himself from an article he imported.
+  //
+  // PAID FOR BY (−44 tok), all three the fact-then-restatement pattern the
+  // 2026-08-12 entry established as the right thing to delete:
+  //   · the bullet's opener, "Memory and knowledge are two stores with one line
+  //     between them", was a topic SENTENCE saying what the bullet then says
+  //     precisely — and every other bullet in this section opens with a topic
+  //     LABEL ("Reminders:", "Modes:", "Grocery:", "Recipes:"). Now it does too.
+  //   · the standing-goal rail said the same thing twice, abstract then
+  //     concrete: "is the easiest to miss and the most worth keeping" and "it
+  //     arrives as an aside about one meal and governs months". The concrete
+  //     half survives; it is the one that teaches.
+  //   · "this week" carried the rule from both sides — "rolling windows are NOT
+  //     the same thing" AND "never report a trailing-N-day number as this week".
+  //     One prohibition now, which is the half that instructs.
+  //
+  // NET 3,655 → 3,668: **+13 tok**, and 32 tokens of headroom, up from 45 →
+  // 12-over → 32. The prompt was declared "genuinely swept" on 2026-08-14; it
+  // was not quite, and these three are the last of that pattern. The next
+  // addition trims the VOICE section or the schemas, because there is no fourth
+  // fact-then-restatement left in here.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(
