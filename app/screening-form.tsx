@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -289,6 +290,7 @@ export default function ScreeningFormScreen() {
               placeholder="months"
               placeholderTextColor={palette.inkMuted}
               keyboardType="number-pad"
+              returnKeyType={KEYPAD_DONE}
               className="min-h-[44px] w-24 border border-paper-deep bg-paper-dim px-3.5 py-2.5 font-mono text-[13px] text-ink"
               accessibilityLabel="Cadence in months"
             />

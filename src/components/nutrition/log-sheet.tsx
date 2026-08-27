@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
+import { keypadDoneKey } from '@/components/ui/keyboard';
 import { ModalScreen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
@@ -125,6 +126,7 @@ function FormField({
           placeholder={placeholder}
           placeholderTextColor={palette.inkMuted}
           keyboardType={keyboardType}
+          returnKeyType={keypadDoneKey(keyboardType)}
           maxLength={maxLength}
           accessibilityLabel={label}
           className={

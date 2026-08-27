@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -96,6 +97,29 @@ import { daysBetween } from '@/lib/screenings/format';
  * so `entries === 0` — never `ml === 0` — is what selects the empty (a capture
  * is always positive, so the two would agree today; keying on the count is what
  * keeps them apart if that ever stops being true).
+ *
+ * ## Every number here is typed on a keypad that has no return key
+ *
+ * All three fields — Add, the entry editor and the goal — take a `numeric`
+ * keyboard, which iOS resolves to `UIKeyboardTypeDecimalPad`: a grid of digits
+ * with **no return key at all**. This screen shipped without either affordance a
+ * keypad needs, and the owner hit both at once on the goal field, the one that
+ * sits lowest on the longest scroll: *"you cant close the keyboard so its
+ * impossible to actually put a number in, and you can't see the number while you
+ * type it."* Two separate failures.
+ *
+ * - **No way out.** Fixed by `KEYPAD_DONE` on every field, which is what makes
+ *   RN build its native Done toolbar over the pad — see
+ *   src/components/ui/keyboard.ts for why one prop does that and why it looks
+ *   like a no-op until you read the RN source.
+ * - **Nothing on screen.** Fixed by `automaticallyAdjustKeyboardInsets` on
+ *   {@link Screen}'s scroll view, which scrolls the focused field clear of the
+ *   keyboard. The Save control stays on the field's OWN row for this reason: the
+ *   inset lifts the focused rect, so a control beside it comes along and a
+ *   control in the row below does not.
+ *
+ * Each field's `onSubmitEditing` is its own commit, so Done means "log it" /
+ * "save it" rather than only "close this" — one tap for the whole gesture.
  *
  * ## Ink
  *
@@ -427,6 +451,8 @@ export default function WaterScreen() {
               value={addText}
               onChangeText={setAddText}
               keyboardType="numeric"
+              returnKeyType={KEYPAD_DONE}
+              onSubmitEditing={() => add(Number(addText))}
               placeholder={`Amount in ${spec.unit}`}
               placeholderTextColor={palette.inkMuted}
               className="min-h-[44px] flex-1 rounded-btn border border-paper-deep bg-paper-dim px-3 py-2 font-mono text-[15px] text-ink"
@@ -531,6 +557,8 @@ export default function WaterScreen() {
                             value={editText}
                             onChangeText={setEditText}
                             keyboardType="numeric"
+                            returnKeyType={KEYPAD_DONE}
+                            onSubmitEditing={() => saveEdit(entry.id)}
                             placeholderTextColor={palette.inkMuted}
                             className="min-h-[44px] flex-1 rounded-btn border border-paper-deep bg-paper-dim px-3 py-2 font-mono text-[15px] text-ink"
                           />
@@ -664,6 +692,8 @@ export default function WaterScreen() {
                   value={goalText}
                   onChangeText={setGoalText}
                   keyboardType="numeric"
+                  returnKeyType={KEYPAD_DONE}
+                  onSubmitEditing={saveGoal}
                   placeholder="Leave empty for no goal"
                   placeholderTextColor={palette.inkMuted}
                   className="min-h-[44px] flex-1 rounded-btn border border-paper-deep bg-paper-dim px-3 py-2 font-mono text-[15px] text-ink"

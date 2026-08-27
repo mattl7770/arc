@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
 import { Block } from '@/components/ui/block';
+import { keypadDoneKey } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -102,6 +103,7 @@ function FormField({ label, value, onChange, placeholder, keyboardType, mono, fi
         placeholder={placeholder}
         placeholderTextColor={palette.inkMuted}
         keyboardType={keyboardType}
+        returnKeyType={keypadDoneKey(keyboardType)}
         accessibilityLabel={label}
         className={
           mono

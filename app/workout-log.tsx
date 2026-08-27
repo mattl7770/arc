@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -264,6 +265,7 @@ export default function WorkoutLogScreen() {
                       placeholder="45"
                       placeholderTextColor={palette.inkMuted}
                       keyboardType="decimal-pad"
+                      returnKeyType={KEYPAD_DONE}
                       className="py-2.5 font-mono text-[15px] text-ink"
                       accessibilityLabel="Duration in minutes"
                     />
@@ -347,6 +349,7 @@ export default function WorkoutLogScreen() {
                   placeholder="Reps"
                   placeholderTextColor={palette.inkMuted}
                   keyboardType="number-pad"
+                  returnKeyType={KEYPAD_DONE}
                   className="py-2.5 font-mono text-[15px] text-ink"
                   accessibilityLabel="Reps"
                 />
@@ -360,6 +363,7 @@ export default function WorkoutLogScreen() {
                   placeholder="Weight (lb)"
                   placeholderTextColor={palette.inkMuted}
                   keyboardType="decimal-pad"
+                  returnKeyType={KEYPAD_DONE}
                   className="py-2.5 font-mono text-[15px] text-ink"
                   accessibilityLabel="Weight in pounds"
                 />

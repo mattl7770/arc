@@ -6,6 +6,7 @@ import Animated, { FadeIn, FadeOut, LinearTransition, ZoomIn } from 'react-nativ
 
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
 import { Block, Divider } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
@@ -917,6 +918,7 @@ function ExerciseBlock({
                       }
                       placeholderTextColor={palette.inkMuted}
                       keyboardType="decimal-pad"
+                      returnKeyType={KEYPAD_DONE}
                       className="py-1.5 text-center font-mono text-[15px] text-ink"
                       accessibilityLabel={`Weight for set ${i + 1}`}
                     />
@@ -930,6 +932,7 @@ function ExerciseBlock({
                     placeholder={prev?.reps != null ? String(prev.reps) : '—'}
                     placeholderTextColor={palette.inkMuted}
                     keyboardType="number-pad"
+                    returnKeyType={KEYPAD_DONE}
                     className="py-1.5 text-center font-mono text-[15px] text-ink"
                     accessibilityLabel={`Reps for set ${i + 1}`}
                   />
@@ -942,6 +945,7 @@ function ExerciseBlock({
                     placeholder="—"
                     placeholderTextColor={palette.inkMuted}
                     keyboardType="decimal-pad"
+                    returnKeyType={KEYPAD_DONE}
                     className="py-1.5 text-center font-mono text-[13px] text-ink"
                     accessibilityLabel={`RPE for set ${i + 1}`}
                   />

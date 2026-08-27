@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -458,6 +459,7 @@ export default function LabImportScreen() {
                             value={row.valueText}
                             onChangeText={(t) => setValue(m.key, t)}
                             keyboardType="decimal-pad"
+                            returnKeyType={KEYPAD_DONE}
                             editable={importable}
                             accessibilityLabel={`${m.displayName} value`}
                             className="h-11 w-20 border border-paper-deep bg-paper-dim px-2 text-right font-mono text-[13px] text-ink"

@@ -5,6 +5,7 @@ import { Alert, Pressable, Text, TextInput, View } from 'react-native';
 
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
 import { Block, Divider } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -123,6 +124,7 @@ function NumField({
           placeholder={placeholder}
           placeholderTextColor={palette.inkMuted}
           keyboardType="number-pad"
+          returnKeyType={KEYPAD_DONE}
           className="py-2 text-center font-mono text-[15px] text-ink"
           accessibilityLabel={accessibilityLabel}
         />

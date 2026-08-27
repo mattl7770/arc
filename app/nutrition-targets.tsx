@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
 import { Block } from '@/components/ui/block';
+import { keypadDoneKey } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -96,6 +97,7 @@ type FieldProps = {
  * The reference fix and its full post-mortem are in app/protocol-edit.tsx.
  */
 function FormField({ label, value, onChange, keyboardType, fill }: FieldProps) {
+  const kind = keyboardType ?? 'decimal-pad';
   return (
     <View className={fill ? 'flex-1' : undefined}>
       <Text className="mb-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
@@ -106,7 +108,8 @@ function FormField({ label, value, onChange, keyboardType, fill }: FieldProps) {
         onChangeText={onChange}
         placeholder="—"
         placeholderTextColor={palette.inkMuted}
-        keyboardType={keyboardType ?? 'decimal-pad'}
+        keyboardType={kind}
+        returnKeyType={keypadDoneKey(kind)}
         accessibilityLabel={label}
         className="border border-paper-deep bg-paper-dim px-3 py-3 font-mono text-[15px] text-ink"
       />

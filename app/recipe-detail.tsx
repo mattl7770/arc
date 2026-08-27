@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider, GridCell } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -1065,6 +1066,7 @@ function LineEditor({ line, onChanged }: { line: RecipeIngredientRow; onChanged:
                   value={grams}
                   onChangeText={setGrams}
                   keyboardType="decimal-pad"
+                  returnKeyType={KEYPAD_DONE}
                   placeholder="grams"
                   placeholderTextColor={palette.inkMuted}
                   className="w-24 border border-paper-deep bg-paper-dim px-2.5 py-3 text-right font-mono text-[16px] text-ink"
@@ -1238,6 +1240,7 @@ function LogSheet({
             value={grams}
             onChangeText={setGrams}
             keyboardType="decimal-pad"
+            returnKeyType={KEYPAD_DONE}
             placeholder="250"
             placeholderTextColor={palette.inkMuted}
             className="w-24 border border-paper-deep bg-paper-dim px-2.5 py-3 text-right font-mono text-[16px] text-ink"

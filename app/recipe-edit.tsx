@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -301,6 +302,7 @@ function LabeledNumber({
         value={value}
         onChangeText={onChange}
         keyboardType="decimal-pad"
+        returnKeyType={KEYPAD_DONE}
         placeholder="—"
         placeholderTextColor={palette.inkMuted}
         className="mt-1 min-h-[44px] border border-paper-deep bg-paper-dim px-2 py-2 text-center font-mono text-[15px] text-ink"

@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
 
+import { keypadDoneKey } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -255,6 +256,7 @@ function FormField({
       placeholder={placeholder}
       placeholderTextColor={palette.inkMuted}
       keyboardType={keyboardType}
+      returnKeyType={keypadDoneKey(keyboardType)}
       maxLength={maxLength}
       multiline={multiline}
       accessibilityLabel={accessibilityLabel}
