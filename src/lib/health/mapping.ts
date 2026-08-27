@@ -751,11 +751,32 @@ export const BODY_INGEST_METRICS: readonly BodyIngestSpec[] = [
  * floor), so refusing unknown sources there would discard real vendor data —
  * the exact mistake the `SOURCE_PRIORITY` note warns about.
  */
-export function isIngestableSample(provenance: HealthProvenance): boolean {
-  if (provenance.arcWritten) return false;
+export type IngestRejection = 'arcTag' | 'arcBundle' | 'unattributed';
+
+/**
+ * WHY a body sample was refused, or null when it was accepted — the same three
+ * rejections as {@link isIngestableSample}, in the same order, named.
+ *
+ * Split out on 2026-08-26 so the sync log can say WHICH guard emptied a metric.
+ * "Weight sync is not working" was unanswerable while every refusal looked
+ * identical from outside; `unattributed: 14` and `arcTag: 14` are opposite
+ * diagnoses (a source ARC cannot attribute, versus ARC reading back its own
+ * writes) and the fixes have nothing in common.
+ *
+ * The guard is unchanged — {@link isIngestableSample} is now defined in terms of
+ * this, so the two cannot drift and no rejection was traded away for the
+ * reporting.
+ */
+export function ingestRejectionFor(provenance: HealthProvenance): IngestRejection | null {
+  if (provenance.arcWritten) return 'arcTag';
   const bundle = provenance.bundleId;
-  if (bundle === null || bundle.length === 0) return false;
-  return bundle !== ARC_BUNDLE_ID;
+  if (bundle === null || bundle.length === 0) return 'unattributed';
+  if (bundle === ARC_BUNDLE_ID) return 'arcBundle';
+  return null;
+}
+
+export function isIngestableSample(provenance: HealthProvenance): boolean {
+  return ingestRejectionFor(provenance) === null;
 }
 
 /** One `body_metrics` row to ingest: an instant plus the columns measured at it. */
@@ -764,6 +785,35 @@ export type BodyIngestRow = {
   measuredAt: string;
   values: Partial<Record<BodyColumn, number>>;
 };
+
+/**
+ * Why body samples did not become rows, counted per reason and per HealthKit
+ * identifier. Every rejection in {@link bodyIngestRows} is silent by design —
+ * one bad sample must never sink a pass — which is exactly why they have to be
+ * counted somewhere the user can see.
+ */
+export type BodyIngestRejections = {
+  /** Guard 3a — carries ARC's `ARCPublishedFrom` tag. */
+  arcTag: number;
+  /** Guard 3b — carries ARC's bundle id. */
+  arcBundle: number;
+  /** Guard 3c — no readable bundle id, so cannot be shown NOT to be ARC's. */
+  unattributed: number;
+  /** Outside the column's `body_metrics` CHECK bounds. */
+  outOfBounds: number;
+  /** Not a finite number, before or after conversion. */
+  nonFinite: number;
+};
+
+/** Rows to write, plus why everything else was dropped, per identifier. */
+export type BodyIngestResult = {
+  rows: BodyIngestRow[];
+  rejected: Record<string, BodyIngestRejections>;
+};
+
+export function noBodyRejections(): BodyIngestRejections {
+  return { arcTag: 0, arcBundle: 0, unattributed: 0, outOfBounds: 0, nonFinite: 0 };
+}
 
 /**
  * HealthKit body samples → `body_metrics` rows — PURE, so the percent
@@ -782,19 +832,40 @@ export type BodyIngestRow = {
  * ARC's own or unattributable samples ({@link isIngestableSample}), non-finite
  * values, and anything outside the column's `body_metrics` CHECK bounds — that
  * last one because the INSERT would throw and take the whole batch with it.
+ * Silent to the PASS, that is; every one is counted into `rejected` and ends up
+ * on screen, because a metric that reads zero has to be able to say why.
  */
 export function bodyIngestRows(
   input: readonly { spec: BodyIngestSpec; samples: readonly HealthQuantitySample[] }[]
-): BodyIngestRow[] {
+): BodyIngestResult {
   const byInstant = new Map<string, Partial<Record<BodyColumn, number>>>();
+  const rejected: Record<string, BodyIngestRejections> = {};
   for (const { spec, samples } of input) {
+    const tally = rejected[spec.hkIdentifier] ?? noBodyRejections();
+    rejected[spec.hkIdentifier] = tally;
     for (const sample of samples) {
-      if (!Number.isFinite(sample.value)) continue;
-      if (!isIngestableSample(sample.provenance)) continue;
+      if (!Number.isFinite(sample.value)) {
+        tally.nonFinite++;
+        continue;
+      }
+      const refusal = ingestRejectionFor(sample.provenance);
+      if (refusal !== null) {
+        tally[refusal]++;
+        continue;
+      }
       const converted = round(spec.fromHealthKit(sample.value), spec.decimals);
-      if (!Number.isFinite(converted)) continue;
-      if (spec.minExclusive ? converted <= spec.min : converted < spec.min) continue;
-      if (spec.maxExclusive ? converted >= spec.max : converted > spec.max) continue;
+      if (!Number.isFinite(converted)) {
+        tally.nonFinite++;
+        continue;
+      }
+      if (spec.minExclusive ? converted <= spec.min : converted < spec.min) {
+        tally.outOfBounds++;
+        continue;
+      }
+      if (spec.maxExclusive ? converted >= spec.max : converted > spec.max) {
+        tally.outOfBounds++;
+        continue;
+      }
       let values = byInstant.get(sample.startISO);
       if (!values) {
         values = {};
@@ -803,9 +874,10 @@ export function bodyIngestRows(
       values[spec.column] = converted;
     }
   }
-  return [...byInstant.entries()]
+  const rows = [...byInstant.entries()]
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
     .map(([measuredAt, values]) => ({ measuredAt, values }));
+  return { rows, rejected };
 }
 
 // --- Scopes ---------------------------------------------------------------------------

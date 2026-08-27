@@ -11,7 +11,8 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO } from '@/lib/db/date';
 import { isHealthSyncEnabled, setHealthSyncEnabled } from '@/lib/db/repositories/user';
-import { getHealthSyncState } from '@/lib/db/repositories/wearables';
+import { getHealthSyncLog, getHealthSyncState } from '@/lib/db/repositories/wearables';
+import { metricNote, publishNote, type HealthSyncLog } from '@/lib/health/log';
 import {
   healthWriteAccess,
   isHealthKitAvailable,
@@ -19,11 +20,7 @@ import {
   requestHealthPermissions,
   type HealthWriteAccess,
 } from '@/lib/health/healthkit';
-import {
-  GARMIN_ONLY_METRICS,
-  METRIC_COVERAGE,
-  type SourceVerdict,
-} from '@/lib/health/coverage';
+import { GARMIN_ONLY_METRICS, METRIC_COVERAGE, type SourceVerdict } from '@/lib/health/coverage';
 import { BODY_INGEST_METRICS } from '@/lib/health/mapping';
 import { syncHealthData } from '@/lib/health/sync';
 
@@ -152,12 +149,14 @@ export default function SettingsHealthScreen() {
   const [lastRows, setLastRows] = useState<number | null>(null);
   const [lastPublished, setLastPublished] = useState<number | null>(null);
   const [writeAccess, setWriteAccess] = useState<HealthWriteAccess>(() => healthWriteAccess());
+  const [log, setLog] = useState<HealthSyncLog | null>(() => getHealthSyncLog(getDb()));
 
   const refresh = useCallback(() => {
     const db = getDb();
     setEnabled(isHealthSyncEnabled(db));
     setLastSyncedAt(getHealthSyncState(db).lastSyncedAt);
     setWriteAccess(healthWriteAccess());
+    setLog(getHealthSyncLog(db));
   }, []);
 
   const enable = useCallback(async () => {
@@ -390,6 +389,119 @@ export default function SettingsHealthScreen() {
           )}
         </Block>
       </View>
+
+      {/* The last sync, step by step — the answer to "it's not working".
+          A ledger of what each metric did, so a ruled plate.
+
+          This section exists because of 2026-08-25: weight stopped arriving
+          from Apple Health and no surface in the app could say which step
+          produced zero. Every failure in the pipeline is silent by design — a
+          refused query predicate returns nothing, an unattributable sample is
+          dropped, one bad day never sinks a window — so an empty read looked
+          exactly like a quiet week, and the only bug report the app made
+          possible was "not working". Counts, not prose: the number HealthKit
+          returned, then the number that reached the database. */}
+      {enabled ? (
+        <View className="mt-8">
+          <SectionLabel label="Last sync" note={log ? `${log.windowDays}d window` : undefined} />
+          <View className="mt-3">
+            <Block device="plate">
+              {log === null ? (
+                <View className="py-3">
+                  <Text className="font-serif text-[13.5px] text-ink-secondary">
+                    No sync has run yet.
+                  </Text>
+                </View>
+              ) : (
+                log.metrics.map((entry, index) => {
+                  const note = metricNote(entry);
+                  return (
+                    <View key={entry.metric}>
+                      <Divider first={index === 0} />
+                      <View
+                        accessible
+                        accessibilityLabel={`${entry.label}. ${entry.returned} read from Apple Health, ${entry.rows} kept.${note ? ` ${note}` : ''}`}
+                        className="py-3">
+                        <View className="flex-row items-center gap-3">
+                          <Text className="flex-1 font-serif text-[13.5px] text-ink">
+                            {entry.label}
+                          </Text>
+                          {/* One interpolation, not two: adjacent expressions
+                              become separate text children, which RN is free to
+                              lay out apart and which no substring assertion can
+                              see as one measurement. */}
+                          <Text className="font-mono text-[11px] text-ink-muted">
+                            {`${entry.returned} → ${entry.rows}`}
+                          </Text>
+                        </View>
+                        {note ? (
+                          <Text className="mt-1 font-serif text-[11px] leading-4 text-ink-muted">
+                            {note}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+            </Block>
+          </View>
+
+          {log !== null ? (
+            <>
+              <View className="mt-3">
+                <Block device="plate">
+                  <Divider first />
+                  <View
+                    accessible
+                    accessibilityLabel={`Published to Apple Health. ${log.publish.succeeded} of ${log.publish.attempted} accepted. ${publishNote(log.publish)}`}
+                    className="py-3">
+                    <View className="flex-row items-center gap-3">
+                      <Text className="flex-1 font-serif text-[13.5px] text-ink">
+                        Published out
+                      </Text>
+                      <Text className="font-mono text-[11px] text-ink-muted">
+                        {`${log.publish.succeeded} / ${log.publish.attempted}`}
+                      </Text>
+                    </View>
+                    <Text className="mt-1 font-serif text-[11px] leading-4 text-ink-muted">
+                      {publishNote(log.publish)}
+                    </Text>
+                  </View>
+                  {log.publish.types.map((type) => (
+                    <View key={type.label}>
+                      <Divider />
+                      <View
+                        accessible
+                        accessibilityLabel={`${type.label}. ${type.succeeded} of ${type.attempted} accepted.`}
+                        className="flex-row items-center gap-3 py-3">
+                        <Text className="flex-1 font-serif text-[13.5px] text-ink-secondary">
+                          {type.label}
+                        </Text>
+                        <Text className="font-mono text-[11px] text-ink-muted">
+                          {`${type.succeeded} / ${type.attempted}`}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </Block>
+              </View>
+
+              <View className="mt-4">
+                <Block device="margin">
+                  <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+                    Each row reads: measurements Apple Health returned → measurements ARC kept. A
+                    gap between the two is always explained on the line beneath it.
+                  </Text>
+                  <Text className="mt-2 font-mono text-[11px] text-ink-muted">
+                    {`${log.rowsWritten} rows changed`}
+                  </Text>
+                </Block>
+              </View>
+            </>
+          ) : null}
+        </View>
+      ) : null}
 
       {/* What syncs, and which way — a list of things, so a ruled plate. */}
       <View className="mt-8">

@@ -91,7 +91,9 @@ import DataScreen from '../app/(tabs)/data.tsx';
 import HomeScreen from '../app/(tabs)/index.tsx';
 
 import { logWater } from '../src/lib/db/repositories/water.ts';
-import { setWaterTarget } from '../src/lib/db/repositories/user.ts';
+import { setHealthSyncEnabled, setWaterTarget } from '../src/lib/db/repositories/user.ts';
+import { setHealthSyncLog } from '../src/lib/db/repositories/wearables.ts';
+import SettingsHealthScreen from '../app/settings-health.tsx';
 import { insertReport } from '../src/lib/db/repositories/reports.ts';
 import { assembleSelfReview } from '../src/lib/reports/assemble-self-review.ts';
 import { periodFromBounds } from '../src/lib/reports/period.ts';
@@ -216,7 +218,13 @@ const db = getDb();
   // Nothing may claim a rate, a phase or a group on a database with none.
   // ("Running" itself is not refutable — the closing margin note says *running
   //  protocols build Today's Mission*, which is true of an empty hub too.)
-  refute('protocols (empty)', emptyHub, ['Ended', 'Paused', '0%', 'no record yet', 'no version yet']);
+  refute('protocols (empty)', emptyHub, [
+    'Ended',
+    'Paused',
+    '0%',
+    'no record yet',
+    'no version yet',
+  ]);
 
   expect(
     'protocol-detail (missing id)',
@@ -1497,6 +1505,84 @@ const db = getDb();
   ]);
   // v1 is the start of the record, not a change, so it prints no diff.
   refute('protocol-versions', versions, ['no change to the items']);
+}
+
+{
+  console.log('Settings › Apple Health — the sync log the owner will actually open');
+
+  // This screen had no render coverage at all, which is uncomfortable given
+  // what it is FOR: it is the surface a user opens when Apple Health has
+  // already gone wrong, and the one added on 2026-08-26 to explain a silent
+  // failure. A screen that throws while explaining a failure explains nothing.
+
+  setHealthSyncEnabled(db, true);
+  const never = render('settings-health (no sync yet)', SettingsHealthScreen);
+  expect('settings-health (no sync yet)', never, [
+    'Apple Health',
+    'Last sync',
+    'No sync has run yet.', // authored, never blank
+  ]);
+  // Nothing may be reported that has not happened. An empty log must not print
+  // counts, and must not name a step as having succeeded or failed.
+  refute('settings-health (no sync yet)', never, ['rows changed', 'Published out']);
+
+  setHealthSyncLog(db, {
+    at: '2026-08-26T09:00:00.000Z',
+    windowDays: 14,
+    rowsWritten: 12,
+    metrics: [
+      {
+        metric: 'hrv',
+        label: 'hrv',
+        returned: 40,
+        rows: 14,
+        exclusion: 'source',
+        error: null,
+        rejected: null,
+      },
+      {
+        metric: 'weight_kg',
+        label: 'Weight',
+        returned: 0,
+        rows: 0,
+        exclusion: 'refused',
+        error: 'predicate not supported',
+        rejected: { arcTag: 0, arcBundle: 0, unattributed: 0, outOfBounds: 0, nonFinite: 0 },
+      },
+      {
+        metric: 'body_fat_pct',
+        label: 'Body fat',
+        returned: 6,
+        rows: 0,
+        exclusion: 'metadata',
+        error: null,
+        rejected: { arcTag: 0, arcBundle: 0, unattributed: 6, outOfBounds: 0, nonFinite: 0 },
+      },
+    ],
+    publish: {
+      armed: true,
+      stalled: false,
+      attempted: 0,
+      succeeded: 0,
+      types: [],
+    },
+  });
+
+  const logged = render('settings-health (logged)', SettingsHealthScreen);
+  expect('settings-health (logged)', logged, [
+    '14d window',
+    'Weight',
+    '0 → 0', // the shape of the whole answer: returned → kept
+    'Apple Health refused both echo-suppression filters',
+    'predicate not supported', // the native error, carried all the way to the screen
+    'Skipped 6 with no readable source.', // the guard named, in words
+    '40 → 14', // …and a healthy metric alongside it, so the zero means something
+    '12 rows changed',
+    'Armed —', // the deliberate zero, said out loud rather than left to look like a bug
+  ]);
+  // The armed pass attempted nothing, so no type may appear claiming it was
+  // refused — a fabricated finding is worse than a missing one.
+  refute('settings-health (logged)', logged, ['Waist circumference. 0 / 0']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

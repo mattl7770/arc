@@ -27,6 +27,7 @@ import type { Database } from '@/lib/db/database';
 import type { HealthQuantitySample } from './types';
 import {
   getHealthSyncState,
+  setHealthSyncLog,
   setHealthSyncState,
   upsertWearableRows,
   type WearableUpsert,
@@ -38,6 +39,7 @@ import { upsertHealthBodyRows } from '@/lib/db/repositories/body';
 import {
   BODY_INGEST_METRICS,
   bodyIngestRows,
+  noBodyRejections,
   quantityDailyRows,
   SAMPLE_METRICS,
   sleepDailyRows,
@@ -45,6 +47,7 @@ import {
   statisticDailyRows,
   workoutRows,
 } from './mapping';
+import { emptyPublishLog, rejectedTotal, type HealthMetricLog, type HealthSyncLog } from './log';
 import {
   isHealthKitAvailable,
   readDailyCumulative,
@@ -207,17 +210,64 @@ export async function syncHealthData(
   const span = sampleQuerySpan(now, windowDays);
 
   const rows: WearableUpsert[] = [];
+  // The per-run log (docs §14). Built as the pass goes so that every zero on the
+  // Settings screen can name the step that produced it.
+  const metrics: HealthMetricLog[] = [];
 
   for (const spec of SAMPLE_METRICS) {
-    const samples = await readQuantitySamples(spec.hkIdentifier, spec.hkUnit, span.start, span.end);
-    rows.push(...quantityDailyRows(spec, samples));
+    const read = await readQuantitySamples(spec.hkIdentifier, spec.hkUnit, span.start, span.end);
+    const mapped = quantityDailyRows(spec, read.samples);
+    rows.push(...mapped);
+    metrics.push({
+      metric: spec.metricType,
+      label: spec.metricType,
+      returned: read.samples.length,
+      rows: mapped.length,
+      exclusion: read.exclusion,
+      error: read.error,
+      rejected: null,
+    });
   }
   for (const spec of STATISTIC_METRICS) {
-    const stats = await readDailyCumulative(spec.hkIdentifier, spec.hkUnit, days);
-    rows.push(...statisticDailyRows(spec, stats));
+    const read = await readDailyCumulative(spec.hkIdentifier, spec.hkUnit, days);
+    const mapped = statisticDailyRows(spec, read.samples);
+    rows.push(...mapped);
+    metrics.push({
+      metric: spec.metricType,
+      label: spec.metricType,
+      returned: read.samples.length,
+      rows: mapped.length,
+      exclusion: read.exclusion,
+      error: read.error,
+      rejected: null,
+    });
   }
-  rows.push(...sleepDailyRows(await readSleepSamples(span.start, span.end)));
-  rows.push(...workoutRows(await readWorkouts(span.start, span.end)));
+
+  const sleep = await readSleepSamples(span.start, span.end);
+  const sleepMapped = sleepDailyRows(sleep.samples);
+  rows.push(...sleepMapped);
+  metrics.push({
+    metric: 'sleep',
+    label: 'sleep',
+    returned: sleep.samples.length,
+    rows: sleepMapped.length,
+    exclusion: sleep.exclusion,
+    error: sleep.error,
+    rejected: null,
+  });
+
+  const workouts = await readWorkouts(span.start, span.end);
+  const workoutMapped = workoutRows(workouts.samples);
+  rows.push(...workoutMapped);
+  metrics.push({
+    metric: 'workout',
+    label: 'workout',
+    returned: workouts.samples.length,
+    rows: workoutMapped.length,
+    exclusion: workouts.exclusion,
+    error: workouts.error,
+    rejected: null,
+  });
 
   // The body channel's INBOUND half (docs §11). It lands in `body_metrics`, not
   // `wearable_data`, because that is the table that owns weight / body fat /
@@ -235,15 +285,41 @@ export async function syncHealthData(
     spec: (typeof BODY_INGEST_METRICS)[number];
     samples: HealthQuantitySample[];
   }[] = [];
+  // Kept alongside the samples so the log can report the query's own outcome
+  // (which exclusion survived, and any native error) separately from the
+  // per-sample guard verdicts. They are different failures with different fixes.
+  const bodyReads = new Map<
+    string,
+    { exclusion: HealthMetricLog['exclusion']; error: string | null }
+  >();
   for (const spec of BODY_INGEST_METRICS) {
-    bodyInput.push({
-      spec,
-      samples: await readQuantitySamples(spec.hkIdentifier, spec.hkUnit, span.start, span.end, {
-        failClosed: true,
-      }),
+    const read = await readQuantitySamples(spec.hkIdentifier, spec.hkUnit, span.start, span.end, {
+      failClosed: true,
+    });
+    bodyInput.push({ spec, samples: read.samples });
+    bodyReads.set(spec.hkIdentifier, { exclusion: read.exclusion, error: read.error });
+  }
+  const body = bodyIngestRows(bodyInput);
+  const bodyWritten = upsertHealthBodyRows(db, body.rows);
+
+  for (const spec of BODY_INGEST_METRICS) {
+    const read = bodyReads.get(spec.hkIdentifier);
+    const rejected = body.rejected[spec.hkIdentifier] ?? noBodyRejections();
+    const returned = bodyInput.find((b) => b.spec === spec)?.samples.length ?? 0;
+    metrics.push({
+      metric: spec.column,
+      label: spec.label,
+      returned,
+      // A body sample becomes a COLUMN on a row keyed by its instant, and one
+      // weigh-in can fill three columns on one row — so "rows" here is what
+      // survived the guards, not a row count. Reporting the merged row count
+      // would make two of the three metrics look like they landed nothing.
+      rows: returned - rejectedTotal(rejected),
+      exclusion: read?.exclusion ?? 'none',
+      error: read?.error ?? null,
+      rejected,
     });
   }
-  const bodyWritten = upsertHealthBodyRows(db, bodyIngestRows(bodyInput));
 
   const written = upsertWearableRows(db, clampRowsToWindow(rows, days)) + bodyWritten;
 
@@ -266,10 +342,34 @@ export async function syncHealthData(
   // the same reason every reader here does: Settings shows the honest counts,
   // and the next pass retries from an unmoved cursor.
   let samplesPublished = 0;
+  const publish = emptyPublishLog();
   try {
-    samplesPublished = (await publishBodyMetrics(db, now)).samplesWritten;
+    const result = await publishBodyMetrics(db, now);
+    samplesPublished = result.samplesWritten;
+    publish.armed = result.armed;
+    publish.stalled = result.stalled;
+    publish.attempted = result.samplesAttempted;
+    publish.succeeded = result.samplesWritten;
+    publish.types = result.byType;
   } catch {
     samplesPublished = 0;
+  }
+
+  // Written LAST and outside the ingest cursor's write, so a log failure can
+  // never cost the pass its progress. Best-effort for the same reason: a
+  // diagnostic that can break the thing it describes is worse than no
+  // diagnostic.
+  const log: HealthSyncLog = {
+    at: syncedAt,
+    windowDays,
+    rowsWritten: written,
+    metrics,
+    publish,
+  };
+  try {
+    setHealthSyncLog(db, log);
+  } catch {
+    // The screen falls back to "no log yet" and the next pass rewrites it.
   }
 
   emitSynced();

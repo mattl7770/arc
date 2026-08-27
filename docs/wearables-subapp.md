@@ -7,6 +7,9 @@ outward (**§10**) and reads the same three back in (**§11**).
 here is re-trued (the runtime guards are untouched); and **Strain left this sub-app** — it is
 derived from ARC's own logged sets now, with active energy demoted to a one-directional second
 opinion (**§6**).
+**Amended:** 2026-08-26 — weight did not arrive on hardware. **§14** reads the answers off the
+installed library's own iOS source, fixes the two defects it found (both in ARC), and adds a
+per-run **sync log** so the next failure names itself instead of being reported as "not working".
 **Read first:** CLAUDE.md §8 (wearables strategy) and §9 (DB conventions), `docs/project-status.md`.
 
 Apple Health is the decided ingestion hub (2026-07-24 ADR): it is on-device, every vendor's
@@ -16,7 +19,8 @@ normalises into `wearable_data`, which shipped in 0001 precisely for this.
 
 §§1–9 describe **ingestion into `wearable_data`**, which is the bulk of the integration.
 §10 describes the outbound channel, §11 the inbound half of the same three body measurements,
-and both hang on the echo suppression written up in §10.
+and both hang on the echo suppression written up in §10. **§14 is what that echo suppression
+actually did on a device**, and is the section to read before touching any of it.
 
 ---
 
@@ -415,19 +419,27 @@ weight; HealthKit stores it; ARC's next read sees it; ARC files it as a new meas
 publish walk sees a new row and posts it back. Each pass duplicates, in a medical record, with
 no undo from inside ARC. Five independent guards, listed in the order a sample meets them:
 
-1. **Query-level exclusion.** Every sample reader passes
-   `filter.NOT = [{ sources: [currentAppSource()] }]`, falling back to the metadata predicate
-   `[{ metadata: { withMetadataKey: 'ARCPublishedFrom' } }]` when that API is unavailable —
-   the key ARC stamps on every sample it writes, carrying the originating `body_metrics.id`.
-   Statistics queries get no exclusion on purpose: they return Apple's own merged cumulative
-   totals, computed before any predicate, and ARC writes none of those types.
-2. **Two failure postures for that filter, and the difference is the point.** On a type ARC
-   only READS, a predicate the native layer rejects falls back to an **unfiltered** query —
-   losing the filter is harmless there and losing the data is not (readers swallow errors to
-   `[]`, so a bad filter would silently empty the whole Data tab). On a type ARC also WRITES,
-   the reader passes `failClosed` and returns **nothing** instead: there the unfiltered read
-   *is* the echo loop, and a weight missing for one pass is recoverable where a duplicate is
-   not.
+1. **Query-level exclusion — a LADDER, strongest first** (corrected 2026-08-26; see §14 for
+   why). Every sample reader tries `filter.NOT = [{ sources: [currentAppSource()] }]` and, if
+   HealthKit refuses that predicate, `[{ metadata: { withMetadataKey: 'ARCPublishedFrom' } }]`
+   — the key ARC stamps on every sample it writes, carrying the originating `body_metrics.id`.
+   Source first because it is categorical (it covers every sample ARC ever wrote, including any
+   predating the metadata scheme); metadata second because it is a plain key predicate with no
+   source set behind it. Statistics queries get no exclusion on purpose: they return Apple's own
+   merged cumulative totals, computed before any predicate, and ARC writes none of those types.
+2. **Two failure postures for that ladder, and the difference is the point.** On a type ARC
+   only READS, a ladder HealthKit exhausts falls back to an **unfiltered** query — losing the
+   filter is harmless there and losing the data is not (readers swallow errors to `[]`, so a
+   bad filter would silently empty the whole Data tab). On a type ARC also WRITES, the reader
+   passes `failClosed` and returns **nothing** instead, reporting `exclusion: 'refused'`: there
+   the unfiltered read *is* the echo loop, and a weight missing for one pass is recoverable
+   where a duplicate is not.
+
+   > The ladder is what was missing until 2026-08-26. The code picked **one** clause — source
+   > when `currentAppSource` existed, metadata only when that API was absent or threw — so the
+   > metadata rung was unreachable in the case that actually bites: the API present and its
+   > *predicate* refused. On a `failClosed` type that is zero weight, forever, with no error
+   > anywhere. The docs described a fallback the code did not have.
 3. **Per-sample rejection** (`isIngestableSample`, pure and tested). A body sample is dropped
    if it carries the `ARCPublishedFrom` tag, or ARC's bundle id, **or no bundle id at all**.
    That last clause is the one that is easy to get backwards: *unknown source is not safe* on
@@ -437,6 +449,14 @@ no undo from inside ARC. Five independent guards, listed in the order a sample m
    reflection, and refusing it costs at worst a measurement still visible in the Health app.
    (Scoped to the body types only. Applying it to wearable reads would discard real vendor
    data, which is the mistake guard 5 warns about.)
+
+   > ⚠️ The teeth in that clause are why the PARSER matters as much as the guard.
+   > `sourceRevision.source` is a Nitro **hybrid object**, not a struct, and a parser that
+   > cannot read one does not mis-source weight — it deletes it (§14). Since 2026-08-26 each
+   > refusal is also counted by reason (`ingestRejectionFor`) and rendered, because
+   > `unattributed: 14` and `arcTag: 14` are opposite diagnoses and used to be the same
+   > silent zero. `isIngestableSample` is defined in terms of that reason-giver, so the guard
+   > and the explanation cannot drift.
 4. **The structural guard: `source <> 'apple_health'` on the publish walk.** Every other guard
    decides whether a sample *looks* like ARC's. This one decides that a value which came FROM
    Apple Health is never sent back TO Apple Health, whatever it looks like — so even if guards
@@ -551,6 +571,13 @@ instants, so a sample from the span's half-day lead-in is a complete, correctly 
 **Backfill is fine here, unlike outbound.** Ingest is reversible — the rows are ARC's own
 database and the user can delete them — so the 90-day first sync applies. The asymmetry with
 §10's no-backfill rule is the asymmetry between "data I can delete" and "data I cannot".
+
+**Every read reports itself** (2026-08-26). `readQuantitySamples` returns the samples *plus*
+which exclusion predicate survived and any native error, and the per-sample guards return their
+rejections by reason. Settings › Apple Health renders both under **Last sync** as
+`returned → rows` with the gap explained on the line beneath it. This exists because this
+direction failed on the first device that ever ran it and nothing in the app could say where —
+see §14.
 
 ---
 
@@ -712,3 +739,109 @@ had ever been ingested — the module was not in the binary. It is in the owner'
 2026-08-25, so ingestion is now *possible*; nothing here has been watched happening. On the
 owner's device 0042's `DELETE` still affects zero rows, because the duplicates it removes
 could only have been created by passes that never ran.
+
+---
+
+## 14. The weight that never arrived — what the library actually does (2026-08-26)
+
+The owner, on the first day HealthKit was live in his binary: *"Weight sync with apple health is
+not working in the read direction, possibly write as well."* Everything else appeared to arrive.
+Weight, body fat and waist are the only three types ARC both reads and writes, so they are the
+only three that run the echo-suppression path — and no device had ever executed it.
+
+The three things §10 said could not be known without hardware were then read off the installed
+library instead: `node_modules/@kingstinct/react-native-healthkit@14.0.2` ships its TypeScript
+source, its Nitro specs **and its iOS Swift**, so most of what was guessed is checkable. Two of
+the three guesses were wrong in ARC's favour; the fault was in ARC's own code.
+
+### What the library actually does
+
+| Question | Answer | Evidence |
+| --- | --- | --- |
+| Is `NOT: [{ sources: [...] }]` the grammar the native side parses? | **Yes**, exactly. `NOT` → `createAndPredicateForSamples` → `createPredicateForSamplesBase` → `createSourcePredicate` → `NSCompoundPredicate(notPredicateWithSubpredicate: HKQuery.predicateForObjects(from:))`, ANDed with the date predicate. | `ios/PredicateHelpers.swift` — `createNotPredicateForSamples`, `createSourcePredicate`, `createPredicateForSamples` |
+| Does a *malformed* sources array fail closed? | **No — it fails OPEN.** `createSourcePredicate` returns `nil` when the cast fails, the whole NOT chain collapses to `nil`, and the query runs date-only. So a bad `sources` payload loses the exclusion silently; it does not empty the read. | `ios/PredicateHelpers.swift`, `createSourcePredicate` (the `sourceSet.count > 0` guard) |
+| Is `sourceRevision` returned by default, or does it need a query option? | **Always returned. There is no option.** `serializeQuantitySample` sets `sourceRevision: serializeSourceRevision(sample.sourceRevision)` unconditionally, and `BaseObject.sourceRevision` is non-optional in the library's own types. | `ios/Serializers.swift`, `serializeQuantitySample`; `src/types/Shared.ts`, `BaseObject` |
+| …so does guard 3 get a bundle id? | **Only if the parser can read a hybrid object.** `SourceRevision.source` is not a struct — it is a Nitro **HybridObject** whose `name`/`bundleIdentifier` are getters on a shared **prototype**, so it has no own keys and does not spread or stringify. The library ships `toJSON()` for exactly this. | `ios/SourceProxy.swift`; `react-native-nitro-modules/cpp/core/HybridObject.cpp`, `registerHybrids` |
+| Does `undefined` from `saveQuantitySample` mean "saved"? | **No. It means failure**, and ARC's conservative reading was right: `let succeeded = try await saveAsync(sample:); return succeeded ? try serializeQuantitySample(...) : nil` — `nil` is reached only when `HKHealthStore.save` reported `success == false`. | `ios/QuantityTypeModule.swift`, `saveQuantitySample`; `ios/Helpers.swift`, `saveAsync` |
+| Is `limit: 0` really "all"? | **Yes.** `getQueryLimit` maps `<= 0`, `NaN` and `Infinity` to `HKObjectQueryNoLimit`. | `ios/Helpers.swift`, `getQueryLimit` |
+| Is `'cumulativeSum'` the right statistics token? | **Yes** — `StatisticsOptions` is a plain string union, and the Swift enum case is Nitro's lowercased codegen of it. | `src/types/QuantityType.ts`; `ios/Helpers.swift`, `buildStatisticsOptions` |
+| Is `metadata` a plain object in both directions? | **Yes.** Nitro's `AnyMap` is `Record<string, ValueType>` in JS, so reading `sample.metadata['ARCPublishedFrom']` and passing `{ ARCPublishedFrom: id }` to a save both work. | `react-native-nitro-modules/src/AnyMap.ts` |
+
+Also checked, and clean: all fifteen read identifiers and all three write identifiers are members
+of the library's generated unions (`src/generated/healthkit.generated.ts`), so no Nitro enum
+conversion can reject them; `NSHealthShareUsageDescription` and `NSHealthUpdateUsageDescription`
+are both in `app.json`.
+
+### The two defects, both in ARC
+
+**1. The exclusion was a choice, not a ladder — and that is the read failure.**
+`ownWriteExclusion` returned the source clause whenever `currentAppSource` existed, and the
+metadata clause *only* when that API was missing or threw. The metadata rung was therefore
+unreachable in the one case that matters: the API present and its **predicate** refused. On a
+`failClosed` type a refused predicate returns nothing, so weight would be empty forever, with the
+narrower predicate never attempted and no error recorded anywhere. §10 already described the
+fallback; the code did not implement it.
+
+It is now a ladder — source, then metadata, then (read-only types only) unfiltered — and nothing
+is weakened: a published type still never reaches an unfiltered read, and exhausting the ladder
+reports `exclusion: 'refused'` rather than looking like a quiet week.
+
+This also explains the *shape* of the report. `readQuantitySamples` runs the exclusion for every
+quantity metric, not just the body ones — but HRV, RHR and the rest pass `failClosed: false`, so
+a refused predicate costs them the filter and nothing else. Only the three body types fail
+closed. **A predicate iOS will not accept produces exactly the observed symptom: everything
+arrives except weight, body fat and waist.**
+
+**2. Provenance was parsed off a hybrid object as if it were a struct.**
+`provenanceOf` read `sourceRevision.source.bundleIdentifier` directly. That is a prototype getter
+on a Nitro hybrid, and the base `HybridObject` prototype registers a `name` getter of its own
+(the hybrid's class name) that a derived `name` must shadow. `sourceRecord` now prefers
+`source.toJSON()` — the library's own answer, a plain `{ name, bundleIdentifier }` built natively
+— and falls back to direct property access. This matters because guard 3 refuses any body sample
+with **no readable bundle id**: a provenance parser that cannot read the wire shape does not
+mis-source weight, it *deletes* it.
+
+**Verdicts.** Suspect 1 (filter grammar / fail-closed): **confirmed as the mechanism**, though
+which predicate iOS refuses is still device-only. Suspect 2 (`sourceRevision` needs a query
+option): **ruled out** — but the hybrid-object hazard behind it was real and is fixed. Suspect 3
+(`undefined` means saved): **ruled out**; ARC was already correct, so *"possibly write as well"*
+is the **armed-cursor design** (§10, rule 1) — the first pass publishes nothing on purpose — and
+the screen now says so instead of reporting a bare zero.
+
+### The sync log — because this must not recur silently
+
+Every failure in this pipeline is deliberately silent, and each decision is right on its own: a
+refused predicate returns `[]`, an unattributable sample is dropped, one bad day never sinks a
+window. Together they made an empty read indistinguishable from a quiet week, so the only signal
+left was the owner noticing a number had stopped moving. That is the least useful bug report a
+system can force a person to write.
+
+So every step now counts what it did, and Settings › Apple Health renders it under **Last sync**:
+
+- per metric — samples HealthKit returned, rows that reached the database, which exclusion
+  predicate survived, any native error text (clamped to 200 chars), and for the three body types
+  the per-guard rejection tally (`arcTag` / `arcBundle` / `unattributed` / `outOfBounds` /
+  `nonFinite`). `unattributed: 14` and `arcTag: 14` are opposite diagnoses with nothing in common,
+  and used to be the same silent zero;
+- outbound — attempted vs accepted overall and **per type** (a partial share grant is otherwise
+  invisible), plus the armed cursor stated in words: *"Armed — your next weight, body fat or
+  waist entry will publish."*
+
+The guards themselves are untouched. `isIngestableSample` is now defined in terms of
+`ingestRejectionFor`, so the reason-giver and the guard are one decision in two shapes and cannot
+drift; no rejection was traded away to get the reporting.
+
+**No migration.** A third key, `apple_health_log`, in the 0021 `health_sync_state` KV — the same
+argument as the publish cursor: `key` carries no CHECK and `value` is free JSON. It holds the
+**last run only**, overwritten each pass. Diagnostics, not history; a trend of syncs would be a
+table and nothing here is worth one. `value` is `CHECK json_valid`, so the reachable corruption is
+a wrong *shape* (a log written by an older build), and `parseSyncLog` re-derives every field, so
+that reads as "no log" rather than throwing on the one screen a user opens when something is
+already wrong.
+
+⚠️ **What is still device-only.** Whether iOS accepts `NOT` over `predicateForObjects(from:)`, and
+whether it accepts it over `predicateForObjects(withMetadataKey:)`. The ladder means ARC survives
+either answer, and the log means the next run *names* the answer instead of leaving it to be
+inferred from a number that stopped moving. If the owner's next sync shows Weight as `0 → 0` with
+*"Apple Health refused both echo-suppression filters"*, both predicates are out and the fix is a
+different exclusion mechanism — not more retries.

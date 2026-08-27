@@ -7,6 +7,21 @@
  * headless tests never touch anything native.
  */
 
+/**
+ * Which own-write exclusion a read actually ran with (docs §10, guard 1). Lives
+ * here rather than in the seam so the DB layer and the Settings screen can name
+ * it without importing anything native.
+ *
+ *   - `source`   — the categorical `currentAppSource()` NOT predicate;
+ *   - `metadata` — the `ARCPublishedFrom` NOT predicate;
+ *   - `none`     — no exclusion applied (statistics always; a read-only type
+ *                  whose every predicate HealthKit refused);
+ *   - `refused`  — every predicate was refused on a PUBLISHED type, so the read
+ *                  returned nothing rather than risk the echo loop. This is the
+ *                  state that used to be indistinguishable from a quiet day.
+ */
+export type HealthExclusion = 'source' | 'metadata' | 'none' | 'refused';
+
 /** Who wrote a sample, straight off HKSourceRevision. All best-effort. */
 export type HealthProvenance = {
   /** User-facing source name, e.g. "Matt's Apple Watch", "Oura". */

@@ -14,6 +14,7 @@ import {
   ECHO_SUPPRESSED_IDENTIFIERS,
   HEALTH_READ_IDENTIFIERS,
   HEALTH_WRITE_IDENTIFIERS,
+  ingestRejectionFor,
   isIngestableSample,
   localDayOf,
   quantityDailyRows,
@@ -42,6 +43,7 @@ import {
   healthWriteAccess,
   isHealthKitAvailable,
   isHealthKitSupported,
+  ownWriteExclusions,
   parseCategorySample,
   parseQuantitySample,
   parseStatisticSum,
@@ -49,7 +51,9 @@ import {
   readQuantitySamples,
   requestHealthPermissions,
   saveHealthQuantity,
+  withOwnWritesExcluded,
 } from '../src/lib/health/healthkit.ts';
+import { metricNote, parseSyncLog, publishNote } from '../src/lib/health/log.ts';
 import { ACCUMULATING_METRIC_TYPES, isAccumulatingMetric } from '../src/lib/health/accumulating.ts';
 import { readFileSync } from 'node:fs';
 
@@ -662,15 +666,22 @@ console.log('6. guarded seam is a safe no-op without the native module');
     : bad('available');
   const granted = await requestHealthPermissions();
   granted === false ? ok('requestHealthPermissions resolves false') : bad('permissions', granted);
-  const samples = await readQuantitySamples(
+  const read = await readQuantitySamples(
     'HKQuantityTypeIdentifierStepCount',
     'count',
     new Date(),
     new Date()
   );
-  Array.isArray(samples) && samples.length === 0
-    ? ok('readQuantitySamples resolves []')
-    : bad('samples', JSON.stringify(samples));
+  Array.isArray(read.samples) && read.samples.length === 0
+    ? ok('readQuantitySamples resolves no samples')
+    : bad('samples', JSON.stringify(read));
+  // An absent module is not a REFUSAL. 'refused' is reserved for "HealthKit
+  // would not accept either echo-suppression predicate", which the Settings
+  // screen says out loud — claiming it here would put a false alarm on a web
+  // preview and on every build predating the native module.
+  read.exclusion === 'none' && read.error === null
+    ? ok("…reported as exclusion 'none' with no error — absent ≠ refused")
+    : bad('absent-module outcome', JSON.stringify(read));
 }
 
 console.log('7. read scopes cover the spec');
@@ -981,7 +992,7 @@ console.log('12. inbound body mapping — the percent trap, in reverse');
       samples: [{ value: 0.185, ...at('2026-08-12T07:00:00.000Z') }],
     },
     { spec: bySpec('waist_cm'), samples: [{ value: 81, ...at('2026-08-12T08:00:00.000Z') }] },
-  ]);
+  ]).rows;
   merged.length === 2 &&
   merged[0].measuredAt === '2026-08-12T07:00:00.000Z' &&
   merged[0].values.weight_kg === 82.4 &&
@@ -994,7 +1005,7 @@ console.log('12. inbound body mapping — the percent trap, in reverse');
     : bad('row order');
 
   // Echo: ARC's own weight coming back must produce NOTHING.
-  bodyIngestRows([
+  const echo = bodyIngestRows([
     {
       spec: bySpec('weight_kg'),
       samples: [
@@ -1018,9 +1029,41 @@ console.log('12. inbound body mapping — the percent trap, in reverse');
         },
       ],
     },
-  ]).length === 0
+  ]);
+  echo.rows.length === 0
     ? ok("ARC's own, tagged, and unattributable samples all ingest to nothing")
     : bad('echo leaked in');
+
+  // …and the pass now says WHICH guard refused each one. This is the whole
+  // point of the 2026-08-26 log: `unattributed: 1` and `arcTag: 1` are opposite
+  // diagnoses — a source ARC cannot attribute versus ARC reading its own writes
+  // back — and before this they were the same silent zero. Counted per guard,
+  // in the order a sample meets them (docs §10, guard 3).
+  {
+    const t = echo.rejected['HKQuantityTypeIdentifierBodyMass'];
+    t && t.arcBundle === 1 && t.arcTag === 1 && t.unattributed === 1
+      ? ok('…and each refusal is counted against the guard that made it')
+      : bad('rejection tally', JSON.stringify(t));
+    t && t.outOfBounds === 0 && t.nonFinite === 0
+      ? ok('…with the value-shape counters left at zero')
+      : bad('spurious value rejections', JSON.stringify(t));
+  }
+
+  // The reason-giver and the guard are ONE decision. If they could disagree,
+  // the log would describe a pipeline that is not the one running.
+  {
+    const cases = [
+      [prov('com.withings.wiScaleNG', null, 'Withings'), null],
+      [prov(ARC_BUNDLE_ID), 'arcBundle'],
+      [prov('com.withings.wiScaleNG', null, null, true), 'arcTag'],
+      [prov(null), 'unattributed'],
+      [prov(''), 'unattributed'],
+    ];
+    cases.every(([p, reason]) => ingestRejectionFor(p) === reason) &&
+    cases.every(([p, reason]) => isIngestableSample(p) === (reason === null))
+      ? ok('ingestRejectionFor and isIngestableSample cannot disagree — one decision, two shapes')
+      : bad('guard/reason drift');
+  }
 
   // Out-of-CHECK values are dropped HERE, because body_metrics would throw on
   // the INSERT and take the whole batch with it.
@@ -1044,13 +1087,32 @@ console.log('12. inbound body mapping — the percent trap, in reverse');
       ],
     },
   ]);
-  outOfRange.length === 2 &&
-  outOfRange[0].values.weight_kg === 82.4 &&
-  outOfRange[1].values.body_fat_pct === 100
+  outOfRange.rows.length === 2 &&
+  outOfRange.rows[0].values.weight_kg === 82.4 &&
+  outOfRange.rows[1].values.body_fat_pct === 100
     ? ok('values outside the body_metrics CHECK bounds are dropped, not thrown')
-    : bad('bounds', JSON.stringify(outOfRange));
+    : bad('bounds', JSON.stringify(outOfRange.rows));
+  // Out-of-bounds and unreadable are separate counters: one says the source is
+  // sending nonsense, the other says the wire shape changed. Same zero rows,
+  // different investigation.
+  outOfRange.rejected['HKQuantityTypeIdentifierBodyMass'].outOfBounds === 2 &&
+  outOfRange.rejected['HKQuantityTypeIdentifierBodyMass'].nonFinite === 1 &&
+  outOfRange.rejected['HKQuantityTypeIdentifierBodyFatPercentage'].outOfBounds === 1
+    ? ok('…counted as outOfBounds vs nonFinite, per identifier')
+    : bad('bounds tally', JSON.stringify(outOfRange.rejected));
 
-  bodyIngestRows([]).length === 0 ? ok('no input → no rows') : bad('empty input');
+  const empty = bodyIngestRows([]);
+  empty.rows.length === 0 && Object.keys(empty.rejected).length === 0
+    ? ok('no input → no rows and no tallies')
+    : bad('empty input');
+
+  // A metric that was READ but rejected nothing still gets a zeroed tally, so
+  // the screen can distinguish "nothing came back" from "this metric was never
+  // queried" — an absent key would render identically to a clean one.
+  const clean = bodyIngestRows([{ spec: bySpec('waist_cm'), samples: [] }]);
+  clean.rejected['HKQuantityTypeIdentifierWaistCircumference'] !== undefined
+    ? ok('a queried metric always gets a tally, even an all-zero one')
+    : bad('missing zero tally', JSON.stringify(clean.rejected));
 }
 
 console.log('13. accumulating metrics — ONE list, and it cannot quietly grow a second');
@@ -1137,6 +1199,319 @@ console.log('13. accumulating metrics — ONE list, and it cannot quietly grow a
   !/\baccumulating\s*\??\s*:/.test('const x = accumulating ? a : b;')
     ? ok('…and the scan catches both declaration shapes without firing on a ternary')
     : bad('drift scan does not scan');
+}
+
+console.log('14. echo-suppression LADDER + hybrid-object provenance (2026-08-26)');
+{
+  // Both fixes for the owner's "weight sync is not working in the read
+  // direction". Neither branch was reachable from node before this section:
+  // the ladder lived inside a function that took the native module, and the
+  // provenance parser was only ever fed plain-object fixtures — which is
+  // precisely the shape the library does NOT send.
+
+  // (a) The ladder's SHAPE. Source first because it is categorical (it covers
+  //     every sample ARC ever wrote, including any predating the metadata
+  //     scheme); metadata second because it is a plain key predicate with no
+  //     source set behind it.
+  const proxy = { __isSourceProxy: true };
+  const both = ownWriteExclusions(() => proxy);
+  both.length === 2 &&
+  both[0].kind === 'source' &&
+  both[0].NOT[0].sources[0] === proxy &&
+  both[1].kind === 'metadata' &&
+  both[1].NOT[0].metadata.withMetadataKey === ARC_WRITE_METADATA_KEY
+    ? ok('the ladder is [source, metadata] — strongest first, both present')
+    : bad('ladder shape', JSON.stringify(both));
+
+  // The metadata rung is ALWAYS present. Before the fix it appeared only when
+  // `currentAppSource` was missing or threw, so the case that actually bit —
+  // the API present, its PREDICATE refused — never reached it.
+  [
+    ['absent', ownWriteExclusions(undefined)],
+    [
+      'throwing',
+      ownWriteExclusions(() => {
+        throw new Error('no source');
+      }),
+    ],
+    ['null-returning', ownWriteExclusions(() => null)],
+  ].every(([, rungs]) => rungs.length === 1 && rungs[0].kind === 'metadata')
+    ? ok('an absent, throwing or empty currentAppSource leaves the metadata rung standing alone')
+    : bad('degenerate ladders');
+
+  // (b) THE REGRESSION. HealthKit refuses the source predicate; the metadata
+  //     predicate is accepted. On a PUBLISHED type this used to return nothing
+  //     — one refused predicate meant no weight, forever, silently, with the
+  //     narrower predicate never tried. It must now come back on rung two.
+  {
+    const seen = [];
+    const result = await withOwnWritesExcluded(both, true, async (NOT) => {
+      seen.push(NOT?.[0]?.sources ? 'source' : NOT?.[0]?.metadata ? 'metadata' : 'unfiltered');
+      if (NOT?.[0]?.sources) throw new Error('predicate not supported');
+      return ['a sample'];
+    });
+    result.value?.length === 1 &&
+    result.outcome.exclusion === 'metadata' &&
+    seen.join(',') === 'source,metadata'
+      ? ok('a refused SOURCE predicate falls through to the metadata rung — weight still arrives')
+      : bad('ladder fallthrough', JSON.stringify({ seen, ...result }));
+  }
+
+  // …and a published type still never reaches an unfiltered read. That is the
+  // guarantee the ladder must not have bought its robustness with: there, the
+  // unfiltered read IS the echo loop.
+  {
+    const seen = [];
+    const result = await withOwnWritesExcluded(both, true, async (NOT) => {
+      seen.push(NOT === undefined ? 'unfiltered' : 'filtered');
+      throw new Error('refused');
+    });
+    result.value === null &&
+    result.outcome.exclusion === 'refused' &&
+    result.outcome.error === 'refused' &&
+    !seen.includes('unfiltered')
+      ? ok("failClosed exhausts the ladder to 'refused' and NEVER queries unfiltered")
+      : bad('failClosed leak', JSON.stringify({ seen, ...result }));
+  }
+
+  // A read-only type does the opposite, for the opposite reason: losing the
+  // filter is harmless there, losing every metric is not.
+  {
+    const seen = [];
+    const result = await withOwnWritesExcluded(both, false, async (NOT) => {
+      seen.push(NOT === undefined ? 'unfiltered' : 'filtered');
+      if (NOT !== undefined) throw new Error('refused');
+      return ['a sample'];
+    });
+    result.value?.length === 1 && result.outcome.exclusion === 'none' && seen.length === 3
+      ? ok('a read-only type falls all the way through to an unfiltered query')
+      : bad('read-only fallthrough', JSON.stringify({ seen, ...result }));
+  }
+
+  // The happy path must not pay for any of this: one rung, one query.
+  {
+    let calls = 0;
+    const result = await withOwnWritesExcluded(both, true, async () => {
+      calls++;
+      return [];
+    });
+    calls === 1 && result.outcome.exclusion === 'source' && result.outcome.error === null
+      ? ok('an accepted source predicate runs exactly one query and reports no error')
+      : bad('happy path', JSON.stringify({ calls, ...result }));
+  }
+
+  // Error text is persisted and rendered, so it is clamped at the seam.
+  {
+    const result = await withOwnWritesExcluded(both, true, async () => {
+      throw new Error('x'.repeat(5000));
+    });
+    typeof result.outcome.error === 'string' && result.outcome.error.length === 200
+      ? ok('native error text is clamped to 200 chars before it can reach the KV')
+      : bad('error clamp', result.outcome.error?.length);
+  }
+
+  // (c) PROVENANCE off a HYBRID object. `sourceRevision.source` is a Nitro
+  //     hybrid (ios/SourceProxy.swift), and Nitro installs a hybrid's
+  //     properties as getters on a shared PROTOTYPE — so the object has no own
+  //     keys, does not spread, and inherits a base `name` getter of its own.
+  //     Every fixture in this file until now was a plain object, which is the
+  //     one shape the library never sends.
+  const hybrid = (source, { toJSON, protoName } = {}) => {
+    const proto = {};
+    Object.defineProperty(proto, 'name', {
+      get: () => protoName ?? source.name,
+      configurable: true,
+    });
+    Object.defineProperty(proto, 'bundleIdentifier', {
+      get: () => source.bundleIdentifier,
+      configurable: true,
+    });
+    if (toJSON !== undefined) proto.toJSON = toJSON;
+    return Object.create(proto);
+  };
+  const sampleWith = (source) =>
+    parseQuantitySample({
+      quantity: 82.4,
+      startDate: new Date('2026-08-26T07:00:00.000Z'),
+      endDate: new Date('2026-08-26T07:00:00.000Z'),
+      sourceRevision: { source, productType: 'iPhone16,2' },
+      metadata: {},
+    });
+  const garmin = { name: 'Garmin Connect', bundleIdentifier: 'com.garmin.connect.mobile' };
+
+  {
+    // Prototype-only properties, no toJSON — the direct-access fallback.
+    const p = sampleWith(hybrid(garmin))?.provenance;
+    p?.bundleId === garmin.bundleIdentifier && p.sourceName === garmin.name
+      ? ok('a prototype-backed source parses — properties are read, not enumerated')
+      : bad('hybrid direct access', JSON.stringify(p));
+  }
+  {
+    // The library's own answer: toJSON() returns a plain Source built natively.
+    const p = sampleWith(hybrid(garmin, { toJSON: () => ({ ...garmin }) }))?.provenance;
+    p?.bundleId === garmin.bundleIdentifier
+      ? ok('…and toJSON() is preferred when the library offers it')
+      : bad('toJSON path', JSON.stringify(p));
+  }
+  {
+    // The collision Nitro makes possible: the BASE HybridObject prototype
+    // registers a `name` getter returning the hybrid's class name. toJSON()
+    // comes from the HKSource itself, so it wins and the real name survives.
+    const p = sampleWith(
+      hybrid(garmin, { toJSON: () => ({ ...garmin }), protoName: 'SourceProxy' })
+    )?.provenance;
+    p?.sourceName === 'Garmin Connect'
+      ? ok("…and beats a base-class `name` getter leaking the hybrid's type name")
+      : bad('name collision', JSON.stringify(p));
+  }
+  {
+    // A toJSON that throws, or answers with nothing usable, must not cost the
+    // bundle id — that is what guard 3 refuses a body sample for lacking.
+    const thrower = sampleWith(
+      hybrid(garmin, {
+        toJSON: () => {
+          throw new Error('unsupported');
+        },
+      })
+    )?.provenance;
+    const useless = sampleWith(hybrid(garmin, { toJSON: () => ({ nothing: 1 }) }))?.provenance;
+    thrower?.bundleId === garmin.bundleIdentifier && useless?.bundleId === garmin.bundleIdentifier
+      ? ok('…and a throwing or useless toJSON falls back to the properties, keeping the bundle id')
+      : bad('toJSON fallback', JSON.stringify({ thrower, useless }));
+  }
+  {
+    // The reason all of this matters, stated as the consequence: an
+    // unattributable body sample is REFUSED, so a provenance parser that
+    // cannot read a hybrid empties weight rather than mis-sourcing it.
+    const readable = sampleWith(hybrid(garmin));
+    const unreadable = sampleWith({ notASource: true });
+    isIngestableSample(readable.provenance) &&
+    !isIngestableSample(unreadable.provenance) &&
+    ingestRejectionFor(unreadable.provenance) === 'unattributed'
+      ? ok('a readable hybrid ingests; an unreadable source is refused as unattributed')
+      : bad('guard 3 consequence');
+  }
+}
+
+console.log('15. the sync log — bounded, defensive, and able to name the failing step');
+{
+  const log = {
+    at: '2026-08-26T09:00:00.000Z',
+    windowDays: 14,
+    rowsWritten: 3,
+    metrics: [
+      {
+        metric: 'weight_kg',
+        label: 'Weight',
+        returned: 0,
+        rows: 0,
+        exclusion: 'refused',
+        error: 'predicate not supported',
+        rejected: { arcTag: 0, arcBundle: 0, unattributed: 0, outOfBounds: 0, nonFinite: 0 },
+      },
+      {
+        metric: 'hrv',
+        label: 'hrv',
+        returned: 40,
+        rows: 14,
+        exclusion: 'source',
+        error: null,
+        rejected: null,
+      },
+    ],
+    publish: {
+      armed: true,
+      stalled: false,
+      attempted: 0,
+      succeeded: 0,
+      types: [{ label: 'Weight', attempted: 0, succeeded: 0 }],
+    },
+  };
+
+  // Round-trips through the KV's JSON without losing a field.
+  const back = parseSyncLog(JSON.parse(JSON.stringify(log)));
+  back &&
+  back.at === log.at &&
+  back.windowDays === 14 &&
+  back.rowsWritten === 3 &&
+  back.metrics.length === 2 &&
+  back.metrics[0].exclusion === 'refused' &&
+  back.metrics[0].error === 'predicate not supported' &&
+  back.metrics[1].rejected === null &&
+  back.publish.armed === true &&
+  back.publish.types[0].label === 'Weight'
+    ? ok('a log round-trips through JSON intact')
+    : bad('round trip', JSON.stringify(back));
+
+  // This screen is opened when something is ALREADY wrong. It must never be the
+  // thing that breaks there, so anything unreadable reads as "no log".
+  [null, undefined, 42, 'nope', {}, { at: 7 }, { metrics: [] }].every(
+    (v) => parseSyncLog(v) === null
+  )
+    ? ok('garbage, and anything without a timestamp, reads as no log at all')
+    : bad('defensive parse');
+  {
+    // A log from a future build must degrade, not throw: unknown fields are
+    // dropped, unparseable entries are skipped, an unknown exclusion is 'none'.
+    const future = parseSyncLog({
+      at: '2026-09-01T00:00:00.000Z',
+      metrics: [null, { label: 'no metric key' }, { metric: 'steps', exclusion: 'quantum' }],
+      publish: { types: [{ attempted: 1 }] },
+      somethingNew: { deeply: ['nested'] },
+    });
+    future &&
+    future.metrics.length === 1 &&
+    future.metrics[0].exclusion === 'none' &&
+    future.metrics[0].label === 'steps' &&
+    future.publish.types.length === 0 &&
+    !('somethingNew' in future)
+      ? ok('a log from a newer build degrades field by field instead of throwing')
+      : bad('forward compat', JSON.stringify(future));
+  }
+
+  // The notes are the whole point: a zero has to say which step produced it.
+  metricNote(back.metrics[0])?.startsWith('Apple Health refused both')
+    ? ok("a 'refused' metric says the filters were refused, and carries the native error")
+    : bad('refused note', metricNote(back.metrics[0]));
+  metricNote(back.metrics[1]) === null
+    ? ok('…and a metric whose counts already explain themselves gets no sentence')
+    : bad('spurious note', metricNote(back.metrics[1]));
+  metricNote({ ...back.metrics[1], returned: 0, rows: 0, exclusion: 'source' }) ===
+  'Nothing recorded in this window.'
+    ? ok('…an empty-but-healthy read says so plainly')
+    : bad('empty note');
+  {
+    const note = metricNote({
+      ...back.metrics[0],
+      returned: 3,
+      rows: 0,
+      exclusion: 'source',
+      error: null,
+      rejected: { arcTag: 0, arcBundle: 0, unattributed: 3, outOfBounds: 0, nonFinite: 0 },
+    });
+    note === 'Skipped 3 with no readable source.'
+      ? ok('…and a guard rejection names the guard, in words')
+      : bad('rejection note', note);
+  }
+
+  // The armed cursor is the single most failure-LOOKING success in the app: a
+  // first sync publishes nothing on purpose (docs §10, rule 1), and "0
+  // published" on its own is what sent the owner looking for a bug.
+  publishNote(back.publish).startsWith('Armed —')
+    ? ok('an armed first pass says so, rather than reporting zero and leaving it there')
+    : bad('armed note', publishNote(back.publish));
+  publishNote({ ...back.publish, armed: false, stalled: true }).includes('refused a write')
+    ? ok('a stalled pass says a write was refused and that it will retry')
+    : bad('stalled note');
+  publishNote({ ...back.publish, armed: false, attempted: 0 }) === 'Nothing new to publish.'
+    ? ok('an idle pass says there was nothing to send')
+    : bad('idle note');
+  publishNote({ ...back.publish, armed: false, attempted: 2, succeeded: 2 }).includes('accepted')
+    ? ok('a full pass says everything was accepted')
+    : bad('full note');
+  publishNote({ ...back.publish, armed: false, attempted: 2, succeeded: 1 }).includes('retried')
+    ? ok('a partial pass says some writes were not accepted')
+    : bad('partial note');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

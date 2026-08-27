@@ -114,6 +114,15 @@ export type HealthPublishResult = {
   armed: boolean;
   /** True when a save was refused and the pass stopped early. */
   stalled: boolean;
+  /** Samples this pass tried to write, accepted or not. */
+  samplesAttempted: number;
+  /**
+   * Per published type, attempted vs accepted. Split per type because a PARTIAL
+   * share grant is a real and invisible state: weight authorised and body fat
+   * refused publishes some rows and stalls on others, and one aggregate count
+   * cannot tell that from a general refusal.
+   */
+  byType: { label: string; attempted: number; succeeded: number }[];
 };
 
 /**
@@ -151,12 +160,9 @@ export async function publishBodyMetrics(
   now: Date = new Date(),
   deps: PublishDeps = NATIVE_DEPS
 ): Promise<HealthPublishResult> {
-  if (!isHealthSyncEnabled(db)) {
-    return { status: 'disabled', samplesWritten: 0, armed: false, stalled: false };
-  }
-  if (!deps.isAvailable()) {
-    return { status: 'unavailable', samplesWritten: 0, armed: false, stalled: false };
-  }
+  const idle = { samplesWritten: 0, armed: false, stalled: false, samplesAttempted: 0, byType: [] };
+  if (!isHealthSyncEnabled(db)) return { status: 'disabled', ...idle };
+  if (!deps.isAvailable()) return { status: 'unavailable', ...idle };
 
   const state = getHealthPublishState(db);
   let cursor: BodyCursor | null =
@@ -170,10 +176,24 @@ export async function publishBodyMetrics(
   if (armed) cursor = newestBodyCursor(db);
 
   let samplesWritten = 0;
+  let samplesAttempted = 0;
   let stalled = false;
+  // Keyed by hkIdentifier so a type that was never reached this pass simply
+  // does not appear, rather than appearing as a zero that reads like a refusal.
+  const tally = new Map<string, { label: string; attempted: number; succeeded: number }>();
+  const labelFor = (identifier: string) =>
+    BODY_PUBLISH_METRICS.find((m) => m.hkIdentifier === identifier)?.label ?? identifier;
+
   for (const row of publishableBodyAfter(db, cursor, PUBLISH_BATCH_ROWS)) {
     let rowComplete = true;
     for (const sample of bodySamplesFor(row)) {
+      let entry = tally.get(sample.hkIdentifier);
+      if (!entry) {
+        entry = { label: labelFor(sample.hkIdentifier), attempted: 0, succeeded: 0 };
+        tally.set(sample.hkIdentifier, entry);
+      }
+      entry.attempted++;
+      samplesAttempted++;
       const saved = await deps.save(
         sample.hkIdentifier,
         sample.hkUnit,
@@ -186,6 +206,7 @@ export async function publishBodyMetrics(
         rowComplete = false;
         break;
       }
+      entry.succeeded++;
       samplesWritten++;
     }
     // Advance only over rows published in FULL (rule 2). A half-published row
@@ -207,5 +228,12 @@ export async function publishBodyMetrics(
   };
   setHealthPublishState(db, next);
 
-  return { status: 'published', samplesWritten, armed, stalled };
+  return {
+    status: 'published',
+    samplesWritten,
+    armed,
+    stalled,
+    samplesAttempted,
+    byType: [...tally.values()],
+  };
 }
