@@ -18,12 +18,15 @@ import {
   dailyMetricSeries,
   deviceLabel,
   getHealthPublishState,
+  getHealthSyncLog,
   getHealthSyncState,
+  HEALTH_LOG_KEY,
   HEALTH_PUBLISH_KEY,
   latestMetric,
   pickDailyMetric,
   recentWearableWorkouts,
   setHealthPublishState,
+  setHealthSyncLog,
   setHealthSyncState,
   SOURCE_PRIORITY,
   upsertWearableRows,
@@ -913,7 +916,7 @@ console.log('15. inbound body ingest — no migration, natural key (source, meas
         ],
       },
       { spec: spec('body_fat_pct'), samples: [sample(0.185, '2026-08-12T07:00:00.000Z')] },
-    ])
+    ]).rows
   );
   first === 2 ? ok('two instants → two rows') : bad('first ingest', first);
   const rows = db.all(`SELECT * FROM body_metrics ORDER BY measured_at`);
@@ -937,7 +940,7 @@ console.log('15. inbound body ingest — no migration, natural key (source, meas
           sample(82.1, '2026-08-12T07:00:00.000Z'),
         ],
       },
-    ])
+    ]).rows
   );
   again === 0 && db.all(`SELECT id FROM body_metrics`).length === 2
     ? ok('an unchanged re-sync writes nothing and duplicates nothing')
@@ -1055,7 +1058,7 @@ console.log('16. the echo loop is shut structurally — an ingested row is never
           },
         ],
       },
-    ])
+    ]).rows
   ) === 0
     ? ok("ARC's own published weight, read back, ingests to nothing")
     : bad('echo ingested');
@@ -1265,7 +1268,8 @@ console.log('19. 0042 on a POPULATED device — the duplicates are cleaned befor
     ? ok('the survivor is the best-sourced row, not merely the newest')
     : bad('wrong survivor', JSON.stringify(survivors));
 
-  raw.prepare("SELECT count(*) AS n FROM wearable_data WHERE source_raw_id = 'UUID-B'").get().n === 1
+  raw.prepare("SELECT count(*) AS n FROM wearable_data WHERE source_raw_id = 'UUID-B'").get().n ===
+  1
     ? ok('a session that was never duplicated is untouched')
     : bad('non-duplicate harmed');
   raw
@@ -1285,6 +1289,141 @@ console.log('19. 0042 on a POPULATED device — the duplicates are cleaned befor
   raw.prepare('SELECT count(*) AS n FROM wearable_data').get().n === before
     ? ok('re-running the migration set changes nothing')
     : bad('not idempotent');
+}
+
+console.log('18. the sync log KV (2026-08-26) — a third key, still no migration');
+{
+  const { db, raw } = freshDb();
+
+  getHealthSyncLog(db) === null ? ok('no log yet reads as null') : bad('fresh log');
+
+  const log = {
+    at: '2026-08-26T09:00:00.000Z',
+    windowDays: 14,
+    rowsWritten: 5,
+    metrics: [
+      {
+        metric: 'weight_kg',
+        label: 'Weight',
+        returned: 0,
+        rows: 0,
+        exclusion: 'refused',
+        error: 'predicate not supported',
+        rejected: { arcTag: 0, arcBundle: 0, unattributed: 0, outOfBounds: 0, nonFinite: 0 },
+      },
+    ],
+    publish: { armed: true, stalled: false, attempted: 0, succeeded: 0, types: [] },
+  };
+  setHealthSyncLog(db, log);
+  const back = getHealthSyncLog(db);
+  back &&
+  back.metrics[0].exclusion === 'refused' &&
+  back.metrics[0].error === 'predicate not supported' &&
+  back.publish.armed === true
+    ? ok('a log survives the round trip through health_sync_state')
+    : bad('log round trip', JSON.stringify(back));
+
+  // Same argument as the publish cursor: `key` carries no CHECK and `value` is
+  // free JSON, so a third integration key is not a schema change. It also must
+  // not disturb the two cursors, which drive windowing and the no-backfill rule.
+  setHealthSyncState(db, { lastSyncedAt: '2026-08-26T09:00:00.000Z', firstSyncedAt: null });
+  setHealthPublishState(db, {
+    armedAt: '2026-08-12T09:00:00.000Z',
+    cursorCreatedAt: '2026-08-12T09:00:00.000Z',
+    cursorId: 'body-1',
+    lastPublishedAt: null,
+  });
+  setHealthSyncLog(db, log);
+  const keys = raw.prepare('SELECT count(*) AS n FROM health_sync_state').get();
+  keys.n === 3 &&
+  getHealthPublishState(db).cursorId === 'body-1' &&
+  getHealthSyncState(db).lastSyncedAt === '2026-08-26T09:00:00.000Z' &&
+  getHealthSyncLog(db) !== null
+    ? ok('three keys coexist — the log never disturbs either cursor')
+    : bad('key independence', JSON.stringify(keys));
+
+  // Bounded to the LAST run. This is diagnostics, not history: a second write
+  // replaces the first rather than appending, so the row cannot grow.
+  setHealthSyncLog(db, { ...log, at: '2026-08-26T10:00:00.000Z', rowsWritten: 9 });
+  const only = raw
+    .prepare("SELECT count(*) AS n FROM health_sync_state WHERE key = 'apple_health_log'")
+    .get();
+  only.n === 1 && getHealthSyncLog(db).rowsWritten === 9
+    ? ok('the log holds the last run only — one row, overwritten')
+    : bad('unbounded log', JSON.stringify(only));
+
+  // The screen that renders this is the one a user opens when something is
+  // already broken. A wrong-shaped row must read as "no log", never throw
+  // there. (Wrong-shaped, not malformed: `value` is CHECK json_valid, so
+  // unparseable text cannot reach the column — the shape is the reachable
+  // corruption, e.g. a log written by an older build.)
+  raw.exec(`UPDATE health_sync_state SET value = '{"metrics":"not an array"}'
+            WHERE key = '${HEALTH_LOG_KEY}'`);
+  getHealthSyncLog(db) === null
+    ? ok('an unreadable log reads as absent rather than throwing on the Settings screen')
+    : bad('corrupt log');
+}
+
+console.log('19. the publish pass reports what it attempted, per type');
+{
+  const { db } = freshDb();
+  setHealthSyncEnabled(db, true);
+  addBody(db, {
+    id: 'seed',
+    createdAt: '2026-08-12T06:00:00.000Z',
+    measuredAt: '2026-08-12T06:00:00.000Z',
+    weightKg: 82,
+  });
+  // Arm on the seed so the pass below is a real forward walk, not an arming.
+  await publishBodyMetrics(db, new Date('2026-08-12T07:00:00.000Z'), recorder().deps);
+
+  addBody(db, {
+    id: 'both-columns',
+    createdAt: '2026-08-12T08:00:00.000Z',
+    measuredAt: '2026-08-12T08:00:00.000Z',
+    weightKg: 82.5,
+    bodyFatPct: 18.5,
+  });
+
+  // A PARTIAL share grant is the state this split exists for: weight
+  // authorised, body fat refused. One aggregate count cannot tell that from a
+  // blanket refusal, and the two need different things done about them.
+  const partial = recorder((identifier) => identifier.endsWith('BodyMass'));
+  const result = await publishBodyMetrics(db, new Date('2026-08-12T09:00:00.000Z'), partial.deps);
+  result.samplesAttempted === 2 && result.samplesWritten === 1 && result.stalled
+    ? ok('a half-accepted row reports 2 attempted, 1 written, and stalls')
+    : bad('partial publish', JSON.stringify(result));
+  {
+    const weight = result.byType.find((t) => t.label === 'Weight');
+    const fat = result.byType.find((t) => t.label === 'Body fat');
+    weight?.attempted === 1 && weight.succeeded === 1 && fat?.attempted === 1 && fat.succeeded === 0
+      ? ok('…and names WHICH type Apple Health refused')
+      : bad('byType', JSON.stringify(result.byType));
+  }
+  // A type the walk never reached must be ABSENT, not a zero — a zero row on
+  // the screen reads as a refusal, which would be a fabricated finding.
+  result.byType.some((t) => t.label === 'Waist circumference')
+    ? bad('waist reported despite never being attempted')
+    : ok('a type never attempted does not appear at all');
+
+  // The arming pass writes nothing, so it attempts nothing — the count the
+  // Settings screen turns into "Armed", never into a failure.
+  const { db: fresh } = freshDb();
+  setHealthSyncEnabled(fresh, true);
+  addBody(fresh, {
+    id: 'history',
+    createdAt: '2025-01-01T08:00:00.000Z',
+    measuredAt: '2025-01-01T08:00:00.000Z',
+    weightKg: 80,
+  });
+  const armed = await publishBodyMetrics(
+    fresh,
+    new Date('2026-08-12T09:00:00.000Z'),
+    recorder().deps
+  );
+  armed.armed && armed.samplesAttempted === 0 && armed.byType.length === 0
+    ? ok('an arming pass attempts nothing and reports no types')
+    : bad('armed tally', JSON.stringify(armed));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -20,6 +20,10 @@
 import type { Database } from '../database';
 import { newId } from '../id';
 import type { WearableDataRow, WearableDevice } from '../types';
+// The log's SHAPE lives with the health module (its only producer and its only
+// reader); this file owns where it is stored. `parseSyncLog` is the sole value
+// import — pure, no native seam behind it.
+import { parseSyncLog, type HealthSyncLog } from '@/lib/health/log';
 
 /** One row to ingest — everything wearable_data needs except the generated id. */
 export type WearableUpsert = {
@@ -352,7 +356,7 @@ export function recentWearableWorkouts(db: Database, limit: number): WearableWor
         // longer record (a truncated copy tells you less about the session).
         const incumbent = priorityOf(twin.row.source_device);
         const challenger = priorityOf(row.source_device);
-        const longer = span.end - span.start > (twin.span!.end - twin.span!.start);
+        const longer = span.end - span.start > twin.span!.end - twin.span!.start;
         if (challenger < incumbent || (challenger === incumbent && longer)) {
           twin.row = row;
           twin.span = span;
@@ -488,5 +492,48 @@ export function setHealthPublishState(
     `INSERT INTO health_sync_state (id, key, value) VALUES (?, ?, ?)
      ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
     [newId(db), key, JSON.stringify(state)]
+  );
+}
+
+// --- The DIAGNOSTIC log (2026-08-26) ----------------------------------------
+//
+// A third key in the same KV, and for the same reason the second one needed no
+// migration: `key` carries no CHECK and `value` is free JSON. It holds ONE
+// record — the last pass — overwritten every sync. Diagnostics, not history: a
+// trend of syncs would be a table, and nothing here is worth one.
+//
+// It exists because the failure it describes was silent. Weight stopped
+// arriving from Apple Health and no surface in the app could say which step
+// produced zero, so the only available bug report was "not working". The log is
+// what makes the next one specific.
+
+/** The JSON under health_sync_state.value for key 'apple_health_log'. */
+export const HEALTH_LOG_KEY = 'apple_health_log';
+
+/**
+ * The last pass's log, or null when there has never been one (or the stored row
+ * is unreadable). Corrupt reads as absent for the same reason the cursors do:
+ * this powers the screen a user opens when something is already wrong, and it
+ * must not be the thing that breaks there.
+ */
+export function getHealthSyncLog(db: Database, key: string = HEALTH_LOG_KEY): HealthSyncLog | null {
+  const row = db.get<{ value: string }>('SELECT value FROM health_sync_state WHERE key = ?', [key]);
+  if (!row) return null;
+  try {
+    return parseSyncLog(JSON.parse(row.value));
+  } catch {
+    return null;
+  }
+}
+
+export function setHealthSyncLog(
+  db: Database,
+  log: HealthSyncLog,
+  key: string = HEALTH_LOG_KEY
+): void {
+  db.run(
+    `INSERT INTO health_sync_state (id, key, value) VALUES (?, ?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    [newId(db), key, JSON.stringify(log)]
   );
 }

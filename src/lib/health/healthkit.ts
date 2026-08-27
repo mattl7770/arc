@@ -31,10 +31,19 @@
  * (losing the filter is harmless; losing the data is not); on a type ARC also
  * writes, `failClosed` returns nothing instead, because there the unfiltered
  * read is the echo loop.
+ *
+ * Every reader also REPORTS what happened — how many samples came back, which
+ * exclusion predicate the query actually ran with, and the native error text
+ * when one was refused. Before 2026-08-26 all three were unknowable from
+ * outside: a refused predicate on a published type returned `[]` exactly like a
+ * quiet day, so "weight sync is not working" was a sentence nothing in the app
+ * could answer. `sync.ts` folds these into the per-run log rendered in Settings
+ * › Apple Health.
  */
 import type {
   HealthCategorySample,
   HealthDailyStatistic,
+  HealthExclusion,
   HealthProvenance,
   HealthQuantitySample,
   HealthWorkoutSample,
@@ -224,11 +233,24 @@ export function healthWriteAccess(): HealthWriteAccess {
  * advances its publish cursor on true ONLY, so a refused write is retried next
  * pass rather than silently lost.
  *
- * `undefined` from the library is treated as a failure. That is the conservative
- * reading of `Promise<QuantitySampleTyped | undefined>`: if it turns out to mean
- * "saved, nothing to hand back", the cost is a stuck cursor and a visible
- * zero-published count in Settings — not a number missing from a medical record.
- * (Not verifiable without a device; see the report.)
+ * `undefined` from the library means FAILURE, and as of 2026-08-26 that is read
+ * off the library rather than assumed. `ios/QuantityTypeModule.swift` ends
+ * `saveQuantitySample` with
+ *
+ *     let succeeded = try await saveAsync(sample: sample)
+ *     return succeeded ? try serializeQuantitySample(sample: sample, unit: unit) : nil
+ *
+ * — so nil is reached only when `HKHealthStore.save` reported `success == false`
+ * (`ios/Helpers.swift`, `saveAsync`). A thrown save rejects instead, and is
+ * caught here. The conservative reading was therefore the correct one; it is no
+ * longer conservative.
+ *
+ * One wrinkle worth knowing: `serializeQuantitySample` THROWS on an identifier
+ * outside the library's generated `QuantityTypeIdentifier` union, which would
+ * report a genuinely-saved sample as refused. Not reachable for the three types
+ * ARC writes — BodyMass, BodyFatPercentage and WaistCircumference are all
+ * members of `QuantityTypeIdentifierWriteable` — but it is why a new published
+ * type must be checked against that union rather than against Apple's docs.
  */
 export async function saveHealthQuantity(
   identifier: string,
@@ -251,57 +273,114 @@ export async function saveHealthQuantity(
 
 // --- Echo suppression ----------------------------------------------------------------
 
+/** One rung of the exclusion ladder. */
+export type ExclusionRung = { kind: 'source' | 'metadata'; NOT: SampleExclusion[] };
+
 /**
- * The `NOT` clause that keeps ARC's own published samples out of ARC's reads.
+ * The `NOT` clauses that keep ARC's own published samples out of ARC's reads,
+ * strongest first — **a ladder, not a choice.** This is the 2026-08-26 fix.
  *
- * Preferred form is source-based: `currentAppSource()` hands back this app's
- * HKSource, and `FilterForSamples.NOT` takes `sources`, so the exclusion is
- * categorical — it covers every sample ARC has ever written, including any
- * written before a metadata scheme existed. When that API is missing or throws
- * we fall back to the metadata tag stamped on every write
- * ({@link ARC_WRITE_METADATA_KEY}), which is narrower but needs no native call.
+ * The preferred form is source-based: `currentAppSource()` hands back this app's
+ * HKSource (`ios/CoreModule.swift` returns `SourceProxy(source: HKSource.default())`)
+ * and `ios/PredicateHelpers.swift` turns `NOT: [{ sources: [...] }]` into
+ * `NSCompoundPredicate(notPredicateWithSubpredicate: HKQuery.predicateForObjects(from:))`.
+ * It is categorical — it covers every sample ARC has ever written, including any
+ * written before a metadata scheme existed.
+ *
+ * The second rung is the metadata tag stamped on every write
+ * ({@link ARC_WRITE_METADATA_KEY}) — `HKQuery.predicateForObjects(withMetadataKey:)`,
+ * a plain key predicate with no source set behind it, so it is the likelier of
+ * the two to survive negation on a given iOS.
+ *
+ * **Why both, in order.** Until now this function returned ONE clause: the
+ * source form when `currentAppSource` existed, the metadata form only when that
+ * API was missing or threw. The metadata rung was therefore unreachable in the
+ * case that actually matters — the API present, the resulting PREDICATE refused
+ * by HealthKit — and on a published type that lands in `failClosed`, which
+ * returns nothing. One refused predicate meant no weight, forever, with no
+ * error anywhere and the narrower predicate never tried. The docs described a
+ * fallback the code did not have.
+ *
+ * Nothing is weakened by laddering: a published type still never falls through
+ * to an unfiltered read.
  *
  * Statistics queries deliberately get no exclusion: they return HealthKit's own
  * MERGED cumulative totals (steps, energy), which ARC neither writes nor could
  * meaningfully filter — the merge is Apple's, computed before the predicate.
+ *
+ * Takes the `currentAppSource` FUNCTION rather than the module, so the ladder's
+ * shape is pinnable with no native module present — the same reasoning that
+ * gave `publishBodyMetrics` its injected deps. Everything that went wrong here
+ * went wrong in a branch node could not reach.
  */
-function ownWriteExclusion(mod: HealthKitModule): SampleExclusion[] {
+export function ownWriteExclusions(currentAppSource?: () => unknown): ExclusionRung[] {
+  const rungs: ExclusionRung[] = [];
   try {
-    if (typeof mod.currentAppSource === 'function') {
-      const source = mod.currentAppSource();
-      if (source) return [{ sources: [source] }];
+    if (typeof currentAppSource === 'function') {
+      const source = currentAppSource();
+      if (source) rungs.push({ kind: 'source', NOT: [{ sources: [source] }] });
     }
   } catch {
-    // Fall through to the metadata tag.
+    // The metadata rung stands alone.
   }
-  return [{ metadata: { withMetadataKey: ARC_WRITE_METADATA_KEY } }];
+  rungs.push({
+    kind: 'metadata',
+    NOT: [{ metadata: { withMetadataKey: ARC_WRITE_METADATA_KEY } }],
+  });
+  return rungs;
+}
+
+/** Native error text, clamped — this gets persisted and rendered. */
+function errorText(error: unknown): string {
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : String(error ?? 'unknown error');
+  return raw.length > 200 ? `${raw.slice(0, 199)}…` : raw;
+}
+
+/** What a read did, beyond the samples themselves. */
+export type ReadOutcome = { exclusion: HealthExclusion; error: string | null };
+
+/** The ladder for a live module — `currentAppSource` bound, or absent. */
+function exclusionsFor(mod: HealthKitModule): ExclusionRung[] {
+  const source = mod.currentAppSource;
+  return ownWriteExclusions(typeof source === 'function' ? source.bind(mod) : undefined);
 }
 
 /**
- * Run a query with ARC's own writes excluded, retrying UNFILTERED if the native
- * layer rejects the predicate.
+ * Walk the exclusion ladder, then — for a type ARC does NOT write — unfiltered.
  *
- * The retry is the difference between a bad predicate costing nothing and it
- * costing the entire wearables pipeline: the readers swallow errors to `[]`, so
- * a filter iOS won't accept would make every metric silently vanish — invisible
- * until someone noticed an empty Data tab.
+ * The unfiltered rung is the difference between a bad predicate costing nothing
+ * and it costing the entire wearables pipeline: a filter iOS won't accept would
+ * otherwise make every metric silently vanish, invisible until someone noticed
+ * an empty Data tab.
  *
- * ⚠️ Only for types ARC does NOT write — sleep, workouts, and every
- * `SAMPLE_METRICS`/`STATISTIC_METRICS` entry. For those an unfiltered read is
- * exactly today's behaviour and cannot echo. The body types ARC publishes go
- * through {@link readQuantitySamples} with `failClosed`, which does not retry:
- * there, an unfiltered read IS the echo loop, so returning nothing is the
- * correct failure. `unsuppressedEchoIdentifiers()` is what keeps a written type
- * from reaching this path by mistake.
+ * ⚠️ `failClosed` types (the body channel) never reach it. There an unfiltered
+ * read IS the echo loop, so exhausting the ladder returns nothing and says
+ * `refused` — recoverable, and now visible. `unsuppressedEchoIdentifiers()` is
+ * what keeps a written type from being read without `failClosed` by mistake.
  */
-async function withOwnWritesExcluded<T>(
-  mod: HealthKitModule,
+export async function withOwnWritesExcluded<T>(
+  rungs: readonly ExclusionRung[],
+  failClosed: boolean,
   run: (not: SampleExclusion[] | undefined) => Promise<T>
-): Promise<T> {
+): Promise<{ value: T | null; outcome: ReadOutcome }> {
+  let error: string | null = null;
+  for (const rung of rungs) {
+    try {
+      return { value: await run(rung.NOT), outcome: { exclusion: rung.kind, error: null } };
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+  if (failClosed) return { value: null, outcome: { exclusion: 'refused', error } };
   try {
-    return await run(ownWriteExclusion(mod));
-  } catch {
-    return run(undefined);
+    return { value: await run(undefined), outcome: { exclusion: 'none', error } };
+  } catch (e) {
+    return { value: null, outcome: { exclusion: 'none', error: errorText(e) } };
   }
 }
 
@@ -361,16 +440,56 @@ function durationSeconds(value: unknown): number | null {
 }
 
 /**
+ * A sample's `sourceRevision.source` as a PLAIN record.
+ *
+ * Load-bearing, and the 2026-08-26 correction. `SourceRevision.source` is not a
+ * struct — it is a Nitro **hybrid object** (`ios/SourceProxy.swift`), and Nitro
+ * installs a hybrid's properties as getters on a shared PROTOTYPE
+ * (`react-native-nitro-modules/cpp/core/HybridObject.cpp`, `registerHybrids`),
+ * not as own properties. Two consequences: the object does not spread or
+ * stringify, and the base `HybridObject` prototype registers a `name` getter of
+ * its own (the hybrid class name) that a derived `name` has to shadow.
+ *
+ * `toJSON()` is the library's own answer to exactly this — it returns a plain
+ * `{ name, bundleIdentifier }` built natively from the HKSource. Preferring it
+ * takes the whole class of "the hybrid object did not read the way we assumed"
+ * out of `bundleIdentifier`, and `bundleIdentifier` is what guard 3
+ * (`isIngestableSample`) refuses a body sample for lacking. Direct property
+ * access remains the fallback, so a library that drops `toJSON` still works.
+ */
+function sourceRecord(revision: Record<string, unknown>): Record<string, unknown> {
+  const source = asRecord(revision.source);
+  const toJSON = source.toJSON;
+  if (typeof toJSON === 'function') {
+    try {
+      const plain = asRecord((toJSON as () => unknown).call(source));
+      if (typeof plain.bundleIdentifier === 'string' || typeof plain.name === 'string') {
+        return plain;
+      }
+    } catch {
+      // Fall through to reading the properties directly.
+    }
+  }
+  return source;
+}
+
+/**
  * Pull provenance off a sample's sourceRevision, tolerating shape drift.
  *
  * `arcWritten` is read from the sample's own metadata rather than its source,
  * which is the point: it is the one piece of identity ARC controls end-to-end
  * (publish.ts stamps it on every write), so it still answers "did we write
  * this?" when `sourceRevision` arrives in a shape this parser cannot read.
+ *
+ * `sourceRevision` itself is always present on the wire — `serializeQuantitySample`
+ * in `ios/Serializers.swift` sets it unconditionally and the library types it
+ * non-optional on `BaseObject` — so there is no query option to ask for it and
+ * nothing to turn on. Whether it PARSES is the part that needed fixing; see
+ * {@link sourceRecord}.
  */
 function provenanceOf(sample: Record<string, unknown>): HealthProvenance {
   const revision = asRecord(sample.sourceRevision);
-  const source = asRecord(revision.source);
+  const source = sourceRecord(revision);
   const name = typeof source.name === 'string' ? source.name : null;
   const bundleId = typeof source.bundleIdentifier === 'string' ? source.bundleIdentifier : null;
   const productType = typeof revision.productType === 'string' ? revision.productType : null;
@@ -457,6 +576,24 @@ export type QuantityReadOptions = {
   failClosed?: boolean;
 };
 
+/**
+ * What one read produced. The samples are the point; the rest is what makes an
+ * empty result readable — `exclusion: 'refused'` with a native error says
+ * "HealthKit would not accept either exclusion predicate", which is a completely
+ * different fact from an empty `samples` under `exclusion: 'source'`.
+ */
+export type HealthReadResult<T> = {
+  samples: T[];
+  exclusion: HealthExclusion;
+  /** Native error text from the last refusal, clamped to 200 chars. */
+  error: string | null;
+};
+
+/** The empty result an absent native module produces. */
+function absentRead<T>(): HealthReadResult<T> {
+  return { samples: [], exclusion: 'none', error: null };
+}
+
 /** Quantity samples for one identifier over [start, end), in `unit`. */
 export async function readQuantitySamples(
   identifier: string,
@@ -464,56 +601,48 @@ export async function readQuantitySamples(
   start: Date,
   end: Date,
   options: QuantityReadOptions = {}
-): Promise<HealthQuantitySample[]> {
+): Promise<HealthReadResult<HealthQuantitySample>> {
   const mod = hk;
-  if (!mod) return [];
-  const query = (NOT: SampleExclusion[] | undefined) =>
-    mod.queryQuantitySamples(identifier, {
-      limit: 0, // <= 0 fetches all matches
-      ascending: true,
-      unit,
-      filter: { date: { startDate: start, endDate: end }, NOT },
-    });
-  let raw: unknown[];
-  try {
-    raw = await query(ownWriteExclusion(mod));
-  } catch {
-    if (options.failClosed) return [];
-    try {
-      raw = await query(undefined);
-    } catch {
-      return [];
-    }
-  }
+  if (!mod) return absentRead();
+  const { value, outcome } = await withOwnWritesExcluded(
+    exclusionsFor(mod),
+    options.failClosed === true,
+    (NOT) =>
+      mod.queryQuantitySamples(identifier, {
+        limit: 0, // <= 0 fetches all matches
+        ascending: true,
+        unit,
+        filter: { date: { startDate: start, endDate: end }, NOT },
+      })
+  );
   const samples: HealthQuantitySample[] = [];
-  for (const item of raw) {
+  for (const item of value ?? []) {
     const parsed = parseQuantitySample(item);
     if (parsed) samples.push(parsed);
   }
-  return samples;
+  return { samples, ...outcome };
 }
 
 /** Sleep-analysis category samples over [start, end). */
-export async function readSleepSamples(start: Date, end: Date): Promise<HealthCategorySample[]> {
+export async function readSleepSamples(
+  start: Date,
+  end: Date
+): Promise<HealthReadResult<HealthCategorySample>> {
   const mod = hk;
-  if (!mod) return [];
-  try {
-    const raw = await withOwnWritesExcluded(mod, (NOT) =>
-      mod.queryCategorySamples('HKCategoryTypeIdentifierSleepAnalysis', {
-        limit: 0,
-        ascending: true,
-        filter: { date: { startDate: start, endDate: end }, NOT },
-      })
-    );
-    const samples: HealthCategorySample[] = [];
-    for (const item of raw) {
-      const parsed = parseCategorySample(item);
-      if (parsed) samples.push(parsed);
-    }
-    return samples;
-  } catch {
-    return [];
+  if (!mod) return absentRead();
+  const { value, outcome } = await withOwnWritesExcluded(exclusionsFor(mod), false, (NOT) =>
+    mod.queryCategorySamples('HKCategoryTypeIdentifierSleepAnalysis', {
+      limit: 0,
+      ascending: true,
+      filter: { date: { startDate: start, endDate: end }, NOT },
+    })
+  );
+  const samples: HealthCategorySample[] = [];
+  for (const item of value ?? []) {
+    const parsed = parseCategorySample(item);
+    if (parsed) samples.push(parsed);
   }
+  return { samples, ...outcome };
 }
 
 /**
@@ -526,10 +655,11 @@ export async function readDailyCumulative(
   identifier: string,
   unit: string,
   days: { date: string; start: Date; end: Date }[]
-): Promise<HealthDailyStatistic[]> {
+): Promise<HealthReadResult<HealthDailyStatistic>> {
   const mod = hk;
-  if (!mod) return [];
+  if (!mod) return absentRead();
   const stats: HealthDailyStatistic[] = [];
+  let error: string | null = null;
   for (const day of days) {
     try {
       const result = await mod.queryStatisticsForQuantity(identifier, ['cumulativeSum'], {
@@ -549,11 +679,16 @@ export async function readDailyCumulative(
       });
       const sum = parseStatisticSum(result);
       if (sum !== null) stats.push({ date: day.date, value: sum });
-    } catch {
-      // One bad day never sinks the rest of the window.
+    } catch (e) {
+      // One bad day never sinks the rest of the window — but the first day's
+      // error is kept, because "every day threw" and "nothing was recorded"
+      // are the two readings of an empty result and they are not the same.
+      error = error ?? errorText(e);
     }
   }
-  return stats;
+  // Statistics carry no own-write exclusion by design (Apple merges before the
+  // predicate), so the honest report is `none`, never `refused`.
+  return { samples: stats, exclusion: 'none', error };
 }
 
 /**
@@ -561,24 +696,23 @@ export async function readDailyCumulative(
  * requestable: duration seconds, `totalEnergyBurned` kcal, `totalDistance`
  * meters — all three arrive as `Quantity` objects, unwrapped below.
  */
-export async function readWorkouts(start: Date, end: Date): Promise<HealthWorkoutSample[]> {
+export async function readWorkouts(
+  start: Date,
+  end: Date
+): Promise<HealthReadResult<HealthWorkoutSample>> {
   const mod = hk;
-  if (!mod) return [];
-  try {
-    const raw = await withOwnWritesExcluded(mod, (NOT) =>
-      mod.queryWorkoutSamples({
-        limit: 0,
-        ascending: true,
-        filter: { date: { startDate: start, endDate: end }, NOT },
-      })
-    );
-    const workouts: HealthWorkoutSample[] = [];
-    for (const item of raw) {
-      const parsed = parseWorkoutSample(item);
-      if (parsed) workouts.push(parsed);
-    }
-    return workouts;
-  } catch {
-    return [];
+  if (!mod) return absentRead();
+  const { value, outcome } = await withOwnWritesExcluded(exclusionsFor(mod), false, (NOT) =>
+    mod.queryWorkoutSamples({
+      limit: 0,
+      ascending: true,
+      filter: { date: { startDate: start, endDate: end }, NOT },
+    })
+  );
+  const workouts: HealthWorkoutSample[] = [];
+  for (const item of value ?? []) {
+    const parsed = parseWorkoutSample(item);
+    if (parsed) workouts.push(parsed);
   }
+  return { samples: workouts, ...outcome };
 }
