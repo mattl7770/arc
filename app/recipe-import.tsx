@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -480,6 +481,7 @@ function ReviewDraft({ draft, onSaved }: { draft: RecipeDraft; onSaved: (id: str
             value={servings}
             onChangeText={setServings}
             keyboardType="decimal-pad"
+            returnKeyType={KEYPAD_DONE}
             placeholder="4"
             placeholderTextColor={palette.inkMuted}
             className="mt-2 min-h-[46px] border border-paper-deep bg-paper-dim px-2.5 py-2 text-center font-mono text-[15px] text-ink"

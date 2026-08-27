@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -426,6 +427,7 @@ export default function WorkoutImportScreen() {
                     placeholder="min"
                     placeholderTextColor={palette.inkMuted}
                     keyboardType="number-pad"
+                    returnKeyType={KEYPAD_DONE}
                     className="py-1.5 text-center font-mono text-[13px] text-ink"
                     accessibilityLabel="Duration in minutes"
                   />
@@ -477,6 +479,7 @@ export default function WorkoutImportScreen() {
                                 placeholder="reps"
                                 placeholderTextColor={palette.inkMuted}
                                 keyboardType="number-pad"
+                                returnKeyType={KEYPAD_DONE}
                                 className="py-1.5 text-center font-mono text-[14px] text-ink"
                                 accessibilityLabel={`Reps for set ${si + 1}`}
                               />
@@ -489,6 +492,7 @@ export default function WorkoutImportScreen() {
                                 placeholder="—"
                                 placeholderTextColor={palette.inkMuted}
                                 keyboardType="decimal-pad"
+                                returnKeyType={KEYPAD_DONE}
                                 className="py-1.5 text-center font-mono text-[14px] text-ink"
                                 accessibilityLabel={`Weight for set ${si + 1}`}
                               />

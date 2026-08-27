@@ -253,6 +253,37 @@ type ScreenProps = {
  * Sections are separated by whitespace, not by rules: in this design rules
  * enclose objects (a plate edge, the rows of one list), never the page. That is
  * why this container draws nothing else at all.
+ *
+ * ## The scroll view keeps the focused field off the keyboard
+ *
+ * `automaticallyAdjustKeyboardInsets` is half of the fix to the owner's report
+ * that the water goal *"you can't see the number while you type it"*. Without
+ * it a `TextInput` low on a long screen stays exactly where it is when the
+ * keyboard rises over it: the field, its value and its Save button are all
+ * behind the keyboard, and no amount of scrolling reaches them because the
+ * content ends above the keyboard's top edge.
+ *
+ * The prop does two things on iOS, both in
+ * `RCTScrollViewComponentView._keyboardWillChangeFrame`: it grows
+ * `contentInset.bottom` by the overlap so the tail of the screen can be scrolled
+ * clear, and — when the first responder's own rect ends below the keyboard — it
+ * animates `contentOffset` by the difference, which is what puts the field back
+ * on screen without the screen asking. A confirm control **beside** the field
+ * (same row, same height) rides up with it; one placed in a row *underneath* the
+ * field does not, which is why the editors here keep Save on the field's row.
+ *
+ * It is set here rather than per screen because six screens that build their own
+ * ScrollView (workout-log/-live/-import, screening-form, appointment-form and
+ * the log sheet) already set it, and every screen that did NOT was one using
+ * this container. Screens without a `TextInput` pay nothing: the handler only
+ * fires on a keyboard notification, and no field means no keyboard.
+ *
+ * The other half — being able to DISMISS a number pad, which has no return key
+ * at all — is `KEYPAD_DONE` in ./keyboard.ts.
+ *
+ * `keyboardShouldPersistTaps="handled"` is the third path out: a tap on any
+ * non-touchable part of the sheet dismisses the keyboard, while a tap that a
+ * child handles still reaches that child.
  */
 export function Screen({ children, scroll = false, edges = ['top'] }: ScreenProps) {
   return (
@@ -263,7 +294,8 @@ export function Screen({ children, scroll = false, edges = ['top'] }: ScreenProp
           <ScrollView
             className="flex-1"
             contentContainerClassName="grow px-5 pb-10"
-            keyboardShouldPersistTaps="handled">
+            keyboardShouldPersistTaps="handled"
+            automaticallyAdjustKeyboardInsets>
             {children}
           </ScrollView>
         ) : (

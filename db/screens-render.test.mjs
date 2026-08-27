@@ -107,11 +107,60 @@ const bad = (n, e) => {
   console.log(`  FAIL ${n}${e ? ' — ' + e : ''}`);
 };
 
+/**
+ * **Every number pad on the screen has a way out.**
+ *
+ * iOS number pads have no return key, so a `TextInput` whose `keyboardType` is
+ * `number-pad` / `decimal-pad` / `numeric` traps the keyboard unless
+ * `returnKeyType` is set — that prop is the whole trigger for the native Done
+ * toolbar RN builds over those keyboards (the mechanism, and why it looks like
+ * dead code at a call site, is documented in src/components/ui/keyboard.ts).
+ * The owner hit this on the water goal: *"you cant close the keyboard so its
+ * impossible to actually put a number in."*
+ *
+ * react-native-web translates the pair faithfully — `keyboardType` becomes
+ * `inputMode="numeric"|"decimal"` and `returnKeyType` becomes `enterKeyHint` —
+ * so the rule is checkable in the rendered markup, on every screen this suite
+ * walks, without naming any of them. `numbers-and-punctuation` and `url` fields
+ * emit no `inputMode` and are correctly ignored: those keyboards have a return
+ * key already.
+ *
+ * What it CANNOT establish: that the toolbar actually appears, or that the field
+ * is visible while you type (that half is the scroll container's keyboard inset
+ * — {@link Screen}). Both are device facts. Nor does it see a field behind an
+ * interaction: the water goal editor and the per-entry editor only mount after a
+ * tap, so what is proved here for app/water.tsx is the Add field.
+ */
+function findKeypads(html) {
+  const all = (html.match(/<input[^>]*>/g) || []).filter((tag) =>
+    /inputMode="(numeric|decimal)"/.test(tag)
+  );
+  return { all, stuck: all.filter((tag) => !tag.includes('enterKeyHint=')) };
+}
+
+/** How many number pads the whole walk has seen — so a silently vacuous check
+ *  (a regex that stopped matching anything at all) fails at the end. */
+let keypadsSeen = 0;
+
+function keypadsDismissable(name, html) {
+  const { all, stuck } = findKeypads(html);
+  if (all.length === 0) return;
+  keypadsSeen += all.length;
+  stuck.length === 0
+    ? ok(`${name}: all ${all.length} number pad(s) can be dismissed`)
+    : bad(
+        `${name}: ${stuck.length} of ${all.length} number pad(s) have no Done key`,
+        stuck[0].slice(0, 140)
+      );
+}
+
 /** Render a screen to HTML; a throw anywhere in the tree is a failure. */
 function render(name, Component, params = {}, props = {}) {
   __setParams(params);
   try {
-    return renderToString(React.createElement(Component, props));
+    const html = renderToString(React.createElement(Component, props));
+    keypadsDismissable(name, html);
+    return html;
   } catch (e) {
     bad(`${name} rendered`, e instanceof Error ? e.message : String(e));
     return null;
@@ -1497,6 +1546,38 @@ const db = getDb();
   ]);
   // v1 is the start of the record, not a change, so it prints no diff.
   refute('protocol-versions', versions, ['no change to the items']);
+}
+
+// —————————————————————————————————————————————————————————————————————————
+// The number-pad check, checked. `keypadsDismissable` runs inside `render` and
+// says nothing when a screen has no number pad — which is also exactly what it
+// would do if the markup shape changed under it and the regex stopped matching.
+// So: assert the walk actually FOUND pads, and that the predicate can still
+// tell a trapped one from a dismissable one.
+{
+  console.log('\n16. The number-pad check can fail');
+  // A floor, not the count: most numeric fields in the app sit inside editors
+  // that open on a TAP, and a server render never opens one. What the walk does
+  // reach (water's Add, recipe-edit's four, protocol-edit's phase lengths) is
+  // enough to prove the regex still matches something.
+  keypadsSeen >= 5
+    ? ok(`the walk inspected ${keypadsSeen} number pads`)
+    : bad(`the number-pad check is vacuous — only ${keypadsSeen} pads seen`);
+
+  const trapped = findKeypads('<input inputMode="decimal" value=""/>');
+  trapped.all.length === 1 && trapped.stuck.length === 1
+    ? ok('a pad with no enterKeyHint is reported as trapped')
+    : bad('a pad with no enterKeyHint was NOT reported as trapped');
+
+  const freed = findKeypads('<input inputMode="numeric" enterKeyHint="done" value=""/>');
+  freed.all.length === 1 && freed.stuck.length === 0
+    ? ok('a pad with enterKeyHint is reported as dismissable')
+    : bad('a pad with enterKeyHint was reported as trapped');
+
+  // A full keyboard already has a return key and must not be demanded one.
+  findKeypads('<input type="text" value=""/>').all.length === 0
+    ? ok('a full keyboard is not held to the number-pad rule')
+    : bad('a full keyboard was held to the number-pad rule');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

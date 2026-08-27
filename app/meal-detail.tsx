@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { Alert, Image, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider, GridCell } from '@/components/ui/block';
+import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -1046,6 +1047,7 @@ function MealTimeEditor({
           value={edit.hour}
           onChangeText={(t) => onChange({ ...edit, hour: t })}
           keyboardType="number-pad"
+          returnKeyType={KEYPAD_DONE}
           maxLength={2}
           placeholder="––"
           placeholderTextColor={palette.inkMuted}
@@ -1057,6 +1059,7 @@ function MealTimeEditor({
           value={edit.minute}
           onChangeText={(t) => onChange({ ...edit, minute: t })}
           keyboardType="number-pad"
+          returnKeyType={KEYPAD_DONE}
           maxLength={2}
           placeholder="––"
           placeholderTextColor={palette.inkMuted}
@@ -1177,6 +1180,7 @@ function PortionEditRow({
             value={edit.gramsText}
             onChangeText={onEditGrams}
             keyboardType="decimal-pad"
+            returnKeyType={KEYPAD_DONE}
             accessibilityLabel="Grams"
             className="w-16 border border-paper-deep bg-paper-dim px-2 py-2 text-right font-mono text-[13px] text-ink"
           />
