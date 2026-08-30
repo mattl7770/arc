@@ -2,19 +2,36 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { humanizeToolName, streamCoachReply } from '@/lib/ai/coach-service';
 import { CoachTurnError } from '@/lib/ai/model-client';
-import type { CoachToolCall } from '@/lib/ai/types';
+import { toolByName } from '@/lib/ai/tools';
+import type { CoachStopReason, CoachToolCall } from '@/lib/ai/types';
 import { getDb } from '@/lib/db/client';
 import {
   appendMessage,
   getOrCreateActiveConversation,
-  listMessages,
+  listThread,
+  markTurnStatus,
   parseToolCalls,
   setConversationTitle,
+  type TurnStatus,
 } from '@/lib/db/repositories/ai-chat';
 import type { ChatMessage, PendingWrite } from '@/types/coach';
 
+/**
+ * A rendered turn, plus what the persistence layer knows about it that the bare
+ * view model does not: whether it actually finished, whether it changed data,
+ * and which `ai_messages` row it is (so a later marker can name it).
+ */
+export type CoachChatMessage = ChatMessage & {
+  /** Set when this turn is NOT a finished answer — drives the honest chip. */
+  incomplete?: TurnStatus;
+  /** True when a write tool ran (approved, not declined, no error). */
+  wrote?: boolean;
+  /** The `ai_messages.id` of this turn once persisted. */
+  dbId?: string;
+};
+
 export type CoachChat = {
-  messages: ChatMessage[];
+  messages: CoachChatMessage[];
   /** True while a reply is streaming — input is disabled and the dots show. */
   isResponding: boolean;
   /** What the Coach is doing right now ("reading metric series"), or null. */
@@ -41,20 +58,44 @@ function makeId(seq: number): string {
   return `${Date.now()}-${seq}`;
 }
 
+/**
+ * Did this turn change data? Declined and errored calls did not, and read tools
+ * never do — so this is exactly "writes landed", the thing the user must be
+ * told about when a turn stops early. An unknown name (a tool retired since the
+ * turn was recorded) is treated as a write: over-warning is the safe direction.
+ */
+function didWrite(calls: CoachToolCall[]): boolean {
+  return calls.some(
+    (call) => !call.declined && !call.isError && toolByName(call.name)?.readOnly !== true
+  );
+}
+
+/**
+ * Map a turn's stop reason to a status, or null when it finished honestly.
+ * `refusal` is a complete turn — coach-service already substitutes the text.
+ */
+function statusOf(stopReason: CoachStopReason): TurnStatus | null {
+  if (stopReason === 'max_tokens') return 'max_tokens';
+  if (stopReason === 'tool_use_limit') return 'tool_use_limit';
+  return null;
+}
+
 /** Load the persisted thread as view-models (conversational roles only). */
-function loadThread(conversationId: string): ChatMessage[] {
-  return listMessages(getDb(), conversationId)
-    .filter((row) => row.role === 'user' || row.role === 'assistant')
-    .map((row) => {
-      const tools = parseToolCalls(row.tool_calls).map((call) => humanizeToolName(call.name));
-      return {
-        id: row.id,
-        role: row.role as ChatMessage['role'],
-        content: row.content,
-        createdAt: Date.parse(row.created_at),
-        ...(tools.length > 0 ? { tools } : {}),
-      };
-    });
+function loadThread(conversationId: string): CoachChatMessage[] {
+  return listThread(getDb(), conversationId).map(({ message: row, status }) => {
+    const calls = parseToolCalls(row.tool_calls);
+    const tools = calls.map((call) => humanizeToolName(call.name));
+    return {
+      id: row.id,
+      dbId: row.id,
+      role: row.role as ChatMessage['role'],
+      content: row.content,
+      createdAt: Date.parse(row.created_at),
+      ...(tools.length > 0 ? { tools } : {}),
+      // A turn marked incomplete must never come back looking like an answer.
+      ...(status ? { incomplete: status, wrote: didWrite(calls) } : {}),
+    };
+  });
 }
 
 /**
@@ -62,8 +103,15 @@ function loadThread(conversationId: string): ChatMessage[] {
  * (0008), so a reload resumes the thread. op-sqlite is synchronous, so the
  * initial load runs in the `useState` initializers (no loading state), same
  * pattern as use-log-feed. Turns persist at their edges: the user row on send,
- * the assistant row (with its tool-call record) when the stream completes;
- * failed/aborted replies are not persisted, so retry replays cleanly.
+ * the assistant row (with its tool-call record) when the stream completes.
+ *
+ * Honesty about unfinished turns: a turn can stop without finishing — cut off
+ * at the token cap, out of tool round-trips after approved writes already
+ * landed, or failed mid-loop. Such a turn is persisted (its tool-call record is
+ * the audit trail of real writes to the owner's health data) and then MARKED
+ * via markTurnStatus, never presented as a completed answer and never quietly
+ * deleted. Retry marks the abandoned fragment `superseded` rather than erasing
+ * it, and leaves it on screen so the thread matches the database exactly.
  *
  * Concurrency model: all side effects (id generation, starting a stream,
  * DB writes) run in the event handlers, never inside a `setState` updater.
@@ -81,15 +129,17 @@ function loadThread(conversationId: string): ChatMessage[] {
  */
 export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
   const [conversationId] = useState<string>(() => getOrCreateActiveConversation(getDb()).id);
-  const [messages, setMessagesState] = useState<ChatMessage[]>(() => loadThread(conversationId));
+  const [messages, setMessagesState] = useState<CoachChatMessage[]>(() =>
+    loadThread(conversationId)
+  );
   const [isResponding, setIsResponding] = useState(false);
   const [activity, setActivity] = useState<string | null>(null);
   const [pendingWrite, setPendingWrite] = useState<PendingWrite | null>(null);
 
   // Mirror of `messages`, always current, so handlers never read stale state.
-  const messagesRef = useRef<ChatMessage[]>(messages);
+  const messagesRef = useRef<CoachChatMessage[]>(messages);
   const setMessages = useCallback(
-    (next: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
+    (next: CoachChatMessage[] | ((prev: CoachChatMessage[]) => CoachChatMessage[])) => {
       const value = typeof next === 'function' ? next(messagesRef.current) : next;
       messagesRef.current = value;
       setMessagesState(value); // concrete value → the updater React runs stays pure
@@ -135,20 +185,23 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
   }, []);
 
   const run = useCallback(
-    (history: ChatMessage[]) => {
+    // `history` is what the model is asked to continue; `rendered` is what the
+    // thread shows. They diverge on retry: an abandoned fragment stays on
+    // screen (and in the record) but must not be replayed to the model.
+    (history: CoachChatMessage[], rendered: CoachChatMessage[] = history) => {
       busyRef.current = true;
       setIsResponding(true);
 
       const assistantId = nextId();
       setMessages([
-        ...history,
+        ...rendered,
         { id: assistantId, role: 'assistant', content: '', createdAt: Date.now(), streaming: true },
       ]);
 
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const patch = (fn: (m: ChatMessage) => ChatMessage) =>
+      const patch = (fn: (m: CoachChatMessage) => CoachChatMessage) =>
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? fn(m) : m)));
 
       streamCoachReply(history, {
@@ -164,32 +217,61 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
       })
         .then((result) => {
           const tools = result.toolCalls.map((call: CoachToolCall) => humanizeToolName(call.name));
-          patch((m) => ({
-            ...m,
-            streaming: false,
-            content: result.text.length > 0 ? result.text : m.content,
-            ...(tools.length > 0 ? { tools } : {}),
-          }));
-          // Persist the completed turn (its tool record included); failed and
-          // aborted turns are deliberately not persisted, so retry is clean.
+          // A turn can end without finishing: cut off at the token cap, or out
+          // of tool round-trips AFTER approved writes already landed. Neither
+          // may render as a completed answer.
+          const status = statusOf(result.stopReason);
+          const wrote = didWrite(result.toolCalls);
+
+          // Persist the turn (its tool record included), then mark it if it
+          // didn't finish — so a reload tells the same story this screen does.
+          let dbId: string | undefined;
           if (result.text.trim().length > 0 || result.toolCalls.length > 0) {
-            appendMessage(
-              getDb(),
+            const db = getDb();
+            dbId = appendMessage(
+              db,
               conversationId,
               'assistant',
               result.text,
               result.toolCalls.length > 0 ? result.toolCalls : null
             );
+            if (status) markTurnStatus(db, conversationId, dbId, status);
           }
+
+          patch((m) => ({
+            ...m,
+            streaming: false,
+            content: result.text.length > 0 ? result.text : m.content,
+            ...(tools.length > 0 ? { tools } : {}),
+            ...(dbId ? { dbId } : {}),
+            ...(status ? { incomplete: status, wrote } : {}),
+          }));
         })
         .catch((err: unknown) => {
           // Tools already executed against the database before the failure —
           // persist the audit record so approved writes are never untraceable,
-          // even though the turn shows as errored (and retry may re-ask).
+          // and mark the row `failed` so the fragment can never come back from
+          // a reload wearing the face of a finished answer.
           if (err instanceof CoachTurnError) {
             const tools = err.toolCalls.map((call) => humanizeToolName(call.name));
-            appendMessage(getDb(), conversationId, 'assistant', err.partialText, err.toolCalls);
-            patch((m) => ({ ...m, streaming: false, error: true, tools }));
+            const db = getDb();
+            const dbId = appendMessage(
+              db,
+              conversationId,
+              'assistant',
+              err.partialText,
+              err.toolCalls
+            );
+            markTurnStatus(db, conversationId, dbId, 'failed');
+            patch((m) => ({
+              ...m,
+              streaming: false,
+              error: true,
+              tools,
+              dbId,
+              incomplete: 'failed',
+              wrote: didWrite(err.toolCalls),
+            }));
             return;
           }
           if (err instanceof Error && err.name === 'AbortError') return; // unmounted; drop it
@@ -220,8 +302,9 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
         setConversationTitle(db, conversationId, trimmed.slice(0, 64));
       }
 
-      const userMessage: ChatMessage = {
+      const userMessage: CoachChatMessage = {
         id,
+        dbId: id,
         role: 'user',
         content: trimmed,
         createdAt: Date.now(),
@@ -236,17 +319,29 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
   const retry = useCallback(() => {
     if (busyRef.current) return;
 
-    // Drop only the trailing failed assistant turn, then replay from the user
-    // message before it. Errored bubbles earlier in the thread are left alone.
-    // The user row was persisted on send, so no re-write happens here.
+    // Replay from the user message before the failed turn. The failed turn is
+    // NOT replayed to the model — but it is NOT erased either: its row holds
+    // the audit record of any writes that already landed, and ai_messages is
+    // append-only. So it stays on screen, marked `superseded`, and the record
+    // gets a marker saying the same thing. Screen and database agree; the
+    // fragment can never resurface looking like a real answer.
     const current = messagesRef.current;
     const last = current[current.length - 1];
-    const cleaned = last?.role === 'assistant' && last.error ? current.slice(0, -1) : current;
-    if (cleaned[cleaned.length - 1]?.role !== 'user') return;
+    const abandoned = last?.role === 'assistant' && last.error ? last : null;
+    const history = abandoned ? current.slice(0, -1) : current;
+    if (history[history.length - 1]?.role !== 'user') return;
 
-    setMessages(cleaned);
-    run(cleaned);
-  }, [run, setMessages]);
+    // A failure with nothing persisted (no tool calls ran) leaves no record to
+    // reconcile — that bubble is simply dropped, as before.
+    let rendered = history;
+    if (abandoned?.dbId) {
+      markTurnStatus(getDb(), conversationId, abandoned.dbId, 'superseded');
+      rendered = [...history, { ...abandoned, error: false, incomplete: 'superseded' as const }];
+    }
+
+    setMessages(rendered);
+    run(history, rendered);
+  }, [conversationId, run, setMessages]);
 
   return { messages, isResponding, activity, pendingWrite, resolveWrite, send, retry };
 }

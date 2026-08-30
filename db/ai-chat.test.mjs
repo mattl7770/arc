@@ -14,7 +14,10 @@ import {
   getOrCreateActiveConversation,
   latestConversation,
   listMessages,
+  listThread,
+  markTurnStatus,
   parseToolCalls,
+  parseTurnStatus,
   setConversationTitle,
 } from '../src/lib/db/repositories/ai-chat.ts';
 
@@ -239,6 +242,114 @@ console.log('8. setConversationTitle + parseToolCalls round-trip');
   parseToolCalls(null).length === 0 && parseToolCalls('{"not":"array"}').length === 0
     ? ok('NULL and non-array parse to empty, never throw')
     : bad('lenient parse');
+}
+
+console.log('9. markTurnStatus records an unfinished turn without editing it');
+{
+  const { db, raw } = freshDb();
+  const convo = createConversation(db);
+  appendMessage(db, convo, 'user', 'Log my weight at 178 and summarise the week.');
+  const calls = [
+    {
+      id: 'toolu_w',
+      name: 'log_body_metric',
+      input: { metric: 'weight', value: 178 },
+      result: '{}',
+    },
+  ];
+  const partial = appendMessage(db, convo, 'assistant', 'Logged 178 lb. Now looking at', calls);
+  markTurnStatus(db, convo, partial, 'tool_use_limit');
+
+  const row = raw.prepare('SELECT * FROM ai_messages WHERE id = ?').get(partial);
+  row.content === 'Logged 178 lb. Now looking at' &&
+  JSON.stringify(JSON.parse(row.tool_calls)) === JSON.stringify(calls)
+    ? ok('the annotated turn is untouched — content and audit record intact')
+    : bad('partial row mutated', JSON.stringify(row));
+
+  const markers = raw.prepare(`SELECT * FROM ai_messages WHERE role = 'system'`).all();
+  markers.length === 1 && parseTurnStatus(markers[0])?.status === 'tool_use_limit'
+    ? ok('the marker is a separate append-only system row')
+    : bad('marker row', JSON.stringify(markers));
+
+  const thread = listThread(db, convo);
+  thread.length === 2 &&
+  thread[0].status === null &&
+  thread[1].message.id === partial &&
+  thread[1].status === 'tool_use_limit'
+    ? ok('listThread hides marker rows and folds the status onto its turn')
+    : bad('thread fold', JSON.stringify(thread.map((t) => [t.message.role, t.status])));
+}
+
+console.log('10. retry supersedes rather than deletes: the fragment survives, marked');
+{
+  const { db, raw } = freshDb();
+  const convo = createConversation(db);
+  appendMessage(db, convo, 'user', 'Set a reminder.');
+  const partial = appendMessage(db, convo, 'assistant', 'Reminder set. I was about', [
+    { id: 't', name: 'set_reminder', input: { title: 'Mg' }, result: '{}' },
+  ]);
+  markTurnStatus(db, convo, partial, 'failed');
+  markTurnStatus(db, convo, partial, 'superseded'); // the user retried
+  appendMessage(db, convo, 'assistant', 'Reminder set for 21:00.');
+
+  listThread(db, convo).find((t) => t.message.id === partial)?.status === 'superseded'
+    ? ok('the last marker wins (failed → superseded)')
+    : bad('marker precedence');
+  raw.prepare('SELECT count(*) c FROM ai_messages WHERE id = ?').get(partial).c === 1
+    ? ok('the partial turn is never DELETEd — the write audit trail survives retry')
+    : bad('partial deleted');
+  const roles = listThread(db, convo).map((t) => t.message.role);
+  JSON.stringify(roles) === JSON.stringify(['user', 'assistant', 'assistant'])
+    ? ok('the retry reply follows the marked fragment, in order')
+    : bad('thread order', JSON.stringify(roles));
+}
+
+console.log('11. parseTurnStatus is strict about what counts as a marker');
+{
+  const { db } = freshDb();
+  const convo = createConversation(db);
+  const row = (id, role, content) => ({
+    id,
+    conversation_id: convo,
+    role,
+    content,
+    tool_calls: null,
+    created_at: '2026-01-01T00:00:00.000Z',
+  });
+
+  parseTurnStatus(
+    row(
+      'a',
+      'assistant',
+      JSON.stringify({ marker: 'arc.turn_status', messageId: 'm', status: 'failed' })
+    )
+  ) === null
+    ? ok('an assistant turn is never a marker, whatever its text says')
+    : bad('assistant treated as marker');
+  parseTurnStatus(row('b', 'system', 'you are a helpful coach')) === null &&
+  parseTurnStatus(row('c', 'system', '{"marker":"something-else"}')) === null
+    ? ok('plain and foreign system rows are not markers, and never throw')
+    : bad('loose marker parse');
+  parseTurnStatus(
+    row(
+      'd',
+      'system',
+      JSON.stringify({ marker: 'arc.turn_status', messageId: 'm', status: 'exploded' })
+    )
+  ) === null
+    ? ok('an unknown status is ignored rather than trusted')
+    : bad('unknown status accepted');
+
+  const id = markTurnStatus(db, convo, 'some-message', 'max_tokens');
+  const stored = listMessages(db, convo).find((m) => m.id === id);
+  JSON.stringify(parseTurnStatus(stored)) ===
+  JSON.stringify({ messageId: 'some-message', status: 'max_tokens' })
+    ? ok('markTurnStatus round-trips through parseTurnStatus')
+    : bad('round-trip', stored?.content);
+  // A marker for a message that isn't in the thread must not invent a turn.
+  listThread(db, convo).length === 0
+    ? ok('a dangling marker renders nothing')
+    : bad('dangling marker rendered');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
