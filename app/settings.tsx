@@ -11,9 +11,10 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { useAppLockPreference } from '@/hooks/use-app-lock-preference';
 import { useSessionKeySet } from '@/hooks/use-session-key';
+import { lastBackupInfo } from '@/lib/backup/snapshot';
 import { getDb } from '@/lib/db/client';
 import { countActiveMemories } from '@/lib/db/repositories/coach-memory';
-import { getOrCreateUser, isHealthSyncEnabled } from '@/lib/db/repositories/user';
+import { getOrCreateUser, isBackupEnabled, isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { exportDataToFile } from '@/lib/export/export-file';
 import { isHealthKitSupported } from '@/lib/health/healthkit';
 
@@ -49,9 +50,11 @@ import { isHealthKitSupported } from '@/lib/health/healthkit';
  * screen — and settings has no such action. No signal colour either: those mark
  * biological state only, never chrome.
  *
- * Profile + Units + Coach + Apple Health push to their own screens; App lock and
- * Export act in place. The name subtitle re-reads on focus (the use-log-feed.ts
- * useFocusEffect pattern) so an edit shows up on return.
+ * Profile + Units + Coach + Apple Health + Backups push to their own screens;
+ * App lock and Export act in place. The name subtitle re-reads on focus (the
+ * use-log-feed.ts useFocusEffect pattern) so an edit shows up on return, and the
+ * Backups subtitle rides the same reload so a snapshot taken one screen away is
+ * reflected here.
  */
 
 /**
@@ -117,15 +120,14 @@ type SoonRow = {
 };
 
 // Visible, non-tappable, muted. Each says honestly why it's not here yet.
-const SOON: SoonRow[] = [
-  {
-    key: 'backup',
-    label: 'Backup & restore',
-    sub: 'Encrypted iCloud snapshot · Phase 4',
-    icon: 'cloud-upload-outline',
-    chip: 'Soon',
-  },
-];
+//
+// Empty as of 2026-08-25: the one entry was "Backup & restore — Encrypted
+// iCloud snapshot · Phase 4", and the encrypted snapshot now exists (it is the
+// Backups row in Security & data above). The list and its section are kept
+// rather than deleted because the shape is load-bearing — the next unbuilt
+// surface goes here, and re-deriving the "say what isn't here yet" idiom from
+// scratch is how it stops being said.
+const SOON: SoonRow[] = [];
 
 // The single source of truth is app.json's `expo.version`, delivered at runtime
 // through the manifest. There is deliberately NO hardcoded fallback: a literal
@@ -137,6 +139,23 @@ const SOON: SoonRow[] = [
 // is unavailable we print nothing: no version line is honest, a wrong one is not.
 const APP_VERSION = Constants.expoConfig?.version ?? null;
 
+/**
+ * How long ago the last snapshot was written, in the coarsest true unit. A
+ * settings subtitle answers "am I covered?", and a wall-clock timestamp makes
+ * that a subtraction the reader has to do; "yesterday" answers it outright. The
+ * exact stamp is on the Backups screen, where it is the subject rather than an
+ * aside.
+ */
+function backupAgo(ms: number, now: number = Date.now()): string {
+  // The store stats an unreadable file as modifiedAt 0 — "20,000 days ago"
+  // would be this row fabricating a date out of a sentinel.
+  if (ms <= 0) return 'time unknown';
+  const days = Math.floor((now - ms) / 86_400_000);
+  if (days <= 0) return 'today';
+  if (days === 1) return 'yesterday';
+  return `${days} days ago`;
+}
+
 export default function SettingsScreen() {
   const router = useRouter();
   const keySet = useSessionKeySet();
@@ -147,11 +166,18 @@ export default function SettingsScreen() {
 
   // Re-read on focus so a name edited on the Profile screen shows up on return.
   const [memoryCount, setMemoryCount] = useState(() => countActiveMemories(getDb()));
+  const [backup, setBackup] = useState(() => ({
+    enabled: isBackupEnabled(getDb()),
+    last: lastBackupInfo(),
+  }));
   const reload = useCallback(() => {
     setProfile(getOrCreateUser(getDb()));
     // Re-read on focus so a memory deleted on the Coach-memory screen is
     // reflected the moment the user comes back.
     setMemoryCount(countActiveMemories(getDb()));
+    // And the snapshot: a backup taken (or the toggle flipped) on the Backups
+    // screen has to be reflected on the row that pushed to it.
+    setBackup({ enabled: isBackupEnabled(getDb()), last: lastBackupInfo() });
   }, []);
   useFocusEffect(reload);
 
@@ -164,6 +190,14 @@ export default function SettingsScreen() {
     : isHealthSyncEnabled(getDb())
       ? 'Connected'
       : 'Wearables via Apple Health';
+
+  // Honest three ways: off, on but nothing written yet, or the age of the last
+  // snapshot. Nothing here promises a backup that does not exist on disk.
+  const backupSub = !backup.enabled
+    ? 'Off'
+    : backup.last
+      ? `Encrypted · backed up ${backupAgo(backup.last.modifiedAt)}`
+      : 'Encrypted snapshot · none written yet';
 
   const setAppLock = appLock.setEnabled;
   const handleLockToggle = useCallback(
@@ -292,6 +326,18 @@ export default function SettingsScreen() {
               )}
             </View>
 
+            {/* The encrypted snapshot (docs/backups-subapp.md). A NavRow like
+                every other destination on this screen — the work happens on the
+                pushed surface, because a backup carries a toggle, a recovery
+                code and a restore that replaces the database, and none of those
+                fit on a settings line. */}
+            <NavRow
+              icon="archive-outline"
+              label="Backups"
+              sub={backupSub}
+              onPress={() => router.push('/settings-backups')}
+            />
+
             <Divider />
             <Pressable
               accessibilityRole="button"
@@ -320,29 +366,35 @@ export default function SettingsScreen() {
           rule; the owner rejected it.) Rows are separated by `Divider`, which
           renders a filled 1px view rather than a one-sided border — the shape
           that draws a full rectangle on React Native. */}
-      <View className="mt-8">
-        <SectionLabel label="Not yet built" />
-        <View className="mt-3">
-          <Block device="plate">
-            {SOON.map((row, index) => (
-              <View
-                key={row.key}
-                accessible
-                accessibilityLabel={`${row.label}. ${row.sub}. ${row.chip}.`}>
-                <Divider first={index === 0} />
-                <View className="min-h-[44px] flex-row items-center gap-3 py-3">
-                  <Ionicons name={row.icon} size={18} color={palette.inkMuted} />
-                  <View className="flex-1">
-                    <Text className="font-serif text-[15px] text-ink-muted">{row.label}</Text>
-                    <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">{row.sub}</Text>
+      {/* Rendered only while there IS something to confess. An empty plate under
+          a "Not yet built" label claims a gap that no longer exists. */}
+      {SOON.length > 0 ? (
+        <View className="mt-8">
+          <SectionLabel label="Not yet built" />
+          <View className="mt-3">
+            <Block device="plate">
+              {SOON.map((row, index) => (
+                <View
+                  key={row.key}
+                  accessible
+                  accessibilityLabel={`${row.label}. ${row.sub}. ${row.chip}.`}>
+                  <Divider first={index === 0} />
+                  <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+                    <Ionicons name={row.icon} size={18} color={palette.inkMuted} />
+                    <View className="flex-1">
+                      <Text className="font-serif text-[15px] text-ink-muted">{row.label}</Text>
+                      <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                        {row.sub}
+                      </Text>
+                    </View>
+                    <Tag>{row.chip}</Tag>
                   </View>
-                  <Tag>{row.chip}</Tag>
                 </View>
-              </View>
-            ))}
-          </Block>
+              ))}
+            </Block>
+          </View>
         </View>
-      </View>
+      ) : null}
 
       {/* About — the wordmark plus one measured value, so the margin annotation
           device rather than a plate. The version is the only mono on this

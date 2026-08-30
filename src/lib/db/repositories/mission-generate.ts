@@ -364,7 +364,8 @@ export type RederiveResult = {
   added: number;
   /** Untouched pending generated/seed rows the new mode no longer wants. */
   removed: number;
-  /** Replaceable rows that still match the new plan, left in place (same id). */
+  /** Replaceable rows that still match the new plan, kept in place (same id) —
+   *  re-synced to the live plan's dose/why/scheduled_time when it changed. */
   kept: number;
   /** Rows protected because the user acted on them, or they weren't machine-made. */
   preserved: number;
@@ -439,9 +440,10 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
     type: LogEntryType;
     status: string;
     value: string | null;
+    scheduled_time: string | null;
   };
   const rows = db.all<Row>(
-    `SELECT id, title, protocol_id, type, status, value FROM log_entries
+    `SELECT id, title, protocol_id, type, status, value, scheduled_time FROM log_entries
      WHERE daily_log_id = ? AND ${PLANNED_ROW_SQL}`,
     [log.id]
   );
@@ -485,38 +487,57 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
   // Match as a MULTISET, not a set: a protocol may legitimately list the same
   // title twice (two doses at different times). Keying by title alone and
   // collapsing would silently drop the second dose — permanently, since the
-  // filter below would then also refuse to re-add it.
-  const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
-  const need = new Map<string, number>();
-  for (const p of plan) bump(need, planKey(p.title, p.protocolId));
-  // Preserved rows already satisfy their plan entry, so a completed item is
-  // never re-inserted as a duplicate pending row. ALL of them count, including
-  // pending-but-not-ours ones (a set keyed only on settled rows would let a
-  // preserved pending row be duplicated by its matching plan entry).
-  const have = new Map<string, number>();
-  for (const row of preservedRows) bump(have, planKey(row.title, row.protocol_id));
-
-  const toRemove: string[] = [];
-  for (const row of replaceable) {
-    const key = planKey(row.title, row.protocol_id);
-    if ((have.get(key) ?? 0) < (need.get(key) ?? 0))
-      bump(have, key); // still wanted → keep
-    else toRemove.push(row.id);
+  // leftover-plan pass below would then also refuse to re-add it. Each key holds
+  // a QUEUE of the plan entries under it, consumed as rows claim them, so a kept
+  // row can be paired to the specific plan entry it should re-sync to.
+  const planByKey = new Map<string, PlannedEntry[]>();
+  for (const p of plan) {
+    const key = planKey(p.title, p.protocolId);
+    const queue = planByKey.get(key);
+    if (queue) queue.push(p);
+    else planByKey.set(key, [p]);
   }
 
-  const remaining = new Map(have);
-  const toAdd = plan.filter((p) => {
-    const key = planKey(p.title, p.protocolId);
-    const n = remaining.get(key) ?? 0;
-    if (n > 0) {
-      remaining.set(key, n - 1);
-      return false;
+  // Preserved rows already satisfy their plan entry, so a completed item is
+  // never re-inserted as a duplicate pending row. ALL of them consume a slot,
+  // including pending-but-not-ours ones (counting only settled rows would let a
+  // preserved pending row be duplicated by its matching plan entry). They are
+  // left untouched — settled or hand-made — so we drop the slot, never the row.
+  for (const row of preservedRows) {
+    planByKey.get(planKey(row.title, row.protocol_id))?.shift();
+  }
+
+  // Replaceable (ours, pending) rows: KEEP and re-sync to the matching plan
+  // entry when the plan still calls for one, else REMOVE. Re-syncing is what
+  // commits a same-day protocol edit — a changed dose/why/scheduled_time — to
+  // today: matching is by (title, protocol), so a pure dose/time edit leaves the
+  // row matched, and without the UPDATE the row would keep its stale value and
+  // time (Home's hero would still read the pre-edit dose for the rest of today).
+  // Only rows whose stored payload actually moved are updated, so a re-derive
+  // with no change stays a no-op and doesn't churn updated_at.
+  const toRemove: string[] = [];
+  const toUpdate: { id: string; value: string; scheduledTime: string | null }[] = [];
+  for (const row of replaceable) {
+    const entry = planByKey.get(planKey(row.title, row.protocol_id))?.shift();
+    if (!entry) {
+      toRemove.push(row.id);
+      continue;
     }
-    return true;
-  });
+    // Both the stored value and the plan entry's extras are built by the same
+    // planForDay shape, so JSON.stringify key order matches and a string compare
+    // detects a real dose/why change.
+    const value = JSON.stringify(entry.extras);
+    if (value !== row.value || entry.scheduledTime !== row.scheduled_time) {
+      toUpdate.push({ id: row.id, value, scheduledTime: entry.scheduledTime });
+    }
+  }
+
+  // Whatever plan entries no row claimed are genuinely new.
+  const toAdd: PlannedEntry[] = [];
+  for (const queue of planByKey.values()) for (const entry of queue) toAdd.push(entry);
 
   const kept = replaceable.length - toRemove.length;
-  if (toRemove.length === 0 && toAdd.length === 0) {
+  if (toRemove.length === 0 && toAdd.length === 0 && toUpdate.length === 0) {
     return { mode, added: 0, removed: 0, kept, preserved: preservedRows.length };
   }
 
@@ -531,6 +552,15 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
          WHERE id IN (${placeholders}) AND daily_log_id = ?
            AND status = 'pending' AND ${PLANNED_ROW_SQL}`,
         [...toRemove, log.id]
+      );
+    }
+    for (const u of toUpdate) {
+      // Same defence in depth as the DELETE: a stale id must never reach an
+      // ad-hoc capture, an acted-on row, or another day.
+      db.run(
+        `UPDATE log_entries SET value = ?, scheduled_time = ?
+         WHERE id = ? AND daily_log_id = ? AND status = 'pending' AND ${PLANNED_ROW_SQL}`,
+        [u.value, u.scheduledTime, u.id, log.id]
       );
     }
     for (const entry of toAdd) insertGenerated(db, log.id, entry);

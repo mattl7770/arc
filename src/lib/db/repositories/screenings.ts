@@ -106,17 +106,26 @@ export function updateScreening(db: Database, id: string, input: ScreeningInput)
  * Stamp a screening done on `completedOn` and roll its cadence: next_due
  * becomes completedOn + interval_months, or NULL for a one-off (nothing left
  * to track until the user schedules it again).
+ *
+ * NEVER regresses the record: an OLDER completion is ignored. Completing a
+ * stale still-'scheduled' booking after the fact ({@link pastScheduledAppointments}
+ * surfaces them, {@link completeAppointment} derives its completedOn from the
+ * booking's own past day) must not move last_completed backward or pull next_due
+ * earlier than a more-recent completion already on file — that would silently
+ * corrupt the medical schedule Home reads as overdue/due. Only advance when
+ * `completedOn` is at least as recent as the stored last_completed.
  */
 export function markScreeningDone(
   db: Database,
   id: string,
   completedOn: string = todayISODate()
 ): void {
-  const row = db.get<{ interval_months: number | null }>(
-    'SELECT interval_months FROM screenings WHERE id = ?',
+  const row = db.get<{ interval_months: number | null; last_completed: string | null }>(
+    'SELECT interval_months, last_completed FROM screenings WHERE id = ?',
     [id]
   );
   if (!row) return;
+  if (row.last_completed && completedOn < row.last_completed) return;
   const nextDue = row.interval_months ? addMonthsClamped(completedOn, row.interval_months) : null;
   db.run('UPDATE screenings SET last_completed = ?, next_due = ? WHERE id = ?', [
     completedOn,

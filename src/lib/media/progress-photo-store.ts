@@ -142,6 +142,11 @@ export function storeProgressPhoto(
     const id = insertProgressPhoto(db, {
       taken_on: photo.taken_on,
       taken_at: photo.taken_at ?? null,
+      // Forward the provenance the review computed. Omitting it here defaulted
+      // every import to 'manual' one layer down — filing an EXIF- or asset-read
+      // date as if the user had typed it, the one claim this whole flow exists
+      // to get right. Found by adversarial review.
+      date_origin: photo.date_origin,
       pose: photo.pose,
       source: photo.source ?? 'library',
       asset_id: photo.asset_id ?? null,

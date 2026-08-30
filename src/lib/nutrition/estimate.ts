@@ -23,6 +23,7 @@
  */
 import type { Database } from '@/lib/db/database';
 import { normalizeFoodName, searchFoods } from '@/lib/db/repositories/foods';
+import type { JsonText } from '@/lib/db/types';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
 
@@ -46,6 +47,10 @@ export type MealEstimateItem = {
   /** Set when the item was grounded to a catalog food (macros re-priced from
    * its per-100 g values); null means raw model numbers. */
   foodId: string | null;
+  /** Per-portion micronutrient snapshot (JSON) when grounded to a catalog food
+   * that carries micros; null for a raw model item, which has none. Carried so
+   * a grounded item is as complete as the manual-add path (servings.ts). */
+  micros: JsonText | null;
 };
 
 export type MealEstimate = {
@@ -215,6 +220,7 @@ export function parseMealEstimate(replyText: string): MealEstimate {
       fiber_g: num(e.fiber_g),
       confidence,
       foodId: null,
+      micros: null,
     });
   }
   if (items.length === 0) {
@@ -446,6 +452,10 @@ export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEs
       fat_g: priced.fat_g ?? item.fat_g,
       // Fiber may be genuinely absent on the food; keep the model's when so.
       fiber_g: priced.fiber_g ?? item.fiber_g,
+      // Carry the food's per-portion micros snapshot too, so a grounded item is
+      // as complete as one added by hand (servings.ts). NULL when the food
+      // records none — "not recorded" never becomes a fake zero.
+      micros: priced.micros ?? item.micros,
       foodId: match.id,
     };
   });

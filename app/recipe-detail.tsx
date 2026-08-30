@@ -216,6 +216,13 @@ export default function RecipeDetailScreen() {
   const reload = useCallback(() => {
     setData(load(recipeId));
     setDeleteArmed(false);
+    // doneSteps are positional INDICES into parseSteps(recipe.steps). An edit
+    // or revision pushed over this screen can insert/delete/reorder steps, so a
+    // checked index would point at a different step on return — a step never
+    // cooked rendering struck-through. Clearing on every reload drops the stale
+    // marks; a reload with the same steps only costs re-ticking, which beats a
+    // false done state.
+    setDoneSteps(new Set());
   }, [recipeId]);
 
   /**
@@ -271,8 +278,18 @@ export default function RecipeDetailScreen() {
         if (!controller.signal.aborted) setPricing(false);
       });
     // Leaving mid-call stops it: it would otherwise run to completion, be
-    // billed in full, and land on a screen nobody is looking at.
-    return () => controller.abort();
+    // billed in full, and land on a screen nobody is looking at. This runs on
+    // BLUR while the screen stays mounted underneath a pushed one, so it must
+    // also clear the in-flight state: the aborted-guarded `finally` won't run
+    // setPricing(false), and askedRef still holds this set — leave them and the
+    // spinner spins forever and re-focus early-returns without re-pricing. Reset
+    // both so re-focus retries. (setPricing on a truly-unmounted component is a
+    // harmless no-op in React 18.)
+    return () => {
+      controller.abort();
+      setPricing(false);
+      askedRef.current = '';
+    };
   }, [recipeId, reload]);
 
   useFocusEffect(

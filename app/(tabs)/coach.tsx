@@ -1,5 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   KeyboardAvoidingView,
   type NativeScrollEvent,
@@ -152,6 +152,21 @@ export default function CoachScreen() {
 
   const chat = useCoachChat({ onTurnComplete });
   const scrollRef = useRef<ScrollView>(null);
+
+  // A reminder notification tap routes here carrying its id (app/_layout.tsx →
+  // registerNotificationRouting). The reminder lives in RemindersCard at the top
+  // of the scroll view, so when the tapped id matches an active reminder we bring
+  // that region into view — which matters when the Coach tab is already mounted
+  // and scrolled down a long thread (the Stack stays mounted across taps). A
+  // per-row scroll or highlight would need RemindersCard to expose a ref/target
+  // for the matched row; that is a broader change than this fix, so surfacing the
+  // card is the low-risk step taken here.
+  const { reminderId } = useLocalSearchParams<{ reminderId?: string }>();
+  useEffect(() => {
+    if (!reminderId) return;
+    if (!reminders.some((r) => r.id === reminderId)) return;
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  }, [reminderId, reminders]);
 
   // Only follow the stream to the bottom if the user is already there. If they
   // scrolled up to re-read an earlier turn, don't yank them back on every token.

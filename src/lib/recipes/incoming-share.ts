@@ -62,7 +62,16 @@ export function consumeIncomingShare(): RecipeImportShare | null {
       lastConsumed = { share, at: Date.now() };
       return share;
     }
-    if (lastConsumed && Date.now() - lastConsumed.at < REPLAY_MS) return lastConsumed.share;
+    // The replay is a ONE-SHOT: it exists only to survive React re-invoking a
+    // screen's state initializer for a single mount (microseconds apart), so it
+    // is cleared the instant it is handed back. Otherwise a genuine second visit
+    // to the import screen within the window would re-import the share just
+    // handled.
+    if (lastConsumed && Date.now() - lastConsumed.at < REPLAY_MS) {
+      const replay = lastConsumed.share;
+      lastConsumed = null;
+      return replay;
+    }
     return null;
   } catch {
     return null;

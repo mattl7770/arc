@@ -14,19 +14,25 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
 
 export async function resolve(specifier, context, nextResolve) {
-  // "@/x" → "<repo>/src/x" (tsconfig paths), preferring the .ts file.
+  // "@/x" → "<repo>/src/x" (tsconfig paths), preferring the .ts file. The .ts
+  // candidate is tried FIRST even when the name looks like it has an extension:
+  // `path.extname` reads a dotted module name (`migrations.generated`) as
+  // ".generated" and would skip the append, breaking every aliased import of a
+  // dotted .ts module. A genuinely extensioned specifier just fails the first
+  // attempt and resolves on the fallback.
   if (specifier.startsWith('@/')) {
     const base = pathToFileURL(path.join(SRC, specifier.slice(2))).href;
-    const candidate = path.extname(base) ? base : base + '.ts';
     try {
-      return await nextResolve(candidate, context);
+      return await nextResolve(base + '.ts', context);
     } catch {
       return nextResolve(base, context);
     }
   }
 
   const isRelative = specifier.startsWith('./') || specifier.startsWith('../');
-  if (isRelative && !path.extname(specifier)) {
+  // Same dotted-name reasoning as the alias branch; ".ts"/".mjs"/".js" are the
+  // only real extensions in this repo's import graph.
+  if (isRelative && !/\.(ts|tsx|mjs|js|json)$/.test(specifier)) {
     try {
       return await nextResolve(specifier + '.ts', context);
     } catch {

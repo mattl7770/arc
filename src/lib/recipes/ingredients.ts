@@ -126,8 +126,11 @@ function stripBullet(line: string): string {
  * number — prose lines keep a null overlay.
  */
 function parseLeadingQty(s: string): { qty: number; rest: string } | null {
-  // "1 1/2" / "1/2" — explicit fractions (mixed first, so "1 1/2" isn't read as 1).
-  let m = /^(\d+)\s+(\d+)\s*\/\s*(\d+)\s*/.exec(s);
+  // "1 1/2" / "1-1/2" / "1/2" — explicit fractions (mixed first, so "1 1/2"
+  // isn't read as 1). The whole/fraction separator may be a hyphen as well as a
+  // space ("1-1/2 cups" is one-and-a-half in recipe notation); read it here
+  // before the range branch below can consume "-1" as a range endpoint.
+  let m = /^(\d+)[\s-]+(\d+)\s*\/\s*(\d+)\s*/.exec(s);
   if (m) {
     const den = Number(m[3]);
     if (den > 0) return { qty: Number(m[1]) + Number(m[2]) / den, rest: s.slice(m[0].length) };

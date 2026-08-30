@@ -26,7 +26,7 @@ import type { SessionTopSet } from '@/lib/exercise/progression';
 
 const ROLE_WEIGHT: Record<MuscleRole, number> = { primary: 1, secondary: 0.5 };
 
-type SetRow = {
+export type SetRow = {
   workout_id: string;
   date: DateString;
   when_iso: string;
@@ -36,8 +36,12 @@ type SetRow = {
   set_type: SetType;
 };
 
-/** Every non-warmup set logged for an exercise, newest workout first. */
-function workingSets(db: Database, exerciseId: string): SetRow[] {
+/**
+ * Every non-warmup set logged for an exercise, newest workout first. Exported so
+ * a screen can fetch the rows ONCE and derive several stats from the same scan
+ * (exercise-detail does this), instead of re-querying per stat.
+ */
+export function workingSets(db: Database, exerciseId: string): SetRow[] {
   return db.all<SetRow>(
     `SELECT s.workout_id, w.date, w.created_at AS when_iso,
             s.reps, s.weight_kg, s.rpe, s.set_type
@@ -61,7 +65,15 @@ function setStrength(s: SetRow): number {
  * `limit` most-recent sessions — the input to progression + the e1RM trend.
  */
 export function exerciseSessionTops(db: Database, exerciseId: string, limit = 12): SessionTopSet[] {
-  const rows = workingSets(db, exerciseId);
+  return exerciseSessionTopsFrom(workingSets(db, exerciseId), limit);
+}
+
+/**
+ * The pure reducer behind {@link exerciseSessionTops}: takes pre-fetched
+ * {@link workingSets} rows (newest workout first) so a screen can derive several
+ * stats from one scan. Same result as the DB form.
+ */
+export function exerciseSessionTopsFrom(rows: SetRow[], limit = 12): SessionTopSet[] {
   const byWorkout = new Map<string, { date: DateString; best: SetRow }>();
   for (const r of rows) {
     const cur = byWorkout.get(r.workout_id);
@@ -82,7 +94,15 @@ export function exerciseSessionTops(db: Database, exerciseId: string, limit = 12
 
 /** Personal records for one exercise (all canonical kg). Empty-safe (nulls). */
 export function personalRecords(db: Database, exerciseId: string): PersonalRecords {
-  const rows = workingSets(db, exerciseId);
+  return personalRecordsFrom(workingSets(db, exerciseId));
+}
+
+/**
+ * The pure reducer behind {@link personalRecords}: takes pre-fetched
+ * {@link workingSets} rows so a screen can derive several stats from one scan.
+ * Same result as the DB form. Empty-safe (nulls).
+ */
+export function personalRecordsFrom(rows: SetRow[]): PersonalRecords {
   let maxWeightKg: number | null = null;
   let bestE1rmKg: number | null = null;
   let bestSetVolumeKg: number | null = null;
@@ -102,7 +122,15 @@ export function personalRecords(db: Database, exerciseId: string): PersonalRecor
 
 /** Best e1RM per session date, oldest → newest, capped at `limit` — the trend. */
 export function e1rmSeries(db: Database, exerciseId: string, limit = 12): E1rmPoint[] {
-  const rows = workingSets(db, exerciseId);
+  return e1rmSeriesFrom(workingSets(db, exerciseId), limit);
+}
+
+/**
+ * The pure reducer behind {@link e1rmSeries}: takes pre-fetched
+ * {@link workingSets} rows (date DESC) so a screen can derive several stats from
+ * one scan. Same result as the DB form.
+ */
+export function e1rmSeriesFrom(rows: SetRow[], limit = 12): E1rmPoint[] {
   const byDate = new Map<DateString, number>();
   for (const r of rows) {
     const e = e1rmForSet(r.weight_kg, r.reps, r.rpe, r.set_type);
@@ -137,8 +165,12 @@ export function lastSessionSets(db: Database, exerciseId: string): PrevSet[] {
   );
   if (!latest) return [];
   const rows = db.all<{ reps: number | null; weight_kg: number | null; rpe: number | null }>(
+    // No warmup filter: the prefill reproduces the whole session (warmups
+    // included) so a repeat is one confirm per set, as the docstring promises —
+    // unlike the stat reads above, which follow the Hevy/Strong exclude-warmups
+    // rule. The latest-workout subquery already makes no warmup distinction.
     `SELECT reps, weight_kg, rpe FROM workout_sets
-     WHERE workout_id = ? AND exercise_id = ? AND set_type != 'warmup'
+     WHERE workout_id = ? AND exercise_id = ?
      ORDER BY set_index`,
     [latest.workout_id, exerciseId]
   );

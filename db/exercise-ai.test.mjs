@@ -443,8 +443,8 @@ console.log('1b. freshness display: tally, spoken summary, the never-trained bas
   virgin.neverTrained && virgin.fresh.length === 16 && virgin.total === 16
     ? ok('a never-trained ledger reads 16/16 fresh AND flags its own basis')
     : bad('virgin tally', JSON.stringify(virgin));
-  freshnessSummary(ledger).includes('No sessions logged')
-    ? ok('the spoken summary states the basis when nothing has been logged')
+  freshnessSummary(ledger).includes('No training in the last 14 days')
+    ? ok('the spoken summary states the basis when nothing recent has been logged')
     : bad('virgin summary', freshnessSummary(ledger));
 
   const worked = ledger.map((m) => {

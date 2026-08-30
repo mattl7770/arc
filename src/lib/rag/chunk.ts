@@ -66,12 +66,18 @@ function toParagraphs(text: string): string[] {
 
 /**
  * Split a (whitespace-normalized) paragraph into sentences. Breaks after `.`,
- * `!`, or `?` (optionally followed by a closing quote/bracket) when the next
- * char is a space — a deliberately simple rule: over-splitting is harmless here
- * (sentences are only repacked), and it avoids shipping an NLP dependency.
+ * `!`, or `?` (optionally followed by a closing quote/bracket) ONLY when a space
+ * or the paragraph end actually follows — the boundary the rule above promises.
+ * A run of terminal punctuation followed by a non-space (a decimal like `82.5`,
+ * an abbreviation like `e.g.`, `Mr.Smith`) is absorbed into the sentence body
+ * instead of splitting it. This matters because the packer rejoins sentences
+ * with a single space: splitting at a point the source had no space would inject
+ * one, turning `82.5` into `82. 5` in a numbers-heavy record. Over-splitting at
+ * real (space-preceded) boundaries stays harmless — the space is restored on
+ * rejoin — and this still ships no NLP dependency.
  */
 function toSentences(paragraph: string): string[] {
-  const parts = paragraph.match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g);
+  const parts = paragraph.match(/(?:[^.!?]+|[.!?]+(?!["')\]]*(?:\s|$)))+[.!?]*["')\]]*/g);
   if (!parts) return paragraph.length > 0 ? [paragraph] : [];
   return parts.map((s) => s.trim()).filter((s) => s.length > 0);
 }

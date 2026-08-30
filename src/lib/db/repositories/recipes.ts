@@ -62,6 +62,11 @@ type FullIngredient = NewRecipeIngredient & {
   fat_g?: number | null;
   fiber_g?: number | null;
   micros?: string | null;
+  // The grams⇔resolved_by pair the schema can't enforce (0034 header) is the
+  // caller's to keep whole: a line with non-null grams MUST carry a provenance,
+  // and a grams-NULL line MUST leave this NULL. saveMealAsRecipe is the only
+  // caller that inserts resolved lines directly and so the only one that sets it.
+  resolved_by?: IngredientResolvedBy | null;
   negligible?: boolean;
 };
 
@@ -77,8 +82,8 @@ function insertIngredient(
   const parsed = parseIngredientLine(line.raw_text);
   db.run(
     `INSERT INTO recipe_ingredients (id, recipe_id, position, raw_text, qty, unit, name,
-       food_id, grams, kcal, protein_g, carbs_g, fat_g, fiber_g, micros, negligible)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       food_id, grams, kcal, protein_g, carbs_g, fat_g, fiber_g, micros, resolved_by, negligible)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       recipeId,
@@ -95,6 +100,7 @@ function insertIngredient(
       line.fat_g ?? null,
       line.fiber_g ?? null,
       line.micros ?? null,
+      line.resolved_by ?? null,
       line.negligible ? 1 : 0,
     ]
   );
@@ -727,6 +733,14 @@ export function saveMealAsRecipe(
         fat_g: resolved ? item.fat_g : null,
         fiber_g: resolved ? item.fiber_g : null,
         micros: resolved ? item.micros : null,
+        // A resolved line MUST carry a provenance or the copied snapshot reads
+        // as unpriced and catalogResolveRecipe (estimate.ts) re-derives it on
+        // the next open — silently swapping what the meal actually recorded for
+        // fresh catalog numbers off a possibly-different food. A catalog-backed
+        // item ('user' — these were the user's logged, asserted values); one
+        // with no food behind it is a model/hand estimate ('ai', so
+        // recipeNutrition's estimatedCount stays truthful).
+        resolved_by: resolved ? (item.food_id ? 'user' : 'ai') : null,
       });
     });
   });

@@ -643,10 +643,25 @@ export function missionBySource(db: Database, from: string, to: string): Mission
       WHERE d.date >= ? AND d.date <= ?
         AND ${PLANNED_ROW_SQL}
         AND ${NOT_REMOVED_SQL}
-      -- By (protocol, title), NOT by the display names: a protocol renamed
-      -- mid-window is one protocol, and grouping on its name would split its
-      -- record in two at the moment it was renamed.
-      GROUP BY e.protocol_id, e.title`,
+      -- For PROTOCOL rows (protocol_id present): by (protocol_id, title), NOT by
+      -- the display names — a protocol renamed mid-window is one protocol, and
+      -- grouping on its name would split its record in two at the rename.
+      --
+      -- For NULL-protocol_id rows (mode items, experiment interventions, and
+      -- items of a since-deleted protocol — protocol_id is SET NULL on delete)
+      -- protocol_id alone can't tell distinct sources apart, so two such rows
+      -- that merely share a title would collapse into one group and have their
+      -- adherence summed before attribute() ever runs, then be filed under
+      -- whichever source max() happened to pick. Add the SAME discriminators
+      -- attribute() keys those rows on — the stored protocol name and the stored
+      -- category — so each source stays its own group. (Left empty for protocol
+      -- rows so their grouping and rename-safety are untouched.)
+      GROUP BY e.protocol_id,
+        CASE WHEN e.protocol_id IS NULL
+          THEN COALESCE(json_extract(e.value, '$.protocol'), '') || char(31)
+            || COALESCE(json_extract(e.value, '$.category'), '')
+          ELSE '' END,
+        e.title`,
     // Bound in TEXTUAL order: the excused-day list sits in the SELECT list,
     // which precedes the WHERE clause.
     [...excusedDates, from, to]

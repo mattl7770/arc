@@ -123,6 +123,14 @@ function read(): DataOverviewState {
   // window's adherence — computed over days that OWED something
   // (missionAdherence, which now discounts skips the day's mode excused), so it
   // is the same refusal one level up.
+  //
+  // Adherence excludes today. On the current day the still-pending planned
+  // items count toward `planned` but not yet toward `completed`, so folding
+  // today in would drag the rate down purely because the day is unfinished —
+  // a number that climbs through the day as items get ticked rather than one
+  // that reflects performance. app/mission-history.tsx grades the same window
+  // over settled days only (`date < today`); this matches it so the two
+  // surfaces can never quote different figures for the same fortnight.
   const missionPoints = missionDailySeries(db, 14, today);
   const missionToday: MissionDayPoint = missionPoints[missionPoints.length - 1] ?? {
     date: today,
@@ -132,7 +140,7 @@ function read(): DataOverviewState {
     skipped: 0,
     excused: 0,
   };
-  const adherence = missionAdherence(missionPoints);
+  const adherence = missionAdherence(missionPoints.filter((p) => p.date < today));
   const mission: DataTrend = {
     key: 'mission',
     name: 'Mission',

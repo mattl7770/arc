@@ -310,8 +310,20 @@ function assembleLabs(db: Database, today: string): LabsSection {
     let trend = EM_DASH;
     let trendNote: string | null = null;
     if (previous != null && latest != null) {
-      trend = latest.value > previous.value ? '↑' : latest.value < previous.value ? '↓' : '→';
-      trendNote = `from ${num(previous.value, 2)} on ${formatDate(previous.collectedAt)}`;
+      // Draw the arrow from the values as they PRINT, not the raw ones. Two
+      // draws that differ only below the 2nd decimal round to the same 2-dp
+      // string, and "5.00 ↑ from 5.00" reads as a contradiction — an arrow
+      // claiming a change beside two identical numbers. Compare the rounded
+      // display strings, and quote the same rounded number in the note.
+      const latestDisplay = num(latest.value, 2);
+      const previousDisplay = num(previous.value, 2);
+      trend =
+        Number(latestDisplay) > Number(previousDisplay)
+          ? '↑'
+          : Number(latestDisplay) < Number(previousDisplay)
+            ? '↓'
+            : '→';
+      trendNote = `from ${previousDisplay} on ${formatDate(previous.collectedAt)}`;
     }
 
     const row: LabMarkerRow = {
@@ -379,7 +391,15 @@ function assembleVitals(db: Database, today: string): VitalsSection {
   const since = isoDatePlusDays(today, -(VITALS_WINDOW_DAYS - 1));
   const rows: VitalsRow[] = [];
   for (const spec of specs) {
-    const latest = latestMetric(db, spec.metricType);
+    // `latestMetric` selects max(date) with NO future-date clamp, while the
+    // 30-day average below reads `wearableArbitratedSeries`, which closes its
+    // window at `today`. A clock-skewed or mis-backdated row dated after today
+    // would otherwise print as the clinician-facing "Latest" and "Taken" — a
+    // reading taken in the future, and one the average already omits — so the
+    // two columns of the same row would disagree on what counts as data. Drop
+    // it here to mirror the average's clamp.
+    const latestRaw = latestMetric(db, spec.metricType);
+    const latest = latestRaw && latestRaw.date <= today ? latestRaw : null;
     const window = wearableArbitratedSeries(db, spec.metricType, since, today);
     const avg = average(window.map((p) => p.value));
     if (latest == null && avg == null) {

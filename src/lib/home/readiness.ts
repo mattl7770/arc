@@ -616,6 +616,14 @@ export function deriveReadiness(
     detail = `Resting HR ${Math.round(rhrToday.value)} bpm · ${fmtDelta(rhrDelta)} bpm vs your 30-day baseline`;
   } else if (sleepToday) {
     detail = `${fmtSleep(sleepToday.value)} asleep last night`;
+  } else if (hasSignal) {
+    // Something HAS arrived — steps, active energy, or an HRV reading still
+    // short of its 5-day baseline — just nothing that grades into a recovery or
+    // sleep verdict yet. Falling through to the link branches here would print
+    // "no readings have arrived" while the metrics strip below is simultaneously
+    // showing the number that did (00-design-spec §5: the copy must never deny
+    // data the screen is displaying).
+    detail = 'Readings arriving — building your baseline.';
   } else if (link === 'unsupported') {
     // Runtime-derived, so it is true whenever it renders — but after the owner's
     // 2026-08-25 rebuild it should no longer render on his phone. Pointing at

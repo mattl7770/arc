@@ -151,16 +151,31 @@ function RoutineEditor({ id }: { id: string | undefined }) {
   const nextKey = useRef(lines.length);
   const inFlight = useRef(false);
 
-  // A line with both rep bounds set must read low ≤ high (the schema CHECK), so
-  // block Save with a hint rather than throwing at the insert.
+  // A line's targets must fit routine_exercises' per-column CHECKs
+  // (0012_routines.sql): each rep bound in [1, 99], rest in [0, 3599], and when
+  // both rep bounds are set low ≤ high. Without this an in-range-looking 0 / 150
+  // / 3600 passes canSave and then throws the CHECK inside save()'s transaction,
+  // rolling the whole routine back with an opaque alert — so block Save with a
+  // hint instead. Blank stays valid (a carry or timed hold has no range / rest).
+  const inRange = (v: string, lo: number, hi: number) => {
+    if (v.trim() === '') return true;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= lo && n <= hi;
+  };
   const repsValid = lines.every((l) => {
+    if (!inRange(l.repLow, 1, 99) || !inRange(l.repHigh, 1, 99)) return false;
     const lo = l.repLow.trim() === '' ? null : Number(l.repLow);
     const hi = l.repHigh.trim() === '' ? null : Number(l.repHigh);
-    if (lo != null && hi != null) return Number.isFinite(lo) && Number.isFinite(hi) && lo <= hi;
+    if (lo != null && hi != null) return lo <= hi;
     return true;
   });
-  const canSave = name.trim() !== '' && repsValid;
-  const problem = repsValid ? null : 'A rep range needs its low ≤ its high — or leave both blank.';
+  const restValid = lines.every((l) => inRange(l.rest, 0, 3599));
+  const canSave = name.trim() !== '' && repsValid && restValid;
+  const problem = !repsValid
+    ? 'A rep range runs from 1 to 99, low ≤ high — or leave both blank.'
+    : !restValid
+      ? 'Rest is in seconds — keep it under 3600 (an hour), or leave it blank.'
+      : null;
 
   const addExercise = (exerciseId: string, exerciseName: string, primaryMuscles: string) => {
     const key = nextKey.current;

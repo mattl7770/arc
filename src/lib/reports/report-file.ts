@@ -20,10 +20,13 @@
  * iOS re-issues the app container's UUID on every install and every update, so
  * an absolute `file:///var/mobile/Containers/…` written today dangles after the
  * next build — the trap 0033 documents at length. The database stores
- * `reports/<name>.html`; the directory is resolved at write time from
- * `Paths.document`. And unlike a photo, a missing report file costs nothing:
- * `data_json` holds the whole snapshot, so "Share again" re-renders and
- * re-creates it (spec §5).
+ * `reports/<name>.html` as a stable label; the file itself is written under
+ * `Paths.cache` (a non-backed-up, purgeable location — a doctor pack is whole
+ * health data and must never ride the iCloud device backup), and is deleted
+ * right after a successful share. And unlike a photo, a missing report file
+ * costs nothing: `data_json` holds the whole snapshot, so "Share again"
+ * re-renders and re-creates it (spec §5). The row's `file_path` is therefore a
+ * record, never a read path.
  */
 import { renderReportHtml, reportFileName } from './render-html';
 import { writeAndShareFile, fileWritingAvailable, type FileOutcome } from '@/lib/files/share-file';

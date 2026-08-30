@@ -785,7 +785,7 @@ const db = getDb();
       'Spent',
       // Empty is AUTHORED, never blank — and "nothing logged" is not the same
       // fact as "nothing depleted", which the model renders identically.
-      'No sessions logged yet, so every muscle reads fresh.',
+      'No training in the last 14 days, so every muscle reads fresh.',
     ]);
 
     logWorkout(
@@ -808,7 +808,7 @@ const db = getDb();
     // The tally moved off 16/16, and the never-logged caveat retired with it.
     refute('exercise hub (after a session)', worked, [
       '16 of 16 fresh',
-      'No sessions logged yet, so every muscle reads fresh.',
+      'No training in the last 14 days, so every muscle reads fresh.',
     ]);
 
     const pushed = render('muscle-freshness', MuscleFreshnessScreen);

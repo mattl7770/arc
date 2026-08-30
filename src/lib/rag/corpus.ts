@@ -16,13 +16,14 @@
  * Every entry carries its own hedging. Nothing here states a target as a fact
  * about the user, and anything clinical says so.
  *
- * Ingestion is idempotent by (source, pack_version): re-running replaces the
- * pack rather than duplicating it. Searchable by keyword TODAY via
+ * Ingestion is idempotent by content: re-running with an unchanged pack is a
+ * no-op, and any edit (version, entry or body) replaces the pack rather than
+ * duplicating it or keeping stale rows. Searchable by keyword TODAY via
  * search_history's sibling path; embeddable later without changing the content
  * (docs/rag-embeddings.md).
  */
 import type { Database } from '@/lib/db/database';
-import { insertKnowledgeChunk } from '@/lib/db/repositories/rag';
+import { deleteVectors, insertKnowledgeChunk } from '@/lib/db/repositories/rag';
 
 /** Bump when the entries change — ingestion replaces a pack by version. */
 export const CORPUS_VERSION = '1';
@@ -84,25 +85,48 @@ export const CORPUS: CorpusEntry[] = [
 ];
 
 /**
- * Load (or reload) the curated pack. Idempotent by (source, pack_version):
- * an existing pack at this version is left alone, and a version bump replaces
- * the old rows rather than accumulating duplicates.
+ * Load (or reload) the curated pack so the shipped `CORPUS` is always the source
+ * of truth. Idempotent, but keyed on actual CONTENT, not just a row count: an
+ * identical pack (same version, entries and bodies, in order) is left alone,
+ * while ANY drift — a version bump, an edited body, a changed count — replaces
+ * the rows. Keying on count alone silently kept stale rows when a body was fixed
+ * without bumping CORPUS_VERSION, so the correction never shipped.
  *
  * Vectors are NOT written here — chunk content persists without them by design
  * (0025), so the corpus is searchable by keyword now and can be backfilled
- * when the embedder ships.
+ * when the embedder ships. A replace still clears the OLD chunks' vectors first
+ * (mirroring memory.ts), because re-inserted chunks get fresh ids: once a
+ * backfill has embedded the corpus, skipping this would orphan the old vectors
+ * in vec_chunks forever, and knnSearch would return ids that no longer resolve.
  *
  * Returns how many chunks the pack has after loading.
  */
 export function ingestCorpus(db: Database): number {
-  const existing = db.get<{ c: number }>(
-    `SELECT count(*) c FROM knowledge_chunks WHERE source = ? AND pack_version = ?`,
-    [CORPUS_SOURCE, CORPUS_VERSION]
+  const existing = db.all<{ title: string | null; topic: string | null; body: string; pack_version: string | null }>(
+    `SELECT title, topic, body, pack_version FROM knowledge_chunks WHERE source = ? ORDER BY chunk_index`,
+    [CORPUS_SOURCE]
   );
-  if ((existing?.c ?? 0) === CORPUS.length) return existing!.c;
+  const upToDate =
+    existing.length === CORPUS.length &&
+    existing.every((row, i) => {
+      const entry = CORPUS[i];
+      return (
+        entry !== undefined &&
+        row.pack_version === CORPUS_VERSION &&
+        row.title === entry.title &&
+        row.topic === entry.topic &&
+        row.body === entry.body
+      );
+    });
+  if (upToDate) return existing.length;
 
   db.transaction(() => {
-    // Replace any older version of THIS pack; other sources are untouched.
+    // Replace any older version of THIS pack; other sources are untouched. Clear
+    // the paired vectors first so a re-insert (fresh ids) never orphans them.
+    const priorIds = db
+      .all<{ id: string }>(`SELECT id FROM knowledge_chunks WHERE source = ?`, [CORPUS_SOURCE])
+      .map((r) => r.id);
+    deleteVectors(db, priorIds);
     db.run(`DELETE FROM knowledge_chunks WHERE source = ?`, [CORPUS_SOURCE]);
     CORPUS.forEach((entry, index) => {
       insertKnowledgeChunk(db, {

@@ -28,13 +28,28 @@ const KEYCHAIN_MODEL = 'arc.coach.model';
 /** The slice of expo-secure-store this module uses. */
 type SecureStoreModule = {
   getItemAsync(key: string): Promise<string | null>;
-  setItemAsync(key: string, value: string): Promise<void>;
+  setItemAsync(
+    key: string,
+    value: string,
+    options?: { keychainAccessible?: number }
+  ): Promise<void>;
   deleteItemAsync(key: string): Promise<void>;
+  /** Accessibility constant: bind the item to this device, never restored to another. */
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY?: number;
 };
 
-// Required in a try/catch so a missing native module (a build predating the
-// module, or the web shim throwing at load) never takes down the bundle — we
-// degrade to memory-only.
+/**
+ * Bind the secret to THIS device: `*_THIS_DEVICE_ONLY` keeps it out of encrypted
+ * iTunes/Finder device backups, so the key never rides a backup to a new phone
+ * (the user re-enters it there) — matching ARC's "nothing personal leaves the
+ * device" stance. Undefined on an older module → the option is simply omitted.
+ */
+function deviceOnly(store: SecureStoreModule): { keychainAccessible?: number } {
+  return { keychainAccessible: store.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
+}
+
+// Required in a try/catch so a missing native module (pre-rebuild) or the web
+// shim throwing at load never takes down the bundle — we degrade to memory-only.
 let secureStore: SecureStoreModule | null = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -62,6 +77,13 @@ function emit(): void {
   for (const listener of listeners) listener();
 }
 
+// Single-slot serialization queue: each persist chains onto the previous one so
+// writes land in CALL order. Without it, setKey('A') then clearKey() fire two
+// independent unawaited promises on expo-secure-store's background dispatch,
+// whose completion order isn't guaranteed — the delete could resolve before the
+// set's write, leaving 'A' at rest for the next boot's hydrate() to resurrect.
+let persistQueue: Promise<void> = Promise.resolve();
+
 /**
  * A background persist that must never reject into an unhandled rejection: the
  * mirror is already the source of truth for this session, so a Keychain write
@@ -77,7 +99,9 @@ function persistInBackground(run: (store: SecureStoreModule) => Promise<void>): 
   // module is truly usable is decided authoritatively by hydrate() (a throwing
   // read = native absent), not by one failed write here.
   if (!store) return;
-  run(store).catch(() => {
+  // Chain onto the queue so ordering is preserved; a failed write is swallowed
+  // (the mirror stays authoritative) but must not break the chain for the next.
+  persistQueue = persistQueue.then(() => run(store)).catch(() => {
     // Swallow a per-op failure — the in-memory mirror stays authoritative for
     // the session, so the Coach keeps working even if this write didn't land.
   });
@@ -136,7 +160,7 @@ export const apiKeyStore = {
     if (trimmed.length === 0) return this.clearKey();
     apiKey = trimmed;
     emit();
-    persistInBackground((store) => store.setItemAsync(KEYCHAIN_API_KEY, trimmed));
+    persistInBackground((store) => store.setItemAsync(KEYCHAIN_API_KEY, trimmed, deviceOnly(store)));
   },
 
   /** Forget the key everywhere — mirror and Keychain. */
@@ -153,7 +177,7 @@ export const apiKeyStore = {
     modelTouched = true;
     model = next;
     emit();
-    persistInBackground((store) => store.setItemAsync(KEYCHAIN_MODEL, next));
+    persistInBackground((store) => store.setItemAsync(KEYCHAIN_MODEL, next, deviceOnly(store)));
   },
 
   /** Change notifications for useSyncExternalStore. */

@@ -162,7 +162,16 @@ export function shouldAutoSync(lastSyncedAt: string | null, now: Date): boolean 
 
 export type HealthSyncResult = {
   status: 'synced' | 'disabled' | 'unavailable';
-  /** Rows landed INBOUND this pass — `wearable_data` plus `body_metrics`. */
+  /**
+   * Rows processed INBOUND this pass — `wearable_data` plus `body_metrics`.
+   *
+   * ⚠️ MIXED SEMANTICS: the `body_metrics` half (`upsertHealthBodyRows`) counts
+   * rows that actually CHANGED, but the `wearable_data` half (`upsertWearableRows`)
+   * counts rows ATTEMPTED, so an unchanged re-sync still reports the full
+   * aggregate count. Honest parity needs `upsertWearableRows` to accumulate
+   * `db.changes()` across its DO UPDATE … WHERE-CHANGED statements — a change to
+   * `src/lib/db/repositories/wearables.ts`.
+   */
   rowsWritten: number;
   /** Samples PUBLISHED outward this pass (weight / body fat / waist). */
   samplesPublished: number;

@@ -239,6 +239,31 @@ const logMetricTool: CoachTool = {
 
 // --- log_meal ----------------------------------------------------------------
 
+/**
+ * The four optional macros, each rejected if negative — the `meals` table
+ * enforces CHECK(kcal IS NULL OR kcal >= 0) (and the same for every macro) since
+ * 0002, so a negative would pass the card and only blow up at INSERT. Shared by
+ * summary and execute so the card can never show a value execute then rejects.
+ */
+function parseMealMacros(args: Record<string, unknown>): {
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+} {
+  const read = (key: string): number | null => {
+    const value = optNumber(args, key);
+    if (value !== undefined && value < 0) throw new Error(`"${key}" cannot be negative.`);
+    return value ?? null;
+  };
+  return {
+    kcal: read('kcal'),
+    protein_g: read('protein_g'),
+    carbs_g: read('carbs_g'),
+    fat_g: read('fat_g'),
+  };
+}
+
 const logMealTool: CoachTool = {
   name: 'log_meal',
   // TRIMMED 2026-08-26 to pay for save_knowledge_entry's `section`
@@ -270,12 +295,17 @@ const logMealTool: CoachTool = {
   confirmSummary: (input, _db, context) => {
     const args = asRecord(input);
     const name = reqString(args, 'name');
+    // Validate exactly what execute enforces — negative macros (the meals CHECK)
+    // and a malformed time — so an approvable card can never carry a value the
+    // INSERT then rejects.
+    const values = parseMealMacros(args);
+    optTime(args, 'time');
     // Everything consequential goes on the card — approving writes ALL of it.
     const macros = [
-      ['kcal', optNumber(args, 'kcal'), 'kcal'],
-      ['protein', optNumber(args, 'protein_g'), 'g protein'],
-      ['carbs', optNumber(args, 'carbs_g'), 'g carbs'],
-      ['fat', optNumber(args, 'fat_g'), 'g fat'],
+      ['kcal', values.kcal, 'kcal'],
+      ['protein', values.protein_g, 'g protein'],
+      ['carbs', values.carbs_g, 'g carbs'],
+      ['fat', values.fat_g, 'g fat'],
     ]
       .filter(([, value]) => value != null)
       .map(([, value, unit]) => `${Math.round(value as number)} ${unit}`)
@@ -288,10 +318,7 @@ const logMealTool: CoachTool = {
       date: logDate(args, context.now),
       time: optTime(args, 'time') ?? null,
       name: reqString(args, 'name'),
-      kcal: optNumber(args, 'kcal') ?? null,
-      protein_g: optNumber(args, 'protein_g') ?? null,
-      carbs_g: optNumber(args, 'carbs_g') ?? null,
-      fat_g: optNumber(args, 'fat_g') ?? null,
+      ...parseMealMacros(args),
       notes: optString(args, 'notes') ?? null,
     });
     return json({ logged: true, id });
@@ -400,6 +427,9 @@ const logWorkoutTool: CoachTool = {
   confirmSummary: (input, db, context) => {
     const args = asRecord(input);
     const name = reqString(args, 'name');
+    // execute requires a valid kind (reqEnum); check it here so a bad or missing
+    // enum fails before the approve, not after.
+    reqEnum(args, 'kind', WORKOUT_KINDS);
     const duration = optNumber(args, 'duration_min');
     const sets = parseSets(args, db);
     const parts = [
@@ -472,6 +502,12 @@ const logSymptomTool: CoachTool = {
     const args = asRecord(input);
     const name = reqString(args, 'name');
     const severity = optNumber(args, 'severity');
+    // Match execute's guards at CARD time — a severity of 5.5 or a malformed
+    // time must fail before the user approves, not after.
+    if (severity !== undefined && (!Number.isInteger(severity) || severity < 1 || severity > 10)) {
+      throw new Error('"severity" must be an integer from 1 to 10.');
+    }
+    optTime(args, 'time');
     return `Log symptom "${name}"${severity != null ? ` · ${severity}/10` : ''}${pastDateSuffix(args, context?.now)}`;
   },
   execute: (db, input, context) => {
@@ -642,6 +678,12 @@ const setReminderTool: CoachTool = {
     const title = reqString(args, 'title');
     const time = optTime(args, 'time');
     const repeat = optEnum(args, 'repeat', REPEATS) ?? 'once';
+    // execute refuses a weekly with no anchoring date (createReminder can't pick
+    // a weekday without one); enforce it HERE so that refusal never rides in on
+    // a card the user is invited to approve.
+    if (repeat === 'weekly' && optDate(args, 'date') === undefined) {
+      throw new Error('A weekly reminder needs a "date" anchoring its weekday.');
+    }
     const now = context.now;
     const day =
       optDate(args, 'date') ?? (repeat === 'once' && time ? resolveOneOffDay(time, now) : null);
@@ -966,7 +1008,11 @@ const rememberTool: CoachTool = {
   readOnly: false,
   confirmSummary: (input) => {
     const args = asRecord(input);
-    return `Remember: "${reqString(args, 'content')}"`;
+    const content = reqString(args, 'content');
+    // execute requires a valid category (reqEnum); validate it here so a missing
+    // or non-enum category fails before the card is approved.
+    reqEnum(args, 'category', MEMORY_CATEGORIES);
+    return `Remember: "${content}"`;
   },
   execute: (db, input) => {
     const args = asRecord(input);
@@ -1403,6 +1449,15 @@ const createExperimentTool: CoachTool = {
     const args = asRecord(input);
     const name = reqString(args, 'name');
     const days = reqNumber(args, 'duration_days');
+    // Validate everything execute requires, so the card can't promise an
+    // experiment execute then refuses: an integer duration ≥ 3, a non-empty
+    // metrics array, and the two required prose fields.
+    if (!Number.isInteger(days) || days < 3) {
+      throw new Error('"duration_days" must be an integer of at least 3.');
+    }
+    parseMetricsArray(args);
+    reqString(args, 'hypothesis');
+    reqString(args, 'intervention');
     return `Start experiment "${name}" — ${Math.round(days)} days`;
   },
   execute: (db, input, context) => {
@@ -1754,6 +1809,9 @@ const logRecipeTool: CoachTool = {
     const recipe = requireRecipe(db, reqString(args, 'recipe_id'));
     const portion = parseRecipePortion(args);
     const factor = portionFactor(recipe, portion);
+    // execute parses the time (optTime throws on a malformed "HH:MM"); validate
+    // it here too so a bad time never rides in on an approvable card.
+    optTime(args, 'time');
     // Fully validate BEFORE the card: a recipe with nothing loggable (no lines,
     // or all-negligible) must refuse here, never after the user approves.
     const loggable = listIngredients(db, recipe.id).filter((l) => l.negligible === 0);

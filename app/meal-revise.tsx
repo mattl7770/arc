@@ -111,7 +111,11 @@ function currentPortion(row: ReviewItem) {
     if (scaled) return scaled;
   }
   return {
-    grams: row.base.grams,
+    // A validly-typed portion is kept even when macros can't be re-scaled (an
+    // ungrounded, gramless item): the number the user entered is recorded rather
+    // than silently dropped, and — since parseGrams only yields >0 — this grams
+    // is always null or positive, so it can never violate meal_items CHECK(grams > 0).
+    grams: grams ?? row.base.grams,
     serving_qty: null,
     kcal: row.base.kcal,
     protein_g: row.base.protein_g,
@@ -158,7 +162,11 @@ export default function MealReviseScreen() {
           food,
           confidence: item.confidence,
           base: {
-            grams: item.grams,
+            // A non-positive grams from the model would violate meal_items
+            // CHECK(grams > 0) and roll back the whole revision; store it as "not
+            // recorded" (null) instead — matching the `grounded` guard above and
+            // parseGrams, both of which already treat 0 as no grams.
+            grams: item.grams != null && item.grams > 0 ? item.grams : null,
             kcal: grounded?.kcal ?? item.kcal,
             protein_g: grounded?.protein_g ?? item.protein_g,
             carbs_g: grounded?.carbs_g ?? item.carbs_g,
@@ -166,7 +174,7 @@ export default function MealReviseScreen() {
             fiber_g: grounded?.fiber_g ?? item.fiber_g,
             micros: grounded?.micros ?? null,
           },
-          gramsText: item.grams != null ? String(Math.round(item.grams)) : '',
+          gramsText: item.grams != null && item.grams > 0 ? String(Math.round(item.grams)) : '',
         };
       })
     );

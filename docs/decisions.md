@@ -1,5 +1,276 @@
 # Architecture Decision Records (ADR)
 
+## 2026-08-25 — Durability comes back as ciphertext: the ARCB1 snapshot rides the device backup on purpose
+
+**Decision:** ARC writes an **XChaCha20-Poly1305-encrypted snapshot of its SQLite file** to
+`Documents/backups/`, and that directory is **deliberately left INSIDE the iCloud/Finder device
+backup**. The cloud carries ciphertext and nothing else. `arc.db` itself and the photo
+directories stay excluded exactly as the 2026-08-23 ADR left them. Spec: `docs/backups-subapp.md`.
+Code: `src/lib/backup/` plus a `replaceDatabaseFile` seam in `client.ts`. **No migration.**
+
+**This supersedes the interim posture in decision 1 below** — *"no automatic backup of health
+data until Phase 4 ships"*. This **is** Phase 4's "encrypted iCloud snapshot", in its pragmatic
+form: not a bespoke sync service, just an encrypted file placed where Apple's own backup will
+pick it up.
+
+**The whole reason, in one paragraph.** The privacy audit was right and its fix was right: an
+unencrypted health record in iCloud violates §2 outright, and excluding it was the only correct
+immediate move. But what that bought was a device holding the sole copy of years of labs,
+protocols, training and Coach memory, with **zero durability** — one lost phone and ARC is gone.
+"Nothing personal sits at rest in any cloud" was never a claim about *bytes*; it is a claim about
+**readable** personal data. A file Apple cannot read, that only this user's key opens, is not
+personal data at rest in a cloud in any sense the principle was written to protect. So the
+resolution is not to pick durability *or* privacy — it is to put the ciphertext exactly where the
+platform already runs a reliable, encrypted, versioned, zero-maintenance backup, and keep the
+plaintext out of it. **The two decisions are the same decision seen from both sides:** plaintext
+is excluded, ciphertext is included, and one line in `backup-file-store.ts` is what separates
+them (it must never call `excludeFromBackup` — the seam that does is one import away, and the
+comment there says so loudly).
+
+**Crypto: XChaCha20-Poly1305 + HKDF-SHA256, via `@noble/ciphers` + `@noble/hashes`.** Audited,
+zero-dependency, pure JavaScript, Hermes-safe. Pure JS is the load-bearing property, not a
+compromise: **this path has no build gate.** Every other native capability in this project —
+HealthKit, the image picker, `ArcBackup` itself — is queued behind an EAS rebuild that has not
+happened, and a backup feature that could not run until then would be a promise rather than a
+safety net. `expo-secure-store` and `expo-file-system` are already in the shipped binary, so the
+whole feature runs in the app that exists today. AES-GCM was not considered seriously: there is
+no `crypto.subtle` in Hermes, so the alternative to a JS ChaCha is a JS AES, which is slower and
+harder to write constant-time.
+
+**The container, ARCB1** (normative form in `docs/backups-subapp.md` §2):
+
+```
+"ARCB1" | headerLen:u32BE | header:ASCII-JSON | chunk0 | chunk1 | …   (4 MiB plain + 16B tag each)
+header = {v, createdAt, salt(16B hex), chunkSize, totalChunks, plainSize, userVersion}
+fileKey = hkdf(sha256, masterKey, salt, ascii('arc-backup-v1'), 32)
+nonce(i) = salt(16B) || u64BE(i)
+```
+
+Three choices in there are worth the ink. **The header bytes are the AAD for every chunk**, which
+binds `totalChunks` and `plainSize` into each tag — so truncating or extending the file fails
+authentication instead of yielding a short, plausible database. **The nonce is constructed, not
+random**, which is only safe because XChaCha's nonce is 192 bits: a fresh per-file salt plus a
+per-chunk counter cannot repeat under one key. **Chunking exists at all** because the DB will
+reach hundreds of megabytes and a single-buffer seal would be a hard OOM on a phone; it also
+makes a corrupt file fail at the chunk that is wrong rather than at the end.
+
+**Everything is ASCII by construction.** Hermes has no `Buffer`, and `TextEncoder`/`TextDecoder`
+are not to be relied on, so the format is defined so that local ASCII helpers suffice — the JSON
+header is ASCII by construction (hex salt, ISO date, numbers) and throws on anything else rather
+than silently mangling it.
+
+**The key: Keychain `arc.backup.key`, DEFAULT accessibility (`WHEN_UNLOCKED`) — and this is the
+one place where the opposite of the API key's rule is correct.** Decision 4 below binds the API
+key with `WHEN_UNLOCKED_THIS_DEVICE_ONLY` so the one secret ARC holds never rides a backup to
+another device. The backup key must do exactly the reverse: `THIS_DEVICE_ONLY` items **do not
+migrate through an encrypted device backup**, so a phone restored from iCloud would carry its own
+snapshot and be unable to open it — durability that fails precisely in the scenario it exists
+for. The asymmetry is not an inconsistency, it is the difference between the two secrets. The API
+key is a **credential**: losing it costs a paste from the provider's dashboard, and it is
+re-issuable, so device-binding is free. The backup key is a **capability to read the user's own
+history**: losing it is unrecoverable, and it protects data that is *already* encrypted at rest by
+the device backup itself, so migrating it grants an attacker nothing they did not already need
+the user's iCloud account and backup password for. `key.ts` says this at the store site, because
+it reads like the bug the 2026-08-23 ADR fixed and would otherwise be "corrected" by the next
+person to walk past it.
+
+**A key that cannot be persisted is never minted.** `ensureBackupKey` returns `null` rather than a
+memory-only key. A snapshot encrypted under a key that dies with the process is worse than no
+snapshot, because it looks like protection — the same class of failure as a plausible-looking
+number over missing data (§5 of the design spec, and the nutrition remainder guard).
+
+**Addendum — the adversarial-review hardening (2026-08-25, same day).** A three-lane attack pass
+(crypto / integration / UI) on the shipped implementation surfaced one critical flaw and a family
+of related ones, all fixed before merge and all now pinned by `db/backup.test.mjs`:
+
+1. **Never mint over ciphertext.** The critical one. A phone restored *without* its Keychain (an
+   unencrypted Finder backup) arrives with the snapshot but no key; the first automatic pass
+   would have minted a fresh key, sealed the **empty** database, and rotated the only real record
+   toward destruction — silently, on the exact disaster path the feature exists for. Minting is
+   now gated by the caller: allowed only when the backups directory is empty. With ciphertext
+   present and no key, backups pause at `no-key` and the UI names the way forward (restore or
+   recovery code). The test seeds an orphaned snapshot and asserts it comes through a keyless
+   pass byte-for-byte untouched.
+2. **Adoption is session-first; the Keychain is earned.** A typed recovery code goes into the
+   in-memory mirror only, and is persisted (`persistAdoptedKey`) solely after it has *decrypted
+   something* — its checksum proves it is *a* key, not *this install's* key, and writing it
+   straight over the slot destroyed the one durable copy of whatever was there. A failed attempt
+   puts the displaced session key back (`restoreSessionKey`). The mint path re-checks the mirror
+   after its awaited Keychain write so it can never clobber a key adopted mid-mint, and a
+   non-empty-but-unparseable Keychain item blocks minting outright (`hasUnreadableStoredKey`)
+   instead of being overwritten.
+3. **A hand-pressed backup outranks the schedule.** The "Automatic backups" toggle gates only the
+   automatic pass; `createBackup` no longer reads it (it had silently disabled the manual button
+   too, leaving zero durability behind a live-looking control).
+4. **Rotation aborts rather than collapses.** The current→previous copy runs natively
+   (`store.copy`), and if it fails the backup **aborts with both generations intact** — the old
+   behaviour swallowed the failure and overwrote current anyway, quietly reducing two generations
+   to one while reporting `done`. `arc-previous.arcb` is also now *reachable*: the Backups screen
+   offers "Restore the previous backup", because a copy that cannot be selected does not exist.
+5. **Restore never deletes the live database before its replacement is whole.** The decrypted
+   bytes land at `arc.db.restoring` first; only a verified scratch is moved over `arc.db` (WAL/SHM
+   removed in between so an old WAL can never replay over the restored file), and the
+   backup-exclusion xattr is re-applied immediately — the move mints a new inode, and waiting for
+   the next `getDb()` left the restored *plaintext* record riding the next iCloud backup during
+   the exact window the user is told to background the app. A snapshot recorded at a **newer**
+   schema than the running build is refused (`newer-schema`) rather than silently installed under
+   a forward-only migration runner that would never touch it. And every stale `Database` wrapper
+   held by a mounted screen now fails with one readable sentence ("close and reopen ARC") instead
+   of op-sqlite's spurious out-of-memory.
+6. **The boot path yields.** The seal runs through `sealBackupAsync` (a macrotask between 4 MiB
+   chunks), the boot invocation is deferred past first paint, and rotation no longer round-trips
+   snapshot bytes through the JS heap.
+
+**The recovery code is the keychain-loss fallback**, and it is the reason this is not a single
+point of failure. The 32-byte key is rendered once, on demand, as Crockford base32 in groups of
+four with a 20-bit `sha256` checksum tail — case-insensitive to re-enter, tolerant of spaces and
+hyphens, `I`/`L`→`1` and `O`→`0`. The checksum matters more than it looks: without it a typo
+decrypts to garbage and reports "wrong key or corrupt", which is indistinguishable from a dead
+file and would send a user to delete a perfectly good backup. It is shown reveal-on-tap, never at
+boot, never logged, with one line of warning above it — it is the whole key in transcribable form.
+
+**Owner call (2026-08-25): the Keychain-through-backup path is the operative story; the code is
+optional.** The key rides the encrypted device backup inside the Keychain (that is what the
+non-device-bound accessibility buys), so the normal disaster — phone dies, new phone restored
+from iCloud — needs no code at all, and the UI does not stage a "write this down" ceremony. The
+code stays available in Settings as an extra copy for the paths that genuinely drop Keychain
+items (an unencrypted computer backup, keychain corruption); the accepted trade is that a user
+who never revealed it has no way in on exactly those paths. All the mechanics stand unchanged:
+minted once, never re-minted over ciphertext, adoption session-first.
+
+**Entropy comes from SQLite's `randomblob`**, injected as `random(n)`, the same source as ARC's
+row ids (`src/lib/db/id.ts`) and for the same reason: Hermes has no `crypto` global and Expo's
+runtime does not add one. SQLite's PRNG is ChaCha20 seeded from OS entropy — a real CSPRNG, not
+`Math.random`, which is never used for key material anywhere in this feature. Stated plainly: it
+is **not** a hardware RNG behind a formally-audited interface, and that is a bar the owner
+explicitly did not set for this ("not bulletproof"). If it ever needs to be, the injection point
+is one function.
+
+**Photos are out of v1, deliberately.** Progress photos are working copies of originals the user
+picked from **iOS Photos**, which the user already backs up; meal photos are transient by design
+(an estimate input, not a record). Photos are also the bulk — an encrypted whole-library snapshot
+rewritten daily inside the device backup is a different size-and-rotation problem, not the same
+one with more bytes. The follow-up path, if wanted, is a **per-file** encrypted mirror (each photo
+sealed once under the same master key and the same chunk scheme, named by content hash), which is
+additive: no format change, no migration.
+
+**Restore, and the relaunch requirement.** Decrypt → verify the plaintext begins with ASCII
+`SQLite format 3\0` (a verified tag proves the bytes are *ours and unmodified*; it does not prove
+they are a database) → `replaceDatabaseFile` closes the raw op-sqlite handle, deletes
+`arc.db`/`-wal`/`-shm`, writes the bytes, clears the cache. **Then the user must close and reopen
+ARC**, and the UI says so as a persistent line rather than a toast. Every live hook and open
+statement in the process still points at the old database; a relaunch is the honest way to get a
+consistent app, and hiding that would be a subtle-corruption bug dressed as a UX shortcut. An
+older snapshot landing on a newer binary is **not** a special case — the next `getDb()` runs
+`pendingMigrations` forward from the snapshot's `user_version`, which is exactly the runner's job.
+
+**The virgin-device story, which is the whole point.** Restore the iPhone from its iCloud/Finder
+backup: that backup carries the ciphertext snapshot (it is in Documents) *and* the Keychain item
+(it is not device-bound). Open ARC — the database is empty, because `arc.db` is excluded and
+always will be — then **Settings › Backups → Restore**, then relaunch. If the Keychain item did
+not survive the restore path taken, the recovery code is the way in. Note the shape: ARC never
+performs the cloud round-trip itself, and holds no account, no entitlement and no network call for
+any of this.
+
+**Rejected alternatives.**
+
+- **SQLCipher / whole-DB encryption at rest.** It solves a problem ARC does not have — the device
+  is already encrypted, and the plaintext DB was excluded from the backup precisely so the cloud
+  never sees it. It costs a build flag on op-sqlite (another EAS gate), a full re-encrypt
+  migration of an existing database, and an unquantified compatibility risk with `sqlite-vec`,
+  which is loaded as an extension into that same connection. All of that to protect against an
+  attacker who has already defeated the device passcode, and none of it produces a *backup*.
+- **iCloud Drive / CloudKit.** Entitlements, a container, a sync state machine, conflict
+  resolution, and — the disqualifier — a great deal more surface that cannot be verified from
+  inside this repo. The device backup is already encrypted, already versioned, already reliable,
+  and already running. Writing a file into a directory Apple backs up is the whole integration.
+- **A user-chosen passphrase instead of a Keychain key.** Rejected because it puts a prompt
+  between the user and their own history on the day they are least able to answer it, and because
+  a passphrase strong enough to protect a health record is one nobody remembers a year later. The
+  recovery code is the same idea without the memory requirement: generated, not chosen, written
+  down once.
+- **More than two snapshot generations.** Two (`arc-current` / `arc-previous`) covers the failure
+  a single slot cannot survive — a corrupt or half-written current. Deeper history multiplies the
+  size inside the device backup for a scenario (silent logical corruption noticed weeks later)
+  that this app has no way to detect anyway.
+
+**Unverified, and it is all the native half.** No snapshot has been written, read back, or
+restored on a device, and no encrypted device backup has been observed carrying one. The crypto
+runs in the current binary; the file seam, the Keychain accessibility class actually migrating,
+and the relaunch story have not been seen. Verification order is in `docs/backups-subapp.md` §9.
+
+---
+
+## 2026-08-23 — At-rest personal data must not ride the iCloud backup (privacy audit)
+
+**Context.** A privacy audit (after the exhaustive code review) found the "nothing personal sits at rest in any cloud" principle (CLAUDE.md §2) was violated in several places that the offline-except-AI framing had hidden — the network was quiet, but the *device backup* was carrying everything to iCloud. Decisions below were taken with owner sign-off (2026-08-23).
+
+**Decisions:**
+
+1. **`arc.db` and all photo directories are excluded from the iCloud/iTunes device backup.** op-sqlite stores `arc.db` under the app's Library directory and the progress/meal/recipe photos live under Documents — both backed up by default, which put the entire health record and the most sensitive imagery ARC holds into iCloud. There is no JS API for `NSURLIsExcludedFromBackupKey` in this stack, so it rides a tiny native module, `ArcBackup`, called through a guarded seam (`src/lib/files/backup-exclusion.ts`, `requireOptionalNativeModule` → no-op until linked). Wired at the DB open path (`client.ts`, main file + `-wal`/`-shm`) and at photo-directory creation (`photo-file-store.ts`, one seam covering all three photo types). **This supersedes, for the interim, the Phase-4 "encrypted iCloud snapshot" intent: until that managed encrypted backup exists, the correct posture is no cloud copy at all, not an unencrypted one.** The trade-off the owner accepted: no automatic backup of health data until Phase 4 ships. **⚠️ That trade-off is discharged as of the 2026-08-25 ADR at the top of this file** — the encrypted snapshot now exists and rides the device backup as ciphertext. The exclusions in this decision are unchanged and permanent; what changed is that there is now an encrypted copy alongside them, which is exactly the condition this paragraph named.
+
+2. **`expo-updates` is removed entirely.** It contacted `u.expo.dev` on every cold launch carrying a persistent per-install identifier — unsanctioned third-party egress that broke offline-except-AI, for an OTA capability ARC does not use (zero runtime references). Removed from `app.json` (`updates` + `runtimeVersion` blocks) and `package.json`. (`eas.json` `channel` labels are inert without it and left in place.)
+
+3. **Whole-DB exports and doctor/self-review reports are written to `Library/Caches`, not Documents, and deleted after a successful share.** Caches is never in the device backup; a share-sheet hand-off copies the bytes to wherever the user chose, after which the on-device plaintext copy is removed. Both are safe because every such artifact regenerates on demand from the DB (reports carry `data_json`), so `reports.file_path` is now a record, never a read path. (`share-file.ts`, `report-file.ts`.)
+
+4. **The API key is bound to this device** (`keychainAccessible: WHEN_UNLOCKED_THIS_DEVICE_ONLY`) so the one secret ARC holds never rides an encrypted backup to another device. (`api-key-store.ts`.)
+
+5. **User-pasted import URLs (recipe/article) are SSRF-guarded** — loopback, RFC-1918, link-local (incl. `169.254.169.254`), CGNAT and IPv6 ULA/link-local hosts are refused before any fetch. (`src/lib/net/safe-url.ts`, wired into both import normalizers.)
+
+6. **Pre-migration `.bak` copies are pruned and excluded from backup** — previously they accumulated unboundedly (one full-DB copy per migration) in a backed-up location. (`client.ts`.)
+
+7. **Owner PII scrubbed from the repo** — a real email in `docs/nutrition-subapp.md` and a real name+DOB in `db/reports.test.mjs` (a fixture) replaced with non-identifying values.
+
+**The `ArcBackup` native module (decision 1) — UNVERIFIED, add + verify on the next EAS build.** The reviewing environment has no iOS toolchain, so this was NOT compiled. The JS seam is inert (a safe no-op) until these files exist under `modules/arc-backup/`; if the build fails to compile them, **delete `modules/arc-backup/` and rebuild** — the app returns to the no-op state. Verify on device with: enable iCloud backup, add a weight + a progress photo, and confirm `arc.db` and the photo dirs report `isExcludedFromBackup == true` (or inspect the backup does not contain them).
+
+```jsonc
+// modules/arc-backup/expo-module.config.json
+{ "platforms": ["apple"], "apple": { "modules": ["ArcBackupModule"] } }
+```
+```ts
+// modules/arc-backup/index.ts
+import { requireOptionalNativeModule } from 'expo-modules-core';
+export default requireOptionalNativeModule('ArcBackup');
+```
+```ruby
+# modules/arc-backup/ios/ArcBackup.podspec
+Pod::Spec.new do |s|
+  s.name = 'ArcBackup'
+  s.version = '1.0.0'
+  s.summary = 'Exclude a file/dir from the iOS device backup.'
+  s.author = 'ARC'
+  s.homepage = 'https://localhost'
+  s.platforms = { :ios => '15.1' }
+  s.source = { :git => '' }
+  s.static_framework = true
+  s.dependency 'ExpoModulesCore'
+  s.source_files = '**/*.{h,m,swift}'
+end
+```
+```swift
+// modules/arc-backup/ios/ArcBackupModule.swift
+import ExpoModulesCore
+import Foundation
+
+public class ArcBackupModule: Module {
+  public func definition() -> ModuleDefinition {
+    Name("ArcBackup")
+    Function("excludeFromBackup") { (pathOrUri: String) -> Bool in
+      let path = pathOrUri.hasPrefix("file://")
+        ? (URL(string: pathOrUri)?.path ?? pathOrUri)
+        : pathOrUri
+      guard FileManager.default.fileExists(atPath: path) else { return false }
+      var url = URL(fileURLWithPath: path)
+      var values = URLResourceValues()
+      values.isExcludedFromBackup = true
+      do { try url.setResourceValues(values); return true } catch { return false }
+    }
+  }
+}
+```
+
+---
+
 ## 2026-08-12 — The recipe-source fetch exception extends to article URLs (knowledge import)
 
 **Decision (owner sign-off, 2026-08-12):** knowledge import extends the 2026-08-08 user-initiated import-fetch exception from recipe sources to **article URLs**: single-shot, at import time only, the URL the user explicitly pasted or shared, **HTML text only**, never media, never background. Failure degrades to paste-the-text, which stays first-class UI.

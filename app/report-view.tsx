@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
 import { ReportPreview } from '@/components/reports/preview';
@@ -101,6 +101,23 @@ export default function ReportViewScreen() {
   const canWrite = fileWritingAvailable();
   const keySet = apiKeyStore.has();
 
+  // Both flows below await multi-second work and then touch state or a global
+  // Alert. If the user taps back mid-flight the screen unmounts, and Alert.alert
+  // — a native surface with no component lifecycle — would otherwise pop over
+  // the Reports list about an action on a screen they already left. A mounted
+  // flag gates every post-await UI call; the read also carries an AbortController
+  // so its streaming request is cancelled on unmount rather than left to finish
+  // into the void.
+  const mountedRef = useRef(true);
+  const readAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      readAbortRef.current?.abort();
+    };
+  }, []);
+
   const share = useCallback(async () => {
     if (!data || busy) return;
     setBusy('saving');
@@ -108,12 +125,14 @@ export default function ReportViewScreen() {
     try {
       const written = await writeReportFile(data, shownRead);
       if (written.outcome.status === 'unavailable') {
-        setNote('No file system on this runtime — nothing was written.');
+        if (mountedRef.current) setNote('No file system on this runtime — nothing was written.');
         return;
       }
       if (written.outcome.status === 'failed') {
-        setNote('Could not write the file.');
-        Alert.alert('Report failed', written.outcome.message);
+        if (mountedRef.current) {
+          setNote('Could not write the file.');
+          Alert.alert('Report failed', written.outcome.message);
+        }
         return;
       }
       // The row lands only once the FILE exists. A ledger entry pointing at a
@@ -125,6 +144,9 @@ export default function ReportViewScreen() {
       // CHECK rejecting the row would otherwise become an unhandled rejection
       // with no user-facing trace, on a tap that DID write the file. The file
       // is the artefact; failing to file it is worth an alert, not a crash.
+      // The insert is the real work and lands regardless of mount state — the
+      // file exists, so the history row that points at it should too, even if
+      // the user has left the screen. Only the UI reactions to it are gated.
       if (isDraft && savedId == null) {
         try {
           const id = insertReport(getDb(), {
@@ -133,15 +155,18 @@ export default function ReportViewScreen() {
             fileName: written.fileName,
             filePath: written.relativePath,
           });
-          setSavedId(id);
+          if (mountedRef.current) setSavedId(id);
         } catch (error) {
-          Alert.alert(
-            'Written, but not filed',
-            `The file was written, but this report could not be added to your history:\n\n` +
-              `${error instanceof Error ? error.message : String(error)}`
-          );
+          if (mountedRef.current) {
+            Alert.alert(
+              'Written, but not filed',
+              `The file was written, but this report could not be added to your history:\n\n` +
+                `${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         }
       }
+      if (!mountedRef.current) return;
       if (written.outcome.status === 'shared') {
         setNote(`Shared · ${written.fileName}`);
       } else {
@@ -154,17 +179,25 @@ export default function ReportViewScreen() {
         );
       }
     } finally {
-      setBusy(null);
+      if (mountedRef.current) setBusy(null);
     }
   }, [data, busy, shownRead, isDraft, savedId]);
 
   const addRead = useCallback(async () => {
     if (!data || data.kind !== 'self_review' || busy) return;
+    const controller = new AbortController();
+    readAbortRef.current = controller;
     setBusy('reading');
     setNote(null);
     try {
-      setRead(await generateCoachRead(data));
+      const result = await generateCoachRead(data, controller.signal);
+      if (!mountedRef.current || controller.signal.aborted) return;
+      setRead(result);
     } catch (error) {
+      // The screen may already be gone — the user tapped back while the
+      // multi-second streaming call was in flight, which aborts the request.
+      // An alert about a read on a screen they have left is worse than silence.
+      if (!mountedRef.current || controller.signal.aborted) return;
       const message =
         error instanceof CoachReadUnavailableError
           ? error.message
@@ -174,7 +207,8 @@ export default function ReportViewScreen() {
       setNote(null);
       Alert.alert('No read written', message);
     } finally {
-      setBusy(null);
+      if (readAbortRef.current === controller) readAbortRef.current = null;
+      if (mountedRef.current) setBusy(null);
     }
   }, [data, busy]);
 

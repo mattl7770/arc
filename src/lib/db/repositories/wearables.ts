@@ -118,6 +118,13 @@ const WORKOUT_UPSERT_SQL = `${UPSERT_COLUMNS}
  * `(source_device, source_raw_id)` key those are two different rows, so one
  * session appears twice and re-appears every time the bucket flips. Keying on
  * the UUID alone makes the second pass an UPDATE that corrects the label.
+ *
+ * The return is the count of rows this pass ACTUALLY WROTE — inserted, or
+ * updated with a real change — mirroring the DO UPDATE … WHERE-CHANGED guard so
+ * a quiet re-sync of an unchanged fortnight reports 0, not the whole batch. The
+ * `Database` seam exposes no `changes()`, so each row is pre-checked against its
+ * conflict key (the same approach `upsertHealthBodyRows` takes in body.ts),
+ * which keeps `HealthSyncResult.rowsWritten` honest across both halves.
  */
 export function upsertWearableRows(db: Database, rows: WearableUpsert[]): number {
   if (rows.length === 0) return 0;
@@ -132,26 +139,69 @@ export function upsertWearableRows(db: Database, rows: WearableUpsert[]): number
       throw new Error(`upsertWearableRows: empty source_raw_id for "${row.metricType}"`);
     }
   }
+  let written = 0;
   db.transaction(() => {
     for (const row of rows) {
-      db.run(
-        row.metricType === GLOBAL_IDENTITY_METRIC ? WORKOUT_UPSERT_SQL : DAY_BUCKET_UPSERT_SQL,
-        [
-          newId(db),
-          row.date,
-          row.metricType,
-          row.value,
-          row.unit,
-          row.sourceDevice,
-          row.sourceRawId,
-          row.startTime,
-          row.endTime,
-          JSON.stringify(row.metadata),
-        ]
-      );
+      const metadata = JSON.stringify(row.metadata);
+      const isWorkout = row.metricType === GLOBAL_IDENTITY_METRIC;
+      if (upsertChangesRow(db, row, metadata, isWorkout)) written++;
+      db.run(isWorkout ? WORKOUT_UPSERT_SQL : DAY_BUCKET_UPSERT_SQL, [
+        newId(db),
+        row.date,
+        row.metricType,
+        row.value,
+        row.unit,
+        row.sourceDevice,
+        row.sourceRawId,
+        row.startTime,
+        row.endTime,
+        metadata,
+      ]);
     }
   });
-  return rows.length;
+  return written;
+}
+
+/** The columns the upsert compares — the CHANGED guard, read back as a row. */
+type UpsertProbe = Pick<
+  WearableDataRow,
+  'value' | 'date' | 'unit' | 'start_time' | 'end_time' | 'metadata' | 'source_device'
+>;
+
+/**
+ * Would this upsert write? True when no row holds the conflict key (an INSERT)
+ * or the existing row differs on any field the DO UPDATE … WHERE clause guards.
+ * The conflict key matches the SQL: `(source_device, source_raw_id)` for
+ * day-bucket rows, `source_raw_id` alone for a workout (which additionally
+ * rewrites `source_device`, so a bucket flip counts as a change here too).
+ */
+function upsertChangesRow(
+  db: Database,
+  row: WearableUpsert,
+  metadata: string,
+  isWorkout: boolean
+): boolean {
+  const existing = isWorkout
+    ? db.get<UpsertProbe>(
+        `SELECT value, date, unit, start_time, end_time, metadata, source_device
+         FROM wearable_data WHERE source_raw_id = ? AND metric_type = 'workout'`,
+        [row.sourceRawId]
+      )
+    : db.get<UpsertProbe>(
+        `SELECT value, date, unit, start_time, end_time, metadata, source_device
+         FROM wearable_data WHERE source_device = ? AND source_raw_id = ?`,
+        [row.sourceDevice, row.sourceRawId]
+      );
+  if (!existing) return true;
+  return (
+    existing.value !== row.value ||
+    existing.date !== row.date ||
+    existing.unit !== row.unit ||
+    existing.start_time !== row.startTime ||
+    existing.end_time !== row.endTime ||
+    existing.metadata !== metadata ||
+    (isWorkout && existing.source_device !== row.sourceDevice)
+  );
 }
 
 /**

@@ -424,7 +424,7 @@ export function MuscleFigureLegend(props: MuscleFigureLegendProps) {
     return (
       <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
         {tally.neverTrained
-          ? 'No sessions logged yet, so every muscle reads fresh. Log one and the figure starts fading.'
+          ? 'No training in the last 14 days, so every muscle reads fresh. Log a session and the figure starts fading.'
           : 'Every muscle is fresh — nothing to train around today.'}
       </Text>
     );

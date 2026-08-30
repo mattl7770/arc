@@ -69,7 +69,14 @@ import {
   plural,
   signed,
 } from './format';
-import { accumulatingEnd, formatDate, formatDateLong, todayNote } from './period';
+import {
+  accumulatingEnd,
+  formatDate,
+  formatDateLong,
+  formatRange,
+  priorEqualWindow,
+  todayNote,
+} from './period';
 import {
   REPORT_DISCLAIMER,
   assembleBodyOver,
@@ -334,9 +341,17 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
     { label: 'Working sets', value: count(sets), unit: null, note: 'warm-ups excluded' },
   ];
 
-  // Volume by muscle, this window against the equal one before it.
+  // Volume by muscle, this window against the equal one before it. The prior
+  // window is sized to the CLIPPED current window (period.start..accEnd), not to
+  // period.prior — which is the full period's length. On a custom range that
+  // reaches today, accEnd is yesterday, so the current window is one day shorter
+  // than the period; comparing it against a full-length prior would bias this
+  // table's raw-set-SUM delta downward and print a training decline that is only
+  // the missing (today) day. Recovery dodges this by averaging per day; the
+  // muscle table sums, so the two windows must be equal in length.
   const current = muscleSetsInRange(db, period.start, accEnd);
-  const prior = muscleSetsInRange(db, period.prior.start, period.prior.end);
+  const priorWindow = priorEqualWindow(period.start, accEnd);
+  const prior = muscleSetsInRange(db, priorWindow.start, priorWindow.end);
   const priorByMuscle = new Map(prior.map((m) => [m.muscle, m.sets]));
   const muscles: MuscleVolumeRow[] = current
     .slice()
@@ -354,12 +369,19 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
     });
   const musclesNote =
     prior.length === 0 && muscles.length > 0
-      ? `Nothing was logged in the window before this one (${period.prior.rangeLabel}), so these have nothing to be compared against.`
+      ? `Nothing was logged in the window before this one (${formatRange(priorWindow.start, priorWindow.end)}), so these have nothing to be compared against.`
       : null;
 
-  // Movements trained at least twice in-period, and the estimated-1RM move
-  // across those sessions. e1rmSeries is an ALL-TIME read per exercise; the
-  // period is a filter over what it returns, never a second query.
+  // Every exercise with at least one non-warmup set in-period, with its distinct
+  // session count. e1rmSeries is an ALL-TIME read per exercise; the period is a
+  // filter over what it returns, never a second query.
+  //
+  // The HAVING >= 2 that used to live on this query has been REMOVED, and the
+  // two things it gated now carry their own filter below. The movement table
+  // needs a first and last e1rm to show a delta, so it stays gated on two
+  // sessions; PR detection needs only a single session — a lift trained once can
+  // set an all-time best — and inheriting the >= 2 gate silently dropped that
+  // record from the report it claims to surface.
   const trained = db.all<{ exerciseId: string; name: string; sessions: number }>(
     `SELECT s.exercise_id AS exerciseId, e.name AS name,
             count(DISTINCT w.date) AS sessions
@@ -369,7 +391,6 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
      WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup'
        AND w.date >= ? AND w.date <= ?
      GROUP BY s.exercise_id
-     HAVING count(DISTINCT w.date) >= 2
      ORDER BY e.name COLLATE NOCASE`,
     [period.start, accEnd]
   );
@@ -383,7 +404,8 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
     // real training history inside a one-year period.
     const series = e1rmSeries(db, row.exerciseId, 1000);
     const inPeriod = series.filter((p) => p.date >= period.start && p.date <= accEnd);
-    if (inPeriod.length >= 2) {
+    // The movement-progression row needs two in-period sessions to show a delta.
+    if (row.sessions >= 2 && inPeriod.length >= 2) {
       const first = inPeriod[0]!;
       const last = inPeriod[inPeriod.length - 1]!;
       const firstDisplay = weightSpec ? weightSpec.fromCanonical(first.e1rm) : first.e1rm;

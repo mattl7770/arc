@@ -1,4 +1,5 @@
-import { Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { AppState, Text, View } from 'react-native';
 
 /**
  * The folio line — the only thing above the hero: the drawing's own mark and
@@ -78,8 +79,50 @@ const MONTHS_SPOKEN = [
   'December',
 ] as const;
 
+/**
+ * The current local date, as state that refreshes only when the date can
+ * actually change: at the next local midnight, and whenever the app returns to
+ * the foreground. Home re-renders only when one of its data hooks changes, so a
+ * bare `new Date()` in render shows whatever the clock read at the last
+ * incidental render — leave Home foregrounded and idle across midnight and the
+ * folio would keep reading 'FRI 22 AUG' into Saturday. The foreground refresh
+ * also covers a background span that swallowed the pending timeout.
+ */
+function useLocalDate(): Date {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const scheduleMidnight = () => {
+      const current = new Date();
+      // Componentwise so it lands on LOCAL midnight, never a UTC-shifted one.
+      const nextMidnight = new Date(
+        current.getFullYear(),
+        current.getMonth(),
+        current.getDate() + 1
+      );
+      timer = setTimeout(() => {
+        setNow(new Date());
+        scheduleMidnight();
+      }, nextMidnight.getTime() - current.getTime());
+    };
+    scheduleMidnight();
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') setNow(new Date());
+    });
+
+    return () => {
+      clearTimeout(timer);
+      sub.remove();
+    };
+  }, []);
+
+  return now;
+}
+
 export function DateEyebrow() {
-  const now = new Date();
+  const now = useLocalDate();
   const day = now.getDate();
   const printed = `${WEEKDAYS[now.getDay()] ?? ''} ${day} ${MONTHS[now.getMonth()] ?? ''}`;
   const spoken = `${WEEKDAYS_SPOKEN[now.getDay()] ?? ''} ${day} ${MONTHS_SPOKEN[now.getMonth()] ?? ''}`;

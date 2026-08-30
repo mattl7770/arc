@@ -170,14 +170,17 @@ console.log('3. cost: an estimate the user can see, never a precise-looking lie'
   ).includes('9.0k cache write')
     ? ok('a COLD turn says so — the expensive event is the one worth seeing')
     : bad('cold write not surfaced');
-  // Three decimals under a cent: at ~$0.004 a turn, 0.004 vs 0.009 is the whole
-  // optimisation, and "<$0.01" hides exactly that.
+  // A turn that costs a real fraction of a cent must not round to "$0.000":
+  // 10 in + 5 out on Haiku is ~$0.00004, which toFixed(3) would show as exactly
+  // zero — presenting a nonzero cost as free, the one thing this module avoids.
+  // Below the three-decimal floor it says "<$0.001"; the 0.0005–0.01 band still
+  // shows three decimals (0.004 vs 0.009 is the whole optimisation).
   usageCaption(
     { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 },
     'claude-haiku-4-5',
     0
-  ) === '10 in · 5 out · ~$0.000'
-    ? ok('a sub-cent turn shows three decimals, not "<$0.01"')
+  ) === '10 in · 5 out · ~<$0.001'
+    ? ok('a sub-milli-cent turn floors to "<$0.001", never "$0.000"')
     : bad(
         'small caption',
         usageCaption(

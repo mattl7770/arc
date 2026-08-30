@@ -75,7 +75,13 @@ export default function KnowledgeEntryEditScreen() {
     id,
     topic: topicParam,
     section: sectionParam,
-  } = useLocalSearchParams<{ id?: string; topic?: string; section?: string }>();
+    draft: draftParam,
+  } = useLocalSearchParams<{
+    id?: string;
+    topic?: string;
+    section?: string;
+    draft?: string;
+  }>();
   const editing = typeof id === 'string' ? getKnowledgeEntry(getDb(), id) : undefined;
 
   // Which half of the base this lands in (0044). An existing entry keeps its
@@ -95,7 +101,14 @@ export default function KnowledgeEntryEditScreen() {
   // because the model couldn't read it, and it must not be mangled by URL
   // decoding on the way (src/lib/knowledge/draft-handoff.ts). Read-and-clear in
   // the initializer, which is why that function has a replay window.
-  const [draft] = useState(() => (editing ? null : consumeKnowledgeDraft()));
+  //
+  // Only consume when this mount is the stash's intended recipient — the import
+  // fall-through sets `draft: '1'`. Without that gate the handoff's replay window
+  // (scoped by elapsed time, not by mount) would leak an abandoned paste into a
+  // fresh "Write an entry" opened within its window.
+  const [draft] = useState(() =>
+    editing || draftParam !== '1' ? null : consumeKnowledgeDraft()
+  );
   const [body, setBody] = useState(editing?.body ?? draft?.body ?? '');
   const [topics] = useState<string[]>(() => listKnowledgeTopics(getDb()));
 

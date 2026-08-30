@@ -120,11 +120,26 @@ type LiveSet = {
   setType: SetType;
   done: boolean;
   pr: boolean;
+  /**
+   * For a set loaded from a stored session: the exact canonical kg it was read
+   * with, and the display string it rendered as. An untouched weight writes back
+   * byte-for-byte on Save instead of round-tripping through the display unit and
+   * drifting — that round-trip is only lossless when the stored kg already
+   * matches a round display value (see finish()). Absent on sets typed fresh.
+   */
+  storedWeightKg?: number | null;
+  storedWeightText?: string;
 };
 
 type LiveBlock = {
   key: number;
-  exerciseId: string;
+  /**
+   * The catalog movement, or null for a free-text set — a genuinely custom
+   * movement the logger never resolved (workout-log.tsx + insertSet's name
+   * backstop), or one whose catalog entry has since been deleted. Nullable so
+   * the editor can hold and re-save such a set rather than dropping it.
+   */
+  exerciseId: string | null;
   name: string;
   loggingType: LoggingType;
   mechanic: Mechanic | null;
@@ -208,6 +223,29 @@ function buildBlock(
 }
 
 /**
+ * A synthetic block for a set with no catalog movement — a free-text custom
+ * movement (null exercise_id) or one whose catalog entry has since been deleted.
+ * It carries the stored display name and keeps exerciseId null so Save re-stores
+ * it as free text (insertSet's name backstop still runs). `weight_reps` is the
+ * safe default logging type: it shows the weight column, and the set's own
+ * numbers fill it. No prev/PR — those are the live logger's, unused when editing.
+ */
+function freeTextBlock(name: string): LiveBlock {
+  return {
+    key: nextKey(),
+    exerciseId: null,
+    name,
+    loggingType: 'weight_reps',
+    mechanic: null,
+    restSec: null,
+    prev: [],
+    bestE1rm: null,
+    linkedToNext: false,
+    sets: [],
+  };
+}
+
+/**
  * Rebuild the editor's blocks from a session already in the database — the
  * whole of "view and edit a past workout" (owner, 2026-08-14).
  *
@@ -221,34 +259,55 @@ function buildBlock(
  * Every set comes back `done` — it happened — and carries no PR flag: PRs are
  * awarded live, against the best e1RM *before* the session, and re-awarding
  * them while editing a two-week-old workout would be a stamp about the wrong
- * moment. A set whose exercise has since been deleted from the catalog keeps
- * its stored name and is dropped from the editor rather than crashing it; the
- * `prev`/`bestE1rm` lookups are the live logger's and are simply unused here.
+ * moment. A set that was always free text (a custom movement the logger never
+ * resolved) — or whose catalog movement has since been deleted (buildBlock
+ * null) — comes back as a {@link freeTextBlock} carrying its stored name, so it
+ * survives a Save instead of being silently erased by replaceWorkout's
+ * DELETE-then-reinsert; the `prev`/`bestE1rm` lookups are the live logger's and
+ * are simply unused here.
  */
 function blocksFromWorkout(detail: WorkoutDetail, units: UnitPreferences): LiveBlock[] {
   const blocks: LiveBlock[] = [];
   for (const s of detail.sets) {
     const last = blocks[blocks.length - 1];
-    if (!last || last.exerciseId !== s.exerciseId || s.exerciseId == null) {
+    // A set continues the last block when it is the same catalog movement, or —
+    // for a free-text set (null exercise_id) — the same free-text name. Grouping
+    // on a RUN, not on identity, keeps the performed order (bench → sled push →
+    // bench comes back as three blocks, not the free-text set dropped and the
+    // two benches merged).
+    const continues =
+      last != null &&
+      (s.exerciseId == null
+        ? last.exerciseId == null && last.name === s.exercise
+        : last.exerciseId === s.exerciseId);
+    if (!continues) {
+      // A matched movement builds a real block; a free-text set — or one whose
+      // catalog movement has been deleted (buildBlock null) — becomes a
+      // synthetic free-text block, so the editor can show it and Save preserves
+      // it rather than dropping it on the next write.
       const built = s.exerciseId == null ? null : buildBlock(s.exerciseId, 0, null);
-      if (!built) continue;
-      built.sets = [];
-      built.linkedToNext = false;
-      blocks.push(built);
+      const block = built ?? freeTextBlock(s.exercise);
+      block.sets = [];
+      block.linkedToNext = false;
+      blocks.push(block);
     }
     const block = blocks[blocks.length - 1]!;
+    const weightText = s.weightKg == null ? '' : String(displayWeight(s.weightKg, units));
     block.sets.push({
       key: nextKey(),
-      weight: s.weightKg == null ? '' : String(displayWeight(s.weightKg, units)),
+      weight: weightText,
       reps: s.reps == null ? '' : String(s.reps),
       rpe: s.rpe == null ? '' : String(s.rpe),
       setType: s.setType,
       done: true,
       pr: false,
+      storedWeightKg: s.weightKg,
+      storedWeightText: weightText,
     });
   }
   // Restore the superset bind: two adjacent blocks whose sets shared a group id
-  // were one object, and the editor draws them fused again.
+  // were one object, and the editor draws them fused again. Free-text blocks
+  // have no exercise_id and never carried a group, so they simply never link.
   const groupOf = new Map<string, number | null>();
   for (const s of detail.sets) {
     if (s.exerciseId != null && !groupOf.has(s.exerciseId)) {
@@ -256,8 +315,11 @@ function blocksFromWorkout(detail: WorkoutDetail, units: UnitPreferences): LiveB
     }
   }
   for (let i = 0; i < blocks.length - 1; i++) {
-    const a = groupOf.get(blocks[i]!.exerciseId);
-    const b = groupOf.get(blocks[i + 1]!.exerciseId);
+    const eidA = blocks[i]!.exerciseId;
+    const eidB = blocks[i + 1]!.exerciseId;
+    if (eidA == null || eidB == null) continue;
+    const a = groupOf.get(eidA);
+    const b = groupOf.get(eidB);
     if (a != null && a === b) blocks[i]!.linkedToNext = true;
   }
   return blocks.filter((b) => b.sets.length > 0);
@@ -336,17 +398,32 @@ function WorkoutLive({
   const [restEndsAt, setRestEndsAt] = useState<number | null>(null);
   // The id of the pending OS rest-alert (to cancel/replace it). null when none.
   const restNotifId = useRef<string | null>(null);
+  // A monotonic token that serialises the async schedule: only the latest arm
+  // keeps its id. scheduleRestAlert resolves after a tick, so two rapid arms (or
+  // an arm then unmount) would otherwise leak the earlier alert — its id lands
+  // in the .then after the cancel already ran against a null ref. An id that
+  // resolves under a stale token is cancelled on arrival instead. Latent until
+  // expo-notifications ships.
+  const restSeq = useRef(0);
   const savedRef = useRef(false);
 
   /** Arm a fresh OS rest alert `seconds` out, cancelling any pending one. */
   const armRestAlert = (seconds: number) => {
     void cancelRestAlert(restNotifId.current);
     restNotifId.current = null;
+    const seq = ++restSeq.current;
     void scheduleRestAlert(seconds).then((id) => {
-      restNotifId.current = id;
+      if (seq === restSeq.current) {
+        restNotifId.current = id;
+      } else if (id) {
+        // A newer arm (or teardown) superseded this schedule before it resolved
+        // — cancel the just-returned id rather than leave it pending.
+        void cancelRestAlert(id);
+      }
     });
   };
   const disarmRestAlert = () => {
+    restSeq.current++;
     void cancelRestAlert(restNotifId.current);
     restNotifId.current = null;
   };
@@ -365,11 +442,27 @@ function WorkoutLive({
   const hasData = blocks.some((b) =>
     b.sets.some((s) => s.done || s.reps !== '' || s.weight !== '')
   );
+  // Every entered weight must fit the schema's canonical-kg bound
+  // (0003_exercise.sql: weight_kg >= 0 AND weight_kg < 1000). A single
+  // over-limit set throws that CHECK inside finish()'s one transaction, rolling
+  // the WHOLE session back with an opaque "Save failed" that names no cause — so
+  // block Finish and name the movement instead. A non-numeric weight is not
+  // flagged: it stores as null (bodyweight), exactly as finish() already treats it.
+  const overWeightBlock = blocks.find((b) =>
+    b.sets.some((s) => {
+      if (s.weight.trim() === '') return false;
+      const kg = toCanonicalKg(Number(s.weight), units);
+      return Number.isFinite(kg) && (kg < 0 || kg >= 1000);
+    })
+  );
+  const weightProblem = overWeightBlock
+    ? `A weight on ${overWeightBlock.name} won’t save — it’s past the logger’s limit.`
+    : null;
   // A session no longer needs a name to be finishable — workouts have no names
   // (owner, 2026-08-14). Sets are the whole requirement. When editing, an empty
   // session is still savable: deleting every set is how you correct a workout
   // that never happened, and the confirm below asks before it lands.
-  const canFinish = editing || hasData;
+  const canFinish = (editing || hasData) && weightProblem == null;
   const unsaved = editing ? dirty : hasData;
 
   // Guard an accidental back from vaporising unsaved work.
@@ -492,7 +585,18 @@ function WorkoutLive({
         .filter((s) => s.done || s.reps.trim() !== '' || s.weight.trim() !== '')
         .map((s) => {
           const reps = s.reps.trim() === '' ? null : Number(s.reps);
-          const weightKg = s.weight.trim() === '' ? null : toCanonicalKg(Number(s.weight), units);
+          // An untouched loaded weight writes back its exact stored kg rather
+          // than re-deriving from the display string: displayWeight rounds to
+          // the unit spec, so toCanonicalKg of that rounded string drifts off
+          // the original whenever the stored kg didn't come from a round display
+          // value (a kg-logged set edited in lb, say) — silently rewriting a set
+          // the user never touched. Only a changed string re-converts.
+          const weightKg =
+            s.weight.trim() === ''
+              ? null
+              : s.storedWeightText != null && s.weight === s.storedWeightText
+                ? (s.storedWeightKg ?? null)
+                : toCanonicalKg(Number(s.weight), units);
           const rpe = s.rpe.trim() === '' ? null : Number(s.rpe);
           return {
             exercise: b.name,
@@ -573,7 +677,16 @@ function WorkoutLive({
   };
 
   // Cancel any pending OS rest alert if the screen is left without finishing.
-  useEffect(() => () => void cancelRestAlert(restNotifId.current), []);
+  // Bump the token first so an in-flight schedule that resolves after teardown
+  // sees a stale seq and cancels its own id, rather than leaking an alert whose
+  // id landed too late for this cleanup to have seen it.
+  useEffect(
+    () => () => {
+      restSeq.current++;
+      void cancelRestAlert(restNotifId.current);
+    },
+    []
+  );
 
   // Superset group per block, derived from the linked-to-next flags.
   const groups = supersetGroups(blocks);
@@ -667,12 +780,15 @@ function WorkoutLive({
                     onCycleType={cycleSetType}
                     onToggleDone={toggleDone}
                     onRemove={removeBlock}
-                    onOpenDetail={() =>
-                      router.push({
-                        pathname: '/exercise-detail',
-                        params: { id: block.exerciseId },
-                      })
-                    }
+                    onOpenDetail={() => {
+                      // A free-text block has no catalog id and no detail page.
+                      if (block.exerciseId != null) {
+                        router.push({
+                          pathname: '/exercise-detail',
+                          params: { id: block.exerciseId },
+                        });
+                      }
+                    }}
                   />
                   {bi < blocks.length - 1 && !block.linkedToNext ? (
                     <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)}>
@@ -704,6 +820,18 @@ function WorkoutLive({
             Add exercise
           </Text>
         </Pressable>
+
+        {/* Why Finish is off — an annotation, so: margin. A single over-limit
+            weight would otherwise roll the whole session back on the CHECK. */}
+        {weightProblem ? (
+          <View className="mt-5">
+            <Block device="margin">
+              <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
+                {weightProblem}
+              </Text>
+            </Block>
+          </View>
+        ) : null}
 
         {/*
           The one primary action on this screen. Disabled reads as an unfilled

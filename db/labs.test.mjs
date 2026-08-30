@@ -15,6 +15,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
+import { applyConnectionPragmas } from '../src/lib/db/pragmas.ts';
 import { listBiomarkerRanges } from '../src/lib/db/repositories/biomarkers.ts';
 import { seedReferenceData } from '../src/lib/db/seed.ts';
 import {
@@ -76,7 +77,8 @@ function makeDb(raw) {
 
 function freshDb({ seed = true } = {}) {
   const raw = new DatabaseSync(':memory:');
-  raw.exec('PRAGMA foreign_keys = ON;');
+  // Same helper the app connection uses, so FK enforcement here mirrors device.
+  applyConnectionPragmas((sql) => raw.exec(sql));
   const db = makeDb(raw);
   migrate(
     {
@@ -808,10 +810,17 @@ console.log('11. Migration 0024 rebuilt `biomarkers` without losing anything');
   rejected ? ok('an unknown category is still rejected') : bad('CHECK lost');
 
   // The trigger still fires, and FK/RESTRICT semantics survived the rebuild.
+  // Write a stale updated_at in the UPDATE itself: a live AFTER UPDATE trigger
+  // overwrites it with now, so `after !== sentinel` fails a trigger that exists
+  // in sqlite_master (line 782 passed) but was recreated with a dead body — a
+  // bare `>= before` would admit equality and pass. Same probe as
+  // wearables.test.mjs section 0.
   const before = raw.prepare("SELECT updated_at FROM biomarkers WHERE id='bio-1'").get().updated_at;
-  db.run("UPDATE biomarkers SET name = 'T2' WHERE id = 'bio-1'");
+  db.run(
+    "UPDATE biomarkers SET name = 'T2', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = 'bio-1'"
+  );
   const after = raw.prepare("SELECT updated_at FROM biomarkers WHERE id='bio-1'").get().updated_at;
-  typeof after === 'string' && after >= before
+  typeof after === 'string' && after !== '2000-01-01T00:00:00.000Z' && after >= before
     ? ok('updated_at trigger stamps on UPDATE (no recursion)')
     : bad('trigger', `${before} → ${after}`);
 
@@ -848,7 +857,7 @@ console.log('12. The rebuild carries EXISTING lab data across (the real upgrade 
   // Migrate only as far as 0020, plant a report + values, THEN apply 0024 —
   // this is what happens on Matt's phone, and the case a naive rebuild breaks.
   const raw = new DatabaseSync(':memory:');
-  raw.exec('PRAGMA foreign_keys = ON;');
+  applyConnectionPragmas((sql) => raw.exec(sql));
   const db = makeDb(raw);
   const exec = {
     exec: (sql) => raw.exec(sql),

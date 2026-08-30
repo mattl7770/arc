@@ -191,10 +191,17 @@ export function parseWorkoutImport(replyText: string): ImportedWorkout {
       const reps = repsRaw == null ? null : Math.round(repsRaw);
       const weightUnit = set.weightUnit === 'kg' || set.weightUnit === 'lb' ? set.weightUnit : null;
       // Bound in the unit's own terms, both strictly inside the canonical
-      // <1000 kg CHECK once converted.
+      // <1000 kg CHECK once converted. A null unit is NOT converted at save time
+      // (app/workout-import.tsx stores the raw number as the user's display
+      // unit), so a kg user would write it straight into weight_kg — it takes
+      // the kg ceiling too, not the lb one.
       const weight =
-        weightUnit === 'kg' ? cleanNumber(set.weight, 0.5, 999) : cleanNumber(set.weight, 1, 1999);
-      const rpe = cleanNumber(set.rpe, 1, 10.5);
+        weightUnit === 'lb' ? cleanNumber(set.weight, 1, 1999) : cleanNumber(set.weight, 0.5, 999);
+      // cleanNumber's upper bound is exclusive of 10.5, so RPE 10.2 survives it;
+      // clamp to the CHECK's rpe <= 10 so a transcribed 10.2 doesn't roll back
+      // the whole import.
+      const raw = cleanNumber(set.rpe, 1, 10.5);
+      const rpe = raw == null ? null : Math.min(10, raw);
       if (reps == null && weight == null) continue;
       sets.push({ reps, weight, weightUnit, rpe });
     }

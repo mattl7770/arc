@@ -34,6 +34,8 @@
  *     the one axis the whole gallery is ordered on.
  */
 
+import { isRealCalendarDate } from './format';
+
 /** Where a photo's date came from — the review screen says so on the row. */
 export type PhotoDateOrigin =
   /** EXIF DateTimeOriginal (or its documented siblings). */
@@ -158,6 +160,17 @@ export function assetPhotoDate(asset: unknown): PhotoDate {
     if (!raw) continue;
     const parsed = parseExifDateTime(raw);
     if (!parsed) continue;
+    // A structurally-valid EXIF date is not yet a real one. Corrupt firmware and
+    // scanners emit impossible days (`2026:04:31`, `2026:02:30`) and absurd
+    // years (`9999:12:31`, `1901:05:05`) that pass the shape check above. Reject
+    // both here — an impossible day would fail the 0036 CHECK after the working
+    // copy was already on disk, and an absurd-but-real year sorts to a permanent
+    // extreme of the gallery's one axis and matches no weigh-in. Same
+    // plausibility window as the epoch path (`instantFromEpochMs`), plus the
+    // sibling calendar round-trip. A rejected date falls through to the
+    // epoch/none fallback rather than being trusted as an EXIF fact.
+    const exifYear = Number(parsed.date.slice(0, 4));
+    if (exifYear < 1900 || exifYear > 2100 || !isRealCalendarDate(parsed.date)) continue;
     // The offset is read from the key PAIRED with the date key that won, not
     // from whichever offset tag happens to exist. A scan carrying
     // DateTimeDigitized (its digitisation clock) alongside a surviving
