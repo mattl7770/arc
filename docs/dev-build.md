@@ -1,6 +1,8 @@
 # Running ARC on a device (and why Expo Go broke)
 
 **Platform assumed:** Windows dev machine + iPhone. **iOS only** — ARC does not target Android.
+A Mac is a *second* dev machine, not a replacement — see Option D, which is the only path
+here that never touches the phone.
 
 ---
 
@@ -16,17 +18,22 @@ And "Update" often can't help: when SDK 57 released (2026-06-30) the store build
 
 ---
 
-## The three options, honestly
+## The four options, honestly
 
 | | Cost | On device today? | Survives Apple Health? |
 | --- | --- | --- | --- |
 | **A. Store update** (if App Store now has SDK 57) | free | yes, if approved | no — Expo Go can't load native modules |
 | **B. `eas go` bridge** — SDK-57 Expo Go via TestFlight | free | yes | no — same limit |
 | **C. Development build** (recommended) | **$99/yr Apple Developer** | yes | **yes** — this is the permanent path |
+| **D. iOS Simulator** (Mac only) | free, needs Xcode | no — simulator, not device | yes, but with no real HealthKit data |
 
 **The catch that decides it:** ARC already depends on a custom native module (`op-sqlite`) and will add more (Apple Health / HealthKit, secure-store, biometrics). Those are **native modules Expo Go can never run** — so Expo Go (any version, including the `eas go` bridge) can't load ARC. The development build is the environment you end up in regardless; the only question is whether you set it up now or in a few weeks.
 
 **Recommended plan:** use **B** to see ARC on your phone today for free, and move to **C** when you're ready to pay for the Apple Developer Program (or when Apple Health forces it — whichever comes first).
+
+**Once a build is installed on the phone, D becomes the one to reach for on a Mac.** A/B/C
+all compete for the same bundle identifier, so each one costs you whatever is already
+installed; D does not, which matters once the installed app is carrying real data.
 
 ---
 
@@ -88,6 +95,44 @@ npx expo start --dev-client
 **More test devices later:** `eas device:create` per device, then rebuild (new UDIDs aren't picked up by existing builds). Ad-hoc is capped at **100 iOS devices/year**.
 
 ---
+
+## Option D — the iOS Simulator, on a Mac (added 2026-08-29)
+
+The other three options all put ARC on the **phone**. This one deliberately does not,
+and that is the whole point of it.
+
+**The collision it avoids.** A dev client and a TestFlight build share one bundle
+identifier (`com.arcresilience.app`) but are signed differently, so iOS will not
+quietly swap one for the other — you delete the installed app first. Deleting it
+deletes its container, and ARC is local-first with no server: that container holds
+the only copy of the owner's labs, logs, protocols and photos. So on a machine that
+also has to keep the phone's data intact, "just install a dev build" is a data-loss
+move, not a convenience.
+
+The simulator sidesteps it entirely. It is a separate container on the Mac with its
+own database, so the phone is never touched.
+
+```bash
+# Requires Xcode (10GB+) — install and boot a simulator once before relying on it.
+eas build --profile simulator --platform ios
+```
+
+The `simulator` profile `extends` `development`, so it keeps `developmentClient: true`
+and the `development` channel and overrides only `ios.simulator`. A simulator build is
+**unsigned**, so it needs no Apple Developer membership, no `eas device:create`, and no
+UDID registration — none of Option C's $99 preamble applies. Drag the resulting `.app`
+onto a booted simulator, then connect it the usual way:
+
+```bash
+npx expo start
+```
+
+**What the simulator will not tell you.** It is real iOS rendering, so it is a genuine
+step up from the web preview for layout and logic — but it is not a device. No OLED, the
+wrong physical size, and HealthKit exists there with no real data in it, so the ingestion
+pipeline has nothing to read. Treat it as "much better than web", never as the final word
+on look and feel (see the owner's standing rule: verify on device).
+
 
 ## If the phone still can't reach the dev server (a separate "can't connect" failure)
 
