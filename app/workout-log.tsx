@@ -12,6 +12,7 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { logWorkout } from '@/lib/db/repositories/exercise';
+import { getExercise, resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
 import {
   clearWorkoutDraft,
   readWorkoutDraft,
@@ -23,8 +24,18 @@ import {
   type ManualDraft,
   type ManualDraftSet,
 } from '@/lib/exercise/draft';
-import { lbToKg, setLine } from '@/lib/exercise/format';
+import {
+  formatClock,
+  formatDistance,
+  lbToKg,
+  parseClock,
+  setLine,
+  toCanonicalMetres,
+} from '@/lib/exercise/format';
+import { DEFAULT_MEASURES, hasMeasure, type Measures } from '@/lib/exercise/measures';
 import type { WorkoutKind } from '@/lib/exercise/types';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
+import type { UnitPreferences } from '@/lib/user/types';
 
 /**
  * The workout logger, pushed from the Exercise screen in two modes:
@@ -83,6 +94,26 @@ function readResumableDraft(): ManualDraft | null {
   return stored ? parseManualDraft(stored.value) : null;
 }
 
+/**
+ * What the typed exercise name measures (0046), so this screen asks for the
+ * right fields too — a plank gets a clock, a run gets a clock and a distance.
+ *
+ * The name is free text here, which is exactly why the lookup goes through
+ * `resolveExerciseByName`: the same confidence-gated matcher `insertSet` uses
+ * to decide which catalog row the set will actually be stored against. If the
+ * two disagreed, the screen would show a distance field for a set the
+ * repository then nulled the distance off. An unresolved name falls back to
+ * reps × load, which is what a free-text set has always meant.
+ */
+function measuresForName(name: string): Measures {
+  const trimmed = name.trim();
+  if (trimmed === '') return DEFAULT_MEASURES;
+  const db = getDb();
+  const id = resolveExerciseByName(db, trimmed);
+  if (id == null) return DEFAULT_MEASURES;
+  return getExercise(db, id)?.measures ?? DEFAULT_MEASURES;
+}
+
 /** "12:34", growing to "1:02:34" past the hour. */
 function formatElapsed(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -90,6 +121,46 @@ function formatElapsed(ms: number): string {
   const m = Math.floor((totalSec % 3600) / 60);
   const s = String(totalSec % 60).padStart(2, '0');
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
+}
+
+/**
+ * One drafted set as its mono line: "8 × 135 lb", "1:30", "26:40 · 5 km".
+ *
+ * It keeps `setLine`'s display-lb form rather than going through the shared
+ * canonical `measuredSetLine`, because this screen's weight field is labelled
+ * "Weight (lb)" and takes lb whatever the unit preference says — an existing
+ * quirk of the free-form logger, and rendering the typed 135 back as "61.2 kg"
+ * would be a behaviour change smuggled in under a metric-types branch. Time and
+ * distance ARE unit-aware: they are new here, so they start correct.
+ */
+function draftSetLine(set: ManualDraftSet, units: UnitPreferences): string {
+  const parts: string[] = [];
+  const lift = setLine(set.reps, set.weightLb);
+  if (lift !== '—') parts.push(lift);
+  if (set.durationSec != null) parts.push(formatClock(set.durationSec));
+  if (set.distanceM != null) parts.push(formatDistance(set.distanceM, units));
+  return parts.length > 0 ? parts.join(' · ') : '—';
+}
+
+/**
+ * The margin note under the entry row: what is optional, and what the units
+ * are. It changes with the fields on screen, because the old line ("Reps and
+ * weight are optional… Stored in kg") describes a row a plank does not have.
+ */
+function entryMeasuresNote(
+  reps: boolean,
+  weight: boolean,
+  time: boolean,
+  distance: boolean
+): string {
+  if (time && distance) {
+    return 'Time and distance are optional — log either, or both. Distance is stored in metres.';
+  }
+  if (time) return 'Time is optional, in minutes and seconds. A bare number is seconds.';
+  if (weight && distance) {
+    return 'Load and distance are optional. Weight is entered in lb and stored in kg; distance in metres.';
+  }
+  return 'Reps and weight are optional — leave weight blank for bodyweight work. Stored in kg.';
 }
 
 /**
@@ -124,11 +195,17 @@ export default function WorkoutLogScreen() {
   const [exercise, setExercise] = useState(draft?.exercise ?? '');
   const [repsText, setRepsText] = useState(draft?.repsText ?? '');
   const [weightText, setWeightText] = useState(draft?.weightText ?? '');
+  const [timeText, setTimeText] = useState(draft?.timeText ?? '');
+  const [distanceText, setDistanceText] = useState(draft?.distanceText ?? '');
+  // What the typed movement measures — re-derived on every keystroke of the
+  // name, restored from the draft on resume so the row comes back as it was.
+  const [measures, setMeasures] = useState<Measures>(draft?.measures ?? DEFAULT_MEASURES);
   // True while the entry row holds something not yet in `sets` — the flag that
   // lets "leave the fields filled after Add" coexist with "a typed-but-never-
   // Added set still saves" without double-counting the last Add on save.
   const [entryDirty, setEntryDirty] = useState(draft?.entryDirty ?? false);
   const savedRef = useRef(false);
+  const { units } = useUnitPreferences();
 
   useEffect(() => {
     if (mode !== 'live') return;
@@ -136,17 +213,42 @@ export default function WorkoutLogScreen() {
     return () => clearInterval(timer);
   }, [mode]);
 
+  // Which fields the entry row offers, from what the movement measures (0046).
+  const showReps = hasMeasure(measures, 'reps');
+  const showWeight = hasMeasure(measures, 'load');
+  const showTime = hasMeasure(measures, 'time');
+  const showDistance = hasMeasure(measures, 'distance');
+
   // Draft-set validation: blank reps/weight are fine (a bodyweight movement, a
-  // timed carry); a non-blank value must be a sane number. The weight cap keeps
-  // the canonical kg under the schema's < 1000 kg fat-finger CHECK.
+  // timed carry); a non-blank value must be a sane number. Each cap keeps the
+  // canonical value under the schema's own fat-finger CHECK — < 1000 kg,
+  // < 36000 s (0013), < 1,000,000 m (0046).
   const reps = repsText === '' ? null : Number(repsText);
   const weightLb = weightText === '' ? null : Number(weightText);
+  const durationSec = parseClock(timeText);
+  const distanceDisplay = distanceText === '' ? null : Number(distanceText);
+  const distanceM =
+    distanceDisplay != null && Number.isFinite(distanceDisplay)
+      ? toCanonicalMetres(distanceDisplay, units)
+      : null;
   const repsValid = reps === null || (Number.isInteger(reps) && reps >= 0 && reps < 10000);
   const weightValid =
     weightLb === null || (Number.isFinite(weightLb) && weightLb > 0 && weightLb < 2000);
-  const canAddSet = exercise.trim().length > 0 && repsValid && weightValid;
+  // A non-empty time that `parseClock` could not read is invalid; an empty one
+  // is simply absent.
+  const timeValid =
+    timeText.trim() === '' ? true : durationSec !== null && durationSec > 0 && durationSec < 36000;
+  const distanceValid =
+    distanceText === '' ? true : distanceM !== null && distanceM > 0 && distanceM < 1_000_000;
+  const canAddSet =
+    exercise.trim().length > 0 && repsValid && weightValid && timeValid && distanceValid;
 
-  const entryBlank = exercise.trim() === '' && repsText === '' && weightText === '';
+  const entryBlank =
+    exercise.trim() === '' &&
+    repsText === '' &&
+    weightText === '' &&
+    timeText === '' &&
+    distanceText === '';
   // Typed something new that can't be saved as a set? Block Save rather than
   // silently dropping it — losing a typed set is worse than a disabled button.
   const entryBlocking = entryDirty && !entryBlank && !canAddSet;
@@ -162,6 +264,10 @@ export default function WorkoutLogScreen() {
 
   const changeExercise = (t: string) => {
     setExercise(t);
+    // The name decides the fields, so it is re-resolved as it is typed. One
+    // indexed lookup per keystroke against a ~70-row table, on a synchronous
+    // database — the same cost the picker's search already pays.
+    setMeasures(measuresForName(t));
     setEntryDirty(true);
   };
   const changeReps = (t: string) => {
@@ -172,13 +278,30 @@ export default function WorkoutLogScreen() {
     setWeightText(t);
     setEntryDirty(true);
   };
+  const changeTime = (t: string) => {
+    setTimeText(t);
+    setEntryDirty(true);
+  };
+  const changeDistance = (t: string) => {
+    setDistanceText(t);
+    setEntryDirty(true);
+  };
+
+  /** The entry row as a drafted set — only the fields the movement measures. */
+  const entrySet = (): ManualDraftSet => ({
+    exercise: exercise.trim(),
+    reps: showReps ? reps : null,
+    weightLb: showWeight ? weightLb : null,
+    durationSec: showTime ? durationSec : null,
+    distanceM: showDistance ? distanceM : null,
+  });
 
   // Straight sets are the common case, so Add keeps every field as-is — tap
   // Add again for the next identical set, or retype what changed. The dirty
   // flag drops so the leftover values aren't re-saved as a phantom set.
   const addDraftSet = () => {
     if (!canAddSet) return;
-    setSets((prev) => [...prev, { exercise: exercise.trim(), reps, weightLb }]);
+    setSets((prev) => [...prev, entrySet()]);
     setEntryDirty(false);
   };
 
@@ -228,6 +351,9 @@ export default function WorkoutLogScreen() {
         exercise,
         repsText,
         weightText,
+        timeText,
+        distanceText,
+        measures,
         entryDirty,
       };
       const serialised = JSON.stringify(payload);
@@ -248,6 +374,9 @@ export default function WorkoutLogScreen() {
     exercise,
     repsText,
     weightText,
+    timeText,
+    distanceText,
+    measures,
     entryDirty,
   ]);
 
@@ -283,7 +412,7 @@ export default function WorkoutLogScreen() {
     // one-set session shouldn't require both buttons. Only a DIRTY row though:
     // after an Add the fields keep their values, and re-saving those would
     // double-count the last set.
-    const pending = entryDirty && canAddSet ? [{ exercise: exercise.trim(), reps, weightLb }] : [];
+    const pending = entryDirty && canAddSet ? [entrySet()] : [];
     const allSets = [...sets, ...pending];
     // A sub-30-second "session" rounds to 0 — store no duration rather than a
     // lying "0 min".
@@ -304,6 +433,8 @@ export default function WorkoutLogScreen() {
           exercise: s.exercise,
           reps: s.reps,
           weightKg: s.weightLb == null ? null : lbToKg(s.weightLb),
+          durationSec: s.durationSec,
+          distanceM: s.distanceM,
         }))
       );
       savedRef.current = true;
@@ -427,7 +558,7 @@ export default function WorkoutLogScreen() {
                         {s.exercise}
                       </Text>
                       <Text className="font-mono text-[13px] text-ink-secondary">
-                        {setLine(s.reps, s.weightLb)}
+                        {draftSetLine(s, units)}
                       </Text>
                       <Pressable
                         accessibilityRole="button"
@@ -457,35 +588,78 @@ export default function WorkoutLogScreen() {
               />
             </Field>
           </View>
-          <View className="mt-2 flex-row gap-2">
-            <View className="flex-1">
-              <Field>
-                <TextInput
-                  value={repsText}
-                  onChangeText={changeReps}
-                  placeholder="Reps"
-                  placeholderTextColor={palette.inkMuted}
-                  keyboardType="number-pad"
-                  returnKeyType={KEYPAD_DONE}
-                  className="py-2.5 font-mono text-[15px] text-ink"
-                  accessibilityLabel="Reps"
-                />
-              </Field>
-            </View>
-            <View className="flex-1">
-              <Field>
-                <TextInput
-                  value={weightText}
-                  onChangeText={changeWeight}
-                  placeholder="Weight (lb)"
-                  placeholderTextColor={palette.inkMuted}
-                  keyboardType="decimal-pad"
-                  returnKeyType={KEYPAD_DONE}
-                  className="py-2.5 font-mono text-[15px] text-ink"
-                  accessibilityLabel="Weight in pounds"
-                />
-              </Field>
-            </View>
+          {/* The value fields the typed movement actually measures (0046): a
+              plank asks only for a clock, a run for a clock and a distance,
+              everything else for reps and a weight as before. They share one
+              wrapping row so the Add button always sits at the end of it. */}
+          <View className="mt-2 flex-row flex-wrap items-start gap-2">
+            {showReps ? (
+              <View className="min-w-[88px] flex-1">
+                <Field>
+                  <TextInput
+                    value={repsText}
+                    onChangeText={changeReps}
+                    placeholder="Reps"
+                    placeholderTextColor={palette.inkMuted}
+                    keyboardType="number-pad"
+                    returnKeyType={KEYPAD_DONE}
+                    className="py-2.5 font-mono text-[15px] text-ink"
+                    accessibilityLabel="Reps"
+                  />
+                </Field>
+              </View>
+            ) : null}
+            {showWeight ? (
+              <View className="min-w-[88px] flex-1">
+                <Field>
+                  <TextInput
+                    value={weightText}
+                    onChangeText={changeWeight}
+                    placeholder="Weight (lb)"
+                    placeholderTextColor={palette.inkMuted}
+                    keyboardType="decimal-pad"
+                    returnKeyType={KEYPAD_DONE}
+                    className="py-2.5 font-mono text-[15px] text-ink"
+                    accessibilityLabel="Weight in pounds"
+                  />
+                </Field>
+              </View>
+            ) : null}
+            {showTime ? (
+              <View className="min-w-[88px] flex-1">
+                <Field>
+                  <TextInput
+                    value={timeText}
+                    onChangeText={changeTime}
+                    placeholder="Time (mm:ss)"
+                    placeholderTextColor={palette.inkMuted}
+                    // A colon is on no iOS number pad, so this takes the full
+                    // punctuation keyboard; KEYPAD_DONE is set regardless so the
+                    // dismissal rule reads the same at every field here.
+                    keyboardType="numbers-and-punctuation"
+                    returnKeyType={KEYPAD_DONE}
+                    className="py-2.5 font-mono text-[15px] text-ink"
+                    accessibilityLabel="Time in minutes and seconds"
+                  />
+                </Field>
+              </View>
+            ) : null}
+            {showDistance ? (
+              <View className="min-w-[88px] flex-1">
+                <Field>
+                  <TextInput
+                    value={distanceText}
+                    onChangeText={changeDistance}
+                    placeholder={`Distance (${units.distance})`}
+                    placeholderTextColor={palette.inkMuted}
+                    keyboardType="decimal-pad"
+                    returnKeyType={KEYPAD_DONE}
+                    className="py-2.5 font-mono text-[15px] text-ink"
+                    accessibilityLabel={`Distance in ${units.distance}`}
+                  />
+                </Field>
+              </View>
+            ) : null}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Add set"
@@ -510,7 +684,7 @@ export default function WorkoutLogScreen() {
               <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
                 {entryBlocking
                   ? 'That set won’t save as typed — fix or clear it.'
-                  : 'Reps and weight are optional — leave weight blank for bodyweight work. Stored in kg.'}
+                  : entryMeasuresNote(showReps, showWeight, showTime, showDistance)}
               </Text>
             </Block>
           </View>

@@ -18,11 +18,20 @@ import {
   workingSets,
 } from '@/lib/db/repositories/training-stats';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
-import { dayLabel, formatWeight, setLineKg } from '@/lib/exercise/format';
+import {
+  dayLabel,
+  formatClock,
+  formatDistance,
+  formatPace,
+  formatWeight,
+  measuredSetLine,
+} from '@/lib/exercise/format';
 import { resolveExerciseImage } from '@/lib/exercise/images.generated';
+import { isLoadedRepsMeasures, measuresLabel, type Measures } from '@/lib/exercise/measures';
 import type { CatalogExercise, E1rmPoint, PersonalRecords } from '@/lib/exercise/types';
 import type { SessionTopSet } from '@/lib/exercise/progression';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
+import type { UnitPreferences } from '@/lib/user/types';
 
 /**
  * Exercise detail — how the movement looks, what it works, the estimated-1RM
@@ -59,7 +68,14 @@ type Detail = {
   sessions: SessionTopSet[];
 };
 
-const EMPTY_PRS: PersonalRecords = { maxWeightKg: null, bestE1rmKg: null, bestSetVolumeKg: null };
+const EMPTY_PRS: PersonalRecords = {
+  maxWeightKg: null,
+  bestE1rmKg: null,
+  bestSetVolumeKg: null,
+  bestDurationSec: null,
+  bestDistanceM: null,
+  bestPaceSecPerKm: null,
+};
 
 function read(id: string | undefined): Detail {
   const db = getDb();
@@ -73,6 +89,73 @@ function read(id: string | undefined): Detail {
     // newest-first for the history list
     sessions: exerciseSessionTopsFrom(rows, 12).slice().reverse(),
   };
+}
+
+/**
+ * The three records this movement actually has (0046).
+ *
+ * A grid of exactly three cells is the surface (`GridCell … columns={3}`), so
+ * the question is which three — and the answer comes from what the exercise
+ * MEASURES, not from which of the six happen to be non-null. That distinction
+ * is the whole point: an exercise with no history yet must still show the right
+ * three em-dashes, or the screen teaches the wrong thing about the movement
+ * before the first set is logged.
+ *
+ *   load + reps      Best e1RM · Top set · Best volume   (unchanged)
+ *   time + distance  Longest · Farthest · Best pace
+ *   time only        Longest · Top set · Best volume
+ *
+ * Three is a width budget, not a truth. A plank has exactly one record worth
+ * the name, so the other two cells go to the load records — permanently
+ * em-dashed on a bodyweight plank, and real on a weighted one, which is the
+ * case they are there for.
+ */
+function recordsFor(
+  measures: Measures,
+  prs: PersonalRecords,
+  units: UnitPreferences
+): { label: string; value: string | null }[] {
+  const e1rm = {
+    label: 'Best e1RM',
+    value: prs.bestE1rmKg == null ? null : formatWeight(prs.bestE1rmKg, units),
+  };
+  const topSet = {
+    label: 'Top set',
+    value: prs.maxWeightKg == null ? null : formatWeight(prs.maxWeightKg, units),
+  };
+  const volume = {
+    label: 'Best volume',
+    value: prs.bestSetVolumeKg == null ? null : formatWeight(prs.bestSetVolumeKg, units),
+  };
+  const longest = {
+    label: 'Longest',
+    value: prs.bestDurationSec == null ? null : formatClock(prs.bestDurationSec),
+  };
+  const farthest = {
+    label: 'Farthest',
+    value: prs.bestDistanceM == null ? null : formatDistance(prs.bestDistanceM, units),
+  };
+  const pace = {
+    label: 'Best pace',
+    value: prs.bestPaceSecPerKm == null ? null : formatPace(prs.bestPaceSecPerKm, units),
+  };
+  if (isLoadedRepsMeasures(measures)) return [e1rm, topSet, volume];
+  switch (measures) {
+    case 'time,distance':
+      return [longest, farthest, pace];
+    case 'time':
+      return [longest, topSet, volume];
+    case 'load,time':
+      return [longest, topSet, volume];
+    case 'load,distance':
+      return [farthest, topSet, volume];
+    case 'distance':
+      return [farthest, longest, pace];
+    default:
+      // Every remaining subset carries reps or load without both, or an unusual
+      // pairing. Show the two measured records it can fill plus the top set.
+      return [longest, farthest, topSet];
+  }
 }
 
 export default function ExerciseDetailScreen() {
@@ -100,27 +183,24 @@ export default function ExerciseDetailScreen() {
     );
   }
 
+  // The measure joins the meta line so the owner knows what he will be asked to
+  // type BEFORE he picks the movement mid-session (0046) — "Machine · Time ·
+  // Distance" is the difference between reaching for a rep count and reaching
+  // for a clock.
   const meta = [
     exercise.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', '),
     exercise.equipment.replace(/_/g, ' '),
+    measuresLabel(exercise.measures),
   ]
     .filter(Boolean)
     .join(' · ');
 
-  const records = [
-    {
-      label: 'Best e1RM',
-      value: prs.bestE1rmKg == null ? null : formatWeight(prs.bestE1rmKg, units),
-    },
-    {
-      label: 'Top set',
-      value: prs.maxWeightKg == null ? null : formatWeight(prs.maxWeightKg, units),
-    },
-    {
-      label: 'Best volume',
-      value: prs.bestSetVolumeKg == null ? null : formatWeight(prs.bestSetVolumeKg, units),
-    },
-  ];
+  const records = recordsFor(exercise.measures, prs, units);
+  // e1RM is a claim about a maximum lift. A movement that records no load, or
+  // no reps under it, can never produce one (0046), so the panel does not draw
+  // an empty promise — the records grid above already says what this movement's
+  // bests are.
+  const showE1rm = isLoadedRepsMeasures(exercise.measures);
 
   const photo = resolveExerciseImage(exercise.id);
 
@@ -196,29 +276,39 @@ export default function ExerciseDetailScreen() {
         </Block>
       </View>
 
-      {/* Estimated 1RM — a readout about the lift, so: measured field. */}
-      <View className="mt-7">
-        <Block device="field">
-          <SectionLabel label="Estimated 1RM" />
-          {series.length >= 2 ? (
-            <View className="mt-2 flex-row items-center justify-between">
-              <View>
-                <Text className="font-mono text-2xl text-ink">
-                  {formatWeight(series[series.length - 1]!.e1rm, units)}
-                </Text>
-                <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                  Latest
-                </Text>
+      {/* Estimated 1RM — a readout about the lift, so: measured field. Absent
+          entirely for a movement that cannot produce one (0046): a plank's
+          e1RM panel could only ever say "log a couple of weighted sessions"
+          about sessions that will never be weighted. */}
+      {showE1rm ? (
+        <View className="mt-7">
+          <Block device="field">
+            <SectionLabel label="Estimated 1RM" />
+            {series.length >= 2 ? (
+              <View className="mt-2 flex-row items-center justify-between">
+                <View>
+                  <Text className="font-mono text-2xl text-ink">
+                    {formatWeight(series[series.length - 1]!.e1rm, units)}
+                  </Text>
+                  <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                    Latest
+                  </Text>
+                </View>
+                <Sparkline
+                  data={series.map((p) => p.e1rm)}
+                  baseline="auto"
+                  width={120}
+                  height={36}
+                />
               </View>
-              <Sparkline data={series.map((p) => p.e1rm)} baseline="auto" width={120} height={36} />
-            </View>
-          ) : (
-            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-              Log a couple of weighted sessions and the estimated-1RM trend appears here.
-            </Text>
-          )}
-        </Block>
-      </View>
+            ) : (
+              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+                Log a couple of weighted sessions and the estimated-1RM trend appears here.
+              </Text>
+            )}
+          </Block>
+        </View>
+      ) : null}
 
       {/* History — a record of sessions, so: ruled plate, in both states. The
           empty branch keeps the plate: a record with nothing in it still stands
@@ -241,7 +331,15 @@ export default function ExerciseDetailScreen() {
                       {dayLabel(s.date, today)}
                     </Text>
                     <Text className="flex-1 font-mono text-[14px] text-ink">
-                      {setLineKg(s.reps, s.weightKg, units)}
+                      {measuredSetLine(
+                        {
+                          reps: s.reps,
+                          weightKg: s.weightKg,
+                          durationSec: s.durationSec ?? null,
+                          distanceM: s.distanceM ?? null,
+                        },
+                        units
+                      )}
                       {s.rpe != null ? `  @${s.rpe}` : ''}
                     </Text>
                   </View>

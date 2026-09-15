@@ -28,7 +28,7 @@
 import type { Database } from '@/lib/db/database';
 import { shiftISODate, todayISODate } from '@/lib/db/date';
 import { logCapture, logMetric, logNote } from '@/lib/db/repositories/logs';
-import { logWorkout } from '@/lib/db/repositories/exercise';
+import { exerciseMeasures, logWorkout } from '@/lib/db/repositories/exercise';
 import { resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
 import {
   activeNutritionTargets,
@@ -94,7 +94,8 @@ import { logSymptom } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { getModeDefinition, MODE_KEYS, type ModeKey } from '@/lib/modes/registry';
 import { syncAndReportForReminder } from '@/lib/notifications/reminders';
-import { lbToKg, setLineKg } from '@/lib/exercise/format';
+import { lbToKg, measuredSetLine } from '@/lib/exercise/format';
+import { maskByMeasures } from '@/lib/exercise/measures';
 import {
   isLoggableCanonical,
   metricByKey,
@@ -361,7 +362,7 @@ function resolveExerciseId(db: Database, name: string): string | null {
  * Sets arrive in the user's weight unit by default (their Settings preference —
  * lb or kg), which an explicit per-set `unit` overrides; conversion to canonical
  * kg happens here, never in the model, and the display line renders back in the
- * same preferred unit (setLineKg) so the confirmation card matches the app.
+ * same preferred unit (measuredSetLine) so the confirmation card matches the app.
  * Each set also resolves its catalog exercise_id (see resolveExerciseId).
  */
 function parseSets(input: Record<string, unknown>, db: Database): ParsedSet[] {
@@ -376,12 +377,32 @@ function parseSets(input: Record<string, unknown>, db: Database): ParsedSet[] {
     const weight = optNumber(set, 'weight') ?? null;
     const unit = optEnum(set, 'unit', SET_UNITS) ?? units.weight;
     const weightKg = weight == null ? null : unit === 'kg' ? weight : lbToKg(weight);
-    return {
-      exercise,
-      exerciseId: resolveExerciseId(db, exercise),
+    // Time and distance (0046) arrive CANONICAL — seconds and metres — which is
+    // why neither takes a unit property the way weight does. "I ran five miles"
+    // is a conversion the model does once, correctly, at no schema cost; the
+    // property NAMES carry the units, which is the cheapest description there
+    // is against the tool-schema token ceiling.
+    const exerciseId = resolveExerciseId(db, exercise);
+    // MASKED HERE, not just in the repository. `insertSet` nulls whatever the
+    // movement does not measure, and the confirmation card must promise the row
+    // that will actually exist — otherwise a model that guesses "Plank 3 × 45
+    // lb" gets that approved and then stores a bare 90-second hold. One rule,
+    // two callers (maskByMeasures).
+    const measures = exerciseId == null ? null : exerciseMeasures(db, exerciseId);
+    const raw = {
       reps,
       weightKg,
-      displayLine: `${exercise} ${setLineKg(reps, weightKg, units)}`,
+      durationSec: optNumber(set, 'duration_s') ?? null,
+      distanceM: optNumber(set, 'distance_m') ?? null,
+    };
+    const fields = measures == null ? raw : maskByMeasures(measures, raw);
+    return {
+      exercise,
+      exerciseId,
+      ...fields,
+      // A run's whole content is its time and distance — a card reading just
+      // "Treadmill Run" would be asking the owner to approve a blank.
+      displayLine: `${exercise} ${measuredSetLine(fields, units)}`,
     };
   });
 }
@@ -392,11 +413,21 @@ const logWorkoutTool: CoachTool = {
   // above: "name, kind (strength/cardio/mobility/other), duration in minutes,
   // and optional strength sets" listed four properties the schema declares one
   // line below, and inlined `kind`'s enum verbatim beside the enum itself.
+  //
+  // TRIMMED AGAIN 2026-09-14, and this one is a fact the app no longer has.
+  // `name` was a REQUIRED property with an example ("Upper A", "Zone 2 ride")
+  // — 25 tokens spent asking the model to invent a string that goes into
+  // `workouts.name`, a column the owner retired on 2026-08-14 (*"Workouts dont
+  // need names, remove this"*) and that NOTHING has rendered since: the session
+  // list titles itself off its movements (`sessionTitle`), the logger shows no
+  // name field, and the repository already defaults the column to ''. The
+  // confirmation card quoted the invented name back — the one place it was
+  // visible, and a label the owner would never see again after approving it.
+  // It pays for B1's `duration_s` / `distance_m` on the set item.
   description: 'Log a training session, sets optional. Use when the user reports a workout.',
   inputSchema: {
     type: 'object',
     properties: {
-      name: { type: 'string', description: 'e.g. "Upper A", "Zone 2 ride"' },
       kind: { type: 'string', enum: [...WORKOUT_KINDS] },
       duration_min: { type: 'number', minimum: 0 },
       notes: { type: 'string' },
@@ -413,6 +444,12 @@ const logWorkoutTool: CoachTool = {
               description: "In `unit`; defaults to the user's weight unit.",
             },
             unit: { type: 'string', enum: [...SET_UNITS] },
+            // Seconds and metres — the property names are the units, which is
+            // why neither carries a description. A plank is duration_s alone; a
+            // run is duration_s + distance_m and no reps. Fields the exercise
+            // does not measure are dropped by the repository, not stored.
+            duration_s: { type: 'number', minimum: 0 },
+            distance_m: { type: 'number', minimum: 0 },
           },
           required: ['exercise'],
           additionalProperties: false,
@@ -420,20 +457,19 @@ const logWorkoutTool: CoachTool = {
       },
       ...DATE_PROPERTY,
     },
-    required: ['name', 'kind'],
+    required: ['kind'],
     additionalProperties: false,
   },
   readOnly: false,
   confirmSummary: (input, db, context) => {
     const args = asRecord(input);
-    const name = reqString(args, 'name');
     // execute requires a valid kind (reqEnum); check it here so a bad or missing
     // enum fails before the approve, not after.
     reqEnum(args, 'kind', WORKOUT_KINDS);
     const duration = optNumber(args, 'duration_min');
     const sets = parseSets(args, db);
     const parts = [
-      `Log workout "${name}"`,
+      'Log workout',
       ...(duration != null ? [`${Math.round(duration)} min`] : []),
       ...sets.map((s) => s.displayLine),
     ];
@@ -446,16 +482,17 @@ const logWorkoutTool: CoachTool = {
       db,
       {
         date: logDate(args, context.now),
-        name: reqString(args, 'name'),
         kind: reqEnum(args, 'kind', WORKOUT_KINDS),
         durationMin: optNumber(args, 'duration_min') ?? null,
         notes: optString(args, 'notes') ?? null,
       },
-      sets.map(({ exercise, exerciseId, reps, weightKg }) => ({
+      sets.map(({ exercise, exerciseId, reps, weightKg, durationSec, distanceM }) => ({
         exercise,
         exerciseId,
         reps,
         weightKg,
+        durationSec,
+        distanceM,
       }))
     );
     // Unmatched names still log (free-text sets are valid) but stay invisible

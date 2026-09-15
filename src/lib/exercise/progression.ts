@@ -12,12 +12,23 @@ import { DELOAD_FRACTION, STALL_SESSIONS } from './constants';
 import { epley, effectiveReps } from './e1rm';
 import type { ProgressionSuggestion } from './types';
 
-/** One prior session's best working set for an exercise (oldest → newest). */
+/**
+ * One prior session's best working set for an exercise (oldest → newest).
+ *
+ * `durationSec` / `distanceM` (0046) ride along for the history list on
+ * app/exercise-detail.tsx, which renders the same rows. The progression engine
+ * below ignores them entirely and that is correct: double progression is a
+ * statement about load and reps, and there is no honest way to "add 2.5 kg" to
+ * a run. A movement with no loaded history returns 'find_weight' — see
+ * `progressionFor` in training-recommend.ts, which does not even ask.
+ */
 export type SessionTopSet = {
   date: string;
   weightKg: number | null;
   reps: number | null;
   rpe: number | null;
+  durationSec?: number | null;
+  distanceM?: number | null;
 };
 
 export type ProgressionInput = {

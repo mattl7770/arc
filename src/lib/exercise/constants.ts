@@ -198,9 +198,83 @@ export function effortWeight(rpe: number | null, isFailureType: boolean): number
   return isFailureType ? 1.25 : 1.0;
 }
 
+/**
+ * Minutes of continuous ENDURANCE work that cost a muscle what one hard working
+ * set costs it. Ten.
+ *
+ * This is the whole of B1's freshness answer and it exists because the default
+ * — one row, one set — is wrong in the one direction that matters. Before 0046
+ * a run could not record its duration at all; now it can, and treating a
+ * 45-minute run as a single set of quads would tell the recovery model that
+ * nothing much happened. The owner would then be shown a leg day the morning
+ * after a long run, which is exactly the class of mistake the ledger exists to
+ * prevent.
+ *
+ * Ten minutes is the calibration, not a derivation — running has no published
+ * "sets" to convert from — and it is set by anchoring one reading the owner can
+ * check against his own legs:
+ *
+ *   **A 45-minute run, no RPE, reads quads 57 and calves/hamstrings/glutes 75.**
+ *
+ * (4.5 effort units on the primary; 2.25 on the secondaries at role weight 0.5;
+ * `freshnessFromFatigue` does the rest. Pinned in db/training-engine.test.mjs.)
+ * Read against {@link FRESH_SCALE}'s own table, that puts a 45-minute run at
+ * roughly a third of a twelve-set leg day, and lands it in the "recovering"
+ * band rather than "fresh" — you would not squat heavy on it, and you would
+ * train upper body without a second thought. Both of those are true.
+ *
+ * It is a SCALE, so it stays honest at the ends too: a 20-minute Zone 2 shuffle
+ * costs 2 units (quads 78, a dent), and a three-hour long run hits the cap.
+ * Tunable — this and {@link ENDURANCE_EFFORT_CAP} are the two numbers a device
+ * review would move.
+ */
+export const ENDURANCE_MINUTES_PER_SET = 10;
+
+/**
+ * The most fatigue one endurance set may contribute, in fractional working sets.
+ *
+ * Eighteen, reached at three hours, and the ceiling matters for two reasons.
+ * Without one, the 10-hour bound on `workout_sets.duration_sec` would permit 60
+ * units, and `freshnessFromFatigue` would round to **0** — a number the model
+ * promises never to print, because a real muscle never is at zero. And 18 sits
+ * deliberately BELOW the ~44 units a hand-asserted "Spent" implies
+ * (`ANCHOR_FLOOR_PERCENT`, freshness.ts), so nothing the app infers on its own
+ * can ever out-assert what the user said about his own body.
+ */
+export const ENDURANCE_EFFORT_CAP = 18;
+
+/**
+ * The effort weight of one ENDURANCE set — time + distance with no load (see
+ * `isEnduranceMeasures`). Duration is the dose; RPE still scales it, through the
+ * same {@link effortWeight} knob every other set uses, so an easy 45-minute jog
+ * (RPE 5 → RIR 5 → 0.5) costs half a hard 45-minute tempo.
+ *
+ * A set with NO duration falls back to the ordinary per-set weight rather than
+ * to zero: a run someone logged as distance-only still happened, and reading it
+ * as free is a worse error than reading it as one set.
+ */
+export function enduranceEffortWeight(
+  durationSec: number | null,
+  rpe: number | null,
+  isFailureType: boolean
+): number {
+  const effort = effortWeight(rpe, isFailureType);
+  if (durationSec == null || !Number.isFinite(durationSec) || durationSec <= 0) return effort;
+  const sets = durationSec / 60 / ENDURANCE_MINUTES_PER_SET;
+  return Math.min(ENDURANCE_EFFORT_CAP, sets * effort);
+}
+
 // ---------------------------------------------------------------------------
 // e1RM
 // ---------------------------------------------------------------------------
+
+/**
+ * The shortest piece that may set a PACE record, in metres. 400 m — one lap —
+ * is the shortest distance at which a pace is a training fact rather than an
+ * artefact of the start. Below it, a sprint's pace would own the record for
+ * every distance forever (see `PersonalRecords.bestPaceSecPerKm`).
+ */
+export const PACE_PR_MIN_M = 400;
 
 /** Sets above this rep count carry too much noise to estimate 1RM from. */
 export const E1RM_REP_CAP = 12;

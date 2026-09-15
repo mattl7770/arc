@@ -2571,5 +2571,76 @@ console.log('36. the coverage manifest: the model is told what it CANNOT see');
   coverageProblems().length === 0 ? ok('and the registry is clean again') : bad('cleanup');
 }
 
+// ---------------------------------------------------------------------------
+// B1 / 0046. "I ran 8k in 45 minutes" and "I held a plank for 90 seconds" are
+// things the owner says out loud, and until now the Coach had nowhere to put
+// either: log_workout took reps and a weight and nothing else.
+console.log('37. log_workout carries time and distance, and the card promises the real row');
+{
+  const { db, raw } = freshDb();
+  const tool = toolByName('log_workout');
+  const summary = tool.confirmSummary(
+    {
+      kind: 'cardio',
+      duration_min: 45,
+      sets: [
+        { exercise: 'Treadmill Run', duration_s: 2700, distance_m: 8000 },
+        // The model guessing reps and a load onto a plank — the exact input the
+        // repository's measure rule exists to refuse.
+        { exercise: 'Plank', reps: 3, weight: 45, duration_s: 90 },
+      ],
+    },
+    db
+  );
+  // The default distance preference is miles, so 8 km renders as 4.97 mi — the
+  // card speaks the owner's units, exactly as the weight half already did.
+  summary.includes('Treadmill Run 45:00 · 4.97 mi')
+    ? ok(`the card shows the run's time and distance in display units ("${summary}")`)
+    : bad('run summary', summary);
+  // THE PROMISE. The model sent a plank 3 × 45 lb; the repository will store
+  // neither. The card has to say what will actually land, or an Approve tap
+  // approves a row that never existed.
+  summary.includes('Plank 1:30') && !summary.includes('45 lb')
+    ? ok('…and the plank line is masked to its 90 seconds, as the row will be')
+    : bad('card promised fields the repository drops', summary);
+  !/"/.test(summary) && summary.startsWith('Log workout ·')
+    ? ok('…and no longer quotes an invented session name (the schema stopped asking)')
+    : bad('name still in summary', summary);
+
+  run('log_workout', db, {
+    kind: 'cardio',
+    duration_min: 45,
+    sets: [
+      { exercise: 'Treadmill Run', duration_s: 2700, distance_m: 8000 },
+      { exercise: 'Plank', reps: 3, weight: 45, duration_s: 90 },
+    ],
+  });
+  const rows = raw
+    .prepare(
+      'SELECT exercise, exercise_id, reps, weight_kg, duration_sec, distance_m FROM workout_sets ORDER BY set_index'
+    )
+    .all();
+  const runRow = rows[0];
+  runRow.exercise_id === 'treadmill-run' &&
+  runRow.duration_sec === 2700 &&
+  runRow.distance_m === 8000 &&
+  runRow.reps === null &&
+  runRow.weight_kg === null
+    ? ok('a spoken run lands as seconds + metres against the catalog movement')
+    : bad('run row', JSON.stringify(runRow));
+  const plank = rows[1];
+  plank.duration_sec === 90 && plank.reps === null && plank.weight_kg === null
+    ? ok('…and the reps and load the model invented for a plank are dropped, not stored')
+    : bad('plank row', JSON.stringify(plank));
+
+  // The read side reports them back, so the Coach can answer "how far did I run
+  // this week" from its own tool rather than from the conversation.
+  const training = JSON.parse(toolByName('get_training_summary').execute(db, {}, { now: NOW }));
+  const session = training.recentSessions[0];
+  session.setMetres === 8000 && session.setSeconds === 2790
+    ? ok('get_training_summary reports the session’s summed metres and seconds')
+    : bad('training read', JSON.stringify(session));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

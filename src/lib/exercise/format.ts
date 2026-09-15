@@ -196,6 +196,103 @@ export function formatClock(totalSec: number): string {
   return `${m}:${String(s % 60).padStart(2, '0')}`;
 }
 
+// ---------------------------------------------------------------------------
+// Time and distance (0046) — hand-rolled, because Hermes ships no Intl
+// ---------------------------------------------------------------------------
+
+/**
+ * Seconds a user typed into a `mm:ss` field, or null.
+ *
+ * TOLERANT, because a number pad on iOS has no colon and this field therefore
+ * takes the full `numbers-and-punctuation` keyboard, where the user can type
+ * anything:
+ *
+ *   "45:00"    → 2700   the intended form
+ *   "45:0"     → 2700   a half-typed second
+ *   "1:05:30"  → 3930   h:mm:ss, tolerated rather than rejected
+ *   "90"       →   90   NO COLON MEANS SECONDS — "60" on a plank is a minute,
+ *                       which is what someone holding a plank means by it
+ *   "5:"       →  300   trailing colon, mid-typing
+ *
+ * Returns null for anything with a non-numeric part, so the caller can leave
+ * the field alone rather than correcting it under the cursor. Minutes and
+ * seconds are NOT range-checked (":90" is 90 seconds): the schema's own
+ * `duration_sec < 36000` bound is the only limit, and it is checked at save.
+ */
+export function parseClock(text: string): number | null {
+  const trimmed = text.trim();
+  if (trimmed === '') return null;
+  const parts = trimmed.split(':');
+  if (parts.length > 3) return null;
+  let total = 0;
+  for (const part of parts) {
+    // An empty segment is a colon the user has typed but not filled ("5:").
+    const n = part === '' ? 0 : Number(part);
+    if (!Number.isFinite(n) || n < 0) return null;
+    total = total * 60 + n;
+  }
+  return Math.round(total);
+}
+
+/** Metres per display unit — the only two distance units ARC offers. */
+const M_PER_KM = 1000;
+const M_PER_MI = 1609.344;
+
+const distanceFactor = (units: UnitPreferences): number =>
+  units.distance === 'km' ? M_PER_KM : M_PER_MI;
+
+/** Canonical metres → a number in the user's distance unit, 2dp. */
+export function displayDistance(metres: number, units: UnitPreferences): number {
+  return Math.round((metres / distanceFactor(units)) * 100) / 100;
+}
+
+/** A distance the user typed, in their unit → canonical metres. */
+export function toCanonicalMetres(value: number, units: UnitPreferences): number {
+  return value * distanceFactor(units);
+}
+
+/** Canonical metres → "5.2 km" / "3.1 mi" (trailing zeros trimmed). */
+export function formatDistance(metres: number, units: UnitPreferences): string {
+  return `${displayDistance(metres, units)} ${units.distance}`;
+}
+
+/**
+ * Pace as "4:35 /km" or "7:22 /mi", from seconds per KILOMETRE (how
+ * `PersonalRecords.bestPaceSecPerKm` stores it) rendered in the user's own
+ * unit. Rounded to the second — nobody reads a pace to a tenth.
+ */
+export function formatPace(secPerKm: number, units: UnitPreferences): string {
+  const perUnit = units.distance === 'km' ? secPerKm : secPerKm * (M_PER_MI / M_PER_KM);
+  return `${formatClock(Math.round(perUnit))} /${units.distance}`;
+}
+
+/**
+ * One set as a single mono line, in whatever it actually measured: "8 × 135 lb",
+ * "1:30", "26:40 · 5.2 km", "60 lb · 0.04 km". The em-dash is the honest answer
+ * for a set that recorded nothing.
+ *
+ * Order follows the canonical measure order (reps, load, time, distance) — the
+ * same order the logger draws its columns in — with reps × load kept as the one
+ * compound form, because "8 × 135 lb" is how a lift is read aloud and splitting
+ * it would be worse.
+ */
+export function measuredSetLine(
+  set: {
+    reps: number | null;
+    weightKg: number | null;
+    durationSec: number | null;
+    distanceM: number | null;
+  },
+  units: UnitPreferences
+): string {
+  const parts: string[] = [];
+  const lift = setLineKg(set.reps, set.weightKg, units);
+  if (lift !== '—') parts.push(lift);
+  if (set.durationSec != null) parts.push(formatClock(set.durationSec));
+  if (set.distanceM != null) parts.push(formatDistance(set.distanceM, units));
+  return parts.length > 0 ? parts.join(' · ') : '—';
+}
+
 /**
  * Warmup ramp for a working weight (canonical kg): a bar set plus the percentage
  * ladder, each load snapped to real plates. Empty when the working weight is

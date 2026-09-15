@@ -10,6 +10,7 @@
 import type { Database } from '../database';
 import { newId } from '../id';
 import { resolveUniqueMatch, type NameSource } from '@/lib/exercise/match';
+import { asMeasures, MEASURES_FOR_LOGGING_TYPE } from '@/lib/exercise/measures';
 import type {
   CatalogExercise,
   CatalogFilter,
@@ -47,6 +48,10 @@ function toCatalogExercise(row: CatalogRow): CatalogExercise {
     movementPattern: row.movement_pattern,
     mechanic: row.mechanic,
     loggingType: row.logging_type,
+    // Total read (0046): a row from a build ahead of this one, or a value the
+    // CHECK somehow let through, reads as reps × load rather than crashing a
+    // picker. `asMeasures` is where that promise lives.
+    measures: asMeasures(row.measures),
     unilateral: row.unilateral === 1,
     isCustom: row.is_custom === 1,
     primaryMuscles: muscles.filter((m) => m.role === 'primary').map((m) => m.muscle),
@@ -198,8 +203,8 @@ export function createCustomExercise(db: Database, input: NewExercise): string {
   db.transaction(() => {
     db.run(
       `INSERT INTO exercises
-         (id, name, equipment, movement_pattern, mechanic, logging_type, unilateral, instructions, is_custom)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+         (id, name, equipment, movement_pattern, mechanic, logging_type, measures, unilateral, instructions, is_custom)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         id,
         input.name.trim(),
@@ -207,6 +212,11 @@ export function createCustomExercise(db: Database, input: NewExercise): string {
         input.movementPattern ?? null,
         input.mechanic ?? null,
         input.loggingType,
+        // Derived, not asked for (0046): every form in the app authors a
+        // `logging_type` and nothing authors measures, so one mapping serves
+        // the picker, AI search and the Coach alike — and the two columns
+        // cannot drift. An explicit `measures` wins when a caller has one.
+        input.measures ?? MEASURES_FOR_LOGGING_TYPE[input.loggingType],
         input.unilateral ? 1 : 0,
         input.instructions && input.instructions.length > 0
           ? JSON.stringify(input.instructions)

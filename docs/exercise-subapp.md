@@ -1,9 +1,13 @@
 # Exercise Sub-App — Design Spec
 
-**Status:** Phase 5 — **the post-trip backlog round (2026-09-14)**: the live session survives the app being killed (migration **0045**), and exercise search tolerates how people actually type. Phase 4 before it: body-figure freshness diagram, photo workout import (AI), saved workouts (programs retired), in-session exercise detail with bundled photos, the superset "bind" animation, and AI exercise search. AI features run through the Coach's model client and always land in an editable review; everything else stays offline.
+**Status:** Phase 6 — **an exercise declares what it measures** (backlog B1, migration **0046**): reps · load · time · distance per movement, so a plank is logged as a hold and a run as a time and a distance. Phase 5 before it: the live session survives the app being killed (**0045**) and exercise search tolerates how people actually type. Phase 4: body-figure freshness diagram, photo workout import (AI), saved workouts (programs retired), in-session exercise detail with bundled photos, the superset "bind" animation, and AI exercise search. AI features run through the Coach's model client and always land in an editable review; everything else stays offline.
 **Last updated:** 2026-09-14
-**Window:** parallel build, migrations **0011–0013** + **0020** + **0045**
-**Reads:** CLAUDE.md §4/§9 · `docs/information-architecture.md` · `docs/project-status.md` ("exercise as measured data") · `db/migrations/0003_exercise.sql` · `docs/backlog-2026-09.md` (A1, A7)
+**Window:** parallel build, migrations **0011–0013** + **0020** + **0045** + **0046**
+**Reads:** CLAUDE.md §4/§9 · `docs/information-architecture.md` · `docs/project-status.md` ("exercise as measured data") · `db/migrations/0003_exercise.sql` · `docs/backlog-2026-09.md` (A1, A7, B1)
+
+> **Phase 6 shipped (2026-09-14) — backlog B1, the last Phase B foundation.**
+>
+> **An exercise declares what a set of it records.** Owner: *"Distance instead of reps for running workouts, etc."* and *"time for some exercises i.e. planks and running instead of reps."* `exercises.measures` (**0046**) is a CHECK'd subset of `reps · load · time · distance`; `workout_sets` gains `distance_m` beside the `duration_sec` 0013 already had. The loggers draw the columns the movement asks for, the freshness model doses endurance work by the clock (a 45-minute run reads quads 57, not 88), e1RM and progression stay confined to load × reps, and time and distance get records of their own. The draft version went 1 → 2, so any in-flight draft evaporates. **§10** is the whole decision.
 
 > **Phase 5 shipped (2026-09-14) — two backlog items, A1 and A7.**
 >
@@ -191,6 +195,17 @@ CREATE TABLE workout_drafts (
 
 A two-slot KV following `health_sync_state`'s pattern — one row per logging screen, the payload free JSON carrying its own `version`. The full argument is in the migration's header; the short form is §9 below.
 
+### 0046 — `exercises.measures` + `workout_sets.distance_m` (B1)
+
+```sql
+ALTER TABLE exercises ADD COLUMN measures text NOT NULL DEFAULT 'reps,load'
+  CHECK (measures IN ( … all 15 non-empty subsets, canonical order … ));
+ALTER TABLE workout_sets ADD COLUMN distance_m real
+  CHECK (distance_m IS NULL OR (distance_m >= 0 AND distance_m < 1000000));
+```
+
+**An exercise declares what a set of it records** — a subset of `reps · load · time · distance`, stored as the comma-joined subset in that fixed order (`'reps,load'`, `'time'`, `'time,distance'`, `'load,distance'`). See §10.
+
 ### Repository & type layout (exports stay stable)
 
 - `src/lib/db/repositories/exercise.ts` — **untouched exports.** One compatible extension: `SetInput` gains optional `exerciseId?`, `setType?`, `rpe?`, `durationSec?` fields and `LogWorkoutInput` gains `routineId?`; `logWorkout`/`addSet` write them when present. Call-compatible — every existing caller and test passes unchanged. Flagged for integrator eyes anyway.
@@ -217,9 +232,10 @@ Per muscle *m*: `fatigue_m(now) = Σ over last 14 days of sets: role_weight × e
 - `role_weight`: primary 1.0, secondary 0.5 (fractional counting).
 - `effort_weight`: 1.0 default; 0.5 if RIR > 4 (easy set); 1.25 if RIR 0 (failure costs 24–48 h extra recovery — Morán-Navarro 2017).
 - `τ_m` from published recovery windows, τ = window/3 (residual ≈ 5% at the window): **72 h** muscles (quads, hamstrings, glutes, lats, upper_back, lower_back) τ = 24 h · **48 h** (chest, side_delts, rear_delts, front_delts, traps, triceps) τ = 16 h · **36 h** (biceps, calves, forearms, abs) τ = 12 h.
-- `freshness_m = 100 × (1 − min(1, fatigue_m / F_full))`, `F_full = 8` (one full hard session's primary sets ≈ fully spent). Display buckets: ≥ 80 fresh · 50–79 recovering · < 50 fatigued.
+- `freshness_m = 100 × e^(−fatigue_m / FRESH_SCALE)`, `FRESH_SCALE = 8`. *(Restated 2026-08-14: it was `100 × (1 − min(1, F/8))`, and the `min` clipped — eight fractional sets and twenty-four both printed 0. The calibration table lives on `freshnessFromFatigue`, and `db/training-engine.test.mjs` §5b is the specification.)* Display buckets: ≥ 80 fresh · 50–79 recovering · < 50 fatigued.
+- **`effort_weight` for ENDURANCE work is the duration, not the set** (B1, 0046). A set whose exercise measures time **and** distance and carries no load — a run, a ride, a row, a swim, a walk — costs `duration / ENDURANCE_MINUTES_PER_SET` working sets, RPE-scaled through the same knob, capped at `ENDURANCE_EFFORT_CAP = 18`. Ten minutes ≈ one hard set. See §10.
 
-Cardio logged with kind `cardio` subtracts a flat small fatigue (0.5) from quads/hamstrings/calves per 30 min — the FitBod cross-training adjustment, minimal version.
+Cardio logged with kind `cardio` but no catalog movement still contributes nothing to any muscle — attribution runs through `exercise_muscles`, so a free-text cardio session is invisible to the ledger by the same rule every other free-text set is.
 
 ### 4.3 Progression (per exercise)
 
@@ -351,3 +367,61 @@ The resolver's contract is unchanged where it matters: a unique match or null, n
 - **The write-through's feel.** Each keystroke in the set grid now performs one small `INSERT … ON CONFLICT` (skipped when the serialised payload is unchanged). op-sqlite is synchronous, so if anything is going to stutter it is typing into a long session on a real phone. If it does, the fix is a short debounce on the payload — not a retreat from write-through.
 - **The Resume card's place** at the top of the hub, above Train today, and whether a neutral plate is enough presence for it.
 - **Whether a resumed rest timer should re-arm its OS alert.** It deliberately does not (the pre-kill notification is still queued); that assumption is only observable on a device where the rest alert has actually been seen to fire — which, per §6, has still never been confirmed.
+
+---
+
+## 10. Phase 6 — an exercise declares what it measures (B1, 2026-09-14)
+
+Owner: *"Distance instead of reps for running workouts, etc."* and *"time for some exercises i.e. planks and running instead of reps."* Every set in ARC had been reps × load since 0003: the logger asked a plank for reps and had nowhere to put five kilometres.
+
+### 10.1 The model
+
+`exercises.measures` (migration **0046**) is the comma-joined subset of `reps · load · time · distance`, in that fixed order. A set carries the corresponding nullable columns — the existing `reps` / `weight_kg` / `duration_sec` (0013) plus the new `distance_m` (metres, canonical, so the km/mi toggle is display-only exactly as kg is).
+
+**Why a CHECK'd text and not JSON.** CLAUDE.md §9: ARC owns this whole vocabulary, so it takes the CHECK. A JSON array would need `json_valid` and would still admit `["reps","reps"]` and `["load","reps"]` — three spellings of two facts. The CHECK enumerates **all fifteen** non-empty subsets, and that totality is the point: the domain is closed at four measures, so the CHECK can never need a sixteenth value and can never become the twelve-step table rebuild it would otherwise be on a table that parents two live foreign keys.
+
+**Why not `logging_type`.** 0011's `logging_type` already sorts movements into seven buckets and three of them are this question. It is not enough: it cannot say load + time + distance or distance alone, adding a value to *its* CHECK is that same rebuild, and it is a **guess** on every row the app writes itself — the picker's New-exercise form derives it from equipment alone, so a custom "Running" is stored as a reps × load lift. `measures` supersedes it as the authority for what a set carries; `logging_type` stays (it still separates bodyweight from weighted from assisted) and remains what the forms author, with `measures` derived from it on write through one map (`MEASURES_FOR_LOGGING_TYPE`), so the two cannot drift.
+
+**The cross-table rule lives in the repository.** "A set carries the fields its exercise implies" is enforced by `insertSet` (via `maskByMeasures`), not by a CHECK — the 0034 lesson: a cross-column CHECK passes on an empty fixture and then rejects the ALTER on a populated device, where the offending rows are the owner's own history. Surplus fields are NULLed rather than throwing, because every caller writes inside one transaction and a throw would roll back a whole session over one surplus field. The Coach's `log_workout` **card** masks with the same function, so the confirmation promises the row that will actually exist.
+
+### 10.2 The backfill
+
+Pass 1 derives from `logging_type` for every row. Passes 2–4 then correct **by name**, which is what reaches the custom exercises the picker mis-typed:
+
+| Pass | Result | From |
+| --- | --- | --- |
+| 1 | `reps,load` | `weight_reps`, `weighted_bodyweight`, `assisted_bodyweight` |
+| 1 | `reps` | `bodyweight_reps` |
+| 1 | `time` | `duration` |
+| 1 | `load,time` | `weight_duration` |
+| 1 | `time,distance` | `distance_duration` |
+| 2 | `time` | plank · wall sit · dead hang · hollow hold |
+| 3 | `time,distance` | run (word-anchored) · jog · sprint · treadmill · cycl · bike · rowing · erg · swim · elliptical · hike · ruck · walk (not lunge) |
+| 4 | `load,distance` | farmer · carry · sled · yoke |
+
+Shipped catalog after the backfill: **plank** `time` · **treadmill run / rowing erg / stationary bike / incline walk** `time,distance` · **farmer's carry** `load,distance` (the owner's own framing; nothing is orphaned, because no screen has ever written `duration_sec`) · **push-up and the other bodyweight movements** `reps` · everything else `reps,load`.
+
+Three traps the name passes are written around, all real: `*run*` matches "t**run**k rotation" (so `run` is word-anchored); `*row*` would have swallowed Barbell / Dumbbell / Seated Cable / Machine Row (so only `rowing` and `erg` match); `*walk*` catches the Walking Lunge (excluded).
+
+### 10.3 Stats: what each measure can and cannot claim
+
+- **e1RM, PRs by load, and progression apply only to `reps` + `load`.** A plank can never set an estimated 1RM — already true arithmetically (`countsForE1rm` rejects a null load or null reps) and now stated as a property of the movement, which is what lets the detail screen *omit* an e1RM panel rather than draw one that would only ever read "—".
+- **Three new records, and the honesty is in what is not answered.** *Longest* (the plank record) and *Farthest* are unambiguous. *Best pace* is seconds per kilometre over pieces of at least `PACE_PR_MIN_M` = 400 m — below that a sprint's pace would own the record for every distance forever. It is still one number across all distances, which is a real simplification: a 5 km PR pace and a half-marathon PR pace are different achievements. Per-distance bests are a table, not a record, and wait until there is history worth tabling.
+- **Freshness is duration-aware for endurance work; weekly VOLUME is not.** The asymmetry is deliberate. Freshness models systemic fatigue, where an hour of running plainly costs more than a minute. Weekly volume is measured against MEV/MAV/MRV, landmarks derived entirely from resistance-training sets — scaling a run to 4.5 "sets" of quads would compare it to a scale it was never on and report that an easy hour had pushed the owner past his maximum recoverable volume. One row, one set, there.
+
+**The calibration** (pinned in `db/training-engine.test.mjs` §5c, which is the specification): a **45-minute run with no RPE reads quads 57 and calves / hamstrings / glutes 75** — recovering, roughly a third of a twelve-set leg day. An easy 45 minutes (RPE 5) reads 75; a hard one 57. A run logged with no duration falls back to one working set (quads 88), because a distance-only import still happened. Ten hours — the `duration_sec` ceiling — caps at 11, above the model's floor and well below the ~44 units a hand-asserted "Spent" implies, so nothing inferred can out-assert the user. A **60-second plank is one set of abs (88)**, not a tenth of one: `time` without `distance` is a hold, and a hold is one set however long it lasts.
+
+### 10.4 What changed above the data layer
+
+- **Loggers.** `workout-live` draws its columns from the block's `measures` (canonical order; the `Prev` column is the one that yields when a movement measures three things). The clock is an `mm:ss` field on the full punctuation keyboard — no iOS number pad has a colon — with a tolerant parser where a bare `60` is a minute. Distance is typed in the user's own unit and stored in metres. `workout-log`, whose exercise is free text, resolves the typed name through the **same** `resolveExerciseByName` the repository will use, so the fields on screen are the fields that will be stored.
+- **`DRAFT_VERSION` 1 → 2.** `DraftSet` gained `time` and `distance`, `DraftBlock` gained `measures`. A v1 payload is discarded, not migrated — the first real use of the mechanism 0045 shipped for. The one abandoned draft on the device evaporates on first launch.
+- **Import.** The extraction prompt said *"Time-only rows: skip"*, so a screenshot of a run imported as nothing. It now asks for `durationS` (seconds) and `distanceM` (metres, converted from whatever the source showed), and a row with only those is a complete set. The review screen shows them; it does not yet let you edit them — a duration and a distance are printed as single unambiguous tokens, and when one is misread the honest repair is to remove the set rather than retype a number the photo does not support.
+- **Coach.** `log_workout`'s set item gained `duration_s` / `distance_m` (+31 tok), paid for by deleting its `name` property (−30 tok) — a required field asking the model to invent a string for a column the owner retired on 2026-08-14 and nothing has rendered since. Net **+1 token**; neither §6 ceiling moved. The training reads report per-session `setSeconds` / `setMetres`, which costs nothing against that budget because it is payload, not schema.
+- **D3's seam.** A set with `duration_sec` + `distance_m` and no reps is a first-class row, pinned as such — which is what ingested HealthKit workouts will map onto.
+
+### 10.5 What only a device can settle
+
+- **The `mm:ss` field.** It is the only input in the app on `numbers-and-punctuation`, and whether reaching for a colon mid-set is acceptable — or whether it should become two number fields, or stopwatch-style digit entry — is a question about standing in a gym.
+- **Three value columns at 375 pt.** Nothing in the shipped catalog measures three things, so the `Prev`-column fallback is untested by the owner's own use.
+- **Whether a session of only endurance movements should log as `kind: 'cardio'`.** The live logger still writes `'strength'` for everything; changing it would move the hub's Zone-2 minutes, so it is left for the owner to call.
+- **The ten-minutes-per-set calibration itself.** It is anchored to one reading (45 min → quads 57), and the only test that matters is whether, the morning after a long run, the figure matches how his legs feel.

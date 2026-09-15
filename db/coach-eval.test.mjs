@@ -648,6 +648,37 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // was not quite, and these three are the last of that pattern. The next
   // addition trims the VOICE section or the schemas, because there is no fourth
   // fact-then-restatement left in here.
+  //
+  // ── 2026-09-14: B1, EXERCISE METRIC TYPES. NEITHER CEILING MOVED, and the
+  // schema addition was paid for out of the same schema — which is where the
+  // 2026-08-26 entry said the next dig would be.
+  //
+  // COST (+31 tok). `log_workout`'s set item gained `duration_s` and
+  // `distance_m` (migration 0046: an exercise declares what it measures, and a
+  // run is time + distance while a plank is time). Both are bare
+  // `{type, minimum}` with NO description, because the property NAMES carry the
+  // units — the cheapest form a numeric property has. Neither takes a `unit`
+  // sibling the way `weight` does: "five miles" is a conversion the model does
+  // once at no schema cost, where an lb/kg reading is one the OWNER has to be
+  // able to check on the card.
+  //
+  // PAID FOR BY (−30 tok): `name`, deleted from the same tool — a REQUIRED
+  // property with an example ("Upper A", "Zone 2 ride") asking the model to
+  // invent a string for `workouts.name`, a column the owner retired on
+  // 2026-08-14 (*"Workouts dont need names, remove this"*) and that nothing has
+  // rendered since. The session list titles itself off its movements, the
+  // logger has no name field, and the repository already defaults the column to
+  // ''. The confirmation card quoted the invented name back — the single place
+  // it was ever visible, and a label the owner would never see again after
+  // approving it. This is not the fact-then-restatement pattern; it is a newer
+  // and worse one, a schema still asking for a fact the APP no longer has.
+  //
+  // NET 9,223 → 9,224: **+1 tok**, 26 of headroom. Where the next addition
+  // digs: `update_protocol` (424) is still the largest schema and still
+  // unswept, then `get_metric_series` (354) and `adjust_today` (348). The
+  // training READ tools gained per-session `setSeconds` / `setMetres` at zero
+  // schema cost — result fields are not in this budget, which is the argument
+  // for putting new information in the payload rather than in the description.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

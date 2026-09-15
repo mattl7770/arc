@@ -20,7 +20,7 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { logWorkout } from '@/lib/db/repositories/exercise';
-import { lbToKg } from '@/lib/exercise/format';
+import { formatClock, formatDistance, lbToKg } from '@/lib/exercise/format';
 import { pickPhotoBase64 } from '@/lib/media/photo-library';
 import {
   groundWorkoutImport,
@@ -96,6 +96,21 @@ type ReviewSet = {
   weight: string;
   unit: 'lb' | 'kg' | null;
   rpe: string;
+  /**
+   * The transcribed time and distance (0046), canonical seconds and metres.
+   *
+   * NUMBERS, not editable strings, and that is the one asymmetry on this
+   * screen. Reps and weight get fields because they are the columns a
+   * screenshot most often gets wrong — a bold PR marker read as a digit, a
+   * plate weight clipped. A duration and a distance are printed as single
+   * unambiguous tokens ("26:40", "5.2 km") and are read correctly or not at
+   * all; when not, the honest repair is to remove the set rather than to retype
+   * a number the photo does not support. They are SHOWN on the row so the user
+   * can check them, and the set's × removes it. Full editing waits until the
+   * owner reports wanting it, rather than being guessed at now.
+   */
+  durationSec: number | null;
+  distanceM: number | null;
 };
 
 type ReviewExercise = {
@@ -150,6 +165,8 @@ export default function WorkoutImportScreen() {
           weight: s.weight == null ? '' : String(s.weight),
           unit: s.weightUnit,
           rpe: s.rpe == null ? '' : String(s.rpe),
+          durationSec: s.durationSec,
+          distanceM: s.distanceM,
         })),
       }))
     );
@@ -240,13 +257,18 @@ export default function WorkoutImportScreen() {
           // say — read it in the user's own display unit.
           const unit = s.unit ?? units.weight;
           const weightKg = weight == null ? null : unit === 'kg' ? weight : lbToKg(weight);
-          if (reps == null && weightKg == null) return null;
+          // A run carries neither reps nor a load and is a complete set (0046).
+          if (reps == null && weightKg == null && s.durationSec == null && s.distanceM == null) {
+            return null;
+          }
           return {
             exercise: e.name.trim(),
             exerciseId: e.exerciseId,
             reps,
             weightKg,
             rpe: rpe != null && Number.isFinite(rpe) ? rpe : null,
+            durationSec: s.durationSec,
+            distanceM: s.distanceM,
           } satisfies SetInput;
         })
         .filter((s): s is NonNullable<typeof s> => s !== null)
@@ -521,6 +543,20 @@ export default function WorkoutImportScreen() {
                               <Ionicons name="close" size={14} color={palette.inkMuted} />
                             </Pressable>
                           </View>
+                          {/* What the photo said about time and distance (0046)
+                              — shown, not editable; see ReviewSet. Indented past
+                              the set-number column so it reads as part of the
+                              row above rather than as another set. */}
+                          {s.durationSec != null || s.distanceM != null ? (
+                            <Text className="mb-1.5 pl-[34px] font-mono text-[12px] text-ink-secondary">
+                              {[
+                                s.durationSec != null ? formatClock(s.durationSec) : null,
+                                s.distanceM != null ? formatDistance(s.distanceM, units) : null,
+                              ]
+                                .filter((p): p is string => p !== null)
+                                .join(' · ')}
+                            </Text>
+                          ) : null}
                         </View>
                       ))}
                     </View>

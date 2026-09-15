@@ -26,18 +26,32 @@
  * old, the user is standing in the gym holding the phone, and the cost of a
  * wrong guess (silently resurrecting half a session in the wrong shape) is far
  * worse than "nothing to resume". B1 — reps / time / distance metric types on
- * the same logger — will change {@link DraftSet}; it bumps the version and the
- * one abandoned draft on the device evaporates on first launch.
+ * the same logger — did exactly that on 2026-09-14: {@link DraftSet} grew a
+ * time and a distance, {@link DRAFT_VERSION} went to 2, and the one abandoned
+ * draft on the device evaporates on first launch. The mechanism worked as
+ * designed the first time it was needed.
  *
  * Parsing is likewise total: anything malformed reads as `null`, never a throw.
  * This runs in a `useState` initialiser on the logger's mount path, and a
  * corrupt row must not be able to make the screen un-openable.
  */
 import type { PrevSet } from '@/lib/db/repositories/training-stats';
+import { asMeasures, type Measures } from '@/lib/exercise/measures';
 import type { LoggingType, Mechanic, SetType, WorkoutKind } from '@/lib/exercise/types';
 
-/** Bumped whenever {@link LiveDraft} or {@link ManualDraft} changes shape. */
-export const DRAFT_VERSION = 1;
+/**
+ * Bumped whenever {@link LiveDraft} or {@link ManualDraft} changes shape.
+ *
+ * **1 → 2 on 2026-09-14 (B1, migration 0046).** Both drafts gained time and
+ * distance: `DraftSet` carries `time`/`distance` strings, `DraftBlock` carries
+ * the exercise's `measures`, and `ManualDraft` carries the typed time/distance
+ * and the movement it resolved to. A v1 payload has none of those, so a v1
+ * block would render as reps × load whatever the movement now measures — which
+ * is the exact confusion this release removes. It is discarded instead: the
+ * owner has at most one abandoned session on the device and it evaporates on
+ * first launch, which is the trade {@link parseLiveDraft} was built for.
+ */
+export const DRAFT_VERSION = 2;
 
 /** The two draft slots — one per logging screen (`workout_drafts.key`). */
 export type DraftKey = 'live' | 'manual';
@@ -65,6 +79,15 @@ export type DraftSet = {
   weight: string;
   reps: string;
   rpe: string;
+  /**
+   * The timed and measured fields (0046), as typed: `time` is an `mm:ss` string
+   * (`parseClock` reads it), `distance` is a number in the user's own distance
+   * unit — metres are canonical only once the set is saved. Strings for the
+   * same reason every other field here is one: a draft must round-trip what is
+   * half-written, and "4:" is a legal thing to be in the middle of typing.
+   */
+  time: string;
+  distance: string;
   setType: SetType;
   done: boolean;
   pr: boolean;
@@ -91,6 +114,13 @@ export type DraftBlock = {
   exerciseId: string | null;
   name: string;
   loggingType: LoggingType;
+  /**
+   * What this movement measures (0046) — the block's column set. Carried on the
+   * draft rather than re-read from the catalog on resume so that a session
+   * resumed after the exercise was edited still shows the columns its numbers
+   * were typed into.
+   */
+  measures: Measures;
   mechanic: Mechanic | null;
   restSec: number | null;
   prev: PrevSet[];
@@ -129,8 +159,20 @@ export type LiveDraft = {
   blocks: DraftBlock[];
 };
 
-/** One drafted set in the free-form manual logger (display lb, not canonical kg). */
-export type ManualDraftSet = { exercise: string; reps: number | null; weightLb: number | null };
+/**
+ * One drafted set in the free-form manual logger. Weight is DISPLAY lb (not
+ * canonical kg) because that is what the field takes; time and distance are
+ * already canonical (seconds, metres) because neither has a display form that
+ * could round-trip wrong — `mm:ss` is seconds and the distance field's unit is
+ * known at the moment it is typed.
+ */
+export type ManualDraftSet = {
+  exercise: string;
+  reps: number | null;
+  weightLb: number | null;
+  durationSec: number | null;
+  distanceM: number | null;
+};
 
 /**
  * The manual logger's recoverable state. It keeps the ENTRY ROW as typed
@@ -149,6 +191,15 @@ export type ManualDraft = {
   exercise: string;
   repsText: string;
   weightText: string;
+  /** The entry row's time/distance fields as typed (0046), mm:ss and display unit. */
+  timeText: string;
+  distanceText: string;
+  /**
+   * What the typed exercise name resolved to in the catalog, so the fields on
+   * screen are the ones that movement measures. Re-derived on every keystroke,
+   * persisted so a resume draws the same row it was left on.
+   */
+  measures: Measures;
   entryDirty: boolean;
 };
 
@@ -168,6 +219,8 @@ function parsePrevSets(raw: unknown): PrevSet[] {
     reps: asFiniteNumber(p.reps),
     weightKg: asFiniteNumber(p.weightKg),
     rpe: asFiniteNumber(p.rpe),
+    durationSec: asFiniteNumber(p.durationSec),
+    distanceM: asFiniteNumber(p.distanceM),
   }));
 }
 
@@ -180,6 +233,8 @@ function parseSet(raw: unknown, index: number): DraftSet | null {
     weight: asString(raw.weight),
     reps: asString(raw.reps),
     rpe: asString(raw.rpe),
+    time: asString(raw.time),
+    distance: asString(raw.distance),
     setType: asOneOf(raw.setType, SET_TYPES, 'normal'),
     done: asBool(raw.done),
     pr: asBool(raw.pr),
@@ -201,6 +256,7 @@ function parseBlock(raw: unknown, index: number): DraftBlock | null {
     exerciseId: typeof raw.exerciseId === 'string' ? raw.exerciseId : null,
     name,
     loggingType: asOneOf(raw.loggingType, LOGGING_TYPES, 'weight_reps'),
+    measures: asMeasures(raw.measures),
     // `null` is meaningful here (a free-text block has no mechanic), so an
     // unrecognised value falls back to null rather than to a guessed 'compound'
     // — the mechanic only picks a default rest interval, and a wrong default is
@@ -248,6 +304,8 @@ export function parseManualDraft(raw: unknown): ManualDraft | null {
         exercise: asString(s.exercise),
         reps: asFiniteNumber(s.reps),
         weightLb: asFiniteNumber(s.weightLb),
+        durationSec: asFiniteNumber(s.durationSec),
+        distanceM: asFiniteNumber(s.distanceM),
       }))
     : [];
   const draft: ManualDraft = {
@@ -260,6 +318,9 @@ export function parseManualDraft(raw: unknown): ManualDraft | null {
     exercise: asString(raw.exercise),
     repsText: asString(raw.repsText),
     weightText: asString(raw.weightText),
+    timeText: asString(raw.timeText),
+    distanceText: asString(raw.distanceText),
+    measures: asMeasures(raw.measures),
     entryDirty: asBool(raw.entryDirty),
   };
   return manualDraftHasData(draft) ? draft : null;
@@ -280,7 +341,18 @@ export function parseManualDraft(raw: unknown): ManualDraft | null {
  */
 export function draftBlocksHaveData(blocks: DraftBlock[]): boolean {
   return blocks.some((b) =>
-    b.sets.some((s) => s.done || s.reps.trim() !== '' || s.weight.trim() !== '')
+    b.sets.some(
+      (s) =>
+        s.done ||
+        s.reps.trim() !== '' ||
+        s.weight.trim() !== '' ||
+        // 0046: a plank's whole session is one time field, and a run's is a time
+        // and a distance. Leaving them out of this test would mean a finished
+        // run was not "data" — no Resume card, no write-through, and Finish
+        // disabled on a session that plainly happened.
+        s.time.trim() !== '' ||
+        s.distance.trim() !== ''
+    )
   );
 }
 
@@ -296,6 +368,8 @@ export function manualDraftHasData(draft: ManualDraft): boolean {
     draft.exercise.trim() !== '' ||
     draft.repsText.trim() !== '' ||
     draft.weightText.trim() !== '' ||
+    draft.timeText.trim() !== '' ||
+    draft.distanceText.trim() !== '' ||
     draft.durationText.trim() !== ''
   );
 }

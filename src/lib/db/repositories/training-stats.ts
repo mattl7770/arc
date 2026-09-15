@@ -14,7 +14,9 @@ import type { Database } from '../database';
 import { formatLocalDate, logicalDate } from '../date';
 import type { DateString } from '../types';
 import { localWeekRange } from './exercise';
+import { PACE_PR_MIN_M } from '@/lib/exercise/constants';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
+import { asMeasures, type Measures } from '@/lib/exercise/measures';
 import type {
   E1rmPoint,
   Muscle,
@@ -35,6 +37,9 @@ export type SetRow = {
   weight_kg: number | null;
   rpe: number | null;
   set_type: SetType;
+  /** Seconds (0013) and metres (0046) — null on a movement that measures neither. */
+  duration_sec: number | null;
+  distance_m: number | null;
 };
 
 /**
@@ -45,7 +50,7 @@ export type SetRow = {
 export function workingSets(db: Database, exerciseId: string): SetRow[] {
   return db.all<SetRow>(
     `SELECT s.workout_id, w.date, w.created_at AS when_iso,
-            s.reps, s.weight_kg, s.rpe, s.set_type
+            s.reps, s.weight_kg, s.rpe, s.set_type, s.duration_sec, s.distance_m
      FROM workout_sets s
      JOIN workouts w ON w.id = s.workout_id
      WHERE s.exercise_id = ? AND s.set_type != 'warmup'
@@ -54,11 +59,21 @@ export function workingSets(db: Database, exerciseId: string): SetRow[] {
   );
 }
 
-/** The "strength" of a set for picking the best per session: e1RM, else load. */
+/**
+ * The "best" of a session's sets, as one comparable number: e1RM, else load.
+ *
+ * A set that measures neither (0046) falls back to its distance, then its
+ * duration — so the session row for a run reports the longest piece rather than
+ * whichever set the query happened to return first, which is what a flat zero
+ * produced. The scales never mix: a movement's sets all measure the same
+ * things, so only one branch is ever live for a given exercise.
+ */
 function setStrength(s: SetRow): number {
   const e = e1rmForSet(s.weight_kg, s.reps, s.rpe, s.set_type);
   if (e != null) return e;
-  return s.weight_kg ?? 0;
+  if (s.weight_kg != null) return s.weight_kg;
+  if (s.distance_m != null) return s.distance_m;
+  return s.duration_sec ?? 0;
 }
 
 /**
@@ -90,6 +105,8 @@ export function exerciseSessionTopsFrom(rows: SetRow[], limit = 12): SessionTopS
     weightKg: best.weight_kg,
     reps: best.reps,
     rpe: best.rpe,
+    durationSec: best.duration_sec,
+    distanceM: best.distance_m,
   }));
 }
 
@@ -102,11 +119,35 @@ export function personalRecords(db: Database, exerciseId: string): PersonalRecor
  * The pure reducer behind {@link personalRecords}: takes pre-fetched
  * {@link workingSets} rows so a screen can derive several stats from one scan.
  * Same result as the DB form. Empty-safe (nulls).
+ *
+ * ## Six records, and each one only exists where the column does (0046)
+ *
+ * The three load records — heaviest set, best e1RM, best set volume — need a
+ * weight, so a plank and a run leave all three null; `e1rmForSet` already
+ * refuses a set with no load or no reps, which is what makes "a plank can never
+ * set an estimated 1RM" true arithmetically rather than by a special case.
+ *
+ * The three new ones are the honest analogues, and the honesty is in which
+ * questions are NOT answered:
+ *
+ *   * **Longest** — the plank record. Unambiguous: one set, one clock.
+ *   * **Farthest** — the longest single piece. Also unambiguous.
+ *   * **Best pace** — seconds per kilometre, and the only one that needed a
+ *     rule. Pace is meaningless without a distance to hold it over (a 20 m
+ *     sprint would own the record for every distance forever), so only pieces
+ *     of at least {@link PACE_PR_MIN_M} are eligible. It is still a single
+ *     number across every distance, which is a real simplification — a 5 km PR
+ *     pace and a half-marathon PR pace are different achievements and this
+ *     reports only the faster. Per-distance bests are a table, not a record,
+ *     and they wait until there is history worth tabling.
  */
 export function personalRecordsFrom(rows: SetRow[]): PersonalRecords {
   let maxWeightKg: number | null = null;
   let bestE1rmKg: number | null = null;
   let bestSetVolumeKg: number | null = null;
+  let bestDurationSec: number | null = null;
+  let bestDistanceM: number | null = null;
+  let bestPaceSecPerKm: number | null = null;
   for (const r of rows) {
     if (r.weight_kg != null) {
       if (maxWeightKg == null || r.weight_kg > maxWeightKg) maxWeightKg = r.weight_kg;
@@ -117,8 +158,24 @@ export function personalRecordsFrom(rows: SetRow[]): PersonalRecords {
     }
     const e = e1rmForSet(r.weight_kg, r.reps, r.rpe, r.set_type);
     if (e != null && (bestE1rmKg == null || e > bestE1rmKg)) bestE1rmKg = e;
+
+    const dur = r.duration_sec != null && r.duration_sec > 0 ? r.duration_sec : null;
+    const dist = r.distance_m != null && r.distance_m > 0 ? r.distance_m : null;
+    if (dur != null && (bestDurationSec == null || dur > bestDurationSec)) bestDurationSec = dur;
+    if (dist != null && (bestDistanceM == null || dist > bestDistanceM)) bestDistanceM = dist;
+    if (dur != null && dist != null && dist >= PACE_PR_MIN_M) {
+      const pace = dur / (dist / 1000);
+      if (bestPaceSecPerKm == null || pace < bestPaceSecPerKm) bestPaceSecPerKm = pace;
+    }
   }
-  return { maxWeightKg, bestE1rmKg, bestSetVolumeKg };
+  return {
+    maxWeightKg,
+    bestE1rmKg,
+    bestSetVolumeKg,
+    bestDurationSec,
+    bestDistanceM,
+    bestPaceSecPerKm,
+  };
 }
 
 /** Best e1RM per session date, oldest → newest, capped at `limit` — the trend. */
@@ -148,7 +205,14 @@ export function e1rmSeriesFrom(rows: SetRow[], limit = 12): E1rmPoint[] {
 }
 
 /** One prior set for the previous-values prefill in the logger. */
-export type PrevSet = { reps: number | null; weightKg: number | null; rpe: number | null };
+export type PrevSet = {
+  reps: number | null;
+  weightKg: number | null;
+  rpe: number | null;
+  /** 0046 — so a run's Prev column shows last week's time and distance. */
+  durationSec: number | null;
+  distanceM: number | null;
+};
 
 /**
  * The sets from the most recent session that included this exercise, in set
@@ -165,17 +229,29 @@ export function lastSessionSets(db: Database, exerciseId: string): PrevSet[] {
     [exerciseId]
   );
   if (!latest) return [];
-  const rows = db.all<{ reps: number | null; weight_kg: number | null; rpe: number | null }>(
+  const rows = db.all<{
+    reps: number | null;
+    weight_kg: number | null;
+    rpe: number | null;
+    duration_sec: number | null;
+    distance_m: number | null;
+  }>(
     // No warmup filter: the prefill reproduces the whole session (warmups
     // included) so a repeat is one confirm per set, as the docstring promises —
     // unlike the stat reads above, which follow the Hevy/Strong exclude-warmups
     // rule. The latest-workout subquery already makes no warmup distinction.
-    `SELECT reps, weight_kg, rpe FROM workout_sets
+    `SELECT reps, weight_kg, rpe, duration_sec, distance_m FROM workout_sets
      WHERE workout_id = ? AND exercise_id = ?
      ORDER BY set_index`,
     [latest.workout_id, exerciseId]
   );
-  return rows.map((r) => ({ reps: r.reps, weightKg: r.weight_kg, rpe: r.rpe }));
+  return rows.map((r) => ({
+    reps: r.reps,
+    weightKg: r.weight_kg,
+    rpe: r.rpe,
+    durationSec: r.duration_sec,
+    distanceM: r.distance_m,
+  }));
 }
 
 /**
@@ -214,15 +290,24 @@ export function recentMuscleLoads(
     weight_kg: number | null;
     rpe: number | null;
     set_type: SetType;
+    duration_sec: number | null;
+    measures: string;
     when_iso: string;
     date: string;
     muscle: Muscle;
     role: MuscleRole;
   }>(
-    `SELECT s.reps, s.weight_kg, s.rpe, s.set_type, w.created_at AS when_iso, w.date, m.muscle, m.role
+    // `exercises` joins in for `measures` alone (0046): the freshness model
+    // doses ENDURANCE work by duration rather than by the set, and nothing else
+    // in the row says whether this set is endurance. The join is free — the
+    // existing `exercise_muscles` join already implies the exercise row exists
+    // (its own FK cascades with it).
+    `SELECT s.reps, s.weight_kg, s.rpe, s.set_type, s.duration_sec, e.measures,
+            w.created_at AS when_iso, w.date, m.muscle, m.role
      FROM workout_sets s
      JOIN workouts w ON w.id = s.workout_id
      JOIN exercise_muscles m ON m.exercise_id = s.exercise_id
+     JOIN exercises e ON e.id = s.exercise_id
      WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup'
        AND (w.created_at >= ? OR w.date >= ?)`,
     [cutoff, cutoffDate]
@@ -236,6 +321,8 @@ export function recentMuscleLoads(
       weightKg: r.weight_kg,
       setType: r.set_type,
       whenIso: attributedInstant(r.date, r.when_iso),
+      measures: asMeasures(r.measures) as Measures,
+      durationSec: r.duration_sec,
     }))
     .filter((load) => Date.parse(load.whenIso) >= cutoffMs);
 }
@@ -291,6 +378,18 @@ const ROLE_WEIGHTED_SETS = `sum(CASE WHEN m.role = 'primary' THEN 1.0 ELSE 0.5 E
  * So the query moved here and `weeklyMuscleSets` became its one-line caller.
  * Behaviour for existing callers is unchanged, which db/training-volume.test.mjs
  * still proves.
+ *
+ * ## A set is a set here, even a 45-minute one (0046)
+ *
+ * Freshness weights an endurance set by its DURATION; this does not, and the
+ * asymmetry is deliberate. The two numbers answer different questions against
+ * different yardsticks. Freshness models systemic fatigue, where an hour of
+ * running plainly costs more than a minute of it. Weekly volume is measured
+ * against MEV/MAV/MRV — landmarks derived entirely from RESISTANCE-training
+ * sets (Renaissance Periodization, see VOLUME_LANDMARKS) — so scaling a run to
+ * 4.5 "sets" of quads would compare it to a scale it was never on and report
+ * that an easy hour had taken the owner past his weekly maximum recoverable
+ * volume. One row, one set, is the honest reading here.
  */
 export function muscleSetsInRange(
   db: Database,

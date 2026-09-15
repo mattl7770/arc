@@ -62,6 +62,7 @@ import {
   buildWorkoutParseRequest,
   groundWorkoutImport,
   parseWorkoutImport,
+  WORKOUT_PARSE_SYSTEM_PROMPT,
 } from '../src/lib/exercise/import-workout.ts';
 import {
   buildExerciseSearchRequest,
@@ -514,6 +515,43 @@ console.log('2. parseWorkoutImport: validation, clamps, fences');
   throws(() => parseWorkoutImport('{"exercises": []}'))
     ? ok('reply with no usable sets throws')
     : bad('empty throws');
+
+  // B1 (0046). The prompt used to say "Time-only rows: skip", so a screenshot
+  // of a run — the single most common thing in another app's log — imported as
+  // nothing at all. A time and a distance with no reps is now a complete set.
+  const cardio = parseWorkoutImport(
+    '{"date": null, "name": "Tuesday", "kind": "cardio", "durationMin": 47, "exercises": [' +
+      '{"name": "Treadmill Run", "sets": [' +
+      '{"reps": null, "weight": null, "weightUnit": null, "rpe": null, "durationS": 1600, "distanceM": 5200},' +
+      '{"reps": null, "weight": null, "weightUnit": null, "rpe": null, "durationS": 240.4, "distanceM": 800}]},' +
+      '{"name": "Plank", "sets": [{"reps": null, "weight": null, "weightUnit": null, "rpe": null, "durationS": 90, "distanceM": null}]},' +
+      // Over the schema's own bounds: 10 h of running and 1,000 km. Dropped
+      // rather than carried into a CHECK that would roll back the import.
+      '{"name": "Ghost Run", "sets": [{"reps": null, "weight": null, "weightUnit": null, "rpe": null, "durationS": 40000, "distanceM": 2000000}]}' +
+      '], "notes": null}'
+  );
+  const runSets = cardio.exercises[0]?.sets ?? [];
+  runSets.length === 2 && runSets[0].durationSec === 1600 && runSets[0].distanceM === 5200
+    ? ok('a time + distance row imports as a set with no reps and no load')
+    : bad('cardio sets', JSON.stringify(cardio.exercises));
+  runSets[1]?.durationSec === 240
+    ? ok('…a fractional second rounds, as reps already do')
+    : bad('duration rounding', JSON.stringify(runSets[1]));
+  cardio.exercises[1]?.sets[0]?.durationSec === 90 &&
+  cardio.exercises[1]?.sets[0]?.distanceM === null
+    ? ok('…and a plank imports as time alone')
+    : bad('plank import', JSON.stringify(cardio.exercises[1]));
+  cardio.exercises.length === 2
+    ? ok('…while a 10-hour, 2,000 km "set" is dropped before it can trip a CHECK')
+    : bad('out-of-bounds cardio kept', JSON.stringify(cardio.exercises.map((e) => e.name)));
+
+  // The prompt is the other half: a model told to skip timed rows will skip
+  // them however good the parser is.
+  !/Time-only rows: skip/.test(WORKOUT_PARSE_SYSTEM_PROMPT) &&
+  /durationS/.test(WORKOUT_PARSE_SYSTEM_PROMPT) &&
+  /distanceM/.test(WORKOUT_PARSE_SYSTEM_PROMPT)
+    ? ok('the extraction prompt asks for the time and distance columns instead of skipping them')
+    : bad('prompt still skips timed rows');
 }
 
 // ---------------------------------------------------------------------------
