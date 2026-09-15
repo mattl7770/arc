@@ -11,9 +11,14 @@
  * every stat (the Hevy/Strong rule).
  */
 import type { Database } from '../database';
-import { formatLocalDate, logicalDate } from '../date';
+// `localWeekRange` comes from the shared date module, NOT from ./exercise (which
+// merely re-exports it for the screens). Importing it from the repository made
+// a cycle the moment ./exercise learned to join ingested workouts
+// (exercise → workout-ingest → training-stats → exercise, 0054), and a stats
+// module reaching into a repository for a date helper was the wrong direction
+// regardless.
+import { formatLocalDate, localWeekRange, logicalDate } from '../date';
 import type { DateString } from '../types';
-import { localWeekRange } from './exercise';
 import { PACE_PR_MIN_M } from '@/lib/exercise/constants';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
 import { asMeasures, type Measures } from '@/lib/exercise/measures';

@@ -195,14 +195,23 @@ export default function WearablesScreen() {
                   <Divider first={index === 0} />
                   <View
                     accessible
-                    accessibilityLabel={`${workout.activity ?? 'Workout'}, ${Math.round(workout.durationMin)} minutes, ${shortDay(workout.date)}, ${deviceLabel(workout.sourceDevice)}.`}
+                    accessibilityLabel={`${workout.activity ?? 'Workout'}, ${Math.round(workout.durationMin)} minutes, ${shortDay(workout.date)}, ${deviceLabel(workout.sourceDevice)}${
+                      workout.loggedInArc ? ', also logged in ARC — the same session' : ''
+                    }.`}
                     className="min-h-[44px] flex-row items-center gap-3 py-3">
                     <View className="flex-1">
                       <Text className="font-serif text-[15px] text-ink">
                         {workout.activity ?? 'Workout'}
                       </Text>
+                      {/* Paired (0054): the same hour, recorded twice. The row
+                          STAYS — this screen is the ingest record and hiding a
+                          real HealthKit object from it would make the record
+                          incomplete — but it says so, so the reader can never
+                          count it as a second session. Mono metadata, no signal
+                          colour: this is provenance, not a biological verdict. */}
                       <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
                         {shortDay(workout.date)} · {deviceLabel(workout.sourceDevice)}
+                        {workout.loggedInArc ? ' · logged in ARC' : ''}
                       </Text>
                     </View>
                     <View className="items-end">

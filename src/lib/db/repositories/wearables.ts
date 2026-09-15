@@ -466,13 +466,39 @@ export type WearableWorkout = {
   /** Parsed metadata: activity name/raw type, kcal, distance when present. */
   activity: string | null;
   kcal: number | null;
+  /**
+   * True when this session is PAIRED to one the owner logged in ARC (0054) —
+   * the same workout, recorded twice. The row still appears, because this screen
+   * IS the ingest record and hiding a real HealthKit object from it would make
+   * the record incomplete; it says "logged in ARC" instead, so the reader can
+   * never count it as a second session.
+   */
+  loggedInArc: boolean;
 };
 
-/** A workout row's usable time span, or null when it cannot be reasoned about. */
-function workoutSpan(row: WearableDataRow): { start: number; end: number } | null {
+/** A span in epoch milliseconds — what {@link overlapFraction} compares. */
+export type TimeSpan = { start: number; end: number };
+
+/**
+ * A workout row's usable time span, or null when it cannot be reasoned about.
+ * Exported since 0054: pairing a manual session to an ingested one asks the same
+ * question of the same rows, and a second reading of `start_time`/`end_time`
+ * would be a second definition of what a readable span is.
+ */
+export function workoutSpan(row: WearableDataRow): TimeSpan | null {
   if (!row.start_time || !row.end_time) return null;
-  const start = new Date(row.start_time).getTime();
-  const end = new Date(row.end_time).getTime();
+  return parseSpan(row.start_time, row.end_time);
+}
+
+/**
+ * Two ISO instants → a span, or null when they do not make one (unparseable, or
+ * an end at or before its start). The shared parse behind {@link workoutSpan}
+ * and the manual side of pairing, which reads `workouts.started_at` plus a
+ * duration rather than two columns.
+ */
+export function parseSpan(startIso: string, endIso: string): TimeSpan | null {
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
   return { start, end };
 }
@@ -483,18 +509,24 @@ function workoutSpan(row: WearableDataRow): { start: number; end: number } | nul
  * phone that catches 48 minutes of it are the same workout, and dividing by the
  * longer span would score that 0.77 against a union-based 0.48 and start
  * depending on which source happened to be more generous.
+ *
+ * Exported since 0054. It is the app's ONE definition of "the same session", and
+ * pairing an ingested row to a logged one reuses it rather than inventing a
+ * second: two definitions agree right up until one of them is tuned.
  */
-function overlapFraction(
-  a: { start: number; end: number },
-  b: { start: number; end: number }
-): number {
+export function overlapFraction(a: TimeSpan, b: TimeSpan): number {
   const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
   if (overlap <= 0) return 0;
   return overlap / Math.min(a.end - a.start, b.end - b.start);
 }
 
 /** Above this shared fraction, two rows are treated as one real session. */
-const SAME_SESSION_OVERLAP = 0.5;
+export const SAME_SESSION_OVERLAP = 0.5;
+
+/** {@link SOURCE_PRIORITY} rank of a device — lower wins. Exported for pairing. */
+export function sourcePriorityOf(device: string): number {
+  return priorityOf(device);
+}
 
 /**
  * Recent HealthKit-ingested workouts, newest first, with **same-session
@@ -545,7 +577,25 @@ export function recentWearableWorkouts(db: Database, limit: number): WearableWor
     kept.push({ row, span });
   }
 
-  return kept.slice(0, limit).map(({ row }) => {
+  const shown = kept.slice(0, limit);
+  // One statement for the whole page rather than one per row: the ids are known
+  // by now, and the alternative is the N+1 every other read in this layer
+  // refuses. A device with no links reads an empty set and the join costs
+  // nothing.
+  const linked = new Set(
+    shown.length === 0
+      ? []
+      : db
+          .all<{ wearable_id: string }>(
+            `SELECT wearable_id FROM workout_ingest_links WHERE wearable_id IN (${shown
+              .map(() => '?')
+              .join(',')})`,
+            shown.map(({ row }) => row.id)
+          )
+          .map((r) => r.wearable_id)
+  );
+
+  return shown.map(({ row }) => {
     let activity: string | null = null;
     let kcal: number | null = null;
     try {
@@ -562,6 +612,7 @@ export function recentWearableWorkouts(db: Database, limit: number): WearableWor
       startTime: row.start_time,
       activity,
       kcal,
+      loggedInArc: linked.has(row.id),
     };
   });
 }

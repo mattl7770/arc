@@ -15,6 +15,7 @@ import { localWeekRange } from '../date';
 import { newId } from '../id';
 import type { DateString } from '../types';
 import { resolveExerciseByName } from './exercise-catalog';
+import { pairedIngestFor, pairedIngestForMany } from './workout-ingest';
 import {
   asMeasures,
   maskByMeasures,
@@ -161,8 +162,8 @@ export function logWorkout(db: Database, input: LogWorkoutInput, sets: SetInput[
   const id = newId(db);
   db.transaction(() => {
     db.run(
-      `INSERT INTO workouts (id, date, name, kind, duration_min, notes, routine_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO workouts (id, date, name, kind, duration_min, notes, routine_id, started_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.date,
@@ -171,6 +172,11 @@ export function logWorkout(db: Database, input: LogWorkoutInput, sets: SetInput[
         input.durationMin ?? null,
         input.notes ?? null,
         input.routineId ?? null,
+        // 0054. Omitted means "no knowable span", which is the honest reading
+        // for a backdated log, a photo import and anything the Coach writes —
+        // and it is what keeps those from auto-pairing with whatever the watch
+        // happened to record that day. Only the live logger passes one.
+        input.startedAt ?? null,
       ]
     );
     sets.forEach((set, i) => insertSet(db, id, set, i + 1));
@@ -195,6 +201,9 @@ export function getWorkoutDetail(db: Database, id: string): WorkoutDetail | unde
      ORDER BY set_index IS NULL, set_index, rowid`,
     [id]
   );
+  // The watch's record of this same session, JOINED through the 0054 link —
+  // never copied onto the row, so a corrected calorie figure corrects here too.
+  const ingested = pairedIngestFor(db, id);
   return {
     id: row.id,
     date: row.date,
@@ -203,6 +212,7 @@ export function getWorkoutDetail(db: Database, id: string): WorkoutDetail | unde
     notes: row.notes,
     routineId: row.routine_id,
     createdAt: row.created_at,
+    ...(ingested ? { ingested } : {}),
     sets: sets.map((s) => ({
       id: s.id,
       exercise: s.exercise,
@@ -397,6 +407,12 @@ export function listRecentSessions(db: Database, limit: number = 10): RecentSess
      LIMIT ?`,
     [limit]
   );
+  // One statement for the page (0054), not one per row — the N+1 the catalog
+  // repo already refuses. Empty-safe.
+  const paired = pairedIngestForMany(
+    db,
+    rows.map((r) => r.id)
+  );
   return rows.map((r) => {
     let names: string[] = [];
     try {
@@ -414,6 +430,7 @@ export function listRecentSessions(db: Database, limit: number = 10): RecentSess
       setCount: r.set_count,
       movements: [...new Set(names.map((n) => n.trim()).filter((n) => n !== ''))],
       createdAt: r.created_at,
+      ...(paired.has(r.id) ? { ingested: paired.get(r.id)! } : {}),
     };
   });
 }

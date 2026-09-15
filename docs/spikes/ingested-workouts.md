@@ -1,10 +1,45 @@
 # D3 — Ingested workouts → training data
 
-**Status:** proposal, for the owner. No code written. The owner's own note is
-*"a topic to continue thinking on further"*, so §3 ends in a **first slice** and
-§6 is the list that decides the rest.
+**Status: BUILT** (2026-09-14, migration **0054** — see below for why not the
+reserved 0052). The owner answered §6 —
+(1a) an inferred load *moves* the freshness figure and is marked inferred;
+(2a) it stays out of weekly set counts; (3a) ship pairing now, HR later — and all
+three pieces shipped together: pairing, inference, and the blank.
+Where the build differs from this proposal, the build is authoritative:
+
+- **The activity table is ROLE WEIGHTS, not fractional sets per hour** (§3.A's
+  numbers are superseded). Duration is dosed by 0046's endurance rule, which is
+  the same arithmetic a logged run gets — so an ingested 45-minute run reads
+  *exactly* as a logged one (quads 57) instead of on a second scale. The
+  `CEILING = 6` is gone with it: `ENDURANCE_EFFORT_CAP` already caps a six-hour
+  walk at the same place.
+- **No `dismissed_at`.** Nothing in this slice writes a tombstone, so the column
+  would have been schema that lies about the app; the 14-day horizon bounds the
+  inbox instead. The two unique indexes are therefore plain (both columns NOT
+  NULL) rather than partial.
+- **The day is an index filter, not the rule** (§3.C.1 widened to ±1 day):
+  `workouts.date` is a logical day and `wearable_data.date` is a calendar day,
+  so one hour of training can carry two day strings. The overlap decides.
+- **Auto-pairing is not gated behind a suggestion UI** (§3.C.6): the confidence
+  bar it describes — same day, overlap ≥ 0.5, a real `started_at` — *is* the
+  auto-pair condition, and a hand link from the blank inbox replaces an
+  automatic one.
+
+Shipped documentation: `docs/wearables-subapp.md` §17 (pairing, the link table,
+the double-count) and `docs/exercise-subapp.md` §11 (inference, provenance, the
+blank). Tests: `db/wearables.test.mjs` §21, `db/training-engine.test.mjs` §9,
+`db/coach-tools.test.mjs` §38.
+
+**Still open** (§3.E, the owner's answer 3a): avg/max HR needs a new HealthKit
+read scope, a `METRIC_COVERAGE` row and a per-session sample query.
+
+---
+
 **Backlog:** `docs/backlog-2026-09.md` D3 (Phase D, marked **[spec]**).
-**Reserved migration:** `0052`, *"ingested-workout pairing"*.
+**Migration:** `0054_ingested_workout_pairing.sql` — **not** the reserved `0052`.
+D4 merged `0053` while this was being written, and the runner applies only
+`version > user_version`, so a 0052 arriving after a 0053 would be skipped
+silently and forever. Every `0052` below in §3–§5 means 0054.
 **Assumes B1 has landed** — per-exercise metric types (reps / time / distance).
 
 ---

@@ -38,6 +38,13 @@ import {
   upsertHealthBodyRows,
 } from '../src/lib/db/repositories/body.ts';
 import { isHealthSyncEnabled, setHealthSyncEnabled } from '../src/lib/db/repositories/user.ts';
+import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import {
+  linkIngestedWorkout,
+  pairIngestedWorkouts,
+  unpairedIngestedSessions,
+  unpairedWorkoutDailyMinutes,
+} from '../src/lib/db/repositories/workout-ingest.ts';
 import {
   ARC_BUNDLE_ID,
   ARC_WRITE_METADATA_KEY,
@@ -1609,6 +1616,219 @@ console.log('20. the re-window pass DELETES the buckets it did not produce (2026
   threw && db.all(`SELECT id FROM wearable_data WHERE metric_type = 'hrv'`).length === before
     ? ok('a rejected batch writes nothing and deletes nothing')
     : bad('partial batch applied');
+}
+
+// ---------------------------------------------------------------------------
+console.log('21. ingested-workout pairing (0054) — one session, one link, either way');
+{
+  const NOW = new Date('2026-07-26T20:00:00.000Z');
+  const DAY = '2026-07-26';
+  const iso = (day, hhmm) => `${day}T${hhmm}:00.000Z`;
+
+  /** One HealthKit workout row, through the real ingest path. */
+  const ingest = (db, { uuid, device = 'garmin', day = DAY, from, to, raw = 50, kcal = 300 }) =>
+    upsertWearableRows(db, [
+      {
+        date: day,
+        metricType: 'workout',
+        value: Math.round((Date.parse(iso(day, to)) - Date.parse(iso(day, from))) / 60_000),
+        unit: 'min',
+        sourceDevice: device,
+        sourceRawId: uuid,
+        startTime: iso(day, from),
+        endTime: iso(day, to),
+        metadata: {
+          activity: 'Strength training',
+          activity_type_raw: raw,
+          kcal,
+          distance_km: null,
+        },
+      },
+    ]);
+
+  /** One ARC session with a real span — what only the live logger writes. */
+  const logSpan = (db, { day = DAY, from, minutes }) =>
+    logWorkout(db, {
+      date: day,
+      kind: 'strength',
+      durationMin: minutes,
+      startedAt: iso(day, from),
+    });
+
+  const linkCount = (db) => db.all('SELECT id FROM workout_ingest_links').length;
+
+  // --- the happy path, and the tie ------------------------------------------
+  {
+    const { db } = freshDb();
+    const workoutId = logSpan(db, { from: '17:00', minutes: 60 });
+    // The same hour, recorded by two devices — the duplicate a Garmin user
+    // actually sees. Both overlap the session fully, so the tie falls to
+    // SOURCE_PRIORITY, where garmin outranks 'other' (an unparsed bundle id).
+    ingest(db, { uuid: 'garmin-1', device: 'garmin', from: '17:05', to: '17:58' });
+    ingest(db, { uuid: 'iphone-1', device: 'other', from: '17:00', to: '18:00' });
+
+    pairIngestedWorkouts(db, NOW) === 1
+      ? ok('two overlapping ingested rows produce exactly ONE link')
+      : bad('link count from a tie', linkCount(db));
+    const link = db.get('SELECT * FROM workout_ingest_links');
+    link.workout_id === workoutId && link.wearable_id
+      ? ok('…attached to the session the owner logged')
+      : bad('link target', JSON.stringify(link));
+    const winner = db.get('SELECT source_device FROM wearable_data WHERE id = ?', [
+      link.wearable_id,
+    ]);
+    winner.source_device === 'garmin'
+      ? ok('…and the tie resolves to the SOURCE_PRIORITY winner (garmin over other)')
+      : bad('tie-break', winner.source_device);
+    link.linked_by === 'auto' && link.overlap > 0.99
+      ? ok('the link records HOW it was made (auto) and the overlap that justified it')
+      : bad('link provenance', JSON.stringify(link));
+
+    // Idempotence — the whole point of excluding linked rows on both sides.
+    pairIngestedWorkouts(db, NOW) === 0 && linkCount(db) === 1
+      ? ok('re-running the pass links nothing new and duplicates nothing')
+      : bad('pass not idempotent', linkCount(db));
+
+    // A RE-SYNC rewrites the same UUID in place (0042), so the link survives it.
+    ingest(db, { uuid: 'garmin-1', device: 'garmin', from: '17:05', to: '17:58', kcal: 611 });
+    pairIngestedWorkouts(db, NOW) === 0 && linkCount(db) === 1
+      ? ok('a re-sync corrects the row in place — it does not re-pair or duplicate')
+      : bad('re-sync broke the link', linkCount(db));
+    JSON.parse(
+      db.get('SELECT metadata FROM wearable_data WHERE id = ?', [link.wearable_id]).metadata
+    ).kcal === 611
+      ? ok('…and the corrected calorie figure is visible through the link, never copied')
+      : bad('corrected kcal did not reach the pair');
+
+    // The one-to-one guarantee is the SCHEMA's, not the code's.
+    let threw = false;
+    try {
+      db.run(`INSERT INTO workout_ingest_links (id, workout_id, wearable_id) VALUES ('x', ?, ?)`, [
+        workoutId,
+        db.get(`SELECT id FROM wearable_data WHERE source_raw_id = 'iphone-1'`).id,
+      ]);
+    } catch {
+      threw = true;
+    }
+    threw
+      ? ok('a second link on the WORKOUT side is refused by the unique index')
+      : bad('workout-side uniqueness');
+    threw = false;
+    try {
+      const second = logSpan(db, { from: '17:00', minutes: 60 });
+      db.run(`INSERT INTO workout_ingest_links (id, workout_id, wearable_id) VALUES ('y', ?, ?)`, [
+        second,
+        link.wearable_id,
+      ]);
+    } catch {
+      threw = true;
+    }
+    threw
+      ? ok('a second link on the WEARABLE side is refused too — one session, one pair')
+      : bad('wearable-side uniqueness');
+  }
+
+  // --- what must NOT pair ---------------------------------------------------
+  {
+    const { db } = freshDb();
+    logSpan(db, { from: '17:00', minutes: 60 });
+    ingest(db, { uuid: 'later', from: '19:00', to: '20:00' });
+    ingest(db, { uuid: 'yesterday', day: '2026-07-25', from: '17:00', to: '18:00' });
+    pairIngestedWorkouts(db, NOW) === 0 && linkCount(db) === 0
+      ? ok('a non-overlapping hour and the same hour a day earlier both refuse to pair')
+      : bad('false pair', linkCount(db));
+  }
+  {
+    // A BACKDATED session has no knowable span, so it never auto-pairs — it can
+    // only be paired by hand. `logWorkout` without `startedAt` is exactly that.
+    const { db } = freshDb();
+    logWorkout(db, { date: DAY, kind: 'strength', durationMin: 60 });
+    ingest(db, { uuid: 'watch', from: '17:00', to: '18:00' });
+    pairIngestedWorkouts(db, NOW) === 0
+      ? ok('a session with no started_at never auto-pairs (backdated, imported, Coach-written)')
+      : bad('backdated paired');
+  }
+  {
+    // Two ARC sessions overlapping one watch record: the earlier takes it, and
+    // the schema makes the second impossible rather than merely unlikely.
+    const { db } = freshDb();
+    logSpan(db, { from: '17:00', minutes: 60 });
+    logSpan(db, { from: '17:10', minutes: 45 });
+    ingest(db, { uuid: 'one-watch', from: '17:05', to: '17:58' });
+    pairIngestedWorkouts(db, NOW) === 1 && linkCount(db) === 1
+      ? ok('one watch record can only ever be claimed once, however many sessions overlap it')
+      : bad('double claim', linkCount(db));
+  }
+
+  // --- the double-count, and where it went ---------------------------------
+  {
+    const { db } = freshDb();
+    logSpan(db, { from: '17:00', minutes: 60 });
+    ingest(db, { uuid: 'both', from: '17:00', to: '18:00' }); // the ARC session
+    ingest(db, { uuid: 'only-watch', from: '07:00', to: '07:40', raw: 52 }); // a walk, unlogged
+    const before = unpairedWorkoutDailyMinutes(db, DAY, DAY);
+    before.length === 1 && before[0].value === 100
+      ? ok('before pairing, ingested minutes count BOTH sessions (60 + 40) — the defect')
+      : bad('pre-pair total', JSON.stringify(before));
+    pairIngestedWorkouts(db, NOW);
+    const after = unpairedWorkoutDailyMinutes(db, DAY, DAY);
+    after.length === 1 && after[0].value === 40
+      ? ok('after pairing, only the 40-min walk remains — the logged hour is counted once')
+      : bad('post-pair total', JSON.stringify(after));
+    unpairedIngestedSessions(db, DAY, 10).length === 1
+      ? ok('…and the session list the Coach reads holds only what ARC has no log for')
+      : bad('unpaired session list');
+
+    // The Data tab still SHOWS the paired row — it is the ingest record — but
+    // says what it is, so nobody counts it as a second workout.
+    const shown = recentWearableWorkouts(db, 10);
+    shown.length === 2 &&
+    shown.filter((w) => w.loggedInArc).length === 1 &&
+    shown.find((w) => !w.loggedInArc).durationMin === 40
+      ? ok('the wearables list marks the paired row "logged in ARC" rather than hiding it')
+      : bad('loggedInArc', JSON.stringify(shown));
+  }
+
+  // --- CASCADE, both directions --------------------------------------------
+  {
+    const { db } = freshDb();
+    const workoutId = logSpan(db, { from: '17:00', minutes: 60 });
+    ingest(db, { uuid: 'w1', from: '17:00', to: '18:00' });
+    pairIngestedWorkouts(db, NOW);
+    db.run('DELETE FROM workouts WHERE id = ?', [workoutId]);
+    linkCount(db) === 0 &&
+    db.all(`SELECT id FROM wearable_data WHERE metric_type = 'workout'`).length === 1
+      ? ok('deleting the ARC session drops the link and leaves the mirror free to re-pair')
+      : bad('workout delete cascade');
+  }
+  {
+    const { db } = freshDb();
+    const workoutId = logSpan(db, { from: '17:00', minutes: 60 });
+    ingest(db, { uuid: 'w2', from: '17:00', to: '18:00' });
+    pairIngestedWorkouts(db, NOW);
+    db.run(`DELETE FROM wearable_data WHERE source_raw_id = 'w2'`);
+    linkCount(db) === 0 && db.get('SELECT id FROM workouts WHERE id = ?', [workoutId])
+      ? ok('deleting the ingested row — which a re-sync may — leaves the session whole')
+      : bad('wearable delete cascade');
+  }
+
+  // --- a hand link outranks an automatic one -------------------------------
+  {
+    const { db } = freshDb();
+    const first = logSpan(db, { from: '17:00', minutes: 60 });
+    ingest(db, { uuid: 'contested', from: '17:00', to: '18:00' });
+    pairIngestedWorkouts(db, NOW);
+    const wearableId = db.get(`SELECT id FROM wearable_data WHERE source_raw_id = 'contested'`).id;
+    const second = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 60 });
+    linkIngestedWorkout(db, second, wearableId);
+    const link = db.get('SELECT * FROM workout_ingest_links');
+    linkCount(db) === 1 && link.workout_id === second && link.linked_by === 'user'
+      ? ok('a hand link REPLACES an automatic one — an assertion outranks an inference')
+      : bad('hand link', JSON.stringify(link));
+    link.overlap === null && first
+      ? ok('…and records no overlap, because it needed no clock to justify it')
+      : bad('hand link overlap', link.overlap);
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

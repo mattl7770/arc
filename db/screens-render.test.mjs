@@ -55,6 +55,7 @@ import { addVersion, createProtocolWithVersion } from '../src/lib/db/repositorie
 import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
 import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
 import { clearMuscleAnchor, setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
+import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 
 import { ingestCorpus } from '../src/lib/rag/corpus.ts';
 import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
@@ -1102,6 +1103,63 @@ const db = getDb();
       'Session in progress',
     ]);
     clearWorkoutDraft(db, 'live');
+
+    // -----------------------------------------------------------------------
+    // Ingested workouts (0054, backlog D3). Two rows the watch wrote: a walk,
+    // which ARC infers a load from, and a strength session, which it refuses to
+    // guess at and asks about instead. The hub has to draw BOTH answers on the
+    // first frame, and neither may read as the other.
+    const nowMs = Date.now();
+    const hkSpan = (endsMinAgo, minutes) => {
+      const end = new Date(nowMs - endsMinAgo * 60_000);
+      return {
+        startTime: new Date(end.getTime() - minutes * 60_000).toISOString(),
+        endTime: end.toISOString(),
+      };
+    };
+    upsertWearableRows(db, [
+      {
+        date: todayISODate(),
+        metricType: 'workout',
+        value: 45,
+        unit: 'min',
+        sourceDevice: 'garmin',
+        sourceRawId: 'render-walk',
+        ...hkSpan(60, 45),
+        metadata: { activity: 'Walking', activity_type_raw: 52, kcal: 180 },
+      },
+      {
+        date: todayISODate(),
+        metricType: 'workout',
+        value: 47,
+        unit: 'min',
+        sourceDevice: 'garmin',
+        sourceRawId: 'render-lift',
+        ...hkSpan(240, 47),
+        metadata: { activity: 'Strength training', activity_type_raw: 50, kcal: 410 },
+      },
+    ]);
+    const ingested = render('exercise hub (ingested workouts)', ExerciseScreen);
+    expect('exercise hub (ingested workouts)', ingested, [
+      // The blank — a question, with the span it will prefill and the one tap
+      // that answers it.
+      'From your watch',
+      'Strength training from Apple Health',
+      '47 min',
+      'muscles unknown',
+      'Log sets',
+      // …and the inference, which must NOT wear the face of a logged set.
+      'Part inferred from Apple Health workouts',
+    ]);
+    // The walk is inferred, never asked about: a question ARC can answer itself
+    // is not a question.
+    refute('exercise hub (ingested workouts)', ingested, ['Walking from Apple Health']);
+    expect(
+      'muscle-freshness (part inferred)',
+      render('muscle-freshness (part inferred)', MuscleFreshnessScreen),
+      ['Part inferred']
+    );
+    db.run(`DELETE FROM wearable_data WHERE metric_type = 'workout'`);
   }
 
   // -------------------------------------------------------------------------

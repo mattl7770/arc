@@ -8,7 +8,11 @@
  * future Settings unit toggle stays a display concern.
  */
 import { BAR_KG, WARMUP_MIN_WORK_MULTIPLE, WARMUP_RAMP } from './constants';
-import type { RecentSession, SetType, WorkoutKind } from './types';
+import type { PairedIngest, RecentSession, SetType, WorkoutKind } from './types';
+// `deviceLabel` is a pure name map; the module it lives in takes a `Database` as
+// a parameter and holds no connection, so importing it keeps this file DB-free
+// in the sense that matters — nothing here can open or touch a database.
+import { deviceLabel } from '@/lib/db/repositories/wearables';
 import { metricByKey, resolveDisplay, roundToSpec, type DisplaySpec } from '@/lib/log/metrics';
 import type { UnitPreferences } from '@/lib/user/types';
 
@@ -108,6 +112,32 @@ export function sessionDetail(session: RecentSession): string {
   }
   if (session.durationMin != null) parts.push(`${Math.round(session.durationMin)} min`);
   return parts.length > 0 ? parts.join(' · ') : KIND_LABEL[session.kind];
+}
+
+/**
+ * What the WATCH says about a session the owner also logged (0054) — "Garmin ·
+ * 612 kcal · 8.4 km", or null when the pair carries no numbers worth a line.
+ *
+ * Kept apart from {@link sessionDetail}, deliberately. That line is what the
+ * owner typed; this one is what a device measured, and merging them would be
+ * the exact confusion migration 0034 wrote its provenance rule against — a
+ * number of unknown origin wearing the face of one the user asserted. The source
+ * leads the line for the same reason: it is the qualifier, not a footnote.
+ *
+ * The duration is NOT repeated here. `sessionDetail` already prints one, and two
+ * slightly different minute counts on adjacent lines (HealthKit excludes pauses;
+ * ARC's elapsed clock does not) reads as a contradiction rather than as two
+ * measurements.
+ */
+export function ingestDetail(ingest: PairedIngest, units: UnitPreferences): string | null {
+  const parts: string[] = [deviceLabel(ingest.sourceDevice)];
+  if (ingest.kcal != null) parts.push(`${Math.round(ingest.kcal)} kcal`);
+  if (ingest.distanceKm != null && ingest.distanceKm > 0) {
+    parts.push(formatDistance(ingest.distanceKm * M_PER_KM, units));
+  }
+  // The source alone is not a measurement — if the watch gave nothing but its
+  // own name there is nothing to put beside what the owner typed.
+  return parts.length > 1 ? parts.join(' · ') : null;
 }
 
 /** "8 × 135 lb", "12 reps", "135 lb" — one draft/stored set, in display units. */

@@ -35,6 +35,10 @@ import {
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
 import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { deviceLabel, pickDailyMetric } from '@/lib/db/repositories/wearables';
+import {
+  unpairedIngestedSessions,
+  unpairedWorkoutDailyMinutes,
+} from '@/lib/db/repositories/workout-ingest';
 import { isAccumulatingMetric } from '@/lib/health/accumulating';
 import { SAMPLE_METRICS, STATISTIC_METRICS } from '@/lib/health/mapping';
 import { deriveReadiness } from '@/lib/home/readiness';
@@ -209,8 +213,14 @@ const DECLARED_WEARABLE_METRICS: readonly WearableMetricSpec[] = [
   {
     // Many sessions a day, each its own row keyed by the HK sample UUID — this
     // one really does accumulate, unlike every day-bucketed metric above.
+    //
+    // The label says "not logged in ARC" because since 0054 that is literally
+    // what the number is: a session PAIRED to one the owner logged is subtracted
+    // here, since get_training_summary already counts it from `workouts` with
+    // its sets and its kind. Before pairing existed the same hour appeared in
+    // both tools and nothing could reconcile them. See `accumulatedSeries`.
     metricType: 'workout',
-    label: 'Workout minutes (Apple Health)',
+    label: 'Workout minutes (Apple Health, not logged in ARC)',
     canonicalUnit: 'min',
     agg: 'sum',
     decimals: 1,
@@ -485,6 +495,34 @@ type NutritionHistoryTarget = {
   fiber_g: number | null;
 };
 
+/**
+ * The daily series for an ACCUMULATING wearable metric — and the one place the
+ * ingested-workout de-duplication is applied.
+ *
+ * `workout` rows are the only metric in `wearable_data` that can describe the
+ * same event as a row in another table: a session the owner logged in ARC and
+ * the watch also recorded. `get_training_summary` counts that session from
+ * `workouts`, where it carries sets, a kind and a duration the owner stands
+ * behind, so counting the watch's copy here as well made one hour of training
+ * appear in two tools with nothing able to tell (the defect migration 0054 was
+ * written for). {@link unpairedWorkoutDailyMinutes} subtracts exactly the paired
+ * rows and nothing else.
+ *
+ * It lives here — one function, both call sites (today's snapshot and the series
+ * tool) — because a second reader that forgot the subtraction would put the
+ * defect straight back.
+ */
+function accumulatedSeries(
+  db: Database,
+  metricType: string,
+  sinceDate: string,
+  untilDate?: string
+): SeriesPoint[] {
+  return metricType === 'workout'
+    ? unpairedWorkoutDailyMinutes(db, sinceDate, untilDate)
+    : wearableDailySeries(db, metricType, sinceDate, 'sum', untilDate);
+}
+
 /** Today's value for one wearable metric under its own aggregation rule. */
 function wearableToday(
   db: Database,
@@ -492,9 +530,7 @@ function wearableToday(
   date: string
 ): { value: number; source: string | null } | null {
   if (spec.agg === 'sum') {
-    const point = wearableDailySeries(db, spec.metricType, date, 'sum').find(
-      (p) => p.date === date
-    );
+    const point = accumulatedSeries(db, spec.metricType, date).find((p) => p.date === date);
     // Summed across every source by definition — no single device owns it.
     return point ? { value: point.value, source: null } : null;
   }
@@ -836,7 +872,7 @@ const getMetricSeries: CoachTool = {
     const display = wearableDisplay(spec, units);
     const raw: SeriesPoint[] =
       spec.agg === 'sum'
-        ? wearableDailySeries(db, metricType, since, 'sum')
+        ? accumulatedSeries(db, metricType, since)
         : wearableArbitratedSeries(db, metricType, since, today);
     // Today stays IN the points — the owner's steps so far today are real and
     // useful — but an accumulating today is flagged as partial, and held out of
@@ -857,7 +893,9 @@ const getMetricSeries: CoachTool = {
         unit: display.unit,
         aggregation:
           spec.agg === 'sum'
-            ? 'daily sum of every logged row'
+            ? metricType === 'workout'
+              ? 'daily sum of Apple Health sessions NOT also logged in ARC (those are in get_training_summary)'
+              : 'daily sum of every logged row'
             : 'one source per day, richest device first (same rule the Home screen uses)',
         days,
         points,
@@ -1090,6 +1128,10 @@ const getTrainingSummary: CoachTool = {
         ...(w.set_metres != null ? { setMetres: Math.round(w.set_metres) } : {}),
       }));
 
+    // Apple Health sessions with NO ARC log (0054). Same cap as recentSessions
+    // — ten is what a model can use; a hundred is a bill.
+    const ingested = unpairedIngestedSessions(db, since, 10);
+
     return json({
       days,
       // Monday-start calendar week to date — the "this week" number, matching
@@ -1117,6 +1159,32 @@ const getTrainingSummary: CoachTool = {
             },
       perDay: daily,
       recentSessions: recent,
+      // The other half of the 0054 de-duplication. `totals` and `recentSessions`
+      // above come from `workouts` — the sessions the owner logged. These are
+      // the ones ONLY the watch knows about: real training, with no sets and no
+      // ARC row, and deliberately not folded into the totals above (a HealthKit
+      // session has no `kind`, so adding its minutes to `cardioMinutes` would be
+      // a guess). A session recorded by BOTH is absent here and present above,
+      // exactly once — which is the whole point of the pairing.
+      //
+      // Omitted entirely when there are none, which is the common case on a
+      // device with no watch: an empty array is a sentence the model has to read
+      // to learn nothing.
+      ...(ingested.length > 0
+        ? {
+            ingestedSessions: ingested.map((s) => ({
+              date: s.date,
+              activity: s.activity ?? 'Workout',
+              minutes: round1(s.durationMin),
+              source: deviceLabel(s.sourceDevice),
+              ...(s.kcal != null ? { kcal: Math.round(s.kcal) } : {}),
+              ...(s.distanceKm != null ? { km: round1(s.distanceKm) } : {}),
+            })),
+            ingestedNote:
+              'Apple Health sessions with no ARC log — already EXCLUDED from totals and ' +
+              'recentSessions above, so never add them to those numbers.',
+          }
+        : {}),
     });
   },
 };

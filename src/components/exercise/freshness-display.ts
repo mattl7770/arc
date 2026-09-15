@@ -135,6 +135,14 @@ export function freshnessSummary(ledger: MuscleFreshness[]): string {
   // — which only sees windowed loads — can be true while a muscle is plainly not
   // fresh. Emitting the all-fresh sentence there would have VoiceOver announce
   // every muscle fresh while the visible legend and figure show one fatigued.
+  // Provenance, spoken (0054) — the same caveat the printed key carries, because
+  // a VoiceOver reader gets the whole drawing through this one string and would
+  // otherwise hear a walk's contribution as a set someone logged.
+  const inferredMuscles = ledger.filter((m) => m.inferredShare > 0).map((m) => m.muscle);
+  const inferredSentence =
+    inferredMuscles.length > 0
+      ? ` Part inferred from Apple Health workouts: ${spoken(inferredMuscles)}.`
+      : '';
   const parts: string[] = [`${t.fresh.length} of ${t.total} muscles fresh.`];
   if (t.fatigued.length > 0) parts.push(`Fatigued: ${spoken(t.fatigued)}.`);
   if (t.recovering.length > 0) parts.push(`Recovering: ${spoken(t.recovering)}.`);
@@ -143,7 +151,7 @@ export function freshnessSummary(ledger: MuscleFreshness[]): string {
   // not "never" — a fortnight layoff or a cardio-only user has simply logged
   // nothing the freshness window can see (see the `neverTrained` docblock).
   if (t.neverTrained && t.fatigued.length === 0 && t.recovering.length === 0) {
-    return `No training in the last 14 days, so all ${t.total} muscles read fresh.`;
+    return `No training in the last 14 days, so all ${t.total} muscles read fresh.${inferredSentence}`;
   }
-  return parts.join(' ');
+  return parts.join(' ') + inferredSentence;
 }

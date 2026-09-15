@@ -483,6 +483,11 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
     version: DRAFT_VERSION,
     startedAt: NOW.getTime() - 22 * 60_000,
     routineId: null,
+    // 0054 — null on every session that is not filling in a watch-recorded
+    // blank, which is all of them here. It rides in the draft for the same
+    // reason `routineId` does: an app kill mid-fill must not forget which
+    // ingested session the sets belong to.
+    ingestId: null,
     restEndsAt: NOW.getTime() + 45_000,
     blocks: [
       {

@@ -53,7 +53,7 @@
 |---|---|---|
 | D1 | **Recipe import from a caption-less video** **[spike]** | *"Some recipe import apps are able to figure out a recipe just from the video, with no captions. I want to see if that is feasible to implement and implement if so."* |
 | D2 | **Faster water logging** **[spec]** | Not just more quick buttons: *"I actually want to find a way to make this logging faster."* |
-| D3 | **Ingested workouts → training data** **[spec]** | Infer muscles where the type allows (*"a walking exercise… minorly effect the legs and not much else"*); **strength-training-coded** workouts leave a blank for the user; **auto-pair** an ingested session with a manually logged one by time, pulling calories and other data into the manual session. *"A topic to continue thinking on further."* |
+| D3 | **Ingested workouts → training data** **[BUILT 0054]** | Infer muscles where the type allows (*"a walking exercise… minorly effect the legs and not much else"*); **strength-training-coded** workouts leave a blank for the user; **auto-pair** an ingested session with a manually logged one by time, pulling calories and other data into the manual session. *"A topic to continue thinking on further."* |
 | D4 | **Automatic timezone handling** **[spec]** | Note when days have timezone changes, **automatically**; *"we will need to do more thinking on the subject to make sure it works intelligently."* |
 
 ## Parked — recorded, revisit later (owner's explicit instruction)
@@ -67,4 +67,11 @@
 
 ## Migration numbers reserved (head is `0044`; re-check `git ls-tree main -- db/migrations/` at merge — seven collisions in a week)
 
-`0045` A8 micros (only if the JSON column proves insufficient) · `0046` B1 exercise metric type · `0047` B2 ml unit · `0048` B3 day boundary (if a preference column is needed) · `0049` C4 composite foods · `0050` C11 protocol toggles (if not expressible in content JSON) · `0051` C13 gym note · `0052` D3 ingested-workout pairing · `0053` D4 timezone.
+`0045` A8 micros (only if the JSON column proves insufficient) · `0046` B1 exercise metric type · `0047` B2 ml unit · `0048` B3 day boundary (if a preference column is needed) · `0049` C4 composite foods · `0050` C11 protocol toggles (if not expressible in content JSON) · `0051` C13 gym note · ~~`0052`~~ **`0054`** D3 ingested-workout pairing · `0053` D4 timezone.
+
+> **A reservation does not hold a number; the head does.** D4 merged `0053`
+> while D3 was being written, which would have left a `0052` permanently
+> unapplied on any device that had already stamped 53 — the runner skips
+> anything at or below `user_version`, silently. D3 therefore shipped as `0054`.
+> Every remaining reservation below main's head has the same problem: re-check
+> `git ls-tree main -- db/migrations/` at merge and renumber UP.

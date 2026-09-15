@@ -144,6 +144,14 @@ export type DraftBlock = {
  * resuming a saved workout and finishing it has to mark that workout used, the
  * same as if the app had never closed.
  *
+ * `ingestId` (0054) rides along for exactly the same reason, one level up: a
+ * session opened from the Train hub's "From your watch" blank takes its DAY, its
+ * DURATION and its start instant from the HealthKit row it is filling in, and
+ * links to it on Finish. A resumed fill that forgot which session it was filling
+ * would save as an ordinary workout dated today, leaving the blank still asking
+ * and a second session beside it. Null for every session that is not a fill —
+ * which is why an older draft parsing to null needs no version bump.
+ *
  * What is deliberately NOT here: the session being EDITED (`workoutId`). An
  * edit of a past session already has a saved copy in `workouts` — losing
  * unsaved edits loses nothing that was ever recorded — and a resumable edit
@@ -155,6 +163,8 @@ export type LiveDraft = {
   version: number;
   startedAt: number;
   routineId: string | null;
+  /** `wearable_data.id` of the ingested session being filled in (0054), or null. */
+  ingestId: string | null;
   restEndsAt: number | null;
   blocks: DraftBlock[];
 };
@@ -288,6 +298,7 @@ export function parseLiveDraft(raw: unknown): LiveDraft | null {
     version: DRAFT_VERSION,
     startedAt,
     routineId: typeof raw.routineId === 'string' ? raw.routineId : null,
+    ingestId: typeof raw.ingestId === 'string' ? raw.ingestId : null,
     restEndsAt: asFiniteNumber(raw.restEndsAt),
     blocks,
   };

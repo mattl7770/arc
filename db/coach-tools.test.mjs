@@ -13,7 +13,8 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
-import { weekSummary } from '../src/lib/db/repositories/exercise.ts';
+import { logWorkout, weekSummary } from '../src/lib/db/repositories/exercise.ts';
+import { pairIngestedWorkouts } from '../src/lib/db/repositories/workout-ingest.ts';
 import { setUnitPreference, updateProfile } from '../src/lib/db/repositories/user.ts';
 import { SOURCE_PRIORITY, upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 // The real ingest mappers — fixtures below are built by the pipeline that runs
@@ -2721,6 +2722,101 @@ console.log('37. log_workout carries time and distance, and the card promises th
   session.setMetres === 8000 && session.setSeconds === 2790
     ? ok('get_training_summary reports the session’s summed metres and seconds')
     : bad('training read', JSON.stringify(session));
+}
+
+console.log('38. the double-count: one session, two tools, counted once (0054)');
+{
+  // THE DEFECT THIS PINS. The Coach reads ingested minutes through the `workout`
+  // metric AND reads `workouts` through get_training_summary. A session logged in
+  // ARC and also recorded by the watch appeared in both, and nothing could tell —
+  // asked "how much did I train yesterday", the model could answer 100 minutes
+  // for one 60-minute lift and a 40-minute walk.
+  const { db } = freshDb();
+  // The registry's own clock (CTX/TODAY), so the tools' "today" and this
+  // fixture's day are the same day by construction.
+  const DAY = TODAY;
+  const lift = { start: new Date(NOW.getTime() - 3 * 3_600_000), minutes: 60 };
+  const walk = { start: new Date(NOW.getTime() - 10 * 3_600_000), minutes: 40 };
+  const span = (s, m) => ({
+    startTime: s.toISOString(),
+    endTime: new Date(s.getTime() + m * 60_000).toISOString(),
+  });
+
+  // The owner logs the lift; the watch records the same hour, plus a walk ARC
+  // knows nothing else about.
+  logWorkout(db, {
+    date: DAY,
+    kind: 'strength',
+    durationMin: lift.minutes,
+    startedAt: lift.start.toISOString(),
+  });
+  upsertWearableRows(db, [
+    {
+      date: DAY,
+      metricType: 'workout',
+      value: lift.minutes,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'watch-lift',
+      ...span(lift.start, lift.minutes),
+      metadata: { activity: 'Strength training', activity_type_raw: 50, kcal: 410 },
+    },
+    {
+      date: DAY,
+      metricType: 'workout',
+      value: walk.minutes,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'watch-walk',
+      ...span(walk.start, walk.minutes),
+      metadata: { activity: 'Walking', activity_type_raw: 52, kcal: 120 },
+    },
+  ]);
+
+  // The day is still accumulating, so it rides in `points` (flagged partial) and
+  // is deliberately held out of `stats` — read the point, which is the number the
+  // model is shown.
+  const ingestedMinutes = (payload) => payload.points.find((p) => p.date === DAY)?.value;
+
+  const beforeSeries = run('get_metric_series', db, { metric: 'workout', days: 2 });
+  near(ingestedMinutes(beforeSeries), 100, 0.5)
+    ? ok('unpaired, the ingested metric reports 100 min — the hour ARC logged, counted twice')
+    : bad('pre-pair ingested minutes', JSON.stringify(beforeSeries.points));
+
+  pairIngestedWorkouts(db, NOW);
+
+  const series = run('get_metric_series', db, { metric: 'workout', days: 2 });
+  near(ingestedMinutes(series), 40, 0.5)
+    ? ok('paired, it reports 40 — only the walk ARC has no log for')
+    : bad('post-pair ingested minutes', JSON.stringify(series.points));
+  /not also logged in ARC|NOT also logged/i.test(series.aggregation) ||
+  /not logged in ARC/i.test(series.label)
+    ? ok('…and the payload says so in words, where the model reads the number')
+    : bad('series provenance wording', `${series.label} / ${series.aggregation}`);
+
+  const summary = run('get_training_summary', db, { days: 7 });
+  summary.totals.minutes === 60 && summary.totals.sessions === 1
+    ? ok('get_training_summary still counts the logged hour exactly once')
+    : bad('summary totals', JSON.stringify(summary.totals));
+  summary.ingestedSessions?.length === 1 && summary.ingestedSessions[0].minutes === 40
+    ? ok('…and lists the watch-only walk separately, so nothing is lost')
+    : bad('ingestedSessions', JSON.stringify(summary.ingestedSessions));
+  summary.ingestedSessions[0].kcal === 120 && summary.ingestedSessions[0].source === 'Garmin'
+    ? ok('the unpaired session carries what the watch measured, named by source')
+    : bad('ingested session fields', JSON.stringify(summary.ingestedSessions[0]));
+
+  // 60 (from `workouts`) + 40 (from `wearable_data`) = 100 real minutes, and the
+  // same hour appears in exactly one of the two.
+  near(summary.totals.minutes + ingestedMinutes(series), 100, 0.5)
+    ? ok('the two tools now sum to the truth instead of over-reporting it')
+    : bad('sum across tools', summary.totals.minutes + ingestedMinutes(series));
+
+  // The snapshot reads the same de-duplicated number.
+  const snapshot = run('get_today_snapshot', db, {});
+  const shown = snapshot.wearables?.today?.workout;
+  shown == null || near(shown.value, 40, 0.5)
+    ? ok('today’s snapshot reports the same de-duplicated ingested minutes')
+    : bad('snapshot workout minutes', JSON.stringify(shown));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
