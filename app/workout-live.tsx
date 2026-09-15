@@ -21,11 +21,21 @@ import {
 } from '@/lib/db/repositories/exercise';
 import { getRoutine, touchRoutineStarted } from '@/lib/db/repositories/routines';
 import {
-  lastSessionSets,
-  personalRecords,
-  type PrevSet,
-} from '@/lib/db/repositories/training-stats';
+  clearWorkoutDraft,
+  readWorkoutDraft,
+  saveWorkoutDraft,
+} from '@/lib/db/repositories/workout-drafts';
+import { lastSessionSets, personalRecords } from '@/lib/db/repositories/training-stats';
 import { restSecFor } from '@/lib/exercise/constants';
+import {
+  DRAFT_VERSION,
+  draftBlocksHaveData,
+  liveDraftHasData,
+  parseLiveDraft,
+  type DraftBlock as LiveBlock,
+  type DraftSet as LiveSet,
+  type LiveDraft,
+} from '@/lib/exercise/draft';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
 import {
   dayLabel,
@@ -35,7 +45,7 @@ import {
   toCanonicalKg,
   weightSpec,
 } from '@/lib/exercise/format';
-import type { LoggingType, Mechanic, SetType, WorkoutDetail } from '@/lib/exercise/types';
+import type { LoggingType, SetType, WorkoutDetail } from '@/lib/exercise/types';
 import { cancelRestAlert, scheduleRestAlert } from '@/lib/notifications/rest-timer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import type { UnitPreferences } from '@/lib/user/types';
@@ -65,6 +75,30 @@ import type { UnitPreferences } from '@/lib/user/types';
  * stamps.** A completed set is chrome, not biology, so the stamp is the accent
  * and never a signal green — signal colours mark biological state only, and
  * that firewall was a finding in all six hostile reviews.
+ *
+ * ## Nothing typed here can be lost (owner, 2026-09-14)
+ *
+ * *"losing workout information when closing app mid workout, necessary for
+ * fixing when app bugs."* Every change to the session — a rep typed, a set
+ * stamped, an exercise added, a superset bound — is written through to
+ * `workout_drafts` (0045) as it happens, so an iOS memory kill, a crash or a
+ * bad build costs nothing. The hub offers **Resume session**, which reopens
+ * this screen with `resume=1` and restores the blocks, every field as typed,
+ * the elapsed clock (from the original start instant, not from zero) and a rest
+ * timer that is still running.
+ *
+ * The draft is NOT a workout row: it lives in its own table precisely so that
+ * an unfinished session cannot reach freshness, weekly volume, PRs, the Coach's
+ * training reads or the export — there is no flag for a future query to forget.
+ * It becomes a workout at one moment, `finish()`, and is deleted in the same
+ * breath. Discarding deletes it and leaves nothing behind. See 0045's header.
+ *
+ * Two things deliberately do not survive: an EDIT of a stored session (it
+ * already has a saved copy, so nothing unrecorded is at risk — `editing` writes
+ * no draft at all), and the OS rest ALERT, which was scheduled with
+ * expo-notifications before the kill and is still queued in iOS; re-arming it
+ * on resume would fire it twice. The countdown itself is restored, because it
+ * counts from a target instant.
  *
  * FLAG (native): the rest timer is foreground-only. Background delivery (a
  * notification at zero) needs expo-notifications, which is in the binary as
@@ -112,45 +146,14 @@ function SupersetSeam({ onPress }: { onPress: () => void }) {
   );
 }
 
-type LiveSet = {
-  key: number;
-  weight: string;
-  reps: string;
-  rpe: string;
-  setType: SetType;
-  done: boolean;
-  pr: boolean;
-  /**
-   * For a set loaded from a stored session: the exact canonical kg it was read
-   * with, and the display string it rendered as. An untouched weight writes back
-   * byte-for-byte on Save instead of round-tripping through the display unit and
-   * drifting — that round-trip is only lossless when the stored kg already
-   * matches a round display value (see finish()). Absent on sets typed fresh.
-   */
-  storedWeightKg?: number | null;
-  storedWeightText?: string;
-};
-
-type LiveBlock = {
-  key: number;
-  /**
-   * The catalog movement, or null for a free-text set — a genuinely custom
-   * movement the logger never resolved (workout-log.tsx + insertSet's name
-   * backstop), or one whose catalog entry has since been deleted. Nullable so
-   * the editor can hold and re-save such a set rather than dropping it.
-   */
-  exerciseId: string | null;
-  name: string;
-  loggingType: LoggingType;
-  mechanic: Mechanic | null;
-  restSec: number | null;
-  prev: PrevSet[];
-  /** Best e1RM before this session — the bar a set must beat to tag a PR. */
-  bestE1rm: number | null;
-  /** Grouped into a superset with the block below it (shared superset_group). */
-  linkedToNext: boolean;
-  sets: LiveSet[];
-};
+/*
+ * `LiveSet` / `LiveBlock` are src/lib/exercise/draft.ts's `DraftSet` /
+ * `DraftBlock`, imported under this screen's own names. They moved there when
+ * the session became PERSISTED (2026-09-14): the state this component holds is
+ * now also the payload written to `workout_drafts`, so a contract with a future
+ * build. One declaration means the thing rendered and the thing serialised
+ * cannot drift apart. The field-level docs live with the types.
+ */
 
 /**
  * Superset group numbers derived from the linked-to-next flags: a maximal run of
@@ -174,6 +177,12 @@ function supersetGroups(blocks: LiveBlock[]): (number | null)[] {
   return groups;
 }
 
+/**
+ * The longest elapsed time still recorded as a session duration. Past it,
+ * Finish stores no duration at all — see the clamp in `finish()`.
+ */
+const MAX_SESSION_MIN = 6 * 60;
+
 const WEIGHT_LOGGING = new Set<LoggingType>([
   'weight_reps',
   'weighted_bodyweight',
@@ -183,6 +192,22 @@ const WEIGHT_LOGGING = new Set<LoggingType>([
 
 let keySeq = 1;
 const nextKey = () => keySeq++;
+
+/**
+ * Lift the key sequence past everything a restored draft carries.
+ *
+ * `keySeq` is module state and a resumed draft arrives with keys minted by a
+ * process that no longer exists — possibly higher than this one has reached, if
+ * the app restarted. Without this, the next set added would reuse a key a
+ * restored row already has, and React would reconcile two different rows as
+ * one: type into set 3, watch set 1 change.
+ */
+function adoptKeys(blocks: LiveBlock[]): void {
+  for (const block of blocks) {
+    keySeq = Math.max(keySeq, block.key + 1);
+    for (const set of block.sets) keySeq = Math.max(keySeq, set.key + 1);
+  }
+}
 
 function blankSet(from?: LiveSet): LiveSet {
   return {
@@ -326,17 +351,39 @@ function blocksFromWorkout(detail: WorkoutDetail, units: UnitPreferences): LiveB
 }
 
 /**
- * Initial blocks: from a session already logged (view/edit), else from a saved
- * workout (targets + rest per line), else from an explicit exercise-id list (the
- * hub's freshest-muscle recommendation), else empty (a blank sheet — add
- * exercises as you go).
+ * The draft this screen would resume, or null — read once, on the way in.
+ *
+ * A draft with no data is not offered and not kept: blocks loaded from a saved
+ * workout and then walked away from are reproducible by starting that workout
+ * again, and a Resume that restores nothing typed is a Resume that wasted a
+ * tap. `liveDraftHasData` is the same test the hub's card uses, so the two can
+ * never disagree about whether there is a session to come back to.
+ */
+function readResumableDraft(): LiveDraft | null {
+  const stored = readWorkoutDraft(getDb(), 'live');
+  if (!stored) return null;
+  const draft = parseLiveDraft(stored.value);
+  return draft && liveDraftHasData(draft) ? draft : null;
+}
+
+/**
+ * Initial blocks: from a RESUMED draft (everything as it was typed), else from
+ * a session already logged (view/edit), else from a saved workout (targets +
+ * rest per line), else from an explicit exercise-id list (the hub's
+ * freshest-muscle recommendation), else empty (a blank sheet — add exercises as
+ * you go).
  */
 function initialBlocks(
+  draft: LiveDraft | null,
   workout: WorkoutDetail | undefined,
   routineId: string | undefined,
   exerciseIds: string[],
   units: UnitPreferences
 ): LiveBlock[] {
+  if (draft) {
+    adoptKeys(draft.blocks);
+    return draft.blocks;
+  }
   if (workout) return blocksFromWorkout(workout, units);
   if (routineId) {
     const routine = getRoutine(getDb(), routineId);
@@ -354,22 +401,34 @@ export default function WorkoutLiveScreen() {
     routineId?: string | string[];
     workoutId?: string | string[];
     exerciseIds?: string | string[];
+    resume?: string | string[];
   }>();
   const routineId = Array.isArray(params.routineId) ? params.routineId[0] : params.routineId;
   const workoutId = Array.isArray(params.workoutId) ? params.workoutId[0] : params.workoutId;
   const idsParam = Array.isArray(params.exerciseIds) ? params.exerciseIds[0] : params.exerciseIds;
   const exerciseIds = idsParam ? idsParam.split(',').filter(Boolean) : [];
-  return <WorkoutLive routineId={routineId} workoutId={workoutId} exerciseIds={exerciseIds} />;
+  const resumeParam = Array.isArray(params.resume) ? params.resume[0] : params.resume;
+  return (
+    <WorkoutLive
+      routineId={routineId}
+      workoutId={workoutId}
+      exerciseIds={exerciseIds}
+      resume={resumeParam === '1'}
+    />
+  );
 }
 
 function WorkoutLive({
   routineId,
   workoutId,
   exerciseIds,
+  resume,
 }: {
   routineId?: string;
   workoutId?: string;
   exerciseIds: string[];
+  /** Reopen the stored draft instead of starting a session (the hub's Resume). */
+  resume: boolean;
 }) {
   const router = useRouter();
   const navigation = useNavigation();
@@ -385,17 +444,33 @@ function WorkoutLive({
   );
   const editing = stored != null;
 
-  const [startedAt] = useState(() => Date.now());
+  // The resumed draft, read once on mount. Only when asked (`resume=1`) and
+  // never while editing — see the docblock: an edit has a saved copy, so it
+  // keeps no draft, and reading one here could only mix two sessions.
+  const [draft] = useState<LiveDraft | null>(() =>
+    resume && !workoutId ? readResumableDraft() : null
+  );
+
+  // A resumed session keeps the instant it really started, so the elapsed clock
+  // says how long this workout has been going, not how long the app has been
+  // open again. Same for the routine it came from: Finish still stamps it used.
+  const [startedAt] = useState(() => draft?.startedAt ?? Date.now());
+  const draftRoutineId = draft?.routineId ?? routineId;
   const [now, setNow] = useState(startedAt);
   const [blocks, setBlocks] = useState<LiveBlock[]>(() =>
-    initialBlocks(stored, routineId, exerciseIds, units)
+    initialBlocks(draft, stored, routineId, exerciseIds, units)
   );
   // Editing starts CLEAN. A past session is already full of data, so the live
   // logger's "anything typed means unsaved" test would prompt to discard on the
   // way out of a screen that was only ever read.
   const [dirty, setDirty] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [restEndsAt, setRestEndsAt] = useState<number | null>(null);
+  // A resumed rest timer counts from its stored target instant; one that ran out
+  // while the app was away is simply over, so it comes back as null rather than
+  // as a countdown showing zero.
+  const [restEndsAt, setRestEndsAt] = useState<number | null>(() =>
+    draft?.restEndsAt != null && draft.restEndsAt > Date.now() ? draft.restEndsAt : null
+  );
   // The id of the pending OS rest-alert (to cancel/replace it). null when none.
   const restNotifId = useRef<string | null>(null);
   // A monotonic token that serialises the async schedule: only the latest arm
@@ -439,9 +514,10 @@ function WorkoutLive({
   const restRemaining =
     restEndsAt == null ? null : Math.max(0, Math.round((restEndsAt - now) / 1000));
 
-  const hasData = blocks.some((b) =>
-    b.sets.some((s) => s.done || s.reps !== '' || s.weight !== '')
-  );
+  // The same test the draft store and the hub's Resume card use — one function,
+  // so "is there anything here" cannot mean three different things across the
+  // write-through, the discard prompt and the offer to resume.
+  const hasData = draftBlocksHaveData(blocks);
   // Every entered weight must fit the schema's canonical-kg bound
   // (0003_exercise.sql: weight_kg >= 0 AND weight_kg < 1000). A single
   // over-limit set throws that CHECK inside finish()'s one transaction, rolling
@@ -465,6 +541,62 @@ function WorkoutLive({
   const canFinish = (editing || hasData) && weightProblem == null;
   const unsaved = editing ? dirty : hasData;
 
+  /** Drop the stored draft — on Finish, and on an explicit Discard. */
+  const discardDraft = () => {
+    try {
+      clearWorkoutDraft(getDb(), 'live');
+    } catch (error) {
+      // Never let losing the draft lose the navigation with it.
+      console.warn('[exercise] draft clear failed', error);
+    }
+  };
+
+  /**
+   * **The write-through.** Every edit to the session lands in `workout_drafts`
+   * before the next render settles, which is the whole of surviving a kill: iOS
+   * gives no warning it is about to reclaim the app, so there is no "save on
+   * background" hook that can be trusted — the only safe moment to write is the
+   * moment the value changes.
+   *
+   * It runs on `blocks` and `restEndsAt`, the two pieces of state that are the
+   * session. The serialised payload is compared against the last one written,
+   * so a re-render that changed nothing (the one-second clock tick, opening the
+   * picker) does not touch the database.
+   *
+   * `hasData` gates existence both ways: the draft appears the moment something
+   * is typed and DISAPPEARS when the last of it is deleted, so an emptied
+   * session leaves no Resume card pointing at nothing. Editing writes no draft
+   * at all.
+   */
+  const lastWrittenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (editing || savedRef.current) return;
+    try {
+      if (!hasData) {
+        if (lastWrittenRef.current !== null) {
+          lastWrittenRef.current = null;
+          clearWorkoutDraft(getDb(), 'live');
+        }
+        return;
+      }
+      const payload: LiveDraft = {
+        version: DRAFT_VERSION,
+        startedAt,
+        routineId: draftRoutineId ?? null,
+        restEndsAt,
+        blocks,
+      };
+      const serialised = JSON.stringify(payload);
+      if (serialised === lastWrittenRef.current) return;
+      lastWrittenRef.current = serialised;
+      saveWorkoutDraft(getDb(), 'live', payload);
+    } catch (error) {
+      // A failed draft write must never break the logger the user is standing
+      // in — the session is still on screen and Finish still saves it.
+      console.warn('[exercise] draft write failed', error);
+    }
+  }, [blocks, restEndsAt, hasData, editing, startedAt, draftRoutineId]);
+
   // Guard an accidental back from vaporising unsaved work.
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', (e) => {
@@ -472,13 +604,23 @@ function WorkoutLive({
       e.preventDefault();
       Alert.alert(
         editing ? 'Discard these changes?' : 'Discard this workout?',
-        editing ? 'The session stays as it was.' : 'Nothing has been saved yet.',
+        editing
+          ? 'The session stays as it was.'
+          : 'It has not been saved to your training history. Discarding deletes the sets you have typed.',
         [
           { text: editing ? 'Keep editing' : 'Keep logging', style: 'cancel' },
           {
             text: 'Discard',
             style: 'destructive',
-            onPress: () => navigation.dispatch(e.data.action),
+            onPress: () => {
+              // Discard means discard: the stored draft goes too, or the hub
+              // would offer to resume a session the user just threw away.
+              if (!editing) {
+                savedRef.current = true; // stop the write-through re-creating it
+                discardDraft();
+              }
+              navigation.dispatch(e.data.action);
+            },
           },
         ]
       );
@@ -609,7 +751,14 @@ function WorkoutLive({
           };
         })
     );
-    const durationMin = Math.round((Date.now() - startedAt) / 60_000);
+    // Elapsed, clamped at zero (SQLite's clock and Date.now() can disagree by a
+    // hair) and DISCARDED past six hours. A resumed draft carries the instant
+    // the session really started, so a workout begun on Monday and finished
+    // from the hub on Wednesday would otherwise record a 2,880-minute session —
+    // a number no reader could tell from a real one. No duration is honest;
+    // that one is not.
+    const elapsedMin = Math.max(0, Math.round((Date.now() - startedAt) / 60_000));
+    const durationMin = elapsedMin <= MAX_SESSION_MIN ? elapsedMin : 0;
     try {
       const db = getDb();
       if (stored) {
@@ -631,14 +780,21 @@ function WorkoutLive({
             date: todayISODate(),
             kind: 'strength',
             durationMin: durationMin > 0 ? durationMin : null,
-            routineId: routineId ?? null,
+            // A resumed session still belongs to the saved workout it started
+            // from, so Finish stamps that workout used exactly as it would have
+            // before the app closed.
+            routineId: draftRoutineId ?? null,
           },
           sets
         );
-        if (routineId) touchRoutineStarted(db, routineId, new Date().toISOString());
+        if (draftRoutineId) touchRoutineStarted(db, draftRoutineId, new Date().toISOString());
       }
       disarmRestAlert();
       savedRef.current = true;
+      // The draft has become a workout. Clear it AFTER the write succeeds —
+      // if the save throws, the draft is the only copy of the session and the
+      // screen stays open holding it.
+      if (!editing) discardDraft();
       router.back();
     } catch (error) {
       console.warn('[exercise] workout save failed', error);

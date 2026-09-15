@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter, useSegments } from 'expo-router';
-import { Pressable, Text, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 
 import {
   FRESHNESS_SPOKEN,
@@ -10,18 +10,26 @@ import {
   freshnessTone,
 } from '@/components/exercise/freshness-display';
 import { MuscleFigure, MuscleFigureLegend } from '@/components/exercise/muscle-figure';
-import { Block, DashedDivider, Divider, GridCell } from '@/components/ui/block';
+import { Block, DashedDivider, Divider, GridCell, VerticalDivider } from '@/components/ui/block';
 import { Gauge } from '@/components/ui/gauge';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
+import { clearWorkoutDraft } from '@/lib/db/repositories/workout-drafts';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
+import {
+  draftAgeLabel,
+  liveDraftMovements,
+  liveDraftSetsDone,
+  type ManualDraft,
+} from '@/lib/exercise/draft';
 import { dayLabel, sessionDetail, sessionTitle } from '@/lib/exercise/format';
 import { volumeAttention } from '@/lib/exercise/volume';
 import type { MuscleVolume, Recommendation, RoutineListItem } from '@/lib/exercise/types';
-import { useTrainingHub } from '@/hooks/use-training';
+import { useTrainingHub, useWorkoutDrafts } from '@/hooks/use-training';
 
 /**
  * Exercise sub-app hub (docs/exercise-subapp.md). It renders at two routes: as
@@ -86,6 +94,7 @@ export default function ExerciseScreen() {
   // tab root; the pushed route is plain `/exercise`. See the header note above.
   const isTabRoot = useSegments()[0] === '(tabs)';
   const { week, sessions, routines, ledger, volume, recommendation } = useTrainingHub();
+  const drafts = useWorkoutDrafts();
   const today = todayISODate();
 
   const stats: { label: string; value: string; unit: string; sub?: string }[] = [
@@ -102,24 +111,91 @@ export default function ExerciseScreen() {
     { label: 'VO₂max', value: '—', unit: 'est', sub: 'no wearable yet' },
   ];
 
+  const resumeLive = () => router.push({ pathname: '/workout-live', params: { resume: '1' } });
+  const resumeManual = () => router.push({ pathname: '/workout-log', params: { resume: '1' } });
+
+  /** Discard one draft slot and re-read, so the hub stops offering it. */
+  const dropDraft = (key: 'live' | 'manual') => {
+    try {
+      clearWorkoutDraft(getDb(), key);
+    } catch (error) {
+      console.warn('[exercise] draft clear failed', error);
+    }
+    drafts.reload();
+  };
+
+  /**
+   * Starting a NEW session while an unfinished one is stored would overwrite
+   * that draft on the first keystroke — each logger keeps ONE slot, because a
+   * workout is a thing you are doing and you are only doing one. So every door
+   * into a logger passes through here first and the user says which session
+   * they meant. No silent clobber: ARC data has one copy, and this is the only
+   * place in the feature where a single tap could destroy something typed.
+   */
+  const guardedStart = (key: 'live' | 'manual', resume: () => void, go: () => void) => {
+    if ((key === 'live' ? drafts.live : drafts.manual) === null) {
+      go();
+      return;
+    }
+    Alert.alert(
+      'A workout is already in progress',
+      'Starting a new one deletes what you have logged in it.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Resume it', onPress: resume },
+        {
+          text: 'Start new',
+          style: 'destructive',
+          onPress: () => {
+            dropDraft(key);
+            go();
+          },
+        },
+      ]
+    );
+  };
+
+  const startLive = (params?: Record<string, string>) =>
+    guardedStart('live', resumeLive, () =>
+      router.push(params ? { pathname: '/workout-live', params } : '/workout-live')
+    );
+
+  /** The free-form logger — cardio, mobility, a past session. */
+  const startManual = () =>
+    guardedStart('manual', resumeManual, () =>
+      router.push({ pathname: '/workout-log', params: { mode: 'past' } })
+    );
+
   const startRecommended = () => {
     if (recommendation.kind === 'routine') {
-      router.push({
-        pathname: '/workout-live',
-        // No `name`: the logger stopped seeding a session name in 2026-08-14's
-        // round, because sessions no longer have one.
-        params: { routineId: recommendation.routineId },
-      });
+      // No `name`: the logger stopped seeding a session name in 2026-08-14's
+      // round, because sessions no longer have one.
+      startLive({ routineId: recommendation.routineId });
     } else if (recommendation.kind === 'muscles') {
-      router.push({
-        pathname: '/workout-live',
-        params: { exerciseIds: recommendation.exercises.map((e) => e.exerciseId).join(',') },
-      });
+      startLive({ exerciseIds: recommendation.exercises.map((e) => e.exerciseId).join(',') });
     }
   };
 
-  /** A blank session — name it and add exercises as you go. */
-  const startEmpty = () => router.push('/workout-live');
+  /** A blank session — add exercises as you go. */
+  const startEmpty = () => startLive();
+
+  /**
+   * Throw an unfinished session away from the hub. Two taps and a named
+   * consequence, the pattern every other destructive control in the app uses —
+   * a draft is the only copy of those sets, exactly like a logged session.
+   */
+  const discardDraft = (key: 'live' | 'manual', setsLogged: number) => {
+    Alert.alert(
+      'Discard this workout?',
+      setsLogged > 0
+        ? `${setsLogged} ${setsLogged === 1 ? 'set' : 'sets'} logged in it will be deleted. This cannot be undone.`
+        : 'What you typed will be deleted. This cannot be undone.',
+      [
+        { text: 'Keep it', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => dropDraft(key) },
+      ]
+    );
+  };
 
   return (
     <Screen scroll>
@@ -130,6 +206,48 @@ export default function ExerciseScreen() {
           <StackHeader title="Exercise" />
         )}
       </View>
+
+      {/*
+        Session in progress — the unfinished workout, offered back.
+
+        It sits ABOVE Train today because a session you are in the middle of
+        outranks one the engine is suggesting: the question this screen answers
+        is "what do I do right now", and the answer is "finish what you started".
+
+        It is drawn as a **ruled plate** and carries no accent. A plate because
+        it is a record — what has been logged so far — and neutral because the
+        screen's one accent belongs to Train today (00-design-spec.md §2), and
+        two stamped cards arguing at the top of a screen is exactly the noise
+        the accent budget exists to prevent.
+      */}
+      {drafts.live || drafts.manual ? (
+        <View className="mt-5">
+          <Block device="plate">
+            <SectionLabel
+              label="Session in progress"
+              note={drafts.updatedAt ? draftAgeLabel(drafts.updatedAt) : undefined}
+            />
+            {drafts.live ? (
+              <DraftRow
+                first
+                title={liveDraftMovements(drafts.live).slice(0, 3).join(' · ') || 'Workout'}
+                detail={draftDetail(liveDraftSetsDone(drafts.live))}
+                onResume={resumeLive}
+                onDiscard={() => discardDraft('live', liveDraftSetsDone(drafts.live!))}
+              />
+            ) : null}
+            {drafts.manual ? (
+              <DraftRow
+                first={!drafts.live}
+                title={manualDraftTitle(drafts.manual)}
+                detail={draftDetail(drafts.manual.sets.length)}
+                onResume={resumeManual}
+                onDiscard={() => discardDraft('manual', drafts.manual!.sets.length)}
+              />
+            ) : null}
+          </Block>
+        </View>
+      ) : null}
 
       {/* Train today — the one accent on this screen.
 
@@ -252,12 +370,7 @@ export default function ExerciseScreen() {
                   <SavedWorkoutRow
                     routine={r}
                     today={today}
-                    onStart={() =>
-                      router.push({
-                        pathname: '/workout-live',
-                        params: { routineId: r.id },
-                      })
-                    }
+                    onStart={() => startLive({ routineId: r.id })}
                     onEdit={() => router.push({ pathname: '/routine-edit', params: { id: r.id } })}
                   />
                 </View>
@@ -293,7 +406,7 @@ export default function ExerciseScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Log a session free-form"
-            onPress={() => router.push({ pathname: '/workout-log', params: { mode: 'past' } })}
+            onPress={startManual}
             className="mt-1 min-h-[44px] flex-row items-center gap-2 active:opacity-60">
             <Ionicons name="time-outline" size={17} color={palette.inkSecondary} />
             <Text className="flex-1 font-serif text-[14px] text-ink">
@@ -371,6 +484,76 @@ export default function ExerciseScreen() {
         </Block>
       </View>
     </Screen>
+  );
+}
+
+/** "3 sets logged" / "nothing logged yet" — the draft's one line of evidence. */
+function draftDetail(count: number): string {
+  if (count === 0) return 'Nothing logged yet';
+  return `${count} ${count === 1 ? 'set' : 'sets'} logged`;
+}
+
+/** The free-form draft's title: its movements, else the kind of session it is. */
+function manualDraftTitle(draft: ManualDraft): string {
+  const names = [...new Set(draft.sets.map((s) => s.exercise.trim()).filter((n) => n !== ''))];
+  if (names.length > 0) return names.slice(0, 3).join(' · ');
+  const typed = draft.exercise.trim();
+  if (typed !== '') return typed;
+  return draft.kind === 'strength'
+    ? 'Manual log'
+    : `${draft.kind[0]?.toUpperCase()}${draft.kind.slice(1)}`;
+}
+
+/**
+ * One unfinished session. Two controls on one row, exactly as the exercise
+ * picker draws its rows: the row proper resumes, and past the rule a 44pt
+ * button throws the draft away. The rule is what says they are two things —
+ * without it the discard reads as decoration on a single tap target, and this
+ * one deletes sets.
+ */
+function DraftRow({
+  first,
+  title,
+  detail,
+  onResume,
+  onDiscard,
+}: {
+  first: boolean;
+  title: string;
+  detail: string;
+  onResume: () => void;
+  onDiscard: () => void;
+}) {
+  return (
+    <View>
+      <Divider first={first} />
+      <View className="flex-row items-center">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Resume ${title}. ${detail}.`}
+          onPress={onResume}
+          className="min-h-[44px] flex-1 flex-row items-center gap-3 py-2.5 pr-3 active:opacity-60">
+          <View className="flex-1">
+            <Text className="font-serif text-[15px] leading-5 text-ink" numberOfLines={1}>
+              {title}
+            </Text>
+            <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">{detail}</Text>
+          </View>
+          <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink">
+            Resume
+          </Text>
+          <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+        </Pressable>
+        <VerticalDivider />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Discard ${title}`}
+          onPress={onDiscard}
+          className="min-h-[44px] w-11 items-center justify-center self-stretch active:bg-paper-dim">
+          <Ionicons name="trash-outline" size={16} color={palette.inkMuted} />
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
