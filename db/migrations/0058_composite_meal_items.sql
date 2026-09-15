@@ -1,0 +1,120 @@
+-- ============================================================================
+-- ARC 0058 — composite foods: a pizza is one row with its parts beneath it
+--
+-- Owner, backlog C4: *"Take a photo of a pepperoni pizza… one composite item
+-- (pepperoni pizza) as well as rows below that are pizza crust, cheese, and
+-- pepperoni. If I ate the whole pizza but took the pepperoni off half, I could
+-- change just one thing. If I ate only half, I could change the entire thing
+-- together."* With the scope fence in the same sentence: **specifically
+-- composite foods like pizza, NOT a general modifier system.**
+--
+-- Two ALTERs and one index. No new table: a component is a `meal_items` row in
+-- every other respect, and a second table would have to duplicate the whole
+-- name/amount/unit/macro/micros/confidence column set — and would put the
+-- parent's numbers somewhere `recomputeMealTotals` does not look, which sounds
+-- safe right up until a later query joins it.
+--
+-- ── `ON DELETE CASCADE`, NOT `SET NULL` ──
+--
+-- A component has no meaning outside its composite — the argument 0014 already
+-- records for `meal_items → meals` ("an item has no meaning outside its meal,
+-- like workout_sets"). The delete-semantics rule in CLAUDE.md §9 that prefers
+-- SET NULL protects EXECUTION HISTORY from CATALOG CHURN; a pizza's cheese is
+-- not execution history in its own right.
+--
+-- ── WHY A FLAG AS WELL AS A PARENT ID ──
+--
+-- "Is this row a composite?" is answerable without the flag —
+-- `EXISTS (SELECT 1 FROM meal_items c WHERE c.parent_item_id = mi.id)` — and a
+-- derived answer cannot drift. The flag is here for one reason, and it is about
+-- the SUMS rather than about convenience: `recomputeMealTotals` and
+-- `partialMealMetrics` need a cheap, indexable predicate that is true of a
+-- parent even in the instant between deleting its last child and deleting the
+-- parent, and a correlated subquery inside a totals recompute is the shape most
+-- likely to be copied wrong by the next query that needs one. The cost is a
+-- denormalisation, governed the way every other denormalisation here is: the
+-- repository is the only writer.
+--
+-- ── THE INVARIANTS (repository-maintained, test-pinned) ──
+--
+--   1. is_composite = 1  ⟹  parent_item_id IS NULL.
+--      ONE LEVEL ONLY. The pizza's cheese does not decompose. This is what
+--      keeps C4 a composite-FOODS feature rather than the general modifier
+--      system the owner ruled out, and it is why no sum here needs a recursive
+--      CTE and no screen needs a variable indent.
+--   2. is_composite = 1  ⟹  kcal, protein_g, carbs_g, fat_g, fiber_g, micros
+--      and confidence are all NULL. **The parent is a HEADER, not a row of
+--      numbers.** See the fail-safe note below.
+--   3. parent_item_id IS NOT NULL ⟹ the parent exists, sits in the same
+--      meal_id, and has is_composite = 1. A component orphaned into another
+--      meal is a corrupt ledger.
+--   4. A composite always has ≥ 1 component. Removing the last one removes the
+--      composite — a header over nothing is a row named "Pepperoni pizza" with
+--      no numbers, indistinguishable from an unpriced meal.
+--   5. A composite's displayed amount is the sum of its components' amounts
+--      when every component has one, and NULL otherwise. Never a fabricated
+--      total; the same NULL discipline as `sumOrNull`.
+--
+-- ── THE ROLL-UP: CHILDREN ONLY, AND FAIL-SAFE ABOUT IT ──
+--
+-- The parent's stored macros are NULL (invariant 2) **and** every sum
+-- additionally filters `is_composite = 0`. Two belts, because the risk is
+-- asymmetric:
+--
+--   · a NULL-macro parent means a query that forgets the rule UNDER-counts by
+--     zero — sum() skips NULL. It fails safe.
+--   · a sum-carrying parent means a forgetful query silently DOUBLES the pizza
+--     in the day's calories. It fails dangerous, on the number this whole app
+--     is built on.
+--
+-- So the storage makes the dangerous mistake impossible, and the filter is
+-- added anyway so the intent is legible at every call site. The number the
+-- reader SEES on a collapsed composite is derived at read time and never
+-- stored, so the headline cannot disagree with the parts: it IS the parts.
+--
+-- The filter is not only about the totals. `partialMealMetrics` marks a meal
+-- "knowingly short" when any item has a NULL kcal — and a macro-less header
+-- trips that on every metric, which would drop the Eat tab out of countdown
+-- mode for a meal that is in fact fully priced. That regression would have
+-- shipped silently; db/nutrition-v2.test.mjs §31 is the guard.
+--
+-- ── NO CROSS-COLUMN CHECK, AND THAT IS 0034's FINDING ──
+--
+-- The obvious constraint is `CHECK (is_composite = 0 OR kcal IS NULL)`. 0034
+-- records that SQLite VALIDATES an ADD COLUMN CHECK against existing rows: such
+-- a constraint passes on an empty fixture and rejects the whole ALTER on a
+-- populated one — the owner's phone. Here the new columns default to 0/NULL so
+-- it would in fact pass, but the precedent's real lesson holds: validate
+-- against a populated fixture (`npm run db:validate`, and db/migrate.test.mjs
+-- stages a populated database and migrates it forward), and put the invariant
+-- where it can say something useful when it breaks — the repository and the
+-- tests.
+--
+-- Numbered 0058, having been written as 0049 — the number the backlog reserved
+-- for C4, which was free at branch time and still is. It was renumbered at the
+-- moment of commit because `main`'s head had moved 0047 → 0054 in the meantime
+-- and `claude/c12-c13-exercise` holds 0055–0056 unmerged; the runner is
+-- forward-only and SILENTLY SKIPS any file at or below a device's
+-- `PRAGMA user_version`, so a "free" number below the head is stranded forever
+-- rather than merely late. 0057 is this branch's own C3 queue. The full
+-- argument is in 0057's header, once. The runner stamps user_version = 58.
+--
+-- Conventions per CLAUDE.md §9: no new table, index-only addition; 0014's
+-- AFTER UPDATE trigger already covers every column on `meal_items`, including
+-- ones added later. Run `npm run db:bundle` after this file changes.
+-- ============================================================================
+
+-- The composite this row is a part of. NULL for every row that exists today,
+-- and for every top-level row forever.
+ALTER TABLE meal_items ADD COLUMN parent_item_id text
+  REFERENCES meal_items (id) ON DELETE CASCADE;
+
+-- 1 when this row is a composite HEADER: a name over its parts, carrying no
+-- numbers of its own. Single-column CHECK with a satisfying DEFAULT, so the
+-- ALTER cannot fail on a populated table (0034's trap).
+ALTER TABLE meal_items ADD COLUMN is_composite integer NOT NULL DEFAULT 0
+  CHECK (is_composite IN (0, 1));
+
+-- The assembler's index: every read of a meal's items groups components under
+-- their parent.
+CREATE INDEX meal_items_parent_idx ON meal_items (parent_item_id);

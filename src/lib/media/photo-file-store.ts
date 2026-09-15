@@ -42,6 +42,16 @@ export type PhotoFileStore = {
   remove(name: string): boolean;
   /** Write a base64 JPEG under `name`; false if nothing landed. */
   write(name: string, base64Jpeg: string): boolean;
+  /**
+   * The file's bytes back as base64, or null when it is missing or unreadable.
+   *
+   * The one reader in the codebase is the offline estimate queue (0057), which
+   * has to hand a plate photographed yesterday to the model today. Every other
+   * consumer of a stored image points an `<Image>` at {@link PhotoFileStore.uri}
+   * instead — a base64 round trip through JS for something the native image
+   * loader can read off disk would be several megabytes of string for nothing.
+   */
+  readBase64(name: string): string | null;
   /** A `file://` URI an `<Image>` can load, or null. */
   uri(name: string): string | null;
 };
@@ -52,6 +62,10 @@ type FileHandle = {
   exists: boolean;
   create(options?: { intermediates?: boolean; overwrite?: boolean }): void;
   write(content: string, options?: { encoding?: 'utf8' | 'base64' }): void;
+  /** The file's bytes as base64. Present on the File API this app targets;
+   *  typed optional and feature-checked anyway, because a build predating it
+   *  must degrade to "no bytes" rather than throw inside a sweep. */
+  base64?(): string;
   delete(): void;
 };
 type DirectoryHandle = {
@@ -159,6 +173,16 @@ export function nativeStoreIn(directory: string): PhotoFileStore | null {
         return f.exists;
       } catch {
         return false;
+      }
+    },
+    readBase64(name) {
+      try {
+        const f = file(name);
+        if (!f.exists || typeof f.base64 !== 'function') return null;
+        const data = f.base64();
+        return typeof data === 'string' && data.length > 0 ? data : null;
+      } catch {
+        return null;
       }
     },
     uri(name) {

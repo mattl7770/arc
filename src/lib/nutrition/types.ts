@@ -177,6 +177,14 @@ export type MealItemRow = {
   /** Per-portion micronutrient snapshot (JSON), scaled from the food at log
    * time — added in 0014. NULL when the food had no micro data. */
   micros: JsonText | null;
+  /** The composite this row is a PART of (0058), or NULL for a top-level row.
+   * One level only — a component never has components of its own. */
+  parent_item_id: string | null;
+  /** 1 when this row is a composite HEADER: a name over its parts, carrying no
+   * numbers of its own. Every sum over `meal_items` filters it out, and its
+   * macro columns are NULL as well — two belts, because a header that carried
+   * its children's sum would let a forgetful query DOUBLE the pizza. */
+  is_composite: SqliteBool;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -185,9 +193,10 @@ export type MealItemRow = {
  * (NULL when the item was free-form or its catalog food was deleted). */
 export type MealItemWithServing = MealItemRow & { food_serving_name: string | null };
 
-/** What the app supplies per item when logging; macros already scaled to the
- * portion (src/lib/nutrition/servings.ts owns that math). */
-export type NewMealItem = {
+/** The columns every supplied item carries — a top-level item, or one part of a
+ * composite. Macros are already scaled to the portion
+ * (src/lib/nutrition/servings.ts owns that math). */
+export type NewMealItemFields = {
   food_id?: string | null;
   name: string;
   amount?: number | null;
@@ -203,6 +212,22 @@ export type NewMealItem = {
   confidence?: EstimateConfidence | null;
   /** Per-portion micronutrient snapshot as a JSON string (serializeMicros). */
   micros?: JsonText | null;
+};
+
+/** One part of a composite (0058). Deliberately NOT nestable: invariant 1 is
+ *  one level only, and the type is where that is easiest to keep true. */
+export type NewMealItemComponent = NewMealItemFields;
+
+/**
+ * What the app supplies per item when logging.
+ *
+ * With `components` present and non-empty the row becomes a COMPOSITE HEADER
+ * (0058): its own macros are ignored and stored NULL, and the parts are
+ * inserted beneath it. A flat list of plain items is unchanged — which is why
+ * every existing caller needed no edit.
+ */
+export type NewMealItem = NewMealItemFields & {
+  components?: NewMealItemComponent[];
 };
 
 /** A meal plus its items, logged atomically; the meal's macro columns are
@@ -355,4 +380,47 @@ export type NutritionHistoryDay = {
     fat_g: number | null;
     fiber_g: number | null;
   } | null;
+};
+
+// --- Queued AI estimates (0057) -----------------------------------------------
+
+/**
+ * Which model call is waiting. `'photo'` and `'text'` create a meal that does
+ * not exist yet (a placeholder the user can see); `'revise'` corrects a meal
+ * that already has items.
+ */
+export type PendingEstimateKind = 'photo' | 'text' | 'revise';
+
+/**
+ * A `pending_estimates` row — one AI request that could not be made because the
+ * network was gone, kept until it can be (0057, backlog C3).
+ *
+ * `file_name` is a BASE NAME inside the pending-estimate directory, never a
+ * path (0033's rule), and the directory is deliberately not `meal-photos`:
+ * that one is swept against `meal_photos` rows on every app open and would
+ * delete a queued file as an orphan.
+ */
+export type PendingEstimateRow = {
+  id: string;
+  meal_id: string;
+  kind: PendingEstimateKind;
+  /** The description, the correction, or extra context for a photo. */
+  description: string | null;
+  file_name: string | null;
+  width: number | null;
+  height: number | null;
+  attempts: number;
+  last_error: string | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
+/** What the estimator screens supply when a call could not be made. The meal
+ *  (or its placeholder) is created by the repository in the same transaction. */
+export type NewPendingEstimate = {
+  kind: PendingEstimateKind;
+  description?: string | null;
+  file_name?: string | null;
+  width?: number | null;
+  height?: number | null;
 };

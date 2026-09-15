@@ -16,6 +16,7 @@ import { getDb } from '@/lib/db/client';
 import { observeTimezone } from '@/lib/db/repositories/day-meta';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
 import { runMealPhotoSweep } from '@/lib/media/meal-photo-store';
+import { runPendingEstimateSweep } from '@/lib/media/pending-estimate-store';
 import { runProgressPhotoSweep } from '@/lib/media/progress-photo-store';
 import { runRecipePhotoSweep } from '@/lib/media/recipe-photo-store';
 import {
@@ -23,6 +24,7 @@ import {
   registerNotificationRouting,
   syncReminderNotifications,
 } from '@/lib/notifications/reminders';
+import { runEstimateQueueDrain } from '@/lib/nutrition/estimate-queue';
 import { useCoachPassRunner } from '@/hooks/use-coach-pass';
 
 /**
@@ -114,6 +116,11 @@ export default function RootLayout() {
   //    timer against the file system for the life of the process. Synchronous
   //    (the expo-file-system File API is) and total: it swallows everything,
   //    including a database that has not reached 0033;
+  //  - reconcile the queued-estimate directory and DRAIN the offline estimate
+  //    queue (0057, backlog C3) — an AI estimate made with no network is kept
+  //    as a placeholder meal plus a request, and this is where the request is
+  //    finally made. Runs on open and on every foreground, no-ops on the empty
+  //    queue of an ordinary day, and never throws;
   //  - write the encrypted database snapshot if the last one is more than a day
   //    old, and again on every foreground — same shape as the health sync above
   //    and for the same reason: a durability net that needs a visit to Settings
@@ -134,6 +141,12 @@ export default function RootLayout() {
     // readings — so a missing JPEG is reported and drawn as an authored empty,
     // never allowed to erase the history. See the sweep's own header.
     runProgressPhotoSweep(getDb());
+    // And the queued-estimate directory (0057). One direction only: a file no
+    // queue row claims is an orphan and goes, but a ROW whose file has vanished
+    // keeps its row — it still carries the words and the meal, and the drainer
+    // degrades it to a text request rather than deleting the user's meal over a
+    // missing JPEG.
+    runPendingEstimateSweep(getDb());
     // Show notifications that fire while ARC is open (iOS drops them silently
     // otherwise) and route a tapped one where it belongs, instead of dumping
     // the user on Home with no idea why the phone buzzed.
@@ -147,6 +160,7 @@ export default function RootLayout() {
     // tolerance. The foreground listener below stays immediate — by then the
     // app is idle-resumed, not racing to first paint.
     const backupTimer = setTimeout(() => void autoBackupIfDue(getDb()), 4000);
+    void runEstimateQueueDrain(getDb());
     const stopHealthSync = registerForegroundHealthSync(getDb());
     // The backup's own foreground listener. It is written out here rather than
     // hidden behind a `registerForegroundBackup` helper because
@@ -169,6 +183,13 @@ export default function RootLayout() {
       } catch (error) {
         console.warn('[timezone] could not record the offset', error);
       }
+
+      // …and the offline estimate queue (0057, backlog C3). React Native has no
+      // reconnect event without a netinfo dependency, and returning to the app
+      // is the moment that matters anyway: a drain nobody is present for helps
+      // nobody, and every drain is a no-op on the empty queue of an ordinary
+      // day. Re-entrancy is guarded inside runEstimateQueueDrain.
+      void runEstimateQueueDrain(getDb());
     });
     const stopRouting = registerNotificationRouting((route) => {
       // Active reminders live on the Coach tab (its RemindersCard), so both

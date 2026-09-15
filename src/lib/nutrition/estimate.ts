@@ -35,23 +35,50 @@ export type EstimateInput =
   | { kind: 'text'; description: string }
   | { kind: 'photo'; base64Jpeg: string; mediaType: 'image/jpeg'; description?: string };
 
-export type MealEstimateItem = {
+/** One part of a composite dish (0058, backlog C4) — a plain priced row that
+ *  happens to live under a header. One level only: a part has no parts. */
+export type MealEstimateComponent = {
   name: string;
-  /** Estimated portion in {@link MealEstimateItem.unit}; null when the model can
-   * only price energy. */
   amount: number | null;
-  /** What the model judged this item to be measured in — `'ml'` when it decided
-   * the item is a DRINK, `'g'` otherwise and whenever it said nothing usable
-   * (0047, backlog B2). Nothing downstream converts between the two. */
   unit: AmountUnit;
   kcal: number;
   protein_g: number;
   carbs_g: number;
   fat_g: number;
   fiber_g: number | null;
+  /** Inherited from the dish the model priced — it stated one confidence for
+   *  the pizza, and that is as true of the cheese as of the crust. */
+  confidence: EstimateConfidence;
+  foodId: string | null;
+  micros: JsonText | null;
+};
+
+export type MealEstimateItem = {
+  name: string;
+  /** Estimated portion in {@link MealEstimateItem.unit}; null when the model can
+   * only price energy — and always null on a composite HEADER, whose amount is
+   * derived from its parts. */
+  amount: number | null;
+  /** What the model judged this item to be measured in — `'ml'` when it decided
+   * the item is a DRINK, `'g'` otherwise and whenever it said nothing usable
+   * (0047, backlog B2). Nothing downstream converts between the two. */
+  unit: AmountUnit;
+  /**
+   * The item's own energy — and **null on a composite header** (0058). A header
+   * is a name over its parts, not a row of numbers: one fact gets one number,
+   * and a headline that cannot disagree with its parts is one that is derived
+   * from them. Every reader must branch on {@link MealEstimateItem.components}
+   * rather than treating a null as a zero.
+   */
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  fiber_g: number | null;
   confidence: EstimateConfidence;
   /** Set when the item was grounded to a catalog food (macros re-priced from
-   * its per-100 g values); null means raw model numbers. */
+   * its per-100 g values); null means raw model numbers. Never set on a
+   * composite header — a dish is not a catalog food. */
   foodId: string | null;
   /**
    * Per-portion micronutrient snapshot (JSON), or null when nothing was
@@ -61,6 +88,80 @@ export type MealEstimateItem = {
    * estimated (backlog A8). Null is "not recorded" and never a zero.
    */
   micros: JsonText | null;
+  /**
+   * The parts of a composite dish — at most 4, capped by the parser rather than
+   * by hoping (0058, backlog C4). Null for a plain item, which is almost every
+   * item. Non-empty means this row is a HEADER and carries no macros.
+   */
+  components: MealEstimateComponent[] | null;
+};
+
+/** Does this estimate item stand over parts? The one predicate every reader
+ *  branches on, so "null kcal" is never mistaken for "zero kcal". */
+export function isCompositeEstimateItem(item: MealEstimateItem): boolean {
+  // `Array.isArray` rather than `!== null`: an estimate built by hand — a test
+  // fixture, a future caller — omits the key entirely, and an undefined must
+  // read as "a plain item", never crash a grounding pass.
+  return Array.isArray(item.components) && item.components.length > 0;
+}
+
+/**
+ * What choosing one button answer DOES to the estimate — a tiny closed
+ * vocabulary the parser can validate (0058-adjacent, backlog C5).
+ *
+ * This is a **wire format for what the model decided**, not a decision table.
+ * The model still decides whether to ask, what to ask, which answers are
+ * plausible and what each implies; these four shapes are only how it says so.
+ * That is the same relationship `MealEstimate`'s JSON already has to the
+ * estimate itself, and it is what keeps ARC's standing rule intact — judgment
+ * lives in the model, never in a rule table.
+ *
+ * Because the effect travels WITH the estimate, answering is pure on-device
+ * arithmetic over the review rows: no second round trip, instant, and it works
+ * with the network gone once the first reply has landed.
+ */
+export type QuestionEffect =
+  /** Multiply that item's portion and macros — "how many shots?" */
+  | { kind: 'scale_item'; name: string; factor: number }
+  /**
+   * Set that item's portion outright, in the item's OWN unit — "small, medium
+   * or large?" on a latte's milk is millilitres, not grams. The spike called
+   * this `set_grams`; `ml` landed (0047) between the design and the build, and
+   * a key named for one unit describing a number in another is exactly the lie
+   * that migration renamed three columns to avoid.
+   */
+  | { kind: 'set_amount'; name: string; amount: number }
+  /** Add a whole item — "was there dressing?" → yes, ~30 g vinaigrette. */
+  | {
+      kind: 'add_item';
+      name: string;
+      amount: number | null;
+      unit: AmountUnit;
+      kcal: number;
+      protein_g: number;
+      carbs_g: number;
+      fat_g: number;
+    }
+  /** Drop an item — "did you eat the bun?" → no. */
+  | { kind: 'remove_item'; name: string };
+
+/** One button answer, carrying the effect of choosing it. */
+export type QuestionOption = { label: string; effect: QuestionEffect };
+
+/**
+ * One clarifying question (backlog C5). **Usually absent** — most meals need
+ * none, and the prompt says so twice.
+ */
+export type EstimateQuestion = {
+  id: string;
+  /** The question, as a sentence: "How many shots?" */
+  ask: string;
+  /** 2–4 button answers. A question left with fewer than two is dropped — one
+   *  button is not a question. */
+  options: QuestionOption[];
+  /** Whether a typed answer is offered behind a click. It is the ONE path that
+   *  costs a second model call, and the photo is never resent. */
+  allowOther: boolean;
 };
 
 export type MealEstimate = {
@@ -69,6 +170,13 @@ export type MealEstimate = {
   items: MealEstimateItem[];
   /** Model-stated caveats worth showing in review ("dressing not visible"). */
   notes: string | null;
+  /**
+   * Up to three things the model would like to know, each answerable with a
+   * button (backlog C5). Empty is the norm. **An unanswered question never
+   * blocks Save** — the items already assume the most likely answer, so
+   * skipping costs accuracy, not coherence.
+   */
+  questions: EstimateQuestion[];
 };
 
 /** Thrown when no model key is configured (the UI points the user to Settings). */
@@ -76,6 +184,22 @@ export class MealEstimationUnavailableError extends Error {
   constructor() {
     super('Meal estimation needs a model key — set one in the Coach settings.');
     this.name = 'MealEstimationUnavailableError';
+  }
+}
+
+/**
+ * Thrown by {@link parseMealEstimate} when the model answered and the answer
+ * was unusable — no JSON, bad JSON, or no item with a name.
+ *
+ * A named class rather than a bare `Error` because the offline queue (0057) has
+ * to tell a reply it could not read from a request that never left the phone:
+ * the first will fail identically tomorrow, the second is exactly what waiting
+ * fixes. See `isQueueableFailure`.
+ */
+export class MealEstimateParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MealEstimateParseError';
   }
 }
 
@@ -136,10 +260,14 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '',
   'Rules:',
   '- Itemize the meal: one entry per distinct food, not one blob.',
+  '- A named prepared dish whose parts a person would change separately (a pizza, a burger,',
+  '  a salad with dressing) comes back as ONE item carrying a "components" array of at most',
+  '  4 parts, and NO macros of its own. Everything else is a plain item with no',
+  '  "components". Never decompose a single ingredient or a packaged product.',
   '- Estimate each portion from visual cues (glass and plate size, utensils) and any text,',
-  '  as "amount" plus the "unit" it is measured in: "ml" for anything DRUNK — coffee,',
-  '  tea, juice, soda, beer, wine, milk, a smoothie or shake — and "g" for everything',
-  '  eaten. Estimate a drink in millilitres directly; never convert it to grams.',
+  '  as "amount" plus the "unit" it is measured in: "ml" for anything DRUNK (coffee, beer,',
+  '  a smoothie), "g" for everything eaten. Estimate a drink in millilitres directly;',
+  '  never convert it to grams.',
   '- Give kcal and protein/carbs/fat grams per item; fiber grams when inferable, else null.',
   '  Those are always grams of macronutrient, whatever the portion unit is.',
   '- Set per-item confidence: "high" for clearly identified packaged/simple foods, "medium"',
@@ -147,20 +275,72 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '- Account for likely hidden fats (cooking oil, butter, dressing) and say so in notes when',
   '  they materially affect the estimate.',
   '- Give sodium and caffeine in milligrams, under "micros", for any item that plausibly',
-  '  carries them: sodium for anything salted, cured, canned, processed or restaurant-made;',
-  '  caffeine for coffee, espresso drinks, tea, matcha, cola, energy drinks, dark chocolate,',
-  '  pre-workout. OMIT the key when you would be guessing — an absent key means "not',
-  '  recorded" and a 0 means "measured none", and they are not the same claim.',
+  '  carries them (salted, cured or restaurant-made; coffee, tea, cola, dark chocolate).',
+  '  OMIT the key when you would be guessing — an absent key means "not recorded" and a 0',
+  '  means "measured none", and they are not the same claim.',
   '- Prefer underestimating an unknown over inventing precision.',
+  '',
+  'Questions (optional, and USUALLY ABSENT):',
+  '- Ask nothing unless an answer would move the estimate by more than ~15% of its energy or',
+  '  ~10 g of protein. Most meals need no question at all; an empty list is the norm.',
+  '- Ask only what the person was there for — how many shots, how big the glass, how much was',
+  "  left. Never what happened in a kitchen they did not stand in (a restaurant's oil, the",
+  '  butter under a steak). Never what the photo already answers.',
+  '- At most 3, and one good question beats three weak ones. Each carries 2-4 button answers,',
+  '  and each answer carries the EFFECT of choosing it, as one of:',
+  '  {"scale_item": name, "factor": n} · {"set_amount": name, "amount": n} ·',
+  '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g}}',
+  '- Name the most likely answer first; the items you return must already assume it.',
   '',
   'Respond with ONLY a JSON object, no prose, matching:',
   '{"title": string, "items": [{"name": string, "amount": number|null, "unit": "g"|"ml",',
   ' "kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number,',
   ' "fiber_g": number|null,',
   ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
-  ' "confidence": "high"|"medium"|"low"}], "notes": string|null}',
+  ' "confidence": "high"|"medium"|"low",',
+  ' "components": [{"name": string, "amount": number|null, "unit": "g"|"ml", "kcal": number,',
+  '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null}]|null}],',
+  ' "notes": string|null,',
+  ' "questions": [{"id": string, "ask": string, "allow_other": boolean,',
+  '   "options": [{"label": string, "effect": <one of the four above>}]}]}',
   'Micro amounts are for the portion you estimated, not per 100.',
 ].join('\n');
+
+/**
+ * The ceiling on {@link MEAL_ESTIMATION_SYSTEM_PROMPT}, in the estimator
+ * db/coach-eval.test.mjs §6 uses (~3.6 chars per prose token).
+ *
+ * **This prompt had no guard at all until C4/C5, and it drifted 296 → 449
+ * tokens in a single day** — backlog A8 (caffeine / fiber / sodium) merged five
+ * lines and a schema key, a 52% growth nobody noticed, because the two Coach
+ * ceilings measure `buildCoachSystemPrompt` and `toWireTools(COACH_TOOLS)` and
+ * the estimator is neither: it is a different system prompt on a tool-less turn
+ * (`tools: []`).
+ *
+ * So the number is here, it is asserted in db/nutrition-v2.test.mjs against
+ * BOTH estimator prompts, and the rule the Coach's own budget note states
+ * applies to it verbatim: **the next addition trims rather than raises it.**
+ *
+ * THE ACCOUNTING for the round that set it (C4 + C5, 2026-09-14):
+ *
+ *   542  `main` at branch point (449 + `ml`)
+ *   +149 C4: the composite rule, and "components" on the schema line
+ *   +279 C5: the question rules, and "questions" on the schema line
+ *   −48  TRIMMED IN THE SAME ROUND, because the rule above binds this round
+ *        too. Three enumerations became three examples each, with no rule
+ *        lost: the drinks list (coffee/tea/juice/soda/beer/wine/milk/smoothie
+ *        → coffee, beer, a smoothie), the sodium and caffeine lists, and the
+ *        composite rule's five dishes → three. Examples teach; a catalogue of
+ *        examples only teaches once.
+ *   ---
+ *   922, against 1,000. **78 tokens of headroom.**
+ *
+ * What is left to cut, when that runs out and it is genuinely needed: the
+ * confidence bullet's three definitions could become two, and the hidden-fats
+ * bullet overlaps the "prefer underestimating" one. Both are real rules, so
+ * neither is free — which is the point of a ceiling.
+ */
+export const ESTIMATOR_PROMPT_CEILING = 1000;
 
 /**
  * Build the model request for a meal estimate — the exact shape the Coach
@@ -207,6 +387,173 @@ function num(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
+/** At most this many parts hang off one composite (0058). A hard number, and
+ *  the PARSER enforces it rather than the prompt hoping: a nine-row pizza is a
+ *  data dump, not a record you can read at a glance. */
+export const MAX_COMPOSITE_COMPONENTS = 4;
+
+/**
+ * The model's `components` array, validated into parts — or null when there is
+ * nothing usable, which is the overwhelmingly common case.
+ *
+ * Every part inherits the dish's `confidence`: the model stated one confidence
+ * for the pizza, and that is as true of the cheese as of the crust. Asking for
+ * a per-part confidence would cost tokens for a number that would only ever
+ * repeat the parent's.
+ */
+function parseComponents(
+  raw: unknown,
+  confidence: EstimateConfidence
+): MealEstimateComponent[] | null {
+  if (!Array.isArray(raw)) return null;
+  const parts: MealEstimateComponent[] = [];
+  for (const entry of raw) {
+    if (parts.length >= MAX_COMPOSITE_COMPONENTS) break;
+    if (typeof entry !== 'object' || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    const name = typeof e.name === 'string' ? e.name.trim() : '';
+    if (name === '') continue;
+    parts.push({
+      name,
+      amount: num(e.amount) ?? num(e.grams),
+      unit: amountUnit(e.unit),
+      kcal: num(e.kcal) ?? 0,
+      protein_g: num(e.protein_g) ?? 0,
+      carbs_g: num(e.carbs_g) ?? 0,
+      fat_g: num(e.fat_g) ?? 0,
+      fiber_g: num(e.fiber_g),
+      confidence,
+      foodId: null,
+      micros: serializeMicros(coerceMicros(e.micros)),
+    });
+  }
+  // A single part is not a composite — it is the item itself, wearing a header.
+  // Collapsing it here keeps invariant 4 ("a composite always has ≥ 1
+  // component") from becoming "a composite that is only ever one component",
+  // which is a disclosure chevron over nothing worth disclosing.
+  return parts.length >= 2 ? parts : null;
+}
+
+/** The owner said three. The model is not the enforcer of that (backlog C5). */
+export const MAX_ESTIMATE_QUESTIONS = 3;
+
+/**
+ * One option's effect, or null when it is not usable.
+ *
+ * `known` is the set of item names the estimate actually returned. **The
+ * commonest model error is an effect naming an item it renamed**, so an effect
+ * pointing at nothing is dropped rather than applied to nothing. `add_item` is
+ * the exception: it names an item that does not exist yet, which is the point.
+ *
+ * Bounds are the schema's own: `CHECK (amount > 0)`, and the same ≤ 5,000
+ * ceiling the review screen's `parseAmount` applies.
+ */
+function parseEffect(raw: unknown, known: Set<string>): QuestionEffect | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const e = raw as Record<string, unknown>;
+  const named = (value: unknown): string | null => {
+    const name = typeof value === 'string' ? value.trim() : '';
+    return name !== '' && known.has(name.toLowerCase()) ? name : null;
+  };
+  const positive = (value: unknown): number | null => {
+    const n = num(value);
+    return n != null && n > 0 && n <= 5000 ? n : null;
+  };
+
+  if (e.scale_item !== undefined) {
+    const name = named(e.scale_item);
+    const factor = num(e.factor);
+    // A factor of 0 is "remove_item" said badly, and a negative one is
+    // meaningless; neither is silently reinterpreted.
+    if (name === null || factor == null || factor <= 0 || factor > 50) return null;
+    return { kind: 'scale_item', name, factor };
+  }
+  if (e.set_amount !== undefined || e.set_grams !== undefined) {
+    // `set_grams` is read as a fallback for the same reason `grams` is read as
+    // a fallback for `amount`: a model reaching for the older word still lands
+    // on the row rather than being dropped.
+    const name = named(e.set_amount ?? e.set_grams);
+    const amount = positive(e.amount ?? e.grams);
+    if (name === null || amount == null) return null;
+    return { kind: 'set_amount', name, amount };
+  }
+  if (e.remove_item !== undefined) {
+    const name = named(e.remove_item);
+    return name === null ? null : { kind: 'remove_item', name };
+  }
+  if (typeof e.add_item === 'object' && e.add_item !== null) {
+    const a = e.add_item as Record<string, unknown>;
+    const name = typeof a.name === 'string' ? a.name.trim() : '';
+    if (name === '') return null;
+    const amount = num(a.amount) ?? num(a.grams);
+    return {
+      kind: 'add_item',
+      name,
+      amount: amount != null && amount > 0 && amount <= 5000 ? amount : null,
+      unit: amountUnit(a.unit),
+      kcal: num(a.kcal) ?? 0,
+      protein_g: num(a.protein_g) ?? 0,
+      carbs_g: num(a.carbs_g) ?? 0,
+      fat_g: num(a.fat_g) ?? 0,
+    };
+  }
+  // An unknown effect key is dropped — the vocabulary is closed on purpose.
+  return null;
+}
+
+/**
+ * The model's `questions`, put through the three gates (backlog C5 §3.5).
+ *
+ * 1. **The prompt** is the judgment gate, and the only one that can be smart.
+ * 2. **A deterministic confidence gate, here:** if EVERY item came back
+ *    `confidence: 'high'`, drop all questions. A model certain about every item
+ *    and still wanting to ask has contradicted itself, and a certain estimate
+ *    is the one case where an extra tap is pure friction.
+ * 3. **A hard cap**, after the drops — so three good questions survive a fourth
+ *    malformed one rather than being crowded out by it.
+ */
+function parseQuestions(raw: unknown, items: MealEstimateItem[]): EstimateQuestion[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  if (items.every((item) => item.confidence === 'high')) return [];
+
+  // Components are addressable too: "was there dressing on the salad" may want
+  // to scale a part rather than the dish.
+  const known = new Set<string>();
+  for (const item of items) {
+    known.add(item.name.toLowerCase());
+    for (const part of item.components ?? []) known.add(part.name.toLowerCase());
+  }
+
+  const questions: EstimateQuestion[] = [];
+  for (const entry of raw) {
+    if (questions.length >= MAX_ESTIMATE_QUESTIONS) break;
+    if (typeof entry !== 'object' || entry === null) continue;
+    const q = entry as Record<string, unknown>;
+    const ask = typeof q.ask === 'string' ? q.ask.trim() : '';
+    if (ask === '') continue;
+    const options: QuestionOption[] = [];
+    for (const rawOption of Array.isArray(q.options) ? q.options : []) {
+      if (options.length >= 4) break;
+      if (typeof rawOption !== 'object' || rawOption === null) continue;
+      const o = rawOption as Record<string, unknown>;
+      const label = typeof o.label === 'string' ? o.label.trim() : '';
+      if (label === '') continue;
+      const effect = parseEffect(o.effect, known);
+      if (effect === null) continue;
+      options.push({ label, effect });
+    }
+    // One button is not a question.
+    if (options.length < 2) continue;
+    questions.push({
+      id: typeof q.id === 'string' && q.id.trim() !== '' ? q.id.trim() : `q${questions.length}`,
+      ask,
+      options,
+      allowOther: q.allow_other === true,
+    });
+  }
+  return questions;
+}
+
 /**
  * Parse and validate the model's JSON reply into a {@link MealEstimate}. Never
  * trusts the model's shape: unknown fields are dropped, missing macros default
@@ -222,16 +569,16 @@ export function parseMealEstimate(replyText: string): MealEstimate {
   const start = replyText.indexOf('{');
   const end = replyText.lastIndexOf('}');
   if (start === -1 || end <= start) {
-    throw new Error('Meal estimate reply contained no JSON object.');
+    throw new MealEstimateParseError('Meal estimate reply contained no JSON object.');
   }
   let raw: unknown;
   try {
     raw = JSON.parse(replyText.slice(start, end + 1));
   } catch {
-    throw new Error('Meal estimate reply was not valid JSON.');
+    throw new MealEstimateParseError('Meal estimate reply was not valid JSON.');
   }
   if (typeof raw !== 'object' || raw === null) {
-    throw new Error('Meal estimate reply was not a JSON object.');
+    throw new MealEstimateParseError('Meal estimate reply was not a JSON object.');
   }
   const obj = raw as Record<string, unknown>;
   const rawItems = Array.isArray(obj.items) ? obj.items : [];
@@ -244,33 +591,38 @@ export function parseMealEstimate(replyText: string): MealEstimate {
     const confidence: EstimateConfidence = CONFIDENCES.includes(e.confidence as EstimateConfidence)
       ? (e.confidence as EstimateConfidence)
       : 'low';
+    const components = parseComponents(e.components, confidence);
+    // A COMPOSITE HEADER keeps no numbers of its own — they are DROPPED, not
+    // reconciled (0058). One fact gets one number, and the headline is derived
+    // from the parts, so it cannot come to disagree with them.
     items.push({
       name,
       // `grams` is read as a fallback for `amount`: an older prompt's shape (and
       // a model that reaches for the word anyway) still lands on the row, as
       // grams, rather than silently becoming an unportioned item.
-      amount: num(e.amount) ?? num(e.grams),
+      amount: components ? null : (num(e.amount) ?? num(e.grams)),
       unit: amountUnit(e.unit),
-      kcal: num(e.kcal) ?? 0,
-      protein_g: num(e.protein_g) ?? 0,
-      carbs_g: num(e.carbs_g) ?? 0,
-      fat_g: num(e.fat_g) ?? 0,
-      fiber_g: num(e.fiber_g),
+      kcal: components ? null : (num(e.kcal) ?? 0),
+      protein_g: components ? null : (num(e.protein_g) ?? 0),
+      carbs_g: components ? null : (num(e.carbs_g) ?? 0),
+      fat_g: components ? null : (num(e.fat_g) ?? 0),
+      fiber_g: components ? null : num(e.fiber_g),
       confidence,
       foodId: null,
       // The model's own sodium/caffeine, put through the same vocabulary filter
       // as stored micros: unknown keys and non-numbers are dropped, and an item
       // that returned nothing usable serialises back to NULL rather than {}.
-      micros: serializeMicros(coerceMicros(e.micros)),
+      micros: components ? null : serializeMicros(coerceMicros(e.micros)),
+      components,
     });
   }
   if (items.length === 0) {
-    throw new Error('Meal estimate reply had no usable items.');
+    throw new MealEstimateParseError('Meal estimate reply had no usable items.');
   }
   const title =
     typeof obj.title === 'string' && obj.title.trim() !== '' ? obj.title.trim() : 'Meal';
   const notes = typeof obj.notes === 'string' && obj.notes.trim() !== '' ? obj.notes.trim() : null;
-  return { title, items, notes };
+  return { title, items, notes, questions: parseQuestions(obj.questions, items) };
 }
 
 /**
@@ -331,21 +683,27 @@ export async function estimateMeal(
 // until the user confirms it on the review screen — which matters more here
 // than for a new meal, because this one REPLACES a record that already exists.
 
+/** One row of the meal as the model is shown it. */
+export type MealRevisionItem = {
+  name: string;
+  amount: number | null;
+  unit: AmountUnit;
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  /** The item's stored micro snapshot, so sodium and caffeine can be shown to
+   * the model and carried back on an item it was not asked to change. */
+  micros?: JsonText | null;
+  /** The parts of a composite dish (0058) — printed indented beneath it, so a
+   *  correction to the pepperoni is a correction to a part the model can see. */
+  components?: MealRevisionItem[];
+};
+
 /** The meal as it stands, the way the model is shown it. */
 export type MealRevisionSubject = {
   name: string;
-  items: {
-    name: string;
-    amount: number | null;
-    unit: AmountUnit;
-    kcal: number | null;
-    protein_g: number | null;
-    carbs_g: number | null;
-    fat_g: number | null;
-    /** The item's stored micro snapshot, so sodium and caffeine can be shown to
-     * the model and carried back on an item it was not asked to change. */
-    micros?: JsonText | null;
-  }[];
+  items: MealRevisionItem[];
 };
 
 /**
@@ -371,6 +729,9 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '  restate a millilitre amount as grams.',
   '- A correction may remove an item, add one, rename one, or change its portion. Apply what',
   '  was actually said and nothing more.',
+  '- An item shown with parts indented under it is ONE composite dish. Return it as one item',
+  '  with those parts in "components" and NO macros of its own, unless the correction is that',
+  '  it was never a composite. A correction to one part changes that part only.',
   '- When a swap changes the cooking fat, carry the portion across sensibly (the same amount',
   '  of oil as there was butter) unless the user gave an amount.',
   '- Keep per-item confidence honest: an item the user has just corrected is usually more',
@@ -380,12 +741,26 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '  guessing, and for the portion stated rather than per 100 g.',
   '- Use the notes field to say what you changed, in one short sentence.',
   '',
+  'Questions (optional, and USUALLY ABSENT):',
+  '- Only when the correction itself left something ambiguous that would move the estimate by',
+  '  more than ~15% of its energy, and only what the person was there for — never what',
+  '  happened in a kitchen they did not stand in. An empty list is the norm.',
+  '- At most 3, each with 2-4 button answers, and each answer carrying the EFFECT of choosing',
+  '  it: {"scale_item": name, "factor": n} · {"set_amount": name, "amount": n} ·',
+  '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g}}',
+  '- Name the most likely answer first; the items you return must already assume it.',
+  '',
   'Respond with ONLY a JSON object, no prose, matching:',
   '{"title": string, "items": [{"name": string, "amount": number|null, "unit": "g"|"ml",',
   ' "kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number,',
   ' "fiber_g": number|null,',
   ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
-  ' "confidence": "high"|"medium"|"low"}], "notes": string|null}',
+  ' "confidence": "high"|"medium"|"low",',
+  ' "components": [{"name": string, "amount": number|null, "unit": "g"|"ml", "kcal": number,',
+  '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null}]|null}],',
+  ' "notes": string|null,',
+  ' "questions": [{"id": string, "ask": string, "allow_other": boolean,',
+  '   "options": [{"label": string, "effect": <one of the four above>}]}]}',
 ].join('\n');
 
 /** Build the revision request: the meal as it stands, then the correction. */
@@ -393,7 +768,7 @@ export function buildMealRevisionRequest(
   meal: MealRevisionSubject,
   instruction: string
 ): MealEstimationRequest {
-  const rows = meal.items.map((item) => {
+  const line = (item: MealRevisionItem, indent: string): string[] => {
     // Only the two micros the model is asked for. The rest of the vocabulary
     // comes off the catalog food at grounding time, so showing it here would
     // invite the model to restate numbers it never estimated.
@@ -410,10 +785,24 @@ export function buildMealRevisionRequest(
       micros.sodium_mg == null ? null : `sodium ${Math.round(micros.sodium_mg)} mg`,
       micros.caffeine_mg == null ? null : `caffeine ${Math.round(micros.caffeine_mg)} mg`,
     ].filter(Boolean);
-    // An unpriced item says so in words. A blank tail would read as zero, and
-    // the model would return zeros for it.
-    return `- ${item.name}${parts.length > 0 ? ` — ${parts.join(', ')}` : ' — no numbers recorded'}`;
-  });
+    // A composite header carries no numbers of its own (0058): it says how many
+    // parts it has, and the parts are printed beneath it. "no numbers recorded"
+    // would be a lie about a dish that is fully priced by its components.
+    const components = item.components ?? [];
+    const tail =
+      components.length > 0
+        ? ` — ${components.length} parts`
+        : parts.length > 0
+          ? ` — ${parts.join(', ')}`
+          : // An unpriced item says so in words. A blank tail would read as
+            // zero, and the model would return zeros for it.
+            ' — no numbers recorded';
+    return [
+      `${indent}- ${item.name}${tail}`,
+      ...components.flatMap((part) => line(part, `${indent}  `)),
+    ];
+  };
+  const rows = meal.items.flatMap((item) => line(item, ''));
   const text = [
     `Logged meal: ${meal.name}`,
     'Items as they stand:',
@@ -692,7 +1081,7 @@ function isConfidentMatch(itemNorm: string, foodNorm: string): boolean {
  * interface, so it's headless-testable.
  */
 export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEstimate {
-  const items = estimate.items.map((item) => {
+  const priceOne = <T extends MealEstimateItem | MealEstimateComponent>(item: T): T => {
     if (item.amount == null || item.amount <= 0) return item;
     const match: FoodRow | undefined = searchFoods(db, item.name, 1)[0];
     if (!match || !isConfidentMatch(normalizeFoodName(item.name), match.name_norm)) return item;
@@ -731,6 +1120,19 @@ export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEs
       micros: priced.micros ?? item.micros,
       foodId: match.id,
     };
+  };
+  const items = estimate.items.map((item) => {
+    // A COMPOSITE HEADER IS NEVER PRICED (0058). The seed catalog holds
+    // whole-dish archetypes — 'Pizza, cheese slice', 'Cheeseburger, fast food',
+    // 'Chicken burrito' — each one leading phrase away from what a model
+    // actually writes, so grounding a header would re-price the dish into
+    // numbers that contradict the parts drawn beneath it. The parts ARE
+    // grounded: a single-token name ("cheese", "crust") fails isConfidentMatch
+    // by design and keeps the model's numbers, which is the correct outcome.
+    if (isCompositeEstimateItem(item)) {
+      return { ...item, components: (item.components ?? []).map(priceOne) };
+    }
+    return priceOne(item);
   });
   return { ...estimate, items };
 }

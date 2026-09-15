@@ -1,6 +1,13 @@
 # C4 — Composite foods
 
-**Status:** design proposal, for owner approval. No code written.
+**Status: BUILT** (2026-09-14, branch `claude/c3-c5-estimator`). The owner took the recommended option at every question — (a) a composite is one item among many, (a) "ate half" halves the *corrected* value, (a) fraction chips plus an amount field — and the design below shipped as written, with four deltas recorded in `docs/nutrition-subapp.md` §12g:
+
+1. **It shipped as `0058`, not `0049` — and §3.1's warning is why.** The header below says *"reserving a number does not hold it… re-check at merge, not at authoring time"*, and that is exactly what happened: `main`'s head moved 0047 → 0054 while this branch was being written, and `claude/c12-c13-exercise` took 0055–0056. `0049` is **still unused on main**, which is the trap — the runner is forward-only and silently skips anything at or below a device's `user_version`, so a free-looking number below the head is stranded on the phone forever, with nothing failing in any test that starts from an empty database. Renumbered at the moment of commit; the full argument is in `0057`'s header.
+2. **It holds two columns, not three.** `resolved_by` on `meal_items` (§3.6) was **not** built: it is a provenance feature in its own right, not a composite one, and the owner's decision list did not carry it. The argument in §3.6 stands and is worth its own round.
+3. **The token table below was measured before `ml` landed (0047).** Against the real baseline — 542 tokens, not 449 — C4 cost **+149**, which is within a rounding error of the +153 predicted. The `ESTIMATOR_PROMPT_CEILING` §3.5 recommends was built, at 1,000, and guards **both** estimator prompts.
+4. **The two review screens now share one table** (`src/components/nutrition/estimate-review.tsx`) rather than each growing a copy of the tree.
+
+The original proposal follows unchanged.
 **Reserved migration:** `0049` (`docs/backlog-2026-09.md:70`). Head on `main` was `0044` when this was drafted and `0045` (`0045_workout_drafts.sql`) a few hours later — **re-check `git ls-tree main -- db/migrations/` at merge, not at authoring time.** Reserving a number does not hold it; the backlog records five collisions in two days, and A-phase work moved the head while this proposal was being written.
 **Citations verified against `main` at `950c846`.** `main` moves several times a day; if a line number below misses, the surrounding quote is the anchor.
 **Scope fence from the owner:** *specifically composite foods like pizza, **not** a general modifier system.*

@@ -343,10 +343,13 @@ const MACRO_CELL_LAST = 'flex-1';
  */
 function MealRowItem({
   meal,
+  estimatePending,
   first,
   onPress,
 }: {
   meal: MealRow;
+  /** A queued AI estimate owes this meal its numbers (0057). */
+  estimatePending: boolean;
   first: boolean;
   onPress: () => void;
 }) {
@@ -369,7 +372,15 @@ function MealRowItem({
           {/* A meal with no numbers says so, and says what to do about it — it
               is the reason the grid above may be showing eaten rather than
               left, and the two must not be discoverable only by inference. */}
-          {unrecorded ? (
+          {/* A meal waiting on a queued estimate says what it is waiting FOR.
+              It has no numbers, but "tap to fill it in" would be advice the
+              user cannot act on offline — and the em-dash on the right must
+              never be mistaken for a 0 kcal meal. */}
+          {estimatePending ? (
+            <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+              Estimate pending — offline
+            </Text>
+          ) : unrecorded ? (
             <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
               Nothing recorded — tap to fill it in
             </Text>
@@ -548,7 +559,8 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
   // Which of this file's two routes is rendering — passed in by the one that
   // knows (app/(tabs)/eat.tsx), never inferred. See the header note above.
   const isTabRoot = asTab;
-  const { meals, targets, partialMeals, kitchen, overTime, reload } = useNutrition();
+  const { meals, targets, partialMeals, pendingEstimates, kitchen, overTime, reload } =
+    useNutrition();
   const [logOpen, setLogOpen] = useState(false);
 
   const targetFor = (metric: DayMetric): number | null => {
@@ -785,6 +797,7 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                 <MealRowItem
                   key={meal.id}
                   meal={meal}
+                  estimatePending={pendingEstimates.has(meal.id)}
                   first={index === 0}
                   onPress={() => router.push({ pathname: '/meal-detail', params: { id: meal.id } })}
                 />

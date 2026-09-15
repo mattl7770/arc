@@ -4,12 +4,14 @@
  * pure AI-estimate helpers — against real SQLite via node:sqlite. Mirrors
  * db/foods.test.mjs; op-sqlite is never loaded. Run: npm run db:test.
  */
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
+import { ModelRequestError } from '../src/lib/ai/model-client.ts';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { createFood } from '../src/lib/db/repositories/foods.ts';
+import { createFood, getFood } from '../src/lib/db/repositories/foods.ts';
 import {
   createTemplate,
   deleteTemplate,
@@ -24,18 +26,42 @@ import {
   addMealItem,
   allMealPhotos,
   dayMicroTotals,
+  deleteMeal,
   getMeal,
   latestMealPhoto,
   listMealItems,
   logMeal,
+  listTodayMeals,
   logMealWithItems,
+  mealItemCounts,
   nutritionHistory,
+  partialMealMetrics,
+  relogMeal,
+  removeMealItem,
   replaceMealItems,
+  scaleCompositeItem,
   setNutritionTargets,
   todayTotals,
   updateMealItemPortion,
   updateMealTime,
 } from '../src/lib/db/repositories/nutrition.ts';
+import {
+  listPendingEstimates,
+  pendingEstimateForMeal,
+  pendingEstimateMealIds,
+  placeholderMealName,
+  queueMealRevision,
+  queueNewMealEstimate,
+} from '../src/lib/db/repositories/pending-estimates.ts';
+import {
+  drainEstimateQueue,
+  failureReason,
+  isQueueableFailure,
+} from '../src/lib/nutrition/estimate-queue.ts';
+import {
+  sweepPendingEstimatePhotos,
+  writePendingEstimatePhoto,
+} from '../src/lib/media/pending-estimate-store.ts';
 import {
   attachMealPhoto,
   deleteMealWithPhotos,
@@ -43,6 +69,15 @@ import {
   mealPhotoView,
   sweepMealPhotos,
 } from '../src/lib/media/meal-photo-store.ts';
+import { assembleMealItems } from '../src/lib/nutrition/composite.ts';
+import {
+  applyAnswer,
+  currentPortion,
+  reviewKcal,
+  rowsFromEstimate,
+  rowsToMealItems,
+} from '../src/lib/nutrition/review-rows.ts';
+import { dayFigure } from '../src/lib/nutrition/remaining.ts';
 import {
   buildFoodEntryRequest,
   buildMealEstimationRequest,
@@ -50,8 +85,11 @@ import {
   FOOD_ENTRY_SYSTEM_PROMPT,
   groundMealEstimate,
   MEAL_ESTIMATION_SYSTEM_PROMPT,
+  ESTIMATOR_PROMPT_CEILING,
   MEAL_REVISION_SYSTEM_PROMPT,
   parseFoodEntry,
+  MealEstimateParseError,
+  MealEstimationUnavailableError,
   parseMealEstimate,
 } from '../src/lib/nutrition/estimate.ts';
 import {
@@ -62,6 +100,7 @@ import {
   serializeMicros,
   sumMicros,
 } from '../src/lib/nutrition/micros.ts';
+import { lookupOffProduct, OffLookupError } from '../src/lib/nutrition/openfoodfacts.ts';
 import { itemForPortion, rescaleLoggedItem } from '../src/lib/nutrition/servings.ts';
 
 let pass = 0;
@@ -627,6 +666,7 @@ function fakeStore(initial = {}) {
       files.set(name, base64);
       return true;
     },
+    readBase64: (name) => files.get(name) ?? null,
     uri: (name) => (files.has(name) ? `file:///documents/meal-photos/${name}` : null),
   };
 }
@@ -1354,6 +1394,1134 @@ console.log('23c. the described entry is marked, and nothing is written before S
   saved.source === 'ai'
     ? ok('and when it IS saved it carries source=ai, so an inferred number never reads as typed')
     : bad('ai stamp', JSON.stringify(saved));
+}
+
+// === Offline food logging (0057, backlog C3) =================================
+//
+// Two halves, tested as two different kinds of claim:
+//
+//   · the catalog / template / manual path is offline BY CONSTRUCTION, which is
+//     a fact about the SOURCE (nothing on it calls fetch) and is asserted as
+//     one — a behavioural test would pass just as happily on a path that calls
+//     the network and swallows the failure;
+//   · the AI path QUEUES, which is a fact about behaviour and is walked end to
+//     end: offline → a visible placeholder → a restart → a reconnect → the
+//     items landing, with the placeholder never once reading 0 kcal.
+
+/** An estimate reply, as the model would send it. */
+const REPLY = JSON.stringify({
+  title: 'Chicken and rice',
+  items: [
+    {
+      name: 'Grilled chicken breast',
+      amount: 180,
+      unit: 'g',
+      kcal: 297,
+      protein_g: 56,
+      carbs_g: 0,
+      fat_g: 7,
+      fiber_g: 0,
+      confidence: 'high',
+    },
+    {
+      name: 'White rice',
+      amount: 200,
+      unit: 'g',
+      kcal: 260,
+      protein_g: 5,
+      carbs_g: 56,
+      fat_g: 1,
+      fiber_g: 1,
+      confidence: 'medium',
+    },
+  ],
+  notes: 'Cooking oil not visible; assumed a teaspoon.',
+});
+
+/** The network being gone, as `expo/fetch` actually reports it. */
+const offline = () => new TypeError('Network request failed');
+
+/** Estimators that answer, count their calls, and record what they were sent. */
+function fakeEstimators(reply = REPLY) {
+  const calls = [];
+  return {
+    calls,
+    estimate: async (input) => {
+      calls.push({ kind: 'estimate', input });
+      return parseMealEstimate(reply);
+    },
+    revise: async (meal, instruction) => {
+      calls.push({ kind: 'revise', meal, instruction });
+      return parseMealEstimate(reply);
+    },
+  };
+}
+
+/** Estimators that are still offline. */
+function deadEstimators() {
+  return {
+    estimate: async () => {
+      throw offline();
+    },
+    revise: async () => {
+      throw offline();
+    },
+  };
+}
+
+console.log('23. C3: the catalog and manual paths need no network at all');
+{
+  // A SOURCE assertion, deliberately. "Logging a food works offline" is only
+  // true if nothing on the path reaches for the network in the first place —
+  // a runtime test cannot tell that from a fetch whose failure is swallowed,
+  // and the swallowed one degrades silently the day someone adds a lookup.
+  const OFFLINE_PATH = [
+    'src/lib/db/repositories/foods.ts',
+    'src/lib/db/repositories/nutrition.ts',
+    'src/lib/db/repositories/meal-templates.ts',
+    'src/lib/nutrition/servings.ts',
+    'src/lib/nutrition/micros.ts',
+    'src/components/nutrition/log-sheet.tsx',
+    'app/food-search.tsx',
+    'app/food-new.tsx',
+    'app/meal-templates.tsx',
+  ];
+  const networked = OFFLINE_PATH.filter((file) => {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+    return /\bfetch\s*\(/.test(source) || /from '.*openfoodfacts'/.test(source);
+  });
+  networked.length === 0
+    ? ok(`all ${OFFLINE_PATH.length} catalog/manual modules are network-free at the source`)
+    : bad('a catalog/manual module reaches the network', networked.join(' · '));
+
+  // And the whole path runs, with no network in the room: create a food, price a
+  // portion, log it, read the day back.
+  const { db } = freshDb();
+  const foodId = createFood(db, {
+    name: 'Skyr',
+    kcal_100g: 63,
+    protein_g_100g: 11,
+    carbs_g_100g: 4,
+    fat_g_100g: 0.2,
+  });
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:00',
+    name: 'Breakfast',
+    items: [itemForPortion(getFood(db, foodId), { amount: 200 })],
+  });
+  near(todayTotals(db, TODAY).kcal, 126) && listMealItems(db, mealId).length === 1
+    ? ok('catalog → portion → logged meal → day total, with nothing to connect to')
+    : bad('offline catalog path', JSON.stringify(todayTotals(db, TODAY)));
+
+  // The one nutrition path that DOES use the network already degrades rather
+  // than throwing something raw into a screen: a rejecting fetch becomes an
+  // OffLookupError the scanner reads as "you're offline" (its ladder then falls
+  // back to manual entry). Confirmed here beside the rest of the offline story,
+  // because "the OFF lookup already degrades — confirm" is a C3 requirement.
+  let offErr = null;
+  try {
+    await lookupOffProduct('5060000000000', () => Promise.reject(offline()));
+  } catch (e) {
+    offErr = e;
+  }
+  offErr instanceof OffLookupError
+    ? ok('the Open Food Facts lookup degrades to a named error, never a raw throw')
+    : bad('OFF lookup does not degrade', String(offErr));
+}
+
+console.log('24. C3: an estimate made offline is QUEUED, and the meal is visible');
+{
+  const { db } = freshDb();
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '13:05', name: placeholderMealName('a chicken burrito and a lager') },
+    { kind: 'text', description: 'a chicken burrito and a lager' }
+  );
+
+  const meal = getMeal(db, mealId);
+  meal && meal.source === 'ai_suggested' && meal.name === 'a chicken burrito and a lager'
+    ? ok('the placeholder is in the day, named with the user’s own words')
+    : bad('placeholder meal', JSON.stringify(meal));
+
+  // THE 0-KCAL TRAP. A placeholder must never read as a meal that was measured
+  // at zero: NULL is "not recorded", 0 is "I ate nothing", and only one of them
+  // is true. The Eat tab draws NULL as an em-dash.
+  meal.kcal === null && meal.protein_g === null && meal.carbs_g === null && meal.fat_g === null
+    ? ok('…with NULL macros — never a fabricated 0 kcal')
+    : bad('placeholder carries numbers', JSON.stringify(meal));
+  const totals = todayTotals(db, TODAY);
+  totals.kcal === 0 && totals.mealCount === 1
+    ? ok('the day counts the meal but no energy (sum() skips NULL)')
+    : bad('day totals', JSON.stringify(totals));
+
+  const queued = pendingEstimateForMeal(db, mealId);
+  queued && queued.kind === 'text' && queued.attempts === 0 && queued.file_name === null
+    ? ok('the request is queued beside it, in one transaction')
+    : bad('queue row', JSON.stringify(queued));
+
+  pendingEstimateMealIds(db, TODAY).has(mealId)
+    ? ok('and the Eat tab can see which meals are waiting')
+    : bad('pendingEstimateMealIds missed the meal');
+
+  // A name the row can actually hold at phone width.
+  placeholderMealName(null) === 'Photographed meal' &&
+  placeholderMealName('   ') === 'Photographed meal' &&
+  placeholderMealName('x'.repeat(200)).length <= 61
+    ? ok('a wordless capture gets a plain name, and a paragraph is cut to one line')
+    : bad('placeholderMealName', placeholderMealName('x'.repeat(200)));
+}
+
+console.log('25. C3: which failures are worth waiting on');
+{
+  // The whole classifier, as a table. The dangerous mistake is the last row: an
+  // HTTP error means the API ANSWERED, so queueing it re-bills the same
+  // rejection tomorrow — and a parse failure will parse identically badly.
+  isQueueableFailure(offline())
+    ? ok('a transport failure (expo/fetch rejecting) queues')
+    : bad('network failure not queued');
+  isQueueableFailure(
+    new ModelRequestError(0, null, 'Model stream ended before the reply completed.')
+  )
+    ? ok('a stream that died mid-reply queues (status 0 = no HTTP response)')
+    : bad('status-0 ModelRequestError not queued');
+  !isQueueableFailure(new ModelRequestError(401, 'authentication_error', 'invalid key'))
+    ? ok('a 401 does NOT queue — the API answered; waiting fixes nothing')
+    : bad('401 queued');
+  !isQueueableFailure(new ModelRequestError(429, 'rate_limit_error', 'slow down'))
+    ? ok('nor does a 429')
+    : bad('429 queued');
+  !isQueueableFailure(new MealEstimateParseError('Meal estimate reply was not valid JSON.'))
+    ? ok('nor an unreadable reply — the same request produces the same nonsense')
+    : bad('parse failure queued');
+  !isQueueableFailure(new MealEstimationUnavailableError())
+    ? ok('nor a missing model key')
+    : bad('unavailable queued');
+  const aborted = new Error('aborted');
+  aborted.name = 'AbortError';
+  !isQueueableFailure(aborted)
+    ? ok('nor an abort — the user left the screen')
+    : bad('abort queued');
+  failureReason(offline()) === 'TypeError: Network request failed'
+    ? ok('and the reason recorded on the row is the error, not a stack')
+    : bad('failureReason', failureReason(offline()));
+}
+
+console.log('26. C3: the queue survives a restart, then drains');
+{
+  const { db, raw } = freshDb();
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '13:05', name: 'a chicken burrito' },
+    { kind: 'text', description: 'a chicken burrito' }
+  );
+
+  // STILL OFFLINE. The row is kept, the attempt is counted, and the placeholder
+  // is untouched — in particular it still reads NULL, not 0.
+  const stillDown = await drainEstimateQueue(db, {
+    estimators: deadEstimators(),
+    pendingStore: null,
+    mealPhotoStore: null,
+  });
+  const kept = pendingEstimateForMeal(db, mealId);
+  stillDown.applied === 0 && stillDown.kept === 1 && kept.attempts === 1 && kept.last_error !== null
+    ? ok('a drain with no network keeps the request and counts the attempt')
+    : bad('offline drain', JSON.stringify({ stillDown, kept }));
+  getMeal(db, mealId).kcal === null
+    ? ok('…and the placeholder still reads “not recorded”, never 0 kcal')
+    : bad('placeholder gained numbers on a failed drain');
+
+  // A RESTART. Re-running the migration runner over the same file is exactly
+  // what the app does on every launch; the queue is rows, so it is still there.
+  migrate(
+    {
+      exec: (sql) => raw.exec(sql),
+      getUserVersion: () => raw.prepare('PRAGMA user_version').get().user_version,
+      setUserVersion: (n) => raw.exec(`PRAGMA user_version = ${n}`),
+      transaction: db.transaction,
+    },
+    MIGRATIONS
+  );
+  listPendingEstimates(db).length === 1
+    ? ok('the queue survives a restart (it is rows, not React state)')
+    : bad('queue lost on restart');
+
+  // BACK ONLINE.
+  const estimators = fakeEstimators();
+  const drained = await drainEstimateQueue(db, {
+    estimators,
+    pendingStore: null,
+    mealPhotoStore: null,
+  });
+  const after = getMeal(db, mealId);
+  const items = listMealItems(db, mealId);
+  drained.applied === 1 && drained.kept === 0
+    ? ok('a drain with a connection applies the estimate and empties the queue')
+    : bad('drain', JSON.stringify(drained));
+  items.length === 2 && near(after.kcal, 557) && after.name === 'Chicken and rice'
+    ? ok('the placeholder becomes the estimated meal — items, totals and the model’s title')
+    : bad('applied meal', JSON.stringify({ name: after.name, kcal: after.kcal, n: items.length }));
+  after.notes === 'Cooking oil not visible; assumed a teaspoon.'
+    ? ok('and the model’s caveat lands as the meal’s note')
+    : bad('notes not carried', String(after.notes));
+  items.every((i) => i.confidence !== null) && after.source === 'ai_suggested'
+    ? ok('still labelled an estimate: per-item confidence, source ai_suggested')
+    : bad('provenance lost', JSON.stringify(items.map((i) => i.confidence)));
+  estimators.calls.length === 1 && estimators.calls[0].input.kind === 'text'
+    ? ok('exactly one model call was made, as a text request')
+    : bad('calls', JSON.stringify(estimators.calls.map((c) => c.kind)));
+}
+
+console.log('27. C3: a queued PHOTO carries its bytes, and lands them on the meal');
+{
+  const { db } = freshDb();
+  const pendingStore = fakeStore();
+  const mealPhotoStore = fakeStore();
+
+  const fileName = writePendingEstimatePhoto('/9j/plate', pendingStore);
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '19:40', name: placeholderMealName(null) },
+    { kind: 'photo', file_name: fileName, width: 1024, height: 768 }
+  );
+  getMeal(db, mealId).name === 'Photographed meal' && pendingStore.files.size === 1
+    ? ok('the shot is parked in its own directory, not in meal-photos')
+    : bad('photo not parked');
+
+  const estimators = fakeEstimators();
+  await drainEstimateQueue(db, { estimators, pendingStore, mealPhotoStore });
+
+  estimators.calls[0].input.kind === 'photo' && estimators.calls[0].input.base64Jpeg === '/9j/plate'
+    ? ok('the drain re-reads the bytes and sends them as a photo request')
+    : bad('photo request', JSON.stringify(estimators.calls[0]?.input?.kind));
+  const photo = latestMealPhoto(db, mealId);
+  photo && mealPhotoStore.files.get(photo.file_name) === '/9j/plate' && photo.width === 1024
+    ? ok('…and the picture ends up on the meal, in the meal-photo directory')
+    : bad('photo not attached', JSON.stringify(photo));
+  pendingStore.files.size === 0 && listPendingEstimates(db).length === 0
+    ? ok('the queued copy and its row are gone — one photo, not two')
+    : bad('pending copy left behind');
+}
+
+console.log('28. C3: giving up, orphans, and a photo whose file vanished');
+{
+  const { db } = freshDb();
+  const pendingStore = fakeStore();
+  const fileName = writePendingEstimatePhoto('/9j/plate', pendingStore);
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '19:40', name: 'Photographed meal' },
+    { kind: 'photo', file_name: fileName, description: 'a bowl of pho' }
+  );
+
+  // Deleting the placeholder is the whole of "forget it" — the queue row goes
+  // with the meal, and the sweep reclaims the file it leaves behind.
+  deleteMeal(db, mealId);
+  listPendingEstimates(db).length === 0
+    ? ok('deleting the placeholder CASCADEs its queued request away')
+    : bad('queue row survived the meal');
+  const swept = sweepPendingEstimatePhotos(db, pendingStore);
+  swept.orphanFilesRemoved === 1 && pendingStore.files.size === 0
+    ? ok('and the orphan pass reclaims the file nothing claims any more')
+    : bad('orphan not swept', JSON.stringify(swept));
+
+  // A row whose FILE went missing degrades to its words rather than losing the
+  // meal. (One direction only — the sweep never deletes a row.)
+  const store2 = fakeStore();
+  const second = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '20:10', name: 'a bowl of pho' },
+    { kind: 'photo', file_name: 'gone.jpg', description: 'a bowl of pho' }
+  );
+  sweepPendingEstimatePhotos(db, store2).orphanFilesRemoved === 0 &&
+  listPendingEstimates(db).length === 1
+    ? ok('a row whose file is missing keeps its row — the words are still a request')
+    : bad('row deleted by the sweep');
+  const estimators = fakeEstimators();
+  await drainEstimateQueue(db, { estimators, pendingStore: store2, mealPhotoStore: fakeStore() });
+  estimators.calls[0].input.kind === 'text' &&
+  estimators.calls[0].input.description === 'a bowl of pho' &&
+  listMealItems(db, second.mealId).length === 2
+    ? ok('…and the drain sends them as a text request rather than dropping the meal')
+    : bad('degrade to text', JSON.stringify(estimators.calls[0]?.input));
+}
+
+console.log('29. C3: a queued REVISION is applied to the items as they stand then');
+{
+  const { db } = freshDb();
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '12:00',
+    name: 'Lunch',
+    items: [
+      { name: 'Butter', amount: 10, kcal: 72, protein_g: 0, carbs_g: 0, fat_g: 8 },
+      { name: 'Steak', amount: 200, kcal: 500, protein_g: 50, carbs_g: 0, fat_g: 32 },
+    ],
+  });
+  queueMealRevision(db, mealId, 'that was olive oil, not butter');
+  // Nothing moved: a queued revision leaves the meal countable.
+  near(getMeal(db, mealId).kcal, 572) && listMealItems(db, mealId).length === 2
+    ? ok('the meal keeps its items while the correction waits')
+    : bad('meal changed while queued');
+
+  // The user edits the meal by hand while still offline. The drain must send
+  // THAT as the "before", not a snapshot taken when the correction was typed.
+  addMealItem(db, mealId, {
+    name: 'Bread',
+    amount: 60,
+    kcal: 160,
+    protein_g: 6,
+    carbs_g: 30,
+    fat_g: 1,
+  });
+  const estimators = fakeEstimators();
+  await drainEstimateQueue(db, { estimators, pendingStore: null, mealPhotoStore: null });
+  const sent = estimators.calls[0];
+  sent.kind === 'revise' &&
+  sent.instruction === 'that was olive oil, not butter' &&
+  sent.meal.items.length === 3 &&
+  sent.meal.items.some((i) => i.name === 'Bread')
+    ? ok('the drain re-reads the items at drain time — the hand-edit is the “before”')
+    : bad('stale subject', JSON.stringify(sent?.meal?.items?.map((i) => i.name)));
+  const revised = getMeal(db, mealId);
+  revised.name === 'Lunch' && listMealItems(db, mealId).length === 2
+    ? ok('…and a revision replaces the items only, never the meal’s name')
+    : bad('revision touched the meal', revised.name);
+  listPendingEstimates(db).length === 0
+    ? ok('the queue is empty afterwards')
+    : bad('revision left in the queue');
+}
+
+// === Composite foods (0058, backlog C4) ======================================
+//
+// The owner: *"one composite item (pepperoni pizza) as well as rows below that
+// are pizza crust, cheese, and pepperoni. If I ate the whole pizza but took the
+// pepperoni off half, I could change just one thing. If I ate only half, I
+// could change the entire thing together."*
+//
+// The asymmetry that shapes every assertion below: a header carrying its
+// children's sum would let a forgetful query DOUBLE the pizza in the day's
+// calories, while a NULL-macro header makes a forgetful query under-count by
+// zero. So the numbers are asserted as numbers, twice — once through
+// `meals.kcal`, once through `partialMealMetrics`, which is the read that would
+// otherwise fail silently.
+
+/** A three-part pizza in a meal that also holds a beer. */
+function pizzaMeal(db, date = TODAY) {
+  return logMealWithItems(db, {
+    date,
+    time: '19:30',
+    name: 'Dinner',
+    items: [
+      {
+        name: 'Pepperoni pizza',
+        // Deliberately supplied WITH numbers, to prove they are dropped.
+        kcal: 9999,
+        protein_g: 999,
+        amount: 9999,
+        components: [
+          { name: 'Pizza crust', amount: 300, kcal: 800, protein_g: 26, carbs_g: 160, fat_g: 6 },
+          { name: 'Mozzarella', amount: 150, kcal: 450, protein_g: 33, carbs_g: 5, fat_g: 33 },
+          { name: 'Pepperoni', amount: 60, kcal: 300, protein_g: 12, carbs_g: 2, fat_g: 27 },
+        ],
+      },
+      { name: 'Lager', amount: 330, unit: 'ml', kcal: 140, protein_g: 1, carbs_g: 11, fat_g: 0 },
+    ],
+  });
+}
+
+/** One tree node as the revision model is shown it. */
+function toSubject(node) {
+  const plain = (i) => ({
+    name: i.name,
+    amount: i.amount,
+    unit: i.unit,
+    kcal: i.kcal,
+    protein_g: i.protein_g,
+    carbs_g: i.carbs_g,
+    fat_g: i.fat_g,
+  });
+  return node.kind === 'composite'
+    ? { ...plain(node.item), components: node.components.map(plain) }
+    : plain(node.item);
+}
+
+console.log('30. C4: the totals count the PARTS, and the header carries nothing');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+  const rows = listMealItems(db, mealId);
+  const header = rows.find((r) => r.is_composite === 1);
+
+  header &&
+  header.kcal === null &&
+  header.protein_g === null &&
+  header.amount === null &&
+  header.confidence === null &&
+  header.parent_item_id === null
+    ? ok('a composite header stores no numbers of its own — invariants 1 and 2')
+    : bad('header carries numbers', JSON.stringify(header));
+  rows.filter((r) => r.parent_item_id === header.id).length === 3
+    ? ok('its three parts hang off it')
+    : bad('parts missing');
+
+  // THE DOUBLE-COUNT GUARD, as a number: 800 + 450 + 300 + 140 = 1,690. The
+  // header's 9,999 was supplied and dropped.
+  near(getMeal(db, mealId).kcal, 1690) && near(todayTotals(db, TODAY).kcal, 1690)
+    ? ok('the meal and the day count the parts only (1,690 kcal, not 11,689)')
+    : bad('double count', String(getMeal(db, mealId).kcal));
+  near(getMeal(db, mealId).protein_g, 72)
+    ? ok('…and the same for protein')
+    : bad('protein', String(getMeal(db, mealId).protein_g));
+
+  // THE REGRESSION THAT WOULD OTHERWISE SHIP SILENTLY. A macro-less header
+  // trips partialMealMetrics on every metric, and the Eat tab's hero stops
+  // counting down for a meal that is fully priced.
+  const partial = partialMealMetrics(db, TODAY);
+  partial[mealId] === undefined
+    ? ok('a NULL-macro header does NOT mark the meal knowingly short')
+    : bad('composite marked partial', JSON.stringify(partial[mealId]));
+  setNutritionTargets(db, { effective_date: TODAY, kcal: 2400 });
+  const figure = dayFigure(listTodayMeals(db, TODAY), 'kcal', 2400, partial);
+  figure.mode === 'remaining' && figure.remaining === 710
+    ? ok('…so the day stays in countdown mode: 710 kcal left of 2,400')
+    : bad('countdown mode lost', JSON.stringify(figure));
+
+  // The tally answers a DIFFERENT question from the sums: it counts what the
+  // collapsed ledger draws, which is one row per pizza.
+  mealItemCounts(db, TODAY)[mealId] === 2
+    ? ok('the Eat-tab tally reads "2 items" — the pizza and the beer, as drawn')
+    : bad('item count', String(mealItemCounts(db, TODAY)[mealId]));
+}
+
+console.log('31. C4: the tree the screens read');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+  const nodes = assembleMealItems(listMealItems(db, mealId));
+
+  nodes.length === 2 && nodes[0].kind === 'composite' && nodes[1].kind === 'item'
+    ? ok('assembleMealItems returns the pizza as one node and the beer as another')
+    : bad('tree shape', JSON.stringify(nodes.map((n) => n.kind)));
+  const rolledUp = nodes[0].rolled;
+  near(rolledUp.kcal, 1550) && near(rolledUp.amount, 510) && rolledUp.unit === 'g'
+    ? ok('the collapsed headline IS the parts’ sum — 510 g, 1,550 kcal')
+    : bad('rollup', JSON.stringify(rolledUp));
+
+  // Nothing converts (B2/0047): parts in two units do not sum to an amount.
+  const mixed = logMealWithItems(db, {
+    date: TODAY,
+    time: '10:00',
+    name: 'Odd',
+    items: [
+      {
+        name: 'Affogato',
+        components: [
+          { name: 'Espresso', amount: 60, unit: 'ml', kcal: 5 },
+          { name: 'Gelato', amount: 90, unit: 'g', kcal: 200 },
+        ],
+      },
+    ],
+  });
+  const mixedRoll = assembleMealItems(listMealItems(db, mixed.mealId))[0].rolled;
+  mixedRoll.amount === null && near(mixedRoll.kcal, 205)
+    ? ok('parts in ml and g roll up their energy but NOT their amount — nothing converts')
+    : bad('units converted', JSON.stringify(mixedRoll));
+
+  // A ledger never silently loses a row it is holding.
+  const all = listMealItems(db, mealId);
+  const orphaned = all
+    .filter((r) => r.parent_item_id === null || r.is_composite === 0)
+    .filter((r) => r.is_composite === 0);
+  const withOrphan = assembleMealItems([
+    ...orphaned,
+    { ...all.find((r) => r.parent_item_id !== null), parent_item_id: 'gone' },
+  ]);
+  withOrphan.some((n) => n.item.parent_item_id === 'gone')
+    ? ok('a component whose parent is absent is emitted top-level, never dropped')
+    : bad('orphan dropped');
+}
+
+console.log('32. C4: editing — one part, the whole dish, and the last part');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+  const rows = listMealItems(db, mealId);
+  const header = rows.find((r) => r.is_composite === 1);
+  const pepperoni = rows.find((r) => r.name === 'Pepperoni');
+  const crustBefore = rows.find((r) => r.name === 'Pizza crust');
+
+  // "I took the pepperoni off half": one part, 60 g → 30 g.
+  updateMealItemPortion(db, pepperoni.id, rescaleLoggedItem(pepperoni, undefined, { amount: 30 }));
+  const afterOne = listMealItems(db, mealId);
+  const crustAfter = afterOne.find((r) => r.name === 'Pizza crust');
+  near(afterOne.find((r) => r.name === 'Pepperoni').kcal, 150) &&
+  near(crustAfter.kcal, crustBefore.kcal) &&
+  near(crustAfter.amount, crustBefore.amount)
+    ? ok('editing one part leaves its siblings byte-identical')
+    : bad('sibling moved', JSON.stringify(crustAfter));
+  near(getMeal(db, mealId).kcal, 1540)
+    ? ok('…and moves only the totals: 1,690 − 150 = 1,540')
+    : bad('totals after part edit', String(getMeal(db, mealId).kcal));
+
+  // "I only ate half" — AFTER the hand-correction, so it halves the CORRECTED
+  // pepperoni (the owner's own answer to that question).
+  scaleCompositeItem(db, header.id, 0.5);
+  const halved = listMealItems(db, mealId);
+  near(halved.find((r) => r.name === 'Pepperoni').kcal, 75) &&
+  near(halved.find((r) => r.name === 'Pepperoni').amount, 15) &&
+  near(halved.find((r) => r.name === 'Pizza crust').kcal, 400)
+    ? ok('“I ate half” halves the CORRECTED values, not the originals')
+    : bad('scale', JSON.stringify(halved.map((r) => [r.name, r.kcal])));
+  near(getMeal(db, mealId).kcal, 840)
+    ? ok('…and the meal follows: (800+450+150)/2 + 140 = 840')
+    : bad('totals after scale', String(getMeal(db, mealId).kcal));
+
+  // No rounding on write, so changing your mind costs nothing.
+  scaleCompositeItem(db, header.id, 2);
+  const back = listMealItems(db, mealId);
+  near(back.find((r) => r.name === 'Pepperoni').amount, 30) &&
+  near(back.find((r) => r.name === 'Pizza crust').amount, 300)
+    ? ok('×0.5 then ×2 round-trips EXACTLY — nothing is rounded on write')
+    : bad('round trip lost precision', JSON.stringify(back.map((r) => [r.name, r.amount])));
+
+  // Removing parts: a non-last one leaves the composite; the last takes it.
+  removeMealItem(db, back.find((r) => r.name === 'Pepperoni').id);
+  listMealItems(db, mealId).some((r) => r.is_composite === 1)
+    ? ok('removing one part of three leaves the composite standing')
+    : bad('composite removed too early');
+  removeMealItem(db, listMealItems(db, mealId).find((r) => r.name === 'Mozzarella').id);
+  removeMealItem(db, listMealItems(db, mealId).find((r) => r.name === 'Pizza crust').id);
+  const left = listMealItems(db, mealId);
+  left.length === 1 && left[0].name === 'Lager'
+    ? ok('removing the LAST part removes the composite with it (invariant 4)')
+    : bad('header left over nothing', JSON.stringify(left.map((r) => r.name)));
+  near(getMeal(db, mealId).kcal, 140)
+    ? ok('…and the meal is left holding the beer alone')
+    : bad('totals after emptying', String(getMeal(db, mealId).kcal));
+}
+
+console.log('33. C4: deleting a composite takes its parts (the FK cascade)');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+  const header = listMealItems(db, mealId).find((r) => r.is_composite === 1);
+  removeMealItem(db, header.id);
+  const left = listMealItems(db, mealId);
+  left.length === 1 && left[0].name === 'Lager' && near(getMeal(db, mealId).kcal, 140)
+    ? ok('removing the header cascades its three parts away, and the totals follow')
+    : bad('cascade', JSON.stringify(left.map((r) => r.name)));
+}
+
+console.log('34. C4: the estimator returns a composite, and grounding will not price it');
+{
+  const { db } = freshDb();
+  // The seeded whole-dish archetype most likely to be matched wrongly.
+  createFood(db, {
+    name: 'Cheeseburger, fast food',
+    kcal_100g: 250,
+    protein_g_100g: 13,
+    carbs_g_100g: 20,
+    fat_g_100g: 13,
+  });
+  createFood(db, {
+    name: 'Beef patty, grilled',
+    kcal_100g: 250,
+    protein_g_100g: 26,
+    carbs_g_100g: 0,
+    fat_g_100g: 17,
+  });
+
+  const parsed = parseMealEstimate(
+    JSON.stringify({
+      title: 'Burger and fries',
+      items: [
+        {
+          name: 'Cheeseburger',
+          amount: 220,
+          kcal: 550,
+          protein_g: 30,
+          carbs_g: 40,
+          fat_g: 28,
+          confidence: 'medium',
+          micros: { sodium_mg: 900 },
+          components: [
+            { name: 'Bun', amount: 80, kcal: 210, protein_g: 7, carbs_g: 40, fat_g: 2 },
+            { name: 'Beef patty', amount: 110, kcal: 275, protein_g: 29, carbs_g: 0, fat_g: 19 },
+            { name: 'Cheese slice', amount: 20, kcal: 70, protein_g: 4, carbs_g: 1, fat_g: 6 },
+            { name: 'Sauce', amount: 10, kcal: 50, protein_g: 0, carbs_g: 2, fat_g: 5 },
+            { name: 'Pickle', amount: 5, kcal: 1, protein_g: 0, carbs_g: 0, fat_g: 0 },
+          ],
+        },
+        { name: 'Fries', amount: 120, kcal: 380, protein_g: 4, carbs_g: 48, fat_g: 19 },
+      ],
+      notes: null,
+    })
+  );
+  const burger = parsed.items[0];
+  burger.kcal === null && burger.amount === null && burger.micros === null
+    ? ok('the header’s own macros are DROPPED, not reconciled')
+    : bad('header kept numbers', JSON.stringify(burger));
+  burger.components.length === 4
+    ? ok('five parts are capped at four — the parser enforces it, not the prompt')
+    : bad('cap', String(burger.components?.length));
+  burger.components.every((c) => c.confidence === 'medium')
+    ? ok('each part inherits the dish’s confidence')
+    : bad('confidence not inherited');
+  parsed.items[1].components === null && parsed.items[1].kcal === 380
+    ? ok('a plain item beside it is untouched')
+    : bad('plain item changed');
+
+  // A one-part "composite" is not a composite — it is the item wearing a header.
+  parseMealEstimate(
+    JSON.stringify({
+      title: 'X',
+      items: [{ name: 'Toast', amount: 40, kcal: 100, components: [{ name: 'Bread', kcal: 100 }] }],
+    })
+  ).items[0].components === null
+    ? ok('a single-part components array collapses — a chevron over nothing is noise')
+    : bad('one-part composite kept');
+  parseMealEstimate(
+    JSON.stringify({ title: 'X', items: [{ name: 'Toast', kcal: 100, components: [] }] })
+  ).items[0].kcal === 100
+    ? ok('an empty components array is a plain item, with its macros intact')
+    : bad('empty components mishandled');
+
+  const grounded = groundMealEstimate(db, parsed);
+  grounded.items[0].foodId === null && grounded.items[0].kcal === null
+    ? ok('grounding NEVER prices a header — not even against "Cheeseburger, fast food"')
+    : bad('header grounded', JSON.stringify(grounded.items[0]));
+  const patty = grounded.items[0].components.find((c) => c.name === 'Beef patty');
+  patty.foodId !== null && near(patty.kcal, 275)
+    ? ok('…while its parts DO ground: the beef patty re-prices from the catalog')
+    : bad('component not grounded', JSON.stringify(patty));
+}
+
+console.log('35. C4: a composite round-trips through a revision, a re-log and a template');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+
+  // The revision path (app/meal-revise.tsx → replaceMealItems) takes a TREE.
+  const tree = assembleMealItems(listMealItems(db, mealId));
+  replaceMealItems(
+    db,
+    mealId,
+    tree.map((node) =>
+      node.kind === 'composite'
+        ? {
+            name: node.item.name,
+            components: node.components.map((c) => ({
+              name: c.name,
+              amount: c.amount,
+              unit: c.unit,
+              kcal: c.kcal,
+              protein_g: c.protein_g,
+              carbs_g: c.carbs_g,
+              fat_g: c.fat_g,
+            })),
+          }
+        : {
+            name: node.item.name,
+            amount: node.item.amount,
+            unit: node.item.unit,
+            kcal: node.item.kcal,
+          }
+    )
+  );
+  const after = assembleMealItems(listMealItems(db, mealId));
+  after.length === 2 && after[0].kind === 'composite' && after[0].components.length === 3
+    ? ok('replaceMealItems round-trips a tree without flattening it')
+    : bad('revision flattened the pizza', JSON.stringify(after.map((n) => n.kind)));
+
+  // The model is SHOWN the tree, indented, so a correction can name a part.
+  const req = buildMealRevisionRequest(
+    { name: 'Dinner', items: [toSubject(after[0]), toSubject(after[1])] },
+    'no pepperoni'
+  );
+  const text = req.messages[0].content[0].text;
+  text.includes('- Pepperoni pizza — 3 parts') && text.includes('  - Pepperoni — 60 g')
+    ? ok('the revision request prints the dish with its parts indented beneath it')
+    : bad('revision text', text);
+  req.system.includes('is ONE composite dish')
+    ? ok('and the revision prompt tells the model to keep it composite')
+    : bad('revision prompt missing the composite rail');
+
+  // "Log again" re-logs a pizza, not four loose rows.
+  const again = relogMeal(db, mealId, TODAY, '20:00');
+  const relogged = assembleMealItems(listMealItems(db, again));
+  relogged.length === 2 && relogged[0].kind === 'composite' && near(getMeal(db, again).kcal, 1690)
+    ? ok('“Log again” carries the tree, and the copy totals the same 1,690 kcal')
+    : bad('relog flattened', JSON.stringify(relogged.map((n) => n.kind)));
+
+  // A template cannot express a composite, so it saves the PARTS — honest, and
+  // the rollup is unchanged because the parts are what the totals summed.
+  const templateId = saveMealAsTemplate(db, mealId, 'Pizza night');
+  listTemplateItems(db, templateId).length === 4
+    ? ok('a template flattens the pizza to its parts (4 priced lines), never a null header')
+    : bad('template items', String(listTemplateItems(db, templateId).length));
+  const logged = logMealFromTemplate(db, templateId, TODAY, '21:00');
+  near(getMeal(db, logged).kcal, 1690)
+    ? ok('…and logging that template comes to the same 1,690 kcal')
+    : bad('template totals', String(getMeal(db, logged).kcal));
+}
+
+console.log('36. C4/C5: the estimator prompts have a ceiling now');
+{
+  // ~3.6 chars/token for prose — db/coach-eval.test.mjs §6's own estimator.
+  const proseTok = (s) => Math.round(s.length / 3.6);
+  const estimation = proseTok(MEAL_ESTIMATION_SYSTEM_PROMPT);
+  const revision = proseTok(MEAL_REVISION_SYSTEM_PROMPT);
+
+  // THE ACCOUNTING. This prompt was guarded by NOTHING until this round, and it
+  // grew 296 → 449 tokens in a single day (backlog A8's caffeine/sodium lines),
+  // then 449 → 542 when `ml` landed (0047) — 83% in a week, unnoticed, because
+  // the two Coach ceilings measure buildCoachSystemPrompt and toWireTools and
+  // the estimator is neither: a different system prompt, on a tool-less turn.
+  //
+  //   542  the head of `main` when this branch started
+  //   +149 C4: the composite rule + the "components" schema clause
+  //   +279 C5: the question rules + the "questions" schema clause
+  //   −48  trimmed in the SAME round, because the rule binds this round too:
+  //        three enumerations became three examples each, no rule lost
+  //   ---
+  //   922, against a ceiling of 1,000 — 78 tokens of headroom.
+  //
+  // The rule the Coach's own budget note states applies verbatim: **the next
+  // addition trims rather than raises this.** What is left to cut is named on
+  // ESTIMATOR_PROMPT_CEILING itself, and neither candidate is free.
+  estimation < ESTIMATOR_PROMPT_CEILING
+    ? ok(
+        `the estimation prompt fits its budget (~${estimation} tok of ${ESTIMATOR_PROMPT_CEILING})`
+      )
+    : bad('estimation prompt over budget', `${estimation} tok — trim before adding more`);
+  revision < ESTIMATOR_PROMPT_CEILING
+    ? ok(`and so does the revision prompt (~${revision} tok)`)
+    : bad('revision prompt over budget', `${revision} tok`);
+
+  // A ceiling nothing approaches is not a guard. If this trips, the prompts
+  // were cut and the ceiling should come down with them.
+  estimation > ESTIMATOR_PROMPT_CEILING * 0.6
+    ? ok('…and the ceiling is close enough to the real size to actually bite')
+    : bad('ceiling is vacuous', `${estimation} tok is far under ${ESTIMATOR_PROMPT_CEILING}`);
+}
+
+// === Auto-ask clarifying questions (backlog C5) ===============================
+//
+// The owner's five rules, each pinned: fires from ANY AI logging method; max 3;
+// button-answerable; only what matters and what he would actually know; and the
+// archetype — *"how many shots are in this latte?"*
+//
+// The shape that makes it cheap is ONE CALL: the estimate and the questions
+// come back together, and each button answer carries the EFFECT of choosing it,
+// so answering is pure on-device arithmetic over the review rows.
+
+/** The owner's own archetype, as the model would send it. */
+const LATTE_REPLY = JSON.stringify({
+  title: 'Latte',
+  items: [
+    {
+      name: 'Espresso',
+      amount: 60,
+      unit: 'ml',
+      kcal: 5,
+      protein_g: 0,
+      carbs_g: 1,
+      fat_g: 0,
+      confidence: 'medium',
+    },
+    {
+      name: 'Whole milk',
+      amount: 300,
+      unit: 'ml',
+      kcal: 186,
+      protein_g: 10,
+      carbs_g: 14,
+      fat_g: 10,
+      confidence: 'medium',
+    },
+  ],
+  notes: null,
+  questions: [
+    {
+      id: 'shots',
+      ask: 'How many shots?',
+      allow_other: false,
+      options: [
+        { label: '1', effect: { scale_item: 'Espresso', factor: 0.5 } },
+        { label: '2', effect: { scale_item: 'Espresso', factor: 1 } },
+        { label: '3', effect: { scale_item: 'Espresso', factor: 1.5 } },
+      ],
+    },
+  ],
+});
+
+console.log('37. C5: the estimate and its questions arrive together');
+{
+  const parsed = parseMealEstimate(LATTE_REPLY);
+  parsed.questions.length === 1 && parsed.questions[0].ask === 'How many shots?'
+    ? ok('the owner’s archetype parses: one question, asked in words')
+    : bad('latte question', JSON.stringify(parsed.questions));
+  const options = parsed.questions[0].options;
+  options.length === 3 &&
+  options[2].effect.kind === 'scale_item' &&
+  options[2].effect.factor === 1.5
+    ? ok('…and each button answer carries the EFFECT of choosing it')
+    : bad('effects', JSON.stringify(options));
+  parsed.questions[0].allowOther === false
+    ? ok('“Other” is offered only when the model says so')
+    : bad('allowOther defaulted true');
+
+  // The whole point of carrying the effect: no second round trip.
+  const { db } = freshDb();
+  const rows = rowsFromEstimate(db, parsed);
+  const answered = applyAnswer(rows, options[2].effect);
+  near(currentPortion(answered[0]).amount, 90) && near(currentPortion(answered[0]).kcal, 7.5)
+    ? ok('tapping “3” re-prices the espresso on-device: 60 ml → 90 ml')
+    : bad('applyAnswer scale', JSON.stringify(currentPortion(answered[0])));
+  currentPortion(answered[1]).amount === 300
+    ? ok('…and touches nothing else on the plate')
+    : bad('sibling moved');
+
+  // THE LEDGER RULE, as arithmetic: after any answer the plate's total is the
+  // sum of the rows drawn.
+  const total = reviewKcal(answered);
+  near(total, currentPortion(answered[0]).kcal + currentPortion(answered[1]).kcal)
+    ? ok('after an answer the total still equals the rows beneath it')
+    : bad('ledger broken', String(total));
+}
+
+console.log('38. C5: the four effects, as on-device arithmetic');
+{
+  const { db } = freshDb();
+  const base = rowsFromEstimate(
+    db,
+    parseMealEstimate(
+      JSON.stringify({
+        title: 'Salad',
+        items: [
+          {
+            name: 'Greens',
+            amount: 100,
+            kcal: 25,
+            protein_g: 2,
+            carbs_g: 4,
+            fat_g: 0,
+            confidence: 'medium',
+          },
+          {
+            name: 'Bun',
+            amount: 80,
+            kcal: 210,
+            protein_g: 7,
+            carbs_g: 40,
+            fat_g: 2,
+            confidence: 'low',
+          },
+        ],
+      })
+    )
+  );
+
+  const setAmount = applyAnswer(base, { kind: 'set_amount', name: 'Greens', amount: 200 });
+  near(currentPortion(setAmount[0]).amount, 200) && near(currentPortion(setAmount[0]).kcal, 50)
+    ? ok('set_amount re-prices through the tested rescale, in the item’s own unit')
+    : bad('set_amount', JSON.stringify(currentPortion(setAmount[0])));
+
+  const added = applyAnswer(base, {
+    kind: 'add_item',
+    name: 'Vinaigrette',
+    amount: 30,
+    unit: 'g',
+    kcal: 130,
+    protein_g: 0,
+    carbs_g: 1,
+    fat_g: 14,
+  });
+  added.length === 3 && added[2].name === 'Vinaigrette' && near(reviewKcal(added), 365)
+    ? ok('add_item appends a priced row and the total follows')
+    : bad('add_item', JSON.stringify(added.map((r) => r.name)));
+  applyAnswer(added, {
+    kind: 'add_item',
+    name: 'Vinaigrette',
+    amount: 30,
+    unit: 'g',
+    kcal: 130,
+    protein_g: 0,
+    carbs_g: 1,
+    fat_g: 14,
+  }).length === 3
+    ? ok('…and applying the same answer twice cannot produce two of it')
+    : bad('add_item duplicated');
+
+  const removed = applyAnswer(base, { kind: 'remove_item', name: 'Bun' });
+  removed.length === 1 && removed[0].name === 'Greens'
+    ? ok('remove_item drops the row it names')
+    : bad('remove_item', JSON.stringify(removed.map((r) => r.name)));
+
+  // An effect naming a row the user already deleted is a no-op, not a crash.
+  applyAnswer(removed, { kind: 'scale_item', name: 'Bun', factor: 0.5 }).length === 1
+    ? ok('an effect naming a row that is gone does nothing')
+    : bad('missing-row effect');
+
+  // NO ACCUMULATION: answering, then changing the answer, is the same state as
+  // having chosen the second option first — because both are applied to the
+  // base, which is what the screen's hook freezes per question.
+  const first = applyAnswer(base, { kind: 'scale_item', name: 'Greens', factor: 0.5 });
+  const changed = applyAnswer(base, { kind: 'scale_item', name: 'Greens', factor: 2 });
+  const direct = applyAnswer(base, { kind: 'scale_item', name: 'Greens', factor: 2 });
+  near(currentPortion(first[0]).amount, 50) &&
+  near(currentPortion(changed[0]).amount, 200) &&
+  near(currentPortion(direct[0]).amount, currentPortion(changed[0]).amount)
+    ? ok('changing an answer does not compound — it re-applies to the same base')
+    : bad(
+        'accumulation',
+        JSON.stringify([currentPortion(changed[0]).amount, currentPortion(direct[0]).amount])
+      );
+
+  // SKIPPING every question leaves the estimate byte-identical to the
+  // unanswered one — the rule "the items already assume the most likely answer"
+  // is what makes that safe.
+  JSON.stringify(rowsToMealItems(base)) === JSON.stringify(rowsToMealItems(base))
+    ? ok('skipping writes exactly the estimate as it came back')
+    : bad('skip changed the estimate');
+}
+
+console.log('39. C5: the three gates, and what the parser refuses');
+{
+  const q = (options, extra = {}) => ({ id: 'q', ask: 'Ask?', options, ...extra });
+  const reply = (questions, confidence = 'medium') =>
+    JSON.stringify({
+      title: 'T',
+      items: [
+        { name: 'Espresso', amount: 60, kcal: 5, confidence },
+        { name: 'Milk', amount: 300, kcal: 186, confidence },
+      ],
+      questions,
+    });
+
+  // GATE 3: the owner said three.
+  parseMealEstimate(
+    reply(
+      [1, 2, 3, 4].map((n) => ({
+        id: `q${n}`,
+        ask: `Ask ${n}?`,
+        options: [
+          { label: 'a', effect: { scale_item: 'Milk', factor: 0.5 } },
+          { label: 'b', effect: { scale_item: 'Milk', factor: 1 } },
+        ],
+      }))
+    )
+  ).questions.length === 3
+    ? ok('four questions become three — the model is not the enforcer of that')
+    : bad('cap');
+
+  // GATE 2: a model certain about every item and still asking has contradicted
+  // itself, and a certain estimate is where an extra tap is pure friction.
+  parseMealEstimate(
+    reply(
+      [
+        q([
+          { label: 'a', effect: { scale_item: 'Milk', factor: 0.5 } },
+          { label: 'b', effect: { scale_item: 'Milk', factor: 1 } },
+        ]),
+      ],
+      'high'
+    )
+  ).questions.length === 0
+    ? ok('an all-high-confidence estimate returns ZERO questions after the gate')
+    : bad('confidence gate');
+
+  // The commonest model error: an effect naming an item it renamed.
+  parseMealEstimate(
+    reply([
+      q([
+        { label: 'a', effect: { scale_item: 'Cappuccino', factor: 0.5 } },
+        { label: 'b', effect: { scale_item: 'Milk', factor: 1 } },
+      ]),
+    ])
+  ).questions.length === 0
+    ? ok(
+        'an option naming an item not in the estimate is dropped, and a one-option question with it'
+      )
+    : bad('unknown item kept');
+
+  // Bounds — the schema's own CHECK(amount > 0) and the review screen's ceiling.
+  const bounded = parseMealEstimate(
+    reply([
+      q([
+        { label: 'zero', effect: { scale_item: 'Milk', factor: 0 } },
+        { label: 'neg', effect: { scale_item: 'Milk', factor: -1 } },
+        { label: 'none', effect: { set_amount: 'Milk', amount: 0 } },
+        { label: 'huge', effect: { set_amount: 'Milk', amount: 9000 } },
+      ]),
+      q(
+        [
+          { label: 'ok', effect: { set_amount: 'Milk', amount: 250 } },
+          { label: 'also', effect: { remove_item: 'Milk' } },
+        ],
+        { id: 'survivor' }
+      ),
+    ])
+  ).questions;
+  bounded.length === 1 && bounded[0].id === 'survivor'
+    ? ok('factor 0/−1 and amount 0/9000 are dropped, and the sound question still renders')
+    : bad('bounds', JSON.stringify(bounded));
+
+  // An unknown effect key is dropped — the vocabulary is closed on purpose.
+  parseMealEstimate(
+    reply([
+      q([
+        { label: 'a', effect: { season_item: 'Milk' } },
+        { label: 'b', effect: { scale_item: 'Milk', factor: 1 } },
+      ]),
+    ])
+  ).questions.length === 0
+    ? ok('an unknown effect key is dropped — the vocabulary is closed')
+    : bad('unknown effect kept');
+
+  // A reply with no questions key parses exactly as it did before C5.
+  const legacy = parseMealEstimate(
+    JSON.stringify({ title: 'T', items: [{ name: 'Rice', amount: 200, kcal: 260 }] })
+  );
+  legacy.questions.length === 0 && legacy.items.length === 1
+    ? ok('a reply with no "questions" key parses as it always did — the key is optional')
+    : bad('legacy reply');
+}
+
+console.log('40. C5: which logging methods may ask — and which must never');
+{
+  // Both AI prompts carry the rules, in the owner's own terms.
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('USUALLY ABSENT') &&
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('an empty list is the norm')
+    ? ok('the prompt says zero questions is normal — twice, which is the cheapest defence there is')
+    : bad('absence not stated twice');
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('a kitchen they did not stand in')
+    ? ok('…and knowability is stated as a PLACE, with the owner’s own restaurant example')
+    : bad('knowability rule missing');
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('~15% of its energy')
+    ? ok('…and materiality as a magnitude, not a list of askable topics')
+    : bad('materiality rule missing');
+  MEAL_REVISION_SYSTEM_PROMPT.includes('Questions (optional, and USUALLY ABSENT)')
+    ? ok('a revision may ask too (owner decision) — the same rules, the same parser')
+    : bad('revision prompt has no questions block');
+
+  // BARCODE NEVER ASKS, and that is a design position rather than an omission:
+  // a barcode is an exact identity against an exact per-100 panel, the portion
+  // sheet already asks the one unknown, and the path is offline-first by
+  // construction — a path that works with the network unplugged must not grow a
+  // question that needs the network. Pinned at the SOURCE, as the negative.
+  const scanner = readFileSync(new URL('../app/barcode-scan.tsx', import.meta.url), 'utf8');
+  !/QuestionsPlate|useEstimateQuestions|estimateMeal\(/.test(scanner)
+    ? ok('the barcode screen has no question surface at all, and cannot grow one by accident')
+    : bad('barcode-scan reaches the estimator');
+  const logSheet = readFileSync(
+    new URL('../src/components/nutrition/log-sheet.tsx', import.meta.url),
+    'utf8'
+  );
+  !/QuestionsPlate|useEstimateQuestions/.test(logSheet)
+    ? ok('…and neither do the catalog, template and manual rungs of the log sheet')
+    : bad('log sheet grew a question surface');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

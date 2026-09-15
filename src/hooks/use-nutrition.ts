@@ -15,6 +15,7 @@ import {
   type DayIntakePoint,
 } from '@/lib/db/repositories/nutrition';
 import { checkedGroceryCount, openGroceryLineCount } from '@/lib/db/repositories/grocery';
+import { pendingEstimateMealIds } from '@/lib/db/repositories/pending-estimates';
 import { recipeCount, recipesCookedSince } from '@/lib/db/repositories/recipes';
 import type { PartialMealMetrics } from '@/lib/nutrition/remaining';
 import type { DayTotals, MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
@@ -50,6 +51,11 @@ export type NutritionDay = {
   fiberTotal: number;
   /** The target set governing today, or null until targets are first set. */
   targets: NutritionTargetsRow | null;
+  /** The meals whose numbers are owed by a QUEUED AI estimate (0057) — logged
+   *  offline, waiting on a connection. The row says so instead of wearing the
+   *  "Nothing recorded — tap to fill it in" line, which would be advice the
+   *  user cannot act on. Empty on every ordinary day. */
+  pendingEstimates: Set<string>;
   /** meal_id → metrics that meal is knowingly SHORT on (an item was never
    *  priced). The countdown refuses these the way it refuses a NULL. */
   partialMeals: PartialMealMetrics;
@@ -106,6 +112,23 @@ function readKitchen(db: ReturnType<typeof getDb>, today: string): KitchenCounts
   }
 }
 
+/**
+ * Which of today's meals are waiting on a queued estimate (0057).
+ *
+ * Guarded for the same reason readKitchen is: this runs synchronously in the
+ * Eat TAB ROOT's first render, and a database that has not reached 0057 would
+ * throw where there is no screen above to catch it. An empty set costs the
+ * placeholder its one authored line; a throw costs the tab.
+ */
+function readPendingEstimates(db: ReturnType<typeof getDb>, today: string): Set<string> {
+  try {
+    return pendingEstimateMealIds(db, today);
+  } catch (error) {
+    console.warn('[nutrition] pending estimates unavailable', error);
+    return new Set();
+  }
+}
+
 function readToday(): Omit<NutritionDay, 'reload'> {
   const db = getDb();
   const date = todayISODate();
@@ -118,6 +141,7 @@ function readToday(): Omit<NutritionDay, 'reload'> {
     fiberTotal: dayFiberTotal(db, date),
     targets: activeNutritionTargets(db, date) ?? null,
     partialMeals: partialMealMetrics(db, date),
+    pendingEstimates: readPendingEstimates(db, date),
     kitchen: readKitchen(db, date),
     overTime: {
       kcal,

@@ -885,3 +885,222 @@ The call is aborted on unmount, like the estimator's: a live stream left running
 - **Whether the model's per-100 figures are any good** for the foods the owner actually describes. No real call is made on this branch (the harness is a mock); the first *"Costco rotisserie chicken thigh, skin on"* on hardware is the test, and the failure mode to watch for is a serving priced as a hundred — which shows up as a blank kcal field, because the parser drops it.
 - **Whether `est` reads as provenance or as noise** at 10px beside a food's name in a list of twenty.
 - **Whether Describe it belongs above the form or below it.** It is above because it is the shortcut *past* everything under it, but that puts a model call first on a screen whose whole job used to be typing.
+
+---
+
+## 12f. Offline food logging (C3, 2026-09-14, migration `0057`)
+
+> **On the number.** Written as `0048` — free then, free on `main` now — and renumbered to `0057` at the moment of commit because `main`’s head had moved 0047 → 0054 and `claude/c12-c13-exercise` holds 0055–0056 unmerged. The runner is forward-only and silently skips anything at or below a device’s `user_version`, so a free-looking number *below the head* is stranded on the phone forever while every test that starts from an empty database still passes. The rule is **the next number above main’s head, re-checked at commit**; the full argument lives in `0057`’s own header, once. C4 was renumbered `0049` → `0058` in the same pass.
+
+Owner, backlog C3: *"Catalog/manual path fully works with no network; AI-dependent estimates **queue until back online**."*
+
+### Half of it was already true, and it is pinned as a source fact
+
+The catalog, template and manual paths never touched the network — `foods.ts`, `nutrition.ts`, `meal-templates.ts`, `servings.ts`, `micros.ts`, the log sheet, Add food, Create a food and Meal templates contain no `fetch` and no import of `openfoodfacts.ts`. That is asserted **over the source** in `db/nutrition-v2.test.mjs` §23, deliberately: a behavioural test passes just as happily on a path that calls the network and swallows the failure, and the swallowed one degrades silently the day someone adds a lookup.
+
+The one nutrition path that *does* use the network already degrades rather than throwing something raw into a screen: `lookupOffProduct` turns a rejecting fetch into an `OffLookupError`, which `app/barcode-scan.tsx` reads as "you're offline" and answers with the manual rung of its resolve ladder. Confirmed in the same section.
+
+### The other half: a request that could not be made is kept
+
+| | |
+| --- | --- |
+| Schema | `pending_estimates` (`0057`) — one row per meal (`meal_id` UNIQUE, `ON DELETE CASCADE`), `kind` ∈ `photo · text · revise`, the words in `description`, the JPEG as a **base name** in `file_name`, plus `attempts` / `last_error` |
+| Files | `pending-estimates/` — **its own directory**, because `meal-photos/` is swept against `meal_photos` rows in both directions on every app open and would delete a queued photo as an orphan on the very launch that needs it |
+| Placeholder | a real `meals` row, `source = 'ai_suggested'`, **NULL macros**, named with the user's own typed words (or `Photographed meal`) |
+| Drain | `runEstimateQueueDrain` on app open and on every foreground (`app/_layout.tsx`), oldest first, re-entrancy-guarded, never throws |
+
+**NULL, not 0.** A placeholder that read `0 kcal` would be a fabricated measurement and would sum into the day as a fact. NULL is "not recorded" — which the Eat tab already draws as an em-dash, and which already (correctly) drops the day out of countdown mode, because energy that is genuinely unknown cannot be subtracted from a target. The row says **`Estimate pending — offline`** rather than `Nothing recorded — tap to fill it in`, which would be advice the user cannot act on.
+
+### Which failures are worth waiting on
+
+`isQueueableFailure` queues a **transport** failure — the request never reached the API — and nothing else:
+
+| failure | queues? | why |
+| --- | --- | --- |
+| `expo/fetch` rejecting (`TypeError: Network request failed`) | **yes** | the phone never got out |
+| `ModelRequestError` with `status === 0` | **yes** | "no HTTP response" — a stream that died mid-reply is what a dropping connection looks like from inside the client |
+| `ModelRequestError` with an HTTP status (400/401/429/5xx) | no | the API **answered**; queueing re-bills the same rejection tomorrow |
+| `MealEstimateParseError` | no | the same request produces the same nonsense |
+| `MealEstimationUnavailableError` | no | no key, or a binary without `expo/fetch`; waiting adds neither |
+| `AbortError` | no | the user left the screen |
+
+`MealEstimateParseError` is new in this round and exists only for that table: the parser's four throws used to be bare `Error`s, indistinguishable from a network failure.
+
+### The drain APPLIES; it does not park a second review
+
+An interactive estimate lands in a review because **nothing has been written yet**. A queued one has already written the placeholder, so holding the result until the user happens to open a review screen would leave that placeholder empty for as long as he does not notice — the exact state this feature exists to end. So the drain grounds the estimate against the catalog (the same `groundMealEstimate`) and writes the items with their per-item `confidence` under `source = 'ai_suggested'` — the labelling the owner already accepts for an estimate. It reads as an estimate everywhere, and `Adjust` and the item editor are one tap away, as they are for a reviewed one. The model's title replaces the provisional name; its caveat becomes the meal's note; a queued photo is moved into `meal-photos/` through the one writer (`attachMealPhoto`), so it inherits the ordinary 7-day retention.
+
+**A queued revision is re-grounded on what is there now.** The queue stores the *correction*, never a snapshot of the items. On drain the meal's current items are read and sent as the "before", so a hand-edit made while offline is what the correction applies to rather than something it silently overwrites with a day-old picture of the meal. A revision still replaces items only — date, time, name and notes are untouched (`replaceMealItems`' own rule).
+
+**Nothing expires.** A row that fails again counts the attempt and records why. The two reasons a drain fails are "still offline" (waiting fixes it) and "no key yet" (Settings fixes it); deleting the user's meal on his behalf fixes neither. The escape hatch is the one he already has — delete the placeholder, and CASCADE takes the request with it.
+
+### Verification
+
+- `db/nutrition-v2.test.mjs` §23–29 — the source scan and a full catalog→meal→day round trip with nothing to connect to; the OFF degrade; the placeholder's NULL macros and the day's `0 kcal / 1 meal` reading; the whole classifier table; **offline → attempt counted → restart → reconnect → items land**, with the placeholder asserted NULL at every step; a queued photo's bytes re-read, sent, and landed in `meal-photos/`; the CASCADE, the orphan sweep, and a photo whose file vanished degrading to its words; a queued revision sent against an item added *after* it was queued.
+- `db/screens-render.test.mjs` §5b — the Eat tab rendered over a real placeholder: the user's words as the name, `Estimate pending — offline` on the row, and no number in the row at all.
+
+### What only a device can judge
+
+- **Whether the drain fires soon enough to feel like magic** rather than like a chore. There is no reconnect event without a netinfo dependency, so the trigger is app-open and foreground — which is the moment that matters (a drain nobody is present for helps nobody), but only the phone says whether "it filled itself in while I wasn't looking" reads as trustworthy.
+- **Whether the queued screen's two sentences are the right two** at the moment a plane's wifi has just failed.
+- **`expo-file-system`'s `File.base64()`** — the one API in this round that has never run on device in this codebase. It is feature-checked (`typeof f.base64 !== 'function'` → null) and its absence degrades a photo request to its typed words, so the failure mode is a worse estimate rather than a lost meal; the first offline photograph is the test.
+
+---
+
+## 12g. Composite foods (C4, 2026-09-14, migration `0058`)
+
+Owner, backlog C4: *"Take a photo of a pepperoni pizza… one composite item (pepperoni pizza) as well as rows below that are pizza crust, cheese, and pepperoni. If I ate the whole pizza but took the pepperoni off half, I could change just one thing. If I ate only half, I could change the entire thing together."* — with the scope fence in the same sentence: **specifically composite foods like pizza, not a general modifier system.** Design: `docs/spikes/composite-foods.md` (**built**).
+
+### The schema: two columns, no new table
+
+`0058` adds `meal_items.parent_item_id` (→ `meal_items`, **`ON DELETE CASCADE`**) and `meal_items.is_composite`, plus one index. A component is a `meal_items` row in every other respect; a second table would duplicate the whole name/amount/unit/macro/micros/confidence set *and* put the parent's numbers somewhere `recomputeMealTotals` does not look.
+
+CASCADE rather than SET NULL because a component has no meaning outside its composite — the rule that prefers SET NULL protects *execution history* from *catalog churn*, and a pizza's cheese is not execution history in its own right.
+
+**Five invariants, repository-maintained and test-pinned:**
+
+| # | | |
+| --- | --- | --- |
+| 1 | `is_composite = 1` ⟹ `parent_item_id IS NULL` | **One level only.** This is what keeps C4 a composite-foods feature and not the modifier system the owner ruled out — and why no sum needs a recursive CTE and no screen needs a variable indent. |
+| 2 | a header's macros, micros, amount and confidence are **NULL** | It is a name over its parts, not a row of numbers. |
+| 3 | a component's parent exists, in the same meal, with `is_composite = 1` | A component orphaned into another meal is a corrupt ledger. |
+| 4 | a composite always has ≥ 1 component | Removing the last part removes the composite. |
+| 5 | a composite's amount sums only when every part has one **and they share a unit** | Never a fabricated total, and **nothing converts** (B2/0047). |
+
+### The roll-up fails safe, deliberately
+
+The header stores NULL **and** every sum additionally filters `is_composite = 0`. Two belts, because the risk is asymmetric: a NULL-macro header means a query that forgets the rule under-counts by **zero** (`sum()` skips NULL), while a sum-carrying header means a forgetful query silently **doubles the pizza** in the day's calories. The storage makes the dangerous mistake impossible; the filter is added anyway so the intent is legible at each call site.
+
+**Three reads, two different filters, and the difference matters:**
+
+| read | filter | the question it answers |
+| --- | --- | --- |
+| `recomputeMealTotals` | `is_composite = 0` | what carries numbers |
+| `partialMealMetrics` | `is_composite = 0` | which items are unpriced — **without it, every meal holding a pizza is marked knowingly short on every metric and the Eat tab's hero stops counting down for a meal that is fully priced.** That regression would have shipped silently; it is asserted as a number. |
+| `mealItemCounts` | `parent_item_id IS NULL` | what the collapsed ledger DRAWS — one row per pizza, so a meal with a three-part pizza and a beer reads "2 items" |
+
+The number the reader *sees* on a collapsed composite is derived at read time by `rollUpComponents` (`src/lib/nutrition/composite.ts`) and never stored, so the headline **is** the parts' sum and cannot come to disagree with them.
+
+### Editing: the owner's two sentences, made arithmetic
+
+- **"I took the pepperoni off half"** → the part's own amount, through the existing `updateMealItemPortion` / `rescaleLoggedItem`. **A part edit never moves its siblings and never pushes back onto the parent** — the parent has no numbers to push onto. It changes what the parent *displays*, which is the point.
+- **"I only ate half"** → `scaleCompositeItem(db, parentId, factor)`: every part's amount, macros and micros multiplied in one transaction. Proportional is the only honest reading — halving the crust and not the cheese would be a claim about *which* half, which nothing knows. **Nothing is rounded on write**, so ×0.5 then ×2 returns to exactly 300 g. And it scales the parts' **current** values, not a hidden original: the current state is the only state the record has (the owner's own answer), so a hand-correction made first is what gets halved.
+
+### The estimator
+
+The item schema gains `"components": [...]|null`, capped at **4 parts by the parser** rather than by the prompt hoping. When components are present the parent's own macros are **dropped, not reconciled** — one fact gets one number. A single-part array collapses to a plain item (a chevron over nothing is noise). Each part inherits the dish's `confidence`: the model stated one confidence for the pizza, and it is as true of the cheese as of the crust.
+
+**Grounding never prices a header.** The seed catalog holds whole-dish archetypes — `Pizza, cheese slice`, `Cheeseburger, fast food`, `Chicken burrito` — each one leading phrase from what a model actually writes, so a catalog re-price on the header would contradict the parts beneath it. The parts *are* grounded; a single-token name ("cheese", "crust") fails `isConfidentMatch` by design and keeps the model's numbers, which is correct.
+
+The revision path carries it too: `buildMealRevisionRequest` prints a dish with its parts indented beneath it, and `MEAL_REVISION_SYSTEM_PROMPT` gains one rail telling the model to return it as one item with those parts.
+
+### What the screens draw
+
+**The Items block stays one `Block device="plate"`.** A composite is not a nested plate — a block gets exactly one device — so the parts are ruled rows *inside the same plate* at `pl-6`, with no fill, no left rule and no new mark. Collapsed by default.
+
+`app/meal-estimate.tsx` and `app/meal-revise.tsx` now share **one** review table (`src/components/nutrition/estimate-review.tsx`) instead of two copies of the same forty lines. The tree, the disclosure, the proportional scaling and the last-part rule are exactly the kind of logic that must not drift between two screens that promise the same thing — the pipeline already says *"one schema, one parser, one review"*, and this is the review half of it.
+
+**"I ate half" is fraction chips `½ · ⅓ · ¼` plus the whole-dish amount field** (owner's choice). Both are outlined, never accent — in the review phase the accent is `Save meal` and stays there. The amount field is **live and non-compounding**: it scales from a snapshot taken when the field is focused, so typing `3`, `36`, `360` into a 720 g pizza lands on ×0.5 rather than on ×0.5 three times. `app/meal-detail.tsx` gets the same tree over a *logged* composite, with the inline `PortionEditRow` on parts and the chips calling `scaleCompositeItem`.
+
+**Three places flatten a composite, and say so:** a meal template, a recipe captured from a meal, and (for sums) the leaves — the first two because their schemas cannot express a composite, where a header with no numbers would be a lie. Nothing moves when they flatten, because the parts are exactly the rows the meal's totals were summed from. `relogMeal` does **not** flatten: logging a pizza again logs a pizza.
+
+### The estimator prompt has a ceiling now
+
+`ESTIMATOR_PROMPT_CEILING = 1000` (prose tokens, `db/coach-eval.test.mjs` §6's own estimator), asserted in `db/nutrition-v2.test.mjs` §36 against **both** estimator prompts. Until this round the estimator's system prompt was guarded by **nothing**: the two Coach ceilings measure `buildCoachSystemPrompt` and `toWireTools(COACH_TOOLS)`, and the estimator is neither — a different system prompt on a tool-less turn (`tools: []`). It grew 296 → 449 in a day (A8) and 449 → 542 when `ml` landed, unnoticed.
+
+| | prose tok |
+| --- | --- |
+| `main` at branch point | **542** |
+| plus C4 (the composite rule, the `components` clause) | **+149** → 691 |
+| plus C5 (the question rules, the `questions` clause) | **+279** → 970 |
+| minus three enumerations trimmed in the same round | **−48** → **922** |
+| ceiling | **1,000** |
+
+The rule the Coach's budget note states applies verbatim: **the next addition trims rather than raises this**, and the two cheapest trims are named on the constant itself. The test also asserts the prompt is over 60% of the ceiling, so a ceiling nobody approaches cannot pass vacuously.
+
+### Verification
+
+`db/nutrition-v2.test.mjs` §30–36 — the header's NULL columns; the day counting 1,690 and not 11,689; **the countdown-mode guard, asserted through `dayFigure`**; the tally reading 2; the roll-up (510 g / 1,550 kcal) and its refusal to sum across units; an orphaned component emitted top-level; a part edit leaving siblings byte-identical; "ate half" halving the *corrected* pepperoni; the exact ×0.5/×2 round trip; the last-part rule and the FK cascade; the parser's drop/cap/collapse rules; grounding refusing the header against `Cheeseburger, fast food` while pricing the patty; a tree surviving `replaceMealItems`, `relogMeal` and a template flatten; both prompt ceilings. `db/screens-render.test.mjs` §7b2 — `meal-detail` over a real composite: one row, `3 parts`, the derived `1,550` beside the meal's `1,690`, the parts and chips **absent** while collapsed.
+
+### What only a device can judge
+
+- **Whether the model actually returns a `components` array**, and for the right dishes. The rule is a criterion ("parts a person would change separately"), not a dish list, and the estimator is tested here against a mock. The first photographed pizza is the test.
+- **Whether a collapsed composite reads as one thing you ate** at 375 pt, with `3 parts` in mono beside a serif name.
+- **Whether the chips feel like the sentence.** `½ ⅓ ¼` at 44 pt inside an expanded disclosure is a lot of furniture on a phone; only the hand says whether it is the fast path or clutter.
+- **The live scale in the hand** — typing into the whole-dish field and watching three rows halve underneath it is the confirmation, and a server render cannot show whether it reads as responsive or as jumpy.
+
+---
+
+## 12h. Auto-ask clarifying questions (C5, 2026-09-14, no migration)
+
+Owner, backlog C5: fires on anything ambiguous, from **any** logging method; **max 3**; **button-answerable** (an "other / type here" option is allowed but only as a click); only for things that **matter** and that the user would **actually know** — *"we shouldn't ask questions the user likely doesn't know themselves (i.e. cooking methods in a restaurant)."* Archetype: *"how many shots are in this latte?"* Design: `docs/spikes/auto-ask.md` (**built**).
+
+**No migration.** A question is a property of an estimate in flight, not of a logged record; nothing is persisted that `meal_items` cannot already hold.
+
+### One call, and each answer carries its own arithmetic
+
+The estimator's structured output gains `questions`, and each button option carries the **effect** of choosing it, from a closed four-shape vocabulary:
+
+| effect | means |
+| --- | --- |
+| `{"scale_item": name, "factor": n}` | multiply that item's portion and macros — *"how many shots?"* |
+| `{"set_amount": name, "amount": n}` | set the portion outright, **in the item's own unit** |
+| `{"add_item": {name, amount, unit, kcal, …}}` | add a whole item — *"was there dressing?"* |
+| `{"remove_item": name}` | drop one — *"did you eat the bun?"* |
+
+`set_amount`, not the spike's `set_grams`: `ml` landed (0047) between the design and the build, and a key named for one unit describing a number in another is exactly the lie that migration renamed three columns to avoid. The older spelling is still *read*, the way `grams` is still read as a fallback for `amount`.
+
+Because the effect travels with the estimate, **answering is pure on-device arithmetic** over the review rows (`applyAnswer`, `src/lib/nutrition/review-rows.ts`): no second round trip, instant, and it works with the network gone once the first reply has landed. The alternative — ask first, then estimate — bills the photo twice (`messages` carries no cache breakpoint) and makes the model invent questions about a meal it has not analysed.
+
+**Judgment still lives in the model.** It decides *whether* to ask, *what*, *which answers are plausible*, and *what each implies*. The four effects are a wire format for what it decided, not a decision table — the same relationship the estimate's own JSON already has to the estimate.
+
+### The prompt rules, and why each is shaped that way
+
+- **Materiality as a magnitude** — "~15% of its energy or ~10 g of protein" — not a list of askable topics, which would be wrong the first time he eats something not on it.
+- **Knowability as a place** — *"what the person was there for"* vs *"a kitchen they did not stand in"* — with the owner's restaurant example verbatim.
+- **"USUALLY ABSENT" and "an empty list is the norm", twice.** A model handed a `questions` field will fill it; saying zero is normal is the cheapest defence there is, and the existing prompt already uses it for the same class of problem.
+- **"the items you return must already assume it."** This is what makes a skipped question safe: the estimate on screen is already the most-likely-answer estimate, so skipping every question leaves a coherent record rather than a half-specified one.
+
+### Three gates, in order
+
+1. **The prompt** — the judgment gate, and the only one that can be smart.
+2. **A deterministic confidence gate:** if every item came back `high`, drop all questions. A model certain about every item and still asking has contradicted itself, and a certain estimate is the one case where an extra tap is pure friction.
+3. **A hard cap of three**, applied *after* the drops — so three good questions survive a fourth malformed one rather than being crowded out by it.
+
+Plus the parser's ordinary tolerance, extended: an option whose effect names an item not in `items` is dropped (the commonest model error is a renamed item); a question left with fewer than two options is dropped entirely (one button is not a question); an unknown effect key is dropped (the vocabulary is closed on purpose); `factor ≤ 0`, `amount ≤ 0` and `amount > 5000` are dropped, which are the schema's own `CHECK (amount > 0)` and the review screen's own ceiling.
+
+### The UX
+
+A `Block device="plate"` labelled **A few things** (not "Questions", which reads like a form), **above the item table** — the rows *are* the answer, and on a phone a control below the thing it changes makes the change happen off-screen. The tally is its note: `1 of 2`.
+
+Each question is one ruled row: the ask in serif (it is a sentence, and serif speaks), then outlined option chips in the label voice at ≥ 44 pt. **No accent anywhere in the block** — in the review phase the accent is `Save meal` and stays there; an answered chip fills `bg-ink`, which is a state mark, not a claim to being the next action. **Skip** sits at the row's trailing edge and becomes **Undo** once answered.
+
+**What it says back: nothing, in words.** Tapping a chip re-prices the rows below, and the Items total moves with it because that total is already derived from the live rows. The screen shows the consequence rather than announcing it.
+
+**No accumulation.** The first time a question is answered, the rows as they stand are frozen as that question's base; every later answer is applied to that base. So answering, then changing the answer, produces exactly the state that choosing the second option first would have, and Skip restores the unanswered estimate. The cost, stated because it is real: a hand-edit made *between two answers to the same question* is lost when the answer changes. That is the price of "no accumulation", and it is the right side of the trade — a silently doubled portion is a wrong record; a re-typed gram figure is an annoyance.
+
+**"Other" is the one second call**, and only when the model set `allow_other`. It is reached by a **click** (the owner's constraint), opens a well with a bare input, and fires a `reviseMeal`-shaped, **text-only** turn — the photo is never resent, because `messages` carries no cache breakpoint and a resent image is billed in full every time. The screen says so under the field. The reply's own questions are discarded: asking again in answer to a typed answer is a loop.
+
+**An unanswered question never blocks Save.**
+
+### Which methods ask
+
+| method | asks? |
+| --- | --- |
+| Describe, Photo (`/meal-estimate`) | **yes** |
+| `reviseMeal` (`/meal-revise`) | **yes** — owner decision. A correction can be as ambiguous as a first description, and it is the same one-call shape and the same parser. |
+| Barcode (`/barcode-scan`) | **no, and it is a design position** — a barcode is an exact identity against an exact per-100 panel, the portion sheet already asks the one unknown, and the path is offline-first by construction. A path that works with the network unplugged must not grow a question that needs the network. |
+| Add food / template / manual | **no** — the user is asserting numbers; asking him to clarify his own assertion is absurd. |
+
+The negatives are pinned **at the source** (`db/nutrition-v2.test.mjs` §40): the scanner and the log sheet must contain no question surface and no call into the estimator, so neither can grow one by accident.
+
+### Verification
+
+`db/nutrition-v2.test.mjs` §37–40 — the owner's latte archetype parsed end to end and its "3 shots" applied on-device (60 ml → 90 ml) with the sibling untouched and the ledger still summing to itself; each of the four effects, including an `add_item` that cannot duplicate itself and an effect naming a row the user already deleted; the no-accumulation property; all three gates; every drop rule; a pre-C5 reply parsing unchanged; both prompts carrying the rules in the owner's own terms; and the two source-level negatives. §36 — the prompt ceiling, at 922 of 1,000.
+
+### What only a device can judge
+
+- **Whether the model asks at all, and asks the right thing.** Every rule here is a criterion, and the estimator is tested against a mock harness — no real call is made on this branch. The first latte is the test: does it come back with "How many shots?", or with three weak questions about a sandwich?
+- **Whether "A few things" above the table reads as help or as an interrogation** at 375 pt, particularly with three questions and four chips each.
+- **Whether watching the rows re-price is enough confirmation**, or whether the change needs saying out loud after all.
+- **The "Other" round trip in the hand** — a second or two of `Working…` on a screen the user thought was finished.

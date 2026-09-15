@@ -15,6 +15,8 @@
 import type { Database } from '../database';
 import { newId } from '../id';
 import { normalizeFoodName } from './foods';
+import { leafMealItems } from '@/lib/nutrition/composite';
+
 import { listMealItems, logMealWithItems } from './nutrition';
 import type {
   MealTemplateItemRow,
@@ -71,7 +73,11 @@ export function createTemplate(db: Database, template: NewMealTemplate): string 
  * has no items (a free-form meal has nothing itemized to templatize).
  */
 export function saveMealAsTemplate(db: Database, mealId: string, name: string): string | null {
-  const items = listMealItems(db, mealId);
+  // LEAVES only (0058): `meal_template_items` cannot express a composite, so a
+  // pizza saves as its parts rather than as a header with no numbers. Honest —
+  // a template IS a curated list of priced lines — and nothing moves, because
+  // the parts are exactly the rows the meal's own totals were summed from.
+  const items = leafMealItems(listMealItems(db, mealId));
   if (items.length === 0) return null;
   return createTemplate(db, {
     name,

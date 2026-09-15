@@ -21,10 +21,12 @@ import {
   listMealItems,
   relogMeal,
   removeMealItem,
+  scaleCompositeItem,
   updateMealItemPortion,
   updateMealName,
   updateMealTime,
 } from '@/lib/db/repositories/nutrition';
+import { assembleMealItems } from '@/lib/nutrition/composite';
 import {
   deleteMealWithPhotos,
   mealPhotoView,
@@ -34,6 +36,13 @@ import { fmtInt, fmtQty, macroLine, portionLabel } from '@/lib/nutrition/format'
 import { mealDayLabel, parseClockParts, partsFromClock, shiftDay } from '@/lib/nutrition/meal-time';
 import { amountForQty, rescaleLoggedItem } from '@/lib/nutrition/servings';
 import type { AmountUnit, FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/types';
+
+/** The fractions a person actually says, for "I ate half the pizza" (C4). */
+const PART_FRACTIONS: { label: string; factor: number; spoken: string }[] = [
+  { label: '½', factor: 0.5, spoken: 'half' },
+  { label: '⅓', factor: 1 / 3, spoken: 'a third' },
+  { label: '¼', factor: 0.25, spoken: 'a quarter' },
+];
 
 /**
  * One meal's record (docs/nutrition-subapp.md §2): its items with portions and
@@ -276,6 +285,9 @@ export default function MealDetailScreen() {
   const [savedRecipe, setSavedRecipe] = useState(false);
   // The item whose portion is being edited inline, prefilled from its snapshot.
   const [editing, setEditing] = useState<ItemEdit | null>(null);
+  // Which composites are open. Collapsed by default: the table stays a table,
+  // and a pizza reads as one thing you ate until you ask about its parts.
+  const [openParts, setOpenParts] = useState<Set<string>>(() => new Set());
   // The when-editor's draft, or null when it is closed.
   const [timeEdit, setTimeEdit] = useState<TimeEdit | null>(null);
   // The rename editor's draft, or null when it is closed.
@@ -393,8 +405,97 @@ export default function MealDetailScreen() {
   }
 
   const removeItem = (itemId: string) => {
+    // Removing a composite takes its parts (the 0058 cascade); removing the
+    // LAST part takes the composite (invariant 4). Both live in the repository,
+    // so this screen just re-reads.
     removeMealItem(getDb(), itemId);
     reload();
+  };
+
+  /** The one-level tree the plate draws (0058). */
+  const nodes = assembleMealItems(items);
+
+  const toggleParts = (id: string) => {
+    setOpenParts((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  /** "I ate half": every part of one composite, scaled proportionally from what
+   *  it reads now. The arithmetic and the transaction are the repository's. */
+  const scaleParts = (parentId: string, factor: number) => {
+    scaleCompositeItem(getDb(), parentId, factor);
+    setEditing(null);
+    reload();
+  };
+
+  /** One priced row — a plain item, or a part indented inside its composite.
+   *  A function rather than a nested component, so React does not remount the
+   *  inline editor on every render of this screen. */
+  const renderItemRow = (item: MealItemWithServing, first: boolean) => {
+    const portion = portionLabel(item, units.volume);
+    const line = macroLine(item);
+    // Editable when there's something to re-scale from: a catalog food
+    // (re-derive) or an existing amount (proportional).
+    const canEdit = item.food_id != null || item.amount != null;
+    const isEditing = editing?.itemId === item.id;
+    return (
+      <View key={item.id}>
+        <Divider first={first} />
+        <View className="flex-row items-center gap-3">
+          {/* The 44pt floor and the row's padding both sit on the control, not
+              on this wrapper — the wrapper is items-center, so a floor set here
+              would not reach the Pressable, and padding set here would be dead
+              space outside the tap area. Same shape as the rows in data.tsx and
+              screenings.tsx. */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={canEdit ? `Edit ${item.name} portion` : item.name}
+            disabled={!canEdit}
+            onPress={() => (isEditing ? setEditing(null) : beginEdit(item))}
+            className="min-h-[44px] flex-1 flex-row items-center gap-3 py-3 active:opacity-60">
+            <View className="flex-1">
+              <Text className="font-serif text-[15px] leading-5 text-ink">
+                {item.name}
+                {item.confidence !== null ? (
+                  <Text className="font-mono text-[10px] text-ink-muted">
+                    {'  '}≈ {item.confidence}
+                  </Text>
+                ) : null}
+              </Text>
+              <Text className="mt-0.5 font-mono text-[10px] leading-4 text-ink-muted">
+                {[portion, line].filter(Boolean).join(' · ') || '—'}
+              </Text>
+            </View>
+            <Text className="font-mono text-[13px] text-ink-secondary">
+              {item.kcal != null ? fmtInt(item.kcal) : '—'}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${item.name}`}
+            hitSlop={12}
+            onPress={() => removeItem(item.id)}
+            className="h-8 w-8 items-center justify-center rounded-btn active:opacity-60">
+            <Ionicons name="close" size={16} color={palette.inkMuted} />
+          </Pressable>
+        </View>
+        {isEditing && editing ? (
+          <PortionEditRow
+            edit={editing}
+            item={item}
+            onStep={stepQty}
+            onEditAmount={(t) =>
+              setEditing((prev) => (prev ? { ...prev, mode: 'amount', amountText: t } : prev))
+            }
+            onSave={saveEdit}
+          />
+        ) : null}
+      </View>
+    );
   };
 
   const logAgain = () => {
@@ -656,71 +757,107 @@ export default function MealDetailScreen() {
             </Text>
           ) : (
             <View className="mt-1">
-              {items.map((item, index) => {
-                const portion = portionLabel(item, units.volume);
-                const line = macroLine(item);
-                // Editable when there's something to re-scale from: a catalog
-                // food (re-derive) or an existing amount (proportional).
-                const canEdit = item.food_id != null || item.amount != null;
-                const isEditing = editing?.itemId === item.id;
-                return (
-                  <View key={item.id}>
+              {/* The one-level tree (0058): a composite is a disclosure row with
+                  its parts indented INSIDE this same plate. Not a nested plate —
+                  a block gets exactly one device, and indentation on a ruled
+                  table is this drawing set's answer to subordination. */}
+              {nodes.map((node, index) =>
+                node.kind === 'composite' ? (
+                  <View key={node.item.id}>
                     <Divider first={index === 0} />
                     <View className="flex-row items-center gap-3">
-                      {/* The 44pt floor and the row's padding both sit on the
-                          control, not on this wrapper — the wrapper is
-                          items-center, so a floor set here would not reach the
-                          Pressable, and padding set here would be dead space
-                          outside the tap area. Same shape as the rows in
-                          data.tsx and screenings.tsx. */}
                       <Pressable
                         accessibilityRole="button"
-                        accessibilityLabel={canEdit ? `Edit ${item.name} portion` : item.name}
-                        disabled={!canEdit}
-                        onPress={() => (isEditing ? setEditing(null) : beginEdit(item))}
-                        className="min-h-[44px] flex-1 flex-row items-center gap-3 py-3 active:opacity-60">
+                        accessibilityLabel={`${node.item.name}, ${node.components.length} parts${
+                          node.rolled.kcal != null ? `, ${fmtInt(node.rolled.kcal)} kcal` : ''
+                        }`}
+                        accessibilityState={{ expanded: openParts.has(node.item.id) }}
+                        onPress={() => toggleParts(node.item.id)}
+                        className="min-h-[44px] flex-1 flex-row items-center gap-2 py-3 active:opacity-60">
+                        <Ionicons
+                          name={openParts.has(node.item.id) ? 'chevron-down' : 'chevron-forward'}
+                          size={16}
+                          color={palette.inkSecondary}
+                        />
                         <View className="flex-1">
                           <Text className="font-serif text-[15px] leading-5 text-ink">
-                            {item.name}
-                            {item.confidence !== null ? (
-                              <Text className="font-mono text-[10px] text-ink-muted">
-                                {'  '}≈ {item.confidence}
-                              </Text>
-                            ) : null}
+                            {node.item.name}
+                            <Text className="font-mono text-[10px] text-ink-muted">
+                              {'  '}
+                              {node.components.length} parts
+                            </Text>
                           </Text>
+                          {/* The headline IS the parts' sum, derived every
+                              render — it cannot come to disagree with them. */}
                           <Text className="mt-0.5 font-mono text-[10px] leading-4 text-ink-muted">
-                            {[portion, line].filter(Boolean).join(' · ') || '—'}
+                            {[
+                              node.rolled.amount != null
+                                ? portionLabel(
+                                    {
+                                      amount: node.rolled.amount,
+                                      unit: node.rolled.unit,
+                                      // A composite has no serving of its own —
+                                      // its parts do, and they keep theirs.
+                                      serving_qty: null,
+                                      food_serving_name: null,
+                                    },
+                                    units.volume
+                                  )
+                                : '',
+                              macroLine(node.rolled),
+                            ]
+                              .filter(Boolean)
+                              .join(' · ') || '—'}
                           </Text>
                         </View>
                         <Text className="font-mono text-[13px] text-ink-secondary">
-                          {item.kcal != null ? fmtInt(item.kcal) : '—'}
+                          {node.rolled.kcal != null ? fmtInt(node.rolled.kcal) : '—'}
                         </Text>
                       </Pressable>
                       <Pressable
                         accessibilityRole="button"
-                        accessibilityLabel={`Remove ${item.name}`}
+                        accessibilityLabel={`Remove ${node.item.name}`}
                         hitSlop={12}
-                        onPress={() => removeItem(item.id)}
+                        onPress={() => removeItem(node.item.id)}
                         className="h-8 w-8 items-center justify-center rounded-btn active:opacity-60">
                         <Ionicons name="close" size={16} color={palette.inkMuted} />
                       </Pressable>
                     </View>
-                    {isEditing && editing ? (
-                      <PortionEditRow
-                        edit={editing}
-                        item={item}
-                        onStep={stepQty}
-                        onEditAmount={(t) =>
-                          setEditing((prev) =>
-                            prev ? { ...prev, mode: 'amount', amountText: t } : prev
-                          )
-                        }
-                        onSave={saveEdit}
-                      />
+                    {openParts.has(node.item.id) ? (
+                      <View>
+                        {node.components.map((part) => (
+                          <View key={part.id} className="pl-6">
+                            {renderItemRow(part, false)}
+                          </View>
+                        ))}
+                        {/* "I ate half", the sentence people actually say. Every
+                            part scales proportionally, from what it reads NOW —
+                            so a part corrected by hand first is halved from the
+                            corrected number. */}
+                        <View className="flex-row items-center gap-2 pb-3 pl-6">
+                          <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
+                            I ate
+                          </Text>
+                          {PART_FRACTIONS.map((fraction) => (
+                            <Pressable
+                              key={fraction.label}
+                              accessibilityRole="button"
+                              accessibilityLabel={`I ate ${fraction.spoken} of the ${node.item.name}`}
+                              onPress={() => scaleParts(node.item.id, fraction.factor)}
+                              className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn border border-hairline px-3 active:bg-paper-dim">
+                              <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+                                {fraction.label}
+                              </Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
                     ) : null}
                   </View>
-                );
-              })}
+                ) : (
+                  renderItemRow(node.item, index === 0)
+                )
+              )}
             </View>
           )}
 

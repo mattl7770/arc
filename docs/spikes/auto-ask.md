@@ -1,7 +1,14 @@
 # C5 — Auto-ask clarifying questions
 
-**Status:** design proposal, for owner approval. No code written.
-**Migration:** **none.** Questions are a property of an estimate in flight, not of a logged record — nothing is persisted that `meal_items` cannot already hold.
+**Status: BUILT** (2026-09-14, branch `claude/c3-c5-estimator`). The owner took the recommended option at every question — (a) above the item table, (a) "Other" is a second text-only call, (a) an unanswered question never blocks Save — and the design below shipped as written, with four deltas recorded in `docs/nutrition-subapp.md` §12h:
+
+1. **`set_grams` is `set_amount`.** `ml` landed (0047) between the design and the build; a key named for one unit describing a number in another is exactly the lie that migration renamed three columns to avoid. The older spelling is still read as a fallback.
+2. **A revision asks too** (owner decision), where §3.4 recommended no. Same rules, same parser, same plate — the whole cost was one rules block on `MEAL_REVISION_SYSTEM_PROMPT`.
+3. **The recipe-log portion card was not built.** §3.4's "yes, but not through a model" is a good idea and a separate one: it needs no estimator, no prompt and no parser, and folding it in here would have made this round's surface bigger than its subject.
+4. **The token cost was under-predicted.** §3.6's `+266` was measured before `ml` landed; against the real baseline the two rounds cost +149 (C4) and +279 (C5). The `ESTIMATOR_PROMPT_CEILING` §3.6 recommends was built, at 1,000, and **the rule it states was applied to this round**: three enumerations were trimmed back to three examples each, taking 970 → 922.
+
+The original proposal follows unchanged.
+**Migration:** **none.** (Confirmed at build: C5 needed no schema at all. Its two branch-mates were renumbered `0048`→`0057` and `0049`→`0058` at commit — see `0057`’s header for why a *free* number below main’s head is worse than a taken one.) Questions are a property of an estimate in flight, not of a logged record — nothing is persisted that `meal_items` cannot already hold.
 **Citations verified against `main` at `950c846`.** `main` moves several times a day; if a line number below misses, the surrounding quote is the anchor.
 
 ---
