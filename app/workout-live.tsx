@@ -89,6 +89,16 @@ import type { UnitPreferences } from '@/lib/user/types';
  * and never a signal green — signal colours mark biological state only, and
  * that firewall was a finding in all six hostile reviews.
  *
+ * ## The away-gym flag (C13, migration 0055)
+ *
+ * One quiet chip beside the clock, off on every new session and never
+ * remembered. On, the session is real training and unreal measurement: it tags
+ * no PR here, sets none in `personalRecords`, steers no progression and seeds
+ * no prefill, while freshness and weekly volume count it exactly as before —
+ * they never read a weight. It stays on the e1RM chart, marked. The flag rides
+ * the draft (`DRAFT_VERSION` 3) and is editable afterwards on a stored session,
+ * which costs nothing because none of those reads is cached.
+ *
  * ## Nothing typed here can be lost (owner, 2026-09-14)
  *
  * *"losing workout information when closing app mid workout, necessary for
@@ -545,6 +555,19 @@ function WorkoutLive({
   // logger's "anything typed means unsaved" test would prompt to discard on the
   // way out of a screen that was only ever read.
   const [dirty, setDirty] = useState(false);
+  /**
+   * The away-gym flag (0055), and the whole of "off by default, deliberately
+   * not sticky".
+   *
+   * A RESUMED session gets back what it was set to; an EDIT of a past session
+   * opens on what that session was stored as; anything else starts `false`. No
+   * preference is read and none is written, and that asymmetry is the argument:
+   * forgetting to turn it ON costs one session's PR fidelity and can be fixed
+   * afterwards on this same screen, where forgetting to turn it OFF at home
+   * would silently kill PR detection indefinitely, with no symptom the owner
+   * would ever notice.
+   */
+  const [away, setAway] = useState<boolean>(() => draft?.away ?? stored?.away ?? false);
   const [pickerOpen, setPickerOpen] = useState(false);
   // A resumed rest timer counts from its stored target instant; one that ran out
   // while the app was away is simply over, so it comes back as null rather than
@@ -677,6 +700,7 @@ function WorkoutLive({
         startedAt,
         routineId: draftRoutineId ?? null,
         restEndsAt,
+        away,
         blocks,
       };
       const serialised = JSON.stringify(payload);
@@ -688,7 +712,7 @@ function WorkoutLive({
       // in — the session is still on screen and Finish still saves it.
       console.warn('[exercise] draft write failed', error);
     }
-  }, [blocks, restEndsAt, hasData, editing, startedAt, draftRoutineId]);
+  }, [blocks, restEndsAt, away, hasData, editing, startedAt, draftRoutineId]);
 
   // Guard an accidental back from vaporising unsaved work.
   useEffect(() => {
@@ -768,6 +792,29 @@ function WorkoutLive({
     setBlocks((prev) => prev.filter((b) => b.key !== blockKey));
   };
 
+  /**
+   * Flip the away-gym flag (0055).
+   *
+   * Turning it ON clears every PR stamp already earned this session, because
+   * the stamp is a claim the app has just stopped making: an away session sets
+   * no record, and a "PR" tag left standing on one would contradict the line of
+   * copy directly beneath the control. Turning it back off simply resumes
+   * detection from the next completed set — nothing is restored, because a set
+   * completed while the flag was on was never measured.
+   */
+  const toggleAway = () => {
+    setDirty(true);
+    setAway((prev) => {
+      const next = !prev;
+      if (next) {
+        setBlocks((bs) =>
+          bs.map((b) => ({ ...b, sets: b.sets.map((s) => ({ ...s, pr: false })) }))
+        );
+      }
+      return next;
+    });
+  };
+
   /** Group / ungroup a block with the one below it into a superset. */
   const toggleLink = (blockKey: number) => {
     setDirty(true);
@@ -785,7 +832,12 @@ function WorkoutLive({
     // A PR here is an e1RM record, which only a set carrying BOTH a load and
     // its reps can hold (0046) — a plank can never set one, and asking is
     // cheaper than computing an e1RM that `countsForE1rm` would reject anyway.
-    if (done && !editing && isLoadedRepsMeasures(block.measures)) {
+    // An AWAY session tags none at all (0055), even when the numbers are the
+    // best on record: `bestE1rm` is a bar every future session must clear, and
+    // a friendlier machine raising it permanently is the false stall this whole
+    // feature exists to prevent. The control's own copy says so, so it is never
+    // a surprise. The stored side is `personalRecordsFrom`'s `baselineSets`.
+    if (done && !editing && !away && isLoadedRepsMeasures(block.measures)) {
       const weightKg = set.weight.trim() === '' ? null : toCanonicalKg(Number(set.weight), units);
       const reps = set.reps.trim() === '' ? null : Number(set.reps);
       const rpe = set.rpe.trim() === '' ? null : Number(set.rpe);
@@ -878,11 +930,14 @@ function WorkoutLive({
       if (stored) {
         // Correcting a past session: its date, kind and duration are facts
         // about that day and are left exactly as they were. Only the sets — the
-        // thing the editor edits — are rewritten.
+        // thing the editor edits — and the away flag are rewritten. The flag is
+        // free to change afterwards precisely because nothing derived from it
+        // is stored: PRs are awarded live and never written, and every other
+        // affected read is computed from the sets on demand.
         replaceWorkout(
           db,
           stored.id,
-          { kind: stored.kind, durationMin: stored.durationMin, notes: stored.notes },
+          { kind: stored.kind, durationMin: stored.durationMin, notes: stored.notes, away },
           sets
         );
       } else {
@@ -898,6 +953,7 @@ function WorkoutLive({
             // from, so Finish stamps that workout used exactly as it would have
             // before the app closed.
             routineId: draftRoutineId ?? null,
+            away,
           },
           sets
         );
@@ -980,29 +1036,72 @@ function WorkoutLive({
           names, remove this"*), and nothing replaced it: the movements below
           are the session's identity.
         */}
-        <View className="mt-2 flex-row items-baseline gap-2">
-          {editing ? (
-            <>
-              <Text className="font-mono text-2xl text-ink">
-                {dayLabel(stored.date, todayISODate())}
-              </Text>
-              {stored.durationMin != null ? (
-                <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                  {Math.round(stored.durationMin)} min
+        {/*
+          The clock and the away-gym control share one row: the control belongs
+          beside the thing that says *when* this session is, because it says
+          *where*. It takes no device of its own — devices never nest, and the
+          set tables below are already plates — and no accent: this screen's
+          budget is exactly one primary action (Finish workout) plus the
+          completion stamps. Off it is a hairline outline; on it takes the
+          protocol editor's selected treatment (border-ink + the recessed fill).
+        */}
+        <View className="mt-2 flex-row items-center justify-between gap-3">
+          <View className="flex-row items-baseline gap-2">
+            {editing ? (
+              <>
+                <Text className="font-mono text-2xl text-ink">
+                  {dayLabel(stored.date, todayISODate())}
                 </Text>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <Text className="font-mono text-2xl text-ink">
-                {formatClock((now - startedAt) / 1000)}
-              </Text>
-              <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                elapsed
-              </Text>
-            </>
-          )}
+                {stored.durationMin != null ? (
+                  <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                    {Math.round(stored.durationMin)} min
+                  </Text>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Text className="font-mono text-2xl text-ink">
+                  {formatClock((now - startedAt) / 1000)}
+                </Text>
+                <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                  elapsed
+                </Text>
+              </>
+            )}
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: away }}
+            accessibilityLabel={
+              away
+                ? 'Away gym, on. This session sets no records and does not steer progression. Tap to turn off.'
+                : 'Away gym, off. Tap to mark this session as logged away from your usual gym.'
+            }
+            onPress={toggleAway}
+            className={`min-h-[44px] justify-center rounded-btn border px-3 active:bg-paper-dim ${
+              away ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'
+            }`}>
+            <Text
+              className={`font-label text-[12px] uppercase tracking-[1px] ${
+                away ? 'font-semibold text-ink' : 'text-ink-secondary'
+              }`}>
+              Away gym
+            </Text>
+          </Pressable>
         </View>
+
+        {/*
+          The entire feature, said where the decision is made — including the
+          corner case the owner will hit first: the away gym's machine is
+          EASIER, he genuinely moves more weight, and there is still no record.
+          Prose about the session, so: serif, muted, no device.
+        */}
+        {away ? (
+          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+            Loads from this session won’t set records or steer progression, even if they’re the best
+            on record. It still counts as training.
+          </Text>
+        ) : null}
 
         {/*
           Exercise blocks — one ruled plate per exercise, and THE BIND for

@@ -1,8 +1,28 @@
 # C13 — The gym away-note
 
-**Status:** proposal, for the owner. No code written.
+**Status: BUILT** (2026-09-14). Approved by the owner on the three questions in
+§6, all as recommended: (1a) never a PR, (2a) plotted and marked, (3a) not
+sticky. Shipped as migration **`0055`** — `workouts.away`, one bit. The
+implementation notes, including the one place it deviates from §3, are
+`docs/exercise-subapp.md` §11; this file stays as the argument.
+
+**The number moved twice, 0051 → 0054 → 0055.** Main's migration head reached
+`0053` while this was being built (D4's timezone migration), and the runner
+filters `version > user_version` — a file numbered below a shipped head is not
+applied late, it is never applied at all. `0054` was then committed by D3
+(ingested-workout pairing) on a parallel branch within the hour, caught by
+re-checking the sibling worktrees rather than at merge. Every `0051` below reads
+as `0055`.
+
+**One deviation, §3.3b.** The proposal excluded away sessions inside
+`exerciseSessionTops`. That reducer has a second consumer the proposal did not
+account for — `app/exercise-detail.tsx`'s **History list** renders the same rows
+— so dropping them there would have erased the session from the one screen built
+to show it. The flag rides on `SessionTopSet` instead and `suggestProgression`
+refuses it, which closes the false-deload path at the branch itself and leaves
+the history honest.
+
 **Backlog:** `docs/backlog-2026-09.md` C13 (Phase C, marked **[spec]**).
-**Reserved migration:** `0051`, *"gym note"*.
 
 ---
 
@@ -98,7 +118,7 @@ the same face"*.
 
 ## 3. Proposed design
 
-### 3.1 The flag: migration `0051`, one column, one bit
+### 3.1 The flag: migration `0055`, one column, one bit
 
 ```sql
 ALTER TABLE workouts ADD COLUMN away integer NOT NULL DEFAULT 0
@@ -259,7 +279,7 @@ confusion this feature exists to remove.
 Headless, `node:sqlite`, in `db/exercise.test.mjs`, `db/training-engine.test.mjs`
 and `db/coach-tools.test.mjs`.
 
-1. `0051` leaves every existing workout at `away = 0`; `npm run db:validate`
+1. `0055` leaves every existing workout at `away = 0`; `npm run db:validate`
    passes.
 2. An away session never appears in `personalRecordsFrom` — **even when its
    numbers are the highest on record.**
@@ -315,7 +335,7 @@ the one thing a single bit cannot give (§3.3c).
 
 | Piece | Size |
 | --- | --- |
-| `0051` + `LogWorkoutInput` / `WorkoutDetail` / `RecentSession` plumbing | small |
+| `0055` + `LogWorkoutInput` / `WorkoutDetail` / `RecentSession` plumbing | small |
 | The control + copy in `workout-live.tsx`, live and editing | small |
 | The four read changes (PR live, `workingSets` exclusion, `exerciseSessionTops`, `lastSessionSets`) | small — each is a predicate |
 | `e1rmSeries` marking + the chart's hollow point | small |

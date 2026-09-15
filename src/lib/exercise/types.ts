@@ -31,6 +31,13 @@ export type WorkoutRow = {
   duration_min: number | null;
   notes: string | null;
   routine_id: string | null;
+  /**
+   * Logged away from the usual gym (0055). 1 means the session's LOADS are not
+   * comparable to the home baseline — it sets no record, steers no progression
+   * and seeds no prefill — while the training itself still counts everywhere
+   * that counts work rather than load. See the migration header.
+   */
+  away: 0 | 1;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -70,6 +77,13 @@ export type LogWorkoutInput = {
   notes?: string | null;
   /** Set when the session was started from a routine (0013). */
   routineId?: string | null;
+  /**
+   * Logged away from the usual gym (0055). Omitted means home, which is what
+   * every caller but the live logger means: the Coach, the photo import and the
+   * manual logger have no way to know, and guessing would be worse than the
+   * truthful default.
+   */
+  away?: boolean;
 };
 
 /**
@@ -116,6 +130,12 @@ export type RecentSession = {
    * Empty for a session with no sets (cardio, mobility).
    */
   movements: string[];
+  /**
+   * Logged away from the usual gym (0055). The list SAYS so, because a session
+   * whose numbers read low and does not say why is the confusion this feature
+   * exists to remove.
+   */
+  away: boolean;
   createdAt: Timestamp;
 };
 
@@ -143,6 +163,8 @@ export type WorkoutDetail = {
   durationMin: number | null;
   notes: string | null;
   routineId: string | null;
+  /** Logged away from the usual gym (0055) — editable after the fact. */
+  away: boolean;
   createdAt: Timestamp;
   sets: StoredSet[];
 };
@@ -456,8 +478,16 @@ export type MuscleFreshness = {
   anchoredAt: Timestamp | null;
 };
 
-/** A per-exercise estimated 1RM data point (for the detail sparkline). */
-export type E1rmPoint = { date: DateString; e1rm: number };
+/**
+ * A per-exercise estimated 1RM data point (for the detail sparkline).
+ *
+ * `away` (0055) marks a point whose session was logged away from the usual gym.
+ * It is present on the CHART and absent from every baseline: hiding it would be
+ * a different lie from awarding it a record — the session happened and the
+ * owner will look for it. Omitted rather than `false` on a home point, so the
+ * flag reads as a mark rather than a column.
+ */
+export type E1rmPoint = { date: DateString; e1rm: number; away?: true };
 
 /**
  * Personal records for one exercise. Loads are canonical kg, distances metres,

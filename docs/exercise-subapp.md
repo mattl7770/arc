@@ -425,3 +425,66 @@ Three traps the name passes are written around, all real: `*run*` matches "t**ru
 - **Three value columns at 375 pt.** Nothing in the shipped catalog measures three things, so the `Prev`-column fallback is untested by the owner's own use.
 - **Whether a session of only endurance movements should log as `kind: 'cardio'`.** The live logger still writes `'strength'` for everything; changing it would move the hub's Zone-2 minutes, so it is left for the owner to call.
 - **The ten-minutes-per-set calibration itself.** It is anchored to one reading (45 min → quads 57), and the only test that matters is whether, the morning after a long run, the figure matches how his legs feel.
+
+---
+
+## 11. Phase 7 — the away-gym bit (C13, 2026-09-14)
+
+Owner: *"for when I am not at my home gym, I can make note of that and ARC can adjust intelligently"* — a stiffer machine must not read as a regression. The full argument is `docs/spikes/gym-away-note.md` (approved, all three questions as recommended); this section is what was built.
+
+### 11.1 The governing sentence
+
+> **An away session is real training and unreal measurement.**
+
+It happened, it fatigued you, it counts as volume. Its *numbers* are not comparable to the home baseline — **in either direction**. Everything that counts **work** includes it; everything that compares **load** excludes it from the baseline while still showing it.
+
+### 11.2 The flag
+
+```sql
+ALTER TABLE workouts ADD COLUMN away integer NOT NULL DEFAULT 0 CHECK (away IN (0, 1));
+```
+
+Migration **0055**. A column and not `workouts.notes`, because every consumer that changes behaviour is SQL or a reducer over SQL rows, and 0034's header already states the rule: provenance is a column. A **bit** and not a four-value enum, because the *behaviour* is binary and widening a CHECK on `workouts` — the parent of `workout_sets.workout_id`, i.e. the whole execution history — is the twelve-step rebuild. A nullable `gym_id` **beside** the bit later is one additive ALTER, and `away = 1 AND gym_id IS NULL` reads perfectly well as "somewhere else"; named gyms are deliberately not v1.
+
+`NOT NULL DEFAULT 0` because every workout already on the device *was* at home — there was no other option when it was logged.
+
+### 11.3 Six consumers, three answers
+
+| Read | Away sessions | Why |
+| --- | --- | --- |
+| `personalRecordsFrom` | **excluded** | `bestE1rmKg` is a bar every future session must clear. A false PR raises it permanently and the next four home sessions then read as a stall — the exact complaint, arriving a month later and much harder to diagnose. A *missed* real PR is recoverable next session. So: no record **even when the numbers are the best on record**, and the control's own copy says so. |
+| `toggleDone` (the live PR stamp) | **excluded** | Same rule, live. Turning the flag on mid-session also clears the stamps already earned — a "PR" tag left standing would contradict the line of copy directly beneath the control. |
+| `suggestProgression` | **excluded** | The stall branch *is* the false-deload path: `STALL_SESSIONS` sessions with no gain and reps below the top of the range is exactly what three weeks on stiffer machines produces. |
+| `lastSessionSets` (prefill) | **deprioritised** | The most recent **non-away** session, falling back to any when there is none. A confirmed placeholder becomes a real logged set, so away numbers leak into history by the quietest route available. One `ORDER BY w.away, …` does the whole of it. |
+| `e1rmSeriesFrom` (the chart) | **kept and marked** | Deleting them would be a different lie: the session happened and the owner will look for it. The point draws **hollow** (`Sparkline`'s new `marked` prop) — a *form* difference, never a colour, because this is behaviour and signal ink marks biology. |
+| freshness · weekly volume · `weekSummary` · the strain pillar · the self-review | **untouched** | **None of them reads a weight.** `muscleFreshness` multiplies role weight × effort(rpe, failure) × decay; the rest count role-weighted sets and minutes. A set to RPE 8 on a stiff machine fatigues the muscle exactly as much as one at home. `db/training-engine.test.mjs` §9(e) asserts these readings are *identical* with the flag on and off — the test exists so a later pass does not "complete" the feature by adding a branch. |
+
+**One deviation from the spike (§3.3b).** It proposed excluding away sessions inside `exerciseSessionTops`. That reducer also feeds `app/exercise-detail.tsx`'s History list, so dropping them there would erase the session from the one screen built to show it. The flag rides on `SessionTopSet` instead and **`suggestProgression` refuses it** — the false-deload path closes at the branch itself, the history stays honest, and a future caller cannot feed the engine away numbers by accident.
+
+### 11.4 The control
+
+One quiet pressable in the live logger's clock row, in the **label voice** — `AWAY GYM`, hairline outline off, `border-ink bg-paper-dim` on, the protocol editor's chip vocabulary. **No accent**: that screen's budget is one primary action (Finish workout) plus the completion stamps. On, one serif muted line sits beneath it:
+
+> *Loads from this session won't set records or steer progression, even if they're the best on record. It still counts as training.*
+
+That sentence is the entire feature, said where the decision is made — including the corner case the owner will hit first, where the away gym's machine is *easier*.
+
+**Off by default on every session and never remembered.** The failure modes are asymmetric: forgetting to turn it *on* costs one session's PR fidelity and is fixable afterwards on this same screen; forgetting to turn it *off* would silently kill PR detection at home, indefinitely, with no symptom.
+
+**`DRAFT_VERSION` 2 → 3.** `LiveDraft` gained `away`; a v2 payload is discarded rather than read as "home", which would be right almost always — the wrong standard for the one flag whose job is keeping an incomparable load out of the baseline.
+
+**Editable afterwards, with nothing to re-derive.** PRs are awarded live and never stored and every other affected read is computed on demand, so flipping the flag on a two-week-old session simply changes what the next read returns. `replaceWorkout` **preserves** an omitted flag rather than defaulting it — silence from a caller is not an assertion of "home".
+
+### 11.5 The Coach
+
+`get_training_summary.recentSessions` rows gain `away: true` (omitted on home sessions — payload, not schema, so it costs the prompt budget nothing), and the tool description gains one sentence:
+
+> *`away: true` means a different gym — those loads are not comparable, so never call them a regression.*
+
+That sentence is the Coach's entire share of the feature; it needs no arithmetic at all. **+36 tok**, paid for with **−21** in the same two training tools: `get_training_recommendation` no longer claims "program week (and whether it is a deload)" — a `recommendation.program` field that *cannot* appear, since programs were retired on 2026-08-11 and the recommender's schedule branch was deleted — and `get_training_summary`'s own "(default 28)", which its `days` property restates verbatim. Net **+17 tok**, 9,224 → 9,241 against the 9,250 ceiling. **Neither ceiling moved.**
+
+### 11.6 What only a device can settle
+
+- **Whether the chip is findable.** It is deliberately quiet and sits beside the clock; the question is whether it is quiet enough to ignore for months and still obvious in a hotel gym on the first try.
+- **Whether "off every time" is the right default in practice**, on a two-week trip where the answer is "away" fourteen days running. The asymmetry argues it is; only a trip will say.
+- **The hollow bar.** At 120 pt the e1RM spark draws twelve ~9 pt bars, and an outlined bar at that width has never been looked at on a phone.

@@ -100,6 +100,13 @@ export function sessionTitle(session: RecentSession): string {
  * The session detail line: "18 sets · 52 min", either half alone, or the kind
  * label when a session has neither (numbers stay sans here — they sit inside
  * prose, the sanctioned exception to the mono rule).
+ *
+ * An away session says so, last (0055). A past session whose numbers read low
+ * and does not say WHY is the confusion the flag exists to remove, and the list
+ * is where the owner meets those numbers again weeks later. It is appended
+ * rather than prefixed because it qualifies the session, it does not name it —
+ * and it survives the `parts.length === 0` branch, so a duration-less cardio
+ * session logged away still carries the mark.
  */
 export function sessionDetail(session: RecentSession): string {
   const parts: string[] = [];
@@ -107,7 +114,9 @@ export function sessionDetail(session: RecentSession): string {
     parts.push(`${session.setCount} ${session.setCount === 1 ? 'set' : 'sets'}`);
   }
   if (session.durationMin != null) parts.push(`${Math.round(session.durationMin)} min`);
-  return parts.length > 0 ? parts.join(' · ') : KIND_LABEL[session.kind];
+  if (parts.length === 0) parts.push(KIND_LABEL[session.kind]);
+  if (session.away) parts.push('Away gym');
+  return parts.join(' · ');
 }
 
 /** "8 × 135 lb", "12 reps", "135 lb" — one draft/stored set, in display units. */

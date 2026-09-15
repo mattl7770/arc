@@ -67,4 +67,15 @@
 
 ## Migration numbers reserved (head is `0044`; re-check `git ls-tree main -- db/migrations/` at merge — seven collisions in a week)
 
-`0045` A8 micros (only if the JSON column proves insufficient) · `0046` B1 exercise metric type · `0047` B2 ml unit · `0048` B3 day boundary (if a preference column is needed) · `0049` C4 composite foods · `0050` C11 protocol toggles (if not expressible in content JSON) · `0051` C13 gym note · `0052` D3 ingested-workout pairing · `0053` D4 timezone.
+`0045` A8 micros (only if the JSON column proves insufficient) · `0046` B1 exercise metric type · `0047` B2 ml unit · `0048` B3 day boundary (if a preference column is needed) · `0049` C4 composite foods · `0050` C11 protocol toggles (if not expressible in content JSON) · ~~`0051` C13 gym note~~ → **`0055`** · ~~`0052` D3 ingested-workout pairing~~ → **`0054`** · `0053` D4 timezone · **`0056`** C12 AI-authored catalog rows (`exercises.source`).
+
+**A reservation is not a claim, and the runner is why.** `pendingMigrations`
+filters `version > user_version`, so a file numbered at or below a device's
+stamped version is not applied late — it is **never applied**, silently, on the
+one database with no second copy. D4 landed `0053` on main on 2026-09-14 while
+0048–0052 were still in flight, which retired every number below it. C13's
+reserved `0051` went to `0054` and then, when D3 committed `0054` on a parallel
+branch the same hour, to **`0055`**; C12 took **`0056`** beside it. **Anything
+still holding 0048–0052 must renumber above main's head at merge** — and check
+the sibling worktrees, not just `main`, which is what caught the second of
+those two moves before it became a collision.

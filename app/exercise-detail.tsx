@@ -294,8 +294,14 @@ export default function ExerciseDetailScreen() {
                     Latest
                   </Text>
                 </View>
+                {/* Away sessions are PLOTTED and MARKED, never hidden (0055):
+                    the session happened and the owner will look for it, but its
+                    loads are not part of the baseline the rest of the series is
+                    measured against. Hollow, not coloured — behaviour, not
+                    biology. */}
                 <Sparkline
                   data={series.map((p) => p.e1rm)}
+                  marked={series.map((p) => p.away === true)}
                   baseline="auto"
                   width={120}
                   height={36}
@@ -306,6 +312,13 @@ export default function ExerciseDetailScreen() {
                 Log a couple of weighted sessions and the estimated-1RM trend appears here.
               </Text>
             )}
+            {/* The key for the mark above — drawn only when there is something
+                marked, so a chart with no away sessions carries no legend. */}
+            {series.length >= 2 && series.some((p) => p.away) ? (
+              <Text className="mt-2 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                Hollow · away gym — plotted, not counted toward records
+              </Text>
+            ) : null}
           </Block>
         </View>
       ) : null}
@@ -342,6 +355,15 @@ export default function ExerciseDetailScreen() {
                       )}
                       {s.rpe != null ? `  @${s.rpe}` : ''}
                     </Text>
+                    {/* A session logged elsewhere says so, in the label voice —
+                        the same reason the chart marks its point (0055): these
+                        numbers are real and are not comparable to the rest of
+                        the column. */}
+                    {s.away ? (
+                      <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                        Away
+                      </Text>
+                    ) : null}
                   </View>
                 </View>
               ))}

@@ -40,16 +40,24 @@ export type SetRow = {
   /** Seconds (0013) and metres (0046) — null on a movement that measures neither. */
   duration_sec: number | null;
   distance_m: number | null;
+  /** The session's away flag (0055) — see {@link baselineSets}. */
+  away: 0 | 1;
 };
 
 /**
  * Every non-warmup set logged for an exercise, newest workout first. Exported so
  * a screen can fetch the rows ONCE and derive several stats from the same scan
  * (exercise-detail does this), instead of re-querying per stat.
+ *
+ * The away flag (0055) rides along rather than being filtered out here, and
+ * that is deliberate: the three reducers below want three different things from
+ * it. The records and the progression input must EXCLUDE away sets; the e1RM
+ * chart must KEEP and MARK them. A `WHERE w.away = 0` in this one query would
+ * make the chart silently lose the sessions the owner will go looking for.
  */
 export function workingSets(db: Database, exerciseId: string): SetRow[] {
   return db.all<SetRow>(
-    `SELECT s.workout_id, w.date, w.created_at AS when_iso,
+    `SELECT s.workout_id, w.date, w.created_at AS when_iso, w.away,
             s.reps, s.weight_kg, s.rpe, s.set_type, s.duration_sec, s.distance_m
      FROM workout_sets s
      JOIN workouts w ON w.id = s.workout_id
@@ -57,6 +65,27 @@ export function workingSets(db: Database, exerciseId: string): SetRow[] {
      ORDER BY w.date DESC, w.created_at DESC, s.set_index`,
     [exerciseId]
   );
+}
+
+/**
+ * The sets a record may be set from and a progression may be steered by — home
+ * sessions only (0055).
+ *
+ * ONE definition, because two would drift: `personalRecordsFrom` and
+ * `exerciseSessionTopsFrom` have to agree exactly about which sets are
+ * comparable to the home baseline, or a movement could show a personal record
+ * the progression engine has never seen.
+ *
+ * The asymmetry is the whole argument (docs/spikes/gym-away-note.md §3.3a):
+ * `bestE1rmKg` is a bar every future session must clear, so a false PR from a
+ * friendlier machine raises it PERMANENTLY and the next four home sessions then
+ * read as a stall — which is the exact complaint this feature exists to
+ * prevent, arriving a month later and much harder to diagnose. A *missed* real
+ * PR is recoverable next session. So an away session sets no record even when
+ * its numbers are the best on record, and the control's own copy says so.
+ */
+function baselineSets(rows: SetRow[]): SetRow[] {
+  return rows.filter((r) => r.away === 0);
 }
 
 /**
@@ -88,6 +117,20 @@ export function exerciseSessionTops(db: Database, exerciseId: string, limit = 12
  * The pure reducer behind {@link exerciseSessionTops}: takes pre-fetched
  * {@link workingSets} rows (newest workout first) so a screen can derive several
  * stats from one scan. Same result as the DB form.
+ *
+ * ## Away sessions are MARKED here, not dropped (0055)
+ *
+ * The spike proposed dropping them at this reducer, because its consumer is
+ * `suggestProgression` and a three-session away block trips the stall branch on
+ * a lift that never stalled. It has a second consumer the spike did not
+ * account for: app/exercise-detail.tsx's **History list**, which renders these
+ * same rows. Dropping them here would erase the session from the one screen
+ * built to show it — the same lie as hiding it from the chart.
+ *
+ * So the flag rides on {@link SessionTopSet} and the ENGINE refuses it
+ * (`suggestProgression` filters on it, src/lib/exercise/progression.ts). The
+ * false-deload path closes at the branch itself, the history stays honest, and
+ * a future caller cannot feed the engine away numbers by accident.
  */
 export function exerciseSessionTopsFrom(rows: SetRow[], limit = 12): SessionTopSet[] {
   const byWorkout = new Map<string, { date: DateString; best: SetRow }>();
@@ -107,6 +150,7 @@ export function exerciseSessionTopsFrom(rows: SetRow[], limit = 12): SessionTopS
     rpe: best.rpe,
     durationSec: best.duration_sec,
     distanceM: best.distance_m,
+    away: best.away === 1,
   }));
 }
 
@@ -119,6 +163,13 @@ export function personalRecords(db: Database, exerciseId: string): PersonalRecor
  * The pure reducer behind {@link personalRecords}: takes pre-fetched
  * {@link workingSets} rows so a screen can derive several stats from one scan.
  * Same result as the DB form. Empty-safe (nulls).
+ *
+ * ## Away sessions are invisible here (0055)
+ *
+ * Every one of the six records below is scanned over {@link baselineSets}, so a
+ * session logged away from the usual gym sets none of them — not the heaviest
+ * set, not the best e1RM, not the longest hold — even when its numbers are the
+ * highest on record. That is the feature, not a rounding of it.
  *
  * ## Six records, and each one only exists where the column does (0046)
  *
@@ -148,7 +199,9 @@ export function personalRecordsFrom(rows: SetRow[]): PersonalRecords {
   let bestDurationSec: number | null = null;
   let bestDistanceM: number | null = null;
   let bestPaceSecPerKm: number | null = null;
-  for (const r of rows) {
+  // Away sessions never set a record — not even when their numbers are the best
+  // on record. See {@link baselineSets} for the asymmetry that decides it.
+  for (const r of baselineSets(rows)) {
     if (r.weight_kg != null) {
       if (maxWeightKg == null || r.weight_kg > maxWeightKg) maxWeightKg = r.weight_kg;
       if (r.reps != null) {
@@ -187,20 +240,39 @@ export function e1rmSeries(db: Database, exerciseId: string, limit = 12): E1rmPo
  * The pure reducer behind {@link e1rmSeries}: takes pre-fetched
  * {@link workingSets} rows (date DESC) so a screen can derive several stats from
  * one scan. Same result as the DB form.
+ *
+ * ## Away points stay, marked (0055)
+ *
+ * This is the one baseline-adjacent read that KEEPS away sessions, and the
+ * reason is that deleting them would be a different lie from awarding them a
+ * record: the session happened, and the owner will go looking for the week he
+ * trained in a hotel. Marked-but-present is the honest rendering; the chart
+ * draws such a point hollow (app/exercise-detail.tsx), never in another colour
+ * — this is behaviour, not biology, so no signal ink.
+ *
+ * The mark belongs to the row that actually WON the date: a day holding both a
+ * home session and an away one plots the higher number and says where that
+ * number came from.
  */
 export function e1rmSeriesFrom(rows: SetRow[], limit = 12): E1rmPoint[] {
-  const byDate = new Map<DateString, number>();
+  const byDate = new Map<DateString, { e1rm: number; away: boolean }>();
   for (const r of rows) {
     const e = e1rmForSet(r.weight_kg, r.reps, r.rpe, r.set_type);
     if (e == null) continue;
     const cur = byDate.get(r.date);
-    if (cur == null || e > cur) byDate.set(r.date, e);
+    if (cur == null || e > cur.e1rm) byDate.set(r.date, { e1rm: e, away: r.away === 1 });
   }
   // byDate keys arrive newest-first (rows are date DESC); take latest `limit`,
   // then sort ascending by date for the chart.
   return [...byDate.entries()]
     .slice(0, limit)
-    .map(([date, e1rm]) => ({ date, e1rm: Math.round(e1rm * 10) / 10 }))
+    .map(([date, best]) => ({
+      date,
+      e1rm: Math.round(best.e1rm * 10) / 10,
+      // Omitted on a home point rather than `false`: the flag is a mark on the
+      // exceptions, not a column on every row.
+      ...(best.away ? { away: true as const } : {}),
+    }))
     .sort((a, b) => (a.date < b.date ? -1 : 1));
 }
 
@@ -218,13 +290,32 @@ export type PrevSet = {
  * The sets from the most recent session that included this exercise, in set
  * order — the placeholders the logger pre-fills so a repeat is one confirm per
  * set. Includes warmups (the logger shows them too). Empty when never done.
+ *
+ * ## The most recent HOME session, falling back to any (0055)
+ *
+ * A placeholder carrying away numbers is a false regression by the quietest
+ * route available: the user confirms the placeholder and it becomes a real
+ * logged set, at which point a stiffer machine's load is indistinguishable from
+ * a home one forever. So the prefill prefers the most recent non-away session
+ * and only falls back to an away one when there is no home session at all — a
+ * placeholder from somewhere else beats no placeholder.
+ *
+ * The ORDER BY does the whole of it: `w.away` ascending puts every home session
+ * ahead of every away one, and the existing date/time ordering then picks the
+ * most recent within whichever group won. One statement, no second query for
+ * the fallback.
+ *
+ * Deliberately NOT done: prefilling an away session from the last AWAY session.
+ * It is genuinely better — a given machine's numbers are stable across visits —
+ * but it is only meaningful once ARC knows *which* away gym, which is the
+ * named-gym list, which is not v1 (spike §3.3c).
  */
 export function lastSessionSets(db: Database, exerciseId: string): PrevSet[] {
   const latest = db.get<{ workout_id: string }>(
     `SELECT s.workout_id
      FROM workout_sets s JOIN workouts w ON w.id = s.workout_id
      WHERE s.exercise_id = ?
-     ORDER BY w.date DESC, w.created_at DESC
+     ORDER BY w.away, w.date DESC, w.created_at DESC
      LIMIT 1`,
     [exerciseId]
   );

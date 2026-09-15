@@ -50,8 +50,18 @@ import type { LoggingType, Mechanic, SetType, WorkoutKind } from '@/lib/exercise
  * is the exact confusion this release removes. It is discarded instead: the
  * owner has at most one abandoned session on the device and it evaporates on
  * first launch, which is the trade {@link parseLiveDraft} was built for.
+ *
+ * **2 → 3 on 2026-09-14 (C13, migration 0055).** {@link LiveDraft} gained
+ * `away`. A v2 payload has no such field, and reading one as "home" would be
+ * the right guess almost always — but "almost always" is exactly the wrong
+ * standard for a flag whose whole job is to keep an incomparable load out of
+ * the baseline. A resumed session that silently forgot it was logged in a hotel
+ * would set a false PR on the owner's first confirm, which is the failure this
+ * release exists to remove. Discarding costs at most one unfinished session
+ * that evaporates on first launch; that is the trade this mechanism was built
+ * for, and this is its second use.
  */
-export const DRAFT_VERSION = 2;
+export const DRAFT_VERSION = 3;
 
 /** The two draft slots — one per logging screen (`workout_drafts.key`). */
 export type DraftKey = 'live' | 'manual';
@@ -156,6 +166,14 @@ export type LiveDraft = {
   startedAt: number;
   routineId: string | null;
   restEndsAt: number | null;
+  /**
+   * The away-gym flag as the user set it on this session (0055). It rides on
+   * the draft for the same reason `restEndsAt` does: it is state of the session
+   * in progress, and a resume that quietly dropped it would turn an away
+   * session back into a record-setting one without saying so. NOT a preference
+   * — it is never read back into a NEW session, only into this one.
+   */
+  away: boolean;
   blocks: DraftBlock[];
 };
 
@@ -289,6 +307,7 @@ export function parseLiveDraft(raw: unknown): LiveDraft | null {
     startedAt,
     routineId: typeof raw.routineId === 'string' ? raw.routineId : null,
     restEndsAt: asFiniteNumber(raw.restEndsAt),
+    away: asBool(raw.away),
     blocks,
   };
 }

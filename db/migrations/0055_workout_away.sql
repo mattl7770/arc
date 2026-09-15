@@ -1,0 +1,92 @@
+-- ============================================================================
+-- ARC 0055 — a session can say it happened somewhere else
+--
+-- Owner, 2026-09-14 (backlog C13): *"for when I am not at my home gym, I can
+-- make note of that and ARC can adjust intelligently"* — a stiffer machine must
+-- not read as a regression. The proposal is docs/spikes/gym-away-note.md,
+-- approved; §3 of that file is the argument and this header is the summary.
+--
+-- ── THE GOVERNING PRINCIPLE ──
+--
+--   An away session is real training and unreal measurement.
+--
+-- It happened, it fatigued you, it counts as volume. Its NUMBERS are not
+-- comparable to the home baseline — in either direction. So everything that
+-- counts WORK includes it (freshness, weekly volume, the week summary, the
+-- strain pillar, the self-review — none of which read a weight at all), and
+-- everything that compares LOAD excludes it from the baseline while still
+-- showing it: no personal record, no progression input, no prefill, but still
+-- plotted and marked on the e1RM trend.
+--
+-- ── A COLUMN, NOT `workouts.notes` ──
+--
+-- Every consumer that must change behaviour is SQL or a reducer over SQL rows
+-- (`workingSets`, `personalRecordsFrom`, `exerciseSessionTopsFrom`,
+-- `e1rmSeriesFrom`, `lastSessionSets`). A flag buried in free text is not
+-- queryable, not indexable and not assertable in a headless test. 0034's header
+-- states the rule this is an instance of: the danger is *"a number of unknown
+-- origin entering the rollup … wearing the same face as a number the user
+-- asserted"*, and the answer is PROVENANCE AS A COLUMN.
+--
+-- ── A BIT, NOT A VOCABULARY ──
+--
+-- 'home' | 'away' | 'hotel' | 'travel' was considered and rejected: the
+-- BEHAVIOUR is binary — either these numbers are comparable to the home
+-- baseline or they are not — and a four-value enum invites a taxonomy nobody
+-- maintains. Widening a CHECK later is the twelve-step table rebuild (the 0024
+-- labs rebuild is the worked example), and `workouts` parents
+-- `workout_sets.workout_id`, i.e. the owner's whole execution history with no
+-- server copy. Adding a nullable `gym_id text REFERENCES gyms (id) ON DELETE
+-- SET NULL` BESIDE this bit later is one additive ALTER, and `away = 1 AND
+-- gym_id IS NULL` reads perfectly well as "somewhere else". Nothing is
+-- foreclosed; named gyms are deliberately not v1 (spike §4).
+--
+-- ── `NOT NULL DEFAULT 0` ──
+--
+-- Every workout already on the device reads "home", which is TRUE rather than
+-- merely convenient: there was no other option when it was logged. A constant
+-- default on ADD COLUMN validates against existing rows trivially — unlike the
+-- cross-column CHECK 0034's header warns about, which passes on an empty
+-- fixture and then rejects the ALTER on the one populated database that matters.
+--
+-- ── WHAT DOES NOT CHANGE, WRITTEN DOWN SO NOBODY "COMPLETES" IT ──
+--
+-- Freshness (`recentMuscleLoads` → `muscleFreshness`) NEVER READS THE WEIGHT:
+-- it multiplies role weight × effort(rpe, failure) × decay. A set to RPE 8 on a
+-- stiff machine fatigues the muscle exactly as much as one at home. Weekly
+-- volume, `weekSummary` and the strain pillar count role-weighted SETS and
+-- minutes. All correct as they stand. There is no away branch to add there, and
+-- adding one later would be the bug.
+--
+-- ── THE NUMBER: 0055, NOT THE 0051 THIS ITEM RESERVED ──
+--
+-- docs/backlog-2026-09.md reserved `0051` for C13. It moved TWICE while this was
+-- being built, and both moves are the same lesson:
+--
+--   1. `git ls-tree main -- db/migrations/`, re-checked at commit, says main's
+--      head is **0053** — D4's timezone migration merged mid-branch. A
+--      reservation is not a claim, and the RUNNER is why it cannot be treated as
+--      one: `pendingMigrations` filters `version > user_version`, so a file
+--      numbered BELOW a device's stamped version is not "applied late", it is
+--      silently **never applied**. Shipping `away` as 0051 after a build
+--      carrying 0053 would leave the owner's phone with no such column and every
+--      `SELECT w.away` throwing — on the one database with no second copy.
+--   2. 0054 was then taken by D3 (ingested-workout pairing), which committed it
+--      on a parallel branch within the hour. Caught by re-checking the sibling
+--      worktrees before committing rather than at merge, which is the only
+--      reason this file is not the seventh collision of the month.
+--
+-- So: the next free number above main's head AND above every number already
+-- claimed on a live branch. C12 takes 0056 beside it, on this same branch.
+-- Re-check again at merge; 0048-0052 are still unlanded and each faces the same
+-- question.
+--
+-- The runner stamps PRAGMA user_version = 55 after applying this file.
+-- ============================================================================
+
+-- One bit. Off is home, and that is the only default that can be wrong in the
+-- recoverable direction: forgetting to turn it ON costs one session's PR
+-- fidelity and is editable afterwards, where forgetting to turn it OFF would
+-- silently kill PR detection at home, indefinitely, with no visible symptom.
+ALTER TABLE workouts ADD COLUMN away integer NOT NULL DEFAULT 0
+  CHECK (away IN (0, 1));
