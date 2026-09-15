@@ -6,6 +6,7 @@
  * headless-tested in db/experiments.test.mjs.
  */
 import type { Database } from '../database';
+import { shiftISODate } from '../date';
 import { newId } from '../id';
 
 export type ExperimentStatus = 'active' | 'completed' | 'abandoned';
@@ -31,11 +32,9 @@ type ExperimentRow = {
 /** An experiment with `metrics` parsed to an array. */
 export type Experiment = Omit<ExperimentRow, 'metrics'> & { metrics: string[] };
 
-/** `date` shifted by `delta` days (UTC arithmetic, DST-proof), YYYY-MM-DD. */
+/** `date` shifted by `delta` calendar days, YYYY-MM-DD (src/lib/db/date.ts). */
 function addDays(date: string, delta: number): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + delta);
-  return d.toISOString().slice(0, 10);
+  return shiftISODate(date, delta);
 }
 
 function toExperiment(row: ExperimentRow): Experiment {

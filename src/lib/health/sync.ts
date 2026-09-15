@@ -24,6 +24,7 @@
  * reader → pure mapping → wearables repo together.
  */
 import type { Database } from '@/lib/db/database';
+import { formatLocalDate } from '@/lib/db/date';
 import type { HealthQuantitySample } from './types';
 import {
   getHealthSyncState,
@@ -68,24 +69,23 @@ export const AUTO_SYNC_THROTTLE_MIN = 15;
 
 export type SyncDay = { date: string; start: Date; end: Date };
 
-/** Local YYYY-MM-DD of a Date (mirrors src/lib/db/date.ts, kept import-free). */
-function localDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
 /**
  * The local-midnight day buckets to (re-)aggregate, oldest first, ending with
  * today. Built with the calendar (never +86400s) so DST days stay correct.
+ *
+ * **Midnight-to-midnight, not the user's day boundary** — `formatLocalDate`,
+ * never `todayISODate`. These windows produce the `hk:<metric>:<date>` rows, and
+ * the full argument for keeping HealthKit on the calendar day is on `localDayOf`
+ * in ./mapping.ts. The two must agree: the window that queries the samples and
+ * the function that buckets them are the same day definition or the upsert key
+ * misses.
  */
 export function syncDayWindows(now: Date, days: number): SyncDay[] {
   const result: SyncDay[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i, 0, 0, 0, 0);
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i + 1, 0, 0, 0, 0);
-    result.push({ date: localDate(start), start, end });
+    result.push({ date: formatLocalDate(start), start, end });
   }
   return result;
 }

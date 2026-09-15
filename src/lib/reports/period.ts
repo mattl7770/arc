@@ -19,7 +19,7 @@
  * the same definition the Exercise screen, the Data tab and the Coach share
  * (src/lib/db/date.ts), so "last week" means one thing in ARC.
  */
-import { localWeekRange, todayISODate } from '@/lib/db/date';
+import { formatLocalDate, localWeekRange, todayISODate } from '@/lib/db/date';
 import { daysBetweenISO, isoDatePlusDays } from '@/lib/ai/series';
 
 import type { Period, PeriodKind } from './types';
@@ -71,11 +71,17 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 /** True for a well-formed `YYYY-MM-DD` that names a real calendar day. */
 export function isValidISODate(date: string): boolean {
   if (!ISO_DATE.test(date)) return false;
-  // Round-trip through UTC: '2026-02-30' parses but normalises to 2026-03-02,
-  // so a date that survives the trip unchanged is a day that exists.
-  const parsed = new Date(`${date}T00:00:00Z`);
+  // Round-trip through the calendar: '2026-02-30' constructs but normalises to
+  // 2026-03-02, so a date whose components survive unchanged is a day that
+  // exists. Done in UTC (Date.UTC + getUTC*) purely to keep the check free of
+  // any local-zone effect — it is a shape test, never a day attribution, and
+  // must not go anywhere near the user's day boundary.
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  const parsed = new Date(Date.UTC(y, m - 1, d));
   if (Number.isNaN(parsed.getTime())) return false;
-  return parsed.toISOString().slice(0, 10) === date;
+  return (
+    parsed.getUTCFullYear() === y && parsed.getUTCMonth() === m - 1 && parsed.getUTCDate() === d
+  );
 }
 
 /** "3 Aug 2026" — hand-rolled; Hermes ships no Intl (CLAUDE.md, insights.ts). */
@@ -176,12 +182,14 @@ export function lastCompleteWeek(now: Date = new Date()): Period {
  * a table here.
  */
 export function lastCalendarMonth(now: Date = new Date()): Period {
-  const year = now.getFullYear();
-  const month = now.getMonth(); // 0-based; the month BEFORE this one is month - 1
-  const first = new Date(year, month - 1, 1);
-  const last = new Date(year, month, 0);
-  const start = todayISODate(first);
-  const end = todayISODate(last);
+  // Anchored on the LOGICAL today, not on `now`'s raw calendar month: a report
+  // pulled at 01:00 on the 1st under a 04:00 boundary is still being pulled on
+  // the last day of the outgoing month, so "last month" is the one before that.
+  const [year, month] = todayISODate(now).split('-').map(Number) as [number, number];
+  const first = new Date(year, month - 2, 1, 12, 0, 0, 0);
+  const last = new Date(year, month - 1, 0, 12, 0, 0, 0);
+  const start = formatLocalDate(first);
+  const end = formatLocalDate(last);
   const label = `${MONTHS_LONG[first.getMonth()] ?? ''} ${first.getFullYear()}`;
   return buildPeriod('last_month', start, end, label, todayISODate(now));
 }

@@ -16,7 +16,7 @@
  * not need one at all.
  */
 import type { Database } from '@/lib/db/database';
-import { todayISODate } from '@/lib/db/date';
+import { shiftISODate, todayISODate } from '@/lib/db/date';
 import {
   dailyMetricSeries,
   deviceLabel,
@@ -407,13 +407,9 @@ function baselineSentence(ratio: number): string {
   return ratio < 1 ? `${pct}% below your 30-day baseline` : `${pct}% above your 30-day baseline`;
 }
 
-/** `n` local days before a YYYY-MM-DD, componentwise (never UTC-shifted). */
+/** `n` local days before a YYYY-MM-DD (src/lib/db/date.ts is the arithmetic). */
 function daysBefore(date: string, n: number): string {
-  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
-  const prev = new Date(y, m - 1, d - n);
-  const mm = String(prev.getMonth() + 1).padStart(2, '0');
-  const dd = String(prev.getDate()).padStart(2, '0');
-  return `${prev.getFullYear()}-${mm}-${dd}`;
+  return shiftISODate(date, -n);
 }
 
 /** The local day before a YYYY-MM-DD. */

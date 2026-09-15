@@ -4,6 +4,7 @@
  * building: Hermes has no Intl, so nothing here may reach for it (same
  * constraint as src/hooks/use-data-overview.ts).
  */
+import { logicalDate } from '@/lib/db/date';
 import type { DateString } from '@/lib/db/types';
 import type { ScreeningCategory } from './types';
 
@@ -111,9 +112,9 @@ export function isValidDay(text: string): boolean {
 /** ISO instant -> local "Wed, Aug 12" ("Today"/"Tomorrow" when it is). */
 export function apptDateText(iso: string, today: DateString): string {
   const d = new Date(iso);
-  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-    d.getDate()
-  ).padStart(2, '0')}`;
+  // The LOGICAL day (src/lib/db/date.ts) — it is compared against `today`, which
+  // is one, so the two must be computed the same way or "Today" starts lying.
+  const day = logicalDate(d);
   const diff = daysBetween(today, day);
   if (diff === 0) return 'Today';
   if (diff === 1) return 'Tomorrow';

@@ -16,7 +16,7 @@ The shell is **six tabs** — Home · Coach · Log · Eat · Train · Data — p
 | **Eat** ✅ *redrawn 2026-08-11* | The nutrition hub (`app/nutrition.tsx`, re-exported by `app/(tabs)/eat.tsx`), rebuilt as a tab root: **Today** (what's *left*, guarded) → the one **Log** button → **Eaten today** → **Kitchen** (recipe book · grocery list) → **Over time** (14-day energy + protein + micros). Every entry path — describe/photograph, catalog, barcode, template, cook a recipe, manual — lives inside the Log sheet. See "The Eat tab, redrawn" below. |
 | **Train** ⚠️ *owner round 2026-08-11* | The exercise hub (`app/exercise.tsx`, re-exported by `app/(tabs)/train.tsx`): train-today recommendation, weekly volume, muscle freshness (a body figure, pushing its own screen), **saved workouts** (programs were retired 2026-08-11), manual log, recent sessions. The owner's own round re-cut it 2026-08-11; the on-device re-verdict is the open item — see "Eat and Train are provisional" below. |
 | **Data** *(view + manage hub)* ⚠️ | Biomarker trends & optimal ranges · **Labs** (Function PDF import + results) · wearable history · body composition + the **progress-photo gallery** ✅ *(built 2026-08-12, migration 0036 — `/progress-photos` and its three pushed siblings `/progress-photo-add`, `/progress-photo-detail`, `/progress-photo-compare`; `docs/progress-photos-subapp.md`)* · **the mission execution record** (`app/mission-history.tsx`, behind the Mission trend row — see below) · **the water record** ✅ *(built 2026-08-14, no migration — `app/water.tsx` behind the Water trend row: track, log AND edit, and the first screen in ARC that can correct or delete a logged metric; see below)* · **Protocols editor** · **preventive screenings + medical calendar** (browse) · environment & lifestyle · genetics/cognitive (later) · **browsable knowledge base** ✅ *(built 2026-08-12, migration 0038 — authored as 0035, renumbered at merge; `/knowledge` (hub) → `/knowledge-entry` (reader, user entries and pack entries behind one route) · `/knowledge-entry-edit` · `/knowledge-import`; `docs/knowledge-subapp.md`)* · **Reports** ✅ *(self-review + doctor-visit pack — built 2026-08-12, migration 0039, authored as 0036 and renumbered at merge; `docs/reports-subapp.md`; pushed from a row whose body carries live state, "2 reports · last 12 Aug")* · **the row into Settings** (last on the sheet). ⚠️ **Open (2026-08-10, substantially answered 2026-08-12):** as built this read as an index of indexes — nothing on it was a *reading* — and 3 of the 8 "full file" rows were unbuilt. **All three are now built** (photos 0036 · knowledge 0038 · reports 0039), and the Reports row is the first whose body carries a live *reading* rather than a status chip; the pattern (`FileRow.state`) is generic and the other rows can adopt it a line at a time. **The status chips themselves were removed on 2026-08-14** (owner request — see below), so a row's body is now either a live reading or nothing. **Export is deliberately NOT on this tab** — it lives in Settings › Security & data, and the Reports screen points there with a margin annotation rather than a duplicate button (⚑ #4, decided). *(The lab-import-stamp complaint this note used to carry was resolved 2026-08-11 — the stamp and the biomarker ranges moved to the pushed Labs screen.)* What Data should lead with is an open question; the destinations listed here are not. |
-| **Settings** *(pushed from Data)* | **App lock** (Face ID) · **provider/model/API-key** · **integrations** (Apple Health read, smart-bottle hydration, Apple Health write-back) · **backup/restore + recovery phrase** · **data export** · profile (DOB/sex/timezone/units) · about |
+| **Settings** *(pushed from Data)* | **App lock** (Face ID) · **provider/model/API-key** · **integrations** (Apple Health read, smart-bottle hydration, Apple Health write-back) · **backup/restore + recovery phrase** · **data export** · profile (DOB/sex/timezone/**day starts at**/units) · about |
 | **Sub-screens** (pushed) | **Settings** (from the bottom of Data) · **metric keypad** (from numeric tiles) · **the Protocols sub-app** (from Home's mission area *and* from Data) · Labs import (from Data) · **the Mission record** (from Data's Mission trend row) · the Nutrition and Exercise sub-app families (food search, meal detail, workout live, routine edit, …) |
 
 ## The tab bar (revised 2026-08-09, owner call on hardware)
@@ -94,6 +94,26 @@ Built out from the mockups and wired to the on-device DB. **Nutrition:** manual 
 
 ### Symptom logging (Log tab, 2026-07-25)
 A **"Log a symptom" row** on the Log tab (kept separate from the routine quick-adds — it's a "something's off" capture, not a daily log) opens `app/symptom.tsx`: common-symptom chips, a 1–10 severity, an optional note → the `symptoms` table (0004). Surfaces in "Logged today"; the Coach correlates it against protocols/labs/wearables. Voice/NL symptom capture arrives with the Coach (Phase 3).
+
+## "Today" — one day, set by the user (B3, built 2026-09-14)
+
+Every surface that says *today* — Home's mission and its re-derive, the Log
+feed, Eat's day and its history windows, water, readiness's today/yesterday, the
+Data tab's day series, the mission record's judged window, the Coach's state
+block, the exports — reads the same function, `todayISODate` in
+`src/lib/db/date.ts`. **The day rolls over at a time the owner sets**
+(Settings › Profile › *Day starts at*, default `00:00`), so under a 04:00 start a
+1 am snack is filed under yesterday, and Home and the mission generator cannot
+disagree about which day that is. The rule, the two calendar-day seams (Apple
+Health buckets; a bare-time reminder's firing day) and the not-rewriting-history
+decision are in `docs/data-model.md` › *Which day is this*; a source scan
+(`db/day-boundary.test.mjs` §5) fails the build if a second "today" is ever
+written anywhere else.
+
+The control is on **Profile**, not Units, for the reason Units' own docblock
+gives: Units is display-only and never changes what is stored, and this does. It
+sits under Timezone because that is the adjacent fact — the boundary is a
+wall-clock rule and says nothing about the zone (D4 builds on top of it).
 
 ## The Data tab — order, folding, and Settings (revised 2026-08-09)
 

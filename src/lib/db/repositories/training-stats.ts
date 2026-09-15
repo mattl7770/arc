@@ -11,6 +11,7 @@
  * every stat (the Hevy/Strong rule).
  */
 import type { Database } from '../database';
+import { formatLocalDate, logicalDate } from '../date';
 import type { DateString } from '../types';
 import { localWeekRange } from './exercise';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
@@ -204,10 +205,10 @@ export function recentMuscleLoads(
   const cutoffMs = now.getTime() - days * 86_400_000;
   const cutoff = new Date(cutoffMs).toISOString();
   // Local calendar day of the cutoff, for the date-column side of the window.
-  const c = new Date(cutoffMs);
-  const cutoffDate = `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, '0')}-${String(
-    c.getDate()
-  ).padStart(2, '0')}`;
+  // A COARSE lower bound on the date column (the JS re-cut below is the
+  // precise filter), so this is the calendar day of a rolling-hours cutoff —
+  // `formatLocalDate`, not a "today".
+  const cutoffDate = formatLocalDate(new Date(cutoffMs));
   const rows = db.all<{
     reps: number | null;
     weight_kg: number | null;
@@ -248,10 +249,8 @@ export function recentMuscleLoads(
 export function attributedInstant(date: string, createdAtIso: string): string {
   const created = new Date(createdAtIso);
   if (Number.isNaN(created.getTime())) return `${date}T12:00:00.000Z`;
-  const createdLocalDate = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(
-    2,
-    '0'
-  )}-${String(created.getDate()).padStart(2, '0')}`;
+  // Compared against `date`, which is a LOGICAL day, so this must be one too.
+  const createdLocalDate = logicalDate(created);
   if (createdLocalDate === date) return createdAtIso;
   const [y, m, d] = date.split('-').map(Number) as [number, number, number];
   return new Date(y, m - 1, d, 12, 0, 0, 0).toISOString();

@@ -11,7 +11,7 @@
  * db/reminders.test.mjs.
  */
 import type { Database } from '../database';
-import { todayISODate } from '../date';
+import { formatLocalDate } from '../date';
 import { newId } from '../id';
 import type { NewReminder, ReminderRow } from '@/lib/reminders/types';
 
@@ -26,10 +26,18 @@ import type { NewReminder, ReminderRow } from '@/lib/reminders/types';
  * same turn clock rather than each deriving a day of their own.
  *
  * Built componentwise from `now`'s local Y/M/D and rendered back through
- * {@link todayISODate} — never `new Date('YYYY-MM-DD')`, which some runtimes
+ * {@link formatLocalDate} — never `new Date('YYYY-MM-DD')`, which some runtimes
  * read as UTC midnight and would shift the day near a timezone boundary. Day
  * arithmetic goes through the Date constructor, so month/year rollover
  * (31 Aug → 1 Sep) is handled for free.
+ *
+ * **This is the one day in ARC the user's day boundary deliberately does NOT
+ * move** (B3, src/lib/db/date.ts). Every other "today" answers *what does this
+ * count as*; this one answers *when does the OS fire the notification*, and that
+ * is a wall-clock fact about the calendar. Under a 04:00 boundary the logical
+ * today at 01:00 is yesterday — returning it would date the row in the past and
+ * the reminder would never fire at all. So the CALENDAR day is correct here, and
+ * `formatLocalDate` is the function that says so out loud.
  */
 export function resolveOneOffDay(time: string, now: Date): string | null {
   const match = /^(\d{2}):(\d{2})$/.exec(time);
@@ -38,8 +46,10 @@ export function resolveOneOffDay(time: string, now: Date): string | null {
   const minute = Number(match[2]);
   if (hour > 23 || minute > 59) return null;
   const todayAt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
-  if (todayAt.getTime() > now.getTime()) return todayISODate(now);
-  return todayISODate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  if (todayAt.getTime() > now.getTime()) return formatLocalDate(now);
+  return formatLocalDate(
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 12, 0, 0, 0)
+  );
 }
 
 /**

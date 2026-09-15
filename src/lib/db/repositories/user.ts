@@ -11,6 +11,7 @@
  * code runs on device and against node:sqlite in db/user.test.mjs.
  */
 import type { Database } from '../database';
+import { normalizeDayStartsAt } from '../date';
 import { newId } from '../id';
 import type { BiologicalSex, UserRow } from '../types';
 import type { AppLockPreferences, Preferences, UnitPreferences } from '@/lib/user/types';
@@ -204,6 +205,44 @@ export function setWaterTarget(db: Database, ml: number | null): void {
   const next = ml !== null && Number.isFinite(ml) && ml > 0 ? ml : null;
   obj.goals = { ...readSection(obj, 'goals'), waterMl: next };
   db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+}
+
+/**
+ * The local wall-clock time the user's day rolls over at, `"HH:MM"` — `"00:00"`
+ * (calendar midnight, ARC's behaviour until B3) unless he has set one.
+ *
+ * This is the single stored input to `src/lib/db/date.ts`, which is where the
+ * rule and all of its consequences are documented. Read it once at open and hand
+ * it to `setDayStartsAt`; nothing else should be asking the database what day it
+ * is.
+ *
+ * It lives in the preferences blob for the same reason the hydration goal does —
+ * a single durable thing the user *sets*, no migration, and `0048` was reserved
+ * for a column that turned out not to be needed. Normalisation (junk → midnight)
+ * belongs to date.ts so that the stored value and a value typed into Settings are
+ * validated by exactly one function.
+ */
+export function getDayStartsAtPreference(db: Database): string {
+  const obj = parseObject(getOrCreateUser(db).preferences);
+  return normalizeDayStartsAt(readSection(obj, 'day').startsAt);
+}
+
+/**
+ * Persist the day boundary, preserving unrelated preference keys, and return
+ * the normalised value actually stored.
+ *
+ * Writing it does NOT re-attribute a single existing row: a stored `date` is the
+ * day that entry was filed under when it happened (date.ts, and the sentence
+ * under the Settings control). Callers must also install the new value with
+ * `setDayStartsAt` so the running app stops using the old one.
+ */
+export function setDayStartsAtPreference(db: Database, value: string): string {
+  const user = getOrCreateUser(db);
+  const obj = parseObject(user.preferences);
+  const next = normalizeDayStartsAt(value);
+  obj.day = { ...readSection(obj, 'day'), startsAt: next };
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+  return next;
 }
 
 /**

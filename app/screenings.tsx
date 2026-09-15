@@ -8,6 +8,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { useScreenings, type ScreeningGroups } from '@/hooks/use-screenings';
+import { logicalDate } from '@/lib/db/date';
 import type { DateString } from '@/lib/db/types';
 import {
   apptDateText,
@@ -160,10 +161,7 @@ function pct(fraction: number): `${number}%` {
  * must not edit that module.
  */
 function localDay(iso: string): DateString {
-  const d = new Date(iso);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
+  return logicalDate(new Date(iso)) as DateString;
 }
 
 function makeItem(

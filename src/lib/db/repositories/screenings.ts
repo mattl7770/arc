@@ -16,7 +16,7 @@
  * (db/screenings.test.mjs).
  */
 import type { Database } from '../database';
-import { todayISODate } from '../date';
+import { formatLocalDate, logicalDate, shiftISODate, todayISODate } from '../date';
 import { newId } from '../id';
 import type {
   AppointmentInput,
@@ -41,13 +41,15 @@ export function addMonthsClamped(date: string, months: number): string {
   const targetMonth = m! - 1 + months;
   // Day 0 of the following month = the target month's last day.
   const lastDay = new Date(y!, targetMonth + 1, 0).getDate();
-  return todayISODate(new Date(y!, targetMonth, Math.min(d!, lastDay)));
+  // `formatLocalDate`, NOT `todayISODate`: this is calendar arithmetic over a
+  // day that has already been attributed, so the user's day boundary has no say
+  // (src/lib/db/date.ts). Noon-anchored for the zones that shift at midnight.
+  return formatLocalDate(new Date(y!, targetMonth, Math.min(d!, lastDay), 12, 0, 0, 0));
 }
 
 /** `date` plus `days` calendar days — the due-soon horizon arithmetic. */
 export function addDaysISO(date: string, days: number): string {
-  const [y, m, d] = date.split('-').map(Number);
-  return todayISODate(new Date(y!, m! - 1, d! + days));
+  return shiftISODate(date, days);
 }
 
 /**
@@ -242,7 +244,9 @@ export function completeAppointment(db: Database, id: string, completedOn?: stri
       markScreeningDone(
         db,
         row.screening_id,
-        completedOn ?? todayISODate(new Date(row.scheduled_at))
+        // A stored instant attributed to the day it counts as — `logicalDate`,
+        // so a pre-dawn appointment completes the day the user was still in.
+        completedOn ?? logicalDate(new Date(row.scheduled_at))
       );
     }
   });

@@ -34,6 +34,7 @@
  *     the one axis the whole gallery is ordered on.
  */
 
+import { logicalDate } from '@/lib/db/date';
 import { isRealCalendarDate } from './format';
 
 /** Where a photo's date came from — the review screen says so on the row. */
@@ -199,17 +200,14 @@ export function assetPhotoDate(asset: unknown): PhotoDate {
   if (epoch !== null) {
     const instant = instantFromEpochMs(epoch);
     if (instant) {
-      const local = new Date(epoch);
-      const takenOn = `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}`;
+      // The LOGICAL day the shot counts as (src/lib/db/date.ts), so a 01:00
+      // photo files under the day the user was still in.
+      const takenOn = logicalDate(new Date(epoch));
       return { takenOn, takenAt: instant, origin: 'asset' };
     }
   }
 
   return NO_DATE;
-}
-
-function pad(n: number): string {
-  return n < 10 ? `0${n}` : String(n);
 }
 
 /**

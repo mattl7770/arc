@@ -9,7 +9,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
-import { clockFromISO, todayISODate } from '@/lib/db/date';
+import { clockFromISO, formatLocalDate } from '@/lib/db/date';
 import {
   addAppointment,
   completeAppointment,
@@ -87,7 +87,7 @@ export default function AppointmentFormScreen() {
   const [provider, setProvider] = useState(initial?.provider ?? '');
   const [location, setLocation] = useState(initial?.location ?? '');
   const [date, setDate] = useState(() =>
-    initial ? todayISODate(new Date(initial.scheduled_at)) : ''
+    initial ? formatLocalDate(new Date(initial.scheduled_at)) : ''
   );
   const [time, setTime] = useState(() => (initial ? clockFromISO(initial.scheduled_at) : ''));
   const [screeningId, setScreeningId] = useState<string | null>(

@@ -11,9 +11,11 @@ import { open } from '@op-engineering/op-sqlite';
 
 import { excludeFromBackup } from '@/lib/files/backup-exclusion';
 import type { Database, Scalar } from './database';
+import { setDayStartsAt } from './date';
 import { migrate, type MigrationExecutor, pendingMigrations } from './migrate';
 import { MIGRATIONS } from './migrations.generated';
 import { applyConnectionPragmas } from './pragmas';
+import { getDayStartsAtPreference } from './repositories/user';
 import { seedReferenceData } from './seed';
 
 const DB_NAME = 'arc.db';
@@ -100,6 +102,13 @@ export function getDb(): Database {
     }
     migrate(db, MIGRATIONS);
     seedReferenceData(db);
+
+    // Install the user's day boundary before anything asks what day it is.
+    // This is the ONE hydration point: `getDb()` is the only way into the
+    // database, so a screen, a Coach pass, an export or a background sync all
+    // reach it before their first `todayISODate()`. Settings re-installs on
+    // change; a restore drops the cache and comes back through here.
+    setDayStartsAt(getDayStartsAtPreference(db));
 
     // Keep the health database OUT of the iCloud/iTunes device backup: op-sqlite
     // stores arc.db under the app's Library directory, which iOS backs up by

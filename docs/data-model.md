@@ -215,6 +215,37 @@ n-of-1 experiments.
 
 - **`wearable_data.metric_type` is `text`, not an enum.** Vendors add metrics on their schedule. See `/docs/decisions.md`.
 - **`log_entries.scheduled_time` is `time`, not a timestamp.** The calendar date comes from the parent `daily_log`, so a 07:00 habit stays 07:00 across timezones.
-- **`daily_logs.date` is a `date`.** "Today" is resolved in `users.timezone`.
+- **`daily_logs.date` is a `date`.** See "Which day is this" below.
+
+### Which day is this — the one definition
+
+Every `date` column in the schema (`daily_logs.date`, `meals.date`, `workouts.date`,
+`symptoms.date`, `wearable_data.date`, `progress_photos.taken_on`, …) stores a
+**logical day**, and exactly one function decides it: `logicalDate` /
+`todayISODate` in **`src/lib/db/date.ts`**. Nothing else in `src/` or `app/` may
+derive a day; a headless source scan (`db/day-boundary.test.mjs` §5) fails the
+build on any second implementation.
+
+- **The day starts when the user says it does (B3).** `dayStartsAt` is a local
+  wall-clock `"HH:MM"` in the `users.preferences` blob under `day.startsAt`,
+  default `"00:00"`. No migration — `0048` was reserved for a column that proved
+  unnecessary. An instant whose local clock reads earlier than the boundary is
+  attributed to the previous calendar day, so under `"04:00"` a 01:00 snack is
+  yesterday's.
+- **Timestamps are untouched.** `created_at`, `measured_at` and every other
+  instant stay UTC. Only the `date` attribution moves.
+- **Existing rows are never rewritten** when the setting changes. A stored `date`
+  is the day that entry was filed under at the time; the Settings control says so.
+- **The boundary is a wall-clock rule**, not a timezone rule — `users.timezone`
+  is stored and deliberately not consulted. D4 (automatic timezone handling)
+  plugs into the single comparison in `logicalDate`.
+
+Two seams deliberately keep the plain **calendar** day, both documented at the
+code:
+
+| Seam | Why |
+|---|---|
+| **Apple Health day buckets** (`hk:<metric>:<date>` in `wearable_data`) and noon-to-noon sleep sessions — `src/lib/health/mapping.ts`, `sync.ts` | The `<date>` is the upsert key, so re-attributing it would insert new rows beside the old ones instead of updating them, double-counting the 14-day re-window and stranding everything older. These rows also mirror the Health app: ARC's steps for a day must equal the phone's or neither can be checked. The discriminator inside the shared table is `source_raw_id` — an `hk:` id is a device bucket, NULL is a manual capture. |
+| **A bare-time one-off reminder's day** — `resolveOneOffDay`, `src/lib/db/repositories/reminders.ts` | It answers *when does the OS fire this*, not *what does this count as*. Under a 04:00 boundary the logical today at 01:00 is yesterday, and a reminder dated in the past never fires at all. |
 
 This schema will evolve. When it does, update this document and note the change in `/docs/decisions.md`.
