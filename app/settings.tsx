@@ -275,17 +275,21 @@ export default function SettingsScreen() {
               onPress={() => router.push('/settings-coach')}
             />
             {/* Memory the user cannot read is memory the user cannot trust —
-                the durable facts the Coach has stored, inspectable and
-                deletable (migration 0030 coach_memories). */}
+                but reading it is no longer Settings' job. C14 moved the list
+                onto the Knowledge base, beside the entries it has to be told
+                apart from, and this row became a LINK rather than a second copy
+                of that list: the owner still finds memory where he last looked
+                for it, and there is only one surface to keep true. The tally
+                stays here because it is the reason to follow the link. */}
             <NavRow
               icon="bookmark-outline"
               label="Coach memory"
               sub={
                 memoryCount === 0
-                  ? 'Nothing remembered yet'
-                  : `${memoryCount} thing${memoryCount === 1 ? '' : 's'} remembered`
+                  ? 'In the Knowledge base · nothing yet'
+                  : `In the Knowledge base · ${memoryCount} held`
               }
-              onPress={() => router.push('/coach-memory')}
+              onPress={() => router.push('/knowledge')}
             />
             <NavRow
               icon="heart-outline"

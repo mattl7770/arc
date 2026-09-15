@@ -158,7 +158,7 @@ export const COACH_DOMAINS: CoachDomain[] = [
   // entries are now the half that outranks it.
   {
     label: 'the knowledge base and past conversations',
-    tools: ['search_history', 'save_knowledge_entry'],
+    tools: ['search_history', 'save_knowledge_entry', 'retire_knowledge_entry'],
   },
   { label: 'appointments', tools: ['get_screenings'] },
 ];
@@ -192,10 +192,14 @@ export const UNCOVERED_DOMAINS: string[] = [
   'progress photos and their AI readings (Data › Progress photos)',
   'booking, moving or cancelling an appointment (Data, Screenings)',
   'creating a protocol or a screening from scratch',
-  // Widened 2026-08-12 (0038) rather than given its own line: a knowledge entry
-  // the Coach saved is "your own writes", and editing one is the same act on
-  // the same list. Naming the screen is what makes the answer useful.
-  'editing or deleting anything already logged, incl. your own writes and knowledge entries (Data, Knowledge base)',
+  // NARROWED BY C14, because the wider claim became FALSE — which is the worst
+  // thing a line in this list can be. It read "…incl. your own writes and
+  // knowledge entries (Data, Knowledge base)"; `save_knowledge_entry` now takes
+  // an id and `retire_knowledge_entry` exists, so knowledge entries moved from
+  // the CANNOT-see list to the read-and-write one. What remains uncovered is
+  // what it always was: a logged meal, workout, metric or capture, once
+  // written, can only be changed on its own screen.
+  'editing or deleting anything already logged — a meal, workout, metric, capture (its screen in Eat, Train or Data)',
   // Reports (0039, docs/reports-subapp.md §8). Named rather than tooled, on
   // purpose: the registry is billed on every turn, generation ends in a share
   // sheet the model cannot drive and a preview the doctrine requires anyway,

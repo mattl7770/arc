@@ -58,6 +58,7 @@ import { clearMuscleAnchor, setMuscleAnchor } from '../src/lib/db/repositories/m
 
 import { ingestCorpus } from '../src/lib/rag/corpus.ts';
 import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
+import { forgetMemory, rememberFact } from '../src/lib/db/repositories/coach-memory.ts';
 
 import ExerciseScreen from '../app/exercise.tsx';
 import MissionHistoryScreen from '../app/mission-history.tsx';
@@ -88,6 +89,7 @@ import KnowledgeScreen from '../app/knowledge.tsx';
 import KnowledgeEntryScreen from '../app/knowledge-entry.tsx';
 import KnowledgeEntryEditScreen from '../app/knowledge-entry-edit.tsx';
 import KnowledgeImportScreen from '../app/knowledge-import.tsx';
+import CoachMemoryScreen from '../app/coach-memory.tsx';
 import ReportsScreen from '../app/reports.tsx';
 import ReportViewScreen from '../app/report-view.tsx';
 import ProtocolsScreen from '../app/protocols.tsx';
@@ -1509,6 +1511,95 @@ const db = getDb();
     'Reading an article needs a model key',
     'Write it yourself',
   ]);
+
+  // --- C14: coach memory is a run on this hub, not a screen under Settings ---
+  //
+  // Owner: "I should be able to manually add stuff to coach memory that it
+  // should know every turn." The store did not change (no migration); its
+  // surface moved here, beside the entries it has to be told apart from.
+  //
+  // The empty state is AUTHORED, and it is a different fact from either entry
+  // empty: "The Coach holds nothing yet" is a statement about what rides in the
+  // prompt, not about what is written down.
+  const coldMemory = render('knowledge hub (no memories)', KnowledgeScreen);
+  expect('knowledge hub (no memories)', coldMemory, [
+    'Coach memory',
+    'The Coach holds nothing yet',
+    'carried into every turn',
+    'Remember something',
+  ]);
+
+  rememberFact(db, {
+    content: 'Render memory: trains fasted before 9am',
+    category: 'preference',
+  });
+  const withMemory = render('knowledge hub (with a memory)', KnowledgeScreen);
+  expect('knowledge hub (with a memory)', withMemory, [
+    'Render memory: trains fasted before 9am',
+    'Preference', // the kind eyebrow, the entry rows' topic-eyebrow shape
+  ]);
+  refute('knowledge hub (with a memory)', withMemory, ['The Coach holds nothing yet']);
+  // The cap is stated only when it BITES. Under 40 the sentence would be a
+  // setting nobody asked about; over it, it is the only explanation for a Coach
+  // that ignores a fact the owner can still read on this screen.
+  refute('knowledge hub (with a memory)', withMemory, ['no longer riding along']);
+
+  // The forgotten foot stays collapsed, so its rows are absent from the render
+  // while its heading is present — the Archived foot's behaviour exactly.
+  const forgottenId = rememberFact(db, {
+    content: 'Render memory: a fact that stopped being true',
+    category: 'context',
+  });
+  forgetMemory(db, forgottenId);
+  const withForgotten = render('knowledge hub (with a forgotten memory)', KnowledgeScreen);
+  expect('knowledge hub (with a forgotten memory)', withForgotten, ['Forgotten']);
+  refute('knowledge hub (with a forgotten memory)', withForgotten, [
+    'Render memory: a fact that stopped being true',
+  ]);
+
+  // Past the cap the sentence appears, and it is the ONLY place in the app that
+  // explains a Coach ignoring a fact the owner can still read on screen. Built
+  // and torn down inside this block so the 41 rows do not follow the hub into
+  // any later render.
+  const overflow = [];
+  for (let i = 0; i < 41; i += 1) {
+    overflow.push(rememberFact(db, { content: `Render memory filler ${i}`, category: 'context' }));
+  }
+  expect('knowledge hub (over the prompt cap)', render('knowledge hub (over the prompt cap)', KnowledgeScreen), [
+    'no longer riding along',
+    'most recent into every turn',
+  ]);
+  for (const id of overflow) db.run('DELETE FROM coach_memories WHERE id = ?', [id]);
+
+  // The editor the hub pushes at, both ways in.
+  expect('coach-memory (new)', render('coach-memory (new)', CoachMemoryScreen), [
+    'Remember something',
+    'The memory',
+    'Kind',
+    'Preference',
+    'Constraint',
+    // The LENGTH litmus, stated where the owner is choosing between the stores.
+    'is a Personal entry instead',
+    // Not "carries the 40 most recent": MEMORY_PROMPT_LIMIT is a JSX
+    // interpolation, so react-dom splits that sentence across text nodes and an
+    // assertion spanning the number would fail on the markup, not the copy.
+    'most recent memories into every turn',
+  ]);
+  const editing = render('coach-memory (editing)', CoachMemoryScreen, { id: forgottenId });
+  expect('coach-memory (editing)', editing, [
+    'Edit memory',
+    'Render memory: a fact that stopped being true',
+    // A forgotten memory offers Restore, not Forget — the two are one control.
+    'Restore',
+    'Delete',
+  ]);
+  refute('coach-memory (editing)', editing, ['Remember this']);
+  // A link to a memory that has since been deleted is authored, not blank.
+  expect(
+    'coach-memory (deleted id)',
+    render('coach-memory (deleted id)', CoachMemoryScreen, { id: 'nope' }),
+    ['That memory is no longer here']
+  );
 }
 
 {

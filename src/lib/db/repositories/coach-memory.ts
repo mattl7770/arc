@@ -4,7 +4,8 @@
  *
  * This is the "deeply familiar with the user" half of CLAUDE.md §6, and it is
  * deliberately NOT a vector store: a handful of one-line facts, readable and
- * deletable by the user in Settings, injected verbatim into every turn's
+ * writable by the owner in Data › Knowledge base (C14 moved that surface off
+ * Settings — docs/knowledge-subapp.md §2c), injected verbatim into every turn's
  * context block (src/lib/ai/turn-context.ts). Bulk semantic recall over
  * history is the RAG layer's job (0025); this is what must work with no
  * embedder, no model, and no network.
@@ -12,6 +13,8 @@
  * Depends only on the {@link Database} interface — never op-sqlite — so the
  * same code runs on device and against node:sqlite in db/coach-memory.test.mjs.
  */
+import { queryTerms } from '@/lib/ai/history-search';
+
 import type { Database } from '../database';
 import { newId } from '../id';
 import type { Timestamp } from '../types';
@@ -90,7 +93,7 @@ export function listMemories(db: Database, limit = MEMORY_PROMPT_LIMIT): CoachMe
 /**
  * How many active memories exist, regardless of the prompt limit.
  *
- * The limit has to be visible to be honest. Settings lists up to 200 memories,
+ * The limit has to be visible to be honest. The hub lists up to 200 memories,
  * so past 40 the user could read a fact on screen, watch the Coach act as
  * though it had never been told, and have no way to discover why. Callers pair
  * this with {@link listMemories} and SAY when the two disagree.
@@ -101,7 +104,7 @@ export function countActiveMemories(db: Database): number {
   );
 }
 
-/** Every memory including archived ones (the Settings "show forgotten" view). */
+/** Every memory including archived ones (the hub's "Forgotten" foot). */
 export function listAllMemories(db: Database, limit = 200): CoachMemoryRow[] {
   return db.all<CoachMemoryRow>(
     `SELECT * FROM coach_memories ORDER BY archived_at IS NOT NULL, created_at DESC, id LIMIT ?`,
@@ -142,9 +145,67 @@ export function restoreMemory(db: Database, id: string): boolean {
   return true;
 }
 
-/** Permanently delete (the Settings trash action — no soft-delete tombstone). */
+/**
+ * Edit a memory in place — the OWNER's act, from the editor the Knowledge hub
+ * opens (C14). Returns false when the id is unknown.
+ *
+ * Deliberately NOT a Coach tool. A memory is one whitespace-collapsed sentence,
+ * so a model correcting one is `forget` then `remember`: two gates on the store
+ * that rides in every prompt, which is the safer shape and costs no schema
+ * tokens against db/coach-eval.test.mjs §6. A person typing a fix is a different
+ * act and wants one field, not a retraction.
+ *
+ * Re-uses {@link normalizeContent}, so an edit cannot introduce a shape the
+ * insert path would have refused.
+ */
+export function updateMemory(
+  db: Database,
+  id: string,
+  patch: { content?: string; category?: MemoryCategory }
+): boolean {
+  const existing = getMemory(db, id);
+  if (!existing) return false;
+  const content = patch.content === undefined ? existing.content : normalizeContent(patch.content);
+  db.run('UPDATE coach_memories SET content = ?, category = ? WHERE id = ?', [
+    content,
+    patch.category ?? existing.category,
+    id,
+  ]);
+  return true;
+}
+
+/** Permanently delete (the trash action — no soft-delete tombstone). */
 export function deleteMemory(db: Database, id: string): void {
   db.run('DELETE FROM coach_memories WHERE id = ?', [id]);
+}
+
+/**
+ * The Knowledge hub's memory run: every active memory, newest first, filtered
+ * and re-ranked by an empty-able keyword query (C14).
+ *
+ * Shares `queryTerms` with the entry and pack filters beside it on that screen,
+ * so "matches" means the same thing in all three runs — a row scores by how
+ * many DISTINCT terms it contains, exactly as `listKnowledgeEntries` does. An
+ * empty query returns the whole active list, which is what the hub draws.
+ *
+ * Distinct from {@link findMemories}, which is the Coach's single-fragment
+ * dedupe check, and from {@link listMemories}, which is the prompt's capped
+ * window and must keep its own contract.
+ */
+export function searchMemories(db: Database, query = '', limit = 200): CoachMemoryRow[] {
+  const terms = queryTerms(query);
+  if (terms.length === 0) return listMemories(db, limit);
+  const rows = db.all<CoachMemoryRow>(
+    `SELECT * FROM coach_memories
+     WHERE archived_at IS NULL AND (${terms.map(() => 'lower(content) LIKE ?').join(' OR ')})
+     ORDER BY created_at DESC, id`,
+    terms.map((t) => `%${t}%`)
+  );
+  return rows
+    .map((row) => ({ row, score: terms.filter((t) => row.content.toLowerCase().includes(t)).length }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((r) => r.row);
 }
 
 /**

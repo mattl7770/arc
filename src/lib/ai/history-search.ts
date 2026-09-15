@@ -27,6 +27,20 @@ export type HistoryHit = {
   date: string;
   /** The matching text, truncated. */
   text: string;
+  /**
+   * The row's own id, on the two hits the Coach can WRITE BACK to: a knowledge
+   * entry of the user's own (`save_knowledge_entry` with an id replaces it,
+   * `retire_knowledge_entry` archives it) and a durable memory (`forget`).
+   *
+   * Added by C14, and it is what makes "read and write on both stores" true
+   * rather than half-true. Before it, a search hit was a dead end: the Coach
+   * could read an entry and had no way to name it again, and a memory past the
+   * prompt's 40 could be found by text and never forgotten. Absent on the five
+   * hit kinds with nothing to write back to — conversation turns, day notes,
+   * protocol change notes, experiments, and ARC's shipped pack, which the user
+   * does not own and the Coach must never edit.
+   */
+  id?: string;
 };
 
 /** Cap on one returned excerpt — the model needs the gist, not the essay. */
@@ -217,6 +231,11 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
       text: row.title ? `${row.title} — ${row.body}` : row.body,
       cap: KNOWLEDGE_EXCERPT_CHARS,
       refRank: rankOf(row),
+      // The ENTRY's id, never the chunk's (C14): the write tools address
+      // entries, and a chunk id would be an id the Coach cannot use. Null on
+      // pack rows by construction, which is also exactly the right answer —
+      // ARC's shipped reference is not the user's to revise.
+      ...(row.entry_id === null ? {} : { id: row.entry_id }),
     });
 
     // The pack: one row per entry by construction (corpus.ts does not chunk),
@@ -262,9 +281,12 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
     for (const { hit } of bestByEntry.values()) rows.push(asHit(hit));
   }
 
-  // 6) Durable memories — things explicitly remembered about the user.
-  for (const row of db.all<{ content: string; created_at: string; category: string }>(
-    `SELECT content, created_at, category FROM coach_memories
+  // 6) Durable memories — things explicitly remembered about the user. The id
+  // rides along (C14) so a memory found past the prompt's 40-row window can
+  // actually be forgotten; without it the Coach could read a stale fact here
+  // and had no way to name it to `forget`.
+  for (const row of db.all<{ id: string; content: string; created_at: string; category: string }>(
+    `SELECT id, content, created_at, category FROM coach_memories
      WHERE archived_at IS NULL AND (${clause('content')})
      ORDER BY created_at DESC LIMIT 50`,
     params
@@ -273,6 +295,7 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
       source: `remembered (${row.category})`,
       date: row.created_at.slice(0, 10),
       text: row.content,
+      id: row.id,
     });
   }
 
