@@ -21,6 +21,7 @@ import {
   type RecipeDraft,
 } from '@/lib/recipes/import';
 import { consumeIncomingShare, readSharedImageBase64 } from '@/lib/recipes/incoming-share';
+import { VIDEO_SHARE_MESSAGE } from '@/lib/recipes/share-payload';
 
 /**
  * Recipe import (docs/recipes-grocery.md §2c): share/paste a URL → the fetch
@@ -148,6 +149,13 @@ export default function RecipeImportScreen() {
       const startUrl = paramUrl ?? (incoming?.kind === 'url' ? incoming.url : null);
       if (startUrl) {
         void run({ kind: 'url', url: startUrl }, 'Reading the link…');
+        return;
+      }
+      // A movie: nothing to run, and the one thing that must not happen is
+      // silence. Routed to the same failure surface as every other dead end, so
+      // it lands beside the two rungs that DO work (suggestPaste draws them).
+      if (incoming?.kind === 'video') {
+        setPhase({ kind: 'failed', message: VIDEO_SHARE_MESSAGE, suggestPaste: true });
         return;
       }
       if (incoming?.kind === 'photo') {

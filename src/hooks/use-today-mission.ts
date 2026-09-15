@@ -3,7 +3,7 @@ import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 
 import { getDb } from '@/lib/db/client';
-import { todayISODate } from '@/lib/db/date';
+import { forwardCursor, todayISODate } from '@/lib/db/date';
 import { listMission, setMissionStatus, toggleMission } from '@/lib/db/repositories/mission';
 import { listProtocols } from '@/lib/db/repositories/protocols';
 import { ensureTodaySeeded } from '@/lib/db/seed';
@@ -89,13 +89,23 @@ export function useTodayMission(): TodayMission {
 
   // On regaining focus or returning to the foreground, re-read — and if the
   // wall-clock day rolled over while mounted, switch to the new day.
+  //
+  // FORWARD ONLY. This used to compare `todayISODate()` to the cached day and
+  // switch either way, which a westbound flight across the date line turns into
+  // a day that runs BACKWARDS: the clock rolls back, today's answer is
+  // yesterday, and the hook silently moves the mission — and the next completion
+  // — onto a day the user already finished. `forwardCursor` is the guard
+  // pass-schedule.ts and snapshot.ts each wrote by hand; this site never had it.
+  // A day may still be SKIPPED (eastbound over the line really does miss one);
+  // it just cannot rewind. Reading a past day stays free — that is what the
+  // history screens are for — it is the implicit write target that must not move.
   const refresh = useCallback(() => {
-    const now = todayISODate();
-    if (now !== dayRef.current) {
-      dayRef.current = now;
+    const day = forwardCursor(dayRef.current, todayISODate());
+    if (day !== dayRef.current) {
+      dayRef.current = day;
       setSnoozed(EMPTY_SNOOZED);
     }
-    setDay(readDay(now));
+    setDay(readDay(day));
   }, []);
 
   useEffect(() => {

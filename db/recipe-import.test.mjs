@@ -34,7 +34,11 @@ import {
   RecipeFetchError,
   recipeSourceFromUrl,
 } from '../src/lib/recipes/import.ts';
-import { firstUrlIn, recipeImportShareFromPayloads } from '../src/lib/recipes/share-payload.ts';
+import {
+  firstUrlIn,
+  recipeImportShareFromPayloads,
+  VIDEO_SHARE_MESSAGE,
+} from '../src/lib/recipes/share-payload.ts';
 import {
   consumeIncomingShare,
   isIncomingShareAvailable,
@@ -556,6 +560,29 @@ function fakeFetch(routes) {
       ],
       { kind: 'url', url: 'https://example.com/r' },
     ],
+    // A movie alone → the video branch, which exists so the screen can say why.
+    // Before it, this returned null and the screen said "nothing usable was
+    // shared" (docs/spikes/video-recipe-import.md §1b).
+    [
+      [{ value: 'file:///tmp/reel.mov', shareType: 'video' }],
+      { kind: 'video', uri: 'file:///tmp/reel.mov' },
+    ],
+    // …and it is LAST: a reel shared with its link still takes the rung that
+    // works, so widening the share rule can never downgrade a working import.
+    [
+      [
+        { value: 'file:///tmp/reel.mov', shareType: 'video' },
+        { value: 'https://www.instagram.com/reel/XYZ/', shareType: 'url' },
+      ],
+      { kind: 'url', url: 'https://www.instagram.com/reel/XYZ/' },
+    ],
+    [
+      [
+        { value: 'file:///tmp/reel.mov', shareType: 'video' },
+        { value: 'file:///tmp/shot.png', shareType: 'image' },
+      ],
+      { kind: 'photo', uri: 'file:///tmp/shot.png' },
+    ],
     [[], null],
     [null, null],
     [[{ value: '   ', shareType: 'text' }], null],
@@ -568,6 +595,29 @@ function fakeFetch(routes) {
   }
   if (firstUrlIn('no links here') === null) ok('firstUrlIn: none → null');
   else bad('firstUrlIn none');
+
+  // The message is the whole point of the branch, so it is pinned: it must name
+  // BOTH working paths, or a user holding a reel is told "no" and nothing else.
+  if (
+    /caption/i.test(VIDEO_SHARE_MESSAGE) &&
+    /screenshot/i.test(VIDEO_SHARE_MESSAGE) &&
+    VIDEO_SHARE_MESSAGE.trim() !== ''
+  ) {
+    ok('the video message names the caption and the screenshot rungs');
+  } else bad('video message', VIDEO_SHARE_MESSAGE);
+
+  // app.json is NOT widened by this fix (it needs a prebuild). The assertion
+  // records the current state so the day the rule changes, this line changes
+  // with it deliberately rather than drifting.
+  {
+    const rule =
+      JSON.parse(readFileSync(new URL('../app.json', import.meta.url), 'utf8')).expo?.plugins?.find(
+        (p) => Array.isArray(p) && p[0] === 'expo-sharing'
+      )?.[1]?.ios?.activationRule ?? {};
+    if (rule.supportsImageWithMaxCount === 1 && rule.supportsMovieWithMaxCount === undefined) {
+      ok('the share rule still accepts images and not movies (a rebuild-scoped change)');
+    } else bad('share activation rule', JSON.stringify(rule));
+  }
 
   // Module-absent honesty: under node the expo-sharing require fails, so the
   // seam reports unavailable and consuming no-ops — the current-binary state.

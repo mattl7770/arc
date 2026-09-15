@@ -35,6 +35,7 @@
  */
 
 import { logicalDate } from '@/lib/db/date';
+import { longEdgeResize } from '@/lib/media/photo-library';
 import { isRealCalendarDate } from './format';
 
 /** Where a photo's date came from — the review screen says so on the row. */
@@ -234,14 +235,20 @@ export function assetLocalId(asset: unknown): string | null {
  *
  * Dimensions the picker did not report fall back to width, which is the
  * conservative default the rest of the app already uses.
+ *
+ * It is now a thin alias for {@link longEdgeResize}: the media seam learned the
+ * same rule when the vision payloads were found paying ~3× for bounding the
+ * short edge (docs/spikes/video-recipe-import.md §3b), and two copies of "which
+ * edge is longest" is how they drift apart. The name stays because this caller
+ * means something specific by it — the size of a photo the owner KEEPS, not the
+ * size of one he sends.
  */
 export function workingCopyResize(
   width: number | null,
   height: number | null,
   edge: number
 ): { width: number } | { height: number } {
-  if (width != null && height != null && height > width) return { height: edge };
-  return { width: edge };
+  return longEdgeResize(width, height, edge);
 }
 
 /**

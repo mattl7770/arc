@@ -132,6 +132,18 @@ console.log('1. the pass schedule: once a day, and only for genuinely new signal
   duePass(db, yesterday) === null
     ? ok('a clock rolled backward does not re-fire the pass')
     : bad('clock rollback re-fired');
+
+  // …and a pass that RUNS on the rolled-back clock must not rewind the cursor,
+  // or the daily pass fires a second time once the calendar catches back up.
+  // Since 2026-09-14 this is src/lib/db/date.ts::forwardCursor rather than a
+  // comparison local to this file.
+  markPassRan(db, yesterday);
+  getPassState(db).lastDate === TODAY
+    ? ok('a pass run after westbound travel keeps the later day')
+    : bad('markPassRan rewound the cursor', String(getPassState(db).lastDate));
+  duePass(db, NOW) === null
+    ? ok('…so the daily pass does not fire twice when the clock catches up')
+    : bad('daily pass re-fired after a rollback', JSON.stringify(duePass(db, NOW)));
 }
 
 console.log('2. the attention router wakes the Coach for a NEW signal, once');
@@ -193,8 +205,7 @@ console.log('3. the directive: open-ended, names no scenario, allows silence');
 // ---------------------------------------------------------------------------
 console.log('3b. isPassSkip: the sentinel survives a preamble, a real note survives the word');
 {
-  const silent = (label, text) =>
-    isPassSkip(text) ? ok(label) : bad(label, JSON.stringify(text));
+  const silent = (label, text) => (isPassSkip(text) ? ok(label) : bad(label, JSON.stringify(text)));
   const spoken = (label, text) =>
     !isPassSkip(text) ? ok(label) : bad(label, JSON.stringify(text));
 

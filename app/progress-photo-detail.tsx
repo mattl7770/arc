@@ -153,7 +153,9 @@ export default function ProgressPhotoDetailScreen() {
    *  this app sends, plus ARC's own numbers — the weigh-in WITH its distance. */
   const buildInput = async () => {
     if (!photo.uri) return null;
-    const base64Jpeg = await downscaleToJpegBase64(photo.uri, { width: 1024, quality: 0.6 });
+    // maxEdge, not width — the compare screen's reasoning, and the same numbers.
+    // The stored working copy is not touched; this is the payload only.
+    const base64Jpeg = await downscaleToJpegBase64(photo.uri, { maxEdge: 1024, quality: 0.6 });
     if (!base64Jpeg) return null;
     return {
       kind: 'single' as const,

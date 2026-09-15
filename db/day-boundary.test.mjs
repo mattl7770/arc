@@ -13,6 +13,9 @@
  * §5  the source scan — no second "today" may be computed outside date.ts, and
  *     the scan is proved able to fail before it is trusted to pass
  * §6  the preference round-trip
+ * §7  the day cursor only ever moves FORWARD — the westbound date-line case
+ *     three subsystems each met separately, and the DST change that must not be
+ *     mistaken for it
  *
  * **§3 pins the timezone.** The boundary rule is DST-sensitive by nature, so the
  * only way to test it is to run in a zone that has a transition. TZ is set to
@@ -29,6 +32,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   DEFAULT_DAY_STARTS_AT,
   formatLocalDate,
+  forwardCursor,
   getDayStartsAt,
   localDayUtcRange,
   localWeekRange,
@@ -509,6 +513,86 @@ console.log('\n6. the preference round-trips and keeps its neighbours');
     db.get(`SELECT date FROM meals WHERE id = 'old'`).date,
     '2026-09-13'
   );
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n7. the day cursor only ever moves FORWARD');
+{
+  // Three subsystems carry a "last seen day" and compare it to todayISODate().
+  // Two of them hand-patched a westbound-travel guard with a comment; the third
+  // (use-today-mission.ts) made the same comparison WITHOUT one, so the day the
+  // user was looking at could flicker backwards and the next completion could
+  // land on a day he had already finished. `forwardCursor` is the one guard.
+
+  // A westbound date-line day, as the device actually experiences it: the wall
+  // clock reads 2026-09-15 08:00 in Tokyo, then 2026-09-14 16:00 in Los Angeles
+  // for very nearly the same instant. todayISODate reads local components, so
+  // these two Dates ARE the two sides of that flight.
+  const beforeTakeoff = todayISODate(new Date(2026, 8, 15, 8, 0));
+  const afterLanding = todayISODate(new Date(2026, 8, 14, 16, 0));
+  eq('westbound: the clock says yesterday after landing', afterLanding, '2026-09-14');
+  afterLanding !== beforeTakeoff
+    ? ok('…so the UNGUARDED comparison would have switched the day backwards')
+    : bad('the westbound case did not reproduce', afterLanding);
+  eq(
+    'the cursor holds the later day instead of rewinding',
+    forwardCursor(beforeTakeoff, afterLanding),
+    '2026-09-15'
+  );
+
+  // Forward motion is untouched, and a SKIPPED date is allowed: eastbound over
+  // the line genuinely misses one, and pretending otherwise would invent a day.
+  eq('an ordinary rollover advances', forwardCursor('2026-09-14', '2026-09-15'), '2026-09-15');
+  eq('eastbound may skip a date', forwardCursor('2026-09-14', '2026-09-16'), '2026-09-16');
+  eq('the same day is a no-op', forwardCursor('2026-09-15', '2026-09-15'), '2026-09-15');
+  eq('a first run has nothing stored', forwardCursor(null, '2026-09-15'), '2026-09-15');
+  eq('…and undefined reads the same', forwardCursor(undefined, '2026-09-15'), '2026-09-15');
+
+  // The epoch-millisecond form, which is what the backup throttle cursors on.
+  eq('milliseconds: a future stamp wins', forwardCursor(2_000, 1_000), 2_000);
+  eq('milliseconds: a past stamp does not', forwardCursor(1_000, 2_000), 2_000);
+
+  // DST MUST NOT COUNT. The fall back moves the wall clock backwards by an hour
+  // — the same DIRECTION as westbound travel — but it never leaves the calendar
+  // day, so the logical day is identical on both sides and the cursor sees
+  // nothing at all. Asserted under the default boundary and under the house
+  // 04:00 one, because it is the boundary that decides what a day is.
+  // 2026-11-01 01:30 happens twice; the second occurrence is an hour later as an
+  // INSTANT and identical on the wall clock, which is the clock going backwards.
+  const fallBackFirst = new Date(2026, 10, 1, 1, 30); // 01:30 EDT
+  const fallBackRepeat = new Date(fallBackFirst.getTime() + 3_600_000); // 01:30 EST
+  fallBackRepeat.getHours() === 1 && fallBackRepeat.getMinutes() === 30
+    ? ok('fall back: an hour passes and the wall clock still reads 01:30 — the trap is real')
+    : bad('DST fall back did not reproduce', 'TZ=America/New_York did not take effect');
+  for (const boundary of [DEFAULT_DAY_STARTS_AT, '04:00']) {
+    const before = todayISODate(fallBackFirst, boundary);
+    const after = todayISODate(fallBackRepeat, boundary);
+    before === after && forwardCursor(before, after) === after
+      ? ok(`fall back under a ${boundary} boundary is not a day change and holds nothing`)
+      : bad(`DST counted as travel under ${boundary}`, `${before} → ${after}`);
+  }
+  // …and spring forward, the other direction, is equally invisible.
+  eq(
+    'spring forward does not advance the day either',
+    forwardCursor(
+      todayISODate(new Date(2026, 2, 8, 1, 30), DEFAULT_DAY_STARTS_AT),
+      todayISODate(new Date(2026, 2, 8, 3, 30), DEFAULT_DAY_STARTS_AT)
+    ),
+    '2026-03-08'
+  );
+
+  // And the routing, so the guard cannot be quietly dropped from one of the
+  // three again — which is exactly how use-today-mission.ts came to be missing
+  // it while its two neighbours carried a comment about it.
+  const ROOT = join(import.meta.dirname, '..');
+  const missing = [
+    join('src', 'hooks', 'use-today-mission.ts'),
+    join('src', 'lib', 'ai', 'pass-schedule.ts'),
+    join('src', 'lib', 'backup', 'snapshot.ts'),
+  ].filter((rel) => !readFileSync(join(ROOT, rel), 'utf8').includes('forwardCursor'));
+  missing.length === 0
+    ? ok('all three day-cursor sites route through forwardCursor')
+    : bad('a cursor site dropped the guard', missing.join(', '));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

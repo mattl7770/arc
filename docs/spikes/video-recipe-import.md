@@ -39,7 +39,11 @@ The activation rule in `app.json:62-68` is Text · 1 WebURL · 1 Image:
 
 The expo-sharing config plugin **does** support a movie rule — `node_modules/expo-sharing/plugin/src/ios/createInfoPlistFile.ts` maps `supportsMovieWithMaxCount` → `NSExtensionActivationSupportsMovieWithMaxCount`. So admitting video is a **one-line `app.json` change with no new npm dependency** (it still needs a rebuild: the extension's Info.plist is generated at prebuild).
 
-A second, quieter blocker sits in our own code. `recipeImportShareFromPayloads` (`src/lib/recipes/share-payload.ts:45`) routes `url` → `text` → `image` and **has no `video` branch**, while expo-sharing's `ShareType` union already includes `'video'` (`node_modules/expo-sharing/build/Sharing.types.d.ts`). A shared video today matches none of the three filters and returns `null` — the screen would say *nothing usable was shared*. Silent, and exactly the class of bug that file's own `shareType`-vs-`type` docstring was written about.
+A second, quieter blocker sat in our own code. `recipeImportShareFromPayloads` (`src/lib/recipes/share-payload.ts`) routed `url` → `text` → `image` and **had no `video` branch**, while expo-sharing's `ShareType` union already includes `'video'` (`node_modules/expo-sharing/build/Sharing.types.d.ts`). A shared video matched none of the three filters and returned `null` — the screen said *nothing usable was shared*. Silent, and exactly the class of bug that file's own `shareType`-vs-`type` docstring was written about.
+
+> **FIXED 2026-09-14** (`claude/fixes-sept`). The router now has a `video` branch, placed **last** so a reel shared with its caption or link still takes a rung that works. It carries no work — it carries a sentence, `VIDEO_SHARE_MESSAGE`, which says ARC cannot pull frames from a movie in this build and names the two paths that do work (paste the caption, share a screenshot). `app/recipe-import.tsx` renders it on the normal failure surface with `suggestPaste`. Pinned in `db/recipe-import.test.mjs` §8.
+>
+> **`app.json` was NOT widened, and that is deliberate.** Checked at the same time: the activation rule is still Text · 1 WebURL · 1 Image with **no** `supportsMovieWithMaxCount`, so iOS does not offer ARC as a destination for a movie at all today — the branch is dormant. The plugin supports the key, but the extension's Info.plist is generated at prebuild, which makes widening it a rebuild-scoped change and not part of a fix batch. A test asserts the rule's current shape so the day it changes, it changes on purpose.
 
 **The real constraint is upstream of both.** Instagram's and TikTok's share sheets offer a **link**, not the movie file; TikTok's "Save video" writes to Photos instead. So even with the rule widened, the share sheet realistically delivers a video only when the user shares **from Photos** — i.e. a file they already saved. Which makes 1c the actual path. *(Confidence high, but device-unverified — nothing about a share extension is testable in the web preview or headless, per `docs/recipes-grocery.md:357`.)*
 
@@ -81,7 +85,20 @@ Request limits are not a concern at this scale: 100 images/request on a 200k-con
 
 Claude bills images in 28×28 patches: **visual tokens = ⌈w/28⌉ × ⌈h/28⌉**. Opus 5 and Sonnet 5 are high-resolution tier (long edge 2576 px, cap 4784 tokens), so a downscaled frame is **not** resized further server-side — we pay for every pixel we send.
 
-**The trap:** `downscaleJpeg`'s default is `RESIZE_WIDTH = 1024` (`src/lib/media/photo-library.ts:62`). On a 9:16 reel frame, 1024 is the **short** edge — the frame goes out at 1024×1820 and costs **2,405 tokens**. Resizing by *long* edge instead — which the seam already supports via `opts.height`, added for progress photos (`photo-library.ts:174-181`) — sends 576×1024 for **777 tokens**. Same legibility class, **one third the bill.** A video rung that naively called `downscaleToJpegBase64(uri)` would silently pay 3× per frame, ten times per import.
+**The trap:** `downscaleJpeg`'s default was `RESIZE_WIDTH = 1024` (`src/lib/media/photo-library.ts`). On a 9:16 reel frame, 1024 is the **short** edge — the frame goes out at 1024×1820 and costs **2,405 tokens**. Resizing by *long* edge instead sends 576×1024 for **777 tokens**. Same legibility class, **one third the bill.** A video rung that naively called `downscaleToJpegBase64(uri)` would silently pay 3× per frame, ten times per import.
+
+> **FIXED 2026-09-14** (`claude/fixes-sept`), independently of the video rung, because the trap was already shipped on three live paths. The seam now bounds the **long edge** by default: `longEdgeResize(width, height, edge)` is the one definition (`workingCopyResize` became an alias of it), `DownscaleOptions` gained `maxEdge` and `source`, and explicit `width`/`height` still win so the two callers written against that contract are untouched. Callers that genuinely cannot know their source's shape — a screenshot off the share sheet, a stored progress photo — get a width-bounded pass that the seam then *corrects* from the manipulator's own report (`overLongEdge`), which costs a second native pass only when the guess was wrong. Per caller:
+>
+> | Caller | Before | After |
+> | --- | --- | --- |
+> | Meal estimator, camera (`app/meal-estimate.tsx`) | 1024×1365 ≈ **1,813** (4:3 portrait) | 768×1024 ≈ **1,036** |
+> | Meal estimator / recipe screenshot / recipe photo, library (`pickPhotoBase64`) | 1024×1820 ≈ **2,405** (9:16 screenshot) | 576×1024 ≈ **777** |
+> | Share-sheet screenshot (`readSharedImageBase64`) | 1024×2220 ≈ **2,960** (19.5:9) | 472×1024 ≈ **629** |
+> | Progress photo compare / detail | 1024×1365 ≈ **1,813** | 768×1024 ≈ **1,036** |
+> | Workout import | 1280×2773 ≈ **4,554** | **unchanged, deliberately** — it reads a grid of small numbers, and on a portrait set table the *width* is what carries them. A misread weight corrupts a workout record, which is worth more than the tokens. |
+> | Progress photo **working copy** (`progress-photo-add.tsx`) | long edge 1600 | **unchanged** — this is the photo the owner keeps, it was already correct, and nothing here shrinks it. |
+>
+> Pinned in `db/progress-photos.test.mjs` (the patch arithmetic itself, both shapes, the landscape non-regression, and the second-pass predicate).
 
 Per-import cost (in = frames × per-frame + 383-token extraction prompt; out ≈ 600 tokens of recipe JSON):
 
@@ -94,7 +111,7 @@ Per-import cost (in = frames × per-frame + 383-token extraction prompt; out ≈
 
 *(Sonnet 5 $2/$10 — the app's `DEFAULT_MODEL`, `src/lib/ai/model-client.ts:54` — / Opus 5 $5/$25. Prices from `src/lib/ai/cost.ts:23`, which carries its own REVISIT 2026-09-01 note: Sonnet's introductory rate has expired and the constant still says $2/$10, so every Sonnet figure here is a **floor**, not a quote.)*
 
-For scale, the rungs that exist today: the **caption** rung ≈ $0.007, the **screenshot** rung ≈ $0.013 (its 1024×2220 screenshot is 2,960 visual tokens — the same width-vs-long-edge trap, already shipped, and worth fixing independently of this spike).
+For scale, the rungs that exist today: the **caption** rung ≈ $0.007, the **screenshot** rung ≈ $0.013 (its 1024×2220 screenshot was 2,960 visual tokens — the same width-vs-long-edge trap, already shipped, and worth fixing independently of this spike; **fixed 2026-09-14**, now 472×1024 ≈ 629 tokens, so that rung is ≈ $0.008).
 
 **Recommendation: 10 frames at long edge 768 ⇒ ~4.9k input tokens, ~$0.016/import on Sonnet 5** — about 1.2× the screenshot rung the owner already pays, and roughly two Coach turns. Comfortably inside the house cost discipline (`db/coach-eval.test.mjs:376`, §6 "the prompt budget"). Note also that this turn does **not** pay the 9,250-token Coach prefix: `runExtractionTurn` passes its own `system` and `tools: []` (`import.ts:582-594`). Conversely, its ~383-token system block sits **below the minimum cacheable prefix**, so the `cache_control` breakpoint `runCoachTurn` stamps on it is inert here — no cache benefit, and none assumed above.
 
@@ -148,11 +165,11 @@ A new **rung 8**, strictly *below* the screenshot rung, reached from `app/recipe
 | File | Change |
 |---|---|
 | `package.json` | **+1 native dep** — `expo-video` (or `expo-video-thumbnails`; see §2) |
-| `src/lib/media/video-frames.ts` | **new.** Guarded-require seam (the `photo-library.ts` pattern): pick a video, sample N timestamps, return `string[]` of base64 JPEGs. **Resize by long edge, not width.** Every failure a variant, never a throw. |
+| `src/lib/media/video-frames.ts` | **new.** Guarded-require seam (the `photo-library.ts` pattern): pick a video, sample N timestamps, return `string[]` of base64 JPEGs. **Resize by long edge, not width** — now the seam's default (§3b), so this is `downscaleToJpegBase64(uri, { maxEdge: 768, source })` rather than a new rule. Every failure a variant, never a throw. |
 | `src/lib/recipes/import.ts` | `ExtractionInput` gains `{kind:'frames', framesBase64: string[]}`; `buildRecipeExtractionRequest` pushes `Image 1:`…`Image N:` label + image pairs (the documented multi-image shape, images before text); `ImportInput` gains the matching variant; prompt gains the stills-from-video rail |
 | `app/recipe-import.tsx` | Third source chip + its unavailable / canceled / failed prose |
-| `src/lib/recipes/share-payload.ts` | `video` branch (`shareType === 'video'` → `{kind:'video', uri}`) — **worth doing regardless**, since today it silently returns null |
-| `app.json` | `supportsMovieWithMaxCount: 1` on the activation rule |
+| ~~`src/lib/recipes/share-payload.ts`~~ | ~~`video` branch~~ — **done 2026-09-14** (§1b). The branch exists and says why; a frames rung would replace its message with work. |
+| `app.json` | `supportsMovieWithMaxCount: 1` on the activation rule — **still pending**, rebuild-scoped |
 | `db/recipe-import.test.mjs` | New numbered section against the mock harness: request shape for N frames (N image blocks + N labels + 1 text block, images first), the frames variant through `parseRecipeExtraction`, a `found:false` reply from a plate-only reel, NULL-quantity preservation, the video share-payload route |
 | **Migrations** | **none** |
 

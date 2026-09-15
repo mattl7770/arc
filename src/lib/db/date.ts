@@ -235,6 +235,52 @@ export function localDaysList(end: string, count: number): string[] {
   return dates;
 }
 
+/**
+ * The forward-most of a stored cursor and what the clock says now — the app's
+ * **one** guard against a device clock that has moved BACKWARDS.
+ *
+ * ## Why this exists
+ *
+ * A westbound flight across the date line rolls the local clock back, and
+ * {@link todayISODate} answers with **yesterday**. Every subsystem that carries
+ * a "last seen day" then has a choice, and three of them made it independently:
+ *
+ *  - `src/lib/ai/pass-schedule.ts` kept the later of stored and today, so a
+ *    signal pass after westbound travel could not rewind the daily-pass cursor
+ *    and fire the day's pass a second time;
+ *  - `src/lib/backup/snapshot.ts` treated a non-positive age as due, so a stamp
+ *    sitting in the future could not read as "not due" for as long as the skew
+ *    lasted;
+ *  - `src/hooks/use-today-mission.ts` made the **same** comparison with **no**
+ *    guard, so the day the user is looking at could flicker backwards and work
+ *    done in the brief "tomorrow" went out of view.
+ *
+ * Two hand-patches and one hole is the argument for one function. It lives here
+ * because this file is already the single home of "what day is it", and the D4
+ * timezone work builds its monotonic-write rule on exactly this comparison
+ * (docs/spikes/timezone-days.md §4).
+ *
+ * ## The rule
+ *
+ * The cursor may **skip** a date — eastbound over the date line genuinely
+ * misses one — but it never goes backwards. The cost is deliberate and worth
+ * naming: a clock set wrongly far ahead and then corrected leaves the cursor
+ * parked on the wrong day until the calendar catches up. That is the trade
+ * `pass-schedule.ts` already accepted, and losing a day of history to a clock
+ * that lied is worse than waiting for it.
+ *
+ * ## Shape
+ *
+ * Generic over `string` and `number` because the two things ARC cursors are a
+ * `YYYY-MM-DD` (which sorts chronologically as text — the whole reason the
+ * schema stores dates that way) and an epoch-millisecond stamp. Comparing
+ * `forwardCursor(marker, now) !== now` is the idiom for *"the clock has moved
+ * backwards since `marker` was written"*.
+ */
+export function forwardCursor<T extends string | number>(stored: T | null | undefined, now: T): T {
+  return stored != null && stored > now ? stored : now;
+}
+
 /** Local wall-clock "HH:MM" for an ISO-8601 UTC instant — the Log feed's time column. */
 export function clockFromISO(iso: string): string {
   const d = new Date(iso);

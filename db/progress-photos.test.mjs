@@ -65,6 +65,7 @@ import {
   PHOTO_READING_SYSTEM_PROMPT,
   parsePhotoReading,
 } from '../src/lib/photos/analyze.ts';
+import { longEdgeResize, overLongEdge } from '../src/lib/media/photo-library.ts';
 
 let pass = 0;
 let fail = 0;
@@ -923,6 +924,57 @@ const KG = (kg) => `${kg.toFixed(1)} kg`;
   JSON.stringify(workingCopyResize(null, 4032, 1600)) === '{"width":1600}'
     ? ok('a square photo, and dimensions the picker never reported, fall back to width')
     : bad('resize fallback');
+
+  // ...and the SAME rule now governs every vision payload in the app, from one
+  // definition. Before this, `downscaleJpeg` bounded the WIDTH, which on a
+  // portrait frame is the SHORT edge — ~3x the visual tokens for the same
+  // readable picture (docs/spikes/video-recipe-import.md §3b).
+  console.log('   ...and the one long-edge rule the whole app downscales by');
+  JSON.stringify(longEdgeResize(3024, 4032, 1600)) ===
+    JSON.stringify(workingCopyResize(3024, 4032, 1600)) &&
+  JSON.stringify(longEdgeResize(null, 4032, 1600)) ===
+    JSON.stringify(workingCopyResize(null, 4032, 1600))
+    ? ok('workingCopyResize is the media seam’s rule, not a second copy of it')
+    : bad('longEdgeResize/workingCopyResize drift');
+
+  // Claude bills an image in 28x28 patches: ceil(w/28) * ceil(h/28). This is the
+  // arithmetic that makes the rule worth having, so it is asserted rather than
+  // asserted-about-in-a-comment.
+  const patches = (w, h) => Math.ceil(w / 28) * Math.ceil(h / 28);
+  const shape = (w, h, edge) => {
+    const r = longEdgeResize(w, h, edge);
+    return r.height != null
+      ? { w: Math.round((w / h) * edge), h: edge }
+      : { w: edge, h: Math.round((h / w) * edge) };
+  };
+  {
+    // A 9:16 reel frame / phone screenshot — the shape almost everything here is.
+    const fixed = shape(1080, 1920, 1024);
+    const trap = { w: 1024, h: Math.round((1920 / 1080) * 1024) };
+    patches(fixed.w, fixed.h) === 777 && patches(trap.w, trap.h) === 2405
+      ? ok(`9:16 at long edge 1024 = 777 visual tokens; bounded by width it was 2,405`)
+      : bad('9:16 token math', `${patches(fixed.w, fixed.h)} vs ${patches(trap.w, trap.h)}`);
+    // A 3:4 progress-photo working copy, the compare/detail payload.
+    const photo = shape(1200, 1600, 1024);
+    patches(photo.w, photo.h) === 1036 && patches(1024, Math.round((1600 / 1200) * 1024)) === 1813
+      ? ok('3:4 at long edge 1024 = 1,036 visual tokens; bounded by width it was 1,813')
+      : bad('3:4 token math', String(patches(photo.w, photo.h)));
+    // Landscape is already correct and must not regress into the other error.
+    JSON.stringify(longEdgeResize(1920, 1080, 1024)) === '{"width":1024}'
+      ? ok('a landscape frame keeps bounding its width — the rule is long edge, not height')
+      : bad('landscape long edge');
+  }
+
+  // The self-correction for callers that cannot know their source's shape (a
+  // screenshot off the share sheet, a stored progress photo): after a
+  // width-bounded pass, only a still-too-tall portrait result triggers a redo.
+  overLongEdge(1024, 1820, 1024) &&
+  !overLongEdge(1024, 576, 1024) &&
+  !overLongEdge(768, 1024, 1024) &&
+  !overLongEdge(null, 1820, 1024) &&
+  !overLongEdge(1024, 1024, 1024)
+    ? ok('only an over-tall portrait result asks for a second pass')
+    : bad('overLongEdge');
 
   console.log('   ...and reading a saved reading back out of its JSON columns');
   parseSavedObservations(JSON.stringify([{ area: 'waist', note: 'taper' }])).length === 1 &&

@@ -6,7 +6,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
-import { todayISODate } from '../src/lib/db/date.ts';
+import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { dailyIntakeSeries, logMeal } from '../src/lib/db/repositories/nutrition.ts';
@@ -485,41 +485,115 @@ console.log('\n13d. mode-aware adherence: a skip while Sick is the right call, n
   sick && sick.mode === 'sick' && deload && deload.mode === 'deload'
     ? ok('each day carries its own mode')
     : bad('day modes', JSON.stringify([sick?.mode, deload?.mode]));
-  sick && sick.excused === 1 && sick.skipped === 0
-    ? ok('the Sick day’s skip is EXCUSED, not counted against it')
+  // The Sick day excuses BOTH the tapped skip and the untouched item; the
+  // Deload day excuses neither. That asymmetry between "tapped skip" and "never
+  // touched" was the defect: the tap is bookkeeping, not virtue.
+  sick && sick.excused === 2 && sick.skipped === 0
+    ? ok('the Sick day excuses the skip AND the item never touched')
     : bad('sick day split', JSON.stringify(sick));
   deload && deload.excused === 0 && deload.skipped === 1
     ? ok('the Deload day’s skip is still a miss — a deload is a plan, not a pass')
     : bad('deload day split', JSON.stringify(deload));
-  sick && sick.planned === 3 && missionOwed(sick) === 2
+  sick && sick.planned === 3 && missionOwed(sick) === 1
     ? ok('planned still says 3 — the day’s plan is a fact, only the denominator moves')
     : bad('planned preserved', JSON.stringify(sick));
 
-  // The headline. Excused-excluded: 1/2 + 1/3 → 2 of 5 = 40%.
-  // Counted as a miss it would be 2 of 6 = 33%; counted as met, 3 of 6 = 50%.
-  near(missionAdherence([sick, deload]), 2 / 5)
-    ? ok('the rate is 2 of 5 owed, not 2 of 6 planned')
+  // The headline. Excused-excluded: 1/1 + 1/3 → 2 of 4 = 50%.
+  // Counted as misses it would be 2 of 6 = 33%; counted as met, 4 of 6 = 67%.
+  near(missionAdherence([sick, deload]), 2 / 4)
+    ? ok('the rate is 2 of 4 owed, not 2 of 6 planned')
     : bad('rate', String(missionAdherence([sick, deload])));
 
   // …and the same rule reaches "Where it's failing", which is the half of the
   // screen that names a protocol to go and change.
   const sources = missionBySource(db, SICK, NORMAL);
   const record = sources.find((s) => s.name === 'Routine');
-  record && record.excused === 1 && record.skipped === 1
-    ? ok('by-source splits the two skips the same way the day series does')
+  record && record.excused === 2 && record.skipped === 1
+    ? ok('by-source excuses the same two rows the day series does')
     : bad('source split', JSON.stringify(record));
   const zone2 = record?.items.find((i) => i.title === 'Zone 2');
   zone2 && zone2.planned === 2 && zone2.excused === 1 && zone2.skipped === 1
     ? ok('the item that was rested from carries the excuse, per day')
     : bad('item split', JSON.stringify(zone2));
-  // 6 planned − 2 completed − 1 excused = 3 missed. Before this change it was 4,
-  // and Zone 2 outranked Magnesium on a list of "what you are failing at".
-  record && record.planned - record.completed - record.excused === 3
-    ? ok('the miss count drops by exactly the excused skip')
+  const magnesium = record?.items.find((i) => i.title === 'Magnesium');
+  magnesium && magnesium.excused === 1 && magnesium.skipped === 0
+    ? ok('…and the item never touched carries it on the Sick day only')
+    : bad('untouched item split', JSON.stringify(magnesium));
+  // 6 planned − 2 completed − 2 excused = 2 missed: one Deload skip and one
+  // Deload day it was never touched. Before modes it was 4; before this fix, 3.
+  record && record.planned - record.completed - record.excused === 2
+    ? ok('the miss count drops by exactly what the Sick day excused')
     : bad('miss count', JSON.stringify(record));
-  record?.items[0]?.title === 'Magnesium'
-    ? ok('…so the never-touched item outranks the one correctly rested from')
-    : bad('failing order', JSON.stringify(record?.items.map((i) => i.title)));
+  // Zone 2 and Magnesium now both carry one miss and one excuse — a genuine tie,
+  // broken alphabetically. The point is that neither is ranked above the other
+  // for a difference that was only ever about which button got pressed.
+  magnesium &&
+  zone2 &&
+  magnesium.planned - magnesium.completed - magnesium.excused ===
+    zone2.planned - zone2.completed - zone2.excused
+    ? ok('a tapped skip and an untouched item rank identically under an excusing mode')
+    : bad('failing order', JSON.stringify(record?.items));
+}
+
+console.log('\n13d-ii. an untouched item is excused only once the day is OVER');
+{
+  const { db } = freshDb();
+  // TODAY is live; YESTERDAY has ended. Both under Travel, which excuses.
+  const YESTERDAY = shiftISODate(TODAY, -1);
+  for (const date of [YESTERDAY, TODAY]) {
+    const log = getOrCreateDailyLog(db, date);
+    for (const [title, status] of [
+      ['Sunlight', 'completed'],
+      ['Zone 2', 'pending'],
+    ]) {
+      insertMissionItem(db, log.id, 'habit', { id: '', title, status, category: 'Routine' });
+    }
+  }
+  setMode(db, { mode: 'travel', startDate: YESTERDAY, endDate: TODAY });
+
+  const series = missionDailySeries(db, 14, TODAY);
+  const past = series.find((p) => p.date === YESTERDAY);
+  const live = series.find((p) => p.date === TODAY);
+  past && past.excused === 1 && missionOwed(past) === 1
+    ? ok('yesterday’s untouched item is excused — the day is over and it stayed untouched')
+    : bad('settled travel day', JSON.stringify(past));
+  live && live.excused === 0 && missionOwed(live) === 2
+    ? ok('today’s is NOT — a pending item at midday is a morning, not a decision')
+    : bad('live travel day', JSON.stringify(live));
+
+  // The control: the same shape on a day whose mode does not excuse.
+  const { db: plain } = freshDb();
+  const log = getOrCreateDailyLog(plain, YESTERDAY);
+  for (const [title, status] of [
+    ['Sunlight', 'completed'],
+    ['Zone 2', 'pending'],
+  ]) {
+    insertMissionItem(plain, log.id, 'habit', { id: '', title, status, category: 'Routine' });
+  }
+  const normalDay = missionDailySeries(plain, 14, TODAY).find((p) => p.date === YESTERDAY);
+  normalDay && normalDay.excused === 0 && missionOwed(normalDay) === 2
+    ? ok('on a Normal day an untouched item is still a miss — nothing else changed')
+    : bad('normal control', JSON.stringify(normalDay));
+  near(missionAdherence([normalDay]), 1 / 2)
+    ? ok('…and it still costs the rate exactly what it always did')
+    : bad('normal rate', String(missionAdherence([normalDay])));
+
+  // The ledger app/mission-history.tsx prints must still reconcile: the four
+  // judged terms plus excused sum back to planned.
+  const bySource = missionBySource(db, YESTERDAY, YESTERDAY);
+  const routine = bySource.find((s) => s.name === 'Routine');
+  routine &&
+  routine.planned === 2 &&
+  routine.completed === 1 &&
+  routine.skipped === 0 &&
+  routine.excused === 1 &&
+  routine.partial === 0
+    ? ok('“Where it’s failing” agrees with the by-day ledger, row for row')
+    : bad('by-source settled travel day', JSON.stringify(routine));
+  routine &&
+  routine.planned - routine.completed - routine.skipped - routine.excused - routine.partial === 0
+    ? ok('…and the ledger still sums to planned, with nothing left untouched')
+    : bad('ledger identity', JSON.stringify(routine));
 }
 
 console.log('\n13e. activeModesIn matches getActiveMode day-for-day');
