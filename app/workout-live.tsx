@@ -25,7 +25,11 @@ import {
   readWorkoutDraft,
   saveWorkoutDraft,
 } from '@/lib/db/repositories/workout-drafts';
-import { lastSessionSets, personalRecords } from '@/lib/db/repositories/training-stats';
+import {
+  lastSessionSets,
+  personalRecords,
+  type PrevSet,
+} from '@/lib/db/repositories/training-stats';
 import { restSecFor } from '@/lib/exercise/constants';
 import {
   DRAFT_VERSION,
@@ -39,13 +43,22 @@ import {
 import { e1rmForSet } from '@/lib/exercise/e1rm';
 import {
   dayLabel,
+  displayDistance,
   displayWeight,
   formatClock,
+  parseClock,
   setTypeTag,
   toCanonicalKg,
+  toCanonicalMetres,
   weightSpec,
 } from '@/lib/exercise/format';
-import type { LoggingType, SetType, WorkoutDetail } from '@/lib/exercise/types';
+import {
+  DEFAULT_MEASURES,
+  hasMeasure,
+  isLoadedRepsMeasures,
+  type Measures,
+} from '@/lib/exercise/measures';
+import type { SetType, WorkoutDetail } from '@/lib/exercise/types';
 import { cancelRestAlert, scheduleRestAlert } from '@/lib/notifications/rest-timer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import type { UnitPreferences } from '@/lib/user/types';
@@ -183,12 +196,67 @@ function supersetGroups(blocks: LiveBlock[]): (number | null)[] {
  */
 const MAX_SESSION_MIN = 6 * 60;
 
-const WEIGHT_LOGGING = new Set<LoggingType>([
-  'weight_reps',
-  'weighted_bodyweight',
-  'weight_duration',
-  'assisted_bodyweight',
-]);
+/**
+ * The columns one exercise block draws, from what its movement MEASURES (0046).
+ *
+ * This replaced a `WEIGHT_LOGGING` set of logging types, and the difference is
+ * the whole of B1 on this screen: the old set answered "does this show a weight
+ * field", the reps column was unconditional, and there was nowhere at all to
+ * put a time or a distance — so a plank asked for reps and a run could not
+ * record five kilometres.
+ *
+ * `prev` is the one column that yields. Set · Prev · RPE · stamp cost about
+ * 210pt of a 375pt screen before any value column, which leaves a third
+ * value column around 30pt wide — unusable. Nothing in the shipped catalog
+ * measures three things (a carry is load + distance), so this is insurance
+ * rather than a daily case; when it does happen, last session's numbers are the
+ * least load-bearing thing on the row.
+ */
+function blockColumns(measures: Measures): {
+  reps: boolean;
+  load: boolean;
+  time: boolean;
+  distance: boolean;
+  prev: boolean;
+} {
+  const cols = {
+    reps: hasMeasure(measures, 'reps'),
+    load: hasMeasure(measures, 'load'),
+    time: hasMeasure(measures, 'time'),
+    distance: hasMeasure(measures, 'distance'),
+  };
+  const count = Number(cols.reps) + Number(cols.load) + Number(cols.time) + Number(cols.distance);
+  return { ...cols, prev: count <= 2 };
+}
+
+/**
+ * Last session's numbers for this set, in sixteen points of width.
+ *
+ * It shows only what this block's own columns show, which is the point: a run's
+ * Prev is "26:40" and not "—×—", and a plank's is "1:30". `12×135` keeps its
+ * compact compound form because reps × load is one reading; the others are
+ * single values and need no separator. Distance goes bare, without its unit —
+ * the column header above already carries it, and the unit would not fit.
+ */
+function prevColumnText(
+  prev: PrevSet | undefined,
+  cols: ReturnType<typeof blockColumns>,
+  units: UnitPreferences
+): string {
+  if (!prev) return '—';
+  const parts: string[] = [];
+  if (cols.reps || cols.load) {
+    const reps = prev.reps ?? '—';
+    const load = prev.weightKg != null ? `×${displayWeight(prev.weightKg, units)}` : '';
+    if (cols.reps) parts.push(`${reps}${load}`);
+    else if (prev.weightKg != null) parts.push(String(displayWeight(prev.weightKg, units)));
+  }
+  if (cols.time && prev.durationSec != null) parts.push(formatClock(prev.durationSec));
+  if (cols.distance && prev.distanceM != null) {
+    parts.push(String(displayDistance(prev.distanceM, units)));
+  }
+  return parts.length > 0 ? parts.join(' ') : '—';
+}
 
 let keySeq = 1;
 const nextKey = () => keySeq++;
@@ -215,6 +283,12 @@ function blankSet(from?: LiveSet): LiveSet {
     weight: from?.weight ?? '',
     reps: from?.reps ?? '',
     rpe: '',
+    // Time and distance do NOT carry forward from the set above, where weight
+    // and reps do. Straight sets repeat a load; nobody runs the same 5 km twice
+    // in a session, and a copied "26:40" would be a number the user has to
+    // notice and clear rather than one they were saved typing.
+    time: '',
+    distance: '',
     setType: 'normal',
     done: false,
     pr: false,
@@ -238,6 +312,7 @@ function buildBlock(
     exerciseId,
     name: ex.name,
     loggingType: ex.loggingType,
+    measures: ex.measures,
     mechanic: ex.mechanic,
     restSec: restSec ?? restSecFor(ex.mechanic, null),
     prev,
@@ -251,9 +326,12 @@ function buildBlock(
  * A synthetic block for a set with no catalog movement — a free-text custom
  * movement (null exercise_id) or one whose catalog entry has since been deleted.
  * It carries the stored display name and keeps exerciseId null so Save re-stores
- * it as free text (insertSet's name backstop still runs). `weight_reps` is the
- * safe default logging type: it shows the weight column, and the set's own
- * numbers fill it. No prev/PR — those are the live logger's, unused when editing.
+ * it as free text (insertSet's name backstop still runs). `weight_reps` /
+ * `reps,load` is the safe default: it shows the weight and reps columns, and the
+ * set's own numbers fill them. A free-text set has no catalog row to ask what it
+ * measures, and reps × load is what one meant before 0046 — nothing that was
+ * stored can be lost by showing both. No prev/PR — those are the live logger's,
+ * unused when editing.
  */
 function freeTextBlock(name: string): LiveBlock {
   return {
@@ -261,6 +339,7 @@ function freeTextBlock(name: string): LiveBlock {
     exerciseId: null,
     name,
     loggingType: 'weight_reps',
+    measures: DEFAULT_MEASURES,
     mechanic: null,
     restSec: null,
     prev: [],
@@ -323,6 +402,8 @@ function blocksFromWorkout(detail: WorkoutDetail, units: UnitPreferences): LiveB
       weight: weightText,
       reps: s.reps == null ? '' : String(s.reps),
       rpe: s.rpe == null ? '' : String(s.rpe),
+      time: s.durationSec == null ? '' : formatClock(s.durationSec),
+      distance: s.distanceM == null ? '' : String(displayDistance(s.distanceM, units)),
       setType: s.setType,
       done: true,
       pr: false,
@@ -518,21 +599,33 @@ function WorkoutLive({
   // so "is there anything here" cannot mean three different things across the
   // write-through, the discard prompt and the offer to resume.
   const hasData = draftBlocksHaveData(blocks);
-  // Every entered weight must fit the schema's canonical-kg bound
-  // (0003_exercise.sql: weight_kg >= 0 AND weight_kg < 1000). A single
-  // over-limit set throws that CHECK inside finish()'s one transaction, rolling
-  // the WHOLE session back with an opaque "Save failed" that names no cause — so
-  // block Finish and name the movement instead. A non-numeric weight is not
-  // flagged: it stores as null (bodyweight), exactly as finish() already treats it.
-  const overWeightBlock = blocks.find((b) =>
+  // Every entered value must fit the schema's own bound (0003_exercise.sql:
+  // weight_kg >= 0 AND weight_kg < 1000). A single over-limit set throws that
+  // CHECK inside finish()'s one transaction, rolling the WHOLE session back
+  // with an opaque "Save failed" that names no cause — so block Finish and name
+  // the movement instead. A non-numeric value is not flagged: it stores as null
+  // (bodyweight), exactly as finish() already treats it.
+  //
+  // 0046 put two more CHECK'd columns on the same row (`duration_sec < 36000`,
+  // `distance_m < 1000000`), and they fail the same way — so the guard covers
+  // all three rather than leaving two of them to discover the rollback.
+  const overLimitBlock = blocks.find((b) =>
     b.sets.some((s) => {
-      if (s.weight.trim() === '') return false;
-      const kg = toCanonicalKg(Number(s.weight), units);
-      return Number.isFinite(kg) && (kg < 0 || kg >= 1000);
+      if (s.weight.trim() !== '') {
+        const kg = toCanonicalKg(Number(s.weight), units);
+        if (Number.isFinite(kg) && (kg < 0 || kg >= 1000)) return true;
+      }
+      const seconds = parseClock(s.time);
+      if (seconds != null && seconds >= 36000) return true;
+      if (s.distance.trim() !== '') {
+        const metres = toCanonicalMetres(Number(s.distance), units);
+        if (Number.isFinite(metres) && (metres < 0 || metres >= 1_000_000)) return true;
+      }
+      return false;
     })
   );
-  const weightProblem = overWeightBlock
-    ? `A weight on ${overWeightBlock.name} won’t save — it’s past the logger’s limit.`
+  const weightProblem = overLimitBlock
+    ? `A value on ${overLimitBlock.name} won’t save — it’s past the logger’s limit.`
     : null;
   // A session no longer needs a name to be finishable — workouts have no names
   // (owner, 2026-08-14). Sets are the whole requirement. When editing, an empty
@@ -689,7 +782,10 @@ function WorkoutLive({
     let pr = set.pr;
     // Editing a past session awards no PRs and starts no rest timer: both are
     // claims about right now, and this set happened days ago.
-    if (done && !editing && WEIGHT_LOGGING.has(block.loggingType)) {
+    // A PR here is an e1RM record, which only a set carrying BOTH a load and
+    // its reps can hold (0046) — a plank can never set one, and asking is
+    // cheaper than computing an e1RM that `countsForE1rm` would reject anyway.
+    if (done && !editing && isLoadedRepsMeasures(block.measures)) {
       const weightKg = set.weight.trim() === '' ? null : toCanonicalKg(Number(set.weight), units);
       const reps = set.reps.trim() === '' ? null : Number(set.reps);
       const rpe = set.rpe.trim() === '' ? null : Number(set.rpe);
@@ -724,9 +820,22 @@ function WorkoutLive({
     const groups = supersetGroups(blocks);
     const sets = blocks.flatMap((b, bi) =>
       b.sets
-        .filter((s) => s.done || s.reps.trim() !== '' || s.weight.trim() !== '')
+        .filter(
+          (s) =>
+            s.done ||
+            s.reps.trim() !== '' ||
+            s.weight.trim() !== '' ||
+            s.time.trim() !== '' ||
+            s.distance.trim() !== ''
+        )
         .map((s) => {
           const reps = s.reps.trim() === '' ? null : Number(s.reps);
+          const durationSec = parseClock(s.time);
+          const distanceDisplay = s.distance.trim() === '' ? null : Number(s.distance);
+          const distanceM =
+            distanceDisplay != null && Number.isFinite(distanceDisplay)
+              ? toCanonicalMetres(distanceDisplay, units)
+              : null;
           // An untouched loaded weight writes back its exact stored kg rather
           // than re-deriving from the display string: displayWeight rounds to
           // the unit spec, so toCanonicalKg of that rounded string drifts off
@@ -746,6 +855,11 @@ function WorkoutLive({
             reps: reps != null && Number.isFinite(reps) ? Math.round(reps) : null,
             weightKg: weightKg != null && Number.isFinite(weightKg) ? weightKg : null,
             rpe: rpe != null && Number.isFinite(rpe) ? rpe : null,
+            // Passed whatever the block draws; `insertSet` nulls anything the
+            // movement does not measure, so the repository has the last word
+            // (0046) and a stale field can never ride along.
+            durationSec,
+            distanceM,
             setType: s.setType,
             supersetGroup: groups[bi],
           };
@@ -1109,7 +1223,7 @@ function ExerciseBlock({
   onRemove: (bk: number) => void;
   onOpenDetail: () => void;
 }) {
-  const showWeight = WEIGHT_LOGGING.has(block.loggingType);
+  const cols = blockColumns(block.measures);
   return (
     // Superset grouping is drawn by THE BIND at the call site (fused plates +
     // the seam chip), not by anything on the block itself. The old left rule
@@ -1143,22 +1257,40 @@ function ExerciseBlock({
           </Pressable>
         </View>
 
-        {/* Column header — the label voice, closed by the rule beneath it. */}
+        {/* Column header — the label voice, closed by the rule beneath it. The
+            value columns are whatever the movement measures (0046), in the
+            canonical order reps · load · time · distance, so a plank offers one
+            clock and a run a clock and a distance. The unit is in the HEADER,
+            never in the field, so every cell below stays a bare mono number. */}
         <View className="mt-1.5 flex-row items-center gap-1.5 pb-1.5">
           <Text className="w-7 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
             Set
           </Text>
-          <Text className="w-16 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-            Prev
-          </Text>
-          {showWeight ? (
+          {cols.prev ? (
+            <Text className="w-16 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+              Prev
+            </Text>
+          ) : null}
+          {cols.load ? (
             <Text className="flex-1 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
               {spec.unit}
             </Text>
           ) : null}
-          <Text className="flex-1 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-            Reps
-          </Text>
+          {cols.reps ? (
+            <Text className="flex-1 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+              Reps
+            </Text>
+          ) : null}
+          {cols.time ? (
+            <Text className="flex-1 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+              mm:ss
+            </Text>
+          ) : null}
+          {cols.distance ? (
+            <Text className="flex-1 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+              {units.distance}
+            </Text>
+          ) : null}
           <Text className="w-12 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
             RPE
           </Text>
@@ -1170,9 +1302,6 @@ function ExerciseBlock({
 
         {block.sets.map((set, i) => {
           const prev = block.prev[i];
-          const prevText = prev
-            ? `${prev.reps ?? '—'}${prev.weightKg != null ? `×${displayWeight(prev.weightKg, units)}` : ''}`
-            : '—';
           const tag = setTypeTag(set.setType);
           return (
             <View key={set.key}>
@@ -1188,11 +1317,13 @@ function ExerciseBlock({
                   <Text className="font-mono text-[12px] text-ink-secondary">{tag || i + 1}</Text>
                 </Pressable>
 
-                <Text className="w-16 font-mono text-[11px] text-ink-muted" numberOfLines={1}>
-                  {prevText}
-                </Text>
+                {cols.prev ? (
+                  <Text className="w-16 font-mono text-[11px] text-ink-muted" numberOfLines={1}>
+                    {prevColumnText(prev, cols, units)}
+                  </Text>
+                ) : null}
 
-                {showWeight ? (
+                {cols.load ? (
                   <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
                     <TextInput
                       value={set.weight}
@@ -1209,18 +1340,62 @@ function ExerciseBlock({
                   </View>
                 ) : null}
 
-                <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
-                  <TextInput
-                    value={set.reps}
-                    onChangeText={(reps) => onPatch(block.key, set.key, { reps })}
-                    placeholder={prev?.reps != null ? String(prev.reps) : '—'}
-                    placeholderTextColor={palette.inkMuted}
-                    keyboardType="number-pad"
-                    returnKeyType={KEYPAD_DONE}
-                    className="py-1.5 text-center font-mono text-[15px] text-ink"
-                    accessibilityLabel={`Reps for set ${i + 1}`}
-                  />
-                </View>
+                {cols.reps ? (
+                  <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                    <TextInput
+                      value={set.reps}
+                      onChangeText={(reps) => onPatch(block.key, set.key, { reps })}
+                      placeholder={prev?.reps != null ? String(prev.reps) : '—'}
+                      placeholderTextColor={palette.inkMuted}
+                      keyboardType="number-pad"
+                      returnKeyType={KEYPAD_DONE}
+                      className="py-1.5 text-center font-mono text-[15px] text-ink"
+                      accessibilityLabel={`Reps for set ${i + 1}`}
+                    />
+                  </View>
+                ) : null}
+
+                {/* The clock. `numbers-and-punctuation` rather than a number pad
+                    because mm:ss needs a colon and no iOS pad has one; it is a
+                    full keyboard, so it already carries a return key, and
+                    KEYPAD_DONE is set anyway so the rule reads the same at every
+                    numeric field on the screen. `parseClock` is tolerant enough
+                    that a bare "60" is a minute. */}
+                {cols.time ? (
+                  <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                    <TextInput
+                      value={set.time}
+                      onChangeText={(time) => onPatch(block.key, set.key, { time })}
+                      placeholder={
+                        prev?.durationSec != null ? formatClock(prev.durationSec) : '0:00'
+                      }
+                      placeholderTextColor={palette.inkMuted}
+                      keyboardType="numbers-and-punctuation"
+                      returnKeyType={KEYPAD_DONE}
+                      className="py-1.5 text-center font-mono text-[15px] text-ink"
+                      accessibilityLabel={`Time for set ${i + 1}, minutes and seconds`}
+                    />
+                  </View>
+                ) : null}
+
+                {cols.distance ? (
+                  <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                    <TextInput
+                      value={set.distance}
+                      onChangeText={(distance) => onPatch(block.key, set.key, { distance })}
+                      placeholder={
+                        prev?.distanceM != null
+                          ? String(displayDistance(prev.distanceM, units))
+                          : '—'
+                      }
+                      placeholderTextColor={palette.inkMuted}
+                      keyboardType="decimal-pad"
+                      returnKeyType={KEYPAD_DONE}
+                      className="py-1.5 text-center font-mono text-[15px] text-ink"
+                      accessibilityLabel={`Distance for set ${i + 1}, in ${units.distance}`}
+                    />
+                  </View>
+                ) : null}
 
                 <View className={`min-h-[36px] w-12 ${INPUT_WELL}`}>
                   <TextInput

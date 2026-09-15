@@ -33,6 +33,20 @@ export type ImportedSet = {
   weight: number | null;
   weightUnit: 'lb' | 'kg' | null;
   rpe: number | null;
+  /**
+   * Time and distance columns (0046). Both arrive CANONICAL — seconds and
+   * metres — unlike `weight`, which keeps the screenshot's own unit because the
+   * review screen shows it back in that unit for checking.
+   *
+   * The asymmetry is deliberate. A weight has two plausible readings and the
+   * user must be able to see which one was taken; a duration written "26:40"
+   * has exactly one, and a distance is the one field where the source's unit
+   * ("5.2 km", "3.1 mi") is almost always printed beside the number, so the
+   * model can convert it once and correctly rather than passing an ambiguity
+   * down to a review screen that would have to re-render it anyway.
+   */
+  durationSec: number | null;
+  distanceM: number | null;
 };
 
 export type ImportedExercise = {
@@ -104,7 +118,11 @@ export const WORKOUT_PARSE_SYSTEM_PROMPT = [
   '- One entry per exercise, in the order shown; one entry per set with reps and weight.',
   '- Read the weight unit from the image (lb or kg). If it is genuinely not shown, use null.',
   '- Warmup sets marked as such in the source may be skipped; working sets must all land.',
-  '- Bodyweight movements: weight null. Reps-only rows: weight null. Time-only rows: skip.',
+  '- Bodyweight movements: weight null. Reps-only rows: weight null.',
+  '- Timed and measured rows (planks, runs, rides, rows, carries) are FIRST-CLASS, not skipped:',
+  '  durationS = the set\'s time in SECONDS ("26:40" is 1600); distanceM = its distance in',
+  '  METRES, converted from whatever the source showed ("5.2 km" is 5200, "3.1 mi" is 4989).',
+  '  A row with only a time and a distance and no reps is a complete, valid set.',
   "- The session DATE: only if visible in the image (a header like 'Yesterday' is NOT a",
   '  date — use null unless an absolute date is shown). Format YYYY-MM-DD.',
   '- kind: "strength" for lifting, "cardio" for a run/ride/row log, "mobility" for',
@@ -116,7 +134,8 @@ export const WORKOUT_PARSE_SYSTEM_PROMPT = [
   'Respond with ONLY a JSON object, no prose, matching:',
   '{"date": "YYYY-MM-DD"|null, "name": string, "kind": "strength"|"cardio"|"mobility"|"other",',
   ' "durationMin": number|null, "exercises": [{"name": string, "sets": [{"reps": number|null,',
-  ' "weight": number|null, "weightUnit": "lb"|"kg"|null, "rpe": number|null}]}],',
+  ' "weight": number|null, "weightUnit": "lb"|"kg"|null, "rpe": number|null,',
+  ' "durationS": number|null, "distanceM": number|null}]}],',
   ' "notes": string|null}',
 ].join('\n');
 
@@ -202,8 +221,16 @@ export function parseWorkoutImport(replyText: string): ImportedWorkout {
       // the whole import.
       const raw = cleanNumber(set.rpe, 1, 10.5);
       const rpe = raw == null ? null : Math.min(10, raw);
-      if (reps == null && weight == null) continue;
-      sets.push({ reps, weight, weightUnit, rpe });
+      // Bounded by the schema's own CHECKs (0013 duration_sec < 36000, 0046
+      // distance_m < 1000000), so a misread "26:40" transcribed as 264000
+      // drops rather than rolling back the whole import on a constraint.
+      const durationRaw = cleanNumber(set.durationS, 1, 36000);
+      const durationSec = durationRaw == null ? null : Math.round(durationRaw);
+      const distanceM = cleanNumber(set.distanceM, 1, 1_000_000);
+      // A set is now usable if it recorded ANY of the four measures — the old
+      // test was reps-or-weight, which is exactly what made a run unimportable.
+      if (reps == null && weight == null && durationSec == null && distanceM == null) continue;
+      sets.push({ reps, weight, weightUnit, rpe, durationSec, distanceM });
     }
     if (sets.length === 0) continue;
     exercises.push({ name, exerciseId: null, sets });

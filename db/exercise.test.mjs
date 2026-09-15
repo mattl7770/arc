@@ -460,9 +460,25 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
   const file = join(dir, 'arc.db');
   const NOW = new Date(2026, 8, 14, 18, 0, 0); // Mon 2026-09-14, local
 
-  // A session mid-flight: three sets stamped, a fourth half-typed, a rest timer
-  // running, one superset bound. Exactly what is in React state when iOS pulls
-  // the rug.
+  // A drafted set, in full — every field, so the round-trip below compares a
+  // COMPLETE object and a field added to DraftSet without being added here
+  // fails loudly instead of silently not being tested.
+  const set = (key, over) => ({
+    key,
+    weight: '',
+    reps: '',
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: false,
+    pr: false,
+    ...over,
+  });
+
+  // A session mid-flight: three sets stamped, a fourth half-typed, a run logged
+  // by time and distance, a rest timer running, one superset bound. Exactly
+  // what is in React state when iOS pulls the rug.
   const draft = {
     version: DRAFT_VERSION,
     startedAt: NOW.getTime() - 22 * 60_000,
@@ -474,16 +490,17 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
         exerciseId: 'barbell-bench-press',
         name: 'Barbell Bench Press',
         loggingType: 'weight_reps',
+        measures: 'reps,load',
         mechanic: 'compound',
         restSec: 180,
-        prev: [{ reps: 8, weightKg: 80, rpe: null }],
+        prev: [{ reps: 8, weightKg: 80, rpe: null, durationSec: null, distanceM: null }],
         bestE1rm: 101.25,
         linkedToNext: true,
         sets: [
-          { key: 1, weight: '80', reps: '8', rpe: '8', setType: 'normal', done: true, pr: false },
-          { key: 2, weight: '80', reps: '8', rpe: '', setType: 'normal', done: true, pr: false },
-          { key: 3, weight: '85', reps: '6', rpe: '9', setType: 'normal', done: true, pr: true },
-          { key: 4, weight: '85', reps: '', rpe: '', setType: 'normal', done: false, pr: false },
+          set(1, { weight: '80', reps: '8', rpe: '8', done: true }),
+          set(2, { weight: '80', reps: '8', done: true }),
+          set(3, { weight: '85', reps: '6', rpe: '9', done: true, pr: true }),
+          set(4, { weight: '85' }),
         ],
       },
       {
@@ -491,14 +508,29 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
         exerciseId: 'barbell-row',
         name: 'Barbell Row',
         loggingType: 'weight_reps',
+        measures: 'reps,load',
         mechanic: 'compound',
         restSec: 180,
         prev: [],
         bestE1rm: null,
         linkedToNext: false,
-        sets: [
-          { key: 5, weight: '70', reps: '10', rpe: '', setType: 'normal', done: true, pr: false },
-        ],
+        sets: [set(5, { weight: '70', reps: '10', done: true })],
+      },
+      // B1 (0046): the block that has no reps and no load at all. It is here
+      // because a draft that could only carry reps × load is exactly what the
+      // version bump exists to throw away — this one has to round-trip.
+      {
+        key: 3,
+        exerciseId: 'treadmill-run',
+        name: 'Treadmill Run',
+        loggingType: 'distance_duration',
+        measures: 'time,distance',
+        mechanic: 'compound',
+        restSec: null,
+        prev: [],
+        bestE1rm: null,
+        linkedToNext: false,
+        sets: [set(6, { time: '26:40', distance: '5.2', done: true })],
       },
     ],
   };
@@ -526,12 +558,21 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
   restored.blocks[0].linkedToNext === true && restored.blocks[0].sets[2].pr === true
     ? ok('the superset bind and the PR stamp survive too')
     : bad('flags');
-  liveDraftHasData(restored) && liveDraftSetsDone(restored) === 4
-    ? ok('the hub can say what is in it: 4 sets logged')
+  liveDraftHasData(restored) && liveDraftSetsDone(restored) === 5
+    ? ok('the hub can say what is in it: 5 sets logged')
     : bad('summary', liveDraftSetsDone(restored));
-  liveDraftMovements(restored).join(' · ') === 'Barbell Bench Press · Barbell Row'
+  liveDraftMovements(restored).join(' · ') === 'Barbell Bench Press · Barbell Row · Treadmill Run'
     ? ok('…and name the movements, in the order they were performed')
     : bad('movements', liveDraftMovements(restored).join());
+  // 0046: the run's whole content is a time and a distance. "Is there anything
+  // here" has to count those, or a finished run is not a session — no Resume
+  // card, no write-through, Finish disabled on work that plainly happened.
+  liveDraftHasData({
+    ...restored,
+    blocks: [{ ...restored.blocks[2], sets: [{ ...restored.blocks[2].sets[0], done: false }] }],
+  })
+    ? ok('a run with only a time and a distance typed counts as data')
+    : bad('time/distance not counted as draft data');
 
   // --- THE EXCLUSION --------------------------------------------------------
   // The whole reason the draft is not a flagged `workouts` row. Nothing that
@@ -612,6 +653,36 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
   parseLiveDraft(readWorkoutDraft(db, 'live').value) === null
     ? ok('a payload from another version reads as nothing to resume')
     : bad('version not enforced');
+  // B1 (0046) is the first release to actually USE that: DRAFT_VERSION went
+  // 1 → 2 because DraftSet grew a time and a distance. A v1 payload is a
+  // complete, plausible-looking session — this is exactly the case where
+  // half-reading it would resurrect a run as reps × load.
+  DRAFT_VERSION === 2 ? ok('DRAFT_VERSION is 2 — B1 changed the set shape') : bad('draft version');
+  saveWorkoutDraft(db, 'live', {
+    version: 1,
+    startedAt: NOW.getTime(),
+    routineId: null,
+    restEndsAt: null,
+    blocks: [
+      {
+        key: 1,
+        exerciseId: 'plank',
+        name: 'Plank',
+        loggingType: 'duration',
+        mechanic: 'isolation',
+        restSec: 60,
+        prev: [],
+        bestE1rm: null,
+        linkedToNext: false,
+        // A v1 set: no `time`, no `distance`, and a plank's hold typed into the
+        // only numeric field v1 had.
+        sets: [{ key: 1, weight: '', reps: '90', rpe: '', setType: 'normal', done: true }],
+      },
+    ],
+  });
+  parseLiveDraft(readWorkoutDraft(db, 'live').value) === null
+    ? ok('a v1 draft evaporates — a plank does not come back as 90 reps')
+    : bad('v1 draft survived the bump');
   saveWorkoutDraft(db, 'live', { version: DRAFT_VERSION, startedAt: 1, blocks: 'nonsense' });
   parseLiveDraft(readWorkoutDraft(db, 'live').value) === null
     ? ok('…and so does junk — parsing is total, never a throw on the mount path')
@@ -627,6 +698,208 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
 
   raw.close();
   rmSync(dir, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// B1 / migration 0046. Owner, 2026-09-14: "Distance instead of reps for running
+// workouts… time for some exercises i.e. planks." An exercise declares what it
+// measures; a set carries those fields and only those.
+console.log('11. an exercise declares what it measures, and a set carries only that');
+{
+  const { db, raw } = freshDb();
+  const measuresOf = (id) => db.get('SELECT measures FROM exercises WHERE id = ?', [id])?.measures;
+
+  // --- the backfill, on the SHIPPED catalog ---------------------------------
+  // Pass 1 derives from logging_type; pass 4 corrects the carry by name.
+  const expected = {
+    'barbell-bench-press': 'reps,load',
+    'pull-up': 'reps,load', // weighted_bodyweight collapses to reps × load
+    'push-up': 'reps', // bodyweight_reps
+    plank: 'time',
+    'treadmill-run': 'time,distance',
+    'rowing-erg': 'time,distance',
+    'stationary-bike': 'time,distance',
+    'incline-walk': 'time,distance',
+    'farmers-carry': 'load,distance', // owner: "a farmer's carry is load + distance"
+  };
+  const wrong = Object.entries(expected).filter(([id, m]) => measuresOf(id) !== m);
+  wrong.length === 0
+    ? ok(
+        'the nine shipped cases backfill exactly (plank time · run time+distance · carry load+distance)'
+      )
+    : bad('catalog backfill', JSON.stringify(wrong.map(([id, m]) => [id, m, measuresOf(id)])));
+  // The trap the name passes are written around: four of the catalog's most-used
+  // lifts are called "Row", and '*row*' would have made every one of them cardio.
+  ['barbell-row', 'dumbbell-row', 'seated-cable-row', 'machine-row', 'walking-lunge'].every(
+    (id) => measuresOf(id) === 'reps,load'
+  )
+    ? ok('…and the name passes spare Barbell/Dumbbell/Cable/Machine Row and the Walking Lunge')
+    : bad('name backfill over-matched a lift');
+  db.all(
+    "SELECT id FROM exercises WHERE measures NOT IN ('reps','reps,load','time','time,distance','load,distance')"
+  ).length === 0
+    ? ok('every seeded row landed on one of the five shapes the catalog actually uses')
+    : bad('stray measures');
+
+  // --- the backfill, on a POPULATED fixture ---------------------------------
+  // The real reason the by-name passes exist: the picker's New-exercise form
+  // derives logging_type from EQUIPMENT alone, so every custom movement the
+  // owner added is stored as a reps × load lift whatever it is. Applying 0046
+  // to a database that already holds those is the case that matters, and it is
+  // why this runs the migration by hand over rows inserted first.
+  {
+    const fresh = new DatabaseSync(':memory:');
+    fresh.exec('PRAGMA foreign_keys = ON;');
+    const fdb = makeDb(fresh);
+    const runner = {
+      exec: (sql) => fresh.exec(sql),
+      getUserVersion: () => fresh.prepare('PRAGMA user_version').get().user_version,
+      setUserVersion: (n) => fresh.exec(`PRAGMA user_version = ${n}`),
+      transaction: fdb.transaction,
+    };
+    // Migrate to 0045 only — the state a device is in before this release.
+    migrate(
+      runner,
+      MIGRATIONS.filter((m) => m.version <= 45)
+    );
+    const custom = [
+      ['c1', 'Running', 'bodyweight', 'bodyweight_reps'],
+      ['c2', 'Side Plank', 'bodyweight', 'bodyweight_reps'],
+      ['c3', 'Outdoor Cycling', 'other', 'weight_reps'],
+      ['c4', 'Swimming', 'other', 'weight_reps'],
+      ['c5', 'Sled Push', 'other', 'weight_reps'],
+      ['c6', 'Trunk Rotation', 'cable', 'weight_reps'], // contains "run"
+      ['c7', 'Weighted Plank', 'plate', 'weight_duration'],
+      ['c8', 'Pendlay Row', 'barbell', 'weight_reps'],
+    ];
+    for (const [id, name, equipment, lt] of custom) {
+      fdb.run(
+        'INSERT INTO exercises (id, name, equipment, logging_type, is_custom) VALUES (?, ?, ?, ?, 1)',
+        [id, name, equipment, lt]
+      );
+    }
+    // A set logged against one of them, so the ALTERs run on a NON-EMPTY table
+    // — the 0034 failure mode (a constraint that passes on an empty fixture and
+    // rejects the ALTER on the owner's device) can only show up here. Written
+    // with raw SQL, not the repository: the repository is this build's, and
+    // this database is deliberately one migration behind it.
+    const w = 'w1';
+    fdb.run("INSERT INTO workouts (id, date, name, kind) VALUES (?, '2026-09-01', '', 'cardio')", [
+      w,
+    ]);
+    fdb.run(
+      "INSERT INTO workout_sets (id, workout_id, exercise, exercise_id, set_index, reps) VALUES ('s1', ?, 'Running', 'c1', 1, 1)",
+      [w]
+    );
+    migrate(runner, MIGRATIONS);
+    ok('0046 applies to a populated database — the ALTERs do not reject existing rows');
+    const got = Object.fromEntries(
+      fresh
+        .prepare('SELECT id, measures FROM exercises WHERE is_custom = 1')
+        .all()
+        .map((r) => [r.id, r.measures])
+    );
+    const want = {
+      c1: 'time,distance',
+      c2: 'time',
+      c3: 'time,distance',
+      c4: 'time,distance',
+      c5: 'load,distance',
+      c6: 'reps,load',
+      c7: 'load,time',
+      c8: 'reps,load',
+    };
+    JSON.stringify(got) === JSON.stringify(want)
+      ? ok('custom rows the picker mis-typed are corrected by name, and only those')
+      : bad('custom backfill', JSON.stringify(got));
+    fresh.prepare('SELECT count(*) c FROM workout_sets WHERE workout_id = ?').get(w).c === 1
+      ? ok('…and the set logged against one of them is untouched')
+      : bad('backfill lost a set');
+    fresh.close();
+  }
+
+  // --- the repository rule: a set carries the fields its exercise implies ----
+  const id = logWorkout(db, { date: '2026-09-14', kind: 'strength' }, [
+    // A plank sent reps and a weight — what the Coach would send if it guessed.
+    {
+      exercise: 'Plank',
+      exerciseId: 'plank',
+      reps: 3,
+      weightKg: 20,
+      durationSec: 90,
+      distanceM: 400,
+    },
+    // A run: no reps, no load, and that is a complete set.
+    { exercise: 'Treadmill Run', exerciseId: 'treadmill-run', durationSec: 2700, distanceM: 8000 },
+    // Free text: nothing to imply anything, so everything is kept.
+    { exercise: 'Some Machine', reps: 10, weightKg: 40 },
+  ]);
+  const rows = db.all(
+    'SELECT exercise, reps, weight_kg, duration_sec, distance_m FROM workout_sets WHERE workout_id = ? ORDER BY set_index',
+    [id]
+  );
+  const plank = rows[0];
+  plank.reps === null && plank.weight_kg === null && plank.duration_sec === 90
+    ? ok('a plank stores its 90 seconds and NULLs the reps and load it was handed')
+    : bad('plank fields', JSON.stringify(plank));
+  plank.distance_m === null
+    ? ok('…and the distance too — a plank measures time and nothing else')
+    : bad('plank distance', JSON.stringify(plank));
+  const run = rows[1];
+  run.reps === null &&
+  run.weight_kg === null &&
+  run.duration_sec === 2700 &&
+  run.distance_m === 8000
+    ? ok('a run with no reps and no load is a first-class row (the seam D3 lands on)')
+    : bad('run fields', JSON.stringify(run));
+  rows[2].reps === 10 && near(rows[2].weight_kg, 40)
+    ? ok('a free-text set has no movement to imply anything, so it keeps what it was given')
+    : bad('free-text fields', JSON.stringify(rows[2]));
+
+  // --- a plank can never set an e1RM ---------------------------------------
+  const prs = personalRecords(db, 'plank');
+  prs.bestE1rmKg === null && prs.maxWeightKg === null && prs.bestSetVolumeKg === null
+    ? ok('a plank has no e1RM, no top set and no set volume — not zero, NULL')
+    : bad('plank load PRs', JSON.stringify(prs));
+  prs.bestDurationSec === 90
+    ? ok('…its record is the longest hold, which is the honest one')
+    : bad('plank duration PR', JSON.stringify(prs));
+  const runPrs = personalRecords(db, 'treadmill-run');
+  runPrs.bestDistanceM === 8000 && runPrs.bestDurationSec === 2700
+    ? ok('a run records farthest and longest')
+    : bad('run PRs', JSON.stringify(runPrs));
+  // 2700 s over 8 km = 337.5 s/km.
+  near(runPrs.bestPaceSecPerKm, 337.5)
+    ? ok('…and a pace, in seconds per km')
+    : bad('pace PR', String(runPrs.bestPaceSecPerKm));
+  runPrs.bestE1rmKg === null
+    ? ok('a run has no e1RM either — e1RM needs a load AND the reps under it')
+    : bad('run e1rm leaked');
+  // A sprint is excluded from the pace record: its pace is real and says nothing
+  // about any distance the owner trains at.
+  logWorkout(db, { date: '2026-09-14', kind: 'cardio' }, [
+    { exercise: 'Treadmill Run', exerciseId: 'treadmill-run', durationSec: 12, distanceM: 100 },
+  ]);
+  near(personalRecords(db, 'treadmill-run').bestPaceSecPerKm, 337.5)
+    ? ok('a 100 m dash does not become the pace record (PACE_PR_MIN_M)')
+    : bad('short piece set the pace PR');
+
+  // --- the schema's own guards ---------------------------------------------
+  throws(() => db.run("UPDATE exercises SET measures = 'load,reps' WHERE id = 'plank'"))
+    ? ok('measures is a CHECK: the subset must be in canonical order, one spelling only')
+    : bad('measures CHECK missing');
+  throws(() => db.run("UPDATE exercises SET measures = 'vibes' WHERE id = 'plank'"))
+    ? ok('…and outside the vocabulary is rejected')
+    : bad('measures vocabulary');
+  throws(() =>
+    db.run(
+      "INSERT INTO workout_sets (id, workout_id, exercise, distance_m) VALUES ('d', ?, 'X', -5)",
+      [id]
+    )
+  )
+    ? ok('distance_m is metres and cannot be negative')
+    : bad('distance CHECK missing');
+  raw.close();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

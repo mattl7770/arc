@@ -15,6 +15,12 @@ import { localWeekRange } from '../date';
 import { newId } from '../id';
 import type { DateString } from '../types';
 import { resolveExerciseByName } from './exercise-catalog';
+import {
+  asMeasures,
+  maskByMeasures,
+  type MeasuredFields,
+  type Measures,
+} from '@/lib/exercise/measures';
 import type {
   LogWorkoutInput,
   RecentSession,
@@ -46,26 +52,83 @@ import type {
 function insertSet(db: Database, workoutId: string, set: SetInput, setIndex: number): string {
   const id = newId(db);
   const exerciseId = set.exerciseId ?? resolveExerciseByName(db, set.exercise);
+  const fields = measuredFields(db, exerciseId, set);
   db.run(
     `INSERT INTO workout_sets
        (id, workout_id, exercise, set_index, reps, weight_kg,
-        exercise_id, set_type, rpe, duration_sec, superset_group)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        exercise_id, set_type, rpe, duration_sec, distance_m, superset_group)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       workoutId,
       set.exercise,
       setIndex,
-      set.reps ?? null,
-      set.weightKg ?? null,
+      fields.reps,
+      fields.weightKg,
       exerciseId,
       set.setType ?? 'normal',
       set.rpe ?? null,
-      set.durationSec ?? null,
+      fields.durationSec,
+      fields.distanceM,
       set.supersetGroup ?? null,
     ]
   );
   return id;
+}
+
+/**
+ * **A set carries the fields its exercise implies** (migration 0046) — the
+ * cross-table rule, enforced here because the schema cannot enforce it.
+ *
+ * A plank measures time; reps on a plank are not a small inaccuracy, they are a
+ * number that would go on to count as volume, feed `setStrength`, and read as a
+ * rep record on a movement that has none. So whatever the caller passes, only
+ * the columns the movement actually measures survive; the rest store NULL.
+ *
+ * ## Why not a CHECK
+ *
+ * The obvious form is a cross-column CHECK on `workout_sets`, and 0034 is why
+ * it is not: a constraint added by ALTER is validated against the table as it
+ * IS, so one written against an empty test fixture passes CI and then rejects
+ * the ALTER on the owner's populated device — where the offending rows are his
+ * own training history and there is no second copy to restore from. A CHECK
+ * would also have to reach `exercises` to know what the movement measures,
+ * which SQLite does not allow at all.
+ *
+ * ## Why NULL rather than throw
+ *
+ * Every caller writes inside `logWorkout`/`replaceWorkout`'s single
+ * transaction, so a throw here rolls the WHOLE session back — losing sets that
+ * were fine because one field was surplus. The loggers never send a surplus
+ * field (they draw the columns from the same `measures`); the ones that can are
+ * the Coach and the photo import, i.e. a model, and quietly refusing a model's
+ * invented reps is the right answer rather than failing the user's save.
+ *
+ * A set with no catalog movement (free text, `exercise_id` null) has nothing to
+ * imply anything, so it keeps whatever it was given.
+ */
+function measuredFields(db: Database, exerciseId: string | null, set: SetInput): MeasuredFields {
+  const given = {
+    reps: set.reps ?? null,
+    weightKg: set.weightKg ?? null,
+    durationSec: set.durationSec ?? null,
+    distanceM: set.distanceM ?? null,
+  };
+  const measures = exerciseId == null ? null : exerciseMeasures(db, exerciseId);
+  return measures == null ? given : maskByMeasures(measures, given);
+}
+
+/**
+ * What one catalog movement measures, or null when the id names no live row.
+ * Exported because the Coach's `log_workout` confirmation card has to mask its
+ * display line with exactly what {@link measuredFields} will store — see
+ * {@link maskByMeasures} for why that had to become one rule.
+ */
+export function exerciseMeasures(db: Database, exerciseId: string): Measures | null {
+  const row = db.get<{ measures: string }>('SELECT measures FROM exercises WHERE id = ?', [
+    exerciseId,
+  ]);
+  return row ? asMeasures(row.measures) : null;
 }
 
 /**
@@ -150,6 +213,7 @@ export function getWorkoutDetail(db: Database, id: string): WorkoutDetail | unde
       rpe: s.rpe,
       setType: s.set_type,
       durationSec: s.duration_sec,
+      distanceM: s.distance_m,
       supersetGroup: s.superset_group,
     })),
   };
@@ -182,16 +246,13 @@ export function replaceWorkout(
   db.transaction(() => {
     const existing = db.get<{ date: DateString }>('SELECT date FROM workouts WHERE id = ?', [id]);
     if (!existing) throw new Error(`No workout ${id}`);
-    db.run(
-      `UPDATE workouts SET date = ?, kind = ?, duration_min = ?, notes = ? WHERE id = ?`,
-      [
-        input.date ?? existing.date,
-        input.kind,
-        input.durationMin ?? null,
-        input.notes ?? null,
-        id,
-      ]
-    );
+    db.run(`UPDATE workouts SET date = ?, kind = ?, duration_min = ?, notes = ? WHERE id = ?`, [
+      input.date ?? existing.date,
+      input.kind,
+      input.durationMin ?? null,
+      input.notes ?? null,
+      id,
+    ]);
     db.run('DELETE FROM workout_sets WHERE workout_id = ?', [id]);
     sets.forEach((set, i) => insertSet(db, id, set, i + 1));
   });

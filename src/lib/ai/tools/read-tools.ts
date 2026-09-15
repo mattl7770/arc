@@ -1060,10 +1060,21 @@ const getTrainingSummary: CoachTool = {
         movements: string | null;
         kind: string;
         duration_min: number | null;
+        set_seconds: number | null;
+        set_metres: number | null;
       }>(
+        // The two roll-ups are B1's (0046): a session whose sets carry a clock
+        // and a distance has content the movement names alone cannot report —
+        // "Treadmill Run" says nothing about whether it was 3 km or 15. Summed
+        // over the session's working sets, which is what "how far did I run on
+        // Tuesday" means when a run is logged as intervals.
         `SELECT w.date, w.kind, w.duration_min,
                 (SELECT group_concat(DISTINCT s.exercise) FROM workout_sets s
-                  WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS movements
+                  WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS movements,
+                (SELECT sum(s.duration_sec) FROM workout_sets s
+                  WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS set_seconds,
+                (SELECT sum(s.distance_m) FROM workout_sets s
+                  WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS set_metres
          FROM workouts w
          WHERE w.date >= ? ORDER BY w.date DESC, w.created_at DESC LIMIT 10`,
         [since]
@@ -1073,6 +1084,10 @@ const getTrainingSummary: CoachTool = {
         kind: w.kind,
         duration_min: w.duration_min,
         movements: (w.movements ?? '').split(',').filter((m) => m.trim() !== ''),
+        // Omitted rather than nulled: most sessions are lifts, and ten sessions
+        // each carrying two explicit nulls is twenty tokens of "no".
+        ...(w.set_seconds != null ? { setSeconds: Math.round(w.set_seconds) } : {}),
+        ...(w.set_metres != null ? { setMetres: Math.round(w.set_metres) } : {}),
       }));
 
     return json({

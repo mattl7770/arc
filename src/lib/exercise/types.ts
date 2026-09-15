@@ -6,8 +6,10 @@
  * feature slices keep their own types and the integrator reconciles the shared
  * type file afterwards. Keep the `Row` types in lockstep with the migrations
  * (0003 workouts/workout_sets, 0011 exercises/exercise_muscles, 0012 routines/
- * routine_exercises, 0013 the workout_sets/workouts enrichment).
+ * routine_exercises, 0013 the workout_sets/workouts enrichment, 0046
+ * exercises.measures + workout_sets.distance_m).
  */
+import type { Measures } from './measures';
 import type { DateString, Timestamp } from '@/lib/db/types';
 
 // ---------------------------------------------------------------------------
@@ -45,6 +47,8 @@ export type WorkoutSetRow = {
   set_type: SetType;
   rpe: number | null;
   duration_sec: number | null;
+  /** Canonical METRES (0046) — the km/mi toggle is a display concern. */
+  distance_m: number | null;
   superset_group: number | null;
   created_at: Timestamp;
   updated_at: Timestamp;
@@ -69,9 +73,14 @@ export type LogWorkoutInput = {
 };
 
 /**
- * One set to persist under a workout (weight already converted to kg). The
- * fields beyond exercise/reps/weightKg are additive (0013) and optional, so
- * every existing caller of logWorkout/addSet stays source-compatible.
+ * One set to persist under a workout (weight already converted to kg, distance
+ * to metres). The fields beyond exercise/reps/weightKg are additive (0013,
+ * 0046) and optional, so every existing caller of logWorkout/addSet stays
+ * source-compatible.
+ *
+ * What lands is not always what is passed: `insertSet` nulls whatever the
+ * exercise does not measure (0046 — "a set carries the fields its exercise
+ * implies"), so reps handed in for a plank are dropped rather than stored.
  */
 export type SetInput = {
   exercise: string;
@@ -81,6 +90,8 @@ export type SetInput = {
   setType?: SetType;
   rpe?: number | null;
   durationSec?: number | null;
+  /** Canonical metres. */
+  distanceM?: number | null;
   supersetGroup?: number | null;
 };
 
@@ -119,6 +130,8 @@ export type StoredSet = {
   rpe: number | null;
   setType: SetType;
   durationSec: number | null;
+  /** Canonical metres (0046). */
+  distanceM: number | null;
   supersetGroup: number | null;
 };
 
@@ -222,6 +235,13 @@ export type ExerciseRow = {
   movement_pattern: MovementPattern | null;
   mechanic: Mechanic | null;
   logging_type: LoggingType;
+  /**
+   * What a set of this movement records (0046) — the authority the loggers,
+   * the stats and the Coach's tools all read. `logging_type` stays because it
+   * still separates bodyweight from weighted from assisted; `measures` is
+   * derived from it on write (src/lib/exercise/measures.ts).
+   */
+  measures: Measures;
   unilateral: 0 | 1;
   instructions: string | null;
   is_custom: 0 | 1;
@@ -251,6 +271,8 @@ export type CatalogExercise = {
   movementPattern: MovementPattern | null;
   mechanic: Mechanic | null;
   loggingType: LoggingType;
+  /** What a set of this movement records (0046). */
+  measures: Measures;
   unilateral: boolean;
   isCustom: boolean;
   primaryMuscles: Muscle[];
@@ -262,6 +284,13 @@ export type NewExercise = {
   name: string;
   equipment: Equipment;
   loggingType: LoggingType;
+  /**
+   * What a set of this movement records. Omitted means "derive it from
+   * `loggingType`" (MEASURES_FOR_LOGGING_TYPE), which is what every form does;
+   * pass it explicitly only when the movement measures something logging_type
+   * cannot express — a carry's load + distance, say.
+   */
+  measures?: Measures;
   movementPattern?: MovementPattern | null;
   mechanic?: Mechanic | null;
   unilateral?: boolean;
@@ -381,6 +410,17 @@ export type MuscleLoad = {
   weightKg: number | null;
   setType: SetType;
   whenIso: Timestamp;
+  /**
+   * What the set's exercise measures (0046), and how long the set lasted.
+   *
+   * Both OPTIONAL, and the default is the pre-0046 behaviour — one set costs
+   * one working set. They only matter for ENDURANCE work (time + distance, no
+   * load), where duration is the dose: a 45-minute run is not one set of quads.
+   * See `enduranceEffortWeight` in ./constants.ts for the weight and its
+   * calibration.
+   */
+  measures?: Measures | null;
+  durationSec?: number | null;
 };
 
 /**
@@ -419,7 +459,16 @@ export type MuscleFreshness = {
 /** A per-exercise estimated 1RM data point (for the detail sparkline). */
 export type E1rmPoint = { date: DateString; e1rm: number };
 
-/** Personal records for one exercise, all in canonical kg. */
+/**
+ * Personal records for one exercise. Loads are canonical kg, distances metres,
+ * times seconds.
+ *
+ * Which three mean anything depends on what the movement measures (0046): the
+ * load records are null for a plank and the time/distance records are null for
+ * a bench press, because no set ever carried the column. The detail screen
+ * picks the trio to show from `measures`, not from which happen to be non-null,
+ * so a movement with no history still shows the right three em-dashes.
+ */
 export type PersonalRecords = {
   /** Heaviest single working set's load. */
   maxWeightKg: number | null;
@@ -427,6 +476,17 @@ export type PersonalRecords = {
   bestE1rmKg: number | null;
   /** Best single-set volume (weight × reps). */
   bestSetVolumeKg: number | null;
+  /** Longest single working set, seconds — the plank record. */
+  bestDurationSec: number | null;
+  /** Farthest single working set, metres. */
+  bestDistanceM: number | null;
+  /**
+   * Fastest pace, seconds per kilometre, over sets carrying BOTH a duration and
+   * a distance of at least `PACE_PR_MIN_M` (./constants.ts). Short pieces are
+   * excluded on purpose: a 20-metre sprint has a stunning pace and says nothing
+   * about a 10 km, so letting one set the record would make it unreadable.
+   */
+  bestPaceSecPerKm: number | null;
 };
 
 /** The progression suggestion for one exercise next session. */

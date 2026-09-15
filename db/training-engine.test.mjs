@@ -412,6 +412,104 @@ console.log('5b. freshness calibration: a hard back day, an accessory day, one s
 }
 
 // ---------------------------------------------------------------------------
+// B1 / 0046. Before this, a run could not record its duration at all; now it
+// can, and treating a 45-minute run as ONE set of quads would tell the recovery
+// model that almost nothing happened — and offer a leg day the morning after a
+// long run. The number below is the calibration, and this section IS the
+// specification: retune ENDURANCE_MINUTES_PER_SET and this is what moves.
+console.log('5c. freshness calibration: endurance work is dosed by the clock, not by the set');
+{
+  const run = (durationSec, rpe = null) => [
+    { exercise: 'Treadmill Run', exerciseId: 'treadmill-run', durationSec, distanceM: 8000, rpe },
+  ];
+  const legs = (db, raw, sets) => {
+    logAt(db, raw, hoursAgo(0), '2026-07-26', 'Run', 'cardio', sets);
+    const ledger = muscleFreshness(recentMuscleLoads(db, 14, NOW), NOW);
+    return (m) => ledger.find((e) => e.muscle === m).freshness;
+  };
+
+  // THE ANCHOR. 45 minutes, no RPE: 4.5 effort units on the primary (quads),
+  // 2.25 on the secondaries at role weight 0.5.
+  {
+    const { db, raw } = freshDb();
+    const f = legs(db, raw, run(45 * 60));
+    f('quads') === 57
+      ? ok('a 45-minute run reads quads 57 — recovering, about a third of a leg day')
+      : bad('45-min run quads', f('quads'));
+    f('calves') === 75 && f('hamstrings') === 75 && f('glutes') === 75
+      ? ok('…and its secondaries 75 — a real dent, not a session')
+      : bad('45-min run secondaries', JSON.stringify([f('calves'), f('hamstrings'), f('glutes')]));
+    f('chest') === 100 && f('biceps') === 100
+      ? ok('…and nothing it does not work')
+      : bad('run leaked to the upper body');
+  }
+
+  // The same run logged as one set with NO duration is the pre-0046 reading:
+  // one working set. It has to stay that, because a distance-only import still
+  // happened and reading it as free would be the worse error.
+  {
+    const { db, raw } = freshDb();
+    const f = legs(db, raw, [
+      { exercise: 'Treadmill Run', exerciseId: 'treadmill-run', distanceM: 8000 },
+    ]);
+    f('quads') === 88
+      ? ok('a run with no duration falls back to one working set (quads 88), not to zero')
+      : bad('duration-less run', f('quads'));
+  }
+
+  // RPE still scales it, through the same knob every other set uses: an easy
+  // jog costs half a hard tempo of the same length.
+  {
+    const { db, raw } = freshDb();
+    const easy = legs(db, raw, run(45 * 60, 5))('quads');
+    const { db: db2, raw: raw2 } = freshDb();
+    const hard = legs(db2, raw2, run(45 * 60, 9))('quads');
+    easy > hard && easy === 75 && hard === 57
+      ? ok(`an easy 45 min (RPE 5) reads ${easy}, a hard one ${hard}`)
+      : bad('rpe scaling', JSON.stringify({ easy, hard }));
+  }
+
+  // The cap. A three-hour run hits ENDURANCE_EFFORT_CAP; ten hours (the
+  // duration_sec ceiling) may not read 0, which the model promises never to
+  // print, and may not out-assert a hand-set "Spent" (~44 units).
+  {
+    const { db, raw } = freshDb();
+    const f = legs(db, raw, run(10 * 3600 - 1));
+    f('quads') === 11 && f('quads') > 0
+      ? ok('the longest loggable set is capped at 11, above the model’s floor')
+      : bad('cap', f('quads'));
+  }
+
+  // A PLANK is not endurance work: time without distance is a hold, and a hold
+  // is one set of abs however long it lasts. This is the branch that keeps a
+  // 60-second plank from reading as a tenth of a set.
+  {
+    const { db, raw } = freshDb();
+    logAt(db, raw, hoursAgo(0), '2026-07-26', 'Core', 'strength', [
+      { exercise: 'Plank', exerciseId: 'plank', durationSec: 60 },
+    ]);
+    const abs = muscleFreshness(recentMuscleLoads(db, 14, NOW), NOW).find(
+      (e) => e.muscle === 'abs'
+    );
+    abs.freshness === 88
+      ? ok('a 60-second plank is one set of abs (88), not 0.1 of one')
+      : bad('plank effort', JSON.stringify(abs));
+  }
+
+  // Weekly VOLUME does not follow: MEV/MAV/MRV are resistance-training
+  // landmarks, so scaling a run to 4.5 "sets" would measure it against a scale
+  // it was never on. One row, one set.
+  {
+    const { db, raw } = freshDb();
+    logAt(db, raw, hoursAgo(0), '2026-07-26', 'Run', 'cardio', run(45 * 60));
+    const quads = weeklyMuscleSets(db, NOW).find((v) => v.muscle === 'quads');
+    quads.sets === 1
+      ? ok('…while weekly volume counts that same run as ONE set (the deliberate asymmetry)')
+      : bad('volume scaled by duration', JSON.stringify(quads));
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('6. recommendToday (pure): freshest routine, caution, empty');
 {
   const ledger = [

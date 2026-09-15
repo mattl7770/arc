@@ -4,7 +4,8 @@
  * Fatigue for a muscle is the sum over recent sets of
  *   roleWeight × effortWeight × e^(−Δhours / τ_muscle)
  * (fractional set counting: primary 1.0, secondary 0.5; effort from proximity
- * to failure; τ from the muscle's recovery window). Freshness is
+ * to failure — or, for endurance work, from DURATION, see
+ * {@link loadEffortWeight}; τ from the muscle's recovery window). Freshness is
  *   100 × e^(−fatigue / FRESH_SCALE)   — see {@link freshnessFromFatigue}.
  * This is FitBod's 0-100% recovery score restated as offline arithmetic
  * (docs/exercise-subapp.md §4.2). `now` is injected so the headless tests are
@@ -16,8 +17,10 @@ import {
   FRESH_THRESHOLDS,
   MUSCLE_ORDER,
   effortWeight,
+  enduranceEffortWeight,
   recoveryTauHours,
 } from './constants';
+import { isEnduranceMeasures } from './measures';
 import type { FreshnessAnchor, Muscle, MuscleFreshness, MuscleLoad } from './types';
 
 const HOUR_MS = 3_600_000;
@@ -100,6 +103,32 @@ function fatigueForFreshness(percent: number): number {
  * at literal zero, he is saying something stronger than "I trained it".
  */
 const ANCHOR_FLOOR_PERCENT = 0.4;
+
+/**
+ * What one set costs its muscle before decay — the effort half of
+ * `roleWeight × effortWeight × decay`.
+ *
+ * Every set is one working set (scaled by proximity to failure) EXCEPT
+ * endurance work, where duration is the dose and the set row is an arbitrary
+ * container: a 45-minute run and a 5-minute one are both "one set" and are not
+ * remotely the same demand. The branch keys on what the exercise MEASURES
+ * (0046) rather than on a cardio flag, because time + distance + no load is
+ * precisely the signature of work dosed by the clock — a plank ('time') is one
+ * set of abs however long it is held, a heavy carry ('load,distance') is one
+ * set of forearms.
+ *
+ * Loads that carry no measures at all — every MuscleLoad built before 0046, and
+ * every hand-made one in a test — read as an ordinary working set, which is
+ * exactly what they meant.
+ */
+function loadEffortWeight(load: MuscleLoad): number {
+  const isFailure = load.setType === 'failure';
+  const measures = load.measures ?? null;
+  if (measures != null && isEnduranceMeasures(measures)) {
+    return enduranceEffortWeight(load.durationSec ?? null, load.rpe, isFailure);
+  }
+  return effortWeight(load.rpe, isFailure);
+}
 
 function bucket(freshness: number): MuscleFreshness['state'] {
   if (freshness >= FRESH_THRESHOLDS.fresh) return 'fresh';
@@ -206,9 +235,7 @@ export function muscleFreshness(
     // dropping it was the opposite answer.
     const dh = Math.max(0, raw);
     const contrib =
-      load.roleWeight *
-      effortWeight(load.rpe, load.setType === 'failure') *
-      Math.exp(-dh / recoveryTauHours(load.muscle));
+      load.roleWeight * loadEffortWeight(load) * Math.exp(-dh / recoveryTauHours(load.muscle));
     fatigue.set(load.muscle, (fatigue.get(load.muscle) ?? 0) + contrib);
     const prev = lastHours.get(load.muscle);
     if (prev == null || dh < prev) lastHours.set(load.muscle, dh);

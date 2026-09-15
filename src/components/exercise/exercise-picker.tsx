@@ -28,6 +28,7 @@ import {
 } from '@/lib/exercise/ai-search';
 import { MUSCLE_LABEL, MUSCLE_ORDER } from '@/lib/exercise/constants';
 import { rankExerciseMatches } from '@/lib/exercise/match';
+import { DEFAULT_MEASURES, measuresLabel, type Measures } from '@/lib/exercise/measures';
 import type { CatalogExercise, Equipment, Muscle, NewExercise } from '@/lib/exercise/types';
 
 /**
@@ -86,6 +87,20 @@ const EQUIPMENT_OPTIONS: { value: Equipment; label: string }[] = [
 
 function equipmentLabel(e: Equipment): string {
   return EQUIPMENT_OPTIONS.find((o) => o.value === e)?.label ?? e.replace(/_/g, ' ');
+}
+
+/**
+ * What this movement measures, appended to the muscle/equipment line — but only
+ * when it is NOT the ordinary reps × load (0046).
+ *
+ * The owner needs to know he will be asked for a clock and a distance BEFORE he
+ * picks the movement mid-session. He does not need to be told that a barbell
+ * curl takes reps and a weight, which is what every row in the catalog would
+ * otherwise say. Showing the measure only where it surprises keeps the line a
+ * signal instead of a column.
+ */
+function measureNote(measures: Measures): string {
+  return measures === DEFAULT_MEASURES ? '' : ` · ${measuresLabel(measures)}`;
 }
 
 function worksMuscle(ex: CatalogExercise, muscle: Muscle | null): boolean {
@@ -352,6 +367,7 @@ function BrowseCatalog({
                         <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
                           {ex.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ') || '—'} ·{' '}
                           {equipmentLabel(ex.equipment)}
+                          {measureNote(ex.measures)}
                         </Text>
                       </View>
                       {/* A one-word marker, not an object: it used to sit in its
@@ -563,6 +579,7 @@ function AiSearchView({
                           <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
                             {ex.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ') || '—'} ·{' '}
                             {equipmentLabel(ex.equipment)}
+                            {measureNote(ex.measures)}
                           </Text>
                         </View>
                         <Ionicons name="add" size={18} color={palette.inkMuted} />
