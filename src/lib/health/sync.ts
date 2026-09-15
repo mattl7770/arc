@@ -19,6 +19,16 @@
  * native module isn't in the binary — web/node, or a build predating the
  * module's 2026-08-25 EAS landing.
  *
+ * **"Converge" now means converge, not merely overwrite (2026-09-14).** The pass
+ * used to only INSERT and UPDATE, so a bucket whose samples MOVED off its day —
+ * a timezone trip re-bucketing the fortnight, or a sample deleted in the Health
+ * app — left its old row standing, describing nothing, and every baseline and
+ * Coach correlation kept reading it (docs/spikes/timezone-days.md §1c). A pass
+ * that produces buckets for a metric now also removes the buckets in its window
+ * it did NOT produce, in the same transaction. The safety condition is that only
+ * metrics read cleanly AND non-empty are reconciled — see `reconcilable` in
+ * {@link syncHealthData}, and the scoping rules on `upsertWearableRows`.
+ *
  * The window/day maths ({@link syncDayWindows}, {@link shouldAutoSync}) is pure
  * and exported for the headless tests; the entry points just glue the guarded
  * reader → pure mapping → wearables repo together.
@@ -171,6 +181,10 @@ export type HealthSyncResult = {
    * aggregate count. Honest parity needs `upsertWearableRows` to accumulate
    * `db.changes()` across its DO UPDATE … WHERE-CHANGED statements — a change to
    * `src/lib/db/repositories/wearables.ts`.
+   *
+   * Stale day buckets REMOVED by the reconcile pass are counted in too. A delete
+   * is a change the pass made, and a run that only cleaned up would otherwise
+   * report "0 rows changed" on the one occasion that mattered.
    */
   rowsWritten: number;
   /** Samples PUBLISHED outward this pass (weight / body fat / waist). */
@@ -222,11 +236,34 @@ export async function syncHealthData(
   // The per-run log (docs §14). Built as the pass goes so that every zero on the
   // Settings screen can name the step that produced it.
   const metrics: HealthMetricLog[] = [];
+  // Metric types this pass may RECONCILE — i.e. whose stale `hk:` buckets inside
+  // the window it is allowed to delete (docs/spikes/timezone-days.md §1c, and
+  // the note on `upsertWearableRows`). The bar is deliberately high, and it is
+  // set HERE because this is the only place that can tell an empty read from a
+  // failed one:
+  //
+  //   - the read produced at least one row this pass, AND
+  //   - the read reported no native error.
+  //
+  // A metric that read nothing prunes nothing, so a denied permission or a
+  // refused predicate can never be mistaken for "HealthKit no longer has this"
+  // and cost a fortnight of history. For a statistics read `error !== null`
+  // means at least one DAY of the window threw, which makes the window
+  // incomplete and the pass unfit to judge absence; for a sample read it may
+  // only mean an exclusion rung was refused before a later one succeeded — but
+  // declining to prune is the safe direction of that ambiguity, and the next
+  // clean pass reconciles anyway.
+  const reconcilable = new Set<string>();
+  const allowReconcile = (mapped: readonly WearableUpsert[], error: string | null): void => {
+    if (error !== null) return;
+    for (const row of mapped) reconcilable.add(row.metricType);
+  };
 
   for (const spec of SAMPLE_METRICS) {
     const read = await readQuantitySamples(spec.hkIdentifier, spec.hkUnit, span.start, span.end);
     const mapped = quantityDailyRows(spec, read.samples);
     rows.push(...mapped);
+    allowReconcile(mapped, read.error);
     metrics.push({
       metric: spec.metricType,
       label: spec.metricType,
@@ -241,6 +278,7 @@ export async function syncHealthData(
     const read = await readDailyCumulative(spec.hkIdentifier, spec.hkUnit, days);
     const mapped = statisticDailyRows(spec, read.samples);
     rows.push(...mapped);
+    allowReconcile(mapped, read.error);
     metrics.push({
       metric: spec.metricType,
       label: spec.metricType,
@@ -255,6 +293,11 @@ export async function syncHealthData(
   const sleep = await readSleepSamples(span.start, span.end);
   const sleepMapped = sleepDailyRows(sleep.samples);
   rows.push(...sleepMapped);
+  // Sleep produces several metric types from one read, and only the ones it
+  // actually emitted are reconcilable — a source that stopped writing STAGES
+  // emits no `sleep_deep_min` at all this pass, so nothing licenses deleting
+  // last week's.
+  allowReconcile(sleepMapped, sleep.error);
   metrics.push({
     metric: 'sleep',
     label: 'sleep',
@@ -330,7 +373,22 @@ export async function syncHealthData(
     });
   }
 
-  const written = upsertWearableRows(db, clampRowsToWindow(rows, days)) + bodyWritten;
+  // Ingest and reconcile in one transaction (docs §4). `workout` is never
+  // reconcilable — a workout row is keyed by its HealthKit UUID rather than by
+  // an `hk:<metric>:<date>` bucket, so the prune's `hk:` scope skips it anyway;
+  // it is left out of the allow-list too so the intent is stated and not merely
+  // implied by a GLOB.
+  reconcilable.delete('workout');
+  const first = days[0]?.date;
+  const last = days[days.length - 1]?.date;
+  const written =
+    upsertWearableRows(
+      db,
+      clampRowsToWindow(rows, days),
+      first !== undefined && last !== undefined
+        ? { first, last, metricTypes: [...reconcilable] }
+        : undefined
+    ) + bodyWritten;
 
   const syncedAt = now.toISOString();
   setHealthSyncState(db, {

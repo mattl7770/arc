@@ -103,6 +103,10 @@ const SYNC_SCOPES: readonly { label: string; direction: SyncDirection }[] = [
   { label: 'Respiratory rate and blood oxygen', direction: 'in' },
   { label: 'Body and sleeping-wrist temperature', direction: 'in' },
   { label: 'VO₂max and workouts', direction: 'in' },
+  // In only, and it must stay that way: a cumulative statistics query cannot
+  // exclude ARC's own samples, so a published water total would be read back
+  // and doubled (src/lib/health/mapping.ts → HEALTH_WRITE_IDENTIFIERS).
+  { label: 'Water (hydration)', direction: 'in' },
 ];
 
 /**
@@ -555,6 +559,18 @@ export default function SettingsHealthScreen() {
               ARC only. Editing or deleting one here does not change the copy already in Apple
               Health — remove that in the Health app. A measurement that arrived from Apple Health
               is marked as such and is never sent back.
+            </Text>
+            {/* The double-count sentence. Water is the one metric with two live
+                doors — the Log tab's tile and anything writing hydration to
+                Apple Health — and ARC deliberately does not reconcile them (the
+                argument is at the head of repositories/water.ts). So the rule is
+                behavioural, and it belongs where the user turns the second door
+                on. */}
+            <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
+              Water is read, never written. Apple Health sends one merged total per day, and ARC
+              adds it to what you logged here rather than trying to match the two up — so log a
+              glass in one place or the other, not both. A day that looks doubled is fixed in Data →
+              Water, where the two entries sit side by side.
             </Text>
           </Block>
         </View>

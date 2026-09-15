@@ -96,9 +96,14 @@ import ProtocolEditScreen from '../app/protocol-edit.tsx';
 import ProtocolVersionsScreen from '../app/protocol-versions.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
 import HomeScreen from '../app/(tabs)/index.tsx';
+import LogScreen from '../app/(tabs)/log.tsx';
 
 import { logWater } from '../src/lib/db/repositories/water.ts';
-import { setHealthSyncEnabled, setWaterTarget } from '../src/lib/db/repositories/user.ts';
+import {
+  setHealthSyncEnabled,
+  setUnitPreference,
+  setWaterTarget,
+} from '../src/lib/db/repositories/user.ts';
 import { setHealthSyncLog } from '../src/lib/db/repositories/wearables.ts';
 import SettingsHealthScreen from '../app/settings-health.tsx';
 import { insertReport } from '../src/lib/db/repositories/reports.ts';
@@ -360,6 +365,50 @@ const db = getDb();
     'on record',
     'average',
   ]);
+
+  // The Log tab's Water tile with nothing to learn from — and this render, like
+  // the two above, only exists here. `usualWaterAmount` returns null on an empty
+  // record and the tile falls back to the Glass literal, which is the state the
+  // owner will actually see on day one. The number has to be ON THE FACE: a
+  // tile that commits and looks like its three navigating neighbours is the one
+  // failure mode this design has (src/components/log/quick-add-grid.tsx).
+  const freshLog = render('log tab (no water on record)', LogScreen);
+  expect('log tab (no water on record)', freshLog, [
+    'Quick add',
+    'Supplement',
+    'Water',
+    'Weight',
+    'Therapy',
+    '+8 oz', // the Glass literal, printed in mono on the tile's own face
+    // The label must say the amount AND that the tap commits — "Water" alone
+    // would describe a door, which this tile no longer is.
+    'Log water, 8 oz',
+    'Nothing logged yet today.',
+  ]);
+
+  // A long-press is invisible to VoiceOver, so the other amounts have to be
+  // exposed as a real ACTION and not only as a gesture. Neither
+  // `accessibilityHint` nor `accessibilityActions` survives react-native-web —
+  // RNW drops both — so this is the only place the pair is checkable headlessly,
+  // and a source scan is honest about being one. The device check stays the
+  // VoiceOver pass in docs/wearables-subapp.md's on-device list.
+  {
+    const tile = readFileSync(
+      new URL('../src/components/log/quick-add-grid.tsx', import.meta.url),
+      'utf8'
+    );
+    /accessibilityHint=/.test(tile) &&
+    /accessibilityActions=\{\[\{ name: 'longpress'/.test(tile) &&
+    /onAccessibilityAction=/.test(tile)
+      ? ok('the Water tile exposes its long-press as a VoiceOver action, not only as a gesture')
+      : bad('the long-press is gesture-only — undiscoverable to VoiceOver');
+  }
+  // The amounts are BEHIND the long-press: they must not be on the sheet until
+  // the gesture opens them, or the block is five controls tall at rest. (A
+  // server render runs no effects and simulates no taps, so their absence here
+  // is exactly the closed state.) Nor may the tile carry a chevron — that mark
+  // means "this pushes a screen", and this one does not.
+  refute('log tab (no water on record)', freshLog, ['Other…', 'Keypad', 'Logged 8 oz']);
 
   // 0035: the cabinet before there is anything in it. "Unfiled is a place" is
   // the design statement the whole feature turns on, so it is asserted.
@@ -1628,6 +1677,30 @@ const db = getDb();
     ' of 6 tracked',
   ]);
   refute('data tab (water + no chips)', dataWithWater, ['Set up', 'Later']);
+
+  // ---------------------------------------------------------------------
+  // The Log tab's Water tile, now that there IS a record to learn from. The
+  // fixture above logged 500 ml thirteen times and 750 / 250 once each, so the
+  // remembered amount is 500 ml — and the tile has to say so in the unit the
+  // user reads in, not in the unit it is stored in.
+  setUnitPreference(db, 'volume', 'ml');
+  const mlLog = render('log tab (ml, learned amount)', LogScreen);
+  expect('log tab (ml, learned amount)', mlLog, [
+    '+500 ml', // the learned amount, in metric literals — never a converted 473
+    'Log water, 500 ml',
+  ]);
+  // Under a metric preference nothing on the tile may still read in ounces.
+  refute('log tab (ml, learned amount)', mlLog, ['+8 oz', '+17 oz', 'Log water, 8 oz']);
+
+  setUnitPreference(db, 'volume', 'oz');
+  const ozLog = render('log tab (oz, learned amount)', LogScreen);
+  // THE INVARIANT, rendered: the face and the accessibility label carry the SAME
+  // number, and it is the number the tap will log. 500 ml read under an ounce
+  // preference is 17 oz, and the tile offers 17 oz rather than pretending to
+  // offer the stored 500 — a tile that printed one amount and logged another
+  // would be a lie, and nothing else about it would matter.
+  expect('log tab (oz, learned amount)', ozLog, ['+17 oz', 'Log water, 17 oz']);
+  refute('log tab (oz, learned amount)', ozLog, ['+500 ml', 'Log water, 500 ml', '+8 oz']);
 }
 
 // ---------------------------------------------------------------------------
@@ -1856,6 +1929,20 @@ const db = getDb();
   // Nothing may be reported that has not happened. An empty log must not print
   // counts, and must not name a step as having succeeded or failed.
   refute('settings-health (no sync yet)', never, ['rows changed', 'Published out']);
+
+  // Hydration (2026-09-14). Three things have to be on this screen and all
+  // three are assertions rather than intentions: the scope row with its
+  // direction, the audit row with its honest verdict, and the sentence that
+  // makes the no-dedupe rule the user's to act on. "Pick one door" is the whole
+  // mitigation for double counting, so it cannot live only in a docblock.
+  expect('settings-health (no sync yet)', never, [
+    'Water (hydration)',
+    'Water is read, never written.',
+    'log a glass in one place or the other, not both',
+    // The audit row. `unverified` is the honest verdict — nothing in the repo
+    // establishes that a Garmin writes hydration to Apple Health.
+    'Unverified',
+  ]);
 
   setHealthSyncLog(db, {
     at: '2026-08-26T09:00:00.000Z',

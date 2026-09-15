@@ -24,6 +24,7 @@ import {
 } from '@/lib/db/repositories/water';
 import { shortDate, windowLabel } from '@/lib/experiments/format';
 import { metricByKey, resolveDisplay, roundToSpec, type DisplaySpec } from '@/lib/log/metrics';
+import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
 import { daysBetween } from '@/lib/screenings/format';
 
 /**
@@ -38,8 +39,30 @@ import { daysBetween } from '@/lib/screenings/format';
  * index is partial on `(source_device, source_raw_id)` and manual rows leave
  * that id NULL, so two logs on one day are two rows and each can be corrected or
  * removed on its own. The full finding, and why the mutable-total trap belongs
- * to HealthKit's day buckets rather than to water, is recorded at the head of
+ * to HealthKit's day buckets rather than to a capture, is recorded at the head of
  * src/lib/db/repositories/water.ts. **No migration was needed.**
+ *
+ * ## Apple Health hydration lands here too (2026-09-14)
+ *
+ * `DietaryWater` is a read scope as of D2, arriving as ONE merged `apple_health`
+ * row per day under `hk:water_ml:<date>`. Three consequences visible on this
+ * screen, all of which it was already built for:
+ *
+ *   - **Today, the percent and the By-day bars simply include it**, because
+ *     `waterDaySeries` sums by `metric_type` across sources. Nothing to build.
+ *   - **Entries lists it without the edit affordance**, reading "From
+ *     apple_health — edit it there" — a state authored below long before a
+ *     device row could exist, and now the case it was authored for.
+ *   - **The two sources are never reconciled.** A synced bucket and a manual
+ *     capture are separate rows and the day sums both; ARC publishes no water,
+ *     so the bucket does not contain what you logged here, and there is no
+ *     per-drink identity in a merged total to match against. Log a glass in one
+ *     place or the other. A double IS visible here — two rows, one marked — and
+ *     removing the manual one is two taps.
+ *
+ * Its `created_at` is the SYNC instant, not drink o'clock, so it sorts into the
+ * day's list at sync time. A merged day total has no drink time to report; the
+ * alternative would be inventing one.
  *
  * ## Four objects, in the order the question is asked
  *
@@ -145,27 +168,18 @@ const WINDOW_DAYS = 14;
 const TREND_FLOOR = 7;
 
 /**
- * The quick amounts, in the DISPLAY unit — the same table and the same values as
- * the keypad's (app/metric-entry.tsx), so one tap means the same thing wherever
- * it is made. Per-unit literals rather than a converted oz figure: a metric
- * bottle is 500 ml, not 473, and a rounded conversion would log a number the
- * user did not choose.
+ * The quick amounts, in the DISPLAY unit — now read from the shared table
+ * (src/lib/log/water-amounts.ts) rather than declared here, because three
+ * surfaces offer them since the Log tab's Water tile landed: this screen, the
+ * keypad, and the tile's long-press. Two copies agreed by luck; three would not
+ * have. Per-unit literals rather than a converted oz figure: a metric bottle is
+ * 500 ml, not 473, and a rounded conversion would log a number the user did not
+ * choose.
  *
  * Whole class strings, never a built fragment — Tailwind's scanner only sees
  * names that appear literally in source.
  */
-const QUICK: Record<'oz' | 'ml', readonly { label: string; amount: number }[]> = {
-  oz: [
-    { label: 'Glass', amount: 8 },
-    { label: 'Bottle', amount: 16 },
-    { label: 'Large', amount: 24 },
-  ],
-  ml: [
-    { label: 'Glass', amount: 240 },
-    { label: 'Bottle', amount: 500 },
-    { label: 'Large', amount: 750 },
-  ],
-};
+const QUICK = WATER_QUICK_AMOUNTS;
 
 /** A typed amount is a display number; the cap stops a fat-fingered 99999. */
 const MAX_DISPLAY = 10000;
@@ -498,9 +512,9 @@ export default function WaterScreen() {
 
       {/* c. Edit — the day's captures, each one correctable and removable. The
           half most likely to be skipped, so it is the half with the most care:
-          a device-sourced row (none today, but the schema allows one) is drawn
-          without the affordance rather than offering an edit the next sync
-          would silently revert. */}
+          a device-sourced row — Apple Health's merged hydration total since
+          2026-09-14 — is drawn without the affordance rather than offering an
+          edit the next sync would silently revert. */}
       <View className="mt-8">
         <Block device="plate">
           <SectionLabel label="Entries" note={isToday ? 'today' : shortDate(day)} />
@@ -548,8 +562,9 @@ export default function WaterScreen() {
                           {fmtVolume(spec, entry.ml)}
                         </Text>
                         {/* Provenance only where it is NOT the ordinary case —
-                            a manual row says nothing, because everything here is
-                            manual until a device channel exists. */}
+                            a manual row says nothing, because a capture made
+                            here is the ordinary case and an Apple Health day
+                            bucket is the exception. */}
                         {entry.editable ? null : (
                           <Text className="mt-0.5 font-serif text-[11px] leading-4 text-ink-muted">
                             {`From ${entry.source} — edit it there.`}

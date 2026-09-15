@@ -1,7 +1,7 @@
 # Faster water logging — a design spike
 
 **Backlog item:** D2, *"Faster water logging"* (`docs/backlog-2026-09.md:55`)
-**Status:** proposal. No app code in this branch.
+**Status:** **BUILT — Rank 1 and Rank 2, 2026-09-14.** Ranks 3–6 remain refused or deferred exactly as argued below. Where the build departed from this document it is noted inline; the shipped behaviour is recorded in `docs/information-architecture.md` (the tile) and `docs/wearables-subapp.md` §15 (the Apple Health read).
 **Date:** 2026-09-14
 
 ---
@@ -237,6 +237,29 @@ They are recommended **together** because they cover the two genuinely different
 ---
 
 ### 3.1 Interaction spec — the Water tile
+
+> **As built (2026-09-14), four departures from the spec below.**
+>
+> 1. **There IS an undo.** This section argued the ledger alone is the receipt and that a
+>    confirm step would hand back the taps the proposal exists to save. The second half still
+>    holds — nothing confirms — but "mitigated, not solved" was not good enough for a tap that
+>    writes: the block now reports the write on a ruled row and offers **Undo**, which deletes
+>    by the id `logWater` returned, so it can only ever remove the glass it just wrote. It
+>    carries no timer (the design system has no timing vocabulary, and an affordance you have
+>    to race is worse than one that waits) and is replaced by the next write. The ledger is
+>    still the durable receipt: `QuickAddGrid` takes an `onLogged` callback and the Log tab
+>    passes it `reload`, exactly as it already did for the command field.
+> 2. **The inline amounts are a 2 × 2, not a row of four.** Four cells across leaves each about
+>    80pt at phone width. Same `w-[48.5%]` arithmetic and the same reasoning as the tile grid's
+>    own layout note.
+> 3. **The literals moved to one table.** `src/lib/log/water-amounts.ts`, read by this screen,
+>    the keypad and the tile. This section said "the same table both other screens use"; there
+>    was no such table, there were two copies that agreed by luck, and a third would not have.
+> 4. **`usualWaterAmount` returns canonical ml and the tile resolves the display amount**, so
+>    the invariant below is true by construction rather than by care: the tile prints
+>    `round(fromCanonical(usual))` and logs `toCanonical(that)`. A 500 ml record read under an
+>    ounce preference therefore offers 17 oz and logs 17 oz — the honest rendering, and it says
+>    which unit it is in.
 
 **Device.** Unchanged. The tile remains a closed hairline box on `paper-hi` inside the Quick Add **plate** (`quick-add-grid.tsx:102–103`). No new device, no new enclosure, no accent — the Log tab's single pine is the command field's send action, and that budget does not move (`app/(tabs)/log.tsx:24–29`).
 

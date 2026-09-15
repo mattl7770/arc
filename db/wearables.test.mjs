@@ -1426,5 +1426,190 @@ console.log('19. the publish pass reports what it attempted, per type');
     : bad('armed tally', JSON.stringify(armed));
 }
 
+console.log('20. the re-window pass DELETES the buckets it did not produce (2026-09-14)');
+{
+  // docs/spikes/timezone-days.md §1c, in one sentence: the ingest path only ever
+  // INSERTed and UPDATEd, so when a sample moved off a day — a timezone trip
+  // re-bucketing the fortnight into a new zone's calendar days, or a sample
+  // deleted in the Health app — the row it used to write was left standing,
+  // describing nothing, and readiness baselines and every Coach correlation kept
+  // reading it.
+  //
+  // The MOVE is simulated by mapping two different sample sets rather than by
+  // changing the process timezone: `localDayOf` reads the ambient zone, so a
+  // genuine re-bucket needs either a child process with TZ= set or an offset
+  // parameter on the mapper (the spike's §10, still open). The defect under test
+  // is the upsert path's missing DELETE, and a bucket that stopped being
+  // produced is a bucket that stopped being produced however it happened.
+  const { db } = freshDb();
+  const days = syncDayWindows(new Date(2026, 6, 28, 15, 0), 14); // 07-15 … 07-28
+  const first = days[0].date;
+  const last = days[days.length - 1].date;
+  first === '2026-07-15' && last === '2026-07-28'
+    ? ok(`the window under test is ${first} … ${last}`)
+    : bad('window', `${first} … ${last}`);
+
+  const hrv = (date, value, device = 'apple_watch') => ({
+    date,
+    metricType: 'hrv',
+    value,
+    unit: 'ms',
+    sourceDevice: device,
+    sourceRawId: `hk:hrv:${date}`,
+    startTime: null,
+    endTime: null,
+    metadata: {},
+  });
+
+  // PASS 1 — HRV on the 15th (from the watch and, separately, a Garmin) and on
+  // the 20th. Plus three rows the prune must never touch:
+  //   · a manual capture inside the window (source_raw_id NULL);
+  //   · a steps bucket inside the window, whose metric this pass will not read;
+  //   · an HRV bucket OUTSIDE the window.
+  upsertWearableRows(db, [
+    hrv('2026-07-15', 60),
+    hrv('2026-07-15', 44, 'garmin'),
+    hrv('2026-07-20', 50),
+    hrv('2026-07-02', 55),
+    {
+      date: '2026-07-16',
+      metricType: 'steps',
+      value: 8000,
+      unit: 'count',
+      sourceDevice: 'apple_health',
+      sourceRawId: 'hk:steps:2026-07-16',
+      startTime: null,
+      endTime: null,
+      metadata: {},
+    },
+  ]);
+  db.run(
+    `INSERT INTO wearable_data (id, date, metric_type, value, unit, source_device)
+     VALUES ('manual-water-1', '2026-07-15', 'water_ml', 500, 'ml', 'manual')`
+  );
+
+  // PASS 2 — the 15th's reading is now bucketed on the 16th. The watch produced
+  // rows; the Garmin produced none; steps were not read at all this pass.
+  const moved = [hrv('2026-07-16', 60), hrv('2026-07-20', 50)];
+  const changed = upsertWearableRows(db, clampRowsToWindow(moved, days), {
+    first,
+    last,
+    metricTypes: ['hrv'],
+  });
+
+  const hrvRows = db.all(`SELECT date, source_device FROM wearable_data
+     WHERE metric_type = 'hrv' ORDER BY date, source_device`);
+  const shape = hrvRows.map((r) => `${r.date}/${r.source_device}`).join(' ');
+  shape === '2026-07-02/apple_watch 2026-07-16/apple_watch 2026-07-20/apple_watch'
+    ? ok('the orphaned 07-15 buckets are gone; the moved 07-16 row stands in their place')
+    : bad('STALE ROW SURVIVED', shape);
+
+  pickDailyMetric(db, 'hrv', '2026-07-15') === null
+    ? ok('...so the day that describes nothing reads as nothing, not as 60 ms')
+    : bad('07-15 still readable', JSON.stringify(pickDailyMetric(db, 'hrv', '2026-07-15')));
+  pickDailyMetric(db, 'hrv', '2026-07-02')
+    ? ok('a bucket OUTSIDE the window is untouched — settled history is not the pass’s to judge')
+    : bad('out-of-window row deleted');
+  pickDailyMetric(db, 'steps', '2026-07-16')
+    ? ok('a metric this pass did not read keeps every row it had')
+    : bad('UNREAD METRIC PRUNED');
+
+  const manual = db.get(`SELECT value FROM wearable_data WHERE id = 'manual-water-1'`);
+  manual && manual.value === 500
+    ? ok('a MANUAL capture inside the window is never touched — the prune is `hk:` only')
+    : bad('MANUAL ROW DELETED', JSON.stringify(manual));
+
+  changed === 3
+    ? ok('the pass reports 3 changes — one moved row written, two orphans removed')
+    : bad('rowsWritten must count deletions', String(changed));
+
+  // THE SAFETY CONDITION, and the one that decides whether this is a fix or a
+  // data loss. A metric that produced NOTHING this pass must prune nothing —
+  // otherwise a refused predicate, a denied permission or a native throw reads
+  // as "HealthKit no longer has this" and costs a fortnight of history. Two
+  // independent guards, and both are exercised:
+  //
+  //   (i) an empty batch, which is what a wholly-failed pass looks like;
+  upsertWearableRows(db, [], { first, last, metricTypes: ['hrv', 'steps'] });
+  const afterEmpty = db.all(`SELECT id FROM wearable_data WHERE metric_type IN ('hrv','steps')`);
+  afterEmpty.length === 4
+    ? ok('an empty batch prunes nothing, however much it allow-lists')
+    : bad('EMPTY READ WIPED THE WINDOW', `${afterEmpty.length} rows left`);
+
+  //  (ii) a batch that produced rows for ONE of two allow-listed metrics, which
+  //       is what one failed reader inside an otherwise good pass looks like.
+  upsertWearableRows(db, [hrv('2026-07-20', 51)], {
+    first,
+    last,
+    metricTypes: ['hrv', 'steps'],
+  });
+  const stepsLeft = db.all(`SELECT id FROM wearable_data WHERE metric_type = 'steps'`);
+  const hrvLeft = db.all(`SELECT date FROM wearable_data WHERE metric_type = 'hrv' AND date >= ?`, [
+    first,
+  ]);
+  stepsLeft.length === 1 && hrvLeft.length === 1 && hrvLeft[0].date === '2026-07-20'
+    ? ok('allow-listing a metric that produced nothing prunes nothing of it — HRV alone reconciles')
+    : bad('PARTIAL PASS PRUNED AN UNREAD METRIC', JSON.stringify({ stepsLeft, hrvLeft }));
+
+  // Workouts are excluded by construction: their raw id is a HealthKit UUID, not
+  // an `hk:` bucket key. Even allow-listed, the GLOB does not reach them.
+  upsertWearableRows(db, [
+    {
+      date: '2026-07-18',
+      metricType: 'workout',
+      value: 42,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'A1B2C3D4-0000-0000-0000-000000000001',
+      startTime: '2026-07-18T10:00:00.000Z',
+      endTime: '2026-07-18T10:42:00.000Z',
+      metadata: {},
+    },
+  ]);
+  upsertWearableRows(
+    db,
+    [
+      {
+        date: '2026-07-19',
+        metricType: 'workout',
+        value: 30,
+        unit: 'min',
+        sourceDevice: 'garmin',
+        sourceRawId: 'A1B2C3D4-0000-0000-0000-000000000002',
+        startTime: '2026-07-19T10:00:00.000Z',
+        endTime: '2026-07-19T10:30:00.000Z',
+        metadata: {},
+      },
+    ],
+    { first, last, metricTypes: ['workout'] }
+  );
+  db.all(`SELECT id FROM wearable_data WHERE metric_type = 'workout'`).length === 2
+    ? ok('a UUID-keyed workout row is out of the prune’s reach even when allow-listed')
+    : bad('WORKOUT PRUNED');
+
+  // And the whole thing is one transaction: a throw mid-batch leaves neither the
+  // writes nor the deletes behind. Forced with a bad metric_type on the second
+  // row, which `upsertWearableRows` validates before it opens the transaction —
+  // so this also pins that the validation runs first.
+  const before = db.all(`SELECT id FROM wearable_data WHERE metric_type = 'hrv'`).length;
+  let threw = false;
+  try {
+    upsertWearableRows(
+      db,
+      [hrv('2026-07-21', 47), { ...hrv('2026-07-22', 48), metricType: 'BAD' }],
+      {
+        first,
+        last,
+        metricTypes: ['hrv'],
+      }
+    );
+  } catch {
+    threw = true;
+  }
+  threw && db.all(`SELECT id FROM wearable_data WHERE metric_type = 'hrv'`).length === before
+    ? ok('a rejected batch writes nothing and deletes nothing')
+    : bad('partial batch applied');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

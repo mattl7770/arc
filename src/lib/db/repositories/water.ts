@@ -19,15 +19,47 @@
  * logs produce three rows summing to 1500, and a per-row UPDATE/DELETE hits
  * exactly one of them (db/water.test.mjs §1–§2).
  *
- * **The mutable-daily-total trap is real, but it is not water's.** HealthKit's
- * inbound day-bucket rows carry a deterministic `hk:<metric>:<date>` raw id
- * precisely so a re-sync UPDATEs one row per day instead of duplicating a
+ * **The mutable-daily-total trap is real, but it is not the capture's.**
+ * HealthKit's inbound day-bucket rows carry a deterministic `hk:<metric>:<date>`
+ * raw id precisely so a re-sync UPDATEs one row per day instead of duplicating a
  * fortnight — those ARE mutable daily totals, which is why republishing one to
- * Health would make Health sum the versions. Water has never been on that path:
- * `src/lib/health/mapping.ts` has no water channel in either direction. If one is
- * ever added, the sum-per-day read below is already the right shape for it and
- * the manual-only guards on the write paths are what keep a synced row from
- * being hand-edited into a value the next sync would silently revert.
+ * Health would make Health sum the versions.
+ *
+ * ## Water now has an INBOUND HealthKit channel — and only inbound (2026-09-14)
+ *
+ * `HKQuantityTypeIdentifierDietaryWater` is a read scope as of D2, landing as a
+ * merged daily statistic: one `apple_health` row per day under
+ * `hk:water_ml:<date>` (`src/lib/health/mapping.ts` → `STATISTIC_METRICS`).
+ * **ARC does not publish water and must never start.** `publish.ts` walks
+ * `body_metrics` only and `HEALTH_WRITE_IDENTIFIERS` is derived from
+ * `BODY_PUBLISH_METRICS`, so water cannot become a write scope without editing
+ * the body channel — and it must not, because a `cumulativeSum` statistics query
+ * carries no own-write exclusion (Apple merges before the predicate), so a
+ * published total would be read straight back and doubled with no suppression
+ * available. `unsuppressedEchoIdentifiers()` is the CI tripwire.
+ *
+ * ## Two sources, one total, and NO dedupe — the rule, argued
+ *
+ * A HealthKit day bucket and a manual capture are **separate rows**, and
+ * {@link waterDaySeries} sums both. They are not two copies of one event that
+ * ARC could reconcile:
+ *
+ *   - There is nothing to match on. The inbound row is Apple's MERGED day total
+ *     — no per-drink identity, no times, no amounts — so a manual 16 oz has no
+ *     counterpart in it to cancel against.
+ *   - Subtracting ARC's manual total from the bucket would assume the bucket
+ *     CONTAINS it. It does not: ARC publishes nothing, so the two records
+ *     describe different acts of logging, not the same one twice.
+ *   - Any other dedupe (nearest amount, nearest minute) would be a guess that
+ *     silently deletes real intake. Inventing a reconciliation is worse than
+ *     summing honestly.
+ *
+ * So the day total is the sum, and **the behavioural rule is: pick one door.**
+ * Log a glass in ARC or on the watch, not both. Settings › Apple Health says so
+ * in a sentence, and a double IS visible and correctable — `/water` lists the two
+ * rows side by side (the synced one marked "From apple_health"), and deleting the
+ * manual duplicate is one tap away. That the mistake is legible is what makes
+ * summing the honest choice rather than a shrug.
  *
  * ## Only manual rows are editable, and that is enforced here
  *
@@ -226,4 +258,63 @@ export function waterRecordStart(db: Database): string | null {
     [WATER_METRIC]
   );
   return row?.first ?? null;
+}
+
+/**
+ * The window {@link usualWaterAmount} learns from. **14, to agree with the water
+ * screen's own `WINDOW_DAYS`** — two windows disagreeing about what "recently"
+ * means is how a number starts lying.
+ */
+export const USUAL_WINDOW_DAYS = 14;
+
+/**
+ * **The amount the Log tab's Water tile logs in one tap** — canonical ml, or
+ * `null` when there is nothing to learn from (the caller then falls back to a
+ * Glass, `src/lib/log/water-amounts.ts`).
+ *
+ * The rule: the **most frequently logged amount across MANUAL captures in the
+ * last {@link USUAL_WINDOW_DAYS} days**, ties broken by the most recent.
+ *
+ * Every clause of that is load-bearing:
+ *
+ *   - **Manual only** (`source_raw_id IS NULL`, the same discriminator
+ *     editability draws). An `apple_health` day bucket must never become "his
+ *     usual": a merged day total is not a vessel, and on a heavy day it would be
+ *     the largest number in the table.
+ *   - **Most frequent, not most recent.** One 4 oz pill-swallow would retrain a
+ *     "last logged" button, and the tile would then quietly log a quarter of a
+ *     glass for the rest of the week.
+ *   - **Ties by the most recent**, and the final tie-break is `rowid` rather than
+ *     `id` — `created_at` resolves to the millisecond and several taps land
+ *     inside one of those, while ids are random v4 UUIDs whose order is
+ *     arbitrary (the same finding {@link listWaterEntries} records).
+ *
+ * Grouping on the stored `value` is exact rather than approximate: a display
+ * amount converts to canonical through one deterministic multiplication, so two
+ * taps of 16 oz store the identical double and group together.
+ *
+ * **Derived, not configured** — the ask was speed, not another setting. What
+ * makes a derived default safe is that the tile PRINTS the amount it will log,
+ * so the button cannot mislead about a number it is displaying. If the
+ * derivation ever proves surprising on device, the fallback is a user-set
+ * default beside the daily goal in the preferences blob; nothing here would need
+ * to move but this function.
+ */
+export function usualWaterAmount(
+  db: Database,
+  today: string,
+  days: number = USUAL_WINDOW_DAYS
+): number | null {
+  const dates = localDaysList(today, days);
+  const first = dates[0]!;
+  const row = db.get<{ value: number }>(
+    `SELECT value, count(*) n, max(created_at) last_at, max(rowid) last_row
+     FROM wearable_data
+     WHERE metric_type = ? AND source_raw_id IS NULL AND date >= ? AND date <= ?
+     GROUP BY value
+     ORDER BY n DESC, last_at DESC, last_row DESC
+     LIMIT 1`,
+    [WATER_METRIC, first, today]
+  );
+  return row && Number.isFinite(row.value) && row.value > 0 ? row.value : null;
 }

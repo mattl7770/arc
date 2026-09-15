@@ -14,12 +14,14 @@ import { useLogFeed } from '@/hooks/use-log-feed';
  * Log — fast capture. Direction A ("Open Line"), locked 2026-07-25
  * (docs/information-architecture.md). Three layers:
  *   1. the command / voice field (free notes + parse) — the hero,
- *   2. six quick-add tiles (Nutrition & Workout push sub-app screens; Water &
- *      Weight open the metric keypad; Supplement & Therapy open a capture sheet),
+ *   2. four quick-add tiles (Weight opens the metric keypad; Supplement &
+ *      Therapy open a capture sheet; **Water logs in place** — tap for the
+ *      remembered amount, long-press for the others),
  *   3. today's running record, read live from the DB.
  *
- * The command field and the keypad persist to on-device SQLite; the feed reloads
- * on capture and whenever the tab regains focus (returning from the keypad).
+ * The command field, the tile and the keypad all persist to on-device SQLite;
+ * the feed reloads on capture and whenever the tab regains focus (returning from
+ * the keypad).
  *
  * Conformed Set treatment (00-design-spec.md §1) — one device per block, and
  * three of them on this sheet: the command field is a **recessed well** (it is
@@ -88,8 +90,13 @@ export default function LogScreen() {
         <CommandField onLogged={reload} />
       </View>
 
+      {/* `onLogged` is here for the Water tile, which as of 2026-09-14 WRITES
+          rather than navigating (src/components/log/quick-add-grid.tsx). Every
+          other tile still leaves the screen and the feed re-reads on focus; the
+          one that stays put has to say so, and the ledger below is what says it.
+          Same wiring, same reason, as the command field's. */}
       <View className="mt-6">
-        <QuickAddGrid />
+        <QuickAddGrid onLogged={reload} />
       </View>
 
       {/* Symptom capture — a distinct "something's off" entry, kept separate from

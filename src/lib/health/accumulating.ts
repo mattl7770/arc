@@ -45,12 +45,19 @@
  *     energy) — a HealthKit *statistic* is a cumulative sum over the day,
  *     rewritten as the day grows. Accumulating BY CONSTRUCTION, so a metric
  *     added to that pipeline is classified here with no edit to this file.
+ *     This now covers **`water_ml`** too, and covering it by derivation rather
+ *     than by hand is the point. Water used to be the one hand-written entry
+ *     here — "one row per sip logged by hand, no HealthKit ingest spec to derive
+ *     from" — and as of 2026-09-14 it HAS one (`DietaryWater`, read-only), so
+ *     the literal was deleted rather than left beside the derived entry. Left
+ *     in, it would have made `ACCUMULATING_METRIC_TYPES` contain `water_ml`
+ *     twice; more to the point, a duplicate is the first step back toward two
+ *     lists. The classification is unchanged either way — sips through the day
+ *     were always a running total.
  *   - **`workout`** — many sessions a day, one row each (mapping.ts's
  *     `workoutRows`), so the day's minutes are a sum that is not final until
- *     the day is.
- *   - **`water_ml`** — one row per sip logged by hand (repositories/water.ts).
- *     The only entry with no HealthKit ingest spec to derive from, which is why
- *     the list is composed here and not inside mapping.ts.
+ *     the day is. The only hand-written entry left, because a workout row is
+ *     per-session rather than per-day and so is not a `STATISTIC_METRICS` spec.
  *
  * Everything else is a level reading, INCLUDING metrics discovered from the
  * table rather than declared (read-tools.ts's layer 2). An unknown cadence is
@@ -62,11 +69,12 @@ import { STATISTIC_METRICS } from './mapping';
 
 /** Metric types whose value for a given day is not final until that day is. */
 export const ACCUMULATING_METRIC_TYPES: readonly string[] = [
+  // steps, active/resting energy — and `water_ml`, since DietaryWater joined the
+  // statistics pipeline (2026-09-14). Sips through the day were always a running
+  // total; they are now classified by derivation rather than by hand.
   ...STATISTIC_METRICS.map((spec) => spec.metricType),
   // Sessions logged through the day (HealthKit workouts).
   'workout',
-  // Sips logged through the day (manual capture — no HealthKit channel).
-  'water_ml',
 ];
 
 const ACCUMULATING = new Set(ACCUMULATING_METRIC_TYPES);

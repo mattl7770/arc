@@ -312,7 +312,16 @@ export function quantityDailyRows(
 
 // --- Cumulative (HealthKit-merged) metrics ---------------------------------------
 
-/** Cumulative metrics ride HealthKit's own merged daily statistics (spec §3). */
+/**
+ * Cumulative metrics ride HealthKit's own merged daily statistics (spec §3).
+ *
+ * **`water_ml` is the one entry here that shares a table with manual captures**,
+ * and the two are deliberately NOT reconciled: an inbound bucket is Apple's
+ * merged day total with no per-drink identity, so there is nothing for a manual
+ * 16 oz to cancel against, and ARC publishes no water for the bucket to contain.
+ * The day total sums both rows; the rule is behavioural (pick one door) and the
+ * full argument is at the head of src/lib/db/repositories/water.ts.
+ */
 export type StatisticMetricSpec = {
   metricType: string;
   hkIdentifier: string;
@@ -341,6 +350,33 @@ export const STATISTIC_METRICS: readonly StatisticMetricSpec[] = [
     hkIdentifier: 'HKQuantityTypeIdentifierBasalEnergyBurned',
     hkUnit: 'kcal',
     unit: 'kcal',
+    decimals: 0,
+  },
+  {
+    metricType: 'water_ml',
+    hkIdentifier: 'HKQuantityTypeIdentifierDietaryWater',
+    // ⚠️ **'mL', with a capital L, and it was checked rather than remembered.**
+    // The unit string is passed to `HKUnit(from:)` on the native side
+    // (`ios/Helpers.swift` → `parseUnitStringSafe`, which THROWS on a string
+    // HealthKit will not parse), so the authority is the library's generated
+    // map: `QUANTITY_IDENTIFIER_CANONICAL_UNITS.HKQuantityTypeIdentifierDietaryWater`
+    // is `"mL"` (lib/typescript/generated/healthkit.generated.d.ts). That map is
+    // the same one every other spec in this file was verified against, and it
+    // reproduces them exactly — including VO2Max's parenthesised
+    // `ml/(kg*min)` — so it is trustworthy here.
+    //
+    // The library's HAND-WRITTEN `VolumeUnit` type disagrees: it is
+    // `` `${MetricPrefix}l` ``, i.e. lowercase, which would make this 'ml'. The
+    // generated constant wins — it is derived from the real HKUnit, the
+    // hand-written union is not, and `QuantityUnitByIdentifierMap` types this
+    // identifier as a bare `string` precisely because the union does not cover
+    // it. Getting this wrong is a factor of a thousand into a health record,
+    // silently, the same class of bug as the percent-fraction trap below.
+    hkUnit: 'mL',
+    // ARC's canonical volume, matching metrics.ts's water descriptor and every
+    // manual capture in `wearable_data` — so `waterDaySeries` can sum the two
+    // sources without knowing which is which.
+    unit: 'ml',
     decimals: 0,
   },
 ];
@@ -921,7 +957,19 @@ export const HEALTH_READ_IDENTIFIERS: readonly string[] = [
   'HKWorkoutTypeIdentifier',
 ];
 
-/** Every HealthKit type ARC asks to WRITE (`toShare`; docs §10). */
+/**
+ * Every HealthKit type ARC asks to WRITE (`toShare`; docs §10).
+ *
+ * **Derived from {@link BODY_PUBLISH_METRICS}, and that is the structural reason
+ * water can never echo.** `DietaryWater` is a read scope (above) and the publish
+ * walk reads `body_metrics` only (`publish.ts`), so adding water to this list
+ * would take deliberately giving it a `body_metrics` column. It must never
+ * happen: a `cumulativeSum` statistics query cannot exclude ARC's own samples
+ * (Apple merges before the predicate — see `readDailyCumulative`), so a
+ * published water total would be read straight back and doubled with no
+ * suppression available. {@link unsuppressedEchoIdentifiers} is the tripwire and
+ * db/health-mapping.test.mjs §8 asserts water's absence here by name.
+ */
 export const HEALTH_WRITE_IDENTIFIERS: readonly string[] = BODY_PUBLISH_METRICS.map(
   (m) => m.hkIdentifier
 );
