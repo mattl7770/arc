@@ -1,9 +1,15 @@
 # Exercise Sub-App — Design Spec
 
-**Status:** Phase 4 — **the owner's redesign round (2026-08-11)**: body-figure freshness diagram, photo workout import (AI), saved workouts (programs retired), in-session exercise detail with bundled photos, the superset "bind" animation, and AI exercise search. AI features run through the Coach's model client and always land in an editable review; everything else stays offline.
-**Last updated:** 2026-08-11
-**Window:** parallel build, migrations **0011–0013** + **0020** (no new migrations in Phase 4)
-**Reads:** CLAUDE.md §4/§9 · `docs/information-architecture.md` · `docs/project-status.md` ("exercise as measured data") · `db/migrations/0003_exercise.sql`
+**Status:** Phase 5 — **the post-trip backlog round (2026-09-14)**: the live session survives the app being killed (migration **0045**), and exercise search tolerates how people actually type. Phase 4 before it: body-figure freshness diagram, photo workout import (AI), saved workouts (programs retired), in-session exercise detail with bundled photos, the superset "bind" animation, and AI exercise search. AI features run through the Coach's model client and always land in an editable review; everything else stays offline.
+**Last updated:** 2026-09-14
+**Window:** parallel build, migrations **0011–0013** + **0020** + **0045**
+**Reads:** CLAUDE.md §4/§9 · `docs/information-architecture.md` · `docs/project-status.md` ("exercise as measured data") · `db/migrations/0003_exercise.sql` · `docs/backlog-2026-09.md` (A1, A7)
+
+> **Phase 5 shipped (2026-09-14) — two backlog items, A1 and A7.**
+>
+> **A1 — an unfinished workout can no longer be lost.** Owner: *"losing workout information when closing app mid workout, necessary for fixing when app bugs."* The live logger held the session in React state, so a memory kill, a crash or a bad build took it with it — and ARC data has exactly one copy. Every change now writes through to **`workout_drafts`** (0045) as it happens, and the hub offers **Session in progress → Resume**. See §3 (0045) and §9 for the decision, what survives, and what deliberately does not.
+>
+> **A7 — search tolerates how people actually type.** Owner: *"more intelligent search for exercises, i.e. common misspellings, alternative names."* One matcher (`src/lib/exercise/match.ts`) now serves both the picker's search field and `resolveExerciseByName`: exact → alias → prefix → contains → fuzzy, with bounded Damerau-Levenshtein (transposition = one edit) and a "squashed" folding that joins split or run-together words. "bnech press", "sqaut", "skullcrusher", "pull-downs" and "lying tricep extension" all land. The resolver keeps its confidence discipline unchanged — a bare "Press" still resolves to nothing, pinned in `db/coach-tools.test.mjs` §27 and `db/exercise-catalog.test.mjs` §8. No new dependency; the alias source is the existing `exercises.aliases` JSON column, so **no migration for A7**.
 
 > **Phase 4 shipped (2026-08-11) — six owner asks.**
 >
@@ -171,6 +177,20 @@ CREATE INDEX workout_sets_exercise_idx ON workout_sets (exercise_id);
 - Warmup sets (`set_type='warmup'`) are **excluded from e1RM, PRs, volume, and freshness** — the Hevy/Strong rule.
 - **PRs and freshness are derived, not stored.** No `personal_records` or `muscle_state` tables: both are cheap indexed reads over history for a single user, always consistent, nothing to invalidate. If set-completion PR checks ever feel slow on device, a cache table is a later additive migration. (This is the one deliberate deviation from the mission's "likely new tables" list — derivation beats denormalization at n=1.)
 
+### 0045 — `workout_drafts` (the unfinished session)
+
+```sql
+CREATE TABLE workout_drafts (
+  id text PRIMARY KEY NOT NULL,
+  key text NOT NULL UNIQUE CHECK (key IN ('live', 'manual')),
+  value text NOT NULL DEFAULT '{}' CHECK (json_valid(value)),
+  created_at text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at text NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+```
+
+A two-slot KV following `health_sync_state`'s pattern — one row per logging screen, the payload free JSON carrying its own `version`. The full argument is in the migration's header; the short form is §9 below.
+
 ### Repository & type layout (exports stay stable)
 
 - `src/lib/db/repositories/exercise.ts` — **untouched exports.** One compatible extension: `SetInput` gains optional `exerciseId?`, `setType?`, `rpe?`, `durationSec?` fields and `LogWorkoutInput` gains `routineId?`; `logWorkout`/`addSet` write them when present. Call-compatible — every existing caller and test passes unchanged. Flagged for integrator eyes anyway.
@@ -275,3 +295,59 @@ Per-slice gates (all green before handoff): `npm run typecheck` · `lint` · `fo
 3. **Catalog size/curation:** ~300 seeded exercises curated by me from free-exercise-db, enriched with patterns/aliases. Want to review the seed list itself, or trust the curation and edit-by-archiving later?
 4. **PR stamp styling** (§5): mono ink tag proposed; bless or redirect on device.
 5. **RPE entry:** optional per set, hidden behind a tap (default) or always a visible column? (Strong shows it always; it adds a fourth number to every row.)
+
+---
+
+## 9. Phase 5 — the draft store and the matcher (2026-09-14)
+
+### 9.1 A1 — why a draft store and not an in-progress workout
+
+Two designs were on the table for "the live session must survive the app being killed":
+
+| | a flagged `workouts` row | **a separate draft store (chosen)** |
+| --- | --- | --- |
+| Where the session lives while unfinished | `workouts` + `workout_sets`, `in_progress = 1` | `workout_drafts`, one JSON row |
+| How stats exclude it | a predicate every reader must remember, forever | **structurally — no training query reads this table** |
+| Abandoning it | delete the parent workout, cascade its sets | delete one row |
+| Cost of getting it wrong | a half-typed set becomes a PR; an abandoned warm-up counts against weekly volume; both silent | nothing to get wrong |
+
+The deciding constraint is the second row. Everything the training engine knows it computes from `workout_sets` at read time — `recentMuscleLoads` (freshness), `weeklyMuscleSets` (volume), `personalRecords` / `workingSets` (PRs, e1RM), `lastSessionSets` (the logger's own placeholders), `weekSummary`, `listRecentSessions`, the Coach's `read-tools.ts`, `assemble-self-review.ts`, the export. A flag puts an exclusion predicate in every one of them and in every query written after today. This is the owner's execution history with no server copy, so the failure mode — silent contamination — is the expensive one.
+
+`health_sync_state` (0021) was considered as a host and rejected: it is named and documented as the HealthKit sync cursor, and a live workout parked in it makes that name a lie. `users.preferences` was rejected too — a draft is machine state, not a user choice, and it is rewritten on every keystroke.
+
+**What survives a kill:** every exercise block and its order, every set with its weight / reps / RPE *exactly as typed* (strings, so a half-typed "1 " is still half-typed), set type, the completion stamps, the PR stamps, superset binds, the previous-session placeholders, the best-e1RM bar, the saved workout the session started from, the instant the session started (so the elapsed clock is honest, not restarted), and the rest timer's target instant if it has not already passed. The free-form logger (`workout-log.tsx`) keeps its drafted sets *and* its entry row, because that screen deliberately saves a typed-but-never-Added row.
+
+**What deliberately does not survive:** an EDIT of an already-saved session (it has a stored copy — nothing unrecorded is at risk, and a resumable edit could only re-apply half a correction); the scheduled OS rest ALERT (it was queued with expo-notifications before the kill and is still queued, so re-arming would fire it twice — only the countdown is restored); scroll position, keyboard focus and the picker sheet.
+
+**Guarantees, each pinned in `db/exercise.test.mjs` §10:** the draft round-trips byte-identical across a close-and-reopen of the database file; a full draft session writes zero `workouts` and zero `workout_sets` rows and moves none of freshness / volume / PRs / placeholders / the week; discarding leaves the draft store empty and the training history untouched; finishing clears the draft only after the write succeeds; a payload from another `version`, or junk, reads as "nothing to resume" rather than throwing on the mount path.
+
+**Overwrite safety.** The logger keeps one live slot, so starting a new session while a draft exists would clobber it. Every door into the live logger on the hub therefore passes through one confirm — *Resume it* / *Start new* (destructive) / Cancel. Discarding, from the hub or from the back-out confirm, names how many sets it is about to delete.
+
+### 9.2 A7 — the ranking, and what the resolver refuses
+
+`src/lib/exercise/match.ts` is the single matcher; `resolveExerciseByName` and the picker's search field are two policies over it, not two implementations.
+
+| Tier | Matches | Resolver uses it? |
+| --- | --- | --- |
+| 0 exact | folded name equals the query | yes |
+| 1 alias | folded alias equals the query | yes |
+| 2 prefix | name/alias begins with the query, at a word boundary | multi-word queries only |
+| 3 contains | name/alias contains the query anywhere | **never** |
+| 4 fuzzy | within tolerance of a whole name/alias | only if exactly one movement is closest |
+| 5 fuzzy word | every typed word is within tolerance of a word of the name | **never** |
+
+Ties break on: tier, edit distance, own-name before alias, shorter name, alphabetical — deterministic, because a list that reshuffles between keystrokes is unusable.
+
+Two foldings do most of the work before any fuzziness is needed. The **normalise** lowercases, turns punctuation into spaces and de-pluralises each token ("Lat Pulldowns" → "lat pulldown", "Triceps" → "tricep"). The **squash** then removes the spaces, which catches every compound people write as one word — "pull-downs" / "Pulldown", "skullcrusher" / "Skull Crusher", "chinup" / "Chin-Up". Equality under the squash counts as *exact*, not fuzzy: the letters are identical, nothing is being guessed.
+
+Only what is left goes to **bounded Damerau-Levenshtein** — transposition costs one edit, which is what makes "bnech" and "sqaut" work — with a tolerance that scales with length: 0 at three characters or fewer, 1 to five, 2 to eight, 3 above. The short-word zero is the guard that keeps "row" away from "raise" and "leg" away from "lat". Hand-rolled: no dependency was added.
+
+**The alias source is the existing `exercises.aliases` JSON column** (0011), which already carries ~60 alternative names. No alias table and no migration were needed for A7 — and generic tolerance beats hand-listing misspellings, which is a list that is never finished.
+
+The resolver's contract is unchanged where it matters: a unique match or null, never a guess. `Press`, `Bench`, `raise`, `pull`, `fly`, `extension` and `machine` all still resolve to nothing, because a wrong `exercise_id` attributes a set to the wrong muscles for the life of the database. Pinned in `db/coach-tools.test.mjs` §27 and `db/exercise-catalog.test.mjs` §8–§9.
+
+### 9.3 What only a device can settle
+
+- **The write-through's feel.** Each keystroke in the set grid now performs one small `INSERT … ON CONFLICT` (skipped when the serialised payload is unchanged). op-sqlite is synchronous, so if anything is going to stutter it is typing into a long session on a real phone. If it does, the fix is a short debounce on the payload — not a retreat from write-through.
+- **The Resume card's place** at the top of the hub, above Train today, and whether a neutral plate is enough presence for it.
+- **Whether a resumed rest timer should re-arm its OS alert.** It deliberately does not (the pre-kill notification is still queued); that assumption is only observable on a device where the rest alert has actually been seen to fire — which, per §6, has still never been confirmed.
