@@ -150,8 +150,7 @@ export default function RecipeFoldersScreen() {
         />
         {data.folders.length === 0 ? (
           <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
-            No folders yet. Every recipe sits in the book unfiled, which is a perfectly good place
-            for it until there are enough of them to sort.
+            No folders yet. Every recipe sits in the book unfiled.
           </Text>
         ) : (
           <View className="mt-2">

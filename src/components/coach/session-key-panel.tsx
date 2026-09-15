@@ -88,7 +88,7 @@ export function SessionKeyPanel({ keySet }: { keySet: boolean }) {
         {/* No model, no accent: the dot reports state, so it has to be honest. */}
         <View className="h-1.5 w-1.5 rounded-full bg-hairline" />
         <Text className="flex-1 font-mono text-[10px] text-ink-muted">
-          Preview mode · no model connected
+          No model connected
         </Text>
         <Pressable
           accessibilityRole="button"

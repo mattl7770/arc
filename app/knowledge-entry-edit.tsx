@@ -261,11 +261,11 @@ export default function KnowledgeEntryEditScreen() {
         {/* Guidance, and only when it is relevant. Never a hard limit: the
             chunker splits anything, so an over-long entry is a reading problem,
             not a storage one — and the app says so rather than refusing. */}
-        <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
-          {words > COMFORTABLE_WORDS
-            ? `Long for one entry (${words} words). It will save and search fine — doctrine just reads better split into a few entries than run together in one.`
-            : 'An entry is a page, not a paper. What you commit to, stated so the Coach can cite it.'}
-        </Text>
+        {words > COMFORTABLE_WORDS ? (
+          <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
+            {`Long for one entry (${words} words). It will save and search fine — doctrine just reads better split into a few entries than run together in one.`}
+          </Text>
+        ) : null}
       </View>
 
       <Pressable

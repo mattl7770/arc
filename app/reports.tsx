@@ -273,8 +273,7 @@ export default function ReportsScreen() {
               <View>
                 <Divider />
                 <Text className="py-3 font-serif text-[13.5px] leading-5 text-ink-secondary">
-                  Nothing generated yet. A report is a document — assembled from your data,
-                  previewed here, shared as a file.
+                  Nothing generated yet.
                 </Text>
               </View>
             ) : (

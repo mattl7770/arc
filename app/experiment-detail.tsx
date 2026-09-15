@@ -121,8 +121,7 @@ export default function ExperimentDetailScreen() {
         <View className="mt-8">
           <Block device="margin">
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-              The Coach reads the watched metrics and records the verdict when the window closes —
-              ask it for the readout.
+              The verdict is recorded when the window closes.
             </Text>
           </Block>
         </View>

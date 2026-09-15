@@ -75,11 +75,14 @@ export function MissionEmpty({ hasActiveProtocols }: Props) {
         through to the RN system sans — a fourth face that is not one of the
         three the design has (00-design-spec.md §3: no Text may be faceless). It
         sits outside the plate deliberately: it is an aside about the screen,
-        not part of the record.
+        not part of the record. Omitted entirely rather than rendered empty when
+        a state has none to add.
       */}
-      <Text className="mt-2.5 font-serif text-[12.5px] leading-5 text-ink-muted">
-        {copy.footnote}
-      </Text>
+      {copy.footnote ? (
+        <Text className="mt-2.5 font-serif text-[12.5px] leading-5 text-ink-muted">
+          {copy.footnote}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -97,14 +100,11 @@ export function MissionEmpty({ hasActiveProtocols }: Props) {
 const UNBUILT = {
   eyebrow: 'No active protocols',
   headline: 'Today has no plan yet.',
-  body:
-    'ARC builds each day from the protocols you are actually running — a supplement stack, a ' +
-    'morning routine, a training block. You have none yet, so today is empty. Nothing has been ' +
-    'invented to fill it.',
+  body: 'You have no protocols yet, so today is empty. Nothing has been invented to fill it.',
   action: 'Build your first protocol',
   icon: 'add' as const,
   href: '/protocols' as const,
-  footnote: 'Anything you do in the meantime can still be captured from the Log tab.',
+  footnote: '',
 };
 
 /**
@@ -121,9 +121,9 @@ const IDLE = {
   headline: 'Your protocols put nothing on today.',
   body:
     'Nothing your active protocols run falls on today — either their items are set to other days, ' +
-    'or their live versions have no items yet. Open them and see what each one is up to.',
+    'or their live versions have no items yet.',
   action: 'Open your protocols',
   icon: 'list-outline' as const,
   href: '/protocols' as const,
-  footnote: 'Paused and ended protocols are skipped. Today fills in as soon as one comes round.',
+  footnote: 'Paused and ended protocols are skipped.',
 };

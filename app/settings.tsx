@@ -265,7 +265,7 @@ export default function SettingsScreen() {
             <NavRow
               icon="swap-horizontal-outline"
               label="Units"
-              sub="Weight, distance, and more"
+              sub="Weight, distance, volume, length, temperature"
               onPress={() => router.push('/settings-units')}
             />
             <NavRow

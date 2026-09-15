@@ -10,7 +10,6 @@ import {
   View,
 } from 'react-native';
 
-import { Block } from '@/components/ui/block';
 import { keypadDoneKey } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -596,14 +595,6 @@ export default function FoodNewScreen() {
             Save food
           </Text>
         </Pressable>
-      </View>
-
-      <View className="mt-3">
-        <Block device="margin">
-          <Text className="font-serif text-[13px] leading-5 text-ink-muted">
-            Saved to your on-device catalog — it shows up in search and recents like any staple.
-          </Text>
-        </Block>
       </View>
     </Screen>
   );

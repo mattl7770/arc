@@ -269,9 +269,7 @@ export default function KnowledgeScreen() {
             Doctrine you commit to
           </Text>
           <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-            Import an article and ARC compresses what its author actually commits to — claims,
-            mechanisms, numbers — into an entry you edit before anything saves. Or write one
-            yourself. Either way the Coach cites it, and it outranks ARC’s own reference.
+            Yours outranks ARC’s shipped reference, and the Coach cites both.
           </Text>
           <View className="mt-4 flex-row items-stretch gap-2">
             <Pressable
@@ -471,13 +469,6 @@ export default function KnowledgeScreen() {
                 ? 'Nothing personal matches.'
                 : 'ARC holds no page about you yet.'}
             </Text>
-            {searching ? null : (
-              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                A surgery and what it still costs you, how you react to something, a constraint
-                you’ve settled on — anything too long to be a one-line memory. The Coach reads these
-                back when they bear on what you asked.
-              </Text>
-            )}
           </View>
         ) : (
           <View className="mt-2">
@@ -520,12 +511,6 @@ export default function KnowledgeScreen() {
                 ? 'Nothing of yours matches.'
                 : 'Nothing of your own yet. Below is ARC’s shipped reference.'}
             </Text>
-            {searching ? null : (
-              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                Anything you add — written, imported, or saved from a Coach chat — lands here, and
-                the Coach cites it like the rest.
-              </Text>
-            )}
           </View>
         ) : (
           <View className="mt-2">

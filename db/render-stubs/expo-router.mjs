@@ -47,3 +47,21 @@ export function useRouter() {
 }
 
 export function useFocusEffect() {}
+
+/**
+ * The static singleton some components import for imperative navigation
+ * outside the render tree (e.g. src/components/exercise/exercise-picker.tsx,
+ * which the routine-edit walk pulled in — A9). Records the same way
+ * useRouter()'s handle does, so either import path is visible in __router.
+ */
+export const router = {
+  push: (to) => {
+    __router.pushes.push(to);
+  },
+  replace: (to) => {
+    __router.replaces.push(to);
+  },
+  back: () => {
+    __router.backs += 1;
+  },
+};

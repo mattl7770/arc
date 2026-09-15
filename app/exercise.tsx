@@ -439,8 +439,7 @@ export default function ExerciseScreen() {
           />
           {routines.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-              Nothing saved yet. A saved workout is a session you reuse — its exercises and targets
-              load pre-filled, with last time&rsquo;s numbers as the placeholders.
+              Nothing saved yet. A saved workout loads pre-filled with last time&rsquo;s numbers.
             </Text>
           ) : (
             <View className="mt-1">
@@ -778,7 +777,7 @@ function TrainTodayCard({
           and the authored version says what would fix it. */}
       <Text className="mt-3.5 font-serif text-[14px] leading-6 text-ink-secondary">
         {emptyRoutine
-          ? 'No exercises in this saved workout yet — add some from Saved workouts below.'
+          ? 'No exercises in this saved workout yet.'
           : recommendation.why}
       </Text>
 

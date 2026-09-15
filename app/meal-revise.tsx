@@ -409,8 +409,7 @@ export default function MealReviseScreen() {
               <View className="mt-4">
                 <Block device="margin">
                   <Text className="font-serif text-[13px] leading-5 text-ink-muted">
-                    You’ll see the revised items and can adjust them before anything is saved. The
-                    meal’s time, name and notes are never changed here.
+                    The meal’s time, name and notes are never changed here.
                   </Text>
                 </Block>
               </View>

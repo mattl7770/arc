@@ -472,8 +472,7 @@ function HorizonAxis({ horizon, today }: { horizon: Horizon; today: string }) {
       {empty ? (
         // Authored, not blank: a rail with nothing on it would be chrome.
         <Text className="font-serif text-[12.5px] leading-5 text-ink-secondary">
-          Nothing dated yet. Give a screening a due date, or book an appointment, and it will be
-          placed on this horizon.
+          Nothing dated yet. A screening appears here once it has a due date or a booking.
         </Text>
       ) : (
         <View accessible accessibilityLabel={horizonLabel(horizon, today)} className="mx-5">
@@ -688,8 +687,7 @@ export default function ScreeningsScreen() {
               The preventive ledger
             </Text>
             <Text className="mt-1 font-serif text-[12.5px] leading-5 text-ink-secondary">
-              The exams that guard the long game — colonoscopy, skin checks, imaging, dental, vision
-              — each with its cadence, so nothing quietly slips a year.
+              Colonoscopy, skin checks, imaging, dental, vision — each with its own cadence.
             </Text>
           </Block>
         </View>

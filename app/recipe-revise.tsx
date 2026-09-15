@@ -358,8 +358,8 @@ export default function RecipeReviseScreen() {
               <View className="mt-4">
                 <Block device="margin">
                   <Text className="font-serif text-[13px] leading-5 text-ink-muted">
-                    You’ll see every line that changed before anything is saved. Your notes, photo,
-                    tags and everything you’ve already cooked from this recipe are never touched.
+                    Your notes, photo, tags and everything you’ve already cooked from this recipe
+                    are never touched.
                   </Text>
                 </Block>
               </View>

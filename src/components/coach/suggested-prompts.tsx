@@ -60,10 +60,10 @@ const PROMPTS = [
 ];
 
 /** Connected: the thread is live, so the only thing missing is a first move. */
-const LEDE_LIVE = 'Nothing asked yet. Pick a starting point, or type your own question below.';
+const LEDE_LIVE = 'Nothing asked yet.';
 /** Preview: same list, but say plainly what it can and cannot reach right now. */
 const LEDE_PREVIEW =
-  'Nothing asked yet. Each of these is answered from your own record — labs, wearables, today’s log. Until a model is connected the Coach replies in preview and reads none of it.';
+  'Nothing asked yet. Until a model is connected the Coach replies in preview and reads none of your record.';
 
 export function SuggestedPrompts({ onPick }: { onPick: (text: string) => void }) {
   const keySet = useSessionKeySet();

@@ -494,8 +494,7 @@ export default function MealEstimateScreen() {
           <View className="mt-4">
             <Block device="margin">
               <Text className="font-serif text-[13px] leading-5 text-ink-muted">
-                Estimates are just that — you’ll review and adjust every item before anything is
-                logged.
+                Every item is reviewed and adjustable before anything is logged.
               </Text>
             </Block>
           </View>

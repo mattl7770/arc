@@ -281,7 +281,7 @@ export default function RecipesScreen() {
             {searching || scopeName !== null ? null : (
               <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
                 Share an Instagram reel or TikTok to ARC, paste a link, or save a logged meal as a
-                recipe — the book builds itself from what you actually cook.
+                recipe.
               </Text>
             )}
             {!searching && scopeName !== null ? (
