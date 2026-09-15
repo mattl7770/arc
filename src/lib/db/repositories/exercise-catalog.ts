@@ -9,6 +9,7 @@
  */
 import type { Database } from '../database';
 import { newId } from '../id';
+import { resolveUniqueMatch, type NameSource } from '@/lib/exercise/match';
 import type {
   CatalogExercise,
   CatalogFilter,
@@ -90,33 +91,21 @@ export function listExercises(db: Database, filter: CatalogFilter = {}): Catalog
 }
 
 /**
- * Fold a typed exercise name to the form the matcher compares on: lowercase,
- * punctuation to single spaces, and each token de-pluralised.
+ * Every live catalog row reduced to the names it answers to — the candidate set
+ * the matcher ranks. ~70 seeded rows plus whatever the owner has created, so
+ * the whole thing is read in one query and folded in JS.
  *
- * The de-pluralisation is the part that earns its keep. Nobody writes their log
- * in the catalog's singular voice — it is "lat pulldowns", "barbell rows",
- * "bench presses" — and a matcher that only knows "Lat Pulldown" resolves none
- * of them. Three rules, in order, on tokens longer than three characters:
- * an `-es` after a sibilant comes off whole (`presses` → `press`, `crunches` →
- * `crunch`); a word already ending `-ss` is left alone (`press`); otherwise a
- * lone trailing `s` comes off (`rows`, `raises`, `dips`, `pulldowns`). `abs` is
- * short enough to be exempt. It is a stemmer for gym English, not for English.
+ * It used to be prefiltered with a `LIKE %first token%`, which was right while
+ * matching was exact-only and is wrong now: a MISSPELLED first token LIKE-matches
+ * nothing at all, so the prefilter would quietly defeat the tolerant tier it is
+ * supposed to feed. SQLite cannot see through "rows" → "row" either, let alone
+ * "bnech" → "bench". At this table size the honest read costs nothing.
  */
-const singular = (t: string): string => {
-  if (t.length <= 3) return t;
-  if (/(?:ss|ch|sh|x|z)es$/.test(t)) return t.slice(0, -2);
-  if (t.endsWith('ss')) return t;
-  return t.endsWith('s') ? t.slice(0, -1) : t;
-};
-
-function normalizeExerciseName(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .split(' ')
-    .map(singular)
-    .join(' ');
+function catalogNames(db: Database): NameSource[] {
+  const rows = db.all<{ id: string; name: string; aliases: string | null }>(
+    'SELECT id, name, aliases FROM exercises WHERE archived = 0'
+  );
+  return rows.map((r) => ({ id: r.id, name: r.name, aliases: parseAliases(r.aliases) }));
 }
 
 /**
@@ -137,49 +126,37 @@ function normalizeExerciseName(s: string): string {
  *
  * Confidence discipline is the labs/nutrition-grounding rule, unchanged: a
  * UNIQUE match resolves and anything ambiguous stays null rather than guessing.
- * Three tiers, each tried only if the one above found nothing:
+ * The tiers, each tried only if the one above found nothing, now live in
+ * src/lib/exercise/match.ts and are shared with the picker's search field:
  *
- *   1. exact on the folded catalog name or a folded alias;
+ *   1. exact on the folded catalog name or a folded alias — including under the
+ *      SQUASH, so "skullcrusher" is the Skull Crusher and "pull-downs" is the
+ *      Pulldown. That is not a guess: the letters are identical;
  *   2. the typed name is a catalog name's leading phrase — the input is shorter
  *      and exactly one catalog movement extends it ("bulgarian split squat"
  *      resolving to its one dumbbell variant), multi-token only;
- *   3. nothing.
+ *   3. **within a few edits of exactly one movement** (2026-09-14, owner:
+ *      *"common misspellings"*) — "bnech press", "sqaut", "dumbell curl". The
+ *      tolerance is small and scales with length, transposition counts as one
+ *      edit, and a tie between two movements resolves to NOTHING;
+ *   4. nothing.
  *
- * Only the shorter-input direction is safe. The reverse — a longer input folding
- * onto a shorter catalog name because the catalog name is its leading phrase —
- * pulls a distinct movement onto an unrelated one whenever the trailing token
- * discriminates rather than qualifies: "deadlift sumo" is not conventional
- * "Deadlift", and "bench press close grip" is not plain "Bench Press". Natural
- * word order ("sumo deadlift", "close grip bench press") leads with the
- * qualifier and matches exactly at tier 1, so nothing is lost by refusing it.
+ * Only the shorter-input direction is safe at tier 2. The reverse — a longer
+ * input folding onto a shorter catalog name because the catalog name is its
+ * leading phrase — pulls a distinct movement onto an unrelated one whenever the
+ * trailing token discriminates rather than qualifies: "deadlift sumo" is not
+ * conventional "Deadlift", and "bench press close grip" is not plain "Bench
+ * Press". Natural word order ("sumo deadlift", "close grip bench press") leads
+ * with the qualifier and matches exactly at tier 1, so nothing is lost.
  *
  * Single-token needles never reach tier 2, which is what keeps "Bench" from
  * claiming "Bench Press" while "Bench Dip" also exists, and "Press" — pinned by
- * db/coach-tools.test.mjs §27 — from claiming anything at all.
+ * db/coach-tools.test.mjs §27 — from claiming anything at all. The picker's
+ * CONTAINS tier, which is what makes typing "press" list every press, is never
+ * consulted here for exactly that reason.
  */
 export function resolveExerciseByName(db: Database, name: string): string | null {
-  const needle = normalizeExerciseName(name);
-  if (needle === '') return null;
-  // The LIKE narrows on the raw text; folding + uniqueness is decided in JS,
-  // because SQLite cannot see through "rows" → "row".
-  const first = needle.split(' ')[0] ?? '';
-  const rows = db.all<{ id: string; name: string; aliases: string | null }>(
-    `SELECT id, name, aliases FROM exercises
-     WHERE archived = 0 AND (name LIKE ? OR aliases LIKE ?)`,
-    [`%${first}%`, `%${first}%`]
-  );
-  const folded = rows.map((r) => ({
-    id: r.id,
-    names: [r.name, ...parseAliases(r.aliases)].map(normalizeExerciseName),
-  }));
-
-  const exact = folded.filter((e) => e.names.includes(needle));
-  if (exact.length === 1) return exact[0]!.id;
-  if (exact.length > 1) return null;
-
-  if (needle.split(' ').length < 2) return null;
-  const prefix = folded.filter((e) => e.names.some((n) => n.startsWith(`${needle} `)));
-  return prefix.length === 1 ? prefix[0]!.id : null;
+  return resolveUniqueMatch(catalogNames(db), name);
 }
 
 /** One catalog exercise by id (including archived), or undefined. */

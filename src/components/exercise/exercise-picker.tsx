@@ -27,13 +27,17 @@ import {
   type ExerciseSearchResult,
 } from '@/lib/exercise/ai-search';
 import { MUSCLE_LABEL, MUSCLE_ORDER } from '@/lib/exercise/constants';
+import { rankExerciseMatches } from '@/lib/exercise/match';
 import type { CatalogExercise, Equipment, Muscle, NewExercise } from '@/lib/exercise/types';
 
 /**
  * The exercise picker — a modal reused by the routine builder and the live
- * logger. Loads the whole catalog once (69 seeded + any custom) and filters
+ * logger. Loads the whole catalog once (69 seeded + any custom) and ranks it
  * in-memory by search + muscle, so there are no DB reads during render. Also
  * creates a custom exercise inline and selects it.
+ *
+ * Search tolerates how people actually type (2026-09-14): misspellings,
+ * alternative names, and words run together — see {@link visibleExercises}.
  *
  * ## The surface system (00-design-spec.md §1)
  *
@@ -84,13 +88,36 @@ function equipmentLabel(e: Equipment): string {
   return EQUIPMENT_OPTIONS.find((o) => o.value === e)?.label ?? e.replace(/_/g, ' ');
 }
 
-function matches(ex: CatalogExercise, search: string, muscle: Muscle | null): boolean {
-  if (muscle && !ex.primaryMuscles.includes(muscle) && !ex.secondaryMuscles.includes(muscle)) {
-    return false;
-  }
-  const q = search.trim().toLowerCase();
-  if (q === '') return true;
-  return ex.name.toLowerCase().includes(q) || ex.aliases.some((a) => a.toLowerCase().includes(q));
+function worksMuscle(ex: CatalogExercise, muscle: Muscle | null): boolean {
+  return !muscle || ex.primaryMuscles.includes(muscle) || ex.secondaryMuscles.includes(muscle);
+}
+
+/**
+ * The visible catalog: filtered by muscle, and — when something is typed —
+ * RANKED rather than merely filtered (owner, 2026-09-14: *"more intelligent
+ * search for exercises, i.e. common misspellings, alternative names"*).
+ *
+ * The ranking is src/lib/exercise/match.ts, the same tiers and the same folding
+ * the resolver uses, so "lat pulldowns", "pull-downs", "skullcrusher" and
+ * "bnech press" all find their movement here exactly as they do when the Coach
+ * or a photo import resolves a name. What differs is the response to ambiguity:
+ * a list can show nine presses and let a human choose, where the resolver must
+ * answer with one id or none.
+ *
+ * With the field empty this is the plain alphabetical catalog — `listExercises`
+ * already returns it name-ordered, so browsing is untouched.
+ */
+function visibleExercises(
+  all: CatalogExercise[],
+  search: string,
+  muscle: Muscle | null
+): CatalogExercise[] {
+  const byMuscle = all.filter((ex) => worksMuscle(ex, muscle));
+  if (search.trim() === '') return byMuscle;
+  const byId = new Map(byMuscle.map((ex) => [ex.id, ex] as const));
+  return rankExerciseMatches(byMuscle, search)
+    .map((m) => byId.get(m.id))
+    .filter((ex): ex is CatalogExercise => ex !== undefined);
 }
 
 export function ExercisePicker({ visible, onClose, onSelect }: Props) {
@@ -103,10 +130,7 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
 
   const reloadCatalog = useCallback(() => setAll(listExercises(getDb())), []);
 
-  const filtered = useMemo(
-    () => all.filter((ex) => matches(ex, search, muscle)),
-    [all, search, muscle]
-  );
+  const filtered = useMemo(() => visibleExercises(all, search, muscle), [all, search, muscle]);
 
   const close = () => {
     setMode('browse');
