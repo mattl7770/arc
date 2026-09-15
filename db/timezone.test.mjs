@@ -546,12 +546,15 @@ console.log('\n7. baselines EXCLUDE the marked day — and do not delete it');
 // ---------------------------------------------------------------------------
 console.log('\n8. the nutrition verdict goes QUIET on a marked day');
 {
-  // First as a pure value — the seam C7 will rework around.
+  // First as a pure value, through C7's inputs object (landed the same day):
+  // a closed day (`expected >= 1`) while maintaining, where a 1.4× day is poor
+  // in every direction's band.
   const totals = { kcal: 3220, protein_g: 180, mealCount: 4 };
   const targets = { kcal: 2300, protein_g: 180 };
-  const graded = nutritionVerdict(totals, targets, true, false);
+  const closed = { totals, targets, direction: 'maintain', expected: 1, clock: '21:00' };
+  const graded = nutritionVerdict({ ...closed, timezoneChanged: false });
   eq('a 1.4× day normally grades poor', graded.level, 'poor');
-  const quiet = nutritionVerdict(totals, targets, true, true);
+  const quiet = nutritionVerdict({ ...closed, timezoneChanged: true });
   eq('… but not on a day that was not 24 hours long', quiet.level, 'unknown');
   quiet.note.includes('timezone changed today — not graded')
     ? ok('… and it says why, without inventing a scaled target')
@@ -560,7 +563,7 @@ console.log('\n8. the nutrition verdict goes QUIET on a marked day');
     ? ok('… while still showing the numbers it declined to judge')
     : bad('progress note dropped', quiet.note);
   // The default is false, so every existing caller is byte-for-byte unchanged.
-  eq('the flag defaults to off', nutritionVerdict(totals, targets, true).level, 'poor');
+  eq('the flag defaults to off', nutritionVerdict(closed).level, 'poor');
 
   // Then end to end, through deriveReadiness, which is what Home renders.
   const { db } = freshDb();

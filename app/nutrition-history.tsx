@@ -25,6 +25,21 @@ import type { MealRow, NutritionHistoryDay, NutritionTargetsRow } from '@/lib/nu
 import { dayLabel, dayPhrase, type DayBounds } from '@/lib/utils/day-cursor';
 
 /**
+ * The timezone-change notes (D4) covering the history window AND the day in
+ * view — the picker can carry `day` earlier than the window's first row, and a
+ * day annotated in the by-day list must be annotated in its own view too.
+ */
+function timezoneNotesFor(
+  days: NutritionHistoryDay[],
+  day: string,
+  today: string
+): Map<string, string> {
+  const first = days[0]?.date;
+  const from = first && first < day ? first : day;
+  return timezoneNotesIn(getDb(), from, today);
+}
+
+/**
  * Nutrition history — **one day at a time, then the shape of the fortnight.**
  *
  * ## The day view (2026-09-14 — backlog C1)
@@ -231,17 +246,6 @@ function dayCorner(targets: NutritionTargetsRow | null, eatenKcal: number): stri
   return `${fmtInt(eatenKcal)} of ${fmtInt(targets.kcal)} kcal`;
 }
 
- * The window's rows plus the days the device's timezone changed on (D4). Read
- * together so a re-read can never leave the annotation a window behind the
- * figures it annotates.
- */
-function read(window: Window): { days: NutritionHistoryDay[]; timezoneNotes: Map<string, string> } {
-  const db = getDb();
-  const today = todayISODate();
-  const days = nutritionHistory(db, window, today);
-  return { days, timezoneNotes: timezoneNotesIn(db, days[0]?.date ?? today, today) };
-}
-
 export default function NutritionHistoryScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ date?: string }>();
@@ -263,6 +267,13 @@ export default function NutritionHistoryScreen() {
     return requested && requested <= now ? requested : now;
   });
   const [view, setView] = useState<NutritionDayView>(() => readNutritionDay(day));
+  // The calendar register (D4): the days in the window — and the day in view,
+  // which the picker can carry earlier than the window — that the device's
+  // timezone changed on. Read beside the figures so a re-read can never leave
+  // the annotation a window behind what it annotates.
+  const [timezoneNotes, setTimezoneNotes] = useState<Map<string, string>>(() =>
+    timezoneNotesFor(days, day, today)
+  );
 
   const reload = useCallback(() => {
     // Roll the screen forward if the calendar moved while it was away, but only
@@ -274,15 +285,10 @@ export default function NutritionHistoryScreen() {
     setToday(fresh);
     if (next !== day) setDay(next);
     setView(readNutritionDay(next));
-    setDays(nutritionHistory(getDb(), window, fresh));
+    const nextDays = nutritionHistory(getDb(), window, fresh);
+    setDays(nextDays);
+    setTimezoneNotes(timezoneNotesFor(nextDays, next, fresh));
   }, [window, day, today]);
-
-  const [view, setView] = useState(() => read(14));
-  const { days, timezoneNotes } = view;
-
-  const reload = useCallback(() => {
-    setView(read(window));
-  }, [window]);
   useFocusEffect(reload);
 
   const selectDay = (next: string) => {
@@ -358,6 +364,14 @@ export default function NutritionHistoryScreen() {
           <View className="flex-row items-baseline gap-2">
             <View className="flex-1">
               <SectionLabel label={dayLabel(day, today)} />
+              {/* The calendar register (D4). The figures below are left exactly
+                  as logged — this day was 24 + Δ hours long, which is why Home's
+                  verdict declines to grade it. */}
+              {timezoneNotes.get(day) ? (
+                <Text className="mt-1 font-mono text-[10px] leading-4 text-ink-muted">
+                  {timezoneNotes.get(day)}
+                </Text>
+              ) : null}
             </View>
             {corner ? (
               <Text className="font-mono text-[11px] text-ink-secondary">{corner}</Text>
@@ -553,12 +567,6 @@ export default function NutritionHistoryScreen() {
                               ) : null}
                             </>
                           )}
-                          {/* The calendar register (D4). The intake figure is
-                              left exactly as logged — this day was 24 + Δ hours
-                              long, which is why Home's verdict declines to
-                              grade it (readiness.ts `nutritionVerdict`), and
-                              the bar above is the target it was not graded
-                              against. */}
                           {timezoneNotes.get(d.date) ? (
                             <Text className="mt-1.5 font-mono text-[10px] leading-4 text-ink-muted">
                               {timezoneNotes.get(d.date)}

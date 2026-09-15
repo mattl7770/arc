@@ -17,9 +17,10 @@
  */
 import type { Database } from '@/lib/db/database';
 import { dayStartMinutes, getDayStartsAt, shiftISODate, todayISODate } from '@/lib/db/date';
-
-import { shiftISODate, todayISODate } from '@/lib/db/date';
-import { isTimezoneChangedDay, timezoneChangedDaysIn } from '@/lib/db/repositories/day-meta';
+import {
+  isTimezoneChangedDay as timezoneChangedDayOnRecord,
+  timezoneChangedDaysIn,
+} from '@/lib/db/repositories/day-meta';
 import {
   dailyMetricSeries,
   deviceLabel,
@@ -538,50 +539,21 @@ export type NutritionInputs = {
 export function nutritionVerdict(inputs: NutritionInputs): { level: SignalLevel; note?: string } {
   const { totals, targets, direction, expected, clock } = inputs;
 
-  if (inputs.timezoneChanged) {
-    return { level: 'unknown', note: 'timezone changed today — not graded' };
-  }
-
   const kcalTarget = usableTarget(targets?.kcal);
   const proteinTarget = usableTarget(targets?.protein_g);
-  if (kcalTarget === null && proteinTarget === null) {
-}}
 
- *   - *Day still open.* Falling short is not yet a fact. Only two things are:
- *     the calorie CEILING (already-eaten calories cannot be un-eaten) and a
- *     protein target already MET. Everything else waits, showing progress
- *     instead of a verdict, until {@link NUTRITION_DAY_CLOSE_HOUR}.
- *   - *Day closed.* Both halves grade, and the worse one wins — the same
- *     `worse()` rule the readiness verdict uses, so a hit protein target cannot
- *     paper over a 900-kcal overshoot.
- *
- * A fourth, added by D4: *the day is not 24 hours long.* See `timezoneChanged`.
- */
-export function nutritionVerdict(
-  totals: NutritionTotals,
-  targets: NutritionTargets | null,
-  dayClosed: boolean,
-  /**
-   * The device's timezone changed on this day (D4 — `isTimezoneChangedDay`).
-   *
-   * The verdict then goes QUIET, which is the owner's call of 2026-09-14. This
-   * is the sharpest quantified harm in the whole D4 item: the kcal band is
-   * symmetric and tight (`off > 0.3 → poor`) and the denominator is one day's
-   * target, so on a 29-hour day a normal 24 hours of eating plus a normal five
-   * more reads as a blowout that never happened.
-   *
-   * Quiet rather than SCALED (a 29-hour day getting a 1.21× target) — scaling is
-   * the one place re-interpretation is arithmetically defensible, and it was
-   * considered and rejected for now because it invents a target the user never
-   * set. It stays cheap to add on top of this later.
-   *
-   * It reuses the shape this function already has for a day still in progress:
-   * numbers exist, they are shown, they are not yet a verdict.
-   */
-  timezoneChanged: boolean = false
-): { level: SignalLevel; note?: string } {
-  const hasTarget = targets && (targets.kcal !== null || targets.protein_g !== null);
-  if (!hasTarget) {
+  // The day was not 24 hours long (D4). Show the numbers, withhold the verdict:
+  // a 24-hour target judged against a 29-hour day is wrong by the length of the
+  // flight, and a scaled target would invent a number the owner never set.
+  if (inputs.timezoneChanged) {
+    const figures =
+      kcalTarget !== null && totals.mealCount > 0
+        ? `${fmtInt(totals.kcal)} / ${fmtInt(kcalTarget)} kcal · `
+        : '';
+    return { level: 'unknown', note: `${figures}timezone changed today — not graded` };
+  }
+
+  if (kcalTarget === null && proteinTarget === null) {
     return { level: 'unknown', note: 'no daily targets set yet (Eat › Targets)' };
   }
 
@@ -590,32 +562,6 @@ export function nutritionVerdict(
     return { level: 'unknown', note: closed ? 'nothing logged today' : 'nothing logged yet' };
   }
   if (expected <= 0) {
-}
-
-  // The day was not 24 hours long. Show the numbers, withhold the verdict.
-  if (timezoneChanged) {
-    return {
-      level: 'unknown',
-      note: `${nutritionProgressNote(totals, targets)} · timezone changed today — not graded`,
-    };
-  }
-
-  const kcalTarget = targets.kcal;
-  const proteinTarget = targets.protein_g;
-  const kcal = kcalTarget !== null && kcalTarget > 0 ? kcalLevel(totals.kcal / kcalTarget) : null;
-  const protein =
-    proteinTarget !== null && proteinTarget > 0
-      ? proteinLevel(totals.protein_g / proteinTarget)
-      : null;
-
-  if (dayClosed) {
-    if (kcal === null && protein === null) return { level: 'unknown', note: 'no usable target' };
-    const level = kcal === null ? protein! : protein === null ? kcal : worse(kcal, protein);
-    return { level, note: nutritionProgressNote(totals, targets) };
-  }
-
-  // Day still open — only completed facts may grade it.
-  if (kcalTarget !== null && kcalTarget > 0 && totals.kcal > kcalTarget * KCAL_CEILING_RATIO) {
     return {
       level: 'unknown',
       note: `nothing expected yet — the pace clock starts at ${PACE_ANCHORS[0].at}`,
@@ -733,17 +679,14 @@ function proteinClause(
  * the flight. The owner chose quiet over clever (docs/spikes/timezone-days.md
  * §7 Q2(b)) — a scaled target would invent a number he never set.
  *
- * D4 (backlog D4, migration `0053`) builds `timezone_changes` and the foreground
- * offset observer on its own branch. When it lands, this becomes one query —
- * `SELECT 1 FROM timezone_changes WHERE kind = 'travel' AND (from_local_date = ?
- * OR to_local_date = ?)` — and nothing else in this file moves. Until then it is
- * honestly false: ARC has no way to know, and guessing would be worse than not
- * grading or not-grading at random.
+ * D4 landed the same day (migration `0053`, `src/lib/db/repositories/day-meta.ts`):
+ * the foreground observer records each zone change, DST discarded at the
+ * observer so there is no `kind` column for a reader to forget to filter. This
+ * export is kept as the seam the verdict was written against — one name, and
+ * the answer comes from the record.
  */
 export function isTimezoneChangedDay(db: Database, date: string): boolean {
-  void db;
-  void date;
-  return false;
+  return timezoneChangedDayOnRecord(db, date);
 }
 
 /** No day is excluded — the shared empty set, so the common path allocates none. */
@@ -904,14 +847,14 @@ export function deriveReadiness(
 ): ReadinessView {
   const link: HealthLink = options.link ?? 'connected';
   const now = options.now ?? new Date();
-  // Days the device's timezone changed on (D4, 0053) — read ONCE for the whole
-  // window and barred from every baseline below. One query; almost always empty.
-  const oddDays = timezoneChangedDaysIn(db, shiftISODate(today, -BASELINE_WINDOW_DAYS - 1), today);
   // --- Raw signals, source-arbitrated per day ------------------------------
   const hrvSeries = dailyMetricSeries(db, 'hrv', BASELINE_WINDOW_DAYS + 1, today);
   const rhrSeries = dailyMetricSeries(db, 'rhr', BASELINE_WINDOW_DAYS + 1, today);
   const hrvToday = pointOn(hrvSeries, today);
   const rhrToday = pointOn(rhrSeries, today);
+  // Days the device's timezone changed on (D4) get no vote in any baseline —
+  // one query for the whole window, shared by every baseline below.
+  const oddDays = timezoneChangedDaysIn(db, shiftISODate(today, -BASELINE_WINDOW_DAYS - 1), today);
   const hrvBaseline = baselineBefore(hrvSeries, today, oddDays);
   const rhrBaseline = baselineBefore(rhrSeries, today, oddDays);
 
@@ -988,15 +931,6 @@ export function deriveReadiness(
     clock: fmtClock(now),
     timezoneChanged: isTimezoneChangedDay(db, today),
   });
-
-  const nutrition = nutritionVerdict(
-    todayTotals(db, today),
-    targets ? { kcal: targets.kcal, protein_g: targets.protein_g } : null,
-    now.getHours() >= NUTRITION_DAY_CLOSE_HOUR,
-    // The D4 seam C7 named. Read here rather than inside the verdict so that
-    // function stays pure over values (it is asserted directly in the tests).
-    isTimezoneChangedDay(db, today)
-  );
 
   // Recovery reads HRV first and falls back to RHR, so its evidence gap is
   // whichever of the two is FURTHEST along — reporting the HRV wait when RHR is

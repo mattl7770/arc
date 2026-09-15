@@ -808,12 +808,16 @@ console.log('10. nutrition — direction-aware bands on an expected-by-now pace 
       : bad('seam control', JSON.stringify(nutritionVerdict(graded)));
 
     const quiet = nutritionVerdict({ ...graded, timezoneChanged: true });
-    quiet.level === 'unknown' && quiet.note === 'timezone changed today — not graded'
-      ? ok('…and the same day goes quiet when it is a timezone-change day')
+    quiet.level === 'unknown' &&
+    quiet.note.endsWith('timezone changed today — not graded') &&
+    quiet.note.includes(' kcal · ')
+      ? ok(
+          '…and the same day goes quiet when it is a timezone-change day — figures shown, verdict withheld'
+        )
       : bad('timezone quiet', JSON.stringify(quiet));
 
     isTimezoneChangedDay(freshDb(), TODAY) === false
-      ? ok('and the predicate is honestly false until D4 lands the marker')
+      ? ok('and the predicate is false on a record with no zone change (D4 landed the marker)')
       : bad('seam default');
   }
 }
