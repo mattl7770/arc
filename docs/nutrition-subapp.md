@@ -679,3 +679,28 @@ A scanned product's basis is **read off the product, not guessed from its name**
 - **Whether `Solid · g / Drink · ml` reads as the food's identity** rather than as a formatting choice, sitting where it does in Create a food.
 - **Whether the entry-field decision is right in the hand** for an oz-preferring user: the row says `8.5 oz` and the field says `250 ml`. That is defensible on paper (and it is what keeps Save from nudging a portion nobody edited), but it is two units in one glance, and only the phone can say whether that reads as precise or as a mistake.
 - **The amount field's width at `ml` values.** A three-digit gram portion and a four-digit millilitre one (`1000`) share a `w-16` box on `app/food-search.tsx` and `app/barcode-scan.tsx`, and a `w-14` one on the two review screens.
+
+
+## 12e. The readiness verdict, reworked — direction, and a pace curve (C7, 2026-09-14)
+
+The Home screen's Nutrition pillar is the one place in the app that *judges* a day's eating, and the owner's verdict on it was blunt: *"It provides almost no value right now; it only triggers late in the day and doesn't take in account my full goal (currently, exceeding my calorie goal is a good thing)."* (`docs/backlog-2026-09.md`, C7.) Both halves were true of the code. The design round, the three models weighed and the alternatives rejected are in **`docs/spikes/nutrition-verdict.md`**; **Model A** was approved and is what shipped. The pillar itself lives on Home — `src/lib/home/readiness.ts` — and its readiness-side write-up is in `docs/home-screen.md`. **No migration.**
+
+**What this changes on the Eat tab: nothing.** The verdict reads `nutrition_targets` and `meals` and writes neither. The one new control is on the targets screen.
+
+### The goal direction is set where the numbers are set
+
+`app/nutrition-targets.tsx` gains a three-chip row **above** the kcal field — Cutting · Maintaining · Gaining — with a line under it saying what the choice changes. It is stored at `users.preferences.goals.direction` (`getGoalDirection` / `setGoalDirection`, `src/lib/db/repositories/user.ts`), beside the hydration goal and in the same shape, so there is no migration and no new table.
+
+It sits here rather than in Settings because it **qualifies the numbers**: 2,400 kcal means a different day depending on which way you are going. It is written **on tap**, not on Save, and the section label says so (`Saved on tap`) — the direction is a live preference, the targets below it are an immutable version. Those are two different kinds of fact on one screen, and the labels are what keep them apart.
+
+The trade that comes with a live preference is the same one `getWaterTarget` already documents: changing it re-judges past days against today's direction. Taken deliberately — a direction changes far less often than the numbers it qualifies, and when it does change the user is usually also changing the numbers, which writes a new target version anyway. The versioned alternative (a `goal_direction` column on `nutrition_targets`) is better modelling and is recorded in the spike as the thing to do if history ever matters.
+
+### Targets are still never invented
+
+Unchanged and load-bearing: `nutrition_targets` seeds no default row, so a profile that has never opened this screen gets `unknown` and the sentence `no daily targets set yet (Eat › Targets)`. The pillar has no stock 2,000-kcal denominator and must not grow one — the same refusal `src/lib/nutrition/remaining.ts` makes for the tab's own hero.
+
+### Verification
+
+`db/readiness.test.mjs` §10 (the band table in all three directions, the pace curve and its anchors, the projection, the protein rule, the note wording at three times of day, no-targets, the empty day, the D4 seam) and `db/user.test.mjs` §12 (the direction's default, its round-trip, and that it and the hydration goal do not clobber each other inside the shared `goals` section).
+
+**Device-only:** the chip row itself — three 44pt chips across a phone's width with the longest label (`Maintaining`), and whether the selected chip's `border-ink bg-paper-hi` reads as chosen against the outlined pair beside it.

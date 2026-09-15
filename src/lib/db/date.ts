@@ -109,6 +109,20 @@ export function getDayStartsAt(): string {
 }
 
 /**
+ * The boundary as **minutes past local midnight** — 0 for `"00:00"`, 240 for
+ * `"04:00"`. A junk value reads as midnight, exactly as every other reader in
+ * this file treats it.
+ *
+ * Exported so that anything measuring *how far into the day* an instant is —
+ * the nutrition pace curve in src/lib/home/readiness.ts — parses the boundary
+ * with the same function that files a row under a day, rather than re-splitting
+ * the string on its own.
+ */
+export function dayStartMinutes(dayStartsAt: string = installedDayStartsAt): number {
+  return boundaryMinutes(dayStartsAt) ?? 0;
+}
+
+/**
  * A `Date` → its LOCAL calendar day as `YYYY-MM-DD`. Plain formatting: no
  * boundary is applied, so this is the right function for a `Date` built out of
  * calendar components and the wrong one for "what day is it now".
