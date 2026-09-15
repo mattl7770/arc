@@ -15,6 +15,7 @@ import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { logWorkout, weekSummary } from '../src/lib/db/repositories/exercise.ts';
 import { pairIngestedWorkouts } from '../src/lib/db/repositories/workout-ingest.ts';
+
 import { setUnitPreference, updateProfile } from '../src/lib/db/repositories/user.ts';
 import { SOURCE_PRIORITY, upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 // The real ingest mappers — fixtures below are built by the pipeline that runs
@@ -2990,6 +2991,37 @@ console.log('38. the double-count: one session, two tools, counted once (0054)')
   shown == null || near(shown.value, 40, 0.5)
     ? ok('today’s snapshot reports the same de-duplicated ingested minutes')
     : bad('snapshot workout minutes', JSON.stringify(shown));
+}
+
+// ---------------------------------------------------------------------------
+// C13 (0055). The Coach's whole share of the away-gym feature: it needs no
+// arithmetic, only to be TOLD, or it reads a travel week's lighter loads as a
+// decline and says so — which is the complaint the feature answers.
+console.log('42. get_training_summary carries the away flag, and the tool says what it means');
+{
+  const { db } = freshDb();
+  logWorkout(db, { date: todayISODate(NOW), kind: 'strength', durationMin: 40 }, [
+    { exercise: 'Bench', exerciseId: 'barbell-bench-press', reps: 5, weightKg: 100 },
+  ]);
+  logWorkout(db, { date: isoDaysAgo(NOW, 1), kind: 'strength', durationMin: 35, away: true }, [
+    { exercise: 'Bench', exerciseId: 'barbell-bench-press', reps: 5, weightKg: 70 },
+  ]);
+  const summary = JSON.parse(toolByName('get_training_summary').execute(db, {}, { now: NOW }));
+  const [today, yesterday] = summary.recentSessions;
+  yesterday.away === true
+    ? ok('the away session comes back flagged')
+    : bad('away missing from the read', JSON.stringify(yesterday));
+  // Omitted, not `false`: almost every session is at the usual gym, and ten
+  // rows each carrying "away": false is twenty tokens of "no".
+  'away' in today === false
+    ? ok('…while an ordinary session carries no field at all')
+    : bad('home session pays for the flag', JSON.stringify(today));
+  // The payload is useless without the sentence. A model that sees `away: true`
+  // and has not been told what it means will still call 70 kg a regression.
+  const description = toolByName('get_training_summary').description;
+  /away: true/.test(description) && /regression/.test(description)
+    ? ok('the tool description tells the model not to read those loads as a regression')
+    : bad('no away doctrine in the description', description);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -22,7 +22,7 @@
 > 3. **Saved workouts replace routines + programs** (owner call): one flat list of reusable sessions, loaded pre-filled. The `routines` tables carry them (UI renamed); **programs are retired** — `app/program-edit.tsx`, the programs repo/tests and the recommender's schedule branch are deleted, the 0020 tables stay in the schema dormant, and `ProgramContext`/the `rest` arm stay in the Recommendation type for the Coach's read tool (dormant). `buildRecommendation`'s signature and result shape are unchanged. The Train-today stamp now carries **two doors: Start recommended + Start empty**.
 > 4. **In-session exercise detail** — the exercise title on every live-logger block pushes `app/exercise-detail.tsx`, which now opens with **how the movement looks** (bundled public-domain demo photo, `assets/exercises/` + `images.generated.ts` — 69 frames, ~4.4 MB, matched from free-exercise-db) beside the **muscles-worked schematic** (figure in highlight mode), above records/trend/history.
 > 5. **The superset "bind"** — linking two exercises makes them one object: the lower plate springs up until the facing borders fuse into a single shared rule, and a SUPERSET seam chip stamps into the joint (Reanimated layout spring + ZoomIn; tap the seam to split). Replaces the static label; awaiting owner review on device.
-> 6. **AI exercise search** — the picker's third door ("Find with AI", shown when a key is set): name it, describe it, or say what you want to train. One model turn resolves against the catalog index; matches come back as tappable rows, genuinely-new movements as vetted review cards ("Create & add" → custom exercise **with instructions** — `NewExercise.instructions`, persisted to `exercises.instructions`). `src/lib/exercise/ai-search.ts`.
+> 6. ~~**AI exercise search**~~ — the picker's third door ("Find with AI"), one model turn resolving the user's words against the catalog index. **Retired 2026-09-14 by C12** (§12): searching the catalog is the matcher's job, and the model now writes the ENTRY for a movement the catalog lacks. `src/lib/exercise/ai-search.ts` is deleted; its review-card discipline and `NewExercise.instructions` survive in `ai-add.ts`.
 >
 > 31 new headless tests (`db/exercise-ai.test.mjs`: figure completeness, import parse/ground, backdated attribution, search parse/vetting, instructions); `db/training-volume.test.mjs` rewritten without programs (volumeScale coverage added); `db/programs.test.mjs` deleted.
 
@@ -534,3 +534,138 @@ freshness moves.
 - **The 14-day blank horizon**, against a real backfill on a real device.
 - **Avg/max HR**, deferred: it needs a new read scope, a `METRIC_COVERAGE` row and a
   per-session sample query, and the owner's call was to ship pairing first.
+
+## 11. Phase 7 — the away-gym bit (C13, 2026-09-14)
+
+Owner: *"for when I am not at my home gym, I can make note of that and ARC can adjust intelligently"* — a stiffer machine must not read as a regression. The full argument is `docs/spikes/gym-away-note.md` (approved, all three questions as recommended); this section is what was built.
+
+### 11.1 The governing sentence
+
+> **An away session is real training and unreal measurement.**
+
+It happened, it fatigued you, it counts as volume. Its *numbers* are not comparable to the home baseline — **in either direction**. Everything that counts **work** includes it; everything that compares **load** excludes it from the baseline while still showing it.
+
+### 11.2 The flag
+
+```sql
+ALTER TABLE workouts ADD COLUMN away integer NOT NULL DEFAULT 0 CHECK (away IN (0, 1));
+```
+
+Migration **0055**. A column and not `workouts.notes`, because every consumer that changes behaviour is SQL or a reducer over SQL rows, and 0034's header already states the rule: provenance is a column. A **bit** and not a four-value enum, because the *behaviour* is binary and widening a CHECK on `workouts` — the parent of `workout_sets.workout_id`, i.e. the whole execution history — is the twelve-step rebuild. A nullable `gym_id` **beside** the bit later is one additive ALTER, and `away = 1 AND gym_id IS NULL` reads perfectly well as "somewhere else"; named gyms are deliberately not v1.
+
+`NOT NULL DEFAULT 0` because every workout already on the device *was* at home — there was no other option when it was logged.
+
+### 11.3 Six consumers, three answers
+
+| Read | Away sessions | Why |
+| --- | --- | --- |
+| `personalRecordsFrom` | **excluded** | `bestE1rmKg` is a bar every future session must clear. A false PR raises it permanently and the next four home sessions then read as a stall — the exact complaint, arriving a month later and much harder to diagnose. A *missed* real PR is recoverable next session. So: no record **even when the numbers are the best on record**, and the control's own copy says so. |
+| `toggleDone` (the live PR stamp) | **excluded** | Same rule, live. Turning the flag on mid-session also clears the stamps already earned — a "PR" tag left standing would contradict the line of copy directly beneath the control. |
+| `suggestProgression` | **excluded** | The stall branch *is* the false-deload path: `STALL_SESSIONS` sessions with no gain and reps below the top of the range is exactly what three weeks on stiffer machines produces. |
+| `lastSessionSets` (prefill) | **deprioritised** | The most recent **non-away** session, falling back to any when there is none. A confirmed placeholder becomes a real logged set, so away numbers leak into history by the quietest route available. One `ORDER BY w.away, …` does the whole of it. |
+| `e1rmSeriesFrom` (the chart) | **kept and marked** | Deleting them would be a different lie: the session happened and the owner will look for it. The point draws **hollow** (`Sparkline`'s new `marked` prop) — a *form* difference, never a colour, because this is behaviour and signal ink marks biology. |
+| freshness · weekly volume · `weekSummary` · the strain pillar · the self-review | **untouched** | **None of them reads a weight.** `muscleFreshness` multiplies role weight × effort(rpe, failure) × decay; the rest count role-weighted sets and minutes. A set to RPE 8 on a stiff machine fatigues the muscle exactly as much as one at home. `db/training-engine.test.mjs` §9(e) asserts these readings are *identical* with the flag on and off — the test exists so a later pass does not "complete" the feature by adding a branch. |
+
+**One deviation from the spike (§3.3b).** It proposed excluding away sessions inside `exerciseSessionTops`. That reducer also feeds `app/exercise-detail.tsx`'s History list, so dropping them there would erase the session from the one screen built to show it. The flag rides on `SessionTopSet` instead and **`suggestProgression` refuses it** — the false-deload path closes at the branch itself, the history stays honest, and a future caller cannot feed the engine away numbers by accident.
+
+### 11.4 The control
+
+One quiet pressable in the live logger's clock row, in the **label voice** — `AWAY GYM`, hairline outline off, `border-ink bg-paper-dim` on, the protocol editor's chip vocabulary. **No accent**: that screen's budget is one primary action (Finish workout) plus the completion stamps. On, one serif muted line sits beneath it:
+
+> *Loads from this session won't set records or steer progression, even if they're the best on record. It still counts as training.*
+
+That sentence is the entire feature, said where the decision is made — including the corner case the owner will hit first, where the away gym's machine is *easier*.
+
+**Off by default on every session and never remembered.** The failure modes are asymmetric: forgetting to turn it *on* costs one session's PR fidelity and is fixable afterwards on this same screen; forgetting to turn it *off* would silently kill PR detection at home, indefinitely, with no symptom.
+
+**`DRAFT_VERSION` 2 → 3.** `LiveDraft` gained `away`; a v2 payload is discarded rather than read as "home", which would be right almost always — the wrong standard for the one flag whose job is keeping an incomparable load out of the baseline.
+
+**Editable afterwards, with nothing to re-derive.** PRs are awarded live and never stored and every other affected read is computed on demand, so flipping the flag on a two-week-old session simply changes what the next read returns. `replaceWorkout` **preserves** an omitted flag rather than defaulting it — silence from a caller is not an assertion of "home".
+
+### 11.5 The Coach
+
+`get_training_summary.recentSessions` rows gain `away: true` (omitted on home sessions — payload, not schema, so it costs the prompt budget nothing), and the tool description gains one sentence:
+
+> *`away: true` means a different gym — those loads are not comparable, so never call them a regression.*
+
+That sentence is the Coach's entire share of the feature; it needs no arithmetic at all. **+36 tok**, paid for with **−21** in the same two training tools: `get_training_recommendation` no longer claims "program week (and whether it is a deload)" — a `recommendation.program` field that *cannot* appear, since programs were retired on 2026-08-11 and the recommender's schedule branch was deleted — and `get_training_summary`'s own "(default 28)", which its `days` property restates verbatim. Net **+17 tok**, 9,224 → 9,241 against the 9,250 ceiling. **Neither ceiling moved.**
+
+### 11.6 What only a device can settle
+
+- **Whether the chip is findable.** It is deliberately quiet and sits beside the clock; the question is whether it is quiet enough to ignore for months and still obvious in a hotel gym on the first try.
+- **Whether "off every time" is the right default in practice**, on a two-week trip where the answer is "away" fourteen days running. The asymmetry argues it is; only a trip will say.
+- **The hollow bar.** At 120 pt the e1RM spark draws twelve ~9 pt bars, and an outlined bar at that width has never been looked at on a phone.
+
+---
+
+## 12. Phase 7 — catalog first, and the AI writes the entry (C12, 2026-09-14)
+
+Owner: *"ai add exercise replaces ai search (search catalog first)."*
+
+### 12.1 What the old door did, and why it is retired
+
+**AI exercise search** (Phase 4, bullet 6 above — `src/lib/exercise/ai-search.ts`, now **deleted**) was a standing third entrance beside browsing and the manual form. It sent the model the **catalog index** — every live movement's id and name — and asked it to pick.
+
+That is a retrieval problem ARC already solves better than a model can: A7's ranked matcher (`src/lib/exercise/match.ts`) folds plurals and punctuation, reads aliases, tolerates transposition, and answers *"lat pulldowns"*, *"pull-downs"*, *"skullcrusher"* and *"bnech press"* offline, deterministically, in about a millisecond. Paying a round-trip to re-derive that was the expensive way to be less reliable — and the model could return an id for an archived movement, or invent one outright.
+
+So the search is the catalog's, and the model is asked only the question the catalog cannot answer.
+
+**Removed:** `src/lib/exercise/ai-search.ts` (the module), `AiSearchView` (the picker's mode), the standing "Find with AI" button, and every export of that module — `searchExercisesWithAI`, `isExerciseSearchAvailable`, `ExerciseSearchUnavailableError`, `parseExerciseSearch`, `resolveSearchMatches`, `buildExerciseSearchRequest`, `EXERCISE_SEARCH_SYSTEM_PROMPT`. `db/exercise-ai.test.mjs` §6d asserts the file is gone **and** that nothing in `src/` or `app/` still imports it or calls anything it exported — a dead module nobody imports is the failure this guards against, not just a missing file. **No route was added or removed:** the picker is a `Modal` component, never a screen, so `app/_layout.tsx` is untouched.
+
+### 12.2 The gate: `offersAiEntry`
+
+```ts
+offersAiEntry(entries, query) // src/lib/exercise/match.ts
+```
+
+True when something was typed **and** nothing matched above the matcher's weakest tier. The line sits under `TIER.fuzzy` and above `TIER.fuzzyToken`, exactly where `match.ts`'s own docblock already puts it: tiers 0-4 are statements about the **letters typed** — an exact fold, an alias, a leading phrase, a containment, a whole name a few edits away — while FUZZY WORD is the one tier that is a *reach*, and the tier `resolveUniqueMatch` refuses outright for the same reason.
+
+| Typed | Tier reached | Door |
+| --- | --- | --- |
+| `bench press`, `RDL`, `lat pulldowns`, `skullcrusher` | exact / alias | shut |
+| `curl`, `press` | contains — lists every one | shut |
+| `bnech press`, `sqaut` | fuzzy | shut |
+| `jefferson curl` | fuzzy word only | **open** |
+| `landmine press`, `zercher squat` | nothing | **open** |
+| *(empty)* | — | shut |
+
+The empty-query case lives inside the gate rather than at the call site, so there is one answer to "is the door drawn": nothing typed is not a question.
+
+**A known limit, pinned rather than papered over.** `hack squat` keeps the door **shut**: "hack" is one substitution from the *Back Squat* alias, which is a whole-name FUZZY match and confident by every definition this module has. The owner gets Back Squat at the top of the list and the manual **New exercise** door. Widening the gate to catch it would mean distrusting tier 4 everywhere — the tier that makes `bnech press` work, a far commoner case than a one-letter collision with a real movement.
+
+### 12.3 What the model is asked for
+
+`src/lib/exercise/ai-add.ts` — a whole `exercises` row's worth of facts: name, **aliases**, equipment, primary/secondary muscles, `measures` (0046), `logging_type`, pattern, mechanic, unilateral, instructions.
+
+- **No catalog index rides with the request.** That is the whole of catalog-first, and it is also why the prompt is a fraction of the retired one: the ~70 id/name pairs were the bulk of every search request. ~571 tokens of system prompt, one-off and uncached, pinned at a ceiling of 600 in `db/exercise-ai.test.mjs` §6b. ARC has no `ESTIMATOR_PROMPT_CEILING` pattern for one-off prompts — the only prompt budget in the repo is the Coach's registry-wide one (`db/coach-eval.test.mjs` §6), and this is a separate turn with no tools, so it is not part of it. The test pins a measured number rather than inheriting an allowance.
+- **The model proposes, the parser disposes.** Every enum is checked against ARC's own vocabulary, and the **sixteen-muscle vocabulary is enforced at the boundary** — a muscle outside it is dropped here rather than at 0011's CHECK inside `createCustomExercise`'s transaction, which would roll the whole movement back with an opaque failure.
+- **Rejected whole, never half-kept.** No name, no legal equipment, no legal `loggingType`, or no surviving primary muscle: throw. Half a definition looks like a catalog entry and is not one — a movement with no primary muscle contributes nothing to freshness, weekly volume or the body figure, for ever, silently. That is the 2026-08-14 null-`exercise_id` bug wearing a different hat.
+- **`measures` both ways.** A legal canonical string from the model wins; anything else derives from `logging_type` through the one `MEASURES_FOR_LOGGING_TYPE` map. Both directions are needed — the derivation cannot express a carry's load + distance, and the model cannot be trusted with a sixteenth value.
+- **Aliases are finally written.** `exercises.aliases` has existed since 0011 and only the seed ever filled it, so a custom movement answered to exactly one spelling. `createCustomExercise` now persists them (trimmed, de-duplicated, never an echo of the name, `NULL` rather than `[]` when empty), which is most of what makes an AI-authored movement findable again next month — and it is what closes the gate for that movement afterwards.
+
+### 12.4 Provenance: migration `0056`
+
+```sql
+ALTER TABLE exercises ADD COLUMN source text CHECK (
+  source IS NULL OR source IN ('seed', 'user', 'ai')
+);
+UPDATE exercises SET source = 'seed' WHERE is_custom = 0;
+```
+
+**Not `is_custom`.** That column answers "did this ship with the app"; `source` answers "who authored the facts in it". A movement the owner typed into the three-field New-exercise form and one a model authored — aliases, secondary muscles, pattern, mechanic, `measures` — are both `is_custom = 1` and are not equally trustworthy. Those muscles feed `exercise_muscles`, and through it freshness, weekly volume and the body figure; when a definition looks wrong in two months, the first question is who put it there. 0034's rule again, and `recipe_ingredients.resolved_by` is the direct precedent down to its vocabulary.
+
+**Custom rows are left NULL by the backfill, deliberately.** The retired AI-search path created movements through the same `createCustomExercise` and left no mark, so an existing custom row could be either. Writing `user` over that would assert something nobody knows — exactly the failure the column exists to prevent. `NULL` means "authored before provenance was recorded", which is true.
+
+The mark is **visible**: the review card carries it before the row exists, and the catalog row afterwards reads `AI` where it would otherwise read `Custom`. A mark nobody can see is not provenance.
+
+### 12.5 The flow
+
+Search, nothing confident, **Add with AI** (in the results plate, under whatever weak guesses the search did turn up, outlined, no accent), the view opens **already running** on the words already typed with no second field, a **review card** listing every fact that will land — including the aliases and secondary muscles nothing else would ever show — and **Save & add** writes the row and picks it into the session like any other exercise. Nothing is written before Save.
+
+**Offline** is an honest state and a specific one: *"Couldn't reach the model. Browsing and 'New exercise' still work offline."* — which is true, and names which half is down. No key at all means the door is never drawn.
+
+### 12.6 What only a device can settle
+
+- **Whether the door is findable where it now sits.** It moved from a standing button at the top of the picker into the results plate; the gain is that it only appears when it is the right answer, and the risk is that it appears below the fold on a long list of weak guesses.
+- **How often the gate is right.** `hack squat` is the known false negative; the real question is how many of the movements the owner actually reaches for land on the wrong side of tier 4.
+- **Whether a one-shot entry is good enough**, or whether the review card needs to be editable before Save. It is deliberately read-only for now: the manual form is one tap away and re-running the model is cheaper than building a second editor.

@@ -29,6 +29,13 @@ export type SessionTopSet = {
   rpe: number | null;
   durationSec?: number | null;
   distanceM?: number | null;
+  /**
+   * The session was logged away from the usual gym (0055). The engine below
+   * ignores such a session entirely — see {@link suggestProgression}. Optional
+   * so a caller with no opinion (a test fixture, a hand-built input) means
+   * "home", which is what every session meant before the column existed.
+   */
+  away?: boolean;
 };
 
 export type ProgressionInput = {
@@ -48,10 +55,28 @@ function setStrength(s: SessionTopSet): number {
 /**
  * Suggest the next session's load + reps for one exercise from its history.
  * No loaded history → 'find_weight' (honest: converges in ~2 sessions anyway).
+ *
+ * ## Away sessions do not steer anything (0055)
+ *
+ * They are filtered out of `loaded` before a single branch below runs, and the
+ * STALL branch is why. Three weeks away from home on stiffer machines produces
+ * exactly its input — `STALL_SESSIONS` sessions with no strength gain and reps
+ * below the top of the range — so ARC would recommend a 10% deload on a lift
+ * that never stalled. That is the false regression the owner asked for this
+ * feature to prevent, and it is the one place in the engine where an
+ * incomparable load does real damage rather than merely reading oddly.
+ *
+ * Filtering here rather than at the caller is deliberate: this is the branch
+ * with the failure mode, the filter is one predicate, and a future caller
+ * cannot reintroduce the bug by handing the engine an unfiltered history.
+ * `exerciseSessionTopsFrom` therefore keeps away sessions and marks them, which
+ * is what lets the detail screen's History list still show them.
  */
 export function suggestProgression(input: ProgressionInput): ProgressionSuggestion {
   const { repRange, incrementKg } = input;
-  const loaded = input.sessions.filter((s) => s.weightKg != null && s.reps != null);
+  const loaded = input.sessions.filter(
+    (s) => s.weightKg != null && s.reps != null && s.away !== true
+  );
 
   if (loaded.length === 0) {
     return {

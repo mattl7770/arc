@@ -9,7 +9,14 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import {
+  getWorkoutDetail,
+  listRecentSessions,
+  logWorkout,
+  replaceWorkout,
+  weekSummary,
+} from '../src/lib/db/repositories/exercise.ts';
+import { sessionDetail } from '../src/lib/exercise/format.ts';
 import { createRoutine } from '../src/lib/db/repositories/routines.ts';
 import {
   e1rmSeries,
@@ -93,9 +100,14 @@ function freshDb() {
 
 // Fixed "now" so freshness decay + week math are deterministic.
 const NOW = new Date('2026-07-26T18:00:00.000Z');
-/** Log a session whose created_at we control (freshness keys on created_at). */
-function logAt(db, raw, whenIso, date, name, kind, sets) {
-  const id = logWorkout(db, { date, name, kind }, sets);
+/**
+ * Log a session whose created_at we control (freshness keys on created_at).
+ * `away` (0055) is additive and defaults to undefined, i.e. home — which is
+ * what every existing caller below means and what every workout meant before
+ * the column existed.
+ */
+function logAt(db, raw, whenIso, date, name, kind, sets, away) {
+  const id = logWorkout(db, { date, name, kind, ...(away ? { away: true } : {}) }, sets);
   raw.prepare('UPDATE workouts SET created_at = ? WHERE id = ?').run(whenIso, id);
   return id;
 }
@@ -788,6 +800,177 @@ console.log('9. ingested workouts → inferred muscle load (0054, backlog D3)');
       ? ok('…and weekly VOLUME is byte-identical — inference never counts as a set')
       : bad('volume moved', JSON.stringify(weeklyMuscleSets(db, NOW)));
   }
+}
+
+// C13 / migration 0055. The governing sentence is "an away session is real
+// training and unreal measurement", and every assertion below is one half of
+// it: the measurement half excludes, the training half is untouched.
+console.log('9. the away-gym flag: real training, unreal measurement (0055)');
+{
+  const { db, raw } = freshDb();
+  const bench = (reps, weightKg, rpe) => ({
+    exercise: 'Bench',
+    exerciseId: 'barbell-bench-press',
+    reps,
+    weightKg,
+    rpe,
+  });
+
+  // The flag is OFF on a session nobody said anything about — every existing
+  // caller (the Coach, the photo import, the manual logger) means "home",
+  // because none of them can know otherwise.
+  const homeId = logAt(db, raw, hoursAgo(72), '2026-07-23', 'Upper A', 'strength', [
+    bench(5, 100, 8),
+  ]);
+  getWorkoutDetail(db, homeId).away === false
+    ? ok('a session logged with no opinion about it is not away — off is the default')
+    : bad('default away', JSON.stringify(getWorkoutDetail(db, homeId).away));
+
+  // ...and an away session, whose numbers are the BEST ON RECORD. This is the
+  // corner case the owner will hit first: the away gym's machine is easier and
+  // he genuinely moves more weight.
+  const awayId = logAt(
+    db,
+    raw,
+    hoursAgo(10),
+    '2026-07-26',
+    'Upper A',
+    'strength',
+    [bench(5, 140, 8)],
+    true
+  );
+  getWorkoutDetail(db, awayId).away === true
+    ? ok('…and one logged away comes back away')
+    : bad('away not persisted');
+
+  // --- (a) no record, even at the top of the board --------------------------
+  const prs = personalRecords(db, 'barbell-bench-press');
+  near(prs.maxWeightKg, 100) && near(prs.bestSetVolumeKg, 500)
+    ? ok('the 140 kg away set sets NO record — the 100 kg home set still owns them')
+    : bad('away set a PR', JSON.stringify(prs));
+  near(prs.bestE1rmKg, 100 * (1 + 7 / 30))
+    ? ok('…including the e1RM, the bar every future session has to clear')
+    : bad('away e1RM leaked', prs.bestE1rmKg);
+
+  // --- (b) the chart keeps it, marked --------------------------------------
+  const series = e1rmSeries(db, 'barbell-bench-press');
+  series.length === 2 && series[0].date === '2026-07-23' && series[1].date === '2026-07-26'
+    ? ok('the away session is still PLOTTED — hiding it would be a different lie')
+    : bad('away point dropped', JSON.stringify(series));
+  series[1].away === true && series[0].away === undefined
+    ? ok('…and marked, while the home point carries no mark at all')
+    : bad('chart mark', JSON.stringify(series));
+
+  // --- (c) the prefill prefers the last HOME session ------------------------
+  const prev = lastSessionSets(db, 'barbell-bench-press');
+  prev.length === 1 && near(prev[0].weightKg, 100)
+    ? ok('the next session is pre-filled from the last HOME session, not the newer away one')
+    : bad('prefill took away numbers', JSON.stringify(prev));
+
+  // --- (d) the stall branch cannot be tripped by a trip ---------------------
+  // Three weeks away on stiffer machines is exactly the deload branch's input:
+  // STALL_SESSIONS sessions with no strength gain and reps below the top of the
+  // range. Without the exclusion ARC recommends dropping 10% off a lift that
+  // never stalled — the false regression this whole feature exists to prevent.
+  const { db: gym, raw: gymRaw } = freshDb();
+  const range = { low: 5, high: 8 };
+  [
+    ['2026-07-01', 100],
+    ['2026-07-05', 102.5],
+    ['2026-07-09', 105],
+  ].forEach(([date, kg], i) => {
+    logAt(gym, gymRaw, hoursAgo(600 - i * 50), date, 'Upper A', 'strength', [bench(6, kg, 8)]);
+  });
+  ['2026-07-14', '2026-07-18', '2026-07-22'].forEach((date, i) => {
+    logAt(
+      gym,
+      gymRaw,
+      hoursAgo(300 - i * 50),
+      date,
+      'Upper A',
+      'strength',
+      [bench(6, 80, 9)],
+      true
+    );
+  });
+  const tops = exerciseSessionTops(gym, 'barbell-bench-press');
+  tops.length === 6 && tops.filter((t) => t.away).length === 3
+    ? ok('all six sessions reach the history list, three of them marked away')
+    : bad('session tops', JSON.stringify(tops.map((t) => [t.date, t.away])));
+  const suggestion = suggestProgression({ sessions: tops, repRange: range, incrementKg: 2.5 });
+  suggestion.kind !== 'deload' && near(suggestion.targetWeightKg, 105)
+    ? ok(`three away sessions do NOT trigger a deload — still ${suggestion.kind} at 105 kg`)
+    : bad('false deload', JSON.stringify(suggestion));
+  // ...and the branch still fires when the stall is real, so the exclusion has
+  // not simply disabled it.
+  suggestProgression({
+    sessions: tops.map((t) => ({ ...t, away: false })),
+    repRange: range,
+    incrementKg: 2.5,
+  }).kind === 'deload'
+    ? ok('…while the very same six sessions, all at home, DO deload — the branch still works')
+    : bad('deload branch broken');
+
+  // --- (e) the training half: nothing that counts work changes --------------
+  // The no-change test. Freshness multiplies role weight × effort × decay and
+  // never reads the weight; volume and the week count sets and minutes. So the
+  // SAME sets must produce byte-identical readings with the flag on and off,
+  // and this is the assertion that stops a later pass "completing" the feature
+  // by adding an away branch to any of them.
+  const readWork = () => ({
+    freshness: muscleFreshness(recentMuscleLoads(db, 14, NOW), NOW),
+    volume: weeklyMuscleSets(db, NOW),
+    week: weekSummary(db, NOW),
+  });
+  const withAway = JSON.stringify(readWork());
+  raw.prepare('UPDATE workouts SET away = 0 WHERE id = ?').run(awayId);
+  const withoutAway = JSON.stringify(readWork());
+  withAway === withoutAway
+    ? ok('freshness, weekly volume and the week summary are IDENTICAL with the flag on and off')
+    : bad('a work reading moved with the flag');
+
+  // --- (f) nothing to re-derive --------------------------------------------
+  // The architectural gift: PRs are awarded live and never stored, and every
+  // other affected read is computed from the sets on demand. So flipping the
+  // flag on a two-week-old session changes what the next read returns, with no
+  // cache to invalidate — asserted rather than assumed.
+  near(personalRecords(db, 'barbell-bench-press').maxWeightKg, 140)
+    ? ok('clearing the flag hands the 140 kg set its record back on the very next read')
+    : bad('flag flip did not re-derive', personalRecords(db, 'barbell-bench-press').maxWeightKg);
+  replaceWorkout(db, awayId, { kind: 'strength', away: true }, [bench(5, 140, 8)]);
+  near(personalRecords(db, 'barbell-bench-press').maxWeightKg, 100)
+    ? ok('…and setting it again through the past-session editor takes it away again')
+    : bad('editor flip', personalRecords(db, 'barbell-bench-press').maxWeightKg);
+  replaceWorkout(db, awayId, { kind: 'strength' }, [bench(5, 140, 8)]);
+  getWorkoutDetail(db, awayId).away === true
+    ? ok('an edit that does not mention the flag PRESERVES it — silence is not "home"')
+    : bad('omitted away cleared the flag');
+
+  // --- (g) the session list says so ----------------------------------------
+  const recent = listRecentSessions(db);
+  recent[0].away === true && sessionDetail(recent[0]).endsWith('Away gym')
+    ? ok(`the list says where it happened: "${sessionDetail(recent[0])}"`)
+    : bad('session list mark', JSON.stringify(recent.map((s) => [s.date, s.away])));
+
+  // --- (h) the fallback: an away session beats no placeholder at all --------
+  const { db: hotel, raw: hotelRaw } = freshDb();
+  logAt(
+    hotel,
+    hotelRaw,
+    hoursAgo(20),
+    '2026-07-25',
+    'Upper A',
+    'strength',
+    [bench(8, 60, 8)],
+    true
+  );
+  const only = lastSessionSets(hotel, 'barbell-bench-press');
+  only.length === 1 && near(only[0].weightKg, 60)
+    ? ok('with no home session at all, the away one still pre-fills — better than nothing')
+    : bad('fallback prefill', JSON.stringify(only));
+  personalRecords(hotel, 'barbell-bench-press').maxWeightKg === null
+    ? ok('…while still setting no record, because it is still not a measurement')
+    : bad('fallback PR leaked');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -383,6 +383,41 @@ export function rankExerciseMatches(entries: NameSource[], query: string): Exerc
 }
 
 /**
+ * Should the picker offer to have a movement WRITTEN — C12's catalog-first gate
+ * (2026-09-14, owner: *"ai add exercise replaces ai search (search catalog
+ * first)"*).
+ *
+ * True when something was typed and the catalog holds nothing that plausibly
+ * *is* it. The model is never asked to FIND a movement ARC already has — that
+ * is a retrieval problem this module solves offline, deterministically, in a
+ * millisecond — only to DEFINE one it does not.
+ *
+ * The line is drawn under {@link TIER.fuzzy} and above {@link TIER.fuzzyToken},
+ * exactly where this module's own docblock already puts it. Tiers 0-4 are all
+ * statements about the LETTERS TYPED: an exact fold, an alias, a leading
+ * phrase, a containment, or a whole name a few edits away. FUZZY WORD is the
+ * one tier that is a reach — it exists so a half-typed misspelling answers with
+ * something rather than an empty list, and it is the tier {@link
+ * resolveUniqueMatch} refuses outright for the same reason.
+ *
+ * Worked: "bnech press" is one transposition from "Bench Press" (FUZZY) — the
+ * catalog has it, no door. Typing "curl" lists every curl (CONTAINS) and offers
+ * no door, which is the point. "landmine press" matches nothing at any tier —
+ * the door opens. "jefferson curl" reaches the curls only through FUZZY WORD,
+ * because "jefferson" is nowhere near any word in the catalog — a reach, so the
+ * door opens there too.
+ *
+ * The empty-query case lives here rather than at the call site so there is one
+ * answer to "is the door drawn": nothing typed is not a question, and a door
+ * offering to invent a movement out of no words at all would be the worst
+ * possible default on a screen whose job is picking an existing one.
+ */
+export function offersAiEntry(entries: NameSource[], query: string): boolean {
+  if (normalizeExerciseName(query) === '') return false;
+  return !rankExerciseMatches(entries, query).some((m) => m.tier <= TIER.fuzzy);
+}
+
+/**
  * The single confident match for `query`, or null — the discipline the resolver
  * is built on, and the reason this is a separate function rather than
  * `rankExerciseMatches(...)[0]`.

@@ -162,8 +162,8 @@ export function logWorkout(db: Database, input: LogWorkoutInput, sets: SetInput[
   const id = newId(db);
   db.transaction(() => {
     db.run(
-      `INSERT INTO workouts (id, date, name, kind, duration_min, notes, routine_id, started_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO workouts (id, date, name, kind, duration_min, notes, routine_id, started_at, away)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.date,
@@ -177,6 +177,9 @@ export function logWorkout(db: Database, input: LogWorkoutInput, sets: SetInput[
         // and it is what keeps those from auto-pairing with whatever the watch
         // happened to record that day. Only the live logger passes one.
         input.startedAt ?? null,
+        // 0055. Absent means home — true of every caller that cannot know, and
+        // the only default whose failure mode is recoverable.
+        input.away ? 1 : 0,
       ]
     );
     sets.forEach((set, i) => insertSet(db, id, set, i + 1));
@@ -211,6 +214,7 @@ export function getWorkoutDetail(db: Database, id: string): WorkoutDetail | unde
     durationMin: row.duration_min,
     notes: row.notes,
     routineId: row.routine_id,
+    away: row.away === 1,
     createdAt: row.created_at,
     ...(ingested ? { ingested } : {}),
     sets: sets.map((s) => ({
@@ -246,6 +250,17 @@ export function getWorkoutDetail(db: Database, id: string): WorkoutDetail | unde
  * progression targets — is computed from `workout_sets` at read time, with the
  * screens re-reading on focus, so correcting a session moves all of it with no
  * cache to invalidate. db/exercise.test.mjs §7 pins that end to end.
+ *
+ * **That is also what makes the away flag (0055) free to edit afterwards.** PRs
+ * are awarded live and never stored, and every other affected read is computed
+ * from the sets on demand — so flipping `away` on a two-week-old session simply
+ * changes what the next read returns. There is nothing to re-derive, which is
+ * asserted rather than assumed (db/training-engine.test.mjs).
+ *
+ * An OMITTED `away` preserves what the row already had, exactly as an omitted
+ * `date` does. A caller that does not mention the flag has no opinion about it,
+ * and silently resetting a session to "home" because an unrelated edit did not
+ * restate it is precisely the invisible failure this feature exists to avoid.
  */
 export function replaceWorkout(
   db: Database,
@@ -254,15 +269,22 @@ export function replaceWorkout(
   sets: SetInput[]
 ): void {
   db.transaction(() => {
-    const existing = db.get<{ date: DateString }>('SELECT date FROM workouts WHERE id = ?', [id]);
+    const existing = db.get<{ date: DateString; away: 0 | 1 }>(
+      'SELECT date, away FROM workouts WHERE id = ?',
+      [id]
+    );
     if (!existing) throw new Error(`No workout ${id}`);
-    db.run(`UPDATE workouts SET date = ?, kind = ?, duration_min = ?, notes = ? WHERE id = ?`, [
-      input.date ?? existing.date,
-      input.kind,
-      input.durationMin ?? null,
-      input.notes ?? null,
-      id,
-    ]);
+    db.run(
+      `UPDATE workouts SET date = ?, kind = ?, duration_min = ?, notes = ?, away = ? WHERE id = ?`,
+      [
+        input.date ?? existing.date,
+        input.kind,
+        input.durationMin ?? null,
+        input.notes ?? null,
+        input.away === undefined ? existing.away : input.away ? 1 : 0,
+        id,
+      ]
+    );
     db.run('DELETE FROM workout_sets WHERE workout_id = ?', [id]);
     sets.forEach((set, i) => insertSet(db, id, set, i + 1));
   });
@@ -429,6 +451,7 @@ export function listRecentSessions(db: Database, limit: number = 10): RecentSess
       durationMin: r.duration_min,
       setCount: r.set_count,
       movements: [...new Set(names.map((n) => n.trim()).filter((n) => n !== ''))],
+      away: r.away === 1,
       createdAt: r.created_at,
       ...(paired.has(r.id) ? { ingested: paired.get(r.id)! } : {}),
     };

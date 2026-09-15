@@ -38,6 +38,13 @@ export type WorkoutRow = {
    * thing that reads it.
    */
   started_at: Timestamp | null;
+  /**
+   * Logged away from the usual gym (0055). 1 means the session's LOADS are not
+   * comparable to the home baseline — it sets no record, steers no progression
+   * and seeds no prefill — while the training itself still counts everywhere
+   * that counts work rather than load. See the migration header.
+   */
+  away: 0 | 1;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -84,6 +91,13 @@ export type LogWorkoutInput = {
    * with whatever the watch happened to record that day.
    */
   startedAt?: Timestamp | null;
+  /**
+   * Logged away from the usual gym (0055). Omitted means home, which is what
+   * every caller but the live logger means: the Coach, the photo import and the
+   * manual logger have no way to know, and guessing would be worse than the
+   * truthful default.
+   */
+  away?: boolean;
 };
 
 /**
@@ -154,6 +168,12 @@ export type RecentSession = {
    * Empty for a session with no sets (cardio, mobility).
    */
   movements: string[];
+  /**
+   * Logged away from the usual gym (0055). The list SAYS so, because a session
+   * whose numbers read low and does not say why is the confusion this feature
+   * exists to remove.
+   */
+  away: boolean;
   createdAt: Timestamp;
   /** The watch's record of this same session (0054), when one is linked. */
   ingested?: PairedIngest;
@@ -183,6 +203,8 @@ export type WorkoutDetail = {
   durationMin: number | null;
   notes: string | null;
   routineId: string | null;
+  /** Logged away from the usual gym (0055) — editable after the fact. */
+  away: boolean;
   createdAt: Timestamp;
   sets: StoredSet[];
   /** The watch's record of this same session (0054), when one is linked. */
@@ -287,10 +309,26 @@ export type ExerciseRow = {
   unilateral: 0 | 1;
   instructions: string | null;
   is_custom: 0 | 1;
+  /** Who authored this entry (0056). NULL on rows written before it existed. */
+  source: ExerciseSource | null;
   archived: 0 | 1;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
+
+/**
+ * Who wrote a catalog entry's facts (0056) — distinct from `is_custom`, which
+ * only says whether the row shipped with the app.
+ *
+ * The distinction earns its keep because a row's muscles feed freshness, weekly
+ * volume and the body figure: a movement the owner typed into the
+ * three-field New-exercise form and one a model authored — aliases, secondary
+ * muscles, pattern, mechanic and `measures` — are both custom, and are not
+ * equally trustworthy. When a definition looks wrong two months from now, the
+ * first question is who put it there. Same rule as `recipe_ingredients
+ * .resolved_by` (0034).
+ */
+export type ExerciseSource = 'seed' | 'user' | 'ai';
 
 /** One `exercise_muscles` row. */
 export type ExerciseMuscleRow = {
@@ -317,6 +355,8 @@ export type CatalogExercise = {
   measures: Measures;
   unilateral: boolean;
   isCustom: boolean;
+  /** Who authored it (0056) — `'ai'` is the one the picker marks. */
+  source: ExerciseSource | null;
   primaryMuscles: Muscle[];
   secondaryMuscles: Muscle[];
 };
@@ -324,6 +364,17 @@ export type CatalogExercise = {
 /** Fields for creating a custom exercise (the picker's "New exercise" form). */
 export type NewExercise = {
   name: string;
+  /**
+   * Search synonyms, stored as the JSON array `exercises.aliases` (0011) and
+   * ranked by the matcher exactly as the seeded rows' aliases are.
+   *
+   * Nothing wrote this column before C12: the seed planted aliases and the
+   * picker's manual form never asked for any, so a custom "Landmine Press"
+   * answered to precisely one spelling and nothing else. The AI entry supplies
+   * them, which is most of what makes an AI-authored movement findable again
+   * next month.
+   */
+  aliases?: string[];
   equipment: Equipment;
   loggingType: LoggingType;
   /**
@@ -338,8 +389,15 @@ export type NewExercise = {
   unilateral?: boolean;
   primaryMuscles: Muscle[];
   secondaryMuscles?: Muscle[];
-  /** Short how-to steps (AI search writes these; the manual form leaves them off). */
+  /** Short how-to steps (the AI entry writes these; the manual form leaves them off). */
   instructions?: string[];
+  /**
+   * Who authored these facts (0056). Omitted means `'user'` — the manual form,
+   * which is the only other thing that creates a row. A model-authored entry
+   * passes `'ai'` explicitly, and is never written without the owner tapping
+   * Save.
+   */
+  source?: ExerciseSource;
 };
 
 /** Filters the catalog picker can apply (all optional / AND-combined). */
@@ -523,8 +581,16 @@ export type MuscleFreshness = {
   inferredShare: number;
 };
 
-/** A per-exercise estimated 1RM data point (for the detail sparkline). */
-export type E1rmPoint = { date: DateString; e1rm: number };
+/**
+ * A per-exercise estimated 1RM data point (for the detail sparkline).
+ *
+ * `away` (0055) marks a point whose session was logged away from the usual gym.
+ * It is present on the CHART and absent from every baseline: hiding it would be
+ * a different lie from awarding it a record — the session happened and the
+ * owner will look for it. Omitted rather than `false` on a home point, so the
+ * flag reads as a mark rather than a column.
+ */
+export type E1rmPoint = { date: DateString; e1rm: number; away?: true };
 
 /**
  * Personal records for one exercise. Loads are canonical kg, distances metres,

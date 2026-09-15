@@ -12,6 +12,17 @@ type SparklineProps = {
    * otherwise render as a flat block of near-full-height bars.
    */
   baseline?: 'zero' | 'auto';
+  /**
+   * Per-point marks, parallel to `data` — a marked bar draws HOLLOW (outline,
+   * no fill) instead of solid.
+   *
+   * Added for the e1RM trend's away-gym sessions (0055): a point that happened
+   * and is plotted, but is not part of the baseline the rest of the series is
+   * measured against. It is deliberately a *form* difference and not a colour
+   * one — this is behaviour, not biology, and signal ink marks biological state
+   * only (00-design-spec.md §2). A short or missing array simply marks nothing.
+   */
+  marked?: boolean[];
 };
 
 /**
@@ -43,10 +54,21 @@ type SparklineProps = {
  * than two points, or no spread) rather than drawing a misleading flat set of
  * full-height bars. "No data, no number" applies to marks as well as figures.
  */
-export function Sparkline({ data, width = 58, height = 24, baseline = 'zero' }: SparklineProps) {
+export function Sparkline({
+  data,
+  width = 58,
+  height = 24,
+  baseline = 'zero',
+  marked,
+}: SparklineProps) {
   // ~4px per bar (body + gap) is the legibility floor; downsample past that.
   const maxBars = Math.max(1, Math.floor(width / 4));
   const bars = downsample(data, maxBars);
+  // Marks follow the same bucketing as the values, ORed: a bucket containing a
+  // marked point is marked. Averaging a boolean has no meaning, and a bucket
+  // that silently dropped its mark would draw a solid bar over a value that is
+  // partly outside the baseline — the one reading the mark exists to prevent.
+  const barMarks = marked === undefined ? undefined : downsampleMarks(marked, data.length, maxBars);
 
   const max = bars.length > 0 ? Math.max(...bars) : 0;
   const min = bars.length > 0 ? Math.min(...bars) : 0;
@@ -70,8 +92,16 @@ export function Sparkline({ data, width = 58, height = 24, baseline = 'zero' }: 
           key={index}
           style={{ height: Math.max(1, Math.round(((value - floor) / span) * height)) }}
           // Whole class strings, never a built prefix — Tailwind's scanner only
-          // sees literals (src/components/home/signal.tsx).
-          className={index === latest ? 'flex-1 bg-ink' : 'flex-1 bg-ink-secondary'}
+          // sees literals (src/components/home/signal.tsx). A marked bar is
+          // drawn as an outline on all four sides; a one-sided border width
+          // beside a border colour draws the box (see Divider's docblock).
+          className={
+            barMarks?.[index]
+              ? 'flex-1 border border-ink-secondary'
+              : index === latest
+                ? 'flex-1 bg-ink'
+                : 'flex-1 bg-ink-secondary'
+          }
         />
       ))}
     </View>
@@ -96,6 +126,26 @@ function downsample(data: number[], maxBars: number): number[] {
       n++;
     }
     out.push(n > 0 ? sum / n : 0);
+  }
+  return out;
+}
+
+/**
+ * {@link downsample}'s bucketing for a parallel boolean array: a bucket is
+ * marked when ANY point in it is. `length` is the VALUE series' length, so the
+ * buckets line up even when the two arrays disagree (a short or over-long
+ * `marked` simply reads `false` past its end).
+ */
+function downsampleMarks(marks: boolean[], length: number, maxBars: number): boolean[] {
+  if (length <= maxBars) return Array.from({ length }, (_, i) => marks[i] === true);
+  const out: boolean[] = [];
+  const bucket = length / maxBars;
+  for (let i = 0; i < maxBars; i++) {
+    const start = Math.floor(i * bucket);
+    const end = Math.floor((i + 1) * bucket);
+    let hit = false;
+    for (let j = start; j < end && j < length; j++) if (marks[j] === true) hit = true;
+    out.push(hit);
   }
   return out;
 }

@@ -477,8 +477,13 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
   });
 
   // A session mid-flight: three sets stamped, a fourth half-typed, a run logged
-  // by time and distance, a rest timer running, one superset bound. Exactly
-  // what is in React state when iOS pulls the rug.
+  // by time and distance, a rest timer running, one superset bound, and the
+  // away-gym flag ON. Exactly what is in React state when iOS pulls the rug.
+  //
+  // `away: true` rather than the default, because a flag only proves it
+  // round-trips when it is carrying the value that is NOT what a missing field
+  // would read as (C13, 0055, DRAFT_VERSION 3). A resumed session that quietly
+  // forgot it was logged in a hotel would set a false PR on the first confirm.
   const draft = {
     version: DRAFT_VERSION,
     startedAt: NOW.getTime() - 22 * 60_000,
@@ -489,6 +494,7 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
     // ingested session the sets belong to.
     ingestId: null,
     restEndsAt: NOW.getTime() + 45_000,
+    away: true,
     blocks: [
       {
         key: 1,
@@ -563,6 +569,9 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
   restored.blocks[0].linkedToNext === true && restored.blocks[0].sets[2].pr === true
     ? ok('the superset bind and the PR stamp survive too')
     : bad('flags');
+  restored.away === true
+    ? ok('…and so does the away-gym flag, which a v2 draft could not have carried')
+    : bad('away flag lost on resume', JSON.stringify(restored.away));
   liveDraftHasData(restored) && liveDraftSetsDone(restored) === 5
     ? ok('the hub can say what is in it: 5 sets logged')
     : bad('summary', liveDraftSetsDone(restored));
@@ -658,11 +667,16 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
   parseLiveDraft(readWorkoutDraft(db, 'live').value) === null
     ? ok('a payload from another version reads as nothing to resume')
     : bad('version not enforced');
-  // B1 (0046) is the first release to actually USE that: DRAFT_VERSION went
+  // B1 (0046) was the first release to actually USE that: DRAFT_VERSION went
   // 1 → 2 because DraftSet grew a time and a distance. A v1 payload is a
-  // complete, plausible-looking session — this is exactly the case where
-  // half-reading it would resurrect a run as reps × load.
-  DRAFT_VERSION === 2 ? ok('DRAFT_VERSION is 2 — B1 changed the set shape') : bad('draft version');
+  // complete, plausible-looking session — exactly the case where half-reading
+  // it would resurrect a run as reps × load. C13 (0055) is the second: 2 → 3,
+  // because LiveDraft grew `away`, and a v2 payload read as "home" would be
+  // right almost always — which is the wrong standard for the one flag whose
+  // job is keeping an incomparable load out of the baseline.
+  DRAFT_VERSION === 3
+    ? ok('DRAFT_VERSION is 3 — C13 added the away flag to the session')
+    : bad('draft version', String(DRAFT_VERSION));
   saveWorkoutDraft(db, 'live', {
     version: 1,
     startedAt: NOW.getTime(),

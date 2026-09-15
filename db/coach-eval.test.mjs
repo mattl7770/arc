@@ -775,6 +775,42 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // The next addition still digs where the 2026-08-26 entry pointed:
   // update_protocol (424), log_workout (321) and adjust_today (348) are the
   // three fattest schemas and none of them has been swept.
+
+  // ── 2026-09-14: C13, THE AWAY-GYM BIT. NEITHER CEILING MOVED, and the
+  // addition was paid for out of the training tools themselves.
+  //
+  // COST (+36 tok). `get_training_summary`'s description gained one sentence:
+  // "`away: true` means a different gym — those loads are not comparable, so
+  // never call them a regression." This sentence IS the feature on the Coach's
+  // side (migration 0055). Everything else about the away flag is arithmetic
+  // the app does — no PR, no progression input, no prefill — but the Coach
+  // needs no arithmetic at all, only to stop reading a travel week's lighter
+  // loads as a decline and saying so, which is the owner's actual complaint.
+  // The per-session `away: true` on `recentSessions` costs this budget NOTHING:
+  // it is payload, and it is omitted on home sessions rather than nulled, so
+  // ten ordinary rows carry no "no".
+  //
+  // PAID FOR BY (−21 tok), both fact-then-restatement, both in the training
+  // tools that grew:
+  //
+  //   • `get_training_recommendation` claimed "program week (and whether it is
+  //     a deload)" — a `recommendation.program` field that CANNOT appear.
+  //     Programs were retired 2026-08-11, the recommender's schedule branch was
+  //     deleted, and `buildRecommendation` contains no mention of one. This is
+  //     the `log_workout.name` class exactly: a description still promising a
+  //     fact the app no longer has, and worse than merely expensive — a model
+  //     told to expect a field that never arrives reads its absence as a
+  //     statement about the user's programming. (−16)
+  //   • `get_training_summary`'s own "(default 28)", which the `days` property
+  //     one line below states verbatim as "Window, default 28.". (−5)
+  //
+  // NET 9,224 → 9,241: **+17 tok**, 9 of headroom. Thinner than it has been,
+  // and the honest reading is that the cheap trims in the training tools are
+  // now spent. Where the next addition digs, unchanged: `update_protocol` (424)
+  // is still the largest schema and still unswept, then `get_metric_series`
+  // (354) — whose `metric` property opens "A body metric or a wearable
+  // metric_type", restating its own description's "Takes body metrics … and any
+  // wearable metric_type" — and `adjust_today` (348).
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

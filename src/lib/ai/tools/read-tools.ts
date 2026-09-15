@@ -1069,10 +1069,19 @@ const getTrainingSummary: CoachTool = {
   description:
     // The "this week" ≠ "last N days" rule lives in the system prompt, cached
     // once for the whole registry (2026-08-11 trim).
-    'Training over the last N days (default 28): per-day sessions/minutes, average weekly ' +
+    // "(default 28)" is gone from here: the `days` property one line below says
+    // "Window, default 28." verbatim. Textbook fact-then-restatement, and the
+    // cheapest half of what the away sentence costs.
+    'Training over the last N days: per-day sessions/minutes, average weekly ' +
     'rates over that rolling window, the most recent sessions, and `thisWeek` — the current ' +
     'Monday-start calendar week. Call this for anything about workouts, training load, ' +
-    'consistency, or recovery context.',
+    'consistency, or recovery context. ' +
+    // The owner's actual ask in C13 — *"ARC can adjust intelligently"* — and it
+    // needs no arithmetic at all, only this sentence. Without it the Coach
+    // reads a travel week's lighter loads as a decline and says so, which is
+    // the complaint the whole feature exists to answer.
+    '`away: true` means a different gym — those loads are not comparable, so never ' +
+    'call them a regression.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1104,13 +1113,14 @@ const getTrainingSummary: CoachTool = {
         duration_min: number | null;
         set_seconds: number | null;
         set_metres: number | null;
+        away: 0 | 1;
       }>(
         // The two roll-ups are B1's (0046): a session whose sets carry a clock
         // and a distance has content the movement names alone cannot report —
         // "Treadmill Run" says nothing about whether it was 3 km or 15. Summed
         // over the session's working sets, which is what "how far did I run on
         // Tuesday" means when a run is logged as intervals.
-        `SELECT w.date, w.kind, w.duration_min,
+        `SELECT w.date, w.kind, w.duration_min, w.away,
                 (SELECT group_concat(DISTINCT s.exercise) FROM workout_sets s
                   WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS movements,
                 (SELECT sum(s.duration_sec) FROM workout_sets s
@@ -1130,6 +1140,11 @@ const getTrainingSummary: CoachTool = {
         // each carrying two explicit nulls is twenty tokens of "no".
         ...(w.set_seconds != null ? { setSeconds: Math.round(w.set_seconds) } : {}),
         ...(w.set_metres != null ? { setMetres: Math.round(w.set_metres) } : {}),
+        // 0055, and omitted rather than nulled for the same reason as the two
+        // above: almost every session is at the usual gym, and ten rows each
+        // carrying `"away": false` is twenty tokens of "no". Result fields cost
+        // nothing against the schema budget — this is payload, not schema.
+        ...(w.away === 1 ? { away: true } : {}),
       }));
 
     // Apple Health sessions with NO ARC log (0054). Same cap as recentSessions
@@ -1584,10 +1599,20 @@ const getExperiments: CoachTool = {
 const getTrainingRecommendation: CoachTool = {
   name: 'get_training_recommendation',
   description:
+    // TRIMMED 2026-09-14 (C13), and it is the `log_workout.name` class again: a
+    // description advertising a fact the app no longer has. "program week (and
+    // whether it is a deload)" named a `recommendation.program` field that
+    // CANNOT appear — programs were retired on 2026-08-11, the recommender's
+    // schedule branch was deleted, and `buildRecommendation` contains no
+    // mention of a program. (The dormant type arm and the guarded spread in
+    // `execute` stay, per the note in exercise/types.ts; what goes is the
+    // promise, because a model told to expect a field that never arrives reads
+    // its absence as a fact about the user's training.) Pays for the away-gym
+    // sentence on get_training_summary above.
     "The training engine's computed state and today's recommended session: per-muscle " +
-    'freshness, weekly volume vs MEV/MAV/MRV landmarks, program week (and whether it is a ' +
-    'deload), and per-exercise progression targets. Call it before advising on training, ' +
-    'programming, or progression. It reports numbers; it does not decide.',
+    'freshness, weekly volume vs MEV/MAV/MRV landmarks, and per-exercise progression ' +
+    'targets. Call it before advising on training, programming, or progression. It ' +
+    'reports numbers; it does not decide.',
   inputSchema: {
     type: 'object',
     properties: {
