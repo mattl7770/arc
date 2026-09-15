@@ -56,15 +56,14 @@ import {
   updateMealMeta,
 } from '@/lib/db/repositories/nutrition';
 import {
-  deletePendingEstimate,
   listPendingEstimates,
   markPendingEstimateFailed,
 } from '@/lib/db/repositories/pending-estimates';
 import { attachMealPhoto, nativePhotoStore } from '@/lib/media/meal-photo-store';
 import {
+  clearPendingEstimate,
   nativePendingEstimateStore,
   readPendingEstimatePhoto,
-  removePendingEstimatePhoto,
 } from '@/lib/media/pending-estimate-store';
 import type { PhotoFileStore } from '@/lib/media/photo-file-store';
 import { assembleMealItems } from '@/lib/nutrition/composite';
@@ -201,15 +200,14 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
       if (!meal) {
         // The FK CASCADE should have taken this row with the meal; if a row
         // outlives its meal anyway, it has nothing to fill in.
-        deletePendingEstimate(db, row.id);
-        removePendingEstimatePhoto(row.file_name, deps.pendingStore);
+        clearPendingEstimate(db, row, deps.pendingStore);
         continue;
       }
 
       if (row.kind === 'revise') {
         const instruction = row.description?.trim() ?? '';
         if (instruction === '') {
-          deletePendingEstimate(db, row.id);
+          clearPendingEstimate(db, row, deps.pendingStore);
           continue;
         }
         // Read the items NOW — see the header. A hand-edit made while offline is
@@ -233,7 +231,7 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
         // A revision touches the items and nothing else — the meal's date,
         // time, name and notes are the user's (replaceMealItems' own rule).
         replaceMealItems(db, row.meal_id, toMealItems(revised));
-        deletePendingEstimate(db, row.id);
+        clearPendingEstimate(db, row, deps.pendingStore);
         applied++;
         continue;
       }
@@ -244,8 +242,7 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
         // Neither bytes nor words: nothing to send, ever. The placeholder stays
         // — it is the user's record that he ate something — and the queue entry
         // goes rather than retrying an empty request on every foreground.
-        deletePendingEstimate(db, row.id);
-        removePendingEstimatePhoto(row.file_name, deps.pendingStore);
+        clearPendingEstimate(db, row, deps.pendingStore);
         continue;
       }
 
@@ -276,8 +273,7 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
           deps.mealPhotoStore
         );
       }
-      deletePendingEstimate(db, row.id);
-      removePendingEstimatePhoto(row.file_name, deps.pendingStore);
+      clearPendingEstimate(db, row, deps.pendingStore);
       applied++;
     } catch (error) {
       markPendingEstimateFailed(db, row.id, failureReason(error));
