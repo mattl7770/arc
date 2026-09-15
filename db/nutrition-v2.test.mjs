@@ -44,11 +44,14 @@ import {
   sweepMealPhotos,
 } from '../src/lib/media/meal-photo-store.ts';
 import {
+  buildFoodEntryRequest,
   buildMealEstimationRequest,
   buildMealRevisionRequest,
+  FOOD_ENTRY_SYSTEM_PROMPT,
   groundMealEstimate,
   MEAL_ESTIMATION_SYSTEM_PROMPT,
   MEAL_REVISION_SYSTEM_PROMPT,
+  parseFoodEntry,
   parseMealEstimate,
 } from '../src/lib/nutrition/estimate.ts';
 import {
@@ -1224,6 +1227,133 @@ console.log('22c. a revision is shown the meal in the units it was logged in');
   req.system.includes('restate a millilitre amount as grams')
     ? ok('and the revision prompt forbids re-uniting an item it was not asked about')
     : bad('revision prompt missing the unit rail');
+}
+
+console.log('23. AI add food (C2): one described food becomes one catalog entry');
+{
+  // The prompt is its own, not the meal estimator's — the two jobs share a
+  // model and nothing else, and every word one does not need is a word the
+  // other pays for on every call.
+  FOOD_ENTRY_SYSTEM_PROMPT !== MEAL_ESTIMATION_SYSTEM_PROMPT &&
+  FOOD_ENTRY_SYSTEM_PROMPT.includes('PER 100 of the basis, never per serving') &&
+  FOOD_ENTRY_SYSTEM_PROMPT.includes('"ml" for anything DRUNK') &&
+  FOOD_ENTRY_SYSTEM_PROMPT.includes('Use null for any figure you cannot estimate')
+    ? ok('the food-entry prompt states per-100, the ml rule, and null-over-a-guess')
+    : bad('food-entry prompt', FOOD_ENTRY_SYSTEM_PROMPT.slice(0, 200));
+
+  const req = buildFoodEntryRequest('Costco rotisserie chicken thigh, skin on');
+  req.system === FOOD_ENTRY_SYSTEM_PROMPT &&
+  req.messages.length === 1 &&
+  req.messages[0].content[0].text.includes('Costco rotisserie chicken thigh, skin on')
+    ? ok('and the request is that prompt plus the description — no image block, one turn')
+    : bad('food-entry request', JSON.stringify(req.messages));
+
+  const entry = parseFoodEntry(`\`\`\`json
+    {"name": "Rotisserie chicken thigh, skin on", "brand": "Costco", "basis": "g",
+     "serving_name": "1 thigh", "serving_amount": 110,
+     "kcal_100": 229, "protein_g_100": 24.5, "carbs_g_100": 0, "fat_g_100": 14.7,
+     "fiber_g_100": 0, "micros": {"sodium_mg": 430, "caffeine_mg": 0, "unobtainium_mg": 9}}
+    \`\`\``);
+  entry.name === 'Rotisserie chicken thigh, skin on' &&
+  entry.brand === 'Costco' &&
+  entry.basis === 'g' &&
+  entry.serving_name === '1 thigh' &&
+  near(entry.serving_amount, 110) &&
+  near(entry.kcal_100g, 229) &&
+  near(entry.protein_g_100g, 24.5) &&
+  near(entry.fat_g_100g, 14.7)
+    ? ok('a fenced reply parses into one entry, per 100 of its basis, with its serving')
+    : bad('food entry parse', JSON.stringify(entry));
+
+  // A 0 is a measurement ("measured none") and survives; an invented key does
+  // not. Same vocabulary filter the meal path uses.
+  const micros = JSON.parse(entry.micros);
+  micros.sodium_mg === 430 && micros.caffeine_mg === 0 && micros.unobtainium_mg === undefined
+    ? ok('micros keep a measured 0 and drop a key the vocabulary has never heard of')
+    : bad('food entry micros', entry.micros);
+
+  // The unit model (0047): a drink is described in millilitres and nothing
+  // converts it. The basis governs what the per-100 figures are per 100 OF.
+  const drink = parseFoodEntry(
+    '{"name": "Oat milk", "basis": "ml", "serving_name": "1 glass", "serving_amount": 250,' +
+      ' "kcal_100": 47, "protein_g_100": 1, "carbs_g_100": 6.7, "fat_g_100": 1.5,' +
+      ' "micros": {"caffeine_mg": 0}}'
+  );
+  drink.basis === 'ml' && near(drink.serving_amount, 250) && near(drink.kcal_100g, 47)
+    ? ok('a drink comes back as ml with its serving in ml — nothing is converted to grams')
+    : bad('ml basis', JSON.stringify(drink));
+
+  parseFoodEntry('{"name": "Mystery", "basis": "cups"}').basis === 'g'
+    ? ok('an unknown basis falls back to g, which is what every food was before 0047')
+    : bad('basis fallback');
+}
+
+console.log('23b. what the parser refuses to pass on to a form the owner will save');
+{
+  // OUT OF RANGE IS DROPPED, NOT CLAMPED. A clamp invents a number the model
+  // never gave and hides that it was wrong; a blank is this catalog's own word
+  // for "not recorded", and it is one tap from corrected on the form.
+  const wild = parseFoodEntry(
+    '{"name": "Priced a serving by mistake", "kcal_100": 1200, "protein_g_100": 140,' +
+      ' "carbs_g_100": 30, "fat_g_100": -3, "fiber_g_100": "some"}'
+  );
+  wild.kcal_100g === null &&
+  wild.protein_g_100g === null &&
+  near(wild.carbs_g_100g, 30) &&
+  wild.fat_g_100g === null &&
+  wild.fiber_g_100g === null
+    ? ok('over the schema bounds, negative, and non-numeric all become null; the sane one stays')
+    : bad('bounds', JSON.stringify(wild));
+
+  // Pair-or-none, because the table CHECK is: a name with no size is unusable,
+  // a size with no name is meaningless, and either half alone fails on save.
+  const half = parseFoodEntry('{"name": "Half a serving claim", "serving_name": "1 scoop"}');
+  half.serving_name === null && half.serving_amount === null
+    ? ok('half a serving claim is dropped whole rather than tripping the CHECK at save')
+    : bad('serving pairing', JSON.stringify(half));
+
+  const zero = parseFoodEntry(
+    '{"name": "Zero serving", "serving_name": "1 jar", "serving_amount": 0}'
+  );
+  zero.serving_amount === null && zero.serving_name === null
+    ? ok('a 0 g serving is not a serving (the column is CHECK > 0)')
+    : bad('zero serving', JSON.stringify(zero));
+
+  let threw = 0;
+  for (const reply of ['no json here', '{"brand": "Anon"}', '{"name": "   "}', '{']) {
+    try {
+      parseFoodEntry(reply);
+    } catch {
+      threw++;
+    }
+  }
+  threw === 4
+    ? ok('a nameless or unparseable reply throws — a blank form typed wrong is worse than none')
+    : bad('parse refusals', `${threw} of 4 threw`);
+}
+
+console.log('23c. the described entry is marked, and nothing is written before Save');
+{
+  // parseFoodEntry takes no database and returns a value — the whole C2 path up
+  // to the Save tap is pure. The row appears only when the screen calls
+  // createFood, and the stamp it carries then is what the catalog reads.
+  const { db } = freshDb();
+  const before = db.get('SELECT count(*) AS n FROM foods').n;
+  const proposed = parseFoodEntry('{"name": "Described but never saved", "kcal_100": 100}');
+  db.get('SELECT count(*) AS n FROM foods').n === before && proposed.name !== ''
+    ? ok('parsing a reply writes nothing — the proposal lives in the form until it is saved')
+    : bad('parse wrote a row');
+
+  const id = createFood(db, {
+    name: proposed.name,
+    kcal_100g: proposed.kcal_100g,
+    micros: proposed.micros,
+    source: 'ai',
+  });
+  const saved = db.get('SELECT source, name FROM foods WHERE id = ?', [id]);
+  saved.source === 'ai'
+    ? ok('and when it IS saved it carries source=ai, so an inferred number never reads as typed')
+    : bad('ai stamp', JSON.stringify(saved));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

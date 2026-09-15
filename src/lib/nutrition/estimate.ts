@@ -462,6 +462,207 @@ export async function reviseMeal(
   return parseMealEstimate(text.length > 0 ? text : result.text);
 }
 
+// --- Describing a CATALOG ENTRY in plain English (C2) -------------------------
+//
+// Owner, backlog C2: *"Describe a food in words and AI fills the catalog
+// entry's macros — yes."*
+//
+// This is a different job from estimating a meal, and it gets its own small
+// prompt rather than a branch inside the estimator's:
+//
+//   * a MEAL is a list of portions eaten now; a catalog ENTRY is one food,
+//     priced PER 100 of its basis, kept for life and re-used at any portion;
+//   * the estimator's reply shape is a list of items with per-portion macros and
+//     per-item confidence — none of which a `foods` row has a column for;
+//   * every word the two prompts do not share is a word the other one pays for
+//     on every call. The meal prompt is the expensive one (it rides a photo);
+//     this one is a few hundred tokens of text.
+//
+// **Nothing here writes.** The reply is rendered into app/food-new.tsx's own
+// fields for review and is saved only when the owner taps Save — at which point
+// the row is stamped `source: 'ai'`, so an inferred number never wears the face
+// of one he typed (the 0034 rule, one screen over).
+
+/** One catalog entry as the model proposes it — the `foods` column names, so the
+ *  screen's mapping is a rename-free assignment. Every figure may be null:
+ *  "not recorded" is a state this catalog already draws, and a blank field is
+ *  what it looks like. */
+export type FoodEntryEstimate = {
+  name: string;
+  brand: string | null;
+  /** What the food is measured in (0047). `'g'` unless the model said `ml`. */
+  basis: AmountUnit;
+  serving_name: string | null;
+  /** The named serving's size, in `basis`. Pair-or-none with `serving_name`. */
+  serving_amount: number | null;
+  kcal_100g: number | null;
+  protein_g_100g: number | null;
+  carbs_g_100g: number | null;
+  fat_g_100g: number | null;
+  fiber_g_100g: number | null;
+  /** Per-100-of-basis sodium/caffeine, or null when the model recorded neither. */
+  micros: JsonText | null;
+};
+
+/**
+ * The food-entry system prompt. Short on purpose — the model is filling one
+ * row, and the three things it has to get right are stated as rules rather than
+ * implied by the schema: **per 100 of the basis** (not per serving), **ml only
+ * for a drink**, and **null rather than a guess**.
+ *
+ * The bounds are in the prompt as well as in the parser because a reply that
+ * trips a CHECK is a field the user has to notice is missing; the schema limits
+ * (a macro ≤ 100 g per 100, kcal ≤ 950) are cheap to state and they are the two
+ * the model would otherwise break by pricing a serving instead of a hundred.
+ */
+export const FOOD_ENTRY_SYSTEM_PROMPT = [
+  'You fill in ONE catalog entry for a longevity-focused food logger, from a plain-English',
+  'description of a single food. Be calibrated, never confident beyond the evidence.',
+  '',
+  'Rules:',
+  '- One food, never a meal. Name it the way a label would ("Rotisserie chicken thigh, skin',
+  '  on"); "brand" only for a branded product, else null.',
+  '- "basis" is what the food is MEASURED IN: "ml" for anything DRUNK — coffee, tea, juice,',
+  '  soda, beer, wine, milk, a smoothie or shake — and "g" for everything eaten.',
+  '- Give a household serving when one is natural ("1 thigh", "1 can"): "serving_name" plus',
+  '  "serving_amount" in the basis. Both null when nothing natural exists.',
+  '- Every macro figure is PER 100 of the basis, never per serving. A macro cannot exceed 100',
+  '  and kcal cannot exceed 950 — if yours do, you have priced a serving by mistake.',
+  '- Give sodium and caffeine in milligrams PER 100, under "micros", where the food plausibly',
+  '  carries them: sodium for anything salted, cured, canned, processed or restaurant-made;',
+  '  caffeine for coffee, tea, matcha, cola, energy drinks, dark chocolate, pre-workout. OMIT',
+  '  the key when you would be guessing — absent means "not recorded", 0 means "measured',
+  '  none", and they are not the same claim.',
+  '- Use null for any figure you cannot estimate: a blank is honest, an invented number is not.',
+  '',
+  'Respond with ONLY a JSON object, no prose, matching:',
+  '{"name": string, "brand": string|null, "basis": "g"|"ml",',
+  ' "serving_name": string|null, "serving_amount": number|null,',
+  ' "kcal_100": number|null, "protein_g_100": number|null, "carbs_g_100": number|null,',
+  ' "fat_g_100": number|null, "fiber_g_100": number|null,',
+  ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null}',
+].join('\n');
+
+/** Build the food-entry request: the system prompt above, and the description. */
+export function buildFoodEntryRequest(description: string): MealEstimationRequest {
+  return {
+    system: FOOD_ENTRY_SYSTEM_PROMPT,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: `Describe this food: ${description}` }] },
+    ],
+  };
+}
+
+/** A per-100 figure the schema will accept, or null. **Out of range is dropped,
+ *  not clamped**: a clamp invents a number the model never gave and hides that
+ *  it was wrong, while a blank is this form's own word for "not recorded" and is
+ *  one tap from corrected. */
+function per100(value: unknown, max: number): number | null {
+  const n = num(value);
+  return n !== null && n <= max ? n : null;
+}
+
+/**
+ * Parse and validate the model's reply into a {@link FoodEntryEstimate}. Never
+ * trusts the model's shape: unknown fields are dropped, out-of-range figures
+ * become null (see {@link per100}), an unknown basis falls back to `'g'` — the
+ * same permissive default `parseMealEstimate` takes, for the same reason: a food
+ * nobody called a drink is a solid, and a mis-defaulted unit is visible and
+ * fixable on the form the reply lands in.
+ *
+ * A reply with no usable NAME throws, because a nameless catalog row is not a
+ * thing the user can be asked to review — it is a blank form with the typing
+ * already done wrong.
+ *
+ * Tolerant of ```json fences and stray prose, like the meal parser.
+ */
+export function parseFoodEntry(replyText: string): FoodEntryEstimate {
+  const start = replyText.indexOf('{');
+  const end = replyText.lastIndexOf('}');
+  if (start === -1 || end <= start) {
+    throw new Error('Food entry reply contained no JSON object.');
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(replyText.slice(start, end + 1));
+  } catch {
+    throw new Error('Food entry reply was not valid JSON.');
+  }
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('Food entry reply was not a JSON object.');
+  }
+  const obj = raw as Record<string, unknown>;
+  const name = typeof obj.name === 'string' ? obj.name.trim() : '';
+  if (name === '') throw new Error('Food entry reply had no usable name.');
+
+  const brand = typeof obj.brand === 'string' && obj.brand.trim() !== '' ? obj.brand.trim() : null;
+  const servingName =
+    typeof obj.serving_name === 'string' && obj.serving_name.trim() !== ''
+      ? obj.serving_name.trim()
+      : null;
+  // A serving is pair-or-none in the schema, so it is pair-or-none here: a name
+  // with no size is unusable and a size with no name is meaningless, and either
+  // half alone would trip the table CHECK on save. The ceiling matches the one
+  // the portion editors already enforce — 5,000 of anything is not a serving.
+  const rawAmount = num(obj.serving_amount);
+  const servingAmount = rawAmount !== null && rawAmount > 0 && rawAmount <= 5000 ? rawAmount : null;
+  const paired = servingName !== null && servingAmount !== null;
+
+  return {
+    name,
+    brand,
+    basis: amountUnit(obj.basis),
+    serving_name: paired ? servingName : null,
+    serving_amount: paired ? servingAmount : null,
+    kcal_100g: per100(obj.kcal_100, 950),
+    protein_g_100g: per100(obj.protein_g_100, 100),
+    carbs_g_100g: per100(obj.carbs_g_100, 100),
+    fat_g_100g: per100(obj.fat_g_100, 100),
+    fiber_g_100g: per100(obj.fiber_g_100, 100),
+    // The same vocabulary filter the meal path uses: an invented key or a
+    // non-number is dropped, and a food that returned nothing usable stores NULL
+    // rather than an empty object.
+    micros: serializeMicros(coerceMicros(obj.micros)),
+  };
+}
+
+/**
+ * Describe a food in words and get one catalog entry back — one turn through
+ * the Coach's model client, no tools, no image. Throws
+ * {@link MealEstimationUnavailableError} when no key is set or the streaming
+ * fetch is absent (pre-rebuild), which the caller renders as the honest
+ * needs-a-connection state rather than a broken form.
+ *
+ * **Writes nothing.** The caller renders the result into its own fields and the
+ * row is created only when the user saves it.
+ */
+export async function estimateFoodEntry(
+  description: string,
+  signal?: AbortSignal
+): Promise<FoodEntryEstimate> {
+  const apiKey = apiKeyStore.get();
+  const fetchImpl = loadStreamingFetch();
+  if (!apiKey || !fetchImpl) throw new MealEstimationUnavailableError();
+
+  const req = buildFoodEntryRequest(description);
+  let text = '';
+  const result = await runCoachTurn(
+    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
+    { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
+    {
+      onToken: (chunk) => {
+        text += chunk;
+      },
+      signal,
+      executeTool: async () => ({ content: '' }),
+    }
+  );
+  if (result.stopReason === 'refusal') {
+    throw new Error('The model declined to describe this food.');
+  }
+  return parseFoodEntry(text.length > 0 ? text : result.text);
+}
+
 /**
  * A catalog match confident enough to re-price from. A generic single-token
  * name ("rice", "chicken", "egg") is deliberately NOT confident — the top

@@ -521,6 +521,19 @@ function FoodListRow({
             {/* Part of the row's name, not a control label: serif, stated
                 rather than inherited from the parent Text. */}
             {food.brand ? <Text className="font-serif text-ink-muted"> · {food.brand}</Text> : null}
+            {/* THE AI MARK (C2). A food whose macros were described to the model
+                rather than read off a label says so wherever it appears — an
+                inferred number must not wear the face of one the user typed
+                (the 0034 rule). Confidence is TYPOGRAPHY here, not colour
+                (docs/nutrition-subapp.md §2): the label voice at the metadata
+                size, in the metadata ink, never a badge and never a hue. It
+                rides inside the name's Text so it wraps with the name, and it
+                states its own size because a nested Text inherits otherwise. */}
+            {food.source === 'ai' ? (
+              <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                {'  est'}
+              </Text>
+            ) : null}
           </Text>
           {subtitle ? (
             <Text className="mt-0.5 font-mono text-[10px] leading-4 text-ink-muted">

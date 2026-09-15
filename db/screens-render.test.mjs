@@ -25,7 +25,7 @@ import { __setParams } from './render-stubs/expo-router.mjs';
 import { getDb } from './render-stubs/db-client.mjs';
 
 import { todayISODate } from '../src/lib/db/date.ts';
-import { createFood } from '../src/lib/db/repositories/foods.ts';
+import { createFood, setFoodFavorite } from '../src/lib/db/repositories/foods.ts';
 import {
   logMeal,
   logMealWithItems,
@@ -79,6 +79,8 @@ import MealDetailScreen from '../app/meal-detail.tsx';
 // import is a resolve failure under node, not a render failure.
 import BarcodeScanScreen from '../app/barcode-scan.tsx';
 import MealEstimateScreen from '../app/meal-estimate.tsx';
+import FoodNewScreen from '../app/food-new.tsx';
+import FoodSearchScreen from '../app/food-search.tsx';
 import { apiKeyStore } from '../src/lib/ai/api-key-store.ts';
 import ProgressPhotosScreen from '../app/progress-photos.tsx';
 import ProgressPhotoAddScreen from '../app/progress-photo-add.tsx';
@@ -975,6 +977,64 @@ const db = getDb();
     //    — nothing can set the flag. What this does prove is that the mode chip
     //    and banner still mount around the rewrapped modal.
     expect('home (after the ModalScreen rewrap)', render('home', HomeScreen), ['Today']);
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('7d. Create a food — the Describe-it path and the mark it leaves (C2)');
+  {
+    // a. NO KEY. The field is replaced by a sentence saying so and what still
+    //    works; the form below is untouched, because typing the food in by hand
+    //    is the path this screen already was. Never a live-looking box that
+    //    answers nothing.
+    const noKey = render('food-new (no key)', FoodNewScreen, { name: 'Overnight oats' });
+    expect('food-new (no key)', noKey, [
+      'Create a food',
+      'Describe it',
+      'Describing a food needs a model key',
+      'everything below works without it',
+      'Overnight oats', // the failed search still prefills the name
+      'Solid · g', // …and the whole manual form is still there
+      'Save food',
+    ]);
+    refute('food-new (no key)', noKey, ['Fill from description', 'Estimated by the model']);
+
+    // b. WITH A KEY, the field and its control. No model call is made here —
+    //    rendering does not describe anything — and the point of the count is
+    //    the C2 guarantee: the path up to the Save tap writes nothing at all.
+    const foodsBefore = db.get('SELECT count(*) AS n FROM foods').n;
+    await apiKeyStore.setKey('render-test-key');
+    const withKey = render('food-new (key set)', FoodNewScreen);
+    expect('food-new (key set)', withKey, [
+      'Describe it',
+      'Fill from description',
+      'Costco rotisserie chicken thigh, skin on', // the placeholder, in the owner's own words
+    ]);
+    refute('food-new (key set)', withKey, ['Describing a food needs a model key']);
+    await apiKeyStore.clearKey();
+    db.get('SELECT count(*) AS n FROM foods').n === foodsBefore
+      ? ok('food-new wrote no catalog row on either render — nothing is saved without Save')
+      : bad('food-new wrote a row on mount');
+
+    // c. THE MARK, in the catalog. A described entry says `est` wherever it
+    //    appears — typography, never a hue — so an inferred number is never
+    //    read as one the owner typed. Favorited so it shows with no query, the
+    //    search field's text being state this render cannot set.
+    const described = createFood(db, {
+      name: 'Render described soup',
+      kcal_100g: 60,
+      source: 'ai',
+    });
+    setFoodFavorite(db, described, true);
+    const search = render('food-search (an ai entry)', FoodSearchScreen);
+    expect('food-search (an ai entry)', search, [
+      'Render described soup',
+      '  est</span>', // the tag itself, not the letters in some other word
+    ]);
+    // The typed foods beside it carry no mark — the tag means something only if
+    // it is not on everything.
+    search !== null && (search.match(/ {2}est<\/span>/g) || []).length === 1
+      ? ok('food-search (an ai entry): exactly one row is marked est')
+      : bad('the est tag is on the wrong number of rows');
   }
 
   // -------------------------------------------------------------------------
