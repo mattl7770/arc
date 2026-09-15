@@ -73,6 +73,7 @@ import MissionHistoryScreen from '../app/mission-history.tsx';
 import WaterScreen from '../app/water.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import ExerciseDetailScreen from '../app/exercise-detail.tsx';
+import RoutineEditScreen from '../app/routine-edit.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
 import RecipeEditScreen from '../app/recipe-edit.tsx';
@@ -342,6 +343,10 @@ const db = getDb();
     'no record yet',
     'no version yet',
   ]);
+  // A9: the empty hub's definition used to run three sentences, the last of
+  // which explained versioning on a screen with no version yet. Cut to the
+  // definition alone — must not silently come back.
+  refute('protocols (empty)', emptyHub, ['Every edit after that becomes a new version.']);
 
   expect(
     'protocol-detail (missing id)',
@@ -468,11 +473,11 @@ const db = getDb();
 
   // 0035: the cabinet before there is anything in it. "Unfiled is a place" is
   // the design statement the whole feature turns on, so it is asserted.
-  expect('recipe-folders (empty)', render('recipe-folders (empty)', RecipeFoldersScreen), [
-    'Folders',
-    'New folder',
-    'No folders yet',
-  ]);
+  const emptyFolders = render('recipe-folders (empty)', RecipeFoldersScreen);
+  expect('recipe-folders (empty)', emptyFolders, ['Folders', 'New folder', 'No folders yet']);
+  // A9: the reassurance clause ("...which is a perfectly good place for it
+  // until there are enough of them to sort") must not silently come back.
+  refute('recipe-folders (empty)', emptyFolders, ['a perfectly good place']);
   expect(
     'recipe-revise (missing id)',
     render('recipe-revise (missing id)', RecipeReviseScreen, { id: 'nope' }),
@@ -1198,6 +1203,10 @@ const db = getDb();
       // fact as "nothing depleted", which the model renders identically.
       'No training in the last 14 days, so every muscle reads fresh.',
     ]);
+    // A9: the caveat used to end "...Log a session and the figure starts
+    // fading." — the UI narrating itself back rather than stating a fact.
+    // Must not silently come back.
+    refute('exercise hub (never trained)', empty, ['Log a session and the figure starts fading.']);
 
     logWorkout(
       db,
@@ -1258,6 +1267,24 @@ const db = getDb();
     // The firewall, asserted rather than asserted-about: the freshness green
     // must not appear anywhere in this screen's markup.
     refute('exercise detail', detail, ['#185A36', '#185a36']);
+
+    // A9: routine-edit is the one screen-render-covered survivor of the
+    // retired "routine" vocabulary — the noun everywhere else is "saved
+    // workout" (renamed 2026-08-11). Its empty-exercises line said "add the
+    // movements this routine runs...", teaching a form whose own fields
+    // (Sets / Rep low / Rep high) already say the same thing. Cut to the
+    // bare fact, in the current noun.
+    const newRoutine = render('routine-edit (new)', RoutineEditScreen);
+    expect('routine-edit (new)', newRoutine, [
+      'New saved workout',
+      'Exercises',
+      'No exercises yet.',
+      'Add exercise',
+    ]);
+    refute('routine-edit (new)', newRoutine, [
+      'movements this routine runs',
+      'routine',
+    ]);
 
     // -----------------------------------------------------------------------
     // The Resume card (0045, owner 2026-09-14). The hub is where the app lands
@@ -1660,6 +1687,17 @@ const db = getDb();
     'Scientific',
     'Nothing of your own yet',
     'ARC reference',
+    // A9: the accent card's pitch cut to the one fact worth keeping.
+    'Yours outranks ARC’s shipped reference, and the Coach cites both.',
+  ]);
+  // A9: three feature-explainers on this one screen — the accent card taught
+  // the import mechanism, and both empty sections re-explained what the
+  // editor already says at the moment it matters (knowledge-entry-edit.tsx).
+  // None may silently come back.
+  refute('knowledge hub (cold)', cold, [
+    'ARC compresses what its author actually commits to',
+    'too long to be a one-line memory',
+    'the Coach cites it like the rest',
   ]);
 
   ingestCorpus(db);
@@ -1899,13 +1937,20 @@ const db = getDb();
     'Reports',
     'Self-review',
     'Doctor visit pack',
-    // Empty is AUTHORED — it says what a report IS, not "no data".
-    'Nothing generated yet. A report is a document',
+    // Empty is AUTHORED — it says so and stops (backlog A9: the explainer that
+    // followed — "A report is a document — assembled from your data,
+    // previewed here, shared as a file." — was a feature-explainer, and the
+    // two cards below it already say what each report contains).
+    'Nothing generated yet.',
     // The pointer to export's real home, not a second export button.
     'lives in Settings › Security &amp; data',
   ]);
   // ⚑ MATT #4: the export ACTION does not live here.
   refute('reports (empty)', emptyReports, ['Export data', 'Reports & export']);
+  // A9: the removed explainer must not silently come back. (Narrower than "A
+  // report is a document" — that clause survives, unrelated, in the export
+  // pointer's own sentence further down this screen.)
+  refute('reports (empty)', emptyReports, ['assembled from your data']);
 
   // b. A draft self-review over a real period, assembled for real.
   const period = {
