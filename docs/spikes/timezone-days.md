@@ -53,12 +53,25 @@ What that breaks, concretely:
 | --- | --- | --- |
 | The day itself | `daily_logs.date text NOT NULL **UNIQUE**` (`0001_init.sql:211`) | One row per calendar date, so a 29-hour day is *one* ARC day. There is no second row to hold the extra five hours, and there should not be — the day really was 29 hours. |
 | Today's Mission | `generateMissionForDay(db, date)` (`src/lib/db/repositories/mission-generate.ts:343`) | Generated **once per date**. A 29-hour day gets one set of protocol items for 29 hours; a 19-hour day gets a full day's items and ends before the 21:00 ones come round. The short day's tail stays `status = 'pending'` → **missed**, and reads as a compliance dip that never happened. |
-| The day cursor | `use-today-mission.ts:92-99` — `refresh()` compares `todayISODate()` to `dayRef.current` on every foreground | **It can move backwards.** A westbound landing rolls the clock back; `todayISODate()` returns yesterday; the hook silently switches to yesterday's mission, and the next completion writes onto yesterday. Not corrupt — but the day the user is looking at flickers backwards, and work done in the brief "tomorrow" goes out of view. |
+| The day cursor | `use-today-mission.ts` — `refresh()` compares `todayISODate()` to `dayRef.current` on every foreground | ~~**It can move backwards.**~~ **FIXED 2026-09-14** (`claude/fixes-sept`). A westbound landing rolled the clock back; `todayISODate()` returned yesterday; the hook silently switched to yesterday's mission and the next completion wrote onto yesterday. The day the user was looking at flickered backwards and work done in the brief "tomorrow" went out of view. The hook now routes through `forwardCursor` (below) — the cursor may SKIP a date but never rewinds. |
 | The Coach's daily pass | `src/lib/ai/pass-schedule.ts:77-92`, `:100-113` | **Already hardened for exactly this**, and the comments name it: *"A clock rolled BACKWARD (timezone travel, a manual clock change) must not re-fire the day's pass"*, and `markPassRan` keeps the later of the two dates so *"a signal pass that ran after westbound date-line travel"* cannot rewind the cursor. |
 | Automatic backups | `src/lib/backup/snapshot.ts:265-272` | Same defence, again by hand: *"A clock that has moved backwards (timezone travel, a manual set) would otherwise read as 'not due'"* → any non-positive age is treated as due. |
 
 Two subsystems have already paid for this bug independently, each with a local patch and a comment.
 That is the argument for modelling it once rather than a third time.
+
+> **DONE, for the cursor half — 2026-09-14** (`claude/fixes-sept`). The guarded comparison is now a
+> single function, `forwardCursor(stored, now)` in `src/lib/db/date.ts`, and all three sites route
+> through it: `markPassRan`, `isBackupDue` (via the `forwardCursor(marker, now) !== now` idiom — "the
+> clock has moved backwards since this was written"), and `use-today-mission.ts`, which never had the
+> guard at all. It is generic over `YYYY-MM-DD` strings and epoch milliseconds, because those are the
+> two things ARC cursors. Pinned in `db/day-boundary.test.mjs` §7 (a simulated westbound date-line
+> day, an eastbound *skipped* date, both DST directions asserted NOT to count, and a source check that
+> all three sites still route through it), `db/coach-pass.test.mjs` §1 and `db/backup.test.mjs`.
+>
+> This is §4(b)'s monotonic clamp, landed early and on its own. Everything else in this file — the
+> `0053` table, the detection, the annotation, the baseline exclusion — is untouched and still
+> sequenced after B3.
 
 ### 1b. A meal at 23:30 that is 02:30 at home
 
@@ -394,13 +407,14 @@ code. Walk the cases with `rollover = 04:00`:
 | Eastbound across the boundary (+8h at 01:00) | Before 04:00, so ARC is still on D−1 | 09:00, past 04:00 | Day advances to D. **Correct** — they are landing into a new day. |
 | Westbound across the boundary (−8h at 09:00) | Past 04:00, day = D | 01:00, *before* D's 04:00 | Naïvely the day **regresses to D−1**. This is the case (b) guards. |
 
-(b) is the generalisation of a rule the codebase has already written twice by hand:
-`pass-schedule.ts:101-113` keeps the later of stored and current date for exactly this reason
-(*"westbound date-line travel"*), and `use-today-mission.ts:92-99` is the same comparison **without**
-the guard. B3 should hoist it into one place: a monotonic last-committed-day cursor, so the
-*implicit* "today" a quick-log writes to only ever advances. **Reading** a past day stays free — the
-day pickers exist (`water.tsx:248`, and C1 asks for one in nutrition) — it is the implicit write
-target that must not rewind.
+(b) is the generalisation of a rule the codebase had already written twice by hand:
+`pass-schedule.ts` keeps the later of stored and current date for exactly this reason
+(*"westbound date-line travel"*), and `use-today-mission.ts` was the same comparison **without**
+the guard. **Landed 2026-09-14** as `forwardCursor` in `src/lib/db/date.ts` (§1a) — a monotonic
+last-committed-day cursor, so the *implicit* "today" a quick-log writes to only ever advances.
+**Reading** a past day stays free — the day pickers exist (`water.tsx:248`, and C1 asks for one in
+nutrition) — it is the implicit write target that must not rewind. B3 inherits it rather than
+hoisting it.
 
 Two build constraints for whoever lands B3:
 

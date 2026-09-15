@@ -17,7 +17,7 @@
  * read/write; headless-tested in db/coach-pass.test.mjs.
  */
 import type { Database } from '@/lib/db/database';
-import { todayISODate } from '@/lib/db/date';
+import { forwardCursor, todayISODate } from '@/lib/db/date';
 import { getOrCreateUser } from '@/lib/db/repositories/user';
 
 import { computeInsights } from './insights';
@@ -103,11 +103,11 @@ export function markPassRan(db: Database, now: Date = new Date()): void {
   // writing today unconditionally here would defeat that — a signal pass that
   // ran after westbound date-line travel would overwrite the future date with an
   // earlier one, and the daily pass would fire a second time once the clock
-  // caught back up. Keep the later of the two (string comparison on YYYY-MM-DD).
-  // seenSignals is always the current set: a signal weighed and set aside must
-  // not re-trigger regardless of which date wins.
+  // caught back up. `forwardCursor` is that guard, and it is now the app's only
+  // copy of it (src/lib/db/date.ts). seenSignals is always the current set: a
+  // signal weighed and set aside must not re-trigger regardless of which date
+  // wins.
   const today = todayISODate(now);
-  const stored = getPassState(db).lastDate;
-  const lastDate = stored !== null && stored > today ? stored : today;
+  const lastDate = forwardCursor(getPassState(db).lastDate, today);
   setPassState(db, { lastDate, seenSignals: currentSignals(db, now) });
 }

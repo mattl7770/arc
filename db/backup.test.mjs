@@ -689,11 +689,36 @@ async function tryImport(spec) {
       lastBackupInfo,
       autoBackupIfDue,
       restoreFromSnapshot,
+      isBackupDue,
+      AUTO_BACKUP_INTERVAL_MS,
     } = snapshot.mod;
 
     CURRENT_SNAPSHOT === 'arc-current.arcb' && PREVIOUS_SNAPSHOT === 'arc-previous.arcb'
       ? ok('the two snapshot names are the specified ones')
       : bad('snapshot names', `${CURRENT_SNAPSHOT} / ${PREVIOUS_SNAPSHOT}`);
+
+    // The throttle, and the clock that lies to it. A stamp sitting in the FUTURE
+    // means the device clock moved backwards (westbound travel, a manual set);
+    // the age is then a negative number pretending to be a duration, and taking
+    // it at face value suppresses every automatic backup for as long as the skew
+    // lasts. Since 2026-09-14 the guard is src/lib/db/date.ts::forwardCursor,
+    // shared with the Coach's daily-pass cursor rather than hand-rolled here.
+    {
+      const now = Date.UTC(2026, 8, 14, 9, 0, 0);
+      isBackupDue(null, now) ? ok('no snapshot at all is due') : bad('first backup not due');
+      !isBackupDue({ modifiedAt: now - 60_000 }, now)
+        ? ok('a snapshot from a minute ago is not due')
+        : bad('fresh snapshot read as due');
+      isBackupDue({ modifiedAt: now - AUTO_BACKUP_INTERVAL_MS - 1 }, now)
+        ? ok('…and one older than the interval is')
+        : bad('stale snapshot not due');
+      isBackupDue({ modifiedAt: now + 12 * 3_600_000 }, now)
+        ? ok('a stamp in the future is due — a backwards clock never suppresses a backup')
+        : bad('a future stamp suppressed the backup');
+      isBackupDue({ modifiedAt: Number.NaN }, now)
+        ? ok('…and an unusable stamp is due rather than silently never')
+        : bad('NaN stamp suppressed the backup');
+    }
     CURRENT_SNAPSHOT !== PREVIOUS_SNAPSHOT
       ? ok('...and the rotation target is not the rotation source')
       : bad('current and previous collide');

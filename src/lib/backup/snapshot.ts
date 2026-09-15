@@ -28,6 +28,7 @@
  * never a throw and never a silent success.
  */
 import type { Database } from '@/lib/db/database';
+import { forwardCursor } from '@/lib/db/date';
 import { MIGRATIONS } from '@/lib/db/migrations.generated';
 import { isBackupEnabled } from '@/lib/db/repositories/user';
 
@@ -265,8 +266,13 @@ export function lastBackupInfo(deps: SnapshotDeps = {}): SnapshotInfo | null {
 export function isBackupDue(info: SnapshotInfo | null, now: number = Date.now()): boolean {
   if (!info) return true;
   // A clock that has moved backwards (timezone travel, a manual set) would
-  // otherwise read as "not due" for as long as the skew lasts. Treat any
-  // non-positive age as due — an extra backup is cheap, a missed month is not.
+  // otherwise read as "not due" for as long as the skew lasts: the stamp sits in
+  // the future and the age is a negative number pretending to be a duration.
+  // `forwardCursor(marker, now) !== now` is the app's one spelling of "the clock
+  // has moved backwards since this was written" (src/lib/db/date.ts) — the same
+  // guard the Coach's daily-pass cursor uses, rather than a second hand-rolled
+  // one. An extra backup is cheap; a missed month is not.
+  if (forwardCursor(info.modifiedAt, now) !== now) return true;
   const age = now - info.modifiedAt;
   return !Number.isFinite(age) || age <= 0 || age >= AUTO_BACKUP_INTERVAL_MS;
 }
