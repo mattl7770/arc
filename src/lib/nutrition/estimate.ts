@@ -80,6 +80,22 @@ export class MealEstimationUnavailableError extends Error {
 }
 
 /**
+ * Thrown by {@link parseMealEstimate} when the model answered and the answer
+ * was unusable — no JSON, bad JSON, or no item with a name.
+ *
+ * A named class rather than a bare `Error` because the offline queue (0048) has
+ * to tell a reply it could not read from a request that never left the phone:
+ * the first will fail identically tomorrow, the second is exactly what waiting
+ * fixes. See `isQueueableFailure`.
+ */
+export class MealEstimateParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MealEstimateParseError';
+  }
+}
+
+/**
  * Whether the estimation path can run — a model key is configured (same key the
  * Coach uses). The UI reads this to keep the "Describe or snap" affordance
  * honest; re-render via the Coach's useSessionKeySet() so it stays current.
@@ -222,16 +238,16 @@ export function parseMealEstimate(replyText: string): MealEstimate {
   const start = replyText.indexOf('{');
   const end = replyText.lastIndexOf('}');
   if (start === -1 || end <= start) {
-    throw new Error('Meal estimate reply contained no JSON object.');
+    throw new MealEstimateParseError('Meal estimate reply contained no JSON object.');
   }
   let raw: unknown;
   try {
     raw = JSON.parse(replyText.slice(start, end + 1));
   } catch {
-    throw new Error('Meal estimate reply was not valid JSON.');
+    throw new MealEstimateParseError('Meal estimate reply was not valid JSON.');
   }
   if (typeof raw !== 'object' || raw === null) {
-    throw new Error('Meal estimate reply was not a JSON object.');
+    throw new MealEstimateParseError('Meal estimate reply was not a JSON object.');
   }
   const obj = raw as Record<string, unknown>;
   const rawItems = Array.isArray(obj.items) ? obj.items : [];
@@ -265,7 +281,7 @@ export function parseMealEstimate(replyText: string): MealEstimate {
     });
   }
   if (items.length === 0) {
-    throw new Error('Meal estimate reply had no usable items.');
+    throw new MealEstimateParseError('Meal estimate reply had no usable items.');
   }
   const title =
     typeof obj.title === 'string' && obj.title.trim() !== '' ? obj.title.trim() : 'Meal';

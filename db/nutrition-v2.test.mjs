@@ -4,12 +4,14 @@
  * pure AI-estimate helpers — against real SQLite via node:sqlite. Mirrors
  * db/foods.test.mjs; op-sqlite is never loaded. Run: npm run db:test.
  */
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
+import { ModelRequestError } from '../src/lib/ai/model-client.ts';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { createFood } from '../src/lib/db/repositories/foods.ts';
+import { createFood, getFood } from '../src/lib/db/repositories/foods.ts';
 import {
   createTemplate,
   deleteTemplate,
@@ -24,6 +26,7 @@ import {
   addMealItem,
   allMealPhotos,
   dayMicroTotals,
+  deleteMeal,
   getMeal,
   latestMealPhoto,
   listMealItems,
@@ -37,6 +40,23 @@ import {
   updateMealTime,
 } from '../src/lib/db/repositories/nutrition.ts';
 import {
+  listPendingEstimates,
+  pendingEstimateForMeal,
+  pendingEstimateMealIds,
+  placeholderMealName,
+  queueMealRevision,
+  queueNewMealEstimate,
+} from '../src/lib/db/repositories/pending-estimates.ts';
+import {
+  drainEstimateQueue,
+  failureReason,
+  isQueueableFailure,
+} from '../src/lib/nutrition/estimate-queue.ts';
+import {
+  sweepPendingEstimatePhotos,
+  writePendingEstimatePhoto,
+} from '../src/lib/media/pending-estimate-store.ts';
+import {
   attachMealPhoto,
   deleteMealWithPhotos,
   MEAL_PHOTO_RETENTION_DAYS,
@@ -49,6 +69,8 @@ import {
   groundMealEstimate,
   MEAL_ESTIMATION_SYSTEM_PROMPT,
   MEAL_REVISION_SYSTEM_PROMPT,
+  MealEstimateParseError,
+  MealEstimationUnavailableError,
   parseMealEstimate,
 } from '../src/lib/nutrition/estimate.ts';
 import {
@@ -59,6 +81,7 @@ import {
   serializeMicros,
   sumMicros,
 } from '../src/lib/nutrition/micros.ts';
+import { lookupOffProduct, OffLookupError } from '../src/lib/nutrition/openfoodfacts.ts';
 import { itemForPortion, rescaleLoggedItem } from '../src/lib/nutrition/servings.ts';
 
 let pass = 0;
@@ -624,6 +647,7 @@ function fakeStore(initial = {}) {
       files.set(name, base64);
       return true;
     },
+    readBase64: (name) => files.get(name) ?? null,
     uri: (name) => (files.has(name) ? `file:///documents/meal-photos/${name}` : null),
   };
 }
@@ -1224,6 +1248,402 @@ console.log('22c. a revision is shown the meal in the units it was logged in');
   req.system.includes('restate a millilitre amount as grams')
     ? ok('and the revision prompt forbids re-uniting an item it was not asked about')
     : bad('revision prompt missing the unit rail');
+}
+
+// === Offline food logging (0048, backlog C3) =================================
+//
+// Two halves, tested as two different kinds of claim:
+//
+//   · the catalog / template / manual path is offline BY CONSTRUCTION, which is
+//     a fact about the SOURCE (nothing on it calls fetch) and is asserted as
+//     one — a behavioural test would pass just as happily on a path that calls
+//     the network and swallows the failure;
+//   · the AI path QUEUES, which is a fact about behaviour and is walked end to
+//     end: offline → a visible placeholder → a restart → a reconnect → the
+//     items landing, with the placeholder never once reading 0 kcal.
+
+/** An estimate reply, as the model would send it. */
+const REPLY = JSON.stringify({
+  title: 'Chicken and rice',
+  items: [
+    {
+      name: 'Grilled chicken breast',
+      amount: 180,
+      unit: 'g',
+      kcal: 297,
+      protein_g: 56,
+      carbs_g: 0,
+      fat_g: 7,
+      fiber_g: 0,
+      confidence: 'high',
+    },
+    {
+      name: 'White rice',
+      amount: 200,
+      unit: 'g',
+      kcal: 260,
+      protein_g: 5,
+      carbs_g: 56,
+      fat_g: 1,
+      fiber_g: 1,
+      confidence: 'medium',
+    },
+  ],
+  notes: 'Cooking oil not visible; assumed a teaspoon.',
+});
+
+/** The network being gone, as `expo/fetch` actually reports it. */
+const offline = () => new TypeError('Network request failed');
+
+/** Estimators that answer, count their calls, and record what they were sent. */
+function fakeEstimators(reply = REPLY) {
+  const calls = [];
+  return {
+    calls,
+    estimate: async (input) => {
+      calls.push({ kind: 'estimate', input });
+      return parseMealEstimate(reply);
+    },
+    revise: async (meal, instruction) => {
+      calls.push({ kind: 'revise', meal, instruction });
+      return parseMealEstimate(reply);
+    },
+  };
+}
+
+/** Estimators that are still offline. */
+function deadEstimators() {
+  return {
+    estimate: async () => {
+      throw offline();
+    },
+    revise: async () => {
+      throw offline();
+    },
+  };
+}
+
+console.log('23. C3: the catalog and manual paths need no network at all');
+{
+  // A SOURCE assertion, deliberately. "Logging a food works offline" is only
+  // true if nothing on the path reaches for the network in the first place —
+  // a runtime test cannot tell that from a fetch whose failure is swallowed,
+  // and the swallowed one degrades silently the day someone adds a lookup.
+  const OFFLINE_PATH = [
+    'src/lib/db/repositories/foods.ts',
+    'src/lib/db/repositories/nutrition.ts',
+    'src/lib/db/repositories/meal-templates.ts',
+    'src/lib/nutrition/servings.ts',
+    'src/lib/nutrition/micros.ts',
+    'src/components/nutrition/log-sheet.tsx',
+    'app/food-search.tsx',
+    'app/food-new.tsx',
+    'app/meal-templates.tsx',
+  ];
+  const networked = OFFLINE_PATH.filter((file) => {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+    return /\bfetch\s*\(/.test(source) || /from '.*openfoodfacts'/.test(source);
+  });
+  networked.length === 0
+    ? ok(`all ${OFFLINE_PATH.length} catalog/manual modules are network-free at the source`)
+    : bad('a catalog/manual module reaches the network', networked.join(' · '));
+
+  // And the whole path runs, with no network in the room: create a food, price a
+  // portion, log it, read the day back.
+  const { db } = freshDb();
+  const foodId = createFood(db, {
+    name: 'Skyr',
+    kcal_100g: 63,
+    protein_g_100g: 11,
+    carbs_g_100g: 4,
+    fat_g_100g: 0.2,
+  });
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:00',
+    name: 'Breakfast',
+    items: [itemForPortion(getFood(db, foodId), { amount: 200 })],
+  });
+  near(todayTotals(db, TODAY).kcal, 126) && listMealItems(db, mealId).length === 1
+    ? ok('catalog → portion → logged meal → day total, with nothing to connect to')
+    : bad('offline catalog path', JSON.stringify(todayTotals(db, TODAY)));
+
+  // The one nutrition path that DOES use the network already degrades rather
+  // than throwing something raw into a screen: a rejecting fetch becomes an
+  // OffLookupError the scanner reads as "you're offline" (its ladder then falls
+  // back to manual entry). Confirmed here beside the rest of the offline story,
+  // because "the OFF lookup already degrades — confirm" is a C3 requirement.
+  let offErr = null;
+  try {
+    await lookupOffProduct('5060000000000', () => Promise.reject(offline()));
+  } catch (e) {
+    offErr = e;
+  }
+  offErr instanceof OffLookupError
+    ? ok('the Open Food Facts lookup degrades to a named error, never a raw throw')
+    : bad('OFF lookup does not degrade', String(offErr));
+}
+
+console.log('24. C3: an estimate made offline is QUEUED, and the meal is visible');
+{
+  const { db } = freshDb();
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '13:05', name: placeholderMealName('a chicken burrito and a lager') },
+    { kind: 'text', description: 'a chicken burrito and a lager' }
+  );
+
+  const meal = getMeal(db, mealId);
+  meal && meal.source === 'ai_suggested' && meal.name === 'a chicken burrito and a lager'
+    ? ok('the placeholder is in the day, named with the user’s own words')
+    : bad('placeholder meal', JSON.stringify(meal));
+
+  // THE 0-KCAL TRAP. A placeholder must never read as a meal that was measured
+  // at zero: NULL is "not recorded", 0 is "I ate nothing", and only one of them
+  // is true. The Eat tab draws NULL as an em-dash.
+  meal.kcal === null && meal.protein_g === null && meal.carbs_g === null && meal.fat_g === null
+    ? ok('…with NULL macros — never a fabricated 0 kcal')
+    : bad('placeholder carries numbers', JSON.stringify(meal));
+  const totals = todayTotals(db, TODAY);
+  totals.kcal === 0 && totals.mealCount === 1
+    ? ok('the day counts the meal but no energy (sum() skips NULL)')
+    : bad('day totals', JSON.stringify(totals));
+
+  const queued = pendingEstimateForMeal(db, mealId);
+  queued && queued.kind === 'text' && queued.attempts === 0 && queued.file_name === null
+    ? ok('the request is queued beside it, in one transaction')
+    : bad('queue row', JSON.stringify(queued));
+
+  pendingEstimateMealIds(db, TODAY).has(mealId)
+    ? ok('and the Eat tab can see which meals are waiting')
+    : bad('pendingEstimateMealIds missed the meal');
+
+  // A name the row can actually hold at phone width.
+  placeholderMealName(null) === 'Photographed meal' &&
+  placeholderMealName('   ') === 'Photographed meal' &&
+  placeholderMealName('x'.repeat(200)).length <= 61
+    ? ok('a wordless capture gets a plain name, and a paragraph is cut to one line')
+    : bad('placeholderMealName', placeholderMealName('x'.repeat(200)));
+}
+
+console.log('25. C3: which failures are worth waiting on');
+{
+  // The whole classifier, as a table. The dangerous mistake is the last row: an
+  // HTTP error means the API ANSWERED, so queueing it re-bills the same
+  // rejection tomorrow — and a parse failure will parse identically badly.
+  isQueueableFailure(offline())
+    ? ok('a transport failure (expo/fetch rejecting) queues')
+    : bad('network failure not queued');
+  isQueueableFailure(
+    new ModelRequestError(0, null, 'Model stream ended before the reply completed.')
+  )
+    ? ok('a stream that died mid-reply queues (status 0 = no HTTP response)')
+    : bad('status-0 ModelRequestError not queued');
+  !isQueueableFailure(new ModelRequestError(401, 'authentication_error', 'invalid key'))
+    ? ok('a 401 does NOT queue — the API answered; waiting fixes nothing')
+    : bad('401 queued');
+  !isQueueableFailure(new ModelRequestError(429, 'rate_limit_error', 'slow down'))
+    ? ok('nor does a 429')
+    : bad('429 queued');
+  !isQueueableFailure(new MealEstimateParseError('Meal estimate reply was not valid JSON.'))
+    ? ok('nor an unreadable reply — the same request produces the same nonsense')
+    : bad('parse failure queued');
+  !isQueueableFailure(new MealEstimationUnavailableError())
+    ? ok('nor a missing model key')
+    : bad('unavailable queued');
+  const aborted = new Error('aborted');
+  aborted.name = 'AbortError';
+  !isQueueableFailure(aborted)
+    ? ok('nor an abort — the user left the screen')
+    : bad('abort queued');
+  failureReason(offline()) === 'TypeError: Network request failed'
+    ? ok('and the reason recorded on the row is the error, not a stack')
+    : bad('failureReason', failureReason(offline()));
+}
+
+console.log('26. C3: the queue survives a restart, then drains');
+{
+  const { db, raw } = freshDb();
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '13:05', name: 'a chicken burrito' },
+    { kind: 'text', description: 'a chicken burrito' }
+  );
+
+  // STILL OFFLINE. The row is kept, the attempt is counted, and the placeholder
+  // is untouched — in particular it still reads NULL, not 0.
+  const stillDown = await drainEstimateQueue(db, {
+    estimators: deadEstimators(),
+    pendingStore: null,
+    mealPhotoStore: null,
+  });
+  const kept = pendingEstimateForMeal(db, mealId);
+  stillDown.applied === 0 && stillDown.kept === 1 && kept.attempts === 1 && kept.last_error !== null
+    ? ok('a drain with no network keeps the request and counts the attempt')
+    : bad('offline drain', JSON.stringify({ stillDown, kept }));
+  getMeal(db, mealId).kcal === null
+    ? ok('…and the placeholder still reads “not recorded”, never 0 kcal')
+    : bad('placeholder gained numbers on a failed drain');
+
+  // A RESTART. Re-running the migration runner over the same file is exactly
+  // what the app does on every launch; the queue is rows, so it is still there.
+  migrate(
+    {
+      exec: (sql) => raw.exec(sql),
+      getUserVersion: () => raw.prepare('PRAGMA user_version').get().user_version,
+      setUserVersion: (n) => raw.exec(`PRAGMA user_version = ${n}`),
+      transaction: db.transaction,
+    },
+    MIGRATIONS
+  );
+  listPendingEstimates(db).length === 1
+    ? ok('the queue survives a restart (it is rows, not React state)')
+    : bad('queue lost on restart');
+
+  // BACK ONLINE.
+  const estimators = fakeEstimators();
+  const drained = await drainEstimateQueue(db, {
+    estimators,
+    pendingStore: null,
+    mealPhotoStore: null,
+  });
+  const after = getMeal(db, mealId);
+  const items = listMealItems(db, mealId);
+  drained.applied === 1 && drained.kept === 0
+    ? ok('a drain with a connection applies the estimate and empties the queue')
+    : bad('drain', JSON.stringify(drained));
+  items.length === 2 && near(after.kcal, 557) && after.name === 'Chicken and rice'
+    ? ok('the placeholder becomes the estimated meal — items, totals and the model’s title')
+    : bad('applied meal', JSON.stringify({ name: after.name, kcal: after.kcal, n: items.length }));
+  after.notes === 'Cooking oil not visible; assumed a teaspoon.'
+    ? ok('and the model’s caveat lands as the meal’s note')
+    : bad('notes not carried', String(after.notes));
+  items.every((i) => i.confidence !== null) && after.source === 'ai_suggested'
+    ? ok('still labelled an estimate: per-item confidence, source ai_suggested')
+    : bad('provenance lost', JSON.stringify(items.map((i) => i.confidence)));
+  estimators.calls.length === 1 && estimators.calls[0].input.kind === 'text'
+    ? ok('exactly one model call was made, as a text request')
+    : bad('calls', JSON.stringify(estimators.calls.map((c) => c.kind)));
+}
+
+console.log('27. C3: a queued PHOTO carries its bytes, and lands them on the meal');
+{
+  const { db } = freshDb();
+  const pendingStore = fakeStore();
+  const mealPhotoStore = fakeStore();
+
+  const fileName = writePendingEstimatePhoto('/9j/plate', pendingStore);
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '19:40', name: placeholderMealName(null) },
+    { kind: 'photo', file_name: fileName, width: 1024, height: 768 }
+  );
+  getMeal(db, mealId).name === 'Photographed meal' && pendingStore.files.size === 1
+    ? ok('the shot is parked in its own directory, not in meal-photos')
+    : bad('photo not parked');
+
+  const estimators = fakeEstimators();
+  await drainEstimateQueue(db, { estimators, pendingStore, mealPhotoStore });
+
+  estimators.calls[0].input.kind === 'photo' && estimators.calls[0].input.base64Jpeg === '/9j/plate'
+    ? ok('the drain re-reads the bytes and sends them as a photo request')
+    : bad('photo request', JSON.stringify(estimators.calls[0]?.input?.kind));
+  const photo = latestMealPhoto(db, mealId);
+  photo && mealPhotoStore.files.get(photo.file_name) === '/9j/plate' && photo.width === 1024
+    ? ok('…and the picture ends up on the meal, in the meal-photo directory')
+    : bad('photo not attached', JSON.stringify(photo));
+  pendingStore.files.size === 0 && listPendingEstimates(db).length === 0
+    ? ok('the queued copy and its row are gone — one photo, not two')
+    : bad('pending copy left behind');
+}
+
+console.log('28. C3: giving up, orphans, and a photo whose file vanished');
+{
+  const { db } = freshDb();
+  const pendingStore = fakeStore();
+  const fileName = writePendingEstimatePhoto('/9j/plate', pendingStore);
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '19:40', name: 'Photographed meal' },
+    { kind: 'photo', file_name: fileName, description: 'a bowl of pho' }
+  );
+
+  // Deleting the placeholder is the whole of "forget it" — the queue row goes
+  // with the meal, and the sweep reclaims the file it leaves behind.
+  deleteMeal(db, mealId);
+  listPendingEstimates(db).length === 0
+    ? ok('deleting the placeholder CASCADEs its queued request away')
+    : bad('queue row survived the meal');
+  const swept = sweepPendingEstimatePhotos(db, pendingStore);
+  swept.orphanFilesRemoved === 1 && pendingStore.files.size === 0
+    ? ok('and the orphan pass reclaims the file nothing claims any more')
+    : bad('orphan not swept', JSON.stringify(swept));
+
+  // A row whose FILE went missing degrades to its words rather than losing the
+  // meal. (One direction only — the sweep never deletes a row.)
+  const store2 = fakeStore();
+  const second = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '20:10', name: 'a bowl of pho' },
+    { kind: 'photo', file_name: 'gone.jpg', description: 'a bowl of pho' }
+  );
+  sweepPendingEstimatePhotos(db, store2).orphanFilesRemoved === 0 &&
+  listPendingEstimates(db).length === 1
+    ? ok('a row whose file is missing keeps its row — the words are still a request')
+    : bad('row deleted by the sweep');
+  const estimators = fakeEstimators();
+  await drainEstimateQueue(db, { estimators, pendingStore: store2, mealPhotoStore: fakeStore() });
+  estimators.calls[0].input.kind === 'text' &&
+  estimators.calls[0].input.description === 'a bowl of pho' &&
+  listMealItems(db, second.mealId).length === 2
+    ? ok('…and the drain sends them as a text request rather than dropping the meal')
+    : bad('degrade to text', JSON.stringify(estimators.calls[0]?.input));
+}
+
+console.log('29. C3: a queued REVISION is applied to the items as they stand then');
+{
+  const { db } = freshDb();
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '12:00',
+    name: 'Lunch',
+    items: [
+      { name: 'Butter', amount: 10, kcal: 72, protein_g: 0, carbs_g: 0, fat_g: 8 },
+      { name: 'Steak', amount: 200, kcal: 500, protein_g: 50, carbs_g: 0, fat_g: 32 },
+    ],
+  });
+  queueMealRevision(db, mealId, 'that was olive oil, not butter');
+  // Nothing moved: a queued revision leaves the meal countable.
+  near(getMeal(db, mealId).kcal, 572) && listMealItems(db, mealId).length === 2
+    ? ok('the meal keeps its items while the correction waits')
+    : bad('meal changed while queued');
+
+  // The user edits the meal by hand while still offline. The drain must send
+  // THAT as the "before", not a snapshot taken when the correction was typed.
+  addMealItem(db, mealId, {
+    name: 'Bread',
+    amount: 60,
+    kcal: 160,
+    protein_g: 6,
+    carbs_g: 30,
+    fat_g: 1,
+  });
+  const estimators = fakeEstimators();
+  await drainEstimateQueue(db, { estimators, pendingStore: null, mealPhotoStore: null });
+  const sent = estimators.calls[0];
+  sent.kind === 'revise' &&
+  sent.instruction === 'that was olive oil, not butter' &&
+  sent.meal.items.length === 3 &&
+  sent.meal.items.some((i) => i.name === 'Bread')
+    ? ok('the drain re-reads the items at drain time — the hand-edit is the “before”')
+    : bad('stale subject', JSON.stringify(sent?.meal?.items?.map((i) => i.name)));
+  const revised = getMeal(db, mealId);
+  revised.name === 'Lunch' && listMealItems(db, mealId).length === 2
+    ? ok('…and a revision replaces the items only, never the meal’s name')
+    : bad('revision touched the meal', revised.name);
+  listPendingEstimates(db).length === 0
+    ? ok('the queue is empty afterwards')
+    : bad('revision left in the queue');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

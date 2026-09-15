@@ -356,3 +356,46 @@ export type NutritionHistoryDay = {
     fiber_g: number | null;
   } | null;
 };
+
+// --- Queued AI estimates (0048) -----------------------------------------------
+
+/**
+ * Which model call is waiting. `'photo'` and `'text'` create a meal that does
+ * not exist yet (a placeholder the user can see); `'revise'` corrects a meal
+ * that already has items.
+ */
+export type PendingEstimateKind = 'photo' | 'text' | 'revise';
+
+/**
+ * A `pending_estimates` row — one AI request that could not be made because the
+ * network was gone, kept until it can be (0048, backlog C3).
+ *
+ * `file_name` is a BASE NAME inside the pending-estimate directory, never a
+ * path (0033's rule), and the directory is deliberately not `meal-photos`:
+ * that one is swept against `meal_photos` rows on every app open and would
+ * delete a queued file as an orphan.
+ */
+export type PendingEstimateRow = {
+  id: string;
+  meal_id: string;
+  kind: PendingEstimateKind;
+  /** The description, the correction, or extra context for a photo. */
+  description: string | null;
+  file_name: string | null;
+  width: number | null;
+  height: number | null;
+  attempts: number;
+  last_error: string | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
+/** What the estimator screens supply when a call could not be made. The meal
+ *  (or its placeholder) is created by the repository in the same transaction. */
+export type NewPendingEstimate = {
+  kind: PendingEstimateKind;
+  description?: string | null;
+  file_name?: string | null;
+  width?: number | null;
+  height?: number | null;
+};

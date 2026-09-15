@@ -14,6 +14,7 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { getFood } from '@/lib/db/repositories/foods';
 import { getMeal, listMealItems, replaceMealItems } from '@/lib/db/repositories/nutrition';
+import { queueMealRevision } from '@/lib/db/repositories/pending-estimates';
 import {
   groundMealEstimate,
   isMealEstimationAvailable,
@@ -21,6 +22,7 @@ import {
   MealEstimationUnavailableError,
   reviseMeal,
 } from '@/lib/nutrition/estimate';
+import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
 import { fmtAmount, fmtInt } from '@/lib/nutrition/format';
 import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
 import type { AmountUnit, FoodRow, MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
@@ -78,6 +80,9 @@ type Phase =
   | { kind: 'input' }
   | { kind: 'working' }
   | { kind: 'review'; notes: string | null }
+  /** The correction never reached the model, so it was kept (0048, backlog C3).
+   *  The meal keeps the items it has until the drain lands. */
+  | { kind: 'queued' }
   | { kind: 'error'; message: string };
 
 /** One editable review row — the estimator's shape, so the two screens agree. */
@@ -223,6 +228,19 @@ export default function MealReviseScreen() {
     } catch (error) {
       // A cancel is not a failure and gets no message — the screen is gone.
       if (controller.signal.aborted) return;
+      // OFFLINE: keep the correction rather than making the user remember it
+      // (0048, backlog C3). The meal is untouched meanwhile — its current items
+      // are still correct and still countable — and the drain sends this
+      // sentence against the items AS THEY STAND THEN, so a hand-edit made in
+      // between is what the correction applies to.
+      if (isQueueableFailure(error)) {
+        try {
+          queueMealRevision(getDb(), mealId, text);
+          return setPhase({ kind: 'queued' });
+        } catch (queueError) {
+          console.warn('[meal-revise] could not queue the correction', queueError);
+        }
+      }
       setPhase({
         kind: 'error',
         message:
@@ -421,6 +439,32 @@ export default function MealReviseScreen() {
             </>
           )}
         </>
+      ) : null}
+
+      {/* QUEUED — what happened, then what will happen. Not an error: the
+          sentence was recorded, the meal is intact, and the numbers are owed. */}
+      {phase.kind === 'queued' ? (
+        <View className="mt-6">
+          <Block device="margin">
+            <Text className="font-serif text-[15px] leading-6 text-ink">
+              No connection, so the correction is waiting.
+            </Text>
+            <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
+              The meal still holds the {before.length} item{before.length === 1 ? '' : 's'} it had.
+              ARC applies your correction the next time you open the app with a connection — against
+              the items as they stand then, so anything you change in the meantime is kept.
+            </Text>
+          </Block>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Done"
+            onPress={() => router.back()}
+            className="mt-4 min-h-[44px] items-center justify-center rounded-btn border border-ink py-3 active:opacity-60">
+            <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink">
+              Done
+            </Text>
+          </Pressable>
+        </View>
       ) : null}
 
       {phase.kind === 'error' ? (

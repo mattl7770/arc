@@ -679,3 +679,60 @@ A scanned product's basis is **read off the product, not guessed from its name**
 - **Whether `Solid · g / Drink · ml` reads as the food's identity** rather than as a formatting choice, sitting where it does in Create a food.
 - **Whether the entry-field decision is right in the hand** for an oz-preferring user: the row says `8.5 oz` and the field says `250 ml`. That is defensible on paper (and it is what keeps Save from nudging a portion nobody edited), but it is two units in one glance, and only the phone can say whether that reads as precise or as a mistake.
 - **The amount field's width at `ml` values.** A three-digit gram portion and a four-digit millilitre one (`1000`) share a `w-16` box on `app/food-search.tsx` and `app/barcode-scan.tsx`, and a `w-14` one on the two review screens.
+
+---
+
+## 12f. Offline food logging (C3, 2026-09-14, migration `0048`)
+
+Owner, backlog C3: *"Catalog/manual path fully works with no network; AI-dependent estimates **queue until back online**."*
+
+### Half of it was already true, and it is pinned as a source fact
+
+The catalog, template and manual paths never touched the network — `foods.ts`, `nutrition.ts`, `meal-templates.ts`, `servings.ts`, `micros.ts`, the log sheet, Add food, Create a food and Meal templates contain no `fetch` and no import of `openfoodfacts.ts`. That is asserted **over the source** in `db/nutrition-v2.test.mjs` §23, deliberately: a behavioural test passes just as happily on a path that calls the network and swallows the failure, and the swallowed one degrades silently the day someone adds a lookup.
+
+The one nutrition path that *does* use the network already degrades rather than throwing something raw into a screen: `lookupOffProduct` turns a rejecting fetch into an `OffLookupError`, which `app/barcode-scan.tsx` reads as "you're offline" and answers with the manual rung of its resolve ladder. Confirmed in the same section.
+
+### The other half: a request that could not be made is kept
+
+| | |
+| --- | --- |
+| Schema | `pending_estimates` (`0048`) — one row per meal (`meal_id` UNIQUE, `ON DELETE CASCADE`), `kind` ∈ `photo · text · revise`, the words in `description`, the JPEG as a **base name** in `file_name`, plus `attempts` / `last_error` |
+| Files | `pending-estimates/` — **its own directory**, because `meal-photos/` is swept against `meal_photos` rows in both directions on every app open and would delete a queued photo as an orphan on the very launch that needs it |
+| Placeholder | a real `meals` row, `source = 'ai_suggested'`, **NULL macros**, named with the user's own typed words (or `Photographed meal`) |
+| Drain | `runEstimateQueueDrain` on app open and on every foreground (`app/_layout.tsx`), oldest first, re-entrancy-guarded, never throws |
+
+**NULL, not 0.** A placeholder that read `0 kcal` would be a fabricated measurement and would sum into the day as a fact. NULL is "not recorded" — which the Eat tab already draws as an em-dash, and which already (correctly) drops the day out of countdown mode, because energy that is genuinely unknown cannot be subtracted from a target. The row says **`Estimate pending — offline`** rather than `Nothing recorded — tap to fill it in`, which would be advice the user cannot act on.
+
+### Which failures are worth waiting on
+
+`isQueueableFailure` queues a **transport** failure — the request never reached the API — and nothing else:
+
+| failure | queues? | why |
+| --- | --- | --- |
+| `expo/fetch` rejecting (`TypeError: Network request failed`) | **yes** | the phone never got out |
+| `ModelRequestError` with `status === 0` | **yes** | "no HTTP response" — a stream that died mid-reply is what a dropping connection looks like from inside the client |
+| `ModelRequestError` with an HTTP status (400/401/429/5xx) | no | the API **answered**; queueing re-bills the same rejection tomorrow |
+| `MealEstimateParseError` | no | the same request produces the same nonsense |
+| `MealEstimationUnavailableError` | no | no key, or a binary without `expo/fetch`; waiting adds neither |
+| `AbortError` | no | the user left the screen |
+
+`MealEstimateParseError` is new in this round and exists only for that table: the parser's four throws used to be bare `Error`s, indistinguishable from a network failure.
+
+### The drain APPLIES; it does not park a second review
+
+An interactive estimate lands in a review because **nothing has been written yet**. A queued one has already written the placeholder, so holding the result until the user happens to open a review screen would leave that placeholder empty for as long as he does not notice — the exact state this feature exists to end. So the drain grounds the estimate against the catalog (the same `groundMealEstimate`) and writes the items with their per-item `confidence` under `source = 'ai_suggested'` — the labelling the owner already accepts for an estimate. It reads as an estimate everywhere, and `Adjust` and the item editor are one tap away, as they are for a reviewed one. The model's title replaces the provisional name; its caveat becomes the meal's note; a queued photo is moved into `meal-photos/` through the one writer (`attachMealPhoto`), so it inherits the ordinary 7-day retention.
+
+**A queued revision is re-grounded on what is there now.** The queue stores the *correction*, never a snapshot of the items. On drain the meal's current items are read and sent as the "before", so a hand-edit made while offline is what the correction applies to rather than something it silently overwrites with a day-old picture of the meal. A revision still replaces items only — date, time, name and notes are untouched (`replaceMealItems`' own rule).
+
+**Nothing expires.** A row that fails again counts the attempt and records why. The two reasons a drain fails are "still offline" (waiting fixes it) and "no key yet" (Settings fixes it); deleting the user's meal on his behalf fixes neither. The escape hatch is the one he already has — delete the placeholder, and CASCADE takes the request with it.
+
+### Verification
+
+- `db/nutrition-v2.test.mjs` §23–29 — the source scan and a full catalog→meal→day round trip with nothing to connect to; the OFF degrade; the placeholder's NULL macros and the day's `0 kcal / 1 meal` reading; the whole classifier table; **offline → attempt counted → restart → reconnect → items land**, with the placeholder asserted NULL at every step; a queued photo's bytes re-read, sent, and landed in `meal-photos/`; the CASCADE, the orphan sweep, and a photo whose file vanished degrading to its words; a queued revision sent against an item added *after* it was queued.
+- `db/screens-render.test.mjs` §5b — the Eat tab rendered over a real placeholder: the user's words as the name, `Estimate pending — offline` on the row, and no number in the row at all.
+
+### What only a device can judge
+
+- **Whether the drain fires soon enough to feel like magic** rather than like a chore. There is no reconnect event without a netinfo dependency, so the trigger is app-open and foreground — which is the moment that matters (a drain nobody is present for helps nobody), but only the phone says whether "it filled itself in while I wasn't looking" reads as trustworthy.
+- **Whether the queued screen's two sentences are the right two** at the moment a plane's wifi has just failed.
+- **`expo-file-system`'s `File.base64()`** — the one API in this round that has never run on device in this codebase. It is feature-checked (`typeof f.base64 !== 'function'` → null) and its absence degrades a photo request to its typed words, so the failure mode is a worse estimate rather than a lost meal; the first offline photograph is the test.

@@ -14,6 +14,9 @@ import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { findFoodByBarcode, getFood } from '@/lib/db/repositories/foods';
 import { logMealWithItems } from '@/lib/db/repositories/nutrition';
+import { placeholderMealName, queueNewMealEstimate } from '@/lib/db/repositories/pending-estimates';
+import { writePendingEstimatePhoto } from '@/lib/media/pending-estimate-store';
+import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
 import {
   ArcCameraView,
   type CameraHandle,
@@ -127,6 +130,9 @@ type Phase =
   | { kind: 'camera' }
   | { kind: 'estimating' }
   | { kind: 'review'; title: string; notes: string | null }
+  /** The request never left the phone, so it was kept (0048, backlog C3). The
+   *  meal is already in today's list under `name`; this phase says so. */
+  | { kind: 'queued'; name: string; photoKept: boolean }
   | { kind: 'error'; message: string };
 
 /** A code sitting in the viewfinder, with whatever the local catalog knows. */
@@ -276,11 +282,54 @@ export default function MealEstimateScreen() {
     } catch (error) {
       // A cancel is not a failure and gets no message — the screen is gone.
       if (controller.signal.aborted) return;
+      // OFFLINE: the request never reached the model, so it is KEPT rather than
+      // lost (0048, backlog C3). ARC data has one copy — a plate photographed on
+      // a plane and thrown away is a meal that never happened.
+      if (isQueueableFailure(error) && queue(input, captured)) return;
       const message =
         error instanceof MealEstimationUnavailableError
           ? error.message
           : 'Couldn’t estimate that meal. Check your connection and try again, or log it manually.';
       setPhase({ kind: 'error', message });
+    }
+  };
+
+  /**
+   * Keep an estimate that could not be made: park the photo, write a visible
+   * placeholder meal and the queue entry in one transaction, and say so.
+   *
+   * Returns false if even that fails, in which case the caller falls back to the
+   * ordinary error — a promise that was not actually kept must not be printed.
+   */
+  const queue = (input: EstimateInput, captured: CapturedPhoto | null): boolean => {
+    const words = input.kind === 'text' ? input.description : (input.description ?? '');
+    try {
+      // The bytes first: a file with no row is reclaimed by the pending
+      // directory's orphan pass, while a row pointing at nothing is a request
+      // that silently degrades to its words.
+      const fileName = captured ? writePendingEstimatePhoto(captured.base64Jpeg) : null;
+      const name = placeholderMealName(words);
+      const now = new Date();
+      queueNewMealEstimate(
+        getDb(),
+        { date: todayISODate(), time: clockFromISO(now.toISOString()), name },
+        {
+          kind: input.kind === 'photo' ? 'photo' : 'text',
+          description: words.trim() === '' ? null : words.trim(),
+          file_name: fileName,
+          width: captured?.width ?? null,
+          height: captured?.height ?? null,
+        }
+      );
+      // The photo now belongs to the queue, not to this screen: leaving Save
+      // unreachable is the point, and a stale CapturedPhoto here could attach
+      // the same image twice when the drain lands.
+      setPhoto(null);
+      setPhase({ kind: 'queued', name, photoKept: fileName !== null });
+      return true;
+    } catch (error) {
+      console.warn('[meal-estimate] could not queue the estimate', error);
+      return false;
     }
   };
 
@@ -660,6 +709,39 @@ export default function MealEstimateScreen() {
           <Text className="mt-3 font-serif text-[14px] text-ink-secondary">
             Estimating the meal…
           </Text>
+        </View>
+      ) : null}
+
+      {/* QUEUED — the offline outcome, stated as what HAPPENED and what will
+          happen, in that order. It is not an error and does not wear an error's
+          words: the meal exists, it is in today's list, and the numbers are
+          owed. The accent is not spent here — nothing on this screen is the
+          next action any more. */}
+      {phase.kind === 'queued' ? (
+        <View className="mt-6">
+          <Block device="margin">
+            <Text className="font-serif text-[15px] leading-6 text-ink">
+              No connection, so the estimate is waiting.
+            </Text>
+            <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
+              “{phase.name}” is logged on today with no numbers yet.
+              {phase.photoKept ? ' The photo is kept with it.' : ''} ARC estimates it the next time
+              you open the app with a connection, and fills the items in.
+            </Text>
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
+              Until then the day counts what it knows rather than what is left. Delete the meal to
+              drop the request.
+            </Text>
+          </Block>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Done"
+            onPress={() => router.back()}
+            className="mt-4 min-h-[44px] items-center justify-center rounded-btn border border-ink py-3 active:opacity-60">
+            <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink">
+              Done
+            </Text>
+          </Pressable>
         </View>
       ) : null}
 

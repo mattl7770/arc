@@ -42,6 +42,10 @@ import {
   setRecipeFavorite,
 } from '../src/lib/db/repositories/recipes.ts';
 import {
+  placeholderMealName,
+  queueNewMealEstimate,
+} from '../src/lib/db/repositories/pending-estimates.ts';
+import {
   addGroceryItems,
   checkGroceryItem,
   setStaple,
@@ -689,6 +693,38 @@ const db = getDb();
     ]);
     // THE POINT OF THE GUARD: no remainder is drawn on a day it cannot compute.
     refute('nutrition hub (fallback)', html, ['kcal left', 'Protein left']);
+  }
+
+  console.log('5b. The Eat tab — a meal waiting on a queued estimate (0048, C3)');
+  {
+    // An estimate taken offline logs a PLACEHOLDER: a meal the user can see,
+    // with NULL macros. The row must say what it is waiting for rather than
+    // wearing "tap to fill it in", which is advice he cannot act on — and it
+    // must never read as a meal measured at zero.
+    queueNewMealEstimate(
+      db,
+      { date: today, time: '21:15', name: placeholderMealName('a chicken burrito and a lager') },
+      { kind: 'text', description: 'a chicken burrito and a lager' }
+    );
+    const html = render('nutrition hub (estimate pending)', NutritionScreen);
+    expect('nutrition hub (estimate pending)', html, [
+      'a chicken burrito and a lager', // the user's own words, as the name
+      'Estimate pending — offline',
+    ]);
+    // …and the two readings the PLACEHOLDER's own row must never produce: a
+    // fabricated zero, and the line meant for a meal the user could fill in
+    // himself right now. Checked in a window around the row rather than over
+    // the whole page, because "Dinner out" above legitimately wears that line
+    // and "2,400 kcal" legitimately contains "0 kcal".
+    if (html !== null) {
+      const at = html.indexOf('a chicken burrito and a lager');
+      const row = at === -1 ? '' : html.slice(at, at + 700);
+      row.includes('Estimate pending — offline') &&
+      !row.includes('Nothing recorded') &&
+      !/>\s*0\s*</.test(row)
+        ? ok('the pending row says what it waits for, and shows no number at all')
+        : bad('pending row', row.slice(0, 200));
+    }
   }
 
   console.log('6. Both routes of the same file still render');
