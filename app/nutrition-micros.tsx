@@ -29,8 +29,17 @@ import { MICROS, type Micros } from '@/lib/nutrition/micros';
  * neon dial and never a good/bad colour — a daily micro total is not a
  * biological state, so the signal palette stays out of it (the firewall,
  * 00-design-spec.md §2), and the reference is context rather than a verdict the
- * user set. Sodium's reference is a ceiling to stay under, framed accordingly.
- * Read-only, so there is **no accent on this screen at all**.
+ * user set. Sodium's and caffeine's references are ceilings to stay under,
+ * framed accordingly. Read-only, so there is **no accent on this screen at
+ * all**.
+ *
+ * **Where every reference value comes from** — sourced in
+ * `src/lib/nutrition/micros.ts`, which is the one place they are written:
+ * FDA Daily Values (21 CFR 101.9) for the minerals and vitamins, sodium's
+ * 2,300 mg included; the IOM's Adequate Intake for omega-3 (ALA); and the FDA's
+ * 400 mg/day figure for healthy adults for caffeine, which is guidance about a
+ * compound rather than a nutrient requirement. Fiber is the exception and is
+ * read against the user's OWN target — see the note on its plate below.
  *
  * A micronutrient with no recorded contribution reads "not recorded" and draws
  * no rule — no data, no number. A PARTIAL one still draws a figure and a filled
@@ -42,10 +51,16 @@ import { MICROS, type Micros } from '@/lib/nutrition/micros';
  * summed from meal items (manual meals record none) and lives in its own plate
  * so the reference-value firewall stays intact: the micros plate's closing
  * annotation says "not personal targets", and fiber is exactly that, so it must
- * not sit under it. The plate appears only when a fiber target has been set,
- * matching `dayFiberTotal`'s contract — a day with no target isn't scolded over
- * data it never captured. (The Today grid deliberately omits fiber for the same
+ * not sit under it. (The Today grid deliberately omits fiber for the same
  * reason it can't count it down; see the MACROS note in app/nutrition.tsx.)
+ *
+ * **The plate stands whether or not a target is set** (changed 2026-09-14,
+ * backlog A8 — caffeine, fiber, sodium are the three the owner named, and one
+ * of them was invisible on a profile that had never opened the targets screen).
+ * With no target the figure prints alone: no denominator, no rule, and a label
+ * that says a target is what is missing. That is §5 of 00-design-spec.md —
+ * *no denominators until targets exist* — rather than the old behaviour of
+ * hiding a number the day genuinely recorded.
  */
 
 type MicrosData = {
@@ -74,9 +89,7 @@ export default function NutritionMicrosScreen() {
   const { micros, fiberEaten, fiberTarget } = data;
   const recorded = MICROS.filter((m) => micros[m.key] != null).length;
   const fiberPct =
-    fiberTarget !== null && fiberTarget > 0
-      ? Math.min(100, (fiberEaten / fiberTarget) * 100)
-      : 0;
+    fiberTarget !== null && fiberTarget > 0 ? Math.min(100, (fiberEaten / fiberTarget) * 100) : 0;
 
   return (
     <Screen scroll>
@@ -161,8 +174,9 @@ export default function NutritionMicrosScreen() {
           <View className="mt-3">
             <Block device="margin">
               <Text className="font-serif text-[13px] leading-5 text-ink-muted">
-                Reference values are general daily guidance (FDA Daily Values; omega-3 uses the ALA
-                adequate intake), not personal targets. Sodium is shown as an upper limit.
+                Reference values are general daily guidance (FDA Daily Values; omega-3 the ALA
+                adequate intake; caffeine the FDA’s 400 mg figure for healthy adults), not personal
+                targets. Sodium and caffeine are shown as upper limits.
               </Text>
             </Block>
           </View>
@@ -171,29 +185,35 @@ export default function NutritionMicrosScreen() {
 
       {/* Fiber stands apart from the micros above: it is read against the
           user's own target, not a general reference, so it cannot sit under the
-          "not personal targets" annotation and gets its own plate. Shown only
-          when a target exists (dayFiberTotal's contract). */}
-      {fiberTarget !== null ? (
-        <View className="mt-3">
-          <Block device="plate">
-            <SectionLabel label="Fiber" note="daily target" />
-            <View className="mt-1 py-3">
-              <View className="flex-row items-baseline justify-between gap-3">
-                <Text className="flex-1 font-serif text-[14px] text-ink">Eaten today</Text>
-                <View className="flex-row items-baseline gap-1">
-                  <Text className="font-mono text-[14px] text-ink">{fmtMicro(fiberEaten, 0)}</Text>
-                  <Text className="font-mono text-[10px] text-ink-muted">
-                    g of {fmtMicro(fiberTarget, 0)} g
-                  </Text>
-                </View>
+          "not personal targets" annotation and gets its own plate. With no
+          target there is no denominator and no rule — the figure alone, and a
+          label naming what is missing. */}
+      <View className="mt-3">
+        <Block device="plate">
+          <SectionLabel
+            label="Fiber"
+            note={fiberTarget !== null ? 'daily target' : 'no target set'}
+          />
+          <View className="mt-1 py-3">
+            <View className="flex-row items-baseline justify-between gap-3">
+              <Text className="flex-1 font-serif text-[14px] text-ink">Eaten today</Text>
+              <View className="flex-row items-baseline gap-1">
+                <Text className="font-mono text-[14px] text-ink">{fmtMicro(fiberEaten, 0)}</Text>
+                <Text className="font-mono text-[10px] text-ink-muted">
+                  {fiberTarget !== null ? `g of ${fmtMicro(fiberTarget, 0)} g` : 'g'}
+                </Text>
               </View>
+            </View>
+            {/* No target, no rule: a bar with no denominator would be drawing a
+                proportion of nothing. The label carries the absence instead. */}
+            {fiberTarget !== null ? (
               <View className="mt-1.5 h-[3px] bg-paper-deep">
                 <View className="h-[3px] bg-ink-secondary" style={{ width: `${fiberPct}%` }} />
               </View>
-            </View>
-          </Block>
-        </View>
-      ) : null}
+            ) : null}
+          </View>
+        </Block>
+      </View>
     </Screen>
   );
 }

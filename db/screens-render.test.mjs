@@ -70,6 +70,7 @@ import RecipeFoldersScreen from '../app/recipe-folders.tsx';
 import RecipeReviseScreen from '../app/recipe-revise.tsx';
 import GroceryScreen from '../app/grocery.tsx';
 import NutritionScreen from '../app/nutrition.tsx';
+import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
 // The two camera screens. They could not be imported here until `expo-camera`
 // moved behind the guarded seam (src/lib/media/camera.ts) — a static native
@@ -683,6 +684,71 @@ const db = getDb();
       '248', // ...and so are the totals derived from them (247.5 kcal, rounded)
     ]);
     updateMealName(db, mealId, 'Render lunch');
+  }
+
+  console.log('7c. Micronutrients — the owner’s three: caffeine, fiber, sodium');
+  {
+    // Backlog A8. Two itemized meals on today, carrying the two micros the
+    // estimator now returns plus the fiber column. The three free-form meals
+    // already logged above contribute nothing — which is exactly the day the
+    // screen's undercount caveat exists for, so it is asserted here too.
+    logMealWithItems(db, {
+      date: today,
+      time: '15:10',
+      name: 'Flat white',
+      items: [
+        {
+          name: 'Flat white',
+          grams: 240,
+          kcal: 120,
+          protein_g: 7,
+          fiber_g: 0,
+          micros: JSON.stringify({ caffeine_mg: 145, sodium_mg: 90 }),
+        },
+      ],
+    });
+    logMealWithItems(db, {
+      date: today,
+      time: '13:15',
+      name: 'Lentil soup',
+      items: [
+        {
+          name: 'Lentil soup',
+          grams: 400,
+          kcal: 320,
+          protein_g: 18,
+          fiber_g: 21,
+          micros: JSON.stringify({ sodium_mg: 1150 }),
+        },
+      ],
+    });
+
+    const micros = render('nutrition-micros', NutritionMicrosScreen);
+    expect('nutrition-micros', micros, [
+      'Sodium',
+      '1,240', // 90 + 1,150, summed across the day's items
+      'Caffeine',
+      '145',
+      // 2 of 12: caffeine joined the vocabulary, so the denominator moved too.
+      '2 of 12 recorded',
+      'Fiber',
+      // The owner asked for this caveat by name once already: a day holding any
+      // food without micros undercounts, silently, unless it is said.
+      'Only foods with recorded micronutrients contribute',
+      // No fiber target on this profile yet — the figure stands with no
+      // denominator rather than vanishing (00-design-spec.md §5).
+      'no target set',
+    ]);
+    refute('nutrition-micros', micros, ['daily target']);
+
+    // Give the day a fiber target and the same figure earns its denominator.
+    // Written onto the existing row rather than appended: two target rows with
+    // the same effective_date tie-break on created_at, and a render fixture
+    // must not depend on which millisecond it landed in.
+    db.run('UPDATE nutrition_targets SET fiber_g = ? WHERE effective_date = ?', [34, today]);
+    const withTarget = render('nutrition-micros (fiber target)', NutritionMicrosScreen);
+    expect('nutrition-micros (fiber target)', withTarget, ['Fiber', 'g of 34 g', 'daily target']);
+    refute('nutrition-micros (fiber target)', withTarget, ['no target set']);
   }
 
   console.log('8. Check-off state renders');
@@ -1568,10 +1634,14 @@ const db = getDb();
     'Maintenance of 2', // where it is up to, as the verdict
     '5 g', // the live phase's dose, not the loading one's
     'Mon · Wed · Fri', // the cadence, in words
-    'How it is going',
+    // The adherence plate, re-set 2026-09-14 (backlog A9). The label is the
+    // noun for what is filed under it; the assistant-voiced version the owner
+    // named as the archetype of the app's AI slop is refuted below.
+    'Adherence',
     'The document',
     'Version history',
   ]);
+  refute('protocol-detail', detail, ['How it is going', 'Nothing settled to judge yet']);
   // The loading dose belongs to a phase that is over. Printing it beside the
   // live one would hand the reader two doses of the same compound with nothing
   // saying which is current.
@@ -1579,7 +1649,7 @@ const db = getDb();
 
   // A protocol whose live version landed today has NO record — which is a
   // different fact from a record of nothing done, and neither is 0%.
-  expect('protocol-detail (no record yet)', detail, ['landed today']);
+  expect('protocol-detail (no record yet)', detail, ['landed today', 'Counting starts tomorrow.']);
   refute('protocol-detail (no record yet)', detail, ['0%']);
 
   // The EDIT path on a phased protocol: phase chrome appears, the start date

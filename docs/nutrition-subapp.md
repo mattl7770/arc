@@ -157,7 +157,7 @@ Designed to extend `meals` (0002) **without touching its shape or its four expor
 | `serving_name` / `serving_grams` | text / real | a household serving ("1 egg" / 50); pair-or-none CHECK; grams > 0 |
 | `kcal_100g` | real | ≥ 0, ≤ 950 (pure fat ≈ 884) |
 | `protein_g_100g` `carbs_g_100g` `fat_g_100g` `fiber_g_100g` | real | each NULL or 0–100 (per definition of per-100 g) |
-| `micros` | text | JSON object, `json_valid` CHECK; longevity shortlist keys (`sodium_mg`, `potassium_mg`, `calcium_mg`, `magnesium_mg`, `iron_mg`, `zinc_mg`, `vitamin_d_mcg`, `b12_mcg`, `folate_mcg`, `omega3_g` …) per 100 g; only values the source actually knows — absent beats guessed |
+| `micros` | text | JSON object, `json_valid` CHECK; longevity shortlist keys (`sodium_mg`, `potassium_mg`, `calcium_mg`, `magnesium_mg`, `iron_mg`, `zinc_mg`, `vitamin_d_mcg`, `b12_mcg`, `folate_mcg`, `omega3_g`, `caffeine_mg` …) per 100 g; only values the source actually knows — absent beats guessed. **An arbitrary-key JSON column is why the vocabulary can grow without a migration** (§12d) |
 | `source` | text NOT NULL DEFAULT 'user' | CHECK IN (`'seed','user','ai','openfoodfacts'`) — ARC-owned vocabulary (the shared `DataSource` describes *log* provenance; a catalog row's provenance is a different axis) |
 | `is_favorite` | integer NOT NULL DEFAULT 0 | 0/1 CHECK — single-user, so a flag beats a join table |
 | `created_at` / `updated_at` | text | defaults + AFTER UPDATE trigger (mutable: favorites, edits) |
@@ -254,7 +254,7 @@ No bulk database ships on-device beyond the seed: the full OFF/FDC dumps are ser
 
 `src/lib/nutrition/estimate.ts`:
 - `EstimateInput = { kind:'text', description } | { kind:'photo', base64Jpeg, mediaType:'image/jpeg', description? }`
-- `MealEstimate = { title, items: MealEstimateItem[], notes? }`; `MealEstimateItem = { name, grams|null, kcal, protein_g, carbs_g, fat_g, fiber_g|null, confidence:'high'|'medium'|'low', foodId|null }`
+- `MealEstimate = { title, items: MealEstimateItem[], notes? }`; `MealEstimateItem = { name, grams|null, kcal, protein_g, carbs_g, fat_g, fiber_g|null, micros: JsonText|null, confidence:'high'|'medium'|'low', foodId|null }` — `micros` carries the model's own **sodium and caffeine** for the portion it estimated (§12d), or the catalog food's full snapshot once grounded
 - `isMealEstimationAvailable(): boolean` — mirrors `isCoachKeyConfigured`, flips with the model client.
 - `estimateMeal(input)` — today throws `MealEstimationUnavailableError`; the UI (the existing pine button's hint) stays honest, exactly like the mock Coach. Callers are written against the final contract now.
 
@@ -546,3 +546,34 @@ above, this one is invisible to a render.
 2. **Whether `name · brand` is the right meal title at a glance** on the Eat
    tab's list, where meal names are read in a column. Long product names may
    want truncating.
+
+## 12d. Caffeine, fiber and sodium — the owner's three, made first-class (A8, 2026-09-14)
+
+The owner's note after two weeks on the TestFlight build was three words and a question mark: *"important micros: caffeine, fiber, sodium?"* (backlog `docs/backlog-2026-09.md`, A8). Two of the three were already in the data layer and one was not tracked at all. **No migration** — and that is the point of the column's shape: `foods.micros` / `meal_items.micros` are arbitrary-key JSON guarded by `json_valid`, so a new nutrient is a new key in `src/lib/nutrition/micros.ts` and nothing else. Head stays `0044`; the number reserved for this item (`0045`) was not needed and is released.
+
+**Where each of the three stood, and what changed**
+
+| | Before | Now |
+| --- | --- | --- |
+| **Sodium** | in the vocabulary since 0017, reference 2,300 mg, framed as a ceiling | unchanged in the data layer; the estimator now returns it, so an AI-logged meal contributes sodium instead of nothing |
+| **Fiber** | a fixed column (`foods.fiber_g_100g`, `meal_items.fiber_g`) read against the user's own `nutrition_targets.fiber_g` | unchanged as data; the micros screen's fiber plate **no longer hides itself when no target is set** |
+| **Caffeine** | not tracked anywhere | a vocabulary key (`caffeine_mg`), a row on the micros screen, and one of the two micros the model is asked for |
+
+**The reference values, and where they come from.** Written once, in `src/lib/nutrition/micros.ts`, and sourced in its docblock because an unsourced number on a health screen is a number nobody can check. FDA Daily Values (21 CFR 101.9) for the minerals and vitamins, sodium's 2,300 mg included; the IOM's Adequate Intake for omega-3 (ALA, 1.6 g); and for caffeine **400 mg/day**, the FDA's stated figure for healthy adults — guidance about a compound, not a nutrient requirement, and marked `ceiling: true` so the UI frames it *"of 400 limit"* rather than as something to reach. Caffeine sorts last in `MICROS`, on its own, because it is not a nutrient and should not read as one filed among the vitamins.
+
+**The estimator now returns two micros, and only two.** `MEAL_ESTIMATION_SYSTEM_PROMPT` and `MEAL_REVISION_SYSTEM_PROMPT` both carry a `"micros"` object in the schema, asking for **sodium and caffeine in milligrams, for the portion estimated**, on foods that plausibly carry them — and to **omit** a key rather than guess it, because an absent key means "not recorded" and a `0` means "measured none", which are not the same claim. Only two, deliberately: the rest of the shortlist is label data the model would be inventing, and the catalog is the better source for it wherever an item grounds.
+
+The reply goes through the same vocabulary filter as stored JSON (`coerceMicros`, split out of `parseMicros` for exactly this caller), so an invented key or a stringy number is dropped at the seam, and an item that returned nothing usable serialises back to `NULL` rather than `{}`.
+
+**Precedence at grounding** (`groundMealEstimate`): a matched catalog food's own snapshot wins whole; a food that records **no** micros leaves the model's sodium/caffeine standing. That is what lets the seeded `Coffee, black` — macros but no micros row — still log its caffeine. It is not merged key by key: a food that records micros at all is the better source for all of them, and half-catalog/half-model is the shape that function exists to avoid.
+
+**A revision no longer strips them.** `buildMealRevisionRequest` prints each item's sodium and caffeine in the row it shows the model (`- Flat white — 240 g, 120 kcal, …, sodium 90 mg, caffeine 145 mg`), and the prompt's restraint rule now says *name, grams, macros and micros* come back unchanged on anything the correction did not touch. Without that, correcting one item would quietly empty the others.
+
+**The seeded catalog was left alone, on purpose.** `db/migrations/0016_food_seed.sql` is a **shipped migration**, and a shipped migration is never edited (CLAUDE.md §9). So `Coffee, black` still carries no caffeine of its own, and neither do the teas or colas; a catalog-logged coffee records caffeine only once its food row is edited in-app or an AI estimate supplies it. Backfilling the seed is a future append-only migration, not this one — it is a data question (which foods, what values, sourced how) rather than a plumbing one.
+
+**The two honesty rules that govern the screen, unchanged and now load-bearing for three nutrients instead of one:**
+
+- **The undercount caveat stays visible.** `dayMicroTotals` sums only items `WHERE mi.micros IS NOT NULL`, so any day holding a free-form or micro-less food runs low. The line inside the plate — *"Only foods with recorded micronutrients contribute, so these totals can run low"* — is what keeps those figures honest, and the owner asked for that honesty by name once already.
+- **No denominators until targets exist** (`docs/design-research/implementation/00-design-spec.md` §5). With no fiber target the fiber plate prints the figure alone: no denominator, no rule, and a label that says `no target set`. The old behaviour hid the plate entirely, which meant a profile that had never opened the targets screen could not see a number the day genuinely recorded.
+
+**Verification.** `db/nutrition-v2.test.mjs` §21 walks one caffeinated item end to end — model reply → parser (keys kept, junk dropped, empty → `NULL`) → grounding against a micro-less catalog food → logged meal → `dayMicroTotals` — and asserts both prompts ask for the two micros and that the revision request states them. `db/screens-render.test.mjs` §7c renders `app/nutrition-micros.tsx` over a real day: sodium `1,240`, caffeine `145`, `2 of 12 recorded`, the caveat, and the fiber plate in both of its states.

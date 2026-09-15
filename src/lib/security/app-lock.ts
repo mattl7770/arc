@@ -44,10 +44,37 @@ try {
 
 /**
  * How long ARC may sit in the background before returning requires a fresh
- * unlock. Short enough that a phone left on a table re-locks, long enough that
- * flicking to Messages and back doesn't prompt every time.
+ * unlock. **Five minutes** — raised from 30 s on 2026-09-14, after two weeks of
+ * daily use: *"stay unlocked for reopens within ~some minutes"* (owner). At 30 s
+ * the ordinary reopen — out to Messages, to a recipe, to the camera, and
+ * straight back — prompted nearly every time, and a lock that prompts on every
+ * reopen is a lock that gets switched off.
+ *
+ * The number is a CONVENIENCE call, and it is the owner's to make: it is not
+ * derived from a threat model. The security boundary is the OS plus this lock
+ * (CLAUDE.md §2), so a phone that is itself locked never reaches this timer at
+ * all — the window only governs a phone left awake in someone else's hand.
+ * Five minutes of that is what the owner has chosen to trade for a prompt he
+ * stops fighting; nothing else about the boundary moves.
+ *
+ * The clock-rollback rule stands (the comparison lives in use-app-lock.ts): a
+ * NEGATIVE elapsed time counts as expired, so winding the clock back cannot buy
+ * a longer window. A wider window makes that rule matter more, not less.
  */
-export const APP_LOCK_RELOCK_MS = 30_000;
+export const APP_LOCK_RELOCK_MS = 5 * 60_000;
+
+/**
+ * Whether returning after `elapsedMs` in the background requires a fresh
+ * unlock. Lifted out of the AppState handler in use-app-lock.ts so the rule is
+ * checkable headlessly (db/user.test.mjs) — a hook's listener is not.
+ *
+ * A NEGATIVE elapsed time means the wall clock moved backwards while ARC was
+ * away, and counts as EXPIRED: winding the clock back must never be the one way
+ * to walk past the lock.
+ */
+export function relockRequired(elapsedMs: number): boolean {
+  return elapsedMs < 0 || elapsedMs >= APP_LOCK_RELOCK_MS;
+}
 
 export type AppLockAuthOutcome =
   /** The user proved presence — reveal. */

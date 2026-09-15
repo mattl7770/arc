@@ -27,6 +27,7 @@ import type { JsonText } from '@/lib/db/types';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
 
+import { coerceMicros, parseMicros, serializeMicros } from './micros';
 import { itemForPortion } from './servings';
 import type { EstimateConfidence, FoodRow } from './types';
 
@@ -47,9 +48,13 @@ export type MealEstimateItem = {
   /** Set when the item was grounded to a catalog food (macros re-priced from
    * its per-100 g values); null means raw model numbers. */
   foodId: string | null;
-  /** Per-portion micronutrient snapshot (JSON) when grounded to a catalog food
-   * that carries micros; null for a raw model item, which has none. Carried so
-   * a grounded item is as complete as the manual-add path (servings.ts). */
+  /**
+   * Per-portion micronutrient snapshot (JSON), or null when nothing was
+   * recorded. Two sources, in this order: a catalog food's own values when the
+   * item grounds to one (as complete as the manual-add path, servings.ts), else
+   * whatever SODIUM and CAFFEINE the model returned for the portion it
+   * estimated (backlog A8). Null is "not recorded" and never a zero.
+   */
   micros: JsonText | null;
 };
 
@@ -132,12 +137,19 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '  for typical mixed dishes, "low" when the food or portion is genuinely uncertain.',
   '- Account for likely hidden fats (cooking oil, butter, dressing) and say so in notes when',
   '  they materially affect the estimate.',
+  '- Give sodium and caffeine in milligrams, under "micros", for any item that plausibly',
+  '  carries them: sodium for anything salted, cured, canned, processed or restaurant-made;',
+  '  caffeine for coffee, espresso drinks, tea, matcha, cola, energy drinks, dark chocolate,',
+  '  pre-workout. OMIT the key when you would be guessing — an absent key means "not',
+  '  recorded" and a 0 means "measured none", and they are not the same claim.',
   '- Prefer underestimating an unknown over inventing precision.',
   '',
   'Respond with ONLY a JSON object, no prose, matching:',
   '{"title": string, "items": [{"name": string, "grams": number|null, "kcal": number,',
   ' "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null,',
+  ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
   ' "confidence": "high"|"medium"|"low"}], "notes": string|null}',
+  'Micro amounts are for the portion you estimated, not per 100 g.',
 ].join('\n');
 
 /**
@@ -220,7 +232,10 @@ export function parseMealEstimate(replyText: string): MealEstimate {
       fiber_g: num(e.fiber_g),
       confidence,
       foodId: null,
-      micros: null,
+      // The model's own sodium/caffeine, put through the same vocabulary filter
+      // as stored micros: unknown keys and non-numbers are dropped, and an item
+      // that returned nothing usable serialises back to NULL rather than {}.
+      micros: serializeMicros(coerceMicros(e.micros)),
     });
   }
   if (items.length === 0) {
@@ -300,6 +315,9 @@ export type MealRevisionSubject = {
     protein_g: number | null;
     carbs_g: number | null;
     fat_g: number | null;
+    /** The item's stored micro snapshot, so sodium and caffeine can be shown to
+     * the model and carried back on an item it was not asked to change. */
+    micros?: JsonText | null;
   }[];
 };
 
@@ -320,18 +338,22 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   'Rules:',
   '- Return the COMPLETE revised item list, not a patch.',
   '- Change ONLY what the correction implies. Every other item must come back with the same',
-  '  name, grams and macros it went in with — do not re-estimate the meal.',
+  '  name, grams, macros and micros it went in with — do not re-estimate the meal.',
   '- A correction may remove an item, add one, rename one, or change its portion. Apply what',
   '  was actually said and nothing more.',
   '- When a swap changes the cooking fat, carry the portion across sensibly (the same amount',
   '  of oil as there was butter) unless the user gave an amount.',
   '- Keep per-item confidence honest: an item the user has just corrected is usually more',
   '  certain, not less; one you had to infer is "low".',
+  '- Give sodium and caffeine in milligrams, under "micros", on the same terms as an',
+  '  estimate: only where the item plausibly carries them, omitted where you would be',
+  '  guessing, and for the portion stated rather than per 100 g.',
   '- Use the notes field to say what you changed, in one short sentence.',
   '',
   'Respond with ONLY a JSON object, no prose, matching:',
   '{"title": string, "items": [{"name": string, "grams": number|null, "kcal": number,',
   ' "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null,',
+  ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
   ' "confidence": "high"|"medium"|"low"}], "notes": string|null}',
 ].join('\n');
 
@@ -341,12 +363,18 @@ export function buildMealRevisionRequest(
   instruction: string
 ): MealEstimationRequest {
   const rows = meal.items.map((item) => {
+    // Only the two micros the model is asked for. The rest of the vocabulary
+    // comes off the catalog food at grounding time, so showing it here would
+    // invite the model to restate numbers it never estimated.
+    const micros = parseMicros(item.micros);
     const parts = [
       item.grams === null ? null : `${Math.round(item.grams)} g`,
       item.kcal === null ? null : `${Math.round(item.kcal)} kcal`,
       item.protein_g === null ? null : `P ${Math.round(item.protein_g)}`,
       item.carbs_g === null ? null : `C ${Math.round(item.carbs_g)}`,
       item.fat_g === null ? null : `F ${Math.round(item.fat_g)}`,
+      micros.sodium_mg == null ? null : `sodium ${Math.round(micros.sodium_mg)} mg`,
+      micros.caffeine_mg == null ? null : `caffeine ${Math.round(micros.caffeine_mg)} mg`,
     ].filter(Boolean);
     // An unpriced item says so in words. A blank tail would read as zero, and
     // the model would return zeros for it.
@@ -453,8 +481,12 @@ export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEs
       // Fiber may be genuinely absent on the food; keep the model's when so.
       fiber_g: priced.fiber_g ?? item.fiber_g,
       // Carry the food's per-portion micros snapshot too, so a grounded item is
-      // as complete as one added by hand (servings.ts). NULL when the food
-      // records none — "not recorded" never becomes a fake zero.
+      // as complete as one added by hand (servings.ts). A food that records
+      // none leaves the model's own sodium/caffeine standing rather than
+      // erasing them — which is how a catalog coffee with no micros row still
+      // logs its caffeine. Not merged key by key: a food that records micros at
+      // all is the better source for all of them, and half-catalog/half-model
+      // is the one shape this function exists to avoid.
       micros: priced.micros ?? item.micros,
       foodId: match.id,
     };

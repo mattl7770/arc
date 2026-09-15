@@ -11,12 +11,32 @@
  * these keys; `foods`, `meal_items`, and `meal_template_items` all store per-
  * portion values under them.
  *
- * `reference` is a general daily reference value (FDA DV where one exists;
- * omega-3 uses the ALA Adequate Intake), shown only as calm context — NOT a
- * target the user set, and NOT a good/bad verdict. `ceiling: true` marks
- * nutrients where the reference is an upper limit to stay under (sodium), so
- * the UI frames it "of ~X limit" rather than "of ~X". Nothing here is a signal
- * colour — a daily micro total is not a biological state.
+ * `reference` is a general daily reference value, shown only as calm context —
+ * NOT a target the user set, and NOT a good/bad verdict. Each one is sourced,
+ * because an unsourced number on a health screen is a number nobody can check:
+ *
+ *  - **FDA Daily Values** (21 CFR 101.9(c)(8)(iv), the adult/4+ column) for the
+ *    minerals and vitamins, including sodium's 2,300 mg.
+ *  - **Omega-3** has no DV: 1.6 g is the Institute of Medicine's Adequate
+ *    Intake for ALA in adult men.
+ *  - **Caffeine** has no DV either: 400 mg is the FDA's stated figure for
+ *    healthy adults ("not generally associated with dangerous, negative
+ *    effects"), which is guidance for a compound, not a nutrient requirement.
+ *
+ * `ceiling: true` marks the two where the reference is an upper limit to stay
+ * under (sodium, caffeine), so the UI frames it "of ~X limit" rather than
+ * "of ~X". Nothing here is a signal colour — a daily micro total is not a
+ * biological state.
+ *
+ * **Caffeine is not a micronutrient**, and it is tracked here anyway (owner,
+ * backlog A8: *"important micros: caffeine, fiber, sodium?"*). It belongs with
+ * these because it is the same kind of fact — a per-portion amount recorded
+ * against a food, summed over a day, read against a daily ceiling — and giving
+ * it its own parallel machinery would buy nothing but a second place for the
+ * same bug. The third of the owner's three, fiber, stays a fixed column
+ * (`foods.fiber_g_100g`) because it is a macro-scale gram value with its own
+ * personal target; the micros screen reads it against that target, apart from
+ * these references.
  */
 
 export type MicroKey =
@@ -30,7 +50,8 @@ export type MicroKey =
   | 'vitamin_d_mcg'
   | 'b12_mcg'
   | 'folate_mcg'
-  | 'omega3_g';
+  | 'omega3_g'
+  | 'caffeine_mg';
 
 export type MicroDescriptor = {
   key: MicroKey;
@@ -45,7 +66,11 @@ export type MicroDescriptor = {
   ceiling?: boolean;
 };
 
-/** Display order: bulk minerals, then trace minerals, then vitamins, then fats. */
+/**
+ * Display order: bulk minerals, then trace minerals, then vitamins, then fats —
+ * and caffeine last, on its own, because it is not a nutrient and should not
+ * read as one filed among the vitamins.
+ */
 export const MICROS: MicroDescriptor[] = [
   { key: 'sodium_mg', label: 'Sodium', unit: 'mg', decimals: 0, reference: 2300, ceiling: true },
   { key: 'potassium_mg', label: 'Potassium', unit: 'mg', decimals: 0, reference: 4700 },
@@ -58,6 +83,7 @@ export const MICROS: MicroDescriptor[] = [
   { key: 'b12_mcg', label: 'Vitamin B12', unit: 'mcg', decimals: 1, reference: 2.4 },
   { key: 'folate_mcg', label: 'Folate', unit: 'mcg', decimals: 0, reference: 400 },
   { key: 'omega3_g', label: 'Omega-3', unit: 'g', decimals: 1, reference: 1.6 },
+  { key: 'caffeine_mg', label: 'Caffeine', unit: 'mg', decimals: 0, reference: 400, ceiling: true },
 ];
 
 const MICRO_KEYS = new Set<string>(MICROS.map((m) => m.key));
@@ -73,12 +99,22 @@ export type Micros = Partial<Record<MicroKey, number>>;
  */
 export function parseMicros(json: string | null | undefined): Micros {
   if (json == null || json === '') return {};
-  let raw: unknown;
   try {
-    raw = JSON.parse(json);
+    return coerceMicros(JSON.parse(json));
   } catch {
     return {};
   }
+}
+
+/**
+ * The vocabulary filter itself, over an already-parsed value: keep known keys
+ * carrying a finite non-negative number, drop everything else. Split out of
+ * {@link parseMicros} for the one caller that never sees JSON text — the meal
+ * estimator, which reads micros out of a MODEL's reply object
+ * (src/lib/nutrition/estimate.ts). A model that invents a key, or answers
+ * "about 90" instead of 90, loses it here rather than somewhere downstream.
+ */
+export function coerceMicros(raw: unknown): Micros {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
   const out: Micros = {};
   for (const [k, v] of Object.entries(raw)) {

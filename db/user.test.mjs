@@ -6,6 +6,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
+import { APP_LOCK_RELOCK_MS, relockRequired } from '../src/lib/security/app-lock.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
@@ -239,6 +240,26 @@ console.log("10. setUnitPreference and setAppLockEnabled don't clobber each othe
   afterLock.units.weight === 'kg'
     ? ok('lock write keeps the unit choice')
     : bad('lock write', JSON.stringify(afterLock));
+}
+
+console.log('11. the re-lock window is five minutes, and a rolled-back clock is expired');
+{
+  // Raised from 30 s on 2026-09-14 (backlog A5): the owner asked to "stay
+  // unlocked for reopens within ~some minutes". Pinned here because the number
+  // is a deliberate owner call, not an implementation detail to drift.
+  APP_LOCK_RELOCK_MS === 300_000
+    ? ok('APP_LOCK_RELOCK_MS is 5 minutes')
+    : bad('relock window', APP_LOCK_RELOCK_MS);
+  relockRequired(0) === false && relockRequired(299_999) === false
+    ? ok('a reopen inside the window needs no fresh unlock')
+    : bad('inside the window re-locks');
+  relockRequired(300_000) === true && relockRequired(60 * 60_000) === true
+    ? ok('at the window and beyond, auth is required again')
+    : bad('outside the window stays open');
+  // The half that matters most: the clock is not a way past the lock.
+  relockRequired(-1) === true && relockRequired(-86_400_000) === true
+    ? ok('a wall clock wound back while away counts as expired')
+    : bad('negative elapsed read as "briefly away"');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
