@@ -462,93 +462,6 @@ Headless renders prove a component body does not throw and that the strings are 
 
 ---
 
-## 13. Round 7 — two logging papercuts (2026-09-14, backlog A3 + A4)
-
-Both came off two weeks of daily use on the TestFlight build. Neither needed a
-migration; head stays `0044`.
-
-### A4 — a scanned product names its own meal
-
-**Owner:** *"Name meals properly from a barcode scan — use the product name, not
-a placeholder."*
-
-A scan that created a meal named it `daypartName(now)` — `Breakfast`, `Lunch`,
-`Dinner`, `Snack`. That is the clock's answer to a question the barcode had
-already answered better, and it is printed twice over: the meal row carries its
-own timestamp. `app/barcode-scan.tsx` now titles the meal from the resolved
-product via `mealNameForProduct` (`src/lib/nutrition/format.ts`).
-
-- **`name · brand`**, in the order the scanner's own rows and the portion plate
-  already draw them, so the meal is titled the way it was chosen. A brand that
-  merely repeats the name is dropped (`Oatly · Oatly`).
-- **The first product only.** A second scan added to the same meal leaves the
-  title alone: a meal named after the thing that started it is a record; one
-  that renames itself under the user is not. A meal reached with a `mealId`
-  param is someone else's record and is never retitled.
-- **The day part survives as the fallback**, because `meals.name` is `NOT NULL`
-  and a product with a blank name must still produce one.
-- **The rename path is untouched** — `updateMealName` from `app/meal-detail.tsx`
-  still overrides it, and that is pinned over an auto-named meal.
-
-`app/food-search.tsx`'s day-part naming is deliberately **left alone**: the
-owner's report was about the scanner, and a catalog search has no single product
-to name the meal after.
-
-**Tests:** `db/barcode.test.mjs` §8 — the naming table, then the real
-`logMealWithItems` write asserting the row carries the product name and no
-clock-derived placeholder, then `updateMealName` on top of it.
-
-### A3 — the amount highlights itself
-
-**Owner:** *"Auto highlight the value when changing amount for a food for ease
-of use."*
-
-Every amount field in food logging arrives prefilled — `100`, the last portion,
-the estimator's guess — so the first act is always to delete what is there.
-`selectAllOnFocus(value)` (`src/components/ui/select-on-focus.ts`) is spread onto
-all seven of them: the portion sheets on `app/barcode-scan.tsx` and
-`app/food-search.tsx`, the meal-item editor on `app/meal-detail.tsx`, the review
-rows on `app/meal-estimate.tsx` and `app/meal-revise.tsx`, and both grams fields
-on `app/recipe-detail.tsx`.
-
-**`selectTextOnFocus` alone does not do this on iOS**, and that is the whole
-reason the helper exists rather than a bare prop at seven call sites. On the New
-Architecture (RN 0.86, which Expo SDK 57 ships) the trait is read in exactly one
-place — inside `-[RCTTextInputComponentView focus]`, the *imperative* focus
-command. A user TAP never goes through it: UIKit makes the field first responder
-itself and the component hears about it in `-textInputDidBeginEditing`, which
-only emits `onFocus`. The same file says so outright. So the helper also returns
-an `onFocus` that calls the input's own `setSelection(0, value.length)` —
-`TextInput` mutates its native instance with that method, and that instance is
-what React hands back as the event's `currentTarget`, so no `ref` is needed at
-any call site. Both halves are kept: the prop is what `react-native-web`, an
-imperative `focus()`, and a future RN that fixes the tap path honour.
-
-**Scope:** amount and quantity fields only. Not names, not notes, and
-specifically **not** the hour/minute pair on `app/meal-detail.tsx` — selecting a
-two-digit hour someone is half-way through correcting would destroy the edit
-they came to make.
-
-**Tests:** `db/screens-render.test.mjs` §17 — the handler is driven with a fake
-focus event and asked what it selected (filled → `(0, len)`; empty → nothing; a
-host without the method → no throw), plus a **source sweep** asserting that
-every `decimal-pad` input whose spoken label says "grams" across the six
-surfaces carries the helper, with the match count asserted so the pattern cannot
-go stale and pass vacuously. It is a source sweep and not a markup assertion
-because `react-native-web` consumes `selectTextOnFocus` in its own focus handler
-and an `onFocus` prop leaves no trace in HTML — unlike the number-pad rule
-above, this one is invisible to a render.
-
-### What only a device can judge (round 7)
-
-1. **Whether the selection survives the caret UIKit places at the tap point.**
-   The render suite cannot see a selection at all. Tap any grams field with a
-   value in it: the digits should go blue and the first keystroke should replace
-   them.
-2. **Whether `name · brand` is the right meal title at a glance** on the Eat
-   tab's list, where meal names are read in a column. Long product names may
-   want truncating.
-
 ## 12d. Caffeine, fiber and sodium — the owner's three, made first-class (A8, 2026-09-14)
 
 The owner's note after two weeks on the TestFlight build was three words and a question mark: *"important micros: caffeine, fiber, sodium?"* (backlog `docs/backlog-2026-09.md`, A8). Two of the three were already in the data layer and one was not tracked at all. **No migration** — and that is the point of the column's shape: `foods.micros` / `meal_items.micros` are arbitrary-key JSON guarded by `json_valid`, so a new nutrient is a new key in `src/lib/nutrition/micros.ts` and nothing else. Head stays `0044`; the number reserved for this item (`0045`) was not needed and is released.
@@ -681,7 +594,7 @@ A scanned product's basis is **read off the product, not guessed from its name**
 - **The amount field's width at `ml` values.** A three-digit gram portion and a four-digit millilitre one (`1000`) share a `w-16` box on `app/food-search.tsx` and `app/barcode-scan.tsx`, and a `w-14` one on the two review screens.
 
 
-## 12e. The readiness verdict, reworked — direction, and a pace curve (C7, 2026-09-14)
+## 12f. The readiness verdict, reworked — direction, and a pace curve (C7, 2026-09-14)
 
 The Home screen's Nutrition pillar is the one place in the app that *judges* a day's eating, and the owner's verdict on it was blunt: *"It provides almost no value right now; it only triggers late in the day and doesn't take in account my full goal (currently, exceeding my calorie goal is a good thing)."* (`docs/backlog-2026-09.md`, C7.) Both halves were true of the code. The design round, the three models weighed and the alternatives rejected are in **`docs/spikes/nutrition-verdict.md`**; **Model A** was approved and is what shipped. The pillar itself lives on Home — `src/lib/home/readiness.ts` — and its readiness-side write-up is in `docs/home-screen.md`. **No migration.**
 
@@ -705,7 +618,7 @@ Unchanged and load-bearing: `nutrition_targets` seeds no default row, so a profi
 
 **Device-only:** the chip row itself — three 44pt chips across a phone's width with the longest label (`Maintaining`), and whether the selected chip's `border-ink bg-paper-hi` reads as chosen against the outlined pair beside it.
 
-## 12e. Past days' food logs — a day picker and a day view (C1, 2026-09-14)
+## 12g. Past days' food logs — a day picker and a day view (C1, 2026-09-14)
 
 Owner: *"see past days food logs."* (backlog `docs/backlog-2026-09.md`, C1.) The Eat tab is today-only by design and must stay that way; `app/nutrition-history.tsx` showed **series** — a sparkline and a per-day ledger of totals — which answers *how has my protein been* and not *what did I eat on Tuesday*. Once a day rolled over, its meals were reachable from nowhere.
 
@@ -760,7 +673,7 @@ The screen now reads: picker → **the day** (a grid: the kcal reading, the thre
 
 ---
 
-## 12f. Nutrition readability — the bars, and the macros on every meal row (C6, 2026-09-14, no migration)
+## 12h. Nutrition readability — the bars, and the macros on every meal row (C6, 2026-09-14, no migration)
 
 The owner, on the September list: *"Macro stats more visible (bars / colours against targets) **and** more macro information per individual meal on the overview."* The approved proposal is `docs/spikes/nutrition-readability.md`; this section records what was built from it and the three answers that were taken.
 
@@ -821,7 +734,7 @@ Size is **11px**, not the 9.5–10px metadata band: a macro the owner has just a
 
 ---
 
-## 12g. AI add food — describe it, and the form fills itself (C2, 2026-09-14, no migration)
+## 12i. AI add food — describe it, and the form fills itself (C2, 2026-09-14, no migration)
 
 The owner, backlog C2: *"Describe a food in words and AI fills the catalog entry's macros — yes."*
 
@@ -888,7 +801,7 @@ The call is aborted on unmount, like the estimator's: a live stream left running
 
 ---
 
-## 12f. Offline food logging (C3, 2026-09-14, migration `0057`)
+## 12j. Offline food logging (C3, 2026-09-14, migration `0057`)
 
 > **On the number.** Written as `0048` — free then, free on `main` now — and renumbered to `0057` at the moment of commit because `main`’s head had moved 0047 → 0054 and `claude/c12-c13-exercise` holds 0055–0056 unmerged. The runner is forward-only and silently skips anything at or below a device’s `user_version`, so a free-looking number *below the head* is stranded on the phone forever while every test that starts from an empty database still passes. The rule is **the next number above main’s head, re-checked at commit**; the full argument lives in `0057`’s own header, once. C4 was renumbered `0049` → `0058` in the same pass.
 
@@ -947,7 +860,7 @@ An interactive estimate lands in a review because **nothing has been written yet
 
 ---
 
-## 12g. Composite foods (C4, 2026-09-14, migration `0058`)
+## 12k. Composite foods (C4, 2026-09-14, migration `0058`)
 
 Owner, backlog C4: *"Take a photo of a pepperoni pizza… one composite item (pepperoni pizza) as well as rows below that are pizza crust, cheese, and pepperoni. If I ate the whole pizza but took the pepperoni off half, I could change just one thing. If I ate only half, I could change the entire thing together."* — with the scope fence in the same sentence: **specifically composite foods like pizza, not a general modifier system.** Design: `docs/spikes/composite-foods.md` (**built**).
 
@@ -1031,7 +944,7 @@ The rule the Coach's budget note states applies verbatim: **the next addition tr
 
 ---
 
-## 12h. Auto-ask clarifying questions (C5, 2026-09-14, no migration)
+## 12l. Auto-ask clarifying questions (C5, 2026-09-14, no migration)
 
 Owner, backlog C5: fires on anything ambiguous, from **any** logging method; **max 3**; **button-answerable** (an "other / type here" option is allowed but only as a click); only for things that **matter** and that the user would **actually know** — *"we shouldn't ask questions the user likely doesn't know themselves (i.e. cooking methods in a restaurant)."* Archetype: *"how many shots are in this latte?"* Design: `docs/spikes/auto-ask.md` (**built**).
 
@@ -1104,3 +1017,90 @@ The negatives are pinned **at the source** (`db/nutrition-v2.test.mjs` §40): th
 - **Whether "A few things" above the table reads as help or as an interrogation** at 375 pt, particularly with three questions and four chips each.
 - **Whether watching the rows re-price is enough confirmation**, or whether the change needs saying out loud after all.
 - **The "Other" round trip in the hand** — a second or two of `Working…` on a screen the user thought was finished.
+
+## 13. Round 7 — two logging papercuts (2026-09-14, backlog A3 + A4)
+
+Both came off two weeks of daily use on the TestFlight build. Neither needed a
+migration; head stays `0044`.
+
+### A4 — a scanned product names its own meal
+
+**Owner:** *"Name meals properly from a barcode scan — use the product name, not
+a placeholder."*
+
+A scan that created a meal named it `daypartName(now)` — `Breakfast`, `Lunch`,
+`Dinner`, `Snack`. That is the clock's answer to a question the barcode had
+already answered better, and it is printed twice over: the meal row carries its
+own timestamp. `app/barcode-scan.tsx` now titles the meal from the resolved
+product via `mealNameForProduct` (`src/lib/nutrition/format.ts`).
+
+- **`name · brand`**, in the order the scanner's own rows and the portion plate
+  already draw them, so the meal is titled the way it was chosen. A brand that
+  merely repeats the name is dropped (`Oatly · Oatly`).
+- **The first product only.** A second scan added to the same meal leaves the
+  title alone: a meal named after the thing that started it is a record; one
+  that renames itself under the user is not. A meal reached with a `mealId`
+  param is someone else's record and is never retitled.
+- **The day part survives as the fallback**, because `meals.name` is `NOT NULL`
+  and a product with a blank name must still produce one.
+- **The rename path is untouched** — `updateMealName` from `app/meal-detail.tsx`
+  still overrides it, and that is pinned over an auto-named meal.
+
+`app/food-search.tsx`'s day-part naming is deliberately **left alone**: the
+owner's report was about the scanner, and a catalog search has no single product
+to name the meal after.
+
+**Tests:** `db/barcode.test.mjs` §8 — the naming table, then the real
+`logMealWithItems` write asserting the row carries the product name and no
+clock-derived placeholder, then `updateMealName` on top of it.
+
+### A3 — the amount highlights itself
+
+**Owner:** *"Auto highlight the value when changing amount for a food for ease
+of use."*
+
+Every amount field in food logging arrives prefilled — `100`, the last portion,
+the estimator's guess — so the first act is always to delete what is there.
+`selectAllOnFocus(value)` (`src/components/ui/select-on-focus.ts`) is spread onto
+all seven of them: the portion sheets on `app/barcode-scan.tsx` and
+`app/food-search.tsx`, the meal-item editor on `app/meal-detail.tsx`, the review
+rows on `app/meal-estimate.tsx` and `app/meal-revise.tsx`, and both grams fields
+on `app/recipe-detail.tsx`.
+
+**`selectTextOnFocus` alone does not do this on iOS**, and that is the whole
+reason the helper exists rather than a bare prop at seven call sites. On the New
+Architecture (RN 0.86, which Expo SDK 57 ships) the trait is read in exactly one
+place — inside `-[RCTTextInputComponentView focus]`, the *imperative* focus
+command. A user TAP never goes through it: UIKit makes the field first responder
+itself and the component hears about it in `-textInputDidBeginEditing`, which
+only emits `onFocus`. The same file says so outright. So the helper also returns
+an `onFocus` that calls the input's own `setSelection(0, value.length)` —
+`TextInput` mutates its native instance with that method, and that instance is
+what React hands back as the event's `currentTarget`, so no `ref` is needed at
+any call site. Both halves are kept: the prop is what `react-native-web`, an
+imperative `focus()`, and a future RN that fixes the tap path honour.
+
+**Scope:** amount and quantity fields only. Not names, not notes, and
+specifically **not** the hour/minute pair on `app/meal-detail.tsx` — selecting a
+two-digit hour someone is half-way through correcting would destroy the edit
+they came to make.
+
+**Tests:** `db/screens-render.test.mjs` §17 — the handler is driven with a fake
+focus event and asked what it selected (filled → `(0, len)`; empty → nothing; a
+host without the method → no throw), plus a **source sweep** asserting that
+every `decimal-pad` input whose spoken label says "grams" across the six
+surfaces carries the helper, with the match count asserted so the pattern cannot
+go stale and pass vacuously. It is a source sweep and not a markup assertion
+because `react-native-web` consumes `selectTextOnFocus` in its own focus handler
+and an `onFocus` prop leaves no trace in HTML — unlike the number-pad rule
+above, this one is invisible to a render.
+
+### What only a device can judge (round 7)
+
+1. **Whether the selection survives the caret UIKit places at the tap point.**
+   The render suite cannot see a selection at all. Tap any grams field with a
+   value in it: the digits should go blue and the first keystroke should replace
+   them.
+2. **Whether `name · brand` is the right meal title at a glance** on the Eat
+   tab's list, where meal names are read in a column. Long product names may
+   want truncating.

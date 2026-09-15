@@ -22,7 +22,7 @@
 > 3. **Saved workouts replace routines + programs** (owner call): one flat list of reusable sessions, loaded pre-filled. The `routines` tables carry them (UI renamed); **programs are retired** — `app/program-edit.tsx`, the programs repo/tests and the recommender's schedule branch are deleted, the 0020 tables stay in the schema dormant, and `ProgramContext`/the `rest` arm stay in the Recommendation type for the Coach's read tool (dormant). `buildRecommendation`'s signature and result shape are unchanged. The Train-today stamp now carries **two doors: Start recommended + Start empty**.
 > 4. **In-session exercise detail** — the exercise title on every live-logger block pushes `app/exercise-detail.tsx`, which now opens with **how the movement looks** (bundled public-domain demo photo, `assets/exercises/` + `images.generated.ts` — 69 frames, ~4.4 MB, matched from free-exercise-db) beside the **muscles-worked schematic** (figure in highlight mode), above records/trend/history.
 > 5. **The superset "bind"** — linking two exercises makes them one object: the lower plate springs up until the facing borders fuse into a single shared rule, and a SUPERSET seam chip stamps into the joint (Reanimated layout spring + ZoomIn; tap the seam to split). Replaces the static label; awaiting owner review on device.
-> 6. ~~**AI exercise search**~~ — the picker's third door ("Find with AI"), one model turn resolving the user's words against the catalog index. **Retired 2026-09-14 by C12** (§12): searching the catalog is the matcher's job, and the model now writes the ENTRY for a movement the catalog lacks. `src/lib/exercise/ai-search.ts` is deleted; its review-card discipline and `NewExercise.instructions` survive in `ai-add.ts`.
+> 6. ~~**AI exercise search**~~ — the picker's third door ("Find with AI"), one model turn resolving the user's words against the catalog index. **Retired 2026-09-14 by C12** (§13): searching the catalog is the matcher's job, and the model now writes the ENTRY for a movement the catalog lacks. `src/lib/exercise/ai-search.ts` is deleted; its review-card discipline and `NewExercise.instructions` survive in `ai-add.ts`.
 >
 > 31 new headless tests (`db/exercise-ai.test.mjs`: figure completeness, import parse/ground, backdated attribution, search parse/vetting, instructions); `db/training-volume.test.mjs` rewritten without programs (volumeScale coverage added); `db/programs.test.mjs` deleted.
 
@@ -535,17 +535,17 @@ freshness moves.
 - **Avg/max HR**, deferred: it needs a new read scope, a `METRIC_COVERAGE` row and a
   per-session sample query, and the owner's call was to ship pairing first.
 
-## 11. Phase 7 — the away-gym bit (C13, 2026-09-14)
+## 12. Phase 8 — the away-gym bit (C13, 2026-09-14)
 
 Owner: *"for when I am not at my home gym, I can make note of that and ARC can adjust intelligently"* — a stiffer machine must not read as a regression. The full argument is `docs/spikes/gym-away-note.md` (approved, all three questions as recommended); this section is what was built.
 
-### 11.1 The governing sentence
+### 12.1 The governing sentence
 
 > **An away session is real training and unreal measurement.**
 
 It happened, it fatigued you, it counts as volume. Its *numbers* are not comparable to the home baseline — **in either direction**. Everything that counts **work** includes it; everything that compares **load** excludes it from the baseline while still showing it.
 
-### 11.2 The flag
+### 12.2 The flag
 
 ```sql
 ALTER TABLE workouts ADD COLUMN away integer NOT NULL DEFAULT 0 CHECK (away IN (0, 1));
@@ -555,7 +555,7 @@ Migration **0055**. A column and not `workouts.notes`, because every consumer th
 
 `NOT NULL DEFAULT 0` because every workout already on the device *was* at home — there was no other option when it was logged.
 
-### 11.3 Six consumers, three answers
+### 12.3 Six consumers, three answers
 
 | Read | Away sessions | Why |
 | --- | --- | --- |
@@ -568,7 +568,7 @@ Migration **0055**. A column and not `workouts.notes`, because every consumer th
 
 **One deviation from the spike (§3.3b).** It proposed excluding away sessions inside `exerciseSessionTops`. That reducer also feeds `app/exercise-detail.tsx`'s History list, so dropping them there would erase the session from the one screen built to show it. The flag rides on `SessionTopSet` instead and **`suggestProgression` refuses it** — the false-deload path closes at the branch itself, the history stays honest, and a future caller cannot feed the engine away numbers by accident.
 
-### 11.4 The control
+### 12.4 The control
 
 One quiet pressable in the live logger's clock row, in the **label voice** — `AWAY GYM`, hairline outline off, `border-ink bg-paper-dim` on, the protocol editor's chip vocabulary. **No accent**: that screen's budget is one primary action (Finish workout) plus the completion stamps. On, one serif muted line sits beneath it:
 
@@ -582,7 +582,7 @@ That sentence is the entire feature, said where the decision is made — includi
 
 **Editable afterwards, with nothing to re-derive.** PRs are awarded live and never stored and every other affected read is computed on demand, so flipping the flag on a two-week-old session simply changes what the next read returns. `replaceWorkout` **preserves** an omitted flag rather than defaulting it — silence from a caller is not an assertion of "home".
 
-### 11.5 The Coach
+### 12.5 The Coach
 
 `get_training_summary.recentSessions` rows gain `away: true` (omitted on home sessions — payload, not schema, so it costs the prompt budget nothing), and the tool description gains one sentence:
 
@@ -590,7 +590,7 @@ That sentence is the entire feature, said where the decision is made — includi
 
 That sentence is the Coach's entire share of the feature; it needs no arithmetic at all. **+36 tok**, paid for with **−21** in the same two training tools: `get_training_recommendation` no longer claims "program week (and whether it is a deload)" — a `recommendation.program` field that *cannot* appear, since programs were retired on 2026-08-11 and the recommender's schedule branch was deleted — and `get_training_summary`'s own "(default 28)", which its `days` property restates verbatim. Net **+17 tok**, 9,224 → 9,241 against the 9,250 ceiling. **Neither ceiling moved.**
 
-### 11.6 What only a device can settle
+### 12.6 What only a device can settle
 
 - **Whether the chip is findable.** It is deliberately quiet and sits beside the clock; the question is whether it is quiet enough to ignore for months and still obvious in a hotel gym on the first try.
 - **Whether "off every time" is the right default in practice**, on a two-week trip where the answer is "away" fourteen days running. The asymmetry argues it is; only a trip will say.
@@ -598,11 +598,11 @@ That sentence is the Coach's entire share of the feature; it needs no arithmetic
 
 ---
 
-## 12. Phase 7 — catalog first, and the AI writes the entry (C12, 2026-09-14)
+## 13. Phase 9 — catalog first, and the AI writes the entry (C12, 2026-09-14)
 
 Owner: *"ai add exercise replaces ai search (search catalog first)."*
 
-### 12.1 What the old door did, and why it is retired
+### 13.1 What the old door did, and why it is retired
 
 **AI exercise search** (Phase 4, bullet 6 above — `src/lib/exercise/ai-search.ts`, now **deleted**) was a standing third entrance beside browsing and the manual form. It sent the model the **catalog index** — every live movement's id and name — and asked it to pick.
 
@@ -612,7 +612,7 @@ So the search is the catalog's, and the model is asked only the question the cat
 
 **Removed:** `src/lib/exercise/ai-search.ts` (the module), `AiSearchView` (the picker's mode), the standing "Find with AI" button, and every export of that module — `searchExercisesWithAI`, `isExerciseSearchAvailable`, `ExerciseSearchUnavailableError`, `parseExerciseSearch`, `resolveSearchMatches`, `buildExerciseSearchRequest`, `EXERCISE_SEARCH_SYSTEM_PROMPT`. `db/exercise-ai.test.mjs` §6d asserts the file is gone **and** that nothing in `src/` or `app/` still imports it or calls anything it exported — a dead module nobody imports is the failure this guards against, not just a missing file. **No route was added or removed:** the picker is a `Modal` component, never a screen, so `app/_layout.tsx` is untouched.
 
-### 12.2 The gate: `offersAiEntry`
+### 13.2 The gate: `offersAiEntry`
 
 ```ts
 offersAiEntry(entries, query) // src/lib/exercise/match.ts
@@ -633,7 +633,7 @@ The empty-query case lives inside the gate rather than at the call site, so ther
 
 **A known limit, pinned rather than papered over.** `hack squat` keeps the door **shut**: "hack" is one substitution from the *Back Squat* alias, which is a whole-name FUZZY match and confident by every definition this module has. The owner gets Back Squat at the top of the list and the manual **New exercise** door. Widening the gate to catch it would mean distrusting tier 4 everywhere — the tier that makes `bnech press` work, a far commoner case than a one-letter collision with a real movement.
 
-### 12.3 What the model is asked for
+### 13.3 What the model is asked for
 
 `src/lib/exercise/ai-add.ts` — a whole `exercises` row's worth of facts: name, **aliases**, equipment, primary/secondary muscles, `measures` (0046), `logging_type`, pattern, mechanic, unilateral, instructions.
 
@@ -643,7 +643,7 @@ The empty-query case lives inside the gate rather than at the call site, so ther
 - **`measures` both ways.** A legal canonical string from the model wins; anything else derives from `logging_type` through the one `MEASURES_FOR_LOGGING_TYPE` map. Both directions are needed — the derivation cannot express a carry's load + distance, and the model cannot be trusted with a sixteenth value.
 - **Aliases are finally written.** `exercises.aliases` has existed since 0011 and only the seed ever filled it, so a custom movement answered to exactly one spelling. `createCustomExercise` now persists them (trimmed, de-duplicated, never an echo of the name, `NULL` rather than `[]` when empty), which is most of what makes an AI-authored movement findable again next month — and it is what closes the gate for that movement afterwards.
 
-### 12.4 Provenance: migration `0056`
+### 13.4 Provenance: migration `0056`
 
 ```sql
 ALTER TABLE exercises ADD COLUMN source text CHECK (
@@ -658,13 +658,13 @@ UPDATE exercises SET source = 'seed' WHERE is_custom = 0;
 
 The mark is **visible**: the review card carries it before the row exists, and the catalog row afterwards reads `AI` where it would otherwise read `Custom`. A mark nobody can see is not provenance.
 
-### 12.5 The flow
+### 13.5 The flow
 
 Search, nothing confident, **Add with AI** (in the results plate, under whatever weak guesses the search did turn up, outlined, no accent), the view opens **already running** on the words already typed with no second field, a **review card** listing every fact that will land — including the aliases and secondary muscles nothing else would ever show — and **Save & add** writes the row and picks it into the session like any other exercise. Nothing is written before Save.
 
 **Offline** is an honest state and a specific one: *"Couldn't reach the model. Browsing and 'New exercise' still work offline."* — which is true, and names which half is down. No key at all means the door is never drawn.
 
-### 12.6 What only a device can settle
+### 13.6 What only a device can settle
 
 - **Whether the door is findable where it now sits.** It moved from a standing button at the top of the picker into the results plate; the gain is that it only appears when it is the right answer, and the risk is that it appears below the fold on a long list of weak guesses.
 - **How often the gate is right.** `hack squat` is the known false negative; the real question is how many of the movements the owner actually reaches for land on the wrong side of tier 4.

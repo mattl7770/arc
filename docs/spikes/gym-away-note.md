@@ -4,7 +4,7 @@
 §6, all as recommended: (1a) never a PR, (2a) plotted and marked, (3a) not
 sticky. Shipped as migration **`0055`** — `workouts.away`, one bit. The
 implementation notes, including the one place it deviates from §3, are
-`docs/exercise-subapp.md` §11; this file stays as the argument.
+`docs/exercise-subapp.md` §12; this file stays as the argument.
 
 **The number moved twice, 0051 → 0054 → 0055.** Main's migration head reached
 `0053` while this was being built (D4's timezone migration), and the runner

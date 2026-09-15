@@ -1,6 +1,6 @@
 # C5 — Auto-ask clarifying questions
 
-**Status: BUILT** (2026-09-14, branch `claude/c3-c5-estimator`). The owner took the recommended option at every question — (a) above the item table, (a) "Other" is a second text-only call, (a) an unanswered question never blocks Save — and the design below shipped as written, with four deltas recorded in `docs/nutrition-subapp.md` §12h:
+**Status: BUILT** (2026-09-14, branch `claude/c3-c5-estimator`). The owner took the recommended option at every question — (a) above the item table, (a) "Other" is a second text-only call, (a) an unanswered question never blocks Save — and the design below shipped as written, with four deltas recorded in `docs/nutrition-subapp.md` §12l:
 
 1. **`set_grams` is `set_amount`.** `ml` landed (0047) between the design and the build; a key named for one unit describing a number in another is exactly the lie that migration renamed three columns to avoid. The older spelling is still read as a fallback.
 2. **A revision asks too** (owner decision), where §3.4 recommended no. Same rules, same parser, same plate — the whole cost was one rules block on `MEAL_REVISION_SYSTEM_PROMPT`.

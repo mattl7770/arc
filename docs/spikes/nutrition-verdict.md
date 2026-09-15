@@ -1,6 +1,6 @@
 # C7 — Nutrition readiness verdict, reworked
 
-**Status:** design proposal, for owner approval. No code written.
+**Status: BUILT** (2026-09-14, merge `a1bddbd`). The owner set the band (**+20% optimal · +50% caution** while gaining, mirrored for cutting) and chose the **pace curve**; what shipped — the projected end-of-day ratio, the protein lift, the quiet timezone day — is recorded in `docs/nutrition-subapp.md` §12f. This file stays as the reasoning behind it.
 **Migration:** **none** — the one new stored fact rides `users.preferences`, a JSON column that already exists (`db/migrations/0001_init.sql:55`).
 **Citations verified against `main` at `950c846`.** `main` moves several times a day; if a line number below misses, the surrounding quote is the anchor.
 **This is the item most likely to need the owner's answer.** The questions in §6 are the ones that decide the design, not details of it.

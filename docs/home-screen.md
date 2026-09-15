@@ -127,7 +127,7 @@ Key design decisions:
 
 The third cell of the readiness strip was the one the owner said had stopped earning its place: *"It provides almost no value right now; it only triggers late in the day and doesn't take in account my full goal (currently, exceeding my calorie goal is a good thing)."* Two complaints, both true of the code — before 20:00 exactly two things could produce a grade (a >10% overshoot, or a protein target already met), and the calorie band was `Math.abs`, so a bulking day at 2,800 on a 2,400 target read as a fault.
 
-The design round is `docs/spikes/nutrition-verdict.md` (Model A, approved); the Eat-tab side of it — where the goal direction is set — is `docs/nutrition-subapp.md` §12e. **No migration**, no model call: this pillar stays deterministic, so Home renders it on a plane with no key.
+The design round is `docs/spikes/nutrition-verdict.md` (Model A, approved); the Eat-tab side of it — where the goal direction is set — is `docs/nutrition-subapp.md` §12f. **No migration**, no model call: this pillar stays deterministic, so Home renders it on a plane with no key.
 
 ### The two constants, which are the specification
 

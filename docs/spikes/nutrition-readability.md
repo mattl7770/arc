@@ -1,6 +1,6 @@
 # C6 — Nutrition readability
 
-**Status: BUILT, 2026-09-14** (`claude/c2-c6-nutrition`). Approved and implemented as proposed, with the owner's three answers taken as recommended: §6 Q1 **(a)** the bar stops at the mark, Q2 **(a)** all four readings, Q3 **(a)** macros replace the item count. What shipped, the measured contrast table and what only a device can judge are recorded in `docs/nutrition-subapp.md` §12f; this file stays as the reasoning behind it.
+**Status: BUILT, 2026-09-14** (`claude/c2-c6-nutrition`). Approved and implemented as proposed, with the owner's three answers taken as recommended: §6 Q1 **(a)** the bar stops at the mark, Q2 **(a)** all four readings, Q3 **(a)** macros replace the item count. What shipped, the measured contrast table and what only a device can judge are recorded in `docs/nutrition-subapp.md` §12h; this file stays as the reasoning behind it.
 **Migration:** **none.** Every number this proposal draws is already stored, already summed and already on the screen's props.
 **Citations verified against `main` at `950c846`.** `main` moves several times a day; if a line number below misses, the surrounding quote is the anchor.
 
