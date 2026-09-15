@@ -12,6 +12,17 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { logWorkout } from '@/lib/db/repositories/exercise';
+import {
+  clearWorkoutDraft,
+  readWorkoutDraft,
+  saveWorkoutDraft,
+} from '@/lib/db/repositories/workout-drafts';
+import {
+  DRAFT_VERSION,
+  parseManualDraft,
+  type ManualDraft,
+  type ManualDraftSet,
+} from '@/lib/exercise/draft';
 import { lbToKg, setLine } from '@/lib/exercise/format';
 import type { WorkoutKind } from '@/lib/exercise/types';
 
@@ -39,6 +50,15 @@ import type { WorkoutKind } from '@/lib/exercise/types';
  * is mono — serif speaks, mono measures.
  *
  * **Accent budget: one.** The Finish/Save button, and nothing else.
+ *
+ * ## The draft survives the app closing (owner, 2026-09-14)
+ *
+ * Same contract as the structured logger: every drafted set and every character
+ * in the entry row is written through to `workout_drafts` (0045, slot
+ * `manual`), so a process kill costs nothing and the hub offers to resume. The
+ * entry row is persisted too, not just the added sets, because this screen
+ * deliberately saves a typed-but-never-Added row on Finish — that half-typed
+ * row is real data here.
  */
 const KINDS: { key: WorkoutKind; label: string }[] = [
   { key: 'strength', label: 'Strength' },
@@ -47,8 +67,21 @@ const KINDS: { key: WorkoutKind; label: string }[] = [
   { key: 'other', label: 'Other' },
 ];
 
-/** One set as drafted on this screen — display units, not yet persisted. */
-type DraftSet = { exercise: string; reps: number | null; weightLb: number | null };
+/** The longest elapsed time still stored as a live session's duration. */
+const MAX_SESSION_MIN = 6 * 60;
+
+/**
+ * One set as drafted on this screen — display units, not yet a `workout_sets`
+ * row. The type lives in src/lib/exercise/draft.ts because it is also the
+ * persisted shape (see the docblock).
+ */
+type DraftSet = ManualDraftSet;
+
+/** The stored draft for this screen, or null — read once, on the way in. */
+function readResumableDraft(): ManualDraft | null {
+  const stored = readWorkoutDraft(getDb(), 'manual');
+  return stored ? parseManualDraft(stored.value) : null;
+}
 
 /** "12:34", growing to "1:02:34" past the hour. */
 function formatElapsed(ms: number): string {
@@ -75,21 +108,26 @@ function Field({ children }: { children: React.ReactNode }) {
 export default function WorkoutLogScreen() {
   const router = useRouter();
   const navigation = useNavigation();
-  const params = useLocalSearchParams<{ mode?: string }>();
-  const mode: 'live' | 'past' = params.mode === 'live' ? 'live' : 'past';
+  const params = useLocalSearchParams<{ mode?: string; resume?: string }>();
+  // A resumed draft carries the mode it was started in, so coming back through
+  // the hub's Resume never turns a past-session log into a live one.
+  const [draft] = useState<ManualDraft | null>(() =>
+    params.resume === '1' ? readResumableDraft() : null
+  );
+  const mode: 'live' | 'past' = (draft?.mode ?? params.mode) === 'live' ? 'live' : 'past';
 
-  const [startedAt] = useState(() => Date.now());
+  const [startedAt] = useState(() => draft?.startedAt ?? Date.now());
   const [now, setNow] = useState(startedAt);
-  const [kind, setKind] = useState<WorkoutKind>('strength');
-  const [durationText, setDurationText] = useState('');
-  const [sets, setSets] = useState<DraftSet[]>([]);
-  const [exercise, setExercise] = useState('');
-  const [repsText, setRepsText] = useState('');
-  const [weightText, setWeightText] = useState('');
+  const [kind, setKind] = useState<WorkoutKind>(draft?.kind ?? 'strength');
+  const [durationText, setDurationText] = useState(draft?.durationText ?? '');
+  const [sets, setSets] = useState<DraftSet[]>(draft?.sets ?? []);
+  const [exercise, setExercise] = useState(draft?.exercise ?? '');
+  const [repsText, setRepsText] = useState(draft?.repsText ?? '');
+  const [weightText, setWeightText] = useState(draft?.weightText ?? '');
   // True while the entry row holds something not yet in `sets` — the flag that
   // lets "leave the fields filled after Add" coexist with "a typed-but-never-
   // Added set still saves" without double-counting the last Add on save.
-  const [entryDirty, setEntryDirty] = useState(false);
+  const [entryDirty, setEntryDirty] = useState(draft?.entryDirty ?? false);
   const savedRef = useRef(false);
 
   useEffect(() => {
@@ -152,18 +190,89 @@ export default function WorkoutLogScreen() {
   // drafted and unsaved, confirm before leaving. savedRef lets the post-save
   // router.back() through without re-prompting.
   const hasDraft = sets.length > 0 || !entryBlank || durationText !== '';
+
+  /** Drop the stored draft — on Save, and on an explicit Discard. */
+  const discardDraft = () => {
+    try {
+      clearWorkoutDraft(getDb(), 'manual');
+    } catch (error) {
+      console.warn('[exercise] draft clear failed', error);
+    }
+  };
+
+  /**
+   * The write-through: every drafted set and every character in the entry row
+   * lands in `workout_drafts` as it changes, because iOS gives no warning
+   * before it reclaims the app. The serialised payload is compared with the
+   * last one written, so the one-second clock tick costs nothing; `hasDraft`
+   * gates existence both ways, so clearing the form clears the draft.
+   */
+  const lastWrittenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (savedRef.current) return;
+    try {
+      if (!hasDraft) {
+        if (lastWrittenRef.current !== null) {
+          lastWrittenRef.current = null;
+          clearWorkoutDraft(getDb(), 'manual');
+        }
+        return;
+      }
+      const payload: ManualDraft = {
+        version: DRAFT_VERSION,
+        startedAt,
+        mode,
+        kind,
+        durationText,
+        sets,
+        exercise,
+        repsText,
+        weightText,
+        entryDirty,
+      };
+      const serialised = JSON.stringify(payload);
+      if (serialised === lastWrittenRef.current) return;
+      lastWrittenRef.current = serialised;
+      saveWorkoutDraft(getDb(), 'manual', payload);
+    } catch (error) {
+      // A failed draft write must never break the screen being typed into.
+      console.warn('[exercise] draft write failed', error);
+    }
+  }, [
+    hasDraft,
+    startedAt,
+    mode,
+    kind,
+    durationText,
+    sets,
+    exercise,
+    repsText,
+    weightText,
+    entryDirty,
+  ]);
+
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (e) => {
       if (savedRef.current || !hasDraft) return;
       e.preventDefault();
-      Alert.alert('Discard this workout?', 'Nothing has been saved yet.', [
-        { text: 'Keep logging', style: 'cancel' },
-        {
-          text: 'Discard',
-          style: 'destructive',
-          onPress: () => navigation.dispatch(e.data.action),
-        },
-      ]);
+      Alert.alert(
+        'Discard this workout?',
+        'It has not been saved to your training history. Discarding deletes what you have typed.',
+        [
+          { text: 'Keep logging', style: 'cancel' },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => {
+              // Discard means discard: the stored draft goes too, or the hub
+              // would offer to resume a session the user just threw away.
+              savedRef.current = true;
+              discardDraft();
+              navigation.dispatch(e.data.action);
+            },
+          },
+        ]
+      );
     });
     return unsubscribe;
   }, [navigation, hasDraft]);
@@ -178,8 +287,13 @@ export default function WorkoutLogScreen() {
     const allSets = [...sets, ...pending];
     // A sub-30-second "session" rounds to 0 — store no duration rather than a
     // lying "0 min".
-    const elapsedMin = Math.round((Date.now() - startedAt) / 60_000);
-    const durationMin = mode === 'live' ? (elapsedMin > 0 ? elapsedMin : null) : duration;
+    // Clamped at zero (SQLite's clock and Date.now() can disagree by a hair)
+    // and dropped past six hours: a resumed draft carries the instant the
+    // session really started, so one begun yesterday would otherwise record a
+    // day-long workout. No duration is honest; that number is not.
+    const elapsedMin = Math.max(0, Math.round((Date.now() - startedAt) / 60_000));
+    const liveDuration = elapsedMin > 0 && elapsedMin <= MAX_SESSION_MIN ? elapsedMin : null;
+    const durationMin = mode === 'live' ? liveDuration : duration;
     try {
       logWorkout(
         getDb(),
@@ -193,6 +307,9 @@ export default function WorkoutLogScreen() {
         }))
       );
       savedRef.current = true;
+      // The draft has become a workout — but only clear it once the write has
+      // actually succeeded; on a throw it is the only copy of what was typed.
+      discardDraft();
       router.back();
     } catch (error) {
       // A failed write must not crash the tap handler; the draft stays on

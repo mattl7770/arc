@@ -5,6 +5,14 @@ import { getDb } from '@/lib/db/client';
 import { listRecentSessions, weekSummary } from '@/lib/db/repositories/exercise';
 import { getRoutine, listRoutines } from '@/lib/db/repositories/routines';
 import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
+import { readWorkoutDraft } from '@/lib/db/repositories/workout-drafts';
+import {
+  liveDraftHasData,
+  parseLiveDraft,
+  parseManualDraft,
+  type LiveDraft,
+  type ManualDraft,
+} from '@/lib/exercise/draft';
 import type {
   MuscleFreshness,
   MuscleVolume,
@@ -52,6 +60,54 @@ const read = () => {
 export function useTrainingHub(): TrainingHub {
   const [state, setState] = useState(read);
   const reload = useCallback(() => setState(read()), []);
+  useFocusEffect(reload);
+  return { ...state, reload };
+}
+
+export type WorkoutDrafts = {
+  /** An unfinished structured session (app/workout-live.tsx), or null. */
+  live: LiveDraft | null;
+  /** An unfinished free-form session (app/workout-log.tsx), or null. */
+  manual: ManualDraft | null;
+  /** When either was last written — the "in progress since" the card shows. */
+  updatedAt: string | null;
+  /** Re-read after resuming, finishing or discarding. */
+  reload: () => void;
+};
+
+const readDrafts = (): Omit<WorkoutDrafts, 'reload'> => {
+  const db = getDb();
+  const liveRow = readWorkoutDraft(db, 'live');
+  const manualRow = readWorkoutDraft(db, 'manual');
+  const live = liveRow ? parseLiveDraft(liveRow.value) : null;
+  const manual = manualRow ? parseManualDraft(manualRow.value) : null;
+  // A live draft with structure but nothing typed is not worth resuming — the
+  // same test the logger applies, so the card and the screen cannot disagree.
+  const resumableLive = live && liveDraftHasData(live) ? live : null;
+  const stamps = [
+    resumableLive ? liveRow?.updatedAt : null,
+    manual ? manualRow?.updatedAt : null,
+  ].filter((s): s is string => typeof s === 'string');
+  return {
+    live: resumableLive,
+    manual,
+    // ISO-8601 text sorts chronologically, so the newest is just the max.
+    updatedAt: stamps.length > 0 ? stamps.reduce((a, b) => (a > b ? a : b)) : null,
+  };
+};
+
+/**
+ * The unfinished sessions waiting to be resumed (`workout_drafts`, 0045) — what
+ * the hub's **Session in progress** card is drawn from.
+ *
+ * Read on focus like every other hub read, which is exactly when it matters:
+ * coming back to the app after iOS killed it mid-workout lands on this screen,
+ * and the card has to be there on the first frame. Empty-safe; a device that
+ * has never abandoned a session reads two nulls.
+ */
+export function useWorkoutDrafts(): WorkoutDrafts {
+  const [state, setState] = useState(readDrafts);
+  const reload = useCallback(() => setState(readDrafts()), []);
   useFocusEffect(reload);
   return { ...state, reload };
 }

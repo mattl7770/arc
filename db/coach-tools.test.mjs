@@ -607,7 +607,7 @@ console.log('13. protocols: get_protocols reads live content; update_protocol ve
   };
   const summary = toolByName('update_protocol').confirmSummary(changeInput, db, CTX);
   summary ===
-  "Update \"Evening Stack\": 3 items (was 2) — Bumped magnesium to 400 mg, added zinc · applies to today's plan now"
+  'Update "Evening Stack": 3 items (was 2) — Bumped magnesium to 400 mg, added zinc · applies to today\'s plan now'
     ? ok(`confirmation shows the item-count delta and the effective day ("${summary}")`)
     : bad('update summary', summary);
 
@@ -1748,7 +1748,7 @@ console.log('26. get_training_recommendation reports engine state (never decides
   }
 }
 
-console.log('27. log_workout resolves catalog exercise ids — exact match only');
+console.log('27. log_workout resolves catalog exercise ids — a unique match only');
 {
   const { db, raw } = freshDb();
   const result = run('log_workout', db, {
@@ -1758,7 +1758,10 @@ console.log('27. log_workout resolves catalog exercise ids — exact match only'
     sets: [
       { exercise: 'Barbell Bench Press', reps: 8, weight: 100, unit: 'kg' },
       { exercise: 'bench press', reps: 8, weight: 100, unit: 'kg' }, // alias, case-insensitive
-      { exercise: 'Press', reps: 5, weight: 60, unit: 'kg' }, // no unique exact match
+      // A misspelling the tolerant matcher owns (2026-09-14, A7): one
+      // transposition from an alias, and nothing else is close.
+      { exercise: 'bnech press', reps: 8, weight: 100, unit: 'kg' },
+      { exercise: 'Press', reps: 5, weight: 60, unit: 'kg' }, // no unique match
     ],
   });
   const ids = raw
@@ -1768,7 +1771,14 @@ console.log('27. log_workout resolves catalog exercise ids — exact match only'
   ids[0] === 'barbell-bench-press' && ids[1] === 'barbell-bench-press'
     ? ok('exact name and exact alias both resolve to the catalog id')
     : bad('resolution', JSON.stringify(ids));
-  ids[2] === null
+  ids[2] === 'barbell-bench-press'
+    ? ok('…and so does a typo that is one edit from exactly one movement')
+    : bad('typo resolution', JSON.stringify(ids));
+  // THE PIN, and the reason tolerance is not looseness: "Press" is contained in
+  // nine movements, is not close to any of them, and must therefore resolve to
+  // none of them. A wrong exercise_id attributes a set to the wrong muscles for
+  // the life of the database.
+  ids[3] === null
     ? ok('a non-unique name stays NULL — never a guess')
     : bad('ambiguous resolved', JSON.stringify(ids));
   result.unmatchedExercises &&
@@ -2415,15 +2425,17 @@ console.log('35. save_knowledge_entry (docs/knowledge-subapp.md §6, migration 0
   // The section is ON THE CARD (0044): it decides which half of the base the
   // entry can be found in afterwards, and "personal" is the one the user would
   // want to catch being wrong before approving it.
-  card ===
-  'Save scientific entry "Magnesium forms differ in absorption" · supplements · 38 words'
+  card === 'Save scientific entry "Magnesium forms differ in absorption" · supplements · 38 words'
     ? ok('the card is section · title · topic · word count')
     : bad('card wording', card);
   summary('save_knowledge_entry', { ...entry, section: 'personal' }).startsWith(
     'Save personal entry'
   )
     ? ok('…and a personal entry says so on the card')
-    : bad('personal card wording', summary('save_knowledge_entry', { ...entry, section: 'personal' }));
+    : bad(
+        'personal card wording',
+        summary('save_knowledge_entry', { ...entry, section: 'personal' })
+      );
   throws(() => summary('save_knowledge_entry', { ...entry, section: 'medical' }))
     ? ok('a section outside the enum fails at the card, not at the DB CHECK')
     : bad('an unknown section reached the write path');

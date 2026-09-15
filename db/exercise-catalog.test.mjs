@@ -16,6 +16,7 @@ import {
   musclesByExercise,
   resolveExerciseByName,
 } from '../src/lib/db/repositories/exercise-catalog.ts';
+import { rankExerciseMatches } from '../src/lib/exercise/match.ts';
 
 let pass = 0;
 let fail = 0;
@@ -343,6 +344,126 @@ console.log('7. resolveExerciseByName: plurals resolve, ambiguity never guesses'
   r('meadows rows') === null
     ? ok('an archived exercise stops claiming names')
     : bad('archived resolves');
+}
+
+// ---------------------------------------------------------------------------
+// Owner, 2026-09-14: "more intelligent search for exercises, i.e. common
+// misspellings, alternative names." Two halves, and the difference between them
+// is the whole safety story: the RESOLVER must answer with one id or none,
+// because its answer becomes a row's exercise_id; the PICKER can show a ranked
+// list and let a human choose.
+console.log('8. tolerant matching: misspellings resolve, ambiguity still refuses');
+{
+  const { db } = freshDb();
+  const r = (n) => resolveExerciseByName(db, n);
+
+  r('bnech press') === 'barbell-bench-press' &&
+  r('bench pres') === 'barbell-bench-press' &&
+  r('dumbell curl') === 'dumbbell-curl' &&
+  r('incline dumbell press') === 'incline-dumbbell-press'
+    ? ok('a mistyped name resolves — "bnech press", "bench pres", "dumbell curl"')
+    : bad('typos', [r('bnech press'), r('bench pres'), r('dumbell curl')].join());
+  r('sqaut') === 'barbell-back-squat'
+    ? ok('a transposition counts as ONE edit, so "sqaut" is the squat')
+    : bad('transposition', r('sqaut'));
+  r('skullcrusher') === 'skull-crusher' &&
+  r('skull crushers') === 'skull-crusher' &&
+  r('lying tricep extension') === 'skull-crusher'
+    ? ok('words run together and the alternative name both land on Skull Crusher')
+    : bad('squash/alias', [r('skullcrusher'), r('lying tricep extension')].join());
+  r('pull-downs') === 'lat-pulldown' && r('chinup') === 'chin-up'
+    ? ok('punctuation and joined spellings fold the same way — "pull-downs", "chinup"')
+    : bad('punctuation', `${r('pull-downs')} / ${r('chinup')}`);
+
+  // THE PINS. Tolerance must not become guessing: these are the same refusals
+  // §7 makes, re-checked with the fuzzy tier in place, and the ones
+  // db/coach-tools.test.mjs §27 pins for the Coach's log_workout.
+  r('Press') === null &&
+  r('Bench') === null &&
+  r('press') === null &&
+  r('extension') === null &&
+  r('machine') === null
+    ? ok('a bare "Press" / "Bench" / "extension" still resolves to NOTHING')
+    : bad('ambiguous resolved', [r('Press'), r('Bench'), r('extension')].join());
+  r('raise') === null && r('pull') === null && r('fly') === null
+    ? ok('…and so do the other one-word families — short words get no tolerance')
+    : bad('short words', [r('raise'), r('pull'), r('fly')].join());
+  r('Zercher Yoke Carry') === null && r('kettlebell juggling') === null
+    ? ok('a movement that genuinely is not in the catalog stays free text')
+    : bad('invented resolved', r('Zercher Yoke Carry'));
+  r('deadlift sumo') === null
+    ? ok('the longer-input direction is still refused — "deadlift sumo" is not Deadlift')
+    : bad('reverse prefix', r('deadlift sumo'));
+
+  // A tie resolves to nothing, even when both candidates are one edit away.
+  createCustomExercise(db, {
+    name: 'Cable Crunch B',
+    equipment: 'cable',
+    loggingType: 'weight_reps',
+    primaryMuscles: ['abs'],
+  });
+  createCustomExercise(db, {
+    name: 'Cable Crunch C',
+    equipment: 'cable',
+    loggingType: 'weight_reps',
+    primaryMuscles: ['abs'],
+  });
+  r('cable crunch d') === null
+    ? ok('two movements equally close is not evidence — a tie resolves to null')
+    : bad('tie resolved', r('cable crunch d'));
+}
+
+console.log('9. ranked search: what the picker lists, and in what order');
+{
+  const { db } = freshDb();
+  const catalog = listExercises(db).map((e) => ({
+    id: e.id,
+    name: e.name,
+    aliases: e.aliases,
+  }));
+  const names = new Map(catalog.map((e) => [e.id, e.name]));
+  const search = (q) => rankExerciseMatches(catalog, q).map((m) => names.get(m.id));
+
+  search('lat pulldown')[0] === 'Lat Pulldown'
+    ? ok('an exact name ranks first')
+    : bad('exact first', search('lat pulldown')[0]);
+  search('pulldown')[0] === 'Lat Pulldown'
+    ? ok('an exact ALIAS outranks the movements that merely contain the word')
+    : bad('alias first', search('pulldown').slice(0, 3).join());
+  {
+    const results = search('press');
+    results.includes('Leg Press') &&
+    results.includes('Overhead Press') &&
+    results.includes('Barbell Bench Press') &&
+    results.length >= 8
+      ? ok('an ambiguous word LISTS every press — the picker is allowed to')
+      : bad('press list', results.slice(0, 5).join());
+  }
+  {
+    const results = search('curl');
+    results.every((n) => n.toLowerCase().includes('curl'))
+      ? ok('…and lists only curls for "curl" — no fuzzy noise while a real match exists')
+      : bad('curl noise', results.join());
+  }
+  {
+    // The half-typed misspelling: the reason the token tier exists at all.
+    const results = search('bnech');
+    results[0] === 'Barbell Bench Press' && results.includes('Dumbbell Bench Press')
+      ? ok('"bnech" finds the bench presses, own-name matches ranked above alias ones')
+      : bad('bnech', results.slice(0, 3).join());
+  }
+  search('skullcrusher')[0] === 'Skull Crusher'
+    ? ok('"skullcrusher" finds Skull Crusher — identical letters, so an exact match')
+    : bad('skullcrusher', search('skullcrusher')[0]);
+  search('zzzz').length === 0 && search('').length === 0
+    ? ok('gibberish and an empty query match nothing, rather than everything')
+    : bad('empty/gibberish', search('zzzz').length);
+  {
+    // Determinism: a list that reshuffles between keystrokes is unusable.
+    const a = search('row').join();
+    const b = search('row').join();
+    a === b && a.length > 0 ? ok('the order is stable across identical queries') : bad('unstable');
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -48,6 +48,8 @@ import {
 } from '../src/lib/db/repositories/grocery.ts';
 
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import { clearWorkoutDraft, saveWorkoutDraft } from '../src/lib/db/repositories/workout-drafts.ts';
+import { DRAFT_VERSION } from '../src/lib/exercise/draft.ts';
 import { importProgressPhotos } from '../src/lib/media/progress-photo-store.ts';
 import { addVersion, createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
@@ -960,6 +962,82 @@ const db = getDb();
     // The firewall, asserted rather than asserted-about: the freshness green
     // must not appear anywhere in this screen's markup.
     refute('exercise detail', detail, ['#185A36', '#185a36']);
+
+    // -----------------------------------------------------------------------
+    // The Resume card (0045, owner 2026-09-14). The hub is where the app lands
+    // after iOS killed it mid-session, so the offer to come back has to be on
+    // the first frame — which is exactly what a server render can prove.
+    refute('exercise hub (no draft)', worked, ['Session in progress', 'Resume']);
+
+    saveWorkoutDraft(db, 'live', {
+      version: DRAFT_VERSION,
+      startedAt: Date.now() - 12 * 60_000,
+      routineId: null,
+      restEndsAt: null,
+      blocks: [
+        {
+          key: 1,
+          exerciseId: 'barbell-bench-press',
+          name: 'Barbell Bench Press',
+          loggingType: 'weight_reps',
+          mechanic: 'compound',
+          restSec: 180,
+          prev: [],
+          bestE1rm: null,
+          linkedToNext: false,
+          sets: [
+            { key: 1, weight: '80', reps: '8', rpe: '', setType: 'normal', done: true, pr: false },
+            { key: 2, weight: '80', reps: '8', rpe: '', setType: 'normal', done: true, pr: false },
+            { key: 3, weight: '80', reps: '', rpe: '', setType: 'normal', done: false, pr: false },
+          ],
+        },
+      ],
+    });
+    const resuming = render('exercise hub (draft waiting)', ExerciseScreen);
+    expect('exercise hub (draft waiting)', resuming, [
+      'Session in progress',
+      'Barbell Bench Press',
+      // What is in it, and how long it has been sitting there — a session
+      // abandoned days ago is resumable, but the user has to be told which
+      // session they are picking up.
+      '2 sets logged',
+      // The age is measured from the last WRITE, not from the session's start:
+      // "how long has this been sitting here" is the question the card answers,
+      // and it was just written. Clamped at zero, so a SQLite/`Date.now()` skew
+      // can never print "in 0 minutes" (the Windows trap, CLAUDE.md house rules).
+      'just now',
+      'Resume',
+    ]);
+
+    // A draft with structure but nothing typed is NOT offered: those blocks are
+    // reproducible by starting the saved workout again, and a Resume that
+    // restores nothing typed is a Resume that wasted a tap.
+    saveWorkoutDraft(db, 'live', {
+      version: DRAFT_VERSION,
+      startedAt: Date.now(),
+      routineId: null,
+      restEndsAt: null,
+      blocks: [
+        {
+          key: 1,
+          exerciseId: 'barbell-row',
+          name: 'Barbell Row',
+          loggingType: 'weight_reps',
+          mechanic: 'compound',
+          restSec: 180,
+          prev: [],
+          bestE1rm: null,
+          linkedToNext: false,
+          sets: [
+            { key: 1, weight: '', reps: '', rpe: '', setType: 'normal', done: false, pr: false },
+          ],
+        },
+      ],
+    });
+    refute('exercise hub (empty draft)', render('exercise hub (empty draft)', ExerciseScreen), [
+      'Session in progress',
+    ]);
+    clearWorkoutDraft(db, 'live');
   }
 
   // -------------------------------------------------------------------------
