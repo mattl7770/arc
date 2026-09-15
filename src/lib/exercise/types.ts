@@ -267,10 +267,26 @@ export type ExerciseRow = {
   unilateral: 0 | 1;
   instructions: string | null;
   is_custom: 0 | 1;
+  /** Who authored this entry (0056). NULL on rows written before it existed. */
+  source: ExerciseSource | null;
   archived: 0 | 1;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
+
+/**
+ * Who wrote a catalog entry's facts (0056) — distinct from `is_custom`, which
+ * only says whether the row shipped with the app.
+ *
+ * The distinction earns its keep because a row's muscles feed freshness, weekly
+ * volume and the body figure: a movement the owner typed into the
+ * three-field New-exercise form and one a model authored — aliases, secondary
+ * muscles, pattern, mechanic and `measures` — are both custom, and are not
+ * equally trustworthy. When a definition looks wrong two months from now, the
+ * first question is who put it there. Same rule as `recipe_ingredients
+ * .resolved_by` (0034).
+ */
+export type ExerciseSource = 'seed' | 'user' | 'ai';
 
 /** One `exercise_muscles` row. */
 export type ExerciseMuscleRow = {
@@ -297,6 +313,8 @@ export type CatalogExercise = {
   measures: Measures;
   unilateral: boolean;
   isCustom: boolean;
+  /** Who authored it (0056) — `'ai'` is the one the picker marks. */
+  source: ExerciseSource | null;
   primaryMuscles: Muscle[];
   secondaryMuscles: Muscle[];
 };
@@ -304,6 +322,17 @@ export type CatalogExercise = {
 /** Fields for creating a custom exercise (the picker's "New exercise" form). */
 export type NewExercise = {
   name: string;
+  /**
+   * Search synonyms, stored as the JSON array `exercises.aliases` (0011) and
+   * ranked by the matcher exactly as the seeded rows' aliases are.
+   *
+   * Nothing wrote this column before C12: the seed planted aliases and the
+   * picker's manual form never asked for any, so a custom "Landmine Press"
+   * answered to precisely one spelling and nothing else. The AI entry supplies
+   * them, which is most of what makes an AI-authored movement findable again
+   * next month.
+   */
+  aliases?: string[];
   equipment: Equipment;
   loggingType: LoggingType;
   /**
@@ -318,8 +347,15 @@ export type NewExercise = {
   unilateral?: boolean;
   primaryMuscles: Muscle[];
   secondaryMuscles?: Muscle[];
-  /** Short how-to steps (AI search writes these; the manual form leaves them off). */
+  /** Short how-to steps (the AI entry writes these; the manual form leaves them off). */
   instructions?: string[];
+  /**
+   * Who authored these facts (0056). Omitted means `'user'` — the manual form,
+   * which is the only other thing that creates a row. A model-authored entry
+   * passes `'ai'` explicitly, and is never written without the owner tapping
+   * Save.
+   */
+  source?: ExerciseSource;
 };
 
 /** Filters the catalog picker can apply (all optional / AND-combined). */

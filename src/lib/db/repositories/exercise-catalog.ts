@@ -54,6 +54,12 @@ function toCatalogExercise(row: CatalogRow): CatalogExercise {
     measures: asMeasures(row.measures),
     unilateral: row.unilateral === 1,
     isCustom: row.is_custom === 1,
+    // 0056. A value the CHECK could not produce reads as null rather than being
+    // passed through, on the same principle as `asMeasures` above: a screen
+    // asking "who wrote this" must get an answer it can render, and "I don't
+    // know" is one.
+    source:
+      row.source === 'seed' || row.source === 'user' || row.source === 'ai' ? row.source : null,
     primaryMuscles: muscles.filter((m) => m.role === 'primary').map((m) => m.muscle),
     secondaryMuscles: muscles.filter((m) => m.role === 'secondary').map((m) => m.muscle),
   };
@@ -197,17 +203,32 @@ export function musclesByExercise(
 /**
  * Create a custom exercise + its muscle mappings in one transaction. Returns the
  * new exercise id (a UUID — seeded rows use slugs, custom rows use newId).
+ *
+ * Two additions in C12 (0056), both because the AI entry authors a WHOLE
+ * catalog row where the manual form authors three fields:
+ *
+ *   - `aliases` is finally written. The column has existed since 0011 and only
+ *     the seed ever filled it, so a custom movement answered to exactly one
+ *     spelling — which the A7 matcher then had nothing to rank. Stored as the
+ *     JSON array the matcher already reads, trimmed and de-duplicated, and NULL
+ *     rather than `[]` when there are none (the same shape `instructions` uses,
+ *     and what every pre-existing row holds).
+ *   - `source` records who wrote the facts. Omitted means `'user'`: the manual
+ *     form is the only other caller, and it is the truthful reading of a hand-
+ *     filled row. See the migration header for why this is not `is_custom`.
  */
 export function createCustomExercise(db: Database, input: NewExercise): string {
   const id = newId(db);
+  const aliases = [...new Set((input.aliases ?? []).map((a) => a.trim()).filter((a) => a !== ''))];
   db.transaction(() => {
     db.run(
       `INSERT INTO exercises
-         (id, name, equipment, movement_pattern, mechanic, logging_type, measures, unilateral, instructions, is_custom)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+         (id, name, aliases, equipment, movement_pattern, mechanic, logging_type, measures, unilateral, instructions, is_custom, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
       [
         id,
         input.name.trim(),
+        aliases.length > 0 ? JSON.stringify(aliases) : null,
         input.equipment,
         input.movementPattern ?? null,
         input.mechanic ?? null,
@@ -221,6 +242,7 @@ export function createCustomExercise(db: Database, input: NewExercise): string {
         input.instructions && input.instructions.length > 0
           ? JSON.stringify(input.instructions)
           : null,
+        input.source ?? 'user',
       ]
     );
     const insertMuscle = (muscle: Muscle, role: MuscleRole) =>

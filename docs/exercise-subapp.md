@@ -22,7 +22,7 @@
 > 3. **Saved workouts replace routines + programs** (owner call): one flat list of reusable sessions, loaded pre-filled. The `routines` tables carry them (UI renamed); **programs are retired** — `app/program-edit.tsx`, the programs repo/tests and the recommender's schedule branch are deleted, the 0020 tables stay in the schema dormant, and `ProgramContext`/the `rest` arm stay in the Recommendation type for the Coach's read tool (dormant). `buildRecommendation`'s signature and result shape are unchanged. The Train-today stamp now carries **two doors: Start recommended + Start empty**.
 > 4. **In-session exercise detail** — the exercise title on every live-logger block pushes `app/exercise-detail.tsx`, which now opens with **how the movement looks** (bundled public-domain demo photo, `assets/exercises/` + `images.generated.ts` — 69 frames, ~4.4 MB, matched from free-exercise-db) beside the **muscles-worked schematic** (figure in highlight mode), above records/trend/history.
 > 5. **The superset "bind"** — linking two exercises makes them one object: the lower plate springs up until the facing borders fuse into a single shared rule, and a SUPERSET seam chip stamps into the joint (Reanimated layout spring + ZoomIn; tap the seam to split). Replaces the static label; awaiting owner review on device.
-> 6. **AI exercise search** — the picker's third door ("Find with AI", shown when a key is set): name it, describe it, or say what you want to train. One model turn resolves against the catalog index; matches come back as tappable rows, genuinely-new movements as vetted review cards ("Create & add" → custom exercise **with instructions** — `NewExercise.instructions`, persisted to `exercises.instructions`). `src/lib/exercise/ai-search.ts`.
+> 6. ~~**AI exercise search**~~ — the picker's third door ("Find with AI"), one model turn resolving the user's words against the catalog index. **Retired 2026-09-14 by C12** (§12): searching the catalog is the matcher's job, and the model now writes the ENTRY for a movement the catalog lacks. `src/lib/exercise/ai-search.ts` is deleted; its review-card discipline and `NewExercise.instructions` survive in `ai-add.ts`.
 >
 > 31 new headless tests (`db/exercise-ai.test.mjs`: figure completeness, import parse/ground, backdated attribution, search parse/vetting, instructions); `db/training-volume.test.mjs` rewritten without programs (volumeScale coverage added); `db/programs.test.mjs` deleted.
 
@@ -488,3 +488,77 @@ That sentence is the Coach's entire share of the feature; it needs no arithmetic
 - **Whether the chip is findable.** It is deliberately quiet and sits beside the clock; the question is whether it is quiet enough to ignore for months and still obvious in a hotel gym on the first try.
 - **Whether "off every time" is the right default in practice**, on a two-week trip where the answer is "away" fourteen days running. The asymmetry argues it is; only a trip will say.
 - **The hollow bar.** At 120 pt the e1RM spark draws twelve ~9 pt bars, and an outlined bar at that width has never been looked at on a phone.
+
+---
+
+## 12. Phase 7 — catalog first, and the AI writes the entry (C12, 2026-09-14)
+
+Owner: *"ai add exercise replaces ai search (search catalog first)."*
+
+### 12.1 What the old door did, and why it is retired
+
+**AI exercise search** (Phase 4, bullet 6 above — `src/lib/exercise/ai-search.ts`, now **deleted**) was a standing third entrance beside browsing and the manual form. It sent the model the **catalog index** — every live movement's id and name — and asked it to pick.
+
+That is a retrieval problem ARC already solves better than a model can: A7's ranked matcher (`src/lib/exercise/match.ts`) folds plurals and punctuation, reads aliases, tolerates transposition, and answers *"lat pulldowns"*, *"pull-downs"*, *"skullcrusher"* and *"bnech press"* offline, deterministically, in about a millisecond. Paying a round-trip to re-derive that was the expensive way to be less reliable — and the model could return an id for an archived movement, or invent one outright.
+
+So the search is the catalog's, and the model is asked only the question the catalog cannot answer.
+
+**Removed:** `src/lib/exercise/ai-search.ts` (the module), `AiSearchView` (the picker's mode), the standing "Find with AI" button, and every export of that module — `searchExercisesWithAI`, `isExerciseSearchAvailable`, `ExerciseSearchUnavailableError`, `parseExerciseSearch`, `resolveSearchMatches`, `buildExerciseSearchRequest`, `EXERCISE_SEARCH_SYSTEM_PROMPT`. `db/exercise-ai.test.mjs` §6d asserts the file is gone **and** that nothing in `src/` or `app/` still imports it or calls anything it exported — a dead module nobody imports is the failure this guards against, not just a missing file. **No route was added or removed:** the picker is a `Modal` component, never a screen, so `app/_layout.tsx` is untouched.
+
+### 12.2 The gate: `offersAiEntry`
+
+```ts
+offersAiEntry(entries, query) // src/lib/exercise/match.ts
+```
+
+True when something was typed **and** nothing matched above the matcher's weakest tier. The line sits under `TIER.fuzzy` and above `TIER.fuzzyToken`, exactly where `match.ts`'s own docblock already puts it: tiers 0-4 are statements about the **letters typed** — an exact fold, an alias, a leading phrase, a containment, a whole name a few edits away — while FUZZY WORD is the one tier that is a *reach*, and the tier `resolveUniqueMatch` refuses outright for the same reason.
+
+| Typed | Tier reached | Door |
+| --- | --- | --- |
+| `bench press`, `RDL`, `lat pulldowns`, `skullcrusher` | exact / alias | shut |
+| `curl`, `press` | contains — lists every one | shut |
+| `bnech press`, `sqaut` | fuzzy | shut |
+| `jefferson curl` | fuzzy word only | **open** |
+| `landmine press`, `zercher squat` | nothing | **open** |
+| *(empty)* | — | shut |
+
+The empty-query case lives inside the gate rather than at the call site, so there is one answer to "is the door drawn": nothing typed is not a question.
+
+**A known limit, pinned rather than papered over.** `hack squat` keeps the door **shut**: "hack" is one substitution from the *Back Squat* alias, which is a whole-name FUZZY match and confident by every definition this module has. The owner gets Back Squat at the top of the list and the manual **New exercise** door. Widening the gate to catch it would mean distrusting tier 4 everywhere — the tier that makes `bnech press` work, a far commoner case than a one-letter collision with a real movement.
+
+### 12.3 What the model is asked for
+
+`src/lib/exercise/ai-add.ts` — a whole `exercises` row's worth of facts: name, **aliases**, equipment, primary/secondary muscles, `measures` (0046), `logging_type`, pattern, mechanic, unilateral, instructions.
+
+- **No catalog index rides with the request.** That is the whole of catalog-first, and it is also why the prompt is a fraction of the retired one: the ~70 id/name pairs were the bulk of every search request. ~571 tokens of system prompt, one-off and uncached, pinned at a ceiling of 600 in `db/exercise-ai.test.mjs` §6b. ARC has no `ESTIMATOR_PROMPT_CEILING` pattern for one-off prompts — the only prompt budget in the repo is the Coach's registry-wide one (`db/coach-eval.test.mjs` §6), and this is a separate turn with no tools, so it is not part of it. The test pins a measured number rather than inheriting an allowance.
+- **The model proposes, the parser disposes.** Every enum is checked against ARC's own vocabulary, and the **sixteen-muscle vocabulary is enforced at the boundary** — a muscle outside it is dropped here rather than at 0011's CHECK inside `createCustomExercise`'s transaction, which would roll the whole movement back with an opaque failure.
+- **Rejected whole, never half-kept.** No name, no legal equipment, no legal `loggingType`, or no surviving primary muscle: throw. Half a definition looks like a catalog entry and is not one — a movement with no primary muscle contributes nothing to freshness, weekly volume or the body figure, for ever, silently. That is the 2026-08-14 null-`exercise_id` bug wearing a different hat.
+- **`measures` both ways.** A legal canonical string from the model wins; anything else derives from `logging_type` through the one `MEASURES_FOR_LOGGING_TYPE` map. Both directions are needed — the derivation cannot express a carry's load + distance, and the model cannot be trusted with a sixteenth value.
+- **Aliases are finally written.** `exercises.aliases` has existed since 0011 and only the seed ever filled it, so a custom movement answered to exactly one spelling. `createCustomExercise` now persists them (trimmed, de-duplicated, never an echo of the name, `NULL` rather than `[]` when empty), which is most of what makes an AI-authored movement findable again next month — and it is what closes the gate for that movement afterwards.
+
+### 12.4 Provenance: migration `0056`
+
+```sql
+ALTER TABLE exercises ADD COLUMN source text CHECK (
+  source IS NULL OR source IN ('seed', 'user', 'ai')
+);
+UPDATE exercises SET source = 'seed' WHERE is_custom = 0;
+```
+
+**Not `is_custom`.** That column answers "did this ship with the app"; `source` answers "who authored the facts in it". A movement the owner typed into the three-field New-exercise form and one a model authored — aliases, secondary muscles, pattern, mechanic, `measures` — are both `is_custom = 1` and are not equally trustworthy. Those muscles feed `exercise_muscles`, and through it freshness, weekly volume and the body figure; when a definition looks wrong in two months, the first question is who put it there. 0034's rule again, and `recipe_ingredients.resolved_by` is the direct precedent down to its vocabulary.
+
+**Custom rows are left NULL by the backfill, deliberately.** The retired AI-search path created movements through the same `createCustomExercise` and left no mark, so an existing custom row could be either. Writing `user` over that would assert something nobody knows — exactly the failure the column exists to prevent. `NULL` means "authored before provenance was recorded", which is true.
+
+The mark is **visible**: the review card carries it before the row exists, and the catalog row afterwards reads `AI` where it would otherwise read `Custom`. A mark nobody can see is not provenance.
+
+### 12.5 The flow
+
+Search, nothing confident, **Add with AI** (in the results plate, under whatever weak guesses the search did turn up, outlined, no accent), the view opens **already running** on the words already typed with no second field, a **review card** listing every fact that will land — including the aliases and secondary muscles nothing else would ever show — and **Save & add** writes the row and picks it into the session like any other exercise. Nothing is written before Save.
+
+**Offline** is an honest state and a specific one: *"Couldn't reach the model. Browsing and 'New exercise' still work offline."* — which is true, and names which half is down. No key at all means the door is never drawn.
+
+### 12.6 What only a device can settle
+
+- **Whether the door is findable where it now sits.** It moved from a standing button at the top of the picker into the results plate; the gain is that it only appears when it is the right answer, and the risk is that it appears below the fold on a long list of weak guesses.
+- **How often the gate is right.** `hack squat` is the known false negative; the real question is how many of the movements the owner actually reaches for land on the wrong side of tier 4.
+- **Whether a one-shot entry is good enough**, or whether the review card needs to be editable before Save. It is deliberately read-only for now: the manual form is one tap away and re-running the model is cheaper than building a second editor.

@@ -4,8 +4,9 @@
  * rasteriser, the view budget and the opacity ramp), hand-set freshness anchors
  * (migration 0037), the photo-import parser/grounder (import-workout.ts),
  * backdated-fatigue attribution (training-stats.attributedInstant + the
- * freshness window), the AI exercise-search parser (ai-search.ts), and custom
- * exercises carrying instructions. Real SQLite via node:sqlite; op-sqlite /
+ * freshness window), the **catalog-first AI add-exercise** path (the gate in
+ * match.ts, the parser in ai-add.ts, the `source` provenance of 0056), and
+ * custom exercises carrying instructions. Real SQLite via node:sqlite; op-sqlite /
  * Expo / the network never loaded — the model calls themselves are NOT tested
  * here, only the pure request/parse/ground layers around them (the
  * db/nutrition-style split). Run: npm run db:test.
@@ -17,12 +18,17 @@
  * scrolling screen to treacle. Looks stay an on-device check (memory: verify on
  * device, not web).
  */
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
-import { createCustomExercise, getExercise } from '../src/lib/db/repositories/exercise-catalog.ts';
+import {
+  createCustomExercise,
+  getExercise,
+  listExercises,
+} from '../src/lib/db/repositories/exercise-catalog.ts';
 import { attributedInstant, recentMuscleLoads } from '../src/lib/db/repositories/training-stats.ts';
 import {
   BODY_STROKE_PT,
@@ -65,10 +71,11 @@ import {
   WORKOUT_PARSE_SYSTEM_PROMPT,
 } from '../src/lib/exercise/import-workout.ts';
 import {
-  buildExerciseSearchRequest,
-  parseExerciseSearch,
-  resolveSearchMatches,
-} from '../src/lib/exercise/ai-search.ts';
+  AI_EXERCISE_SYSTEM_PROMPT,
+  buildAiExerciseRequest,
+  parseAiExercise,
+} from '../src/lib/exercise/ai-add.ts';
+import { offersAiEntry } from '../src/lib/exercise/match.ts';
 
 let pass = 0;
 let fail = 0;
@@ -108,6 +115,20 @@ function makeDb(raw) {
     },
   };
 }
+
+/**
+ * The candidate set the matcher ranks — the same reduction
+ * `resolveExerciseByName` makes internally, rebuilt here from the public read
+ * because the picker's gate (`offersAiEntry`) takes names, not a database.
+ */
+const catalogNames = (db) =>
+  listExercises(db).map((e) => ({ id: e.id, name: e.name, aliases: e.aliases }));
+
+/** The muscle vocabulary the add-exercise PROMPT states, read back out of it. */
+const MUSCLES_IN_PROMPT = (AI_EXERCISE_SYSTEM_PROMPT.match(/^- muscles: (.+)$/m)?.[1] ?? '')
+  .split(', ')
+  .map((m) => m.trim())
+  .filter(Boolean);
 
 function freshDb() {
   const raw = new DatabaseSync(':memory:');
@@ -655,68 +676,297 @@ console.log('5. backdated fatigue attribution (attributedInstant + the window)')
 }
 
 // ---------------------------------------------------------------------------
-console.log('6. parseExerciseSearch: enum discipline, drops half-definitions');
+// C12 (0056). The AI's job changed from FINDING a movement to DEFINING one, so
+// this section tests the gate that decides whether the model is asked at all,
+// and then what happens to what it says.
+console.log('6a. catalog first: a confident match never reaches the model');
 {
-  const reply = JSON.stringify({
-    matches: [
-      { id: 'barbell-bench-press' },
-      { id: 'nope-not-real' },
-      { id: 'barbell-bench-press' },
-    ],
-    created: [
-      {
+  const { db } = freshDb();
+  const names = catalogNames(db);
+  const offered = (q) => offersAiEntry(names, q);
+
+  // The tiers that are statements about the letters typed. Every one of these
+  // is in the catalog, so the door must stay shut — paying a model round-trip
+  // to re-derive what the matcher already knows is the expensive way to be
+  // less reliable.
+  const inCatalog = [
+    'Barbell Bench Press', // EXACT
+    'bench press', // exact under the fold
+    'RDL', // ALIAS
+    'lat pulldowns', // plural, folded
+    'skullcrusher', // squashed compound
+    'lat pull', // multi-word PREFIX
+    'curl', // CONTAINS — lists every curl
+    'press', // CONTAINS — lists nine presses
+    'bnech press', // FUZZY, one transposition
+    'sqaut', // FUZZY
+  ];
+  const shut = inCatalog.filter((q) => !offered(q));
+  shut.length === inCatalog.length
+    ? ok(`all ${inCatalog.length} catalog-answerable queries keep the AI door shut`)
+    : bad('AI offered over a real match', inCatalog.filter(offered).join(' | '));
+
+  // ...and the reaches, where the catalog genuinely has nothing. "jefferson
+  // curl" is the instructive one: it reaches the curls, but only through FUZZY
+  // WORD, because "jefferson" is nowhere near any word in the catalog. That is
+  // the tier `resolveUniqueMatch` refuses outright, and the tier this gate
+  // draws its line under.
+  const missing = ['landmine press', 'jefferson curl', 'zercher squat', 'copenhagen adduction'];
+  const wrongly = missing.filter((q) => !offered(q));
+  wrongly.length === 0
+    ? ok('…and every movement the catalog lacks opens it, including a FUZZY-WORD near-miss')
+    : bad('AI not offered for a missing movement', wrongly.join(' | '));
+
+  // A KNOWN LIMIT, pinned rather than papered over. "hack squat" is a distinct
+  // machine the catalog does not have, and the gate stays SHUT on it: "hack" is
+  // one substitution from the "Back Squat" alias, which is a whole-name FUZZY
+  // match and therefore confident by every definition this module has. The
+  // owner gets Back Squat at the top of the list and the manual "New exercise"
+  // door; he does not get the AI one. Widening the gate to catch it would mean
+  // distrusting tier 4 everywhere, which is the tier that makes "bnech press"
+  // work — a far commoner case than a one-letter collision with a real
+  // movement. Recorded here so the next reader knows it was weighed.
+  !offered('hack squat')
+    ? ok('a one-edit collision with a real movement keeps the door shut (known limit)')
+    : bad('hack squat now opens the door — the tier line moved');
+
+  // Nothing typed is not a question, so it gets no door.
+  !offered('') && !offered('   ')
+    ? ok('an empty query offers nothing — no ask, no door')
+    : bad('empty query opened the AI door');
+
+  // The gate has to move with the catalog: once the movement EXISTS, the door
+  // closes for it, which is what makes "add it once" the whole interaction.
+  createCustomExercise(db, {
+    name: 'Landmine Press',
+    aliases: ['Viking Press'],
+    equipment: 'barbell',
+    loggingType: 'weight_reps',
+    primaryMuscles: ['front_delts'],
+    source: 'ai',
+  });
+  const after = catalogNames(db);
+  !offersAiEntry(after, 'landmine press') && !offersAiEntry(after, 'viking press')
+    ? ok('once saved, the movement answers by name AND by its alias — the door closes')
+    : bad('saved AI movement not findable');
+}
+
+// ---------------------------------------------------------------------------
+console.log('6b. parseAiExercise: one entry, vetted whole or rejected whole');
+{
+  const entry = (over) =>
+    JSON.stringify({
+      entry: {
         name: 'Landmine Press',
+        aliases: ['Viking Press', 'landmine press', '  ', 'Angled Barbell Press'],
         equipment: 'barbell',
         primaryMuscles: ['front_delts', 'front_delts', 'earlobe'],
-        secondaryMuscles: ['triceps', 'front_delts'],
+        secondaryMuscles: ['triceps', 'front_delts', 'gluteus_supremus'],
         movementPattern: 'push_v',
         mechanic: 'compound',
         loggingType: 'weight_reps',
+        measures: 'reps,load',
         unilateral: true,
         instructions: ['Wedge the bar in a corner.', 'Press from the shoulder.', ''],
+        ...over,
       },
-      {
-        name: 'Broken One',
-        equipment: 'jetpack',
-        primaryMuscles: ['chest'],
+      note: 'Closest existing is the overhead press.',
+    });
+
+  const parsed = parseAiExercise('```json\n' + entry() + '\n```');
+  parsed.entry.name === 'Landmine Press' &&
+  parsed.note === 'Closest existing is the overhead press.'
+    ? ok('the entry parses through ```json fences, note carried')
+    : bad('parse', JSON.stringify(parsed));
+
+  // THE MUSCLE VOCABULARY, at the boundary. "earlobe" and "gluteus_supremus"
+  // are not in ARC's sixteen; they must die here, not at 0011's CHECK inside
+  // createCustomExercise's transaction — which would roll the whole movement
+  // back with an opaque failure.
+  parsed.entry.primaryMuscles.join() === 'front_delts' &&
+  parsed.entry.secondaryMuscles.join() === 'triceps'
+    ? ok('muscles outside ARC’s sixteen are dropped at the boundary, and duplicates deduped')
+    : bad('muscle vocabulary', JSON.stringify(parsed.entry));
+  MUSCLES_IN_PROMPT.length === MUSCLE_ORDER.length &&
+  MUSCLE_ORDER.every((m) => MUSCLES_IN_PROMPT.includes(m))
+    ? ok('…and the vocabulary the PROMPT states is the same sixteen the app uses')
+    : bad('prompt muscle list drifted from MUSCLE_ORDER');
+
+  // Aliases: trimmed, de-duplicated, and never an echo of the name itself.
+  parsed.entry.aliases.join(' · ') === 'Viking Press · Angled Barbell Press'
+    ? ok('aliases are trimmed and de-duplicated, and the name is not repeated as one')
+    : bad('aliases', JSON.stringify(parsed.entry.aliases));
+  parsed.entry.instructions.length === 2
+    ? ok('empty instruction steps are dropped')
+    : bad('instructions', JSON.stringify(parsed.entry.instructions));
+  parsed.entry.source === 'ai'
+    ? ok('the entry is marked `ai` before it is anywhere near the database')
+    : bad('source not marked', parsed.entry.source);
+
+  // `measures` (0046): taken from the model when legal, derived from
+  // loggingType when not. Both directions matter — the derivation cannot
+  // express a carry's load + distance, and the model cannot be trusted with a
+  // sixteenth value.
+  parseAiExercise(entry({ measures: 'load,distance', loggingType: 'weight_reps' })).entry
+    .measures === 'load,distance'
+    ? ok('a legal `measures` from the model wins — this is how a carry gets load + distance')
+    : bad('explicit measures ignored');
+  parseAiExercise(entry({ measures: 'reps,vibes', loggingType: 'distance_duration' })).entry
+    .measures === 'time,distance'
+    ? ok('…and an illegal one falls back to the one logging_type → measures mapping')
+    : bad('measures fallback');
+  parseAiExercise(entry({ measures: undefined, loggingType: 'duration' })).entry.measures === 'time'
+    ? ok('…as does an absent one')
+    : bad('measures absent');
+
+  // REJECTED WHOLE. Half a definition looks like a catalog entry and is not
+  // one: a movement with no primary muscle contributes nothing to freshness,
+  // weekly volume or the body figure, for ever, silently.
+  throws(() => parseAiExercise(entry({ equipment: 'jetpack' })))
+    ? ok('an entry with unknown equipment is rejected whole, not half-kept')
+    : bad('bad equipment kept');
+  throws(() => parseAiExercise(entry({ primaryMuscles: ['earlobe'] })))
+    ? ok('…so is one whose only primary muscle is outside the vocabulary')
+    : bad('no-primary entry kept');
+  throws(() => parseAiExercise(entry({ name: '   ' })))
+    ? ok('…and one with no name')
+    : bad('nameless entry kept');
+  throws(() => parseAiExercise(JSON.stringify({ entry: null, note: null })))
+    ? ok('a request that is not a movement throws, and the UI reports it')
+    : bad('null entry kept');
+  throws(() => parseAiExercise('no json here'))
+    ? ok('a reply with no JSON throws')
+    : bad('no-JSON');
+
+  // The request carries the ask and NOT the catalog — the whole of catalog
+  // first, and why this prompt is a fraction of the retired search prompt's
+  // size (that one shipped ~70 id/name pairs on every request).
+  const req = buildAiExerciseRequest('  landmine press  ');
+  req.messages.length === 1 &&
+  req.messages[0].content.includes('landmine press') &&
+  !/::/.test(req.messages[0].content)
+    ? ok('the request is the user’s words alone — no catalog index rides with it')
+    : bad('request', JSON.stringify(req.messages));
+
+  // Token measure. ARC has no ESTIMATOR_PROMPT_CEILING pattern for one-off
+  // prompts — the only prompt budget in the repo is the Coach's registry-wide
+  // one (db/coach-eval.test.mjs §6), and this is a separate turn with no tools,
+  // so it is not in that budget. A number with a ceiling here is the same
+  // discipline applied locally: ~3.6 chars/token for prose.
+  //
+  // 600 is the measured size plus a little air, not an inherited allowance:
+  // ~560 tok, of which the five VOCABULARY lines are ~200 and cannot be cut —
+  // they are the closed domains the parser then enforces, and a model guessing
+  // at tokens it was never shown produces exactly the entries that get rejected
+  // whole. The retired AI-search prompt was comparable AND shipped ~70 catalog
+  // id/name pairs with every request; dropping the index is where the real
+  // saving is.
+  const promptTokens = Math.round(AI_EXERCISE_SYSTEM_PROMPT.length / 3.6);
+  promptTokens < 600
+    ? ok(`the system prompt is ~${promptTokens} tok (ceiling 600, one-off, uncached)`)
+    : bad('add-exercise prompt over budget', String(promptTokens));
+}
+
+// ---------------------------------------------------------------------------
+console.log('6c. nothing is written without Save, and what is written says who wrote it');
+{
+  const { db, raw } = freshDb();
+  const before = raw.prepare('SELECT count(*) c FROM exercises').get().c;
+  const { entry } = parseAiExercise(
+    JSON.stringify({
+      entry: {
+        name: 'Landmine Press',
+        aliases: ['Viking Press'],
+        equipment: 'barbell',
+        primaryMuscles: ['front_delts'],
+        secondaryMuscles: ['triceps'],
+        movementPattern: 'push_v',
+        mechanic: 'compound',
         loggingType: 'weight_reps',
+        measures: 'reps,load',
+        unilateral: true,
+        instructions: ['Wedge the bar in a corner.'],
       },
-    ],
-    note: 'Closest existing is the overhead press.',
+      note: null,
+    })
+  );
+  raw.prepare('SELECT count(*) c FROM exercises').get().c === before
+    ? ok('parsing an entry writes NOTHING — the review card is a proposal, not a row')
+    : bad('parse wrote a row');
+
+  // Save.
+  const id = createCustomExercise(db, entry);
+  const row = raw.prepare('SELECT * FROM exercises WHERE id = ?').get(id);
+  row.source === 'ai' && row.is_custom === 1
+    ? ok('the saved row is marked source = "ai" — distinct from merely being custom')
+    : bad('source on the row', JSON.stringify([row.source, row.is_custom]));
+  JSON.parse(row.aliases).join() === 'Viking Press'
+    ? ok('…and its aliases land as JSON, which nothing but the seed ever wrote before')
+    : bad('aliases not persisted', row.aliases);
+  getExercise(db, id).source === 'ai'
+    ? ok('…and the repository reads the mark back')
+    : bad('source read-back');
+
+  // The manual form's rows are the OTHER provenance, and the seed is the third.
+  const byHand = createCustomExercise(db, {
+    name: 'Sled Drag',
+    equipment: 'other',
+    loggingType: 'weight_reps',
+    primaryMuscles: ['quads'],
   });
-  const parsed = parseExerciseSearch(reply);
-  parsed.matchIds.join() === 'barbell-bench-press,nope-not-real'
-    ? ok('match ids dedupe, order kept (unknowns resolved later)')
-    : bad('matchIds', JSON.stringify(parsed.matchIds));
-  parsed.creations.length === 1
-    ? ok('an invalid-equipment creation is dropped whole')
-    : bad('drops');
-  const c = parsed.creations[0];
-  c.primaryMuscles.join() === 'front_delts' &&
-  c.secondaryMuscles.join() === 'triceps' &&
-  c.unilateral === true &&
-  c.instructions.length === 2
-    ? ok('creation vetted: muscles deduped + enum-checked, secondary≠primary, empty steps dropped')
-    : bad('creation', JSON.stringify(c));
-  parsed.note === 'Closest existing is the overhead press.' ? ok('note carried') : bad('note');
+  getExercise(db, byHand).source === 'user'
+    ? ok('a hand-authored movement is "user" — an omitted source is not "ai"')
+    : bad('manual source', getExercise(db, byHand).source);
+  getExercise(db, 'barbell-bench-press').source === 'seed'
+    ? ok('…and 0056’s backfill records what actually happened: the seed wrote the core')
+    : bad('seed backfill', getExercise(db, 'barbell-bench-press').source);
+  raw.prepare("SELECT count(*) c FROM exercises WHERE is_custom = 0 AND source IS NOT 'seed'").get()
+    .c === 0
+    ? ok('every shipped row carries it, and no custom row was guessed at')
+    : bad('backfill leaked onto custom rows');
+  throws(() =>
+    db.run(
+      "INSERT INTO exercises (id, name, equipment, logging_type, source) VALUES ('x','X','barbell','weight_reps','vibes')"
+    )
+  )
+    ? ok('the source vocabulary is a CHECK, not a convention')
+    : bad('source CHECK missing');
+}
 
-  const { db } = freshDb();
-  const resolved = resolveSearchMatches(db, parsed);
-  resolved.matches.length === 1 && resolved.matches[0].id === 'barbell-bench-press'
-    ? ok('resolution drops ids the catalog does not know')
-    : bad('resolve', JSON.stringify(resolved.matches.map((m) => m.id)));
+// ---------------------------------------------------------------------------
+console.log('6d. the retired AI-search path is gone, not merely unused');
+{
+  const root = new URL('../', import.meta.url);
+  existsSync(new URL('src/lib/exercise/ai-search.ts', root))
+    ? bad('ai-search.ts still present')
+    : ok('src/lib/exercise/ai-search.ts is deleted, not left dead in the tree');
 
-  throws(() => parseExerciseSearch('{"matches": [], "created": [], "note": null}'))
-    ? ok('an empty result throws (the UI reports, never renders nothing)')
-    : bad('empty result');
-
-  const req = buildExerciseSearchRequest('rear delts with bands', [
-    { id: 'face-pull', name: 'Face Pull' },
-  ]);
-  req.messages[0].content.includes('face-pull :: Face Pull') &&
-  req.messages[0].content.includes('rear delts with bands')
-    ? ok('request carries the catalog index and the ask')
-    : bad('request');
+  // The failure this guards is a stale IMPORT — a file that still reaches for
+  // the retired module, or for one of its exports, which would either fail to
+  // build or resurrect the door the owner asked to have replaced. Prose that
+  // merely names the old file (ai-add.ts's own docblock explains what it
+  // replaced, and should) is not a reference; an import or a call is.
+  const stale =
+    /from\s+['"][^'"]*ai-search['"]|require\(['"][^'"]*ai-search['"]\)|searchExercisesWithAI|isExerciseSearchAvailable|ExerciseSearchUnavailableError|resolveSearchMatches|parseExerciseSearch|buildExerciseSearchRequest|EXERCISE_SEARCH_SYSTEM_PROMPT/;
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(new URL(dir, root), { withFileTypes: true })) {
+      const rel = `${dir}${entry.name}`;
+      if (entry.isDirectory()) walk(`${rel}/`);
+      else if (/\.(ts|tsx|mjs)$/.test(entry.name)) {
+        if (stale.test(readFileSync(new URL(rel, root), 'utf8'))) offenders.push(rel);
+      }
+    }
+  };
+  walk('src/');
+  walk('app/');
+  // Shipped code only. A stale import in a db/*.test.mjs would throw on import
+  // and take its whole suite down, so the gate already catches that — and
+  // scanning db/ would flag THIS file, whose regex necessarily names every
+  // retired symbol.
+  offenders.length === 0
+    ? ok('…and nothing in src/ or app/ imports it or calls anything it exported')
+    : bad('stale AI-search references', offenders.join(' '));
 }
 
 // ---------------------------------------------------------------------------

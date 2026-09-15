@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -22,12 +22,12 @@ import {
   listExercises,
 } from '@/lib/db/repositories/exercise-catalog';
 import {
-  isExerciseSearchAvailable,
-  searchExercisesWithAI,
-  type ExerciseSearchResult,
-} from '@/lib/exercise/ai-search';
+  addExerciseWithAI,
+  isAiExerciseAvailable,
+  type ParsedAiExercise,
+} from '@/lib/exercise/ai-add';
 import { MUSCLE_LABEL, MUSCLE_ORDER } from '@/lib/exercise/constants';
-import { rankExerciseMatches } from '@/lib/exercise/match';
+import { offersAiEntry, rankExerciseMatches } from '@/lib/exercise/match';
 import { DEFAULT_MEASURES, measuresLabel, type Measures } from '@/lib/exercise/measures';
 import type { CatalogExercise, Equipment, Muscle, NewExercise } from '@/lib/exercise/types';
 
@@ -39,6 +39,21 @@ import type { CatalogExercise, Equipment, Muscle, NewExercise } from '@/lib/exer
  *
  * Search tolerates how people actually type (2026-09-14): misspellings,
  * alternative names, and words run together — see {@link visibleExercises}.
+ *
+ * ## Catalog first, then the model (C12, 2026-09-14)
+ *
+ * Owner: *"ai add exercise replaces ai search (search catalog first)."* The old
+ * "Find with AI" door was a standing third entrance that sent the model the
+ * whole catalog index and asked it to pick — a retrieval problem the ranked
+ * matcher already solves offline and deterministically.
+ *
+ * It is gone. Typing searches the catalog, and **only when nothing above the
+ * matcher's weakest tier matches** (`offersAiEntry`) does *Add with AI*
+ * appear, in the empty-results state where the reader is already looking. It
+ * asks the model for a catalog ENTRY — name, aliases, equipment, muscles,
+ * measures, logging type — which is rendered for review and written only on
+ * Save, marked `source: 'ai'`. Nothing is created silently: those muscles feed
+ * freshness, weekly volume and the body figure.
  *
  * ## The surface system (00-design-spec.md §1)
  *
@@ -147,6 +162,25 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
 
   const filtered = useMemo(() => visibleExercises(all, search, muscle), [all, search, muscle]);
 
+  /**
+   * Whether the AI door is drawn at all — the catalog-first gate (C12), plus a
+   * model key to walk through it with.
+   *
+   * `offersAiEntry` (src/lib/exercise/match.ts) is asked about the WHOLE
+   * catalog, not about `filtered`: the muscle chips are the reader's own
+   * narrowing, and "Back" selected while searching "landmine press" must not be
+   * read as ARC lacking the movement.
+   */
+  const aiOffered = useMemo(
+    () =>
+      isAiExerciseAvailable() &&
+      offersAiEntry(
+        all.map((ex) => ({ id: ex.id, name: ex.name, aliases: ex.aliases })),
+        search
+      ),
+    [all, search]
+  );
+
   const close = () => {
     setMode('browse');
     setSearch('');
@@ -204,7 +238,7 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
               <Ionicons name="close" size={22} color={palette.ink} />
             </Pressable>
             <Text className="flex-1 font-serif text-lg font-semibold text-ink">
-              {mode === 'create' ? 'New exercise' : mode === 'ai' ? 'Find with AI' : 'Add exercise'}
+              {mode === 'create' ? 'New exercise' : mode === 'ai' ? 'Add with AI' : 'Add exercise'}
             </Text>
           </View>
 
@@ -218,9 +252,9 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
               }}
             />
           ) : mode === 'ai' ? (
-            <AiSearchView
+            <AiAddView
+              query={search}
               onCancel={() => setMode('browse')}
-              onSelect={select}
               onCreated={(id) => {
                 reloadCatalog();
                 const ex = getExercise(getDb(), id);
@@ -237,7 +271,7 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
               onSelect={select}
               onOpenDetail={openDetail}
               onNew={() => setMode('create')}
-              onAi={isExerciseSearchAvailable() ? () => setMode('ai') : null}
+              onAi={aiOffered ? () => setMode('ai') : null}
             />
           )}
         </View>
@@ -265,7 +299,10 @@ function BrowseCatalog({
   onSelect: (ex: CatalogExercise) => void;
   onOpenDetail: (ex: CatalogExercise) => void;
   onNew: () => void;
-  /** null when no model key is configured — the door simply isn't drawn. */
+  /**
+   * null unless the catalog has nothing confident for what was typed AND a
+   * model key is configured — the door is not a standing entrance (C12).
+   */
   onAi: (() => void) | null;
 }) {
   return (
@@ -301,31 +338,20 @@ function BrowseCatalog({
         ))}
       </ScrollView>
 
-      {/* The other two doors: the manual form, and — when a model key is set —
-          AI search ("name it, describe it, or say what you want to do"). */}
-      <View className="mt-3 flex-row gap-2">
+      {/* The manual door, always. The AI door used to sit beside it as a
+          standing third entrance; it now lives in the results plate below,
+          where it is only drawn once the catalog has come up empty-handed. */}
+      <View className="mt-3">
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Create a custom exercise"
           onPress={onNew}
-          className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+          className="min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
           <Ionicons name="add" size={17} color={palette.inkSecondary} />
           <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
             New exercise
           </Text>
         </Pressable>
-        {onAi ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Find an exercise with AI"
-            onPress={onAi}
-            className="min-h-[44px] flex-1 flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
-            <Ionicons name="sparkles-outline" size={15} color={palette.inkSecondary} />
-            <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
-              Find with AI
-            </Text>
-          </Pressable>
-        ) : null}
       </View>
 
       {/* Results — a catalog is a record, so: one ruled plate, drawn whether or
@@ -374,10 +400,17 @@ function BrowseCatalog({
                         own hairline box, which put a border inside a plate row
                         that is already ruled top and bottom (owner, 2026-08-10 —
                         boxes around a single item). The label voice is what
-                        marks it, the same as the muscle/equipment line above. */}
+                        marks it, the same as the muscle/equipment line above.
+
+                        Still one word, and now the more useful one where the
+                        two differ (0056): a movement a model defined reads AI
+                        rather than Custom. That is the whole point of recording
+                        provenance — a mark nobody can see is not provenance,
+                        and this row is where the owner meets the movement again
+                        a month after approving it. */}
                       {ex.isCustom ? (
                         <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                          Custom
+                          {ex.source === 'ai' ? 'AI' : 'Custom'}
                         </Text>
                       ) : null}
                       <Ionicons name="add" size={18} color={palette.inkMuted} />
@@ -399,6 +432,43 @@ function BrowseCatalog({
               ))}
             </View>
           )}
+
+          {/*
+            The AI door — drawn only when the ranked matcher found nothing above
+            its weakest tier for what was typed (C12). That is the whole of
+            "catalog first": ARC answers from its own catalog whenever it
+            honestly can, and the model is asked only to DEFINE what the catalog
+            lacks.
+
+            It sits inside the results plate, below whatever the search did
+            manage to turn up, because that is where the reader already is when
+            a search disappoints — and because the weak guesses above it are
+            still worth reading first. Outlined, never the accent: browsing this
+            picker has no accent at all, and adding a door is not a reason to
+            spend one. The rule above it is `Divider`, so it reads as the last
+            line of the record rather than a box bolted onto it.
+          */}
+          {onAi ? (
+            <View className="mt-1">
+              <Divider first={filtered.length === 0} />
+              <Text className="mt-2.5 font-serif text-[13px] leading-5 text-ink-secondary">
+                {filtered.length === 0
+                  ? 'ARC doesn’t have this one.'
+                  : 'Not one of these? ARC doesn’t have a close match.'}{' '}
+                AI can write the catalog entry — you review it before it’s saved.
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Add ${search.trim()} with AI`}
+                onPress={onAi}
+                className="mt-2.5 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+                <Ionicons name="sparkles-outline" size={15} color={palette.inkSecondary} />
+                <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+                  Add with AI
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
         </Block>
       </ScrollView>
     </>
@@ -434,58 +504,86 @@ function FilterChip({ label, on, onPress }: { label: string; on: boolean; onPres
 }
 
 /**
- * AI search — "name it, describe it, or say what you want to do". One model
- * turn (src/lib/exercise/ai-search.ts) resolves the words against the catalog:
- * matched movements come back as plain rows (tap adds, exactly like browsing),
- * and genuinely-new movements come back as REVIEW CARDS with the full vetted
- * definition and a ghost "Create & add" — the model proposes, the user
- * disposes, nothing writes silently.
+ * **Add with AI** — the model writes a catalog ENTRY, and the owner approves it.
  *
- * **Accent budget: one — the Search action.** Result rows add by plain tap and
- * creation cards use an outlined button, so the accent never multiplies as
- * results appear.
+ * Reached only from the catalog-first gate in {@link BrowseCatalog}: the search
+ * has already run, ARC has nothing above the matcher's weakest tier, and the
+ * words the owner typed are handed straight to `src/lib/exercise/ai-add.ts`. So
+ * this view opens ALREADY RUNNING — there is no second field to retype the same
+ * words into, which is what the retired AI-search door made you do.
+ *
+ * Four beats, the house contract: ask (already made) → work → **review** →
+ * save. The review card prints every fact that will land on the row, including
+ * the ones the owner would otherwise never see — the aliases his future
+ * searches will match, and the secondary muscles that will feed freshness,
+ * weekly volume and the body figure. Those are the reason nothing is written
+ * before Save.
+ *
+ * **Accent budget: one — Save & add.** Everything else is outlined or plain.
  */
-function AiSearchView({
+function AiAddView({
+  query,
   onCancel,
-  onSelect,
   onCreated,
 }: {
+  /** What was typed in the search field — the ask, already made. */
+  query: string;
   onCancel: () => void;
-  onSelect: (ex: CatalogExercise) => void;
   onCreated: (id: string) => void;
 }) {
-  const [query, setQuery] = useState('');
+  // The view opens WORKING — the ask was made on the previous screen, so there
+  // is no idle state to sit in and nothing to press to begin.
   const [phase, setPhase] = useState<
-    | { kind: 'idle' }
-    | { kind: 'searching' }
-    | { kind: 'results'; result: ExerciseSearchResult }
+    | { kind: 'working' }
+    | { kind: 'review'; result: ParsedAiExercise }
     | { kind: 'error'; message: string }
-  >({ kind: 'idle' });
+  >({ kind: 'working' });
+  // Bumped by Try again; the only thing that re-runs the turn. The counter is
+  // the retry rather than a callback so the effect below never has to set state
+  // synchronously — which is a lint error and, more to the point, a cascading
+  // render on a screen that is already mid-request.
+  const [attempt, setAttempt] = useState(0);
 
-  const canSearch = query.trim().length > 1 && phase.kind !== 'searching';
-
-  const runSearch = async () => {
-    if (!canSearch) return;
-    setPhase({ kind: 'searching' });
-    try {
-      const result = await searchExercisesWithAI(getDb(), query);
-      setPhase({ kind: 'results', result });
-    } catch (error) {
-      setPhase({
-        kind: 'error',
-        message:
-          error instanceof Error && error.name === 'ExerciseSearchUnavailableError'
-            ? error.message
-            : 'Couldn’t search. Check your connection and try again, or browse the catalog.',
+  useEffect(() => {
+    // `cancelled` is not a nicety: the sheet can be dismissed mid-flight, and a
+    // `setPhase` after that is a state update on an unmounted tree.
+    let cancelled = false;
+    addExerciseWithAI(query)
+      .then((result) => {
+        if (!cancelled) setPhase({ kind: 'review', result });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setPhase({
+          kind: 'error',
+          message:
+            error instanceof Error && error.name === 'AiExerciseUnavailableError'
+              ? error.message
+              : error instanceof Error && /reply|JSON|movement|incomplete/i.test(error.message)
+                ? // The model answered and the answer was unusable — say that,
+                  // rather than blaming a connection that plainly worked.
+                  error.message
+                : // The honest offline state. Everything else in this picker —
+                  // browsing, searching, the manual form — works with the
+                  // network unplugged, so the sentence says which half is down.
+                  'Couldn’t reach the model. Browsing and “New exercise” still work offline.',
+        });
       });
-    }
+    return () => {
+      cancelled = true;
+    };
+  }, [query, attempt]);
+
+  const retry = () => {
+    setPhase({ kind: 'working' });
+    setAttempt((n) => n + 1);
   };
 
-  const createFromCard = (definition: NewExercise) => {
+  const save = (entry: NewExercise) => {
     try {
-      onCreated(createCustomExercise(getDb(), definition));
+      onCreated(createCustomExercise(getDb(), entry));
     } catch (error) {
-      console.warn('[exercise] AI-search create failed', error);
+      console.warn('[exercise] AI entry save failed', error);
       setPhase({ kind: 'error', message: 'Couldn’t save that exercise. Please try again.' });
     }
   };
@@ -495,144 +593,65 @@ function AiSearchView({
       className="-mx-5 mt-2 flex-1 px-5"
       keyboardShouldPersistTaps="handled"
       contentContainerClassName="pb-8">
+      {/* The ask, quoted back. The owner typed it one screen ago, and a review
+          card with no subject is a card about nothing. */}
       <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
-        Name it, describe it, or say what you want to train — &ldquo;landmine press&rdquo;,
-        &ldquo;that one where you row lying face-down&rdquo;, &ldquo;rear delts with only
-        bands&rdquo;.
+        Writing a catalog entry for <Text className="text-ink">“{query.trim()}”</Text>. Nothing is
+        saved until you say so.
       </Text>
 
-      {/* The ask — recessed stock: you write into it. */}
-      <View className="mt-3 min-h-[64px] border border-paper-deep bg-paper-dim px-3.5">
-        <TextInput
-          value={query}
-          onChangeText={setQuery}
-          placeholder="What are you looking for?"
-          placeholderTextColor={palette.inkMuted}
-          multiline
-          className="py-2.5 font-serif text-[15px] leading-5 text-ink"
-          accessibilityLabel="Describe the exercise you want"
-          autoFocus
-        />
-      </View>
-
-      {/* The one primary action in this view. */}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Search with AI"
-        accessibilityState={{ disabled: !canSearch }}
-        disabled={!canSearch}
-        onPress={runSearch}
-        className={`mt-3 h-12 flex-row items-center justify-center gap-2 rounded-btn ${
-          canSearch ? 'bg-pine active:opacity-70' : 'border border-hairline'
-        }`}>
-        <Ionicons
-          name="sparkles-outline"
-          size={15}
-          color={canSearch ? palette.pineOn : palette.inkMuted}
-        />
-        <Text
-          className={`font-label text-[15px] font-semibold ${
-            canSearch ? 'text-pine-on' : 'text-ink-muted'
-          }`}>
-          Search
-        </Text>
-      </Pressable>
-
-      {phase.kind === 'searching' ? (
+      {phase.kind === 'working' ? (
         <View className="mt-8 items-center">
           <ActivityIndicator color={palette.ink} />
           <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
-            Looking through the catalog…
+            Looking it up…
           </Text>
         </View>
       ) : null}
 
       {phase.kind === 'error' ? (
-        <Text className="mt-4 font-serif text-[13px] leading-5 text-ink-secondary">
-          {phase.message}
-        </Text>
+        <>
+          <Text className="mt-5 font-serif text-[13px] leading-5 text-ink-secondary">
+            {phase.message}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Try again"
+            onPress={retry}
+            className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+            <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+              Try again
+            </Text>
+          </Pressable>
+        </>
       ) : null}
 
-      {phase.kind === 'results' ? (
+      {phase.kind === 'review' ? (
         <>
           {phase.result.note ? (
             <Text className="mt-4 font-serif text-[12px] leading-5 text-ink-muted">
               {phase.result.note}
             </Text>
           ) : null}
-
-          {phase.result.matches.length > 0 ? (
-            <View className="mt-4">
-              <Block device="plate">
-                <SectionLabel label="In the catalog" note={String(phase.result.matches.length)} />
-                <View className="mt-1">
-                  {phase.result.matches.map((ex, i) => (
-                    <View key={ex.id}>
-                      <Divider first={i === 0} />
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Add ${ex.name}`}
-                        onPress={() => onSelect(ex)}
-                        className="min-h-[44px] flex-row items-center gap-3 py-2 active:opacity-60">
-                        <View className="flex-1">
-                          <Text className="font-serif text-[15px] text-ink">{ex.name}</Text>
-                          <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                            {ex.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ') || '—'} ·{' '}
-                            {equipmentLabel(ex.equipment)}
-                            {measureNote(ex.measures)}
-                          </Text>
-                        </View>
-                        <Ionicons name="add" size={18} color={palette.inkMuted} />
-                      </Pressable>
-                    </View>
-                  ))}
-                </View>
-              </Block>
-            </View>
-          ) : null}
-
-          {phase.result.creations.map((c, i) => (
-            <View key={`${c.name}-${i}`} className="mt-4">
-              <Block device="plate">
-                <SectionLabel label="Not in the catalog — proposed" />
-                <Text className="mt-2 font-serif text-[16px] font-semibold text-ink">{c.name}</Text>
-                <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                  {c.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ')} ·{' '}
-                  {equipmentLabel(c.equipment)}
-                  {c.secondaryMuscles && c.secondaryMuscles.length > 0
-                    ? ` · assists ${c.secondaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ')}`
-                    : ''}
-                </Text>
-                {c.instructions && c.instructions.length > 0 ? (
-                  <View className="mt-2">
-                    {c.instructions.map((step, si) => (
-                      <Text
-                        key={si}
-                        className="mt-0.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
-                        {si + 1}. {step}
-                      </Text>
-                    ))}
-                  </View>
-                ) : null}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Create ${c.name} and add it`}
-                  onPress={() => createFromCard(c)}
-                  className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
-                  <Ionicons name="add" size={16} color={palette.inkSecondary} />
-                  <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
-                    Create &amp; add
-                  </Text>
-                </Pressable>
-              </Block>
-            </View>
-          ))}
+          <View className="mt-4">
+            <EntryReview entry={phase.result.entry} />
+          </View>
+          {/* The one primary action in this view. */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Save ${phase.result.entry.name} and add it`}
+            onPress={() => save(phase.result.entry)}
+            className="mt-5 h-12 flex-row items-center justify-center gap-2 rounded-btn bg-pine active:opacity-70">
+            <Text className="font-label text-[15px] font-semibold text-pine-on">
+              Save &amp; add
+            </Text>
+          </Pressable>
         </>
       ) : null}
 
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Back to search"
+        accessibilityLabel="Back to the catalog"
         onPress={onCancel}
         className="mt-4 min-h-[44px] items-center justify-center active:opacity-60">
         <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
@@ -640,6 +659,65 @@ function AiSearchView({
         </Text>
       </Pressable>
     </ScrollView>
+  );
+}
+
+/**
+ * The proposed entry, in full — a record of what is about to become a catalog
+ * row, so: ruled plate, one labelled line per fact.
+ *
+ * Every field the model authored is printed, and that is the point rather than
+ * thoroughness for its own sake. The **muscles** decide what this movement
+ * contributes to freshness, weekly volume and the body figure; the **aliases**
+ * decide whether the owner ever finds it again by another name; the
+ * **measures** decide which columns the logger draws for it. None of those is
+ * visible anywhere else once the row exists, so this card is the only moment
+ * they can be checked. The `AI` mark on the section label is on the card
+ * because it will be on the row (`source: 'ai'`, 0056) — a card that hid it
+ * would be the silent creation this flow exists to avoid.
+ */
+function EntryReview({ entry }: { entry: NewExercise }) {
+  const rows: { label: string; value: string }[] = [
+    { label: 'Equipment', value: equipmentLabel(entry.equipment) },
+    {
+      label: 'Primary',
+      value: entry.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', ') || '—',
+    },
+    {
+      label: 'Secondary',
+      value: (entry.secondaryMuscles ?? []).map((m) => MUSCLE_LABEL[m]).join(', ') || '—',
+    },
+    { label: 'Records', value: measuresLabel(entry.measures ?? DEFAULT_MEASURES) },
+    { label: 'Also called', value: (entry.aliases ?? []).join(', ') || '—' },
+  ];
+  return (
+    <Block device="plate">
+      <SectionLabel label="Proposed entry" note="AI" />
+      <Text className="mt-2 font-serif text-[16px] font-semibold text-ink">{entry.name}</Text>
+      <View className="mt-1">
+        {rows.map((r, i) => (
+          <View key={r.label}>
+            <Divider first={i === 0} />
+            <View className="flex-row items-baseline gap-3 py-1.5">
+              <Text className="w-20 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                {r.label}
+              </Text>
+              <Text className="flex-1 font-serif text-[13px] leading-5 text-ink">{r.value}</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+      {entry.instructions && entry.instructions.length > 0 ? (
+        <View className="mt-2">
+          <Divider />
+          {entry.instructions.map((step, si) => (
+            <Text key={si} className="mt-1.5 font-serif text-[12.5px] leading-5 text-ink-secondary">
+              {si + 1}. {step}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </Block>
   );
 }
 

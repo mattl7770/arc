@@ -1,0 +1,75 @@
+-- ============================================================================
+-- ARC 0056 — who WROTE this catalog entry
+--
+-- Owner, 2026-09-14 (backlog C12): *"ai add exercise replaces ai search (search
+-- catalog first)."* The AI's job in the exercise picker changes from FINDING a
+-- movement to DEFINING one: the catalog is searched first with A7's ranked
+-- matcher, and only when nothing above the weakest tier matches does an *Add
+-- with AI* door appear. What comes back is a whole catalog entry — name,
+-- aliases, equipment, muscles, measures, logging type — which the owner reviews
+-- and saves as a real `exercises` row.
+--
+-- A real row, and therefore a row with provenance.
+--
+-- ── WHY A COLUMN AND NOT `is_custom` ──
+--
+-- `is_custom` (0011) already separates the ~69 seeded movements from anything
+-- created on the device, and it is not the same question. It answers "did this
+-- ship with the app"; `source` answers "who authored the facts in it". A
+-- movement the owner typed into the New-exercise form and one a model wrote are
+-- both `is_custom = 1`, and they are not equally trustworthy: the form asks for
+-- a name, an equipment and ONE primary muscle, while the model supplies
+-- aliases, secondary muscles, a movement pattern, a mechanic and `measures` —
+-- every one of which feeds `exercise_muscles`, and through it muscle freshness,
+-- weekly volume and the body figure. When a lat pulldown's secondary muscles
+-- look wrong two months from now, the first question is who put them there.
+--
+-- This is 0034's rule again, stated in its own header: the danger is *"a number
+-- of unknown origin entering the rollup … wearing the same face as a number the
+-- user asserted"*, and the answer is provenance as a column. `recipe_ingredients
+-- .resolved_by` is the direct precedent, down to its vocabulary.
+--
+-- ── NULLABLE, WITH THE HONEST BACKFILL ──
+--
+-- 'seed'  shipped with the app (the stable-slug core)
+-- 'user'  authored by hand in the picker's New-exercise form
+-- 'ai'    a model wrote the definition and the owner approved it
+-- NULL    authored on this device before provenance was recorded
+--
+-- The backfill sets 'seed' where `is_custom = 0`, which is a record of what
+-- happened rather than a guess. Custom rows are deliberately LEFT NULL: the
+-- retired AI-search path created movements through the same
+-- `createCustomExercise` the manual form uses and left no mark, so a row on the
+-- owner's device could be either. Writing 'user' over that would assert
+-- something nobody knows — precisely the failure this column exists to prevent.
+-- NULL says "unrecorded", which is true.
+--
+-- Nullable ADD COLUMN with a vocabulary-only CHECK is the 0031/0034 shape, and
+-- the CHECK is deliberately vocabulary-only: a cross-column constraint (say,
+-- `source = 'seed'` ⇔ `is_custom = 0`) validates against the table AS IT IS on
+-- ADD COLUMN, so it would pass an empty test fixture and reject the ALTER on the
+-- owner's populated device. 0034's header records that trap; this is it avoided.
+--
+-- ── THE NUMBER: 0056 ──
+--
+-- C12 reserved no number. Main's head at commit is **0053** (`git ls-tree main
+-- -- db/migrations/`), and the runner filters `version > user_version`, so any
+-- file at or below a shipped head is silently NEVER applied — not applied late,
+-- never applied, on the one database with no second copy. 0054 belongs to D3
+-- (ingested-workout pairing, committed on a parallel branch while this branch
+-- was open) and 0055 is C13 on this same branch, so 0056 is the next free
+-- number above every one of them.
+--
+-- Re-check at merge, and check the sibling worktrees rather than `main` alone:
+-- that is what caught D3's 0054 here, and 0048-0052 are all still unlanded.
+--
+-- The runner stamps PRAGMA user_version = 56 after applying this file.
+-- ============================================================================
+
+ALTER TABLE exercises ADD COLUMN source text CHECK (
+  source IS NULL OR source IN ('seed', 'user', 'ai')
+);
+
+-- Every row that shipped with the app was written by the seed. Not a guess —
+-- `is_custom = 0` is exactly the set 0011 planted, and nothing else can write it.
+UPDATE exercises SET source = 'seed' WHERE is_custom = 0;
