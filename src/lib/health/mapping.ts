@@ -22,6 +22,7 @@
  * ({@link unsuppressedEchoIdentifiers}) is only checkable when both lists sit in
  * one place.
  */
+import { formatLocalDate } from '@/lib/db/date';
 import type { BodyColumn } from '@/lib/db/repositories/body';
 import type { WearableUpsert } from '@/lib/db/repositories/wearables';
 import type { WearableDevice } from '@/lib/db/types';
@@ -108,13 +109,39 @@ export function sourceDeviceFor(provenance: HealthProvenance): WearableDevice {
 
 // --- Local-day helpers ----------------------------------------------------------
 
-/** ISO instant → the LOCAL calendar day it falls on (device wall clock). */
+/**
+ * ISO instant → the LOCAL **calendar** day it falls on (device wall clock).
+ *
+ * **Apple Health keeps the calendar day. The user's day boundary (B3,
+ * src/lib/db/date.ts) deliberately does not apply here**, and this is the
+ * conservative call of the two available:
+ *
+ *  1. *Correctness of the upsert key.* Every inbound bucket is written under the
+ *     deterministic raw id `hk:<metric>:<date>` so a re-sync UPDATEs one row per
+ *     day instead of duplicating a fortnight. If `<date>` were the logical day,
+ *     changing the boundary would change what that key MEANS: the same HealthKit
+ *     samples, re-aggregated on the next pass, would insert new rows beside the
+ *     old ones. The 14-day re-aggregation window would double-count and every
+ *     bucket older than it would be stranded under an attribution nothing writes
+ *     any more. That is data corruption, not a preference.
+ *  2. *Falsifiability.* These rows mirror the Health app. ARC's steps for a day
+ *     must equal what the phone shows for that day, or the number cannot be
+ *     checked against anything. Re-bucketing HK samples 04:00→04:00 would make
+ *     the two disagree permanently with no way to tell which is right.
+ *  3. *Sleep is already on a third rule.* Sessions are attributed noon-to-noon by
+ *     wake day (a night belongs to the morning it ends). Layering the boundary on
+ *     top would be a third day definition in one table.
+ *
+ * The seam is therefore: **device-reported daily aggregates keep HealthKit's
+ * calendar day; everything the user logs follows his boundary.** Both live in
+ * `wearable_data`; the discriminator is `source_raw_id` (an `hk:` id is a device
+ * bucket, NULL is a manual capture — the same line water's editability already
+ * draws, see src/lib/db/repositories/water.ts). If that ever needs revisiting,
+ * the fix is a re-bucket MIGRATION over the stored samples, not a read-time
+ * change here.
+ */
 export function localDayOf(iso: string): string {
-  const d = new Date(iso);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return formatLocalDate(new Date(iso));
 }
 
 /** Minutes between two ISO instants, floored at 0. */

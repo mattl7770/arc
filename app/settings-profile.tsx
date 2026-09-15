@@ -9,7 +9,13 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
-import { getOrCreateUser, updateProfile } from '@/lib/db/repositories/user';
+import { DEFAULT_DAY_STARTS_AT, setDayStartsAt } from '@/lib/db/date';
+import {
+  getDayStartsAtPreference,
+  getOrCreateUser,
+  setDayStartsAtPreference,
+  updateProfile,
+} from '@/lib/db/repositories/user';
 import type { BiologicalSex } from '@/lib/db/types';
 
 /**
@@ -20,6 +26,14 @@ import type { BiologicalSex } from '@/lib/db/types';
  * Date of birth is guarded by a DB CHECK (YYYY-MM-DD shape, year > 1900), so the
  * save is wrapped in try/catch and surfaces an inline note rather than crashing
  * the tap handler.
+ *
+ * **Day starts at** lives here rather than in Units because Units is explicitly
+ * display-only ("never what's stored") and this is not: it decides which day
+ * every future entry is filed under. It sits beside Timezone because that is the
+ * adjacent fact — the boundary is a wall-clock rule and says nothing about the
+ * zone the clock is in (the D4 seam, documented on src/lib/db/date.ts). It is a
+ * preference, not a `users` column, so it saves through its own repo call
+ * alongside `updateProfile` and then installs itself for the running app.
  *
  * Conformed Set treatment: each field is **recessed stock** — a capture surface
  * is a well, so the input itself carries the paper-dim fill on a paper-deep
@@ -41,6 +55,13 @@ const SEX_OPTIONS: { value: BiologicalSex; label: string }[] = [
 const FIELD =
   'mt-2 border border-paper-deep bg-paper-dim px-3.5 py-3 font-serif text-[15px] text-ink';
 
+/** A measured value: mono, and the width the appointment form gives a clock. */
+const CLOCK_FIELD =
+  'mt-2 w-24 min-h-[44px] border border-paper-deep bg-paper-dim px-3.5 py-3 font-mono text-[15px] text-ink';
+
+/** 24-hour `HH:MM` — the same shape app/appointment-form.tsx accepts. */
+const TIME_SHAPE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 export default function SettingsProfileScreen() {
   const router = useRouter();
   const [user] = useState(() => getOrCreateUser(getDb()));
@@ -49,9 +70,18 @@ export default function SettingsProfileScreen() {
   const [dob, setDob] = useState(user.date_of_birth ?? '');
   const [sex, setSex] = useState<BiologicalSex | null>(user.biological_sex);
   const [timezone, setTimezone] = useState(user.timezone);
+  const [dayStart, setDayStart] = useState(() => getDayStartsAtPreference(getDb()));
   const [error, setError] = useState<string | null>(null);
 
+  // A cleared field means the default, not a rejection.
+  const dayStartEntry = dayStart.trim() || DEFAULT_DAY_STARTS_AT;
+  const dayStartOk = TIME_SHAPE.test(dayStartEntry);
+
   const save = () => {
+    if (!dayStartOk) {
+      setError('That day start isn’t a 24-hour clock time — use HH:MM, e.g. 04:00.');
+      return;
+    }
     try {
       updateProfile(getDb(), {
         fullName: fullName.trim() || null,
@@ -60,6 +90,9 @@ export default function SettingsProfileScreen() {
         // Never blank a NOT NULL column — fall back to what was stored.
         timezone: timezone.trim() || user.timezone,
       });
+      // Persist, then install for the running app so the very next screen reads
+      // the new boundary without a relaunch (src/lib/db/date.ts).
+      setDayStartsAt(setDayStartsAtPreference(getDb(), dayStartEntry));
       router.back();
     } catch {
       // The DB CHECK on date_of_birth is the realistic failure here.
@@ -156,6 +189,34 @@ export default function SettingsProfileScreen() {
           className={FIELD}
           accessibilityLabel="Timezone"
         />
+      </View>
+
+      {/* Day starts at — a measured value, so mono, and the same HH:MM field the
+          appointment form uses. `numbers-and-punctuation` is a full keyboard
+          with its own return key, so it takes no KEYPAD_DONE
+          (src/components/ui/keyboard.ts names the four pads that do). */}
+      <View className="mt-8">
+        <SectionLabel label="Day starts at" />
+        <TextInput
+          value={dayStart}
+          onChangeText={(t) => {
+            setDayStart(t);
+            if (error) setError(null);
+          }}
+          placeholder={DEFAULT_DAY_STARTS_AT}
+          placeholderTextColor={palette.inkMuted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="numbers-and-punctuation"
+          className={CLOCK_FIELD}
+          accessibilityLabel="Day starts at, 24-hour"
+        />
+        <Text className="mt-1.5 font-serif text-[11px] leading-4 text-ink-muted">
+          {dayStartOk && dayStartEntry !== DEFAULT_DAY_STARTS_AT
+            ? `Anything logged before ${dayStartEntry} counts as the previous day.`
+            : 'Days run midnight to midnight.'}{' '}
+          Days already logged keep the date they were filed under.
+        </Text>
       </View>
 
       {/* The primary action — solid ink, because Settings spends no accent. */}

@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 
 import { getDb } from '@/lib/db/client';
-import { todayISODate } from '@/lib/db/date';
+import { shiftISODate, todayISODate } from '@/lib/db/date';
 import {
   activeNutritionTargets,
   dailyIntakeSeries,
@@ -71,13 +71,9 @@ function meanPositive(values: number[]): number | null {
   return present.reduce((a, b) => a + b, 0) / present.length;
 }
 
-/** `date` minus `days`, as a local YYYY-MM-DD. */
+/** `date` minus `days`, as a local YYYY-MM-DD (src/lib/db/date.ts). */
 function isoDaysBefore(date: string, days: number): string {
-  const [y, m, d] = date.split('-').map(Number);
-  const at = new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1);
-  at.setDate(at.getDate() - days);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+  return shiftISODate(date, -days);
 }
 
 const EMPTY_KITCHEN: KitchenCounts = {

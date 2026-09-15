@@ -12,6 +12,7 @@
  * `toLocaleDateString` silently ignores its options object on device (the trap
  * src/components/home/date-eyebrow.tsx documents in full).
  */
+import { logicalDate } from '@/lib/db/date';
 import type { NearestWeighIn, PhotoPose } from './types';
 
 const MONTHS_SHORT = [
@@ -131,9 +132,10 @@ export const NO_WEIGH_IN = 'no weigh-in near this date';
 export function localDayOf(instant: string): string {
   const ms = Date.parse(instant);
   if (!Number.isFinite(ms)) return instant.slice(0, 10);
-  const local = new Date(ms);
-  const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
-  return `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}`;
+  // The LOGICAL day (src/lib/db/date.ts): a reading saved at 01:00 prints the
+  // day the user was still in, matching the date every other surface files it
+  // under rather than disagreeing with the photo's own `taken_on`.
+  return logicalDate(new Date(ms));
 }
 
 /**

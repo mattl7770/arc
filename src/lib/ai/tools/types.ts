@@ -160,11 +160,19 @@ export function optTime(input: Record<string, unknown>, key: string): string | u
 export function optDate(input: Record<string, unknown>, key: string): string | undefined {
   const value = optString(input, key);
   if (value === undefined) return undefined;
-  const parsed = new Date(`${value}T00:00:00Z`);
+  // Componentwise round-trip. A shape test, deliberately in UTC and
+  // deliberately NOT a day attribution — nothing here consults the day boundary.
+  const shaped = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const y = Number(shaped?.[1]);
+  const m = Number(shaped?.[2]);
+  const d = Number(shaped?.[3]);
+  const parsed = new Date(Date.UTC(y, m - 1, d));
   const roundTrips =
-    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    shaped !== null &&
     !Number.isNaN(parsed.getTime()) &&
-    parsed.toISOString().slice(0, 10) === value;
+    parsed.getUTCFullYear() === y &&
+    parsed.getUTCMonth() === m - 1 &&
+    parsed.getUTCDate() === d;
   if (!roundTrips) {
     throw new Error(`"${key}" must be a real "YYYY-MM-DD" calendar date.`);
   }

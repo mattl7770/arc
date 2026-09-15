@@ -9,7 +9,7 @@
  * at the edge (the metric registry).
  */
 import type { Database } from '@/lib/db/database';
-import { localDayUtcRange, todayISODate } from '@/lib/db/date';
+import { localDayUtcRange, shiftISODate, todayISODate } from '@/lib/db/date';
 import { dailyMetricSeries } from '@/lib/db/repositories/wearables';
 
 /**
@@ -23,16 +23,18 @@ export function endOfLocalDayUtc(now: Date): string {
 /** One daily observation. */
 export type SeriesPoint = { date: string; value: number };
 
-/** The local calendar day `days` before `now`, as YYYY-MM-DD. */
+/**
+ * The day `days` before today, as YYYY-MM-DD — counted back from the LOGICAL
+ * today, so a window opened at 01:00 under a 04:00 boundary covers the same N
+ * days the user thinks it does (src/lib/db/date.ts).
+ */
 export function isoDaysAgo(now: Date, days: number): string {
-  return todayISODate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - days));
+  return shiftISODate(todayISODate(now), -days);
 }
 
-/** Pure date-string arithmetic: `date` shifted by `delta` days (UTC, DST-proof). */
+/** Pure date-string arithmetic: `date` shifted by `delta` days. */
 export function isoDatePlusDays(date: string, delta: number): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + delta);
-  return d.toISOString().slice(0, 10);
+  return shiftISODate(date, delta);
 }
 
 /**

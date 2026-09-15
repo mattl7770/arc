@@ -26,7 +26,7 @@
  * approve "at 09:00" and get a row dated tomorrow.
  */
 import type { Database } from '@/lib/db/database';
-import { todayISODate } from '@/lib/db/date';
+import { shiftISODate, todayISODate } from '@/lib/db/date';
 import { logCapture, logMetric, logNote } from '@/lib/db/repositories/logs';
 import { logWorkout } from '@/lib/db/repositories/exercise';
 import { resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
@@ -633,8 +633,7 @@ function humanDay(date: string): string {
 function reminderDaySuffix(date: string | null, repeat: string, now: Date): string {
   if (date == null) return '';
   if (repeat !== 'once') return ` · ${date} (${humanDay(date)})`;
-  const dayFrom = (offset: number) =>
-    todayISODate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset));
+  const dayFrom = (offset: number) => shiftISODate(todayISODate(now), offset);
   if (date === dayFrom(0)) return '';
   if (date === dayFrom(1)) return ` · tomorrow (${humanDay(date)})`;
   if (date === dayFrom(-1)) return ` · yesterday (${humanDay(date)})`;

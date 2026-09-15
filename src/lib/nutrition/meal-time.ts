@@ -18,6 +18,7 @@
  * nutrition screen would drag `@/lib/log/metrics` and `@/lib/user/types` across
  * a domain boundary to save nine lines.
  */
+import { shiftISODate } from '@/lib/db/date';
 import type { DateString, TimeString } from '@/lib/db/types';
 
 /**
@@ -55,20 +56,13 @@ function parseLocalDate(date: DateString): Date {
   return new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1);
 }
 
-function toISODate(at: Date): DateString {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
-}
-
 /**
- * `date` moved by `days` on the LOCAL calendar, as `YYYY-MM-DD`. `Date` handles
- * month ends, year ends and DST for us; the point of going through it rather
- * than doing arithmetic on the string is that 2026-02-28 + 1 is not 2026-02-29.
+ * `date` moved by `days` on the LOCAL calendar, as `YYYY-MM-DD`. Calendar
+ * arithmetic over a day that has already been attributed, so it takes no day
+ * boundary — `shiftISODate` in src/lib/db/date.ts is the one implementation.
  */
 export function shiftDay(date: DateString, days: number): DateString {
-  const at = parseLocalDate(date);
-  at.setDate(at.getDate() + days);
-  return toISODate(at);
+  return shiftISODate(date, days) as DateString;
 }
 
 /**
