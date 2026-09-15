@@ -804,7 +804,8 @@ The revision path carries it too: `buildMealRevisionRequest` prints a dish with 
 | --- | --- |
 | `main` at branch point | **542** |
 | plus C4 (the composite rule, the `components` clause) | **+149** → 691 |
-| plus C5 (the question rules, the `questions` clause) | **+200** → ~891 |
+| plus C5 (the question rules, the `questions` clause) | **+279** → 970 |
+| minus three enumerations trimmed in the same round | **−48** → **922** |
 | ceiling | **1,000** |
 
 The rule the Coach's budget note states applies verbatim: **the next addition trims rather than raises this**, and the two cheapest trims are named on the constant itself. The test also asserts the prompt is over 60% of the ceiling, so a ceiling nobody approaches cannot pass vacuously.
@@ -819,3 +820,79 @@ The rule the Coach's budget note states applies verbatim: **the next addition tr
 - **Whether a collapsed composite reads as one thing you ate** at 375 pt, with `3 parts` in mono beside a serif name.
 - **Whether the chips feel like the sentence.** `½ ⅓ ¼` at 44 pt inside an expanded disclosure is a lot of furniture on a phone; only the hand says whether it is the fast path or clutter.
 - **The live scale in the hand** — typing into the whole-dish field and watching three rows halve underneath it is the confirmation, and a server render cannot show whether it reads as responsive or as jumpy.
+
+---
+
+## 12h. Auto-ask clarifying questions (C5, 2026-09-14, no migration)
+
+Owner, backlog C5: fires on anything ambiguous, from **any** logging method; **max 3**; **button-answerable** (an "other / type here" option is allowed but only as a click); only for things that **matter** and that the user would **actually know** — *"we shouldn't ask questions the user likely doesn't know themselves (i.e. cooking methods in a restaurant)."* Archetype: *"how many shots are in this latte?"* Design: `docs/spikes/auto-ask.md` (**built**).
+
+**No migration.** A question is a property of an estimate in flight, not of a logged record; nothing is persisted that `meal_items` cannot already hold.
+
+### One call, and each answer carries its own arithmetic
+
+The estimator's structured output gains `questions`, and each button option carries the **effect** of choosing it, from a closed four-shape vocabulary:
+
+| effect | means |
+| --- | --- |
+| `{"scale_item": name, "factor": n}` | multiply that item's portion and macros — *"how many shots?"* |
+| `{"set_amount": name, "amount": n}` | set the portion outright, **in the item's own unit** |
+| `{"add_item": {name, amount, unit, kcal, …}}` | add a whole item — *"was there dressing?"* |
+| `{"remove_item": name}` | drop one — *"did you eat the bun?"* |
+
+`set_amount`, not the spike's `set_grams`: `ml` landed (0047) between the design and the build, and a key named for one unit describing a number in another is exactly the lie that migration renamed three columns to avoid. The older spelling is still *read*, the way `grams` is still read as a fallback for `amount`.
+
+Because the effect travels with the estimate, **answering is pure on-device arithmetic** over the review rows (`applyAnswer`, `src/lib/nutrition/review-rows.ts`): no second round trip, instant, and it works with the network gone once the first reply has landed. The alternative — ask first, then estimate — bills the photo twice (`messages` carries no cache breakpoint) and makes the model invent questions about a meal it has not analysed.
+
+**Judgment still lives in the model.** It decides *whether* to ask, *what*, *which answers are plausible*, and *what each implies*. The four effects are a wire format for what it decided, not a decision table — the same relationship the estimate's own JSON already has to the estimate.
+
+### The prompt rules, and why each is shaped that way
+
+- **Materiality as a magnitude** — "~15% of its energy or ~10 g of protein" — not a list of askable topics, which would be wrong the first time he eats something not on it.
+- **Knowability as a place** — *"what the person was there for"* vs *"a kitchen they did not stand in"* — with the owner's restaurant example verbatim.
+- **"USUALLY ABSENT" and "an empty list is the norm", twice.** A model handed a `questions` field will fill it; saying zero is normal is the cheapest defence there is, and the existing prompt already uses it for the same class of problem.
+- **"the items you return must already assume it."** This is what makes a skipped question safe: the estimate on screen is already the most-likely-answer estimate, so skipping every question leaves a coherent record rather than a half-specified one.
+
+### Three gates, in order
+
+1. **The prompt** — the judgment gate, and the only one that can be smart.
+2. **A deterministic confidence gate:** if every item came back `high`, drop all questions. A model certain about every item and still asking has contradicted itself, and a certain estimate is the one case where an extra tap is pure friction.
+3. **A hard cap of three**, applied *after* the drops — so three good questions survive a fourth malformed one rather than being crowded out by it.
+
+Plus the parser's ordinary tolerance, extended: an option whose effect names an item not in `items` is dropped (the commonest model error is a renamed item); a question left with fewer than two options is dropped entirely (one button is not a question); an unknown effect key is dropped (the vocabulary is closed on purpose); `factor ≤ 0`, `amount ≤ 0` and `amount > 5000` are dropped, which are the schema's own `CHECK (amount > 0)` and the review screen's own ceiling.
+
+### The UX
+
+A `Block device="plate"` labelled **A few things** (not "Questions", which reads like a form), **above the item table** — the rows *are* the answer, and on a phone a control below the thing it changes makes the change happen off-screen. The tally is its note: `1 of 2`.
+
+Each question is one ruled row: the ask in serif (it is a sentence, and serif speaks), then outlined option chips in the label voice at ≥ 44 pt. **No accent anywhere in the block** — in the review phase the accent is `Save meal` and stays there; an answered chip fills `bg-ink`, which is a state mark, not a claim to being the next action. **Skip** sits at the row's trailing edge and becomes **Undo** once answered.
+
+**What it says back: nothing, in words.** Tapping a chip re-prices the rows below, and the Items total moves with it because that total is already derived from the live rows. The screen shows the consequence rather than announcing it.
+
+**No accumulation.** The first time a question is answered, the rows as they stand are frozen as that question's base; every later answer is applied to that base. So answering, then changing the answer, produces exactly the state that choosing the second option first would have, and Skip restores the unanswered estimate. The cost, stated because it is real: a hand-edit made *between two answers to the same question* is lost when the answer changes. That is the price of "no accumulation", and it is the right side of the trade — a silently doubled portion is a wrong record; a re-typed gram figure is an annoyance.
+
+**"Other" is the one second call**, and only when the model set `allow_other`. It is reached by a **click** (the owner's constraint), opens a well with a bare input, and fires a `reviseMeal`-shaped, **text-only** turn — the photo is never resent, because `messages` carries no cache breakpoint and a resent image is billed in full every time. The screen says so under the field. The reply's own questions are discarded: asking again in answer to a typed answer is a loop.
+
+**An unanswered question never blocks Save.**
+
+### Which methods ask
+
+| method | asks? |
+| --- | --- |
+| Describe, Photo (`/meal-estimate`) | **yes** |
+| `reviseMeal` (`/meal-revise`) | **yes** — owner decision. A correction can be as ambiguous as a first description, and it is the same one-call shape and the same parser. |
+| Barcode (`/barcode-scan`) | **no, and it is a design position** — a barcode is an exact identity against an exact per-100 panel, the portion sheet already asks the one unknown, and the path is offline-first by construction. A path that works with the network unplugged must not grow a question that needs the network. |
+| Add food / template / manual | **no** — the user is asserting numbers; asking him to clarify his own assertion is absurd. |
+
+The negatives are pinned **at the source** (`db/nutrition-v2.test.mjs` §40): the scanner and the log sheet must contain no question surface and no call into the estimator, so neither can grow one by accident.
+
+### Verification
+
+`db/nutrition-v2.test.mjs` §37–40 — the owner's latte archetype parsed end to end and its "3 shots" applied on-device (60 ml → 90 ml) with the sibling untouched and the ledger still summing to itself; each of the four effects, including an `add_item` that cannot duplicate itself and an effect naming a row the user already deleted; the no-accumulation property; all three gates; every drop rule; a pre-C5 reply parsing unchanged; both prompts carrying the rules in the owner's own terms; and the two source-level negatives. §36 — the prompt ceiling, at 922 of 1,000.
+
+### What only a device can judge
+
+- **Whether the model asks at all, and asks the right thing.** Every rule here is a criterion, and the estimator is tested against a mock harness — no real call is made on this branch. The first latte is the test: does it come back with "How many shots?", or with three weak questions about a sandwich?
+- **Whether "A few things" above the table reads as help or as an interrogation** at 375 pt, particularly with three questions and four chips each.
+- **Whether watching the rows re-price is enough confirmation**, or whether the change needs saying out loud after all.
+- **The "Other" round trip in the hand** — a second or two of `Working…` on a screen the user thought was finished.

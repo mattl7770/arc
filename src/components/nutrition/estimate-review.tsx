@@ -6,41 +6,23 @@ import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { palette } from '@/constants/theme';
-import type { Database } from '@/lib/db/database';
-import { getFood } from '@/lib/db/repositories/foods';
-import type { MealEstimate } from '@/lib/nutrition/estimate';
+import type { EstimateQuestion } from '@/lib/nutrition/estimate';
 import { fmtInt } from '@/lib/nutrition/format';
-import { parseMicros, scaleMicros, serializeMicros } from '@/lib/nutrition/micros';
-import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
-import type {
-  AmountUnit,
-  EstimateConfidence,
-  FoodRow,
-  NewMealItem,
-  NewMealItemComponent,
-} from '@/lib/nutrition/types';
+import {
+  amountLabel,
+  currentPortion,
+  isComposite,
+  type ReviewItem,
+  type ReviewRow,
+  reviewKcal,
+  rolled,
+} from '@/lib/nutrition/review-rows';
 
 /**
- * The estimator's editable review table — the one copy, used by
- * `app/meal-estimate.tsx` and `app/meal-revise.tsx`.
- *
- * ## Why this is shared and not duplicated
- *
- * The two screens have always drawn the same table, and until C4 they did it
- * with two copies of the same forty lines. Composite foods (0049) turn that
- * table into a **tree** with a disclosure, proportional scaling and a
- * last-component rule — which is exactly the kind of logic that must not drift
- * between two screens that are supposed to guarantee the same thing. The
- * estimator already states the principle for the pipeline (*"one schema, one
- * parser, one review"*); this is the review half of it.
- *
- * ## The ledger rule, mechanically
- *
- * The Items label carries the total of the rows visible beneath it, recomputed
- * from each row's live amount. A **composite header carries no numbers of its
- * own** — its amount and kcal are derived from its parts every render — so the
- * headline cannot come to disagree with the parts, by construction rather than
- * by maintenance.
+ * The estimator's editable review table — the DRAWING half. Its rows, its tree
+ * and every edit it can make are pure and live in
+ * src/lib/nutrition/review-rows.ts, which this file re-exports so a screen has
+ * one import.
  *
  * ## One surface device (00-design-spec.md §1)
  *
@@ -50,349 +32,15 @@ import type {
  * So the parts are ruled rows inside the same plate at `pl-6`, with no fill, no
  * left rule and no new mark.
  *
- * ## "I ate half" (owner decision, C4)
+ * ## Accent
  *
- * Fraction chips `½ · ⅓ · ¼` plus the whole-dish amount field. Both scale every
- * part proportionally — halving the crust and not the cheese would be a claim
- * about *which* half, which nothing knows — and both act on the parts' CURRENT
- * values, so a hand-correction made first is what gets halved. Nothing is
- * written until the screen's own Save; what the chips move is the proposal.
- *
- * The amount field is live and non-compounding because it scales from a
- * SNAPSHOT taken when the field is focused, not from whatever it last produced.
- * Typing `3`, `36`, `360` into a 720 g pizza therefore lands on ×0.5, not on
- * ×0.5 ×0.5 ×0.5.
+ * Nothing here takes the accent. In the review phase it belongs to Save and
+ * stays there — the fraction chips are outlined, and an answered question chip
+ * fills with ink, which is a state mark rather than a claim to being the next
+ * action.
  */
 
-/** The portion snapshot an amount edit re-scales from. */
-export type ReviewBase = {
-  amount: number | null;
-  kcal: number | null;
-  protein_g: number | null;
-  carbs_g: number | null;
-  fat_g: number | null;
-  fiber_g: number | null;
-  micros: string | null;
-};
-
-/** One priced row: a plain item, or one part of a composite. */
-export type ReviewRow = {
-  key: string;
-  name: string;
-  foodId: string | null;
-  food: FoodRow | undefined;
-  confidence: EstimateConfidence;
-  base: ReviewBase;
-  amountText: string;
-  /** What the amount counts — the model's own call (0047). Shown beside the
-   *  field and written onto the item; never converted for the oz preference. */
-  unit: AmountUnit;
-};
-
-/** A top-level review row. `components` is empty for a plain item and holds the
- *  parts for a composite (0049); one level only. */
-export type ReviewItem = ReviewRow & {
-  components: ReviewRow[];
-  expanded: boolean;
-  /** The parts as they stood when the whole-dish field was focused — the
-   *  baseline that keeps live scaling from compounding. Null when not editing. */
-  scaleFrom: ReviewRow[] | null;
-};
-
-export function isComposite(row: ReviewItem): boolean {
-  return row.components.length > 0;
-}
-
-export function parseAmount(text: string): number | null {
-  const n = Number(text.trim());
-  return Number.isFinite(n) && n > 0 && n <= 5000 ? n : null;
-}
-
-/**
- * Current macros/micros for a row at its edited amount — via the same tested
- * rescale used everywhere; falls back to the base when it cannot scale.
- */
-export function currentPortion(row: ReviewRow) {
-  const amount = parseAmount(row.amountText);
-  if (amount != null) {
-    const scaled = rescaleLoggedItem(row.base, row.food, { amount });
-    if (scaled) return scaled;
-  }
-  return {
-    // A validly-typed portion is kept even when macros can't be re-scaled (an
-    // ungrounded, amountless item): the number the user entered is recorded
-    // rather than silently dropped, and — since parseAmount only yields > 0 —
-    // this is always null or positive, so it can never violate the schema's
-    // CHECK(amount > 0).
-    amount: amount ?? row.base.amount,
-    serving_qty: null,
-    kcal: row.base.kcal,
-    protein_g: row.base.protein_g,
-    carbs_g: row.base.carbs_g,
-    fat_g: row.base.fat_g,
-    fiber_g: row.base.fiber_g,
-    micros: row.base.micros,
-  };
-}
-
-/** NULL-skipping sum — "not recorded" never becomes 0. */
-function sumOrNull(values: (number | null | undefined)[]): number | null {
-  let sum: number | null = null;
-  for (const v of values) {
-    if (v != null) sum = (sum ?? 0) + v;
-  }
-  return sum;
-}
-
-/**
- * What a composite reads as, derived from its parts every render.
- *
- * An amount sums only when EVERY part has one and they share a unit — nothing
- * converts (B2/0047), and a partial sum would be a fabricated total.
- */
-export function rolled(row: ReviewItem) {
-  const portions = row.components.map(currentPortion);
-  const units = new Set(row.components.map((c) => c.unit));
-  const allPriced = portions.length > 0 && portions.every((p) => p.amount != null);
-  return {
-    amount:
-      allPriced && units.size === 1 ? portions.reduce((s, p) => s + (p.amount ?? 0), 0) : null,
-    unit: units.size === 1 ? (row.components[0]?.unit ?? row.unit) : row.unit,
-    kcal: sumOrNull(portions.map((p) => p.kcal)),
-    protein_g: sumOrNull(portions.map((p) => p.protein_g)),
-    carbs_g: sumOrNull(portions.map((p) => p.carbs_g)),
-    fat_g: sumOrNull(portions.map((p) => p.fat_g)),
-    fiber_g: sumOrNull(portions.map((p) => p.fiber_g)),
-  };
-}
-
-/** The visible total: a plain row's own kcal, a composite's parts' sum. */
-export function reviewKcal(rows: ReviewItem[]): number | null {
-  return rows.reduce<number | null>((sum, row) => {
-    const kcal = isComposite(row) ? rolled(row).kcal : currentPortion(row).kcal;
-    return kcal == null ? sum : (sum ?? 0) + kcal;
-  }, null);
-}
-
-/** An amount as a field shows it: whole where it is whole, one decimal where a
- *  fraction chip produced one. Rounding to an integer here is what would make
- *  ×½ then ×2 lose a gram. */
-function amountLabel(amount: number): string {
-  return Number.isInteger(amount) ? String(amount) : String(Math.round(amount * 10) / 10);
-}
-
-/** Build one review row from an estimate item or component. */
-function toRow(
-  db: Database,
-  item: {
-    name: string;
-    amount: number | null;
-    unit: AmountUnit;
-    kcal: number | null;
-    protein_g: number | null;
-    carbs_g: number | null;
-    fat_g: number | null;
-    fiber_g: number | null;
-    confidence: EstimateConfidence;
-    foodId: string | null;
-    micros: string | null;
-  },
-  key: string
-): ReviewRow {
-  const food = item.foodId ? getFood(db, item.foodId) : undefined;
-  // A grounded item's base is derived from the food so macros AND micros are
-  // consistent — including when the user clears the amount field. An ungrounded
-  // item keeps the model's numbers, including the sodium/caffeine it returns
-  // (A8); those scale with an amount edit like every other figure on the row.
-  // groundMealEstimate only sets foodId when the food's basis MATCHES the
-  // item's unit, so re-pricing here can never cross the two.
-  const grounded =
-    food && item.amount != null && item.amount > 0
-      ? itemForPortion(food, { amount: item.amount })
-      : null;
-  return {
-    key,
-    name: item.name,
-    foodId: item.foodId,
-    food,
-    confidence: item.confidence,
-    unit: item.unit,
-    base: {
-      // A non-positive amount from the model would violate meal_items
-      // CHECK(amount > 0) and roll back the whole save; store it as "not
-      // recorded" (null) instead.
-      amount: item.amount != null && item.amount > 0 ? item.amount : null,
-      kcal: grounded?.kcal ?? item.kcal,
-      protein_g: grounded?.protein_g ?? item.protein_g,
-      carbs_g: grounded?.carbs_g ?? item.carbs_g,
-      fat_g: grounded?.fat_g ?? item.fat_g,
-      fiber_g: grounded?.fiber_g ?? item.fiber_g,
-      micros: grounded?.micros ?? item.micros,
-    },
-    amountText: item.amount != null && item.amount > 0 ? amountLabel(item.amount) : '',
-  };
-}
-
-/** A grounded estimate as editable review rows — the tree included. */
-export function rowsFromEstimate(db: Database, estimate: MealEstimate): ReviewItem[] {
-  return estimate.items.map((item, i) => ({
-    ...toRow(db, { ...item, micros: item.micros ?? null }, `${i}-${item.name}`),
-    components: (item.components ?? []).map((part, j) =>
-      toRow(db, { ...part, micros: part.micros ?? null }, `${i}-${j}-${part.name}`)
-    ),
-    expanded: false,
-    scaleFrom: null,
-  }));
-}
-
-/** The rows as `meal_items` input — a composite becomes a header with parts. */
-export function rowsToMealItems(rows: ReviewItem[]): NewMealItem[] {
-  const priced = (row: ReviewRow): NewMealItemComponent => {
-    const p = currentPortion(row);
-    return {
-      food_id: row.foodId,
-      name: row.name,
-      amount: p.amount,
-      unit: row.unit,
-      serving_qty: null,
-      kcal: p.kcal,
-      protein_g: p.protein_g,
-      carbs_g: p.carbs_g,
-      fat_g: p.fat_g,
-      fiber_g: p.fiber_g,
-      confidence: row.confidence,
-      micros: p.micros,
-    };
-  };
-  return rows.map((row) =>
-    isComposite(row)
-      ? // The header's own numbers are never sent — the repository would drop
-        // them anyway (invariant 2), and sending them would suggest they mean
-        // something.
-        { name: row.name, unit: row.unit, components: row.components.map(priced) }
-      : priced(row)
-  );
-}
-
-// --- Edits ------------------------------------------------------------------
-
-/** Set one row's amount text. `key` may name a top-level row or a part. */
-export function setRowAmount(rows: ReviewItem[], key: string, text: string): ReviewItem[] {
-  return rows.map((row) => {
-    if (row.key === key) return { ...row, amountText: text };
-    if (!row.components.some((c) => c.key === key)) return row;
-    return {
-      ...row,
-      components: row.components.map((c) => (c.key === key ? { ...c, amountText: text } : c)),
-      // A hand-correction rebases what the chips will halve (owner decision):
-      // the whole-dish snapshot is stale the moment a part moves.
-      scaleFrom: null,
-    };
-  });
-}
-
-/**
- * Remove one row. **Removing the last part removes the composite** (invariant
- * 4): a header over nothing is a name with no numbers, which is
- * indistinguishable from an unpriced item.
- */
-export function removeRow(rows: ReviewItem[], key: string): ReviewItem[] {
-  const out: ReviewItem[] = [];
-  for (const row of rows) {
-    // A top-level row, or a whole composite with its parts.
-    if (row.key === key) continue;
-    if (!row.components.some((c) => c.key === key)) {
-      out.push(row);
-      continue;
-    }
-    const components = row.components.filter((c) => c.key !== key);
-    // Invariant 4: the header goes with its last part.
-    if (components.length === 0) continue;
-    out.push({ ...row, components, scaleFrom: null });
-  }
-  return out;
-}
-
-export function toggleExpanded(rows: ReviewItem[], key: string): ReviewItem[] {
-  return rows.map((row) => (row.key === key ? { ...row, expanded: !row.expanded } : row));
-}
-
-/** One part, scaled by `factor` from its CURRENT values. */
-function scaleRow(row: ReviewRow, factor: number): ReviewRow {
-  const cur = currentPortion(row);
-  const mul = (v: number | null | undefined): number | null => (v == null ? null : v * factor);
-  const amount = cur.amount == null ? null : cur.amount * factor;
-  return {
-    ...row,
-    base: {
-      amount,
-      kcal: mul(cur.kcal),
-      protein_g: mul(cur.protein_g),
-      carbs_g: mul(cur.carbs_g),
-      fat_g: mul(cur.fat_g),
-      fiber_g: mul(cur.fiber_g),
-      micros: serializeMicros(scaleMicros(parseMicros(cur.micros), factor)),
-    },
-    amountText: amount == null ? '' : amountLabel(amount),
-  };
-}
-
-/** A fraction chip: every part of one composite, scaled proportionally from
- *  what it reads NOW. */
-export function scaleComposite(rows: ReviewItem[], key: string, factor: number): ReviewItem[] {
-  if (!(factor > 0)) return rows;
-  return rows.map((row) =>
-    row.key === key && isComposite(row)
-      ? {
-          ...row,
-          components: row.components.map((c) => scaleRow(c, factor)),
-          // The whole-dish field re-derives from the parts again, and the next
-          // chip starts from what is now on screen.
-          amountText: '',
-          scaleFrom: null,
-        }
-      : row
-  );
-}
-
-/** Focus of the whole-dish field: freeze the parts as the scaling baseline. */
-export function beginCompositeScale(rows: ReviewItem[], key: string): ReviewItem[] {
-  return rows.map((row) => (row.key === key ? { ...row, scaleFrom: row.components } : row));
-}
-
-/** Blur: drop the baseline, so the next edit takes a fresh one. */
-export function endCompositeScale(rows: ReviewItem[], key: string): ReviewItem[] {
-  return rows.map((row) => (row.key === key ? { ...row, scaleFrom: null } : row));
-}
-
-/**
- * The whole-dish field changed: scale the parts to that total, from the
- * snapshot taken on focus. Non-compounding, so typing `3` `6` `0` into a 720 g
- * pizza lands on ×0.5 rather than on ×0.5 three times.
- */
-export function scaleCompositeTo(rows: ReviewItem[], key: string, text: string): ReviewItem[] {
-  return rows.map((row) => {
-    if (row.key !== key || !isComposite(row)) return row;
-    const from = row.scaleFrom ?? row.components;
-    const target = parseAmount(text);
-    const total = from.reduce<number | null>((sum, c) => {
-      const amount = currentPortion(c).amount;
-      return sum == null || amount == null ? null : sum + amount;
-    }, 0);
-    if (target == null || total == null || total <= 0) {
-      // Mid-typing ("3", "", "abc") the parts must not jump. The field holds
-      // what was typed; the parts follow only once it is a number.
-      return { ...row, scaleFrom: from, amountText: text };
-    }
-    const factor = target / total;
-    return {
-      ...row,
-      scaleFrom: from,
-      amountText: text,
-      components: from.map((c) => scaleRow(c, factor)),
-    };
-  });
-}
+export * from '@/lib/nutrition/review-rows';
 
 // --- The plate ---------------------------------------------------------------
 
@@ -650,6 +298,197 @@ export function ReviewItemsPlate({
           )}
         </View>
       )}
+    </Block>
+  );
+}
+
+// --- The questions plate (backlog C5) ----------------------------------------
+
+/**
+ * What the screen holds per question: which option is chosen, or null for
+ * unanswered / skipped.
+ */
+export type QuestionAnswers = Record<string, number | null>;
+
+export type QuestionHandlers = {
+  /** Choose option `index`, or `null` to un-answer (Skip / Undo). */
+  onAnswer: (id: string, index: number | null) => void;
+  /** Open the typed answer for this question — the ONE path that costs a
+   *  second model call. */
+  onOpenOther: (id: string) => void;
+  onOtherText: (text: string) => void;
+  onApplyOther: (id: string) => void;
+  onCancelOther: () => void;
+};
+
+/**
+ * The questions, above the item table.
+ *
+ * **Above, deliberately.** The rows ARE the answer — tapping a chip re-prices
+ * them — and on a phone a control below the thing it changes makes the change
+ * happen off-screen.
+ *
+ * **What it says back: nothing, in words.** Tapping a chip re-prices the plate
+ * below, and the Items total moves with it because that total is already
+ * derived from the live rows. The screen shows the consequence rather than
+ * announcing it.
+ *
+ * **Skip is always available and Save is always live.** The estimate already
+ * assumes the most likely answer, so an unanswered question costs accuracy, not
+ * coherence.
+ */
+export function QuestionsPlate({
+  questions,
+  answers,
+  otherFor,
+  otherText,
+  otherBusy,
+  handlers,
+}: {
+  questions: EstimateQuestion[];
+  answers: QuestionAnswers;
+  /** The question whose typed answer is open, or null. */
+  otherFor: string | null;
+  otherText: string;
+  /** True while the second, text-only call is in flight. */
+  otherBusy: boolean;
+  handlers: QuestionHandlers;
+}) {
+  if (questions.length === 0) return null;
+  const answered = questions.filter((q) => answers[q.id] != null).length;
+  return (
+    <Block device="plate">
+      {/* "A few things", not "Questions" — which reads like a form. The tally
+          is its note, in the house's own form. */}
+      <SectionLabel label="A few things" note={`${answered} of ${questions.length}`} />
+      <View className="mt-1">
+        {questions.map((question, index) => {
+          const chosen = answers[question.id] ?? null;
+          const isOther = otherFor === question.id;
+          return (
+            <View key={question.id}>
+              <Divider first={index === 0} />
+              <View className="py-3">
+                <View className="flex-row items-start gap-3">
+                  {/* A question is a sentence, and serif speaks. */}
+                  <Text className="flex-1 font-serif text-[15px] leading-6 text-ink">
+                    {question.ask}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      chosen !== null
+                        ? `Undo the answer to: ${question.ask}`
+                        : `Skip: ${question.ask}`
+                    }
+                    hitSlop={12}
+                    onPress={() => handlers.onAnswer(question.id, null)}
+                    className="min-h-[28px] justify-center active:opacity-60">
+                    <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted">
+                      {chosen !== null ? 'Undo' : 'Skip'}
+                    </Text>
+                  </Pressable>
+                </View>
+                <View className="mt-2 flex-row flex-wrap gap-2">
+                  {question.options.map((option, optionIndex) => {
+                    const on = chosen === optionIndex;
+                    return (
+                      <Pressable
+                        key={option.label}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: on }}
+                        accessibilityLabel={`${question.ask} ${option.label}`}
+                        onPress={() => handlers.onAnswer(question.id, on ? null : optionIndex)}
+                        className={
+                          on
+                            ? 'min-h-[44px] items-center justify-center rounded-btn bg-ink px-4'
+                            : 'min-h-[44px] items-center justify-center rounded-btn border border-hairline px-4 active:bg-paper-dim'
+                        }>
+                        <Text
+                          className={
+                            on
+                              ? 'font-label text-[13px] uppercase tracking-[1.2px] text-paper-hi'
+                              : 'font-label text-[13px] uppercase tracking-[1.2px] text-ink'
+                          }>
+                          {option.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                  {question.allowOther ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Type another answer to: ${question.ask}`}
+                      onPress={() => handlers.onOpenOther(question.id)}
+                      className="min-h-[44px] items-center justify-center rounded-btn border border-hairline px-4 active:bg-paper-dim">
+                      <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+                        Other
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+
+                {/* A capture surface is a well, and the input inside it is bare.
+                    Reached by a CLICK, which is the owner's constraint: typing
+                    is opt-in behind the Other chip and never the default. */}
+                {isOther ? (
+                  <View className="mt-3">
+                    <Block device="well">
+                      <TextInput
+                        value={otherText}
+                        onChangeText={handlers.onOtherText}
+                        placeholder="e.g. it was a triple"
+                        placeholderTextColor={palette.inkMuted}
+                        editable={!otherBusy}
+                        accessibilityLabel={`Your answer to: ${question.ask}`}
+                        className="min-h-[36px] font-serif text-[15px] leading-6 text-ink"
+                      />
+                    </Block>
+                    <View className="mt-2 flex-row gap-2">
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Apply this answer"
+                        accessibilityState={{ disabled: otherBusy || otherText.trim() === '' }}
+                        disabled={otherBusy || otherText.trim() === ''}
+                        onPress={() => handlers.onApplyOther(question.id)}
+                        className={
+                          otherBusy || otherText.trim() === ''
+                            ? 'min-h-[44px] flex-1 items-center justify-center rounded-btn border border-paper-deep'
+                            : 'min-h-[44px] flex-1 items-center justify-center rounded-btn border border-ink active:opacity-60'
+                        }>
+                        <Text
+                          className={
+                            otherBusy || otherText.trim() === ''
+                              ? 'font-label text-[13px] uppercase tracking-[1.2px] text-ink-muted'
+                              : 'font-label text-[13px] uppercase tracking-[1.2px] text-ink'
+                          }>
+                          {otherBusy ? 'Working…' : 'Apply'}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Cancel this typed answer"
+                        onPress={handlers.onCancelOther}
+                        className="min-h-[44px] items-center justify-center px-3 active:opacity-60">
+                        <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted">
+                          Cancel
+                        </Text>
+                      </Pressable>
+                    </View>
+                    {/* The one place a second model call happens, said out loud
+                        — and what it does NOT do, because a resent photo would
+                        be billed in full every time. */}
+                    <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
+                      Applying asks the model again, in words only — the photo is not sent a second
+                      time.
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            </View>
+          );
+        })}
+      </View>
     </Block>
   );
 }

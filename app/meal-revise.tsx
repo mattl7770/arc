@@ -10,6 +10,7 @@ import {
   reviewKcal,
   type ReviewHandlers,
   type ReviewItem,
+  QuestionsPlate,
   ReviewItemsPlate,
   rowsFromEstimate,
   rowsToMealItems,
@@ -37,6 +38,7 @@ import {
   reviseMeal,
 } from '@/lib/nutrition/estimate';
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
+import { useEstimateQuestions } from '@/hooks/use-estimate-questions';
 import { fmtAmount, fmtInt } from '@/lib/nutrition/format';
 import type { MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
 
@@ -138,12 +140,21 @@ export default function MealReviseScreen() {
   const [rows, setRows] = useState<ReviewItem[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
+  // A revision may ask too (owner decision, C5): a correction can be as
+  // ambiguous as a first description, and it is the same one-call shape.
+  const asking = useEstimateQuestions({
+    rows,
+    setRows,
+    mealName: () => meal?.name ?? 'Meal',
+    onError: (message) => setPhase({ kind: 'error', message }),
+  });
 
   /** Turn a grounded revision into editable review rows — the estimator's own
    *  builder, so the two screens cannot drift apart in how they price or nest
    *  (src/components/nutrition/estimate-review.tsx). */
   const toReview = (estimate: MealEstimate) => {
     setRows(rowsFromEstimate(getDb(), estimate));
+    asking.begin(estimate.questions);
     setPhase({ kind: 'review', notes: estimate.notes });
   };
 
@@ -462,6 +473,21 @@ export default function MealReviseScreen() {
                   {phase.notes}
                 </Text>
               </Block>
+            </View>
+          ) : null}
+
+          {/* Above the table, for the reason it is above the table on the
+              estimator: the rows are the answer. */}
+          {asking.questions.length > 0 ? (
+            <View className="mb-4">
+              <QuestionsPlate
+                questions={asking.questions}
+                answers={asking.answers}
+                otherFor={asking.otherFor}
+                otherText={asking.otherText}
+                otherBusy={asking.otherBusy}
+                handlers={asking.handlers}
+              />
             </View>
           ) : null}
 

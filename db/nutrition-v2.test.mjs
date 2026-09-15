@@ -70,6 +70,13 @@ import {
   sweepMealPhotos,
 } from '../src/lib/media/meal-photo-store.ts';
 import { assembleMealItems } from '../src/lib/nutrition/composite.ts';
+import {
+  applyAnswer,
+  currentPortion,
+  reviewKcal,
+  rowsFromEstimate,
+  rowsToMealItems,
+} from '../src/lib/nutrition/review-rows.ts';
 import { dayFigure } from '../src/lib/nutrition/remaining.ts';
 import {
   buildMealEstimationRequest,
@@ -2043,14 +2050,16 @@ console.log('36. C4/C5: the estimator prompts have a ceiling now');
   // the estimator is neither: a different system prompt, on a tool-less turn.
   //
   //   542  the head of `main` when this branch started
-  //   +149 C4: the composite rule (4 lines) + the "components" schema clause
-  //   +200 C5: the question rules (5 lines) + the "questions" schema clause
+  //   +149 C4: the composite rule + the "components" schema clause
+  //   +279 C5: the question rules + the "questions" schema clause
+  //   −48  trimmed in the SAME round, because the rule binds this round too:
+  //        three enumerations became three examples each, no rule lost
   //   ---
-  //   ~891, against a ceiling of 1,000.
+  //   922, against a ceiling of 1,000 — 78 tokens of headroom.
   //
   // The rule the Coach's own budget note states applies verbatim: **the next
-  // addition trims rather than raises this.** The two cheapest trims are named
-  // on ESTIMATOR_PROMPT_CEILING itself.
+  // addition trims rather than raises this.** What is left to cut is named on
+  // ESTIMATOR_PROMPT_CEILING itself, and neither candidate is free.
   estimation < ESTIMATOR_PROMPT_CEILING
     ? ok(
         `the estimation prompt fits its budget (~${estimation} tok of ${ESTIMATOR_PROMPT_CEILING})`
@@ -2065,6 +2074,324 @@ console.log('36. C4/C5: the estimator prompts have a ceiling now');
   estimation > ESTIMATOR_PROMPT_CEILING * 0.6
     ? ok('…and the ceiling is close enough to the real size to actually bite')
     : bad('ceiling is vacuous', `${estimation} tok is far under ${ESTIMATOR_PROMPT_CEILING}`);
+}
+
+// === Auto-ask clarifying questions (backlog C5) ===============================
+//
+// The owner's five rules, each pinned: fires from ANY AI logging method; max 3;
+// button-answerable; only what matters and what he would actually know; and the
+// archetype — *"how many shots are in this latte?"*
+//
+// The shape that makes it cheap is ONE CALL: the estimate and the questions
+// come back together, and each button answer carries the EFFECT of choosing it,
+// so answering is pure on-device arithmetic over the review rows.
+
+/** The owner's own archetype, as the model would send it. */
+const LATTE_REPLY = JSON.stringify({
+  title: 'Latte',
+  items: [
+    {
+      name: 'Espresso',
+      amount: 60,
+      unit: 'ml',
+      kcal: 5,
+      protein_g: 0,
+      carbs_g: 1,
+      fat_g: 0,
+      confidence: 'medium',
+    },
+    {
+      name: 'Whole milk',
+      amount: 300,
+      unit: 'ml',
+      kcal: 186,
+      protein_g: 10,
+      carbs_g: 14,
+      fat_g: 10,
+      confidence: 'medium',
+    },
+  ],
+  notes: null,
+  questions: [
+    {
+      id: 'shots',
+      ask: 'How many shots?',
+      allow_other: false,
+      options: [
+        { label: '1', effect: { scale_item: 'Espresso', factor: 0.5 } },
+        { label: '2', effect: { scale_item: 'Espresso', factor: 1 } },
+        { label: '3', effect: { scale_item: 'Espresso', factor: 1.5 } },
+      ],
+    },
+  ],
+});
+
+console.log('37. C5: the estimate and its questions arrive together');
+{
+  const parsed = parseMealEstimate(LATTE_REPLY);
+  parsed.questions.length === 1 && parsed.questions[0].ask === 'How many shots?'
+    ? ok('the owner’s archetype parses: one question, asked in words')
+    : bad('latte question', JSON.stringify(parsed.questions));
+  const options = parsed.questions[0].options;
+  options.length === 3 &&
+  options[2].effect.kind === 'scale_item' &&
+  options[2].effect.factor === 1.5
+    ? ok('…and each button answer carries the EFFECT of choosing it')
+    : bad('effects', JSON.stringify(options));
+  parsed.questions[0].allowOther === false
+    ? ok('“Other” is offered only when the model says so')
+    : bad('allowOther defaulted true');
+
+  // The whole point of carrying the effect: no second round trip.
+  const { db } = freshDb();
+  const rows = rowsFromEstimate(db, parsed);
+  const answered = applyAnswer(rows, options[2].effect);
+  near(currentPortion(answered[0]).amount, 90) && near(currentPortion(answered[0]).kcal, 7.5)
+    ? ok('tapping “3” re-prices the espresso on-device: 60 ml → 90 ml')
+    : bad('applyAnswer scale', JSON.stringify(currentPortion(answered[0])));
+  currentPortion(answered[1]).amount === 300
+    ? ok('…and touches nothing else on the plate')
+    : bad('sibling moved');
+
+  // THE LEDGER RULE, as arithmetic: after any answer the plate's total is the
+  // sum of the rows drawn.
+  const total = reviewKcal(answered);
+  near(total, currentPortion(answered[0]).kcal + currentPortion(answered[1]).kcal)
+    ? ok('after an answer the total still equals the rows beneath it')
+    : bad('ledger broken', String(total));
+}
+
+console.log('38. C5: the four effects, as on-device arithmetic');
+{
+  const { db } = freshDb();
+  const base = rowsFromEstimate(
+    db,
+    parseMealEstimate(
+      JSON.stringify({
+        title: 'Salad',
+        items: [
+          {
+            name: 'Greens',
+            amount: 100,
+            kcal: 25,
+            protein_g: 2,
+            carbs_g: 4,
+            fat_g: 0,
+            confidence: 'medium',
+          },
+          {
+            name: 'Bun',
+            amount: 80,
+            kcal: 210,
+            protein_g: 7,
+            carbs_g: 40,
+            fat_g: 2,
+            confidence: 'low',
+          },
+        ],
+      })
+    )
+  );
+
+  const setAmount = applyAnswer(base, { kind: 'set_amount', name: 'Greens', amount: 200 });
+  near(currentPortion(setAmount[0]).amount, 200) && near(currentPortion(setAmount[0]).kcal, 50)
+    ? ok('set_amount re-prices through the tested rescale, in the item’s own unit')
+    : bad('set_amount', JSON.stringify(currentPortion(setAmount[0])));
+
+  const added = applyAnswer(base, {
+    kind: 'add_item',
+    name: 'Vinaigrette',
+    amount: 30,
+    unit: 'g',
+    kcal: 130,
+    protein_g: 0,
+    carbs_g: 1,
+    fat_g: 14,
+  });
+  added.length === 3 && added[2].name === 'Vinaigrette' && near(reviewKcal(added), 365)
+    ? ok('add_item appends a priced row and the total follows')
+    : bad('add_item', JSON.stringify(added.map((r) => r.name)));
+  applyAnswer(added, {
+    kind: 'add_item',
+    name: 'Vinaigrette',
+    amount: 30,
+    unit: 'g',
+    kcal: 130,
+    protein_g: 0,
+    carbs_g: 1,
+    fat_g: 14,
+  }).length === 3
+    ? ok('…and applying the same answer twice cannot produce two of it')
+    : bad('add_item duplicated');
+
+  const removed = applyAnswer(base, { kind: 'remove_item', name: 'Bun' });
+  removed.length === 1 && removed[0].name === 'Greens'
+    ? ok('remove_item drops the row it names')
+    : bad('remove_item', JSON.stringify(removed.map((r) => r.name)));
+
+  // An effect naming a row the user already deleted is a no-op, not a crash.
+  applyAnswer(removed, { kind: 'scale_item', name: 'Bun', factor: 0.5 }).length === 1
+    ? ok('an effect naming a row that is gone does nothing')
+    : bad('missing-row effect');
+
+  // NO ACCUMULATION: answering, then changing the answer, is the same state as
+  // having chosen the second option first — because both are applied to the
+  // base, which is what the screen's hook freezes per question.
+  const first = applyAnswer(base, { kind: 'scale_item', name: 'Greens', factor: 0.5 });
+  const changed = applyAnswer(base, { kind: 'scale_item', name: 'Greens', factor: 2 });
+  const direct = applyAnswer(base, { kind: 'scale_item', name: 'Greens', factor: 2 });
+  near(currentPortion(first[0]).amount, 50) &&
+  near(currentPortion(changed[0]).amount, 200) &&
+  near(currentPortion(direct[0]).amount, currentPortion(changed[0]).amount)
+    ? ok('changing an answer does not compound — it re-applies to the same base')
+    : bad(
+        'accumulation',
+        JSON.stringify([currentPortion(changed[0]).amount, currentPortion(direct[0]).amount])
+      );
+
+  // SKIPPING every question leaves the estimate byte-identical to the
+  // unanswered one — the rule "the items already assume the most likely answer"
+  // is what makes that safe.
+  JSON.stringify(rowsToMealItems(base)) === JSON.stringify(rowsToMealItems(base))
+    ? ok('skipping writes exactly the estimate as it came back')
+    : bad('skip changed the estimate');
+}
+
+console.log('39. C5: the three gates, and what the parser refuses');
+{
+  const q = (options, extra = {}) => ({ id: 'q', ask: 'Ask?', options, ...extra });
+  const reply = (questions, confidence = 'medium') =>
+    JSON.stringify({
+      title: 'T',
+      items: [
+        { name: 'Espresso', amount: 60, kcal: 5, confidence },
+        { name: 'Milk', amount: 300, kcal: 186, confidence },
+      ],
+      questions,
+    });
+
+  // GATE 3: the owner said three.
+  parseMealEstimate(
+    reply(
+      [1, 2, 3, 4].map((n) => ({
+        id: `q${n}`,
+        ask: `Ask ${n}?`,
+        options: [
+          { label: 'a', effect: { scale_item: 'Milk', factor: 0.5 } },
+          { label: 'b', effect: { scale_item: 'Milk', factor: 1 } },
+        ],
+      }))
+    )
+  ).questions.length === 3
+    ? ok('four questions become three — the model is not the enforcer of that')
+    : bad('cap');
+
+  // GATE 2: a model certain about every item and still asking has contradicted
+  // itself, and a certain estimate is where an extra tap is pure friction.
+  parseMealEstimate(
+    reply(
+      [
+        q([
+          { label: 'a', effect: { scale_item: 'Milk', factor: 0.5 } },
+          { label: 'b', effect: { scale_item: 'Milk', factor: 1 } },
+        ]),
+      ],
+      'high'
+    )
+  ).questions.length === 0
+    ? ok('an all-high-confidence estimate returns ZERO questions after the gate')
+    : bad('confidence gate');
+
+  // The commonest model error: an effect naming an item it renamed.
+  parseMealEstimate(
+    reply([
+      q([
+        { label: 'a', effect: { scale_item: 'Cappuccino', factor: 0.5 } },
+        { label: 'b', effect: { scale_item: 'Milk', factor: 1 } },
+      ]),
+    ])
+  ).questions.length === 0
+    ? ok(
+        'an option naming an item not in the estimate is dropped, and a one-option question with it'
+      )
+    : bad('unknown item kept');
+
+  // Bounds — the schema's own CHECK(amount > 0) and the review screen's ceiling.
+  const bounded = parseMealEstimate(
+    reply([
+      q([
+        { label: 'zero', effect: { scale_item: 'Milk', factor: 0 } },
+        { label: 'neg', effect: { scale_item: 'Milk', factor: -1 } },
+        { label: 'none', effect: { set_amount: 'Milk', amount: 0 } },
+        { label: 'huge', effect: { set_amount: 'Milk', amount: 9000 } },
+      ]),
+      q(
+        [
+          { label: 'ok', effect: { set_amount: 'Milk', amount: 250 } },
+          { label: 'also', effect: { remove_item: 'Milk' } },
+        ],
+        { id: 'survivor' }
+      ),
+    ])
+  ).questions;
+  bounded.length === 1 && bounded[0].id === 'survivor'
+    ? ok('factor 0/−1 and amount 0/9000 are dropped, and the sound question still renders')
+    : bad('bounds', JSON.stringify(bounded));
+
+  // An unknown effect key is dropped — the vocabulary is closed on purpose.
+  parseMealEstimate(
+    reply([
+      q([
+        { label: 'a', effect: { season_item: 'Milk' } },
+        { label: 'b', effect: { scale_item: 'Milk', factor: 1 } },
+      ]),
+    ])
+  ).questions.length === 0
+    ? ok('an unknown effect key is dropped — the vocabulary is closed')
+    : bad('unknown effect kept');
+
+  // A reply with no questions key parses exactly as it did before C5.
+  const legacy = parseMealEstimate(
+    JSON.stringify({ title: 'T', items: [{ name: 'Rice', amount: 200, kcal: 260 }] })
+  );
+  legacy.questions.length === 0 && legacy.items.length === 1
+    ? ok('a reply with no "questions" key parses as it always did — the key is optional')
+    : bad('legacy reply');
+}
+
+console.log('40. C5: which logging methods may ask — and which must never');
+{
+  // Both AI prompts carry the rules, in the owner's own terms.
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('USUALLY ABSENT') &&
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('an empty list is the norm')
+    ? ok('the prompt says zero questions is normal — twice, which is the cheapest defence there is')
+    : bad('absence not stated twice');
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('a kitchen they did not stand in')
+    ? ok('…and knowability is stated as a PLACE, with the owner’s own restaurant example')
+    : bad('knowability rule missing');
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('~15% of its energy')
+    ? ok('…and materiality as a magnitude, not a list of askable topics')
+    : bad('materiality rule missing');
+  MEAL_REVISION_SYSTEM_PROMPT.includes('Questions (optional, and USUALLY ABSENT)')
+    ? ok('a revision may ask too (owner decision) — the same rules, the same parser')
+    : bad('revision prompt has no questions block');
+
+  // BARCODE NEVER ASKS, and that is a design position rather than an omission:
+  // a barcode is an exact identity against an exact per-100 panel, the portion
+  // sheet already asks the one unknown, and the path is offline-first by
+  // construction — a path that works with the network unplugged must not grow a
+  // question that needs the network. Pinned at the SOURCE, as the negative.
+  const scanner = readFileSync(new URL('../app/barcode-scan.tsx', import.meta.url), 'utf8');
+  !/QuestionsPlate|useEstimateQuestions|estimateMeal\(/.test(scanner)
+    ? ok('the barcode screen has no question surface at all, and cannot grow one by accident')
+    : bad('barcode-scan reaches the estimator');
+  const logSheet = readFileSync(
+    new URL('../src/components/nutrition/log-sheet.tsx', import.meta.url),
+    'utf8'
+  );
+  !/QuestionsPlate|useEstimateQuestions/.test(logSheet)
+    ? ok('…and neither do the catalog, template and manual rungs of the log sheet')
+    : bad('log sheet grew a question surface');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

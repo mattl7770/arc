@@ -9,6 +9,7 @@ import {
   removeRow,
   type ReviewHandlers,
   type ReviewItem,
+  QuestionsPlate,
   ReviewItemsPlate,
   rowsFromEstimate,
   rowsToMealItems,
@@ -29,6 +30,7 @@ import { logMealWithItems } from '@/lib/db/repositories/nutrition';
 import { placeholderMealName, queueNewMealEstimate } from '@/lib/db/repositories/pending-estimates';
 import { writePendingEstimatePhoto } from '@/lib/media/pending-estimate-store';
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
+import { useEstimateQuestions } from '@/hooks/use-estimate-questions';
 import {
   ArcCameraView,
   type CameraHandle,
@@ -175,12 +177,21 @@ export default function MealEstimateScreen() {
   // unmounted screen. app/recipe-import.tsx does exactly this.
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
+  // The clarifying questions this estimate came back with (backlog C5). Shared
+  // with app/meal-revise.tsx, so the two screens answer identically.
+  const asking = useEstimateQuestions({
+    rows,
+    setRows,
+    mealName: () => (phase.kind === 'review' ? phase.title : 'Meal'),
+    onError: (message) => setPhase({ kind: 'error', message }),
+  });
 
   /** Turn a grounded estimate into editable review rows — the shared builder,
    * so this screen and app/meal-revise.tsx price and nest identically
    * (src/components/nutrition/estimate-review.tsx). */
   const toReview = (estimate: MealEstimate) => {
     setRows(rowsFromEstimate(getDb(), estimate));
+    asking.begin(estimate.questions);
     setPhase({ kind: 'review', title: estimate.title, notes: estimate.notes });
   };
 
@@ -682,6 +693,23 @@ export default function MealEstimateScreen() {
                   {phase.notes}
                 </Text>
               </Block>
+            </View>
+          ) : null}
+
+          {/* A FEW THINGS — above the item table, deliberately (backlog C5).
+              The rows ARE the answer: tapping a chip re-prices them, and on a
+              phone a control below the thing it changes makes the change happen
+              off-screen. Absent on most meals, which is the point. */}
+          {asking.questions.length > 0 ? (
+            <View className="mt-4">
+              <QuestionsPlate
+                questions={asking.questions}
+                answers={asking.answers}
+                otherFor={asking.otherFor}
+                otherText={asking.otherText}
+                otherBusy={asking.otherBusy}
+                handlers={asking.handlers}
+              />
             </View>
           ) : null}
 
