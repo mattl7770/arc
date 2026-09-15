@@ -113,7 +113,32 @@ written anywhere else.
 The control is on **Profile**, not Units, for the reason Units' own docblock
 gives: Units is display-only and never changes what is stored, and this does. It
 sits under Timezone because that is the adjacent fact — the boundary is a
-wall-clock rule and says nothing about the zone (D4 builds on top of it).
+wall-clock rule and says nothing about the zone (D4, below, builds on top of it).
+
+### A day the timezone changed on (D4, built 2026-09-14)
+
+iOS changes the device's zone by itself, and ARC now notices: the offset is
+sampled when the database opens and on every foreground
+(`observeTimezone`), and a change writes one row of `timezone_changes`
+(migration `0053`). A **DST** shift writes nothing — the device's own
+January/July offsets are the probe that tells the two apart without `Intl`, which
+Hermes does not have. The design and the owner's three decisions are
+`docs/spikes/timezone-days.md`.
+
+**Every stored `date` keeps the day it was logged under.** A meal at 23:30 in
+London was eaten at 23:30 in London; nothing is re-attributed, ever. What the day
+gets is an annotation, and four consequences:
+
+| Where | What it does |
+| --- | --- |
+| **Home** | One line, on that day only, directly under the folio line: *"Timezone changed (UTC−8 → UTC+1). Today is 15 hours long."* Then it is gone. Unmarked, no accent, no `signal-*` — a zone is a fact about the calendar, not the body. |
+| **The records** | The same fact as a quiet register line on the day's row in **mission history**, **water** and **nutrition history**. The figures beside it are untouched: a 29-hour day genuinely held more water. |
+| **Today's Mission** | That day's skipped and untouched items are **excused**, through the same `excusesSkips` machinery Sick/Travel/Social use — and **no mode is set**. ARC cannot tell a flight from a Settings change, and a mode reshapes the plan and the Coach's tone, which stays the owner's call. The record says *"excused · Timezone change"* rather than naming a mode nobody chose. |
+| **Readiness** | The day is excluded from every baseline window (HRV, resting HR, active energy) but still renders its own reading, and the **nutrition verdict goes quiet** on it — a one-day calorie target against a 29-hour day is the sharpest wrong number in the whole item. Fixed-length trend windows are untouched. |
+
+The Coach is handed the fact and nothing else — no jet-lag rule table — for the
+five days after a change, plus the one clause it cannot derive: that this day's
+readings are out of the baselines.
 
 ## The Data tab — order, folding, and Settings (revised 2026-08-09)
 

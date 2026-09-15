@@ -17,6 +17,7 @@ import { useCoachPassMessage } from '@/hooks/use-coach-pass';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
 import { useMode } from '@/hooks/use-mode';
 import { useReadiness } from '@/hooks/use-readiness';
+import { useTimezoneNote } from '@/hooks/use-timezone-note';
 import { useTodayMission } from '@/hooks/use-today-mission';
 
 /**
@@ -140,6 +141,8 @@ export default function HomeScreen() {
   const brief = useDailyBrief();
   const readiness = useReadiness();
   const modeView = useMode();
+  // D4: one line, on the day the device's timezone changed, and never again.
+  const timezoneNote = useTimezoneNote();
   const planned = mission.total > 0;
   // The one thing here the user did not ask for: the Coach's own daily pass,
   // shown only when it judged the day worth a word (it usually says nothing).
@@ -154,6 +157,23 @@ export default function HomeScreen() {
         <DateEyebrow />
         <ModeControl mode={modeView.mode} onSelect={modeView.setMode} />
       </View>
+
+      {/*
+          D4 — the device's timezone changed today, and the day is not 24 hours
+          long. Directly under the folio line because that is where the day's
+          own facts live (the date, the mode), and this is one of them.
+
+          Unmarked, uncoloured, mono: a zone change is a fact about the
+          CALENDAR, so it takes neither the accent (Home's budget is the hero,
+          the completion stamps and the active tab) nor a `signal-*` — that
+          palette marks biology, and the firewall is stated in exactly this
+          context at src/components/home/mode-control.tsx. It appears on one day
+          and then disappears; on every other day the hook returns null and this
+          costs no vertical space at all.
+      */}
+      {timezoneNote ? (
+        <Text className="mt-3 font-mono text-[11px] leading-4 text-ink-muted">{timezoneNote}</Text>
+      ) : null}
 
       {/*
           What the mode DID, stated above the hero — see ModeBanner. It renders

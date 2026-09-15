@@ -11,6 +11,7 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
+import { timezoneNotesIn } from '@/lib/db/repositories/day-meta';
 import { getPreferences, getWaterTarget, setWaterTarget } from '@/lib/db/repositories/user';
 import {
   deleteWaterEntry,
@@ -192,6 +193,14 @@ type WaterView = {
   daysOnRecord: number;
   /** The window, clipped to the record. Oldest → today. */
   days: WaterDay[];
+  /**
+   * The days in the window the device's timezone changed on, with the line the
+   * record states (D4 — `timezoneNotesIn`). A 29-hour day genuinely held more
+   * water than a 24-hour one, so the FIGURE is untouched and only annotated:
+   * the arithmetic is right, and what it was measured over is what needed
+   * saying.
+   */
+  timezoneNotes: Map<string, string>;
   /** Canonical ml, or null when the user has set no goal. */
   targetMl: number | null;
   spec: DisplaySpec;
@@ -239,6 +248,7 @@ function read(): WaterView {
     // clocks to agree (SQLite's `now` reads a finer clock than Date.now()).
     daysOnRecord: recordStart === null ? 0 : Math.max(1, daysBetween(recordStart, today) + 1),
     days,
+    timezoneNotes: timezoneNotesIn(db, days[0]?.date ?? today, today),
     targetMl: getWaterTarget(db),
     spec,
     volumeUnit: units.volume === 'ml' ? 'ml' : 'oz',
@@ -296,6 +306,7 @@ export default function WaterScreen() {
   );
 
   const { today, recordStart, daysOnRecord, days, targetMl, spec, volumeUnit } = view;
+  const { timezoneNotes } = view;
 
   const selectDay = (next: string) => {
     setDay(next);
@@ -683,6 +694,15 @@ export default function WaterScreen() {
                             Nothing logged
                           </Text>
                         )}
+                        {/* The calendar register (D4). The figure beside it is
+                            untouched: a 29-hour day really did hold more water,
+                            and this says what the day was rather than adjusting
+                            what was drunk. */}
+                        {timezoneNotes.get(point.date) ? (
+                          <Text className="mt-1 font-mono text-[10px] leading-4 text-ink-muted">
+                            {timezoneNotes.get(point.date)}
+                          </Text>
+                        ) : null}
                       </View>
                       <View className="items-end">
                         <Text

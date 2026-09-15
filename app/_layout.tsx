@@ -13,6 +13,7 @@ import { useAppLock } from '@/hooks/use-app-lock';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { autoBackupIfDue } from '@/lib/backup/snapshot';
 import { getDb } from '@/lib/db/client';
+import { observeTimezone } from '@/lib/db/repositories/day-meta';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
 import { runMealPhotoSweep } from '@/lib/media/meal-photo-store';
 import { runProgressPhotoSweep } from '@/lib/media/progress-photo-store';
@@ -154,7 +155,20 @@ export default function RootLayout() {
     // to keep react-native out of node. One subscription at the root costs
     // nothing and keeps that cost from being paid twice.
     const backupSub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void autoBackupIfDue(getDb());
+      if (state !== 'active') return;
+      void autoBackupIfDue(getDb());
+      // And the timezone observer (D4, 0053). It rides this subscription rather
+      // than opening a fourth: it is a synchronous read of one preference that
+      // writes only when the offset actually moved, and iOS changes the device
+      // zone by itself minutes after the phone attaches to a foreign carrier —
+      // so a foreground is exactly where the change is caught. Guarded here and
+      // not inside the observer because a throw in an AppState handler is not
+      // caught by the error boundary and would take the app down on resume.
+      try {
+        observeTimezone(getDb());
+      } catch (error) {
+        console.warn('[timezone] could not record the offset', error);
+      }
     });
     const stopRouting = registerNotificationRouting((route) => {
       // Active reminders live on the Coach tab (its RemindersCard), so both

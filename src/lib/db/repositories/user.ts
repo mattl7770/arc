@@ -246,6 +246,39 @@ export function setDayStartsAtPreference(db: Database, value: string): string {
 }
 
 /**
+ * The last device timezone offset ARC saw, in minutes **EAST** of UTC — or
+ * `null` before the first observation, which is what makes a fresh install
+ * report no change (you cannot report a change you did not see).
+ *
+ * A machine cursor, not a user choice, and it sits in the preferences blob for
+ * exactly the reason the D4 spike gives: it is a single scalar, beside the
+ * other scalars, and putting it in `timezone_changes` (0053) would make that
+ * table mean two things — the events, and the bookmark. The events are facts
+ * about days; this is a bookmark about the app.
+ *
+ * Deliberately NOT `users.timezone`, which is a user-typed zone label that
+ * nothing reads (see src/lib/db/date.ts). This is a derived number with a sign
+ * convention, and conflating the two would guarantee the sign gets lost.
+ */
+export function getTimezoneCursor(db: Database): number | null {
+  const obj = parseObject(getOrCreateUser(db).preferences);
+  const value = readSection(obj, 'timezone').lastOffsetMin;
+  // Strict: only a plausible integer offset is a cursor. Junk reads as "never
+  // observed", which costs one silent observation and never a bogus change row.
+  return typeof value === 'number' && Number.isInteger(value) && Math.abs(value) <= 840
+    ? value
+    : null;
+}
+
+/** Record the offset ARC has now seen, preserving unrelated preference keys. */
+export function setTimezoneCursor(db: Database, offsetEastMin: number): void {
+  const user = getOrCreateUser(db);
+  const obj = parseObject(user.preferences);
+  obj.timezone = { ...readSection(obj, 'timezone'), lastOffsetMin: offsetEastMin };
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+}
+
+/**
  * Set one unit preference and persist. Merges into the existing blob (unknown
  * preference keys are preserved), and returns the normalised result.
  */

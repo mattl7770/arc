@@ -1,13 +1,31 @@
 # Spike — automatic timezone handling (backlog **D4**)
 
-**Status:** design proposal, no code. **Date:** 2026-09-14.
+**Status: BUILT, 2026-09-14** (`claude/d4-timezone`). **Date of the design:** 2026-09-14.
 **Owner's ask:** *"way to note when days have timezone changes"* — and, asked whether it should be
 automatic: *"Yeah this should work automatically, we will need to do more thinking on the subject to
 make sure it works intelligently."* (`docs/backlog-2026-09.md:57`)
 
-**Reserved migration:** `0053` (`docs/backlog-2026-09.md:70`). Re-check
-`git ls-tree main -- db/migrations/` at merge — the backlog already records seven collisions in a
-week.
+**Migration:** `0053_timezone_changes.sql` — the number the backlog reserved, and free on main
+(head `0045`). Re-check `git ls-tree main -- db/migrations/` at merge — the backlog records seven
+collisions in a week.
+
+## What shipped, and where it differs from this proposal
+
+The owner settled all three §8 questions on the recommended options — **Q1 (b)** excuse the day
+without setting a mode, **Q2 (b)** the nutrition verdict goes quiet, **Q3 (b)** a quiet register
+line in the records plus one line on Home on the day itself. Option **1** was built.
+
+| Where | Built as |
+| --- | --- |
+| The table | `timezone_changes` (§2d), **without the `kind` column**. A DST change is classified at the observer and writes NO ROW at all. §2d's own reasoning, taken one step further: a row that every reader must remember to filter is a filter someone eventually forgets, and the failure — a DST Sunday excusing a day's mission items and dropping itself out of the HRV baseline — looks exactly like working software. `observed_at` is spelled `changed_at`. |
+| The cursor | `users.preferences.timezone.lastOffsetMin`, exactly as §2d argued. |
+| The classifier | `src/lib/timezone/classify.ts` — pure over injected offsets, the January/July probe verbatim. |
+| The day maths | **`logicalDateAtOffset` in `src/lib/db/date.ts`**, not in the observer. §4's second build constraint said the observer must not re-derive a local date; the way to guarantee that was to put "the logical day under an explicit offset" in the one file allowed to compute a day at all. |
+| **The day-length sign** | §1a's Δ convention is *west-positive*, and the offsets ARC stores are *east-positive*, so the formula is `24 − (toEast − fromEast)/60`. Written the other way round first and caught by the test: LA → London is a **15**-hour day, the return leg **33**. |
+| Baselines | `baselineBefore` and `baselineDaysRemaining` both take the excluded set, so the evidence gate and the mean are over the same cohort. Trend windows untouched, per §3c. |
+| Excused days | `excusedDatesIn` in `src/lib/db/repositories/mission.ts` — the union of mode-excusing days and marked days, resolved once and read by both `missionDailySeries` and `missionBySource`. |
+| Coach | One line in `turn-context.ts`, ~36 uncached tokens on the days it appears and nothing on the others. `get_today_snapshot` was NOT mirrored — the state block already carries it on every turn of the horizon. |
+| Not done | §1c, the health-sync re-bucketing defect. Still real, still self-limited to 14 days, still its own backlog item — the direction of travel is to re-attribute *less*, and D4 re-attributes nothing. Test 10 of §6 was not written with it. |
 
 **Depends on / sequenced after:** **B3**, the configurable day boundary
 (`docs/backlog-2026-09.md:29`). Both edit the same function. §4 states the combined rule.

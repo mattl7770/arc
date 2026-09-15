@@ -13,6 +13,7 @@ import { localDaysList, todayISODate } from '../date';
 import { newId } from '../id';
 import type { DailyLogRow, LogEntryRow, LogEntryStatus, LogEntryType } from '../types';
 import { activeModesIn } from './day-modes';
+import { timezoneChangedDaysIn } from './day-meta';
 import { getModeDefinition, type ModeKey } from '@/lib/modes/registry';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
@@ -319,6 +320,36 @@ export function modeExcusesSkips(mode: ModeKey): boolean {
 }
 
 /**
+ * Every day in `from … to` whose skips are EXCUSED — the union of two
+ * independent reasons, resolved once so no figure on any screen can honour one
+ * and miss the other.
+ *
+ * 1. **The day's MODE excuses them** ({@link modeExcusesSkips}) — Sick, Travel,
+ *    Social. The user declared it.
+ * 2. **The device's timezone changed on it** (D4, migration 0053). Nobody
+ *    declared anything: a 19-hour day simply ends before its 21:00 items come
+ *    round, and a 29-hour one gets 24 hours of plan for 29 hours of living.
+ *    Counting either as a compliance dip would be describing the calendar as a
+ *    character flaw — which is the complaint a trip would actually produce.
+ *
+ * **A timezone change deliberately does NOT set a mode**, and this is where
+ * that decision is mechanically kept (owner, 2026-09-14). ARC cannot tell a
+ * flight from a Settings change, and Travel mode reshapes the plan and the
+ * Coach's tone — that is the user's call. What ARC observed is one fact about
+ * one day, so it changes exactly one thing: how the skips are judged. Anything
+ * that wants to say WHY a day was excused reads the mode and the timezone note
+ * separately (app/mission-history.tsx does).
+ */
+export function excusedDatesIn(db: Database, from: string, to: string): Set<string> {
+  const dates = new Set<string>();
+  for (const [date, mode] of activeModesIn(db, from, to)) {
+    if (modeExcusesSkips(mode)) dates.add(date);
+  }
+  for (const date of timezoneChangedDaysIn(db, from, to)) dates.add(date);
+  return dates;
+}
+
+/**
  * What a day actually OWED — planned items minus the ones its mode excused.
  * The denominator of every rate here; see {@link modeExcusesSkips} for why the
  * excused ones leave rather than count as met.
@@ -427,11 +458,13 @@ export function missionDailySeries(
   );
   const byDate = new Map(rows.map((r) => [r.date, r]));
   const modes = activeModesIn(db, dates[0] ?? today, today);
+  // Mode OR timezone change — one definition, resolved once for the window.
+  const excusedDates = excusedDatesIn(db, dates[0] ?? today, today);
   return dates.map((date) => {
     const row = byDate.get(date);
     const mode = modes.get(date) ?? 'normal';
     const skipped = row?.skipped ?? 0;
-    const excusing = modeExcusesSkips(mode);
+    const excusing = excusedDates.has(date);
     // A skip is either excused or a miss — never both, and never neither.
     const excusedSkips = excusing ? skipped : 0;
     // An UNTOUCHED item is excused too, but only once the day is over: at 09:00
@@ -663,16 +696,15 @@ function attribute(
 export function missionBySource(db: Database, from: string, to: string): MissionSourceRecord[] {
   if (to < from) return [];
 
-  // The days in this window whose mode EXCUSES a skip. Resolved once in JS from
-  // the registry (`excusesSkips`) rather than restated in SQL, so the rule has
-  // exactly one definition; bound as values, never interpolated. `'0'` — a
-  // false literal — covers the ordinary case of no excusing day in the window,
-  // and keeps the sum in the query rather than folding a per-day breakdown in
-  // JS afterwards. The list is bounded by the caller's range (14 days on
-  // app/mission-history.tsx).
-  const excusedDates = [...activeModesIn(db, from, to)]
-    .filter(([, mode]) => modeExcusesSkips(mode))
-    .map(([date]) => date);
+  // The days in this window whose skips are EXCUSED — by the day's mode or by a
+  // timezone change on it ({@link excusedDatesIn}). Resolved once in JS rather
+  // than restated in SQL, so the rule has exactly one definition; bound as
+  // values, never interpolated. `'0'` — a false literal — covers the ordinary
+  // case of no excusing day in the window, and keeps the sum in the query rather
+  // than folding a per-day breakdown in JS afterwards. The list is bounded by
+  // the caller's range (14 days on app/mission-history.tsx). Sorted so the
+  // bound parameters are deterministic.
+  const excusedDates = [...excusedDatesIn(db, from, to)].sort();
   const isExcusedDay =
     excusedDates.length > 0 ? `d.date IN (${excusedDates.map(() => '?').join(', ')})` : '0';
 
