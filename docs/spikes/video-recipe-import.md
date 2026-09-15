@@ -39,7 +39,11 @@ The activation rule in `app.json:62-68` is Text · 1 WebURL · 1 Image:
 
 The expo-sharing config plugin **does** support a movie rule — `node_modules/expo-sharing/plugin/src/ios/createInfoPlistFile.ts` maps `supportsMovieWithMaxCount` → `NSExtensionActivationSupportsMovieWithMaxCount`. So admitting video is a **one-line `app.json` change with no new npm dependency** (it still needs a rebuild: the extension's Info.plist is generated at prebuild).
 
-A second, quieter blocker sits in our own code. `recipeImportShareFromPayloads` (`src/lib/recipes/share-payload.ts:45`) routes `url` → `text` → `image` and **has no `video` branch**, while expo-sharing's `ShareType` union already includes `'video'` (`node_modules/expo-sharing/build/Sharing.types.d.ts`). A shared video today matches none of the three filters and returns `null` — the screen would say *nothing usable was shared*. Silent, and exactly the class of bug that file's own `shareType`-vs-`type` docstring was written about.
+A second, quieter blocker sat in our own code. `recipeImportShareFromPayloads` (`src/lib/recipes/share-payload.ts`) routed `url` → `text` → `image` and **had no `video` branch**, while expo-sharing's `ShareType` union already includes `'video'` (`node_modules/expo-sharing/build/Sharing.types.d.ts`). A shared video matched none of the three filters and returned `null` — the screen said *nothing usable was shared*. Silent, and exactly the class of bug that file's own `shareType`-vs-`type` docstring was written about.
+
+> **FIXED 2026-09-14** (`claude/fixes-sept`). The router now has a `video` branch, placed **last** so a reel shared with its caption or link still takes a rung that works. It carries no work — it carries a sentence, `VIDEO_SHARE_MESSAGE`, which says ARC cannot pull frames from a movie in this build and names the two paths that do work (paste the caption, share a screenshot). `app/recipe-import.tsx` renders it on the normal failure surface with `suggestPaste`. Pinned in `db/recipe-import.test.mjs` §8.
+>
+> **`app.json` was NOT widened, and that is deliberate.** Checked at the same time: the activation rule is still Text · 1 WebURL · 1 Image with **no** `supportsMovieWithMaxCount`, so iOS does not offer ARC as a destination for a movie at all today — the branch is dormant. The plugin supports the key, but the extension's Info.plist is generated at prebuild, which makes widening it a rebuild-scoped change and not part of a fix batch. A test asserts the rule's current shape so the day it changes, it changes on purpose.
 
 **The real constraint is upstream of both.** Instagram's and TikTok's share sheets offer a **link**, not the movie file; TikTok's "Save video" writes to Photos instead. So even with the rule widened, the share sheet realistically delivers a video only when the user shares **from Photos** — i.e. a file they already saved. Which makes 1c the actual path. *(Confidence high, but device-unverified — nothing about a share extension is testable in the web preview or headless, per `docs/recipes-grocery.md:357`.)*
 
@@ -151,8 +155,8 @@ A new **rung 8**, strictly *below* the screenshot rung, reached from `app/recipe
 | `src/lib/media/video-frames.ts` | **new.** Guarded-require seam (the `photo-library.ts` pattern): pick a video, sample N timestamps, return `string[]` of base64 JPEGs. **Resize by long edge, not width.** Every failure a variant, never a throw. |
 | `src/lib/recipes/import.ts` | `ExtractionInput` gains `{kind:'frames', framesBase64: string[]}`; `buildRecipeExtractionRequest` pushes `Image 1:`…`Image N:` label + image pairs (the documented multi-image shape, images before text); `ImportInput` gains the matching variant; prompt gains the stills-from-video rail |
 | `app/recipe-import.tsx` | Third source chip + its unavailable / canceled / failed prose |
-| `src/lib/recipes/share-payload.ts` | `video` branch (`shareType === 'video'` → `{kind:'video', uri}`) — **worth doing regardless**, since today it silently returns null |
-| `app.json` | `supportsMovieWithMaxCount: 1` on the activation rule |
+| ~~`src/lib/recipes/share-payload.ts`~~ | ~~`video` branch~~ — **done 2026-09-14** (§1b). The branch exists and says why; a frames rung would replace its message with work. |
+| `app.json` | `supportsMovieWithMaxCount: 1` on the activation rule — **still pending**, rebuild-scoped |
 | `db/recipe-import.test.mjs` | New numbered section against the mock harness: request shape for N frames (N image blocks + N labels + 1 text block, images first), the frames variant through `parseRecipeExtraction`, a `found:false` reply from a plate-only reel, NULL-quantity preservation, the video share-payload route |
 | **Migrations** | **none** |
 
