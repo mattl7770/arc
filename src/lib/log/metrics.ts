@@ -64,7 +64,10 @@ export type MetricDescriptor = {
 
 // Exact-ish conversion factors (enough precision that a 1-dp round-trip is stable).
 const LB_PER_KG = 2.2046226218;
-const ML_PER_OZ = 29.5735295625;
+/** Exported since 0047: nutrition prints ml portions under the same oz/ml
+ * preference as water, and one app must not carry two versions of one factor
+ * (src/lib/nutrition/format.ts). */
+export const ML_PER_OZ = 29.5735295625;
 const CM_PER_IN = 2.54;
 
 const id = (v: number) => v;

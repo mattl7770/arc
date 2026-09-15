@@ -10,6 +10,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import {
@@ -19,9 +20,10 @@ import {
   setFoodFavorite,
 } from '@/lib/db/repositories/foods';
 import { addMealItem, logMealWithItems } from '@/lib/db/repositories/nutrition';
-import { fmtInt, fmtQty } from '@/lib/nutrition/format';
-import { gramsForQty, itemForPortion } from '@/lib/nutrition/servings';
+import { fmtAmount, fmtInt, fmtQty } from '@/lib/nutrition/format';
+import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
+import type { VolumeUnit } from '@/lib/user/types';
 
 /**
  * Food search — the catalog quick-add path (docs/nutrition-subapp.md §2).
@@ -29,8 +31,9 @@ import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
  * Speed is the whole design (benchmark: MacroFactor's action counts). Before
  * any query: RECENTS, each re-addable at its last portion in ONE tap, then
  * favorites. Results rank whole-query prefix matches first. Tapping a row
- * expands an inline portion editor (serving stepper when the food names one,
- * grams always); Add either appends to the meal this screen was pushed for
+ * expands an inline portion editor (serving stepper when the food names one, an
+ * amount field always — in the food's own unit, g or ml per its `basis`, 0047);
+ * Add either appends to the meal this screen was pushed for
  * (`mealId` param, from meal detail) or creates a day-part-named meal on the
  * first add and keeps appending to it — multi-add without leaving the screen.
  *
@@ -41,7 +44,7 @@ import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
  *   Recents / Favorites
  *   / Results            → **ruled plates**: a list of records is a table.
  *   Portion editor       → no device. It opens inside a plate row, and devices
- *                          never nest — only the grams input keeps a recessed
+ *                          never nest — only the amount input keeps a recessed
  *                          treatment, because an input is a well at control
  *                          scale.
  *   Catalog actions      → a closing **ruled plate**, holding one row before a
@@ -61,17 +64,17 @@ function daypartName(now: Date): string {
   return 'Snack';
 }
 
-/** Right-edge kcal summary for a list row: per serving when named, per 100 g
- * otherwise; em-dash when the food has no energy recorded. */
+/** Right-edge kcal summary for a list row: per serving when named, per 100 of
+ * the food's basis otherwise; em-dash when the food has no energy recorded. */
 function rowKcal(food: FoodRow): { value: string; unit: string } {
   if (food.kcal_100g === null) return { value: '—', unit: '' };
-  if (food.serving_grams !== null) {
+  if (food.serving_amount !== null) {
     return {
-      value: fmtInt((food.kcal_100g * food.serving_grams) / 100),
+      value: fmtInt((food.kcal_100g * food.serving_amount) / 100),
       unit: food.serving_name ?? 'serving',
     };
   }
-  return { value: fmtInt(food.kcal_100g), unit: '100 g' };
+  return { value: fmtInt(food.kcal_100g), unit: `100 ${food.basis}` };
 }
 
 type Base = { recents: RecentFood[]; favorites: FoodRow[] };
@@ -82,8 +85,14 @@ function readBase(): Base {
 }
 
 /** The expanded row's portion state. Serving mode tracks the stepper; editing
- * grams by hand drops to grams mode (serving_qty no longer claimed). */
-type Portion = { mode: 'serving' | 'grams'; qty: number; gramsText: string };
+ * the amount by hand drops to amount mode (serving_qty no longer claimed).
+ *
+ * The typed amount is always in the FOOD'S OWN unit (g or ml) — the Settings
+ * oz/ml preference governs read-only figures, never this field. Converting an
+ * entry box would mean a 330 ml can reads "11.2 oz" and writes back 331.2 ml on
+ * a Save the user never edited, which is the rounding drift meal-detail already
+ * guards against in the other direction. */
+type Portion = { mode: 'serving' | 'amount'; qty: number; amountText: string };
 
 /** Which list the editor is open under — a food can appear in Recents AND
  * Favorites, and matching on food.id alone would open twin editors. */
@@ -92,24 +101,28 @@ type ListSection = 'recents' | 'favorites' | 'results';
 type Expanded = { food: FoodRow; portion: Portion; section: ListSection };
 
 function initialPortion(food: FoodRow): Portion {
-  if (food.serving_grams !== null) {
-    return { mode: 'serving', qty: 1, gramsText: fmtQty(food.serving_grams) };
+  if (food.serving_amount !== null) {
+    return { mode: 'serving', qty: 1, amountText: fmtQty(food.serving_amount) };
   }
-  return { mode: 'grams', qty: 1, gramsText: '100' };
+  return { mode: 'amount', qty: 1, amountText: '100' };
 }
 
-/** A typed grams value that is actually loggable: finite, positive, and under
- * a sanity ceiling (paste and hardware keyboards get past decimal-pad — a
- * '1e99' item must never reach the DB). */
-function parseGrams(text: string): number | null {
-  const g = Number(text.trim());
-  return Number.isFinite(g) && g > 0 && g <= 5000 ? g : null;
+/** A typed amount that is actually loggable: finite, positive, and under a
+ * sanity ceiling (paste and hardware keyboards get past decimal-pad — a '1e99'
+ * item must never reach the DB). The ceiling is unit-blind: 5000 ml is five
+ * litres, which is as implausible a single portion as 5000 g. */
+function parseAmount(text: string): number | null {
+  const n = Number(text.trim());
+  return Number.isFinite(n) && n > 0 && n <= 5000 ? n : null;
 }
 
 export default function FoodSearchScreen() {
   const router = useRouter();
   const { mealId } = useLocalSearchParams<{ mealId?: string }>();
 
+  // Display-only (src/lib/user/types.ts): it decides whether a logged
+  // millilitre portion READS as ml or oz, and nothing that is stored.
+  const { units } = useUnitPreferences();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<FoodRow[]>([]);
   const [base, setBase] = useState(readBase);
@@ -162,11 +175,11 @@ export default function FoodSearchScreen() {
 
   /** One-tap re-add from the recents rail, at the food's last-logged portion. */
   const addRecent = (recent: RecentFood) => {
-    const { food, lastServingQty, lastGrams } = recent;
-    if (lastServingQty !== null && food.serving_grams !== null) {
+    const { food, lastServingQty, lastAmount } = recent;
+    if (lastServingQty !== null && food.serving_amount !== null) {
       saveItem(itemForPortion(food, { servingQty: lastServingQty }));
-    } else if (lastGrams !== null) {
-      saveItem(itemForPortion(food, { grams: lastGrams }));
+    } else if (lastAmount !== null) {
+      saveItem(itemForPortion(food, { amount: lastAmount }));
     } else {
       setExpanded({ food, portion: initialPortion(food), section: 'recents' });
     }
@@ -179,9 +192,9 @@ export default function FoodSearchScreen() {
       if (portion.qty <= 0) return;
       saveItem(itemForPortion(food, { servingQty: portion.qty }));
     } else {
-      const grams = parseGrams(portion.gramsText);
-      if (grams === null) return;
-      saveItem(itemForPortion(food, { grams }));
+      const amount = parseAmount(portion.amountText);
+      if (amount === null) return;
+      saveItem(itemForPortion(food, { amount }));
     }
   };
 
@@ -189,21 +202,21 @@ export default function FoodSearchScreen() {
     setExpanded((prev) => {
       if (!prev) return prev;
       const qty = Math.min(50, Math.max(0.5, prev.portion.qty + delta));
-      const grams = gramsForQty(prev.food, qty);
+      const amount = amountForQty(prev.food, qty);
       return {
         ...prev,
         portion: {
           mode: 'serving',
           qty,
-          gramsText: grams !== null ? fmtQty(grams) : prev.portion.gramsText,
+          amountText: amount !== null ? fmtQty(amount) : prev.portion.amountText,
         },
       };
     });
   };
 
-  const editGrams = (text: string) => {
+  const editAmount = (text: string) => {
     setExpanded((prev) =>
-      prev ? { ...prev, portion: { ...prev.portion, mode: 'grams', gramsText: text } } : prev
+      prev ? { ...prev, portion: { ...prev.portion, mode: 'amount', amountText: text } } : prev
     );
   };
 
@@ -218,15 +231,15 @@ export default function FoodSearchScreen() {
     );
   };
 
-  const gramsPreview =
+  const amountPreview =
     expanded === null
       ? null
       : expanded.portion.mode === 'serving'
-        ? gramsForQty(expanded.food, expanded.portion.qty)
-        : parseGrams(expanded.portion.gramsText);
+        ? amountForQty(expanded.food, expanded.portion.qty)
+        : parseAmount(expanded.portion.amountText);
   const kcalPreview =
-    expanded !== null && gramsPreview !== null && expanded.food.kcal_100g !== null
-      ? (expanded.food.kcal_100g * gramsPreview) / 100
+    expanded !== null && amountPreview !== null && expanded.food.kcal_100g !== null
+      ? (expanded.food.kcal_100g * amountPreview) / 100
       : null;
 
   /** The one catalog action that is always offered. `ruled` is true only when a
@@ -251,10 +264,10 @@ export default function FoodSearchScreen() {
     expanded?.section === section && expanded.food.id === food.id ? (
       <PortionEditor
         expanded={expanded}
-        gramsPreview={gramsPreview}
+        amountPreview={amountPreview}
         kcalPreview={kcalPreview}
         onStep={stepQty}
-        onEditGrams={editGrams}
+        onEditAmount={editAmount}
         onToggleFavorite={toggleFavorite}
         onAdd={addExpanded}
       />
@@ -314,7 +327,7 @@ export default function FoodSearchScreen() {
                       <Divider first={index === 0} />
                       <FoodListRow
                         food={recent.food}
-                        subtitle={lastPortionLabel(recent)}
+                        subtitle={lastPortionLabel(recent, units.volume)}
                         onPress={() =>
                           setExpanded({
                             food: recent.food,
@@ -435,13 +448,14 @@ export default function FoodSearchScreen() {
   );
 }
 
-/** "2 × 1 egg" / "150 g" — how a recent food was last logged. */
-function lastPortionLabel(recent: RecentFood): string | null {
-  const { food, lastServingQty, lastGrams } = recent;
+/** "2 × 1 egg" / "150 g" / "250 ml" — how a recent food was last logged, under
+ * the user's volume preference. */
+function lastPortionLabel(recent: RecentFood, volume: VolumeUnit): string | null {
+  const { food, lastServingQty, lastAmount } = recent;
   if (lastServingQty !== null && food.serving_name !== null) {
     return `Last: ${fmtQty(lastServingQty)} × ${food.serving_name}`;
   }
-  if (lastGrams !== null) return `Last: ${fmtQty(lastGrams)} g`;
+  if (lastAmount !== null) return `Last: ${fmtAmount(lastAmount, food.basis, volume)}`;
   return null;
 }
 
@@ -528,34 +542,34 @@ function FoodListRow({
 
 /**
  * The inline portion editor under a tapped row. It draws **no device of its
- * own** — it lives inside a plate, and devices never nest. Only the grams input
+ * own** — it lives inside a plate, and devices never nest. Only the amount input
  * takes the recessed treatment, because an input is a well at control scale.
  *
  * The Add button is this screen's one accent (only one editor is ever open).
  */
 function PortionEditor({
   expanded,
-  gramsPreview,
+  amountPreview,
   kcalPreview,
   onStep,
-  onEditGrams,
+  onEditAmount,
   onToggleFavorite,
   onAdd,
 }: {
   expanded: Expanded;
-  gramsPreview: number | null;
+  amountPreview: number | null;
   kcalPreview: number | null;
   onStep: (delta: number) => void;
-  onEditGrams: (text: string) => void;
+  onEditAmount: (text: string) => void;
   onToggleFavorite: (food: FoodRow) => void;
   onAdd: () => void;
 }) {
   const { food, portion } = expanded;
-  const canAdd = gramsPreview !== null && gramsPreview > 0;
+  const canAdd = amountPreview !== null && amountPreview > 0;
   return (
     <View className="pb-3">
       <View className="flex-row items-center gap-2">
-        {food.serving_grams !== null ? (
+        {food.serving_amount !== null ? (
           <View className="flex-row items-center gap-1">
             <Pressable
               accessibilityRole="button"
@@ -583,15 +597,15 @@ function PortionEditor({
         ) : null}
         <View className="ml-auto flex-row items-center gap-2">
           <TextInput
-            value={portion.gramsText}
-            onChangeText={onEditGrams}
+            value={portion.amountText}
+            onChangeText={onEditAmount}
             keyboardType="decimal-pad"
             returnKeyType={KEYPAD_DONE}
-            {...selectAllOnFocus(portion.gramsText)}
-            accessibilityLabel="Grams"
+            {...selectAllOnFocus(portion.amountText)}
+            accessibilityLabel={food.basis === 'ml' ? 'Millilitres' : 'Grams'}
             className="w-16 border border-paper-deep bg-paper-dim px-2 py-2 text-right font-mono text-[13px] text-ink"
           />
-          <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
+          <Text className="font-mono text-[11px] text-ink-secondary">{food.basis}</Text>
         </View>
       </View>
 

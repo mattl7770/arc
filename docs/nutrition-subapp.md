@@ -154,12 +154,13 @@ Designed to extend `meals` (0002) **without touching its shape or its four expor
 | `name_norm` | text NOT NULL | lowercased search key, written by the repo |
 | `brand` | text | NULL for generic foods |
 | `barcode` | text | EAN/UPC digits; **partial UNIQUE index** where not null |
-| `serving_name` / `serving_grams` | text / real | a household serving ("1 egg" / 50); pair-or-none CHECK; grams > 0 |
+| `serving_name` / `serving_amount` | text / real | a household serving ("1 egg" / 50, "1 can" / 330); pair-or-none CHECK; amount > 0. **In the food's `basis`** (§12e) |
 | `kcal_100g` | real | ≥ 0, ≤ 950 (pure fat ≈ 884) |
 | `protein_g_100g` `carbs_g_100g` `fat_g_100g` `fiber_g_100g` | real | each NULL or 0–100 (per definition of per-100 g) |
 | `micros` | text | JSON object, `json_valid` CHECK; longevity shortlist keys (`sodium_mg`, `potassium_mg`, `calcium_mg`, `magnesium_mg`, `iron_mg`, `zinc_mg`, `vitamin_d_mcg`, `b12_mcg`, `folate_mcg`, `omega3_g`, `caffeine_mg` …) per 100 g; only values the source actually knows — absent beats guessed. **An arbitrary-key JSON column is why the vocabulary can grow without a migration** (§12d) |
 | `source` | text NOT NULL DEFAULT 'user' | CHECK IN (`'seed','user','ai','openfoodfacts'`) — ARC-owned vocabulary (the shared `DataSource` describes *log* provenance; a catalog row's provenance is a different axis) |
 | `is_favorite` | integer NOT NULL DEFAULT 0 | 0/1 CHECK — single-user, so a flag beats a join table |
+| `basis` | text NOT NULL DEFAULT 'g' | CHECK IN (`'g','ml'`) — what this food is MEASURED IN (0047, §12e). Every per-100 column above is per 100 **of this** |
 | `created_at` / `updated_at` | text | defaults + AFTER UPDATE trigger (mutable: favorites, edits) |
 
 Indexes: `foods_name_norm_idx`, partial-unique `foods_barcode_idx`.
@@ -172,8 +173,9 @@ Indexes: `foods_name_norm_idx`, partial-unique `foods_barcode_idx`.
 | `meal_id` | text NOT NULL → `meals(id)` **ON DELETE CASCADE** | items are part of the meal record (same reasoning as `workout_sets`) |
 | `food_id` | text → `foods(id)` **ON DELETE SET NULL** | provenance only — deleting a catalog food never destroys eating history (delete-semantics ADR) |
 | `name` | text NOT NULL | snapshot of the food name at log time — the row stays meaningful alone |
-| `grams` / `serving_qty` | real | either/both, > 0; NULL grams allowed (an "≈300 kcal lasagna" AI item) |
+| `amount` / `serving_qty` | real | either/both, > 0; NULL amount allowed (an "≈300 kcal lasagna" AI item). `amount` is in the row's `unit` (§12e) |
 | `kcal` `protein_g` `carbs_g` `fat_g` `fiber_g` | real | ≥ 0, **snapshot at log time** (catalog edits never rewrite history) |
+| `unit` | text NOT NULL DEFAULT 'g' | CHECK IN (`'g','ml'`) — the food's `basis`, SNAPSHOTTED at log time like the name and the macros (0047, §12e) |
 | `confidence` | text | NULL or `'high','medium','low'` — persisted for AI items so the Coach can weigh them |
 | `created_at` / `updated_at` | text | defaults + trigger (portions are editable) |
 
@@ -227,7 +229,7 @@ All new code depends only on the `Database` interface. **No existing export chan
 - **Targets are append-only** (`setNutritionTargets` / `activeNutritionTargets`, the `protocol_versions` pattern).
 - **The 0033 meal-photo functions are the ROW half only.** The FILE half is `src/lib/media/meal-photo-store.ts`, and calling the row functions directly is exactly how a name and its bytes come to disagree.
 
-**Pure helpers:** `src/lib/nutrition/servings.ts` — `gramsForQty`, `macrosForGrams` (per-100 g × grams/100), used by UI and repo, headless-tested. `src/lib/nutrition/format.ts` — `fmtInt`, `macroLine`, `portionLabel` (nutrition.tsx's local copies move here; the Data-tab's own copy is untouched).
+**Pure helpers:** `src/lib/nutrition/servings.ts` — `amountForQty`, `macrosForAmount` (per-100 × amount/100; unit-blind, because the amount is in the food's own basis — §12e), used by UI and repo, headless-tested. `src/lib/nutrition/format.ts` — `fmtInt`, `fmtAmount`, `macroLine`, `portionLabel` (nutrition.tsx's local copies move here; the Data-tab's own copy is untouched).
 
 **Types** (`src/lib/nutrition/types.ts`, feature-local per convention): `FoodRow`, `NewFood`, `FoodSource`, `MealItemRow`, `NewMealItem`, `NewMealWithItems`, `RecentFood`, `NutritionTargetsRow`, `NewNutritionTargets`, `EstimateConfidence`.
 
@@ -577,3 +579,103 @@ The reply goes through the same vocabulary filter as stored JSON (`coerceMicros`
 - **No denominators until targets exist** (`docs/design-research/implementation/00-design-spec.md` §5). With no fiber target the fiber plate prints the figure alone: no denominator, no rule, and a label that says `no target set`. The old behaviour hid the plate entirely, which meant a profile that had never opened the targets screen could not see a number the day genuinely recorded.
 
 **Verification.** `db/nutrition-v2.test.mjs` §21 walks one caffeinated item end to end — model reply → parser (keys kept, junk dropped, empty → `NULL`) → grounding against a micro-less catalog food → logged meal → `dayMicroTotals` — and asserts both prompts ask for the two micros and that the revision request states them. `db/screens-render.test.mjs` §7c renders `app/nutrition-micros.tsx` over a real day: sodium `1,240`, caffeine `145`, `2 of 12 recorded`, the caveat, and the fiber plate in both of its states.
+
+---
+
+## 12e. `ml` as a second unit (B2, 2026-09-14, migration `0047`)
+
+The owner, opening the September Phase-B list: *"Let's start by implementing ml as a new unit type; the AI should estimate how many ML a drink is, instead of grams, when using ml instead of g."* And the scope fence, in the same breath: *"it could get complex having too many and being too creative with it."*
+
+So: **one** new unit. No density table, no general unit system, no `oz`/`cup`/`slice` in the schema. ("Slices" is parked.)
+
+### The model, and why there is no conversion
+
+Three facts, and nothing else:
+
+1. **A food declares a `basis`** — `'g'` (the default) or `'ml'`. Its per-100 macro columns are per 100 **of that basis**: a 42 kcal/100 ml milk stores `42`.
+2. **A meal item's `amount` carries a `unit`** — the food's basis, *snapshotted* at log time exactly as its name and macros are, so editing or deleting the catalog food can never restate what was drunk.
+3. **Nothing converts.** A drink is logged in ml and stays in ml, on every screen and in every total, for life.
+
+The third is the load-bearing one. A ml↔g factor needs a **density per food** (milk 1.03, oil 0.92, honey 1.42) — a table of numbers nobody in this app has measured, maintained forever, wrong in the cases that matter most. That is precisely the "too creative" the fence forbids. The two units are two parallel ledgers of the same shape, never two views of one number.
+
+**Refusing it costs nothing, and that is the whole reason the design is this small.** Energy and macros are already the common currency: `meal_items.kcal`, `protein_g`, … are absolute amounts **for the portion**, not per basis, so a 250 ml glass of milk and a 50 g bowl of oats sum into one day's totals by construction. Nothing that rolls up — `todayTotals`, `nutritionHistory`, `dayMicroTotals`, the Coach's snapshot — has to know the unit exists. The unit governs exactly one thing: the portion number and how it prints. That is why `0047` touches **no aggregate, no index and no trigger**.
+
+A food has one basis, and a portion of it is always in that basis. There is deliberately **no "log this ml food in grams" path**: offering one would immediately require the conversion this design refuses.
+
+### The rename, and the one it did not do
+
+`0047` also renames the three portion columns to what they now hold:
+
+| before | after |
+| --- | --- |
+| `meal_items.grams` | `meal_items.amount` |
+| `meal_template_items.grams` | `meal_template_items.amount` |
+| `foods.serving_grams` | `foods.serving_amount` |
+
+A column called `grams` holding `250` for a 250 ml drink is the exact class of lie the rest of this schema goes out of its way not to carry (`meal_photos.file_name` is a *name*, never a path; `wearable_data.metric_type` is free text on purpose). SQLite's `ALTER TABLE … RENAME COLUMN` rewrites the references inside indexes, triggers and CHECK constraints — which matters, because `foods` carries a table-level `CHECK ((serving_name IS NULL) = (serving_grams IS NULL))` that would otherwise dangle. `db/migrate.test.mjs` §8 proves the rewritten constraint still *bites*, not merely that it still exists.
+
+**The per-100 macro columns kept their names** (`kcal_100g`, `protein_g_100g`, …), and that is a judgment rather than a half-finished rename. They stay true of every row that exists today and of every solid food forever; "_100g" is read as "per 100 of the basis", and the basis sits one column away. A portion is different in kind — it is the number the user types and the screen prints back, so its unit has to be legible at the point of use.
+
+### Recipe lines stay grams — stated explicitly, because it is a real choice
+
+**`recipe_ingredients.grams` is not renamed and gains no unit.** A recipe line is parsed from prose ("1 cup milk") and *resolved* to a mass by `src/lib/recipes/ingredients.ts` + `src/lib/recipes/estimate.ts`, which is already **mass-only by design** ("a cup of flour and a cup of oil differ by…"); that resolution to one unit is what makes a recipe's nutrition summable at all. So those grams really are grams, and the name stays true.
+
+That also leaves the **0034 invariant** `resolved_by IS NULL ⇔ grams IS NULL` untouched — same two columns, same repository writers, same pairing, not one byte moved.
+
+Three seams between the two worlds, all explicit:
+
+- **`logRecipe`** (recipe → meal): a counted line becomes a meal item at `unit: 'g'`, stated rather than defaulted.
+- **`saveMealAsRecipe`** (meal → recipe): a **millilitre item lands UNRESOLVED**, with its number and unit kept in the raw line ("250 ml Milk", `qty` 250, `unit` ml) — which is exactly what a hand-typed volumetric line looks like, and it is priced in grams by the same automatic pass every other volumetric line already goes through. Copying 250 ml into a grams column would be a silent unit swap inside a number the whole rollup then trusts.
+- **`resolveIngredient`** refuses a non-`g` food outright, with the reason in the error.
+
+### The estimator
+
+`MEAL_ESTIMATION_SYSTEM_PROMPT` now asks for `"amount"` plus `"unit": "g"|"ml"`, with the rule stated in the terms a model can act on — **"ml" for anything DRUNK** (coffee, tea, juice, soda, beer, wine, milk, a smoothie or shake), `g` for everything eaten — and an explicit *"estimate a drink in millilitres directly; never convert it to grams."* Macro grams stay macro grams whatever the portion unit is, which the prompt also says, because that is the one place the two senses of "g" could collide.
+
+Two coercions in `parseMealEstimate`, both deliberately permissive rather than throwing, because **every estimate lands on an editable review screen** — a wrong unit is visible and one tap from fixed, while a refusal loses the whole meal:
+
+- an unknown `unit` (`"cups"`, absent, nonsense) falls back to `g`;
+- a reply that still says `"grams"` is read as a gram `amount`, so an older prompt's shape lands on the row instead of becoming an unportioned item.
+
+**`groundMealEstimate` will not cross the two.** It re-prices only on a confident name match to a food with complete macros **and the same unit**. Two foods with the same name, one per-100-g and one per-100-ml, is the sharpest form of the trap: the name match is perfect and only the unit tells them apart. A mismatch keeps the model's own numbers, which are at least self-consistent — the same reasoning as the existing generic-single-word rule, one axis over.
+
+`MEAL_REVISION_SYSTEM_PROMPT` gains the matching rail (*keep the unit each item arrived with; never restate a millilitre amount as grams*), and `buildMealRevisionRequest` prints each row in its own unit — without that, "leave the untouched items byte-identical" cannot mean anything for a drink.
+
+### What the screens do
+
+| surface | what changed |
+| --- | --- |
+| `app/food-new.tsx` | a **Solid · g / Drink · ml** toggle above the serving row, because it names what that row's number counts and what the macros are per 100 of. The serving label, the entry-basis chip and the two validation messages all follow it. |
+| `app/food-search.tsx`, `app/barcode-scan.tsx` | the portion editor's suffix and spoken label are the food's own unit; the right-edge summary reads `100 ml` for a drink; the recents rail prints last time's portion under the volume preference. |
+| `app/meal-detail.tsx` | the amount field is suffixed with the **item's** unit (not the food's — a food re-declared as a drink afterwards does not restate what was eaten), and `portionLabel` prints under the preference. `selectOnFocus` and `KEYPAD_DONE` are untouched. |
+| `app/meal-estimate.tsx`, `app/meal-revise.tsx` | each review row carries the model's unit beside its amount and writes it onto the item. |
+| `app/meal-templates.tsx` | a saved "morning shake" round-trips with its millilitres intact. |
+
+**The oz/ml preference applies to READINGS, and deliberately not to entry fields.** `fmtAmount` converts a millilitre amount for display when Settings › Units says `oz` — the same factor water uses, exported once from `src/lib/log/metrics.ts` so there is one copy of it — and leaves gram amounts alone, because that toggle is a *volume* preference. An entry box is different: converting one means a 330 ml can reads "11.2 oz" and writes back 331.2 ml on a Save the user never edited, which is the rounding drift `app/meal-detail.tsx` already fights in the other direction. So the field is in the food's own unit, labelled with it, and the reading beside it honours the preference.
+
+### The Coach: a measured **zero**
+
+The finding, recorded because it is the answer rather than an omission: **no Coach tool carries a food portion at all.** `log_meal` writes a free-form meal (name, time, optional macro totals) and `meals` has no amount column for a unit to qualify; `log_recipe`'s `grams` is a cooked *dish* weight against `total_weight_g`, still exactly grams; `save_recipe`'s ingredient `unit` is free text read off the written line, normalisation-only. A `unit` property on any of them would describe a number that does not exist.
+
+So the schema-token delta is **0 / 0** — 9,223 tool tokens and 3,668 prompt tokens, unchanged, with 27 and 32 of headroom. Neither ceiling was raised and nothing had to be trimmed to pay for it (`db/coach-eval.test.mjs` §6 carries the accounting). What *had* to hold is that a millilitre meal is neither invisible nor distorted to a Coach reading the day, and it holds for free because kcal is the common currency: `db/coach-tools.test.mjs` §37 walks a 250 ml drink and a 50 g bowl through `get_today_snapshot` and `get_nutrition_summary` and asserts they sum.
+
+### Backfill, and barcoded drinks
+
+Both new columns are `NOT NULL DEFAULT 'g'`, which backfills every existing row as the column is added — **not a guess about history**: until `0047` there was no other unit to have logged in. No `UPDATE` statement is needed or wanted. The CHECK is single-column and the default satisfies it, so `ADD COLUMN` cannot fail on a populated table — the trap `0034`'s header records (SQLite validates a *cross*-column CHECK against existing rows, so such a constraint passes on a fresh fixture and rejects the whole ALTER on the owner's phone).
+
+A scanned product's basis is **read off the product, not guessed from its name**: Open Food Facts publishes `nutrition_data_per` as `"100g"` or `"100ml"`, and that field is authoritative for the very numbers being cached, so it is consulted first; where it is absent, the `serving_size` string is the fallback (`"330 ml"` is a volume, `"30 g"` is a mass). Both checks look only for a literal `ml` — a `cl` or `l` product falls back to grams rather than being converted, because the user can fix the basis in one tap on the edit screen and that is cheaper than a units table nobody audits.
+
+### Verification
+
+- `db/migrate.test.mjs` §8 — a **populated** database staged at 0046, migrated forward: the renames carry their values, both columns backfill to `g`, the rewritten pair-or-none CHECK still rejects a half-pair, `oz` is refused and `ml` is accepted.
+- `db/foods.test.mjs` §14–15 — a per-100-ml food prices 250 ml to 105 kcal with `unit: 'ml'`; the serving stepper works in ml; a gram food is unchanged; a ml item and a g item sum into one day; the unit survives the catalog food being deleted; `fmtAmount` / `portionLabel` suffixes, the oz preference over ml, and grams untouched by it.
+- `db/nutrition-v2.test.mjs` §22–22c — the prompt asks for the unit and forbids the conversion; a drink parses as 240 ml beside a 60 g solid; the `grams` and unknown-unit coercions; grounding across the same-name g/ml pair in both directions; the revision request printed in each item's own unit.
+- `db/coach-tools.test.mjs` §37 — the Coach round-trip above, plus assertions that `log_meal` still carries no portion and `log_recipe`'s grams is still a dish weight.
+- `db/screens-render.test.mjs` §7b — the scanner's recents row rendered twice over a real ml item: `8.5 oz` under the default preference, `250 ml` after flipping it.
+
+### What only a device can judge
+
+- **Whether the model actually reaches for `ml`.** The prompt asks for it and the parser keeps it, but the estimator is tested against the mock harness here — no real call is made on this branch. The first photograph of a coffee is the test: does it come back `240 ml`, or `240 g` with the word "cup" in the name?
+- **Whether `Solid · g / Drink · ml` reads as the food's identity** rather than as a formatting choice, sitting where it does in Create a food.
+- **Whether the entry-field decision is right in the hand** for an oz-preferring user: the row says `8.5 oz` and the field says `250 ml`. That is defensible on paper (and it is what keeps Save from nudging a portion nobody edited), but it is two units in one glance, and only the phone can say whether that reads as precise or as a mistake.
+- **The amount field's width at `ml` values.** A three-digit gram portion and a four-digit millilitre one (`1000`) share a `w-16` box on `app/food-search.tsx` and `app/barcode-scan.tsx`, and a `w-14` one on the two review screens.

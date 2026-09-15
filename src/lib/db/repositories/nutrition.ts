@@ -151,15 +151,18 @@ function sumOrNull(values: (number | null | undefined)[]): number | null {
 function insertMealItem(db: Database, mealId: string, item: NewMealItem): string {
   const id = newId(db);
   db.run(
-    `INSERT INTO meal_items (id, meal_id, food_id, name, grams, serving_qty,
+    `INSERT INTO meal_items (id, meal_id, food_id, name, amount, unit, serving_qty,
        kcal, protein_g, carbs_g, fat_g, fiber_g, confidence, micros)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       mealId,
       item.food_id ?? null,
       item.name,
-      item.grams ?? null,
+      item.amount ?? null,
+      // Absent unit is grams (0047) — every item logged before that column
+      // existed was grams, and so is every caller that never states one.
+      item.unit ?? 'g',
       item.serving_qty ?? null,
       item.kcal ?? null,
       item.protein_g ?? null,
@@ -273,18 +276,20 @@ export function updateMealItemPortion(
   itemId: string,
   portion: Pick<
     NewMealItem,
-    'grams' | 'serving_qty' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
+    'amount' | 'serving_qty' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
   >
 ): void {
   const row = db.get<{ meal_id: string }>('SELECT meal_id FROM meal_items WHERE id = ?', [itemId]);
   if (!row) return;
   db.transaction(() => {
+    // `unit` is deliberately absent: re-portioning answers "how much", and a
+    // portion does not change what it is measured in (see rescaleLoggedItem).
     db.run(
-      `UPDATE meal_items SET grams = ?, serving_qty = ?, kcal = ?, protein_g = ?,
+      `UPDATE meal_items SET amount = ?, serving_qty = ?, kcal = ?, protein_g = ?,
          carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?
        WHERE id = ?`,
       [
-        portion.grams ?? null,
+        portion.amount ?? null,
         portion.serving_qty ?? null,
         portion.kcal ?? null,
         portion.protein_g ?? null,
@@ -588,7 +593,8 @@ export function relogMeal(
     items: items.map((i) => ({
       food_id: i.food_id,
       name: i.name,
-      grams: i.grams,
+      amount: i.amount,
+      unit: i.unit,
       serving_qty: i.serving_qty,
       kcal: i.kcal,
       protein_g: i.protein_g,

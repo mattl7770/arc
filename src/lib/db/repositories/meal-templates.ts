@@ -27,15 +27,16 @@ import type {
 function insertTemplateItem(db: Database, templateId: string, item: NewMealItem): string {
   const id = newId(db);
   db.run(
-    `INSERT INTO meal_template_items (id, template_id, food_id, name, grams, serving_qty,
+    `INSERT INTO meal_template_items (id, template_id, food_id, name, amount, unit, serving_qty,
        kcal, protein_g, carbs_g, fat_g, fiber_g, micros)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       templateId,
       item.food_id ?? null,
       item.name,
-      item.grams ?? null,
+      item.amount ?? null,
+      item.unit ?? 'g',
       item.serving_qty ?? null,
       item.kcal ?? null,
       item.protein_g ?? null,
@@ -77,7 +78,8 @@ export function saveMealAsTemplate(db: Database, mealId: string, name: string): 
     items: items.map((i) => ({
       food_id: i.food_id,
       name: i.name,
-      grams: i.grams,
+      amount: i.amount,
+      unit: i.unit,
       serving_qty: i.serving_qty,
       kcal: i.kcal,
       protein_g: i.protein_g,
@@ -175,7 +177,8 @@ export function logMealFromTemplate(
     items: items.map((i) => ({
       food_id: i.food_id,
       name: i.name,
-      grams: i.grams,
+      amount: i.amount,
+      unit: i.unit,
       serving_qty: i.serving_qty,
       kcal: i.kcal,
       protein_g: i.protein_g,

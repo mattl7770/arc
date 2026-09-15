@@ -566,5 +566,105 @@ console.log('7. 0029 never runs twice (a re-purge cannot touch new rows)');
   db.close();
 }
 
+// ===========================================================================
+// 8. 0047 — `ml`, on a database that already has foods and items in it.
+//
+// The fixture is POPULATED BEFORE the migration runs, and that is the whole
+// point. 0034's header records the trap: SQLite validates a CROSS-column CHECK
+// on ADD COLUMN against existing rows, so a constraint can pass on an empty
+// test fixture and reject the whole ALTER on the owner's actual phone. 0047
+// also RENAMES three columns, one of which is referenced by a table-level CHECK
+// on `foods` — another thing that is indistinguishable from working until it
+// runs against real rows.
+//
+// So: stage at 0046 (i.e. everything through 0045), write the rows a phone
+// would have, migrate forward, and read the result back.
+// ===========================================================================
+console.log('8. 0047 renames the portion columns and backfills every row to `g`');
+{
+  const db = new DatabaseSync(':memory:');
+  stageAt(db, 46);
+
+  const before = db.prepare('PRAGMA user_version').get().user_version;
+  before === 45
+    ? ok('staged at 45 — the state a device sits in before this migration')
+    : bad('stage version', String(before));
+
+  // The rows a real device carries: a catalog food with a named serving, a meal
+  // with an item that points at it, and a saved template item.
+  db.exec(`
+    INSERT INTO foods (id, name, name_norm, serving_name, serving_grams, kcal_100g)
+      VALUES ('f-milk', 'Milk', 'milk', '1 cup', 244, 42);
+    INSERT INTO meals (id, date, name) VALUES ('m-1', '2026-09-14', 'Breakfast');
+    INSERT INTO meal_items (id, meal_id, food_id, name, grams, kcal)
+      VALUES ('i-1', 'm-1', 'f-milk', 'Milk', 244, 102);
+    INSERT INTO meal_templates (id, name, name_norm) VALUES ('t-1', 'Shake', 'shake');
+    INSERT INTO meal_template_items (id, template_id, name, grams)
+      VALUES ('ti-1', 't-1', 'Milk', 244);
+  `);
+
+  const result = migrate(executor(db), MIGRATIONS);
+  result.applied.includes('0047_ml_unit')
+    ? ok('0047 applied on a populated database (the ADD COLUMNs did not reject the rows)')
+    : bad('0047 not applied', JSON.stringify(result.applied));
+
+  const food = db.prepare("SELECT * FROM foods WHERE id = 'f-milk'").get();
+  food.serving_amount === 244 && !('serving_grams' in food)
+    ? ok('foods.serving_grams is now serving_amount, carrying its value')
+    : bad('food rename', JSON.stringify(food));
+  food.basis === 'g'
+    ? ok('and the food backfills to `g` — nothing was ever ml, so that is history, not a guess')
+    : bad('food basis', String(food.basis));
+
+  const item = db.prepare("SELECT * FROM meal_items WHERE id = 'i-1'").get();
+  item.amount === 244 && item.unit === 'g' && !('grams' in item)
+    ? ok('meal_items.grams is now amount, at `g`, with the logged number intact')
+    : bad('item rename', JSON.stringify(item));
+
+  const tItem = db.prepare("SELECT * FROM meal_template_items WHERE id = 'ti-1'").get();
+  tItem.amount === 244 && tItem.unit === 'g'
+    ? ok('and so does a saved template item')
+    : bad('template rename', JSON.stringify(tItem));
+
+  // The table-level CHECK on `foods` referenced the old column name. SQLite
+  // rewrites it on RENAME COLUMN — but only if it can parse it, so prove the
+  // rewritten constraint still BITES rather than merely still existing.
+  let paired = false;
+  try {
+    db.exec(
+      "INSERT INTO foods (id, name, name_norm, serving_name) VALUES ('f-x', 'X', 'x', '1 cup')"
+    );
+  } catch {
+    paired = true;
+  }
+  paired
+    ? ok('the serving pair-or-none CHECK survived the rename and still rejects a half-pair')
+    : bad('pair CHECK lost in rename');
+
+  // The new vocabulary is closed. `oz` is the unit this design deliberately does
+  // NOT have (it is a display preference, never a stored unit), so it is the
+  // honest thing to try.
+  let rejected = false;
+  try {
+    db.exec(
+      "INSERT INTO meal_items (id, meal_id, name, amount, unit) VALUES ('i-x', 'm-1', 'X', 1, 'oz')"
+    );
+  } catch {
+    rejected = true;
+  }
+  rejected
+    ? ok('`oz` is refused — the stored vocabulary is exactly g and ml')
+    : bad('oz accepted as a unit');
+
+  db.exec(
+    "INSERT INTO meal_items (id, meal_id, name, amount, unit) VALUES ('i-ml', 'm-1', 'Juice', 250, 'ml')"
+  );
+  db.prepare("SELECT unit FROM meal_items WHERE id = 'i-ml'").get().unit === 'ml'
+    ? ok('and `ml` is accepted — the point of the whole migration')
+    : bad('ml refused');
+
+  db.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

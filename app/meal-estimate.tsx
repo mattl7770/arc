@@ -38,7 +38,7 @@ import {
 } from '@/lib/media/meal-photo-store';
 import { downscaleJpeg, pickPhotoBase64 } from '@/lib/media/photo-library';
 import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
-import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
+import type { AmountUnit, FoodRow, NewMealItem } from '@/lib/nutrition/types';
 
 /**
  * AI meal estimation → editable review (docs/nutrition-subapp.md §6). Describe a
@@ -82,7 +82,7 @@ import type { FoodRow, NewMealItem } from '@/lib/nutrition/types';
  * of the decision follows. The outcome is never drawn alongside the proposal.
  *
  * **The ledger rule.** The Items label carries the total of the rows visible
- * beneath it, recomputed from each row's live grams — edit or remove a row and
+ * beneath it, recomputed from each row's live amount — edit or remove a row and
  * the total moves with it, because it is derived from exactly the items that
  * will be written.
  *
@@ -132,16 +132,16 @@ type Phase =
 /** A code sitting in the viewfinder, with whatever the local catalog knows. */
 type SeenCode = { code: string; name: string | null; brand: string | null };
 
-/** One editable review row: the model's item, grounded, with a live grams edit. */
+/** One editable review row: the model's item, grounded, with a live amount edit. */
 type ReviewItem = {
   key: string;
   name: string;
   foodId: string | null;
   food: FoodRow | undefined;
   confidence: 'high' | 'medium' | 'low';
-  /** The base snapshot the grams edit re-scales from. */
+  /** The base snapshot the amount edit re-scales from. */
   base: {
-    grams: number | null;
+    amount: number | null;
     kcal: number | null;
     protein_g: number | null;
     carbs_g: number | null;
@@ -149,28 +149,33 @@ type ReviewItem = {
     fiber_g: number | null;
     micros: string | null;
   };
-  gramsText: string;
+  amountText: string;
+  /** What the amount counts — the model's own call (0047, backlog B2: "ml" when
+   * it judged this item a drink). Shown beside the field and written onto the
+   * item; the field itself is never converted for the oz/ml preference. */
+  unit: AmountUnit;
 };
 
-function parseGrams(text: string): number | null {
-  const g = Number(text.trim());
-  return Number.isFinite(g) && g > 0 && g <= 5000 ? g : null;
+function parseAmount(text: string): number | null {
+  const n = Number(text.trim());
+  return Number.isFinite(n) && n > 0 && n <= 5000 ? n : null;
 }
 
-/** Current macros/micros for a review row at its edited grams — via the same
+/** Current macros/micros for a review row at its edited amount — via the same
  * tested rescale used everywhere; falls back to the base when it can't scale. */
 function currentPortion(row: ReviewItem) {
-  const grams = parseGrams(row.gramsText);
-  if (grams != null) {
-    const scaled = rescaleLoggedItem(row.base, row.food, { grams });
+  const amount = parseAmount(row.amountText);
+  if (amount != null) {
+    const scaled = rescaleLoggedItem(row.base, row.food, { amount });
     if (scaled) return scaled;
   }
   return {
     // A validly-typed portion is kept even when macros can't be re-scaled (an
-    // ungrounded, gramless item): the number the user entered is recorded rather
-    // than silently dropped, and — since parseGrams only yields >0 — this grams
-    // is always null or positive, so it can never violate meal_items CHECK(grams > 0).
-    grams: grams ?? row.base.grams,
+    // ungrounded, amountless item): the number the user entered is recorded
+    // rather than silently dropped, and — since parseAmount only yields >0 —
+    // this is always null or positive, so it can never violate the schema's
+    // CHECK(amount > 0).
+    amount: amount ?? row.base.amount,
     serving_qty: null,
     kcal: row.base.kcal,
     protein_g: row.base.protein_g,
@@ -210,19 +215,21 @@ export default function MealEstimateScreen() {
   useEffect(() => () => abortRef.current?.abort(), []);
 
   /** Turn a grounded estimate into editable review rows (loads each grounded
-   * food so grams edits re-price from it). */
+   * food so amount edits re-price from it). */
   const toReview = (estimate: MealEstimate) => {
     const db = getDb();
     const reviewRows: ReviewItem[] = estimate.items.map((item, i) => {
       const food = item.foodId ? getFood(db, item.foodId) : undefined;
       // A grounded item's base is derived from the food so macros AND micros are
-      // consistent — including when the user clears the grams field (currentPortion
-      // falls back to base). An ungrounded item keeps the model's numbers,
-      // including the sodium/caffeine it now returns (backlog A8); those scale
-      // with a grams edit like every other figure on the row.
+      // consistent — including when the user clears the amount field
+      // (currentPortion falls back to base). An ungrounded item keeps the
+      // model's numbers, including the sodium/caffeine it now returns (backlog
+      // A8); those scale with an amount edit like every other figure on the row.
+      // groundMealEstimate only sets foodId when the food's basis MATCHES the
+      // item's unit, so re-pricing here can never cross the two.
       const grounded =
-        food && item.grams != null && item.grams > 0
-          ? itemForPortion(food, { grams: item.grams })
+        food && item.amount != null && item.amount > 0
+          ? itemForPortion(food, { amount: item.amount })
           : null;
       return {
         key: `${i}-${item.name}`,
@@ -230,12 +237,13 @@ export default function MealEstimateScreen() {
         foodId: item.foodId,
         food,
         confidence: item.confidence,
+        unit: item.unit,
         base: {
-          // A non-positive grams from the model would violate meal_items
-          // CHECK(grams > 0) and roll back the whole save; store it as "not
+          // A non-positive amount from the model would violate meal_items
+          // CHECK(amount > 0) and roll back the whole save; store it as "not
           // recorded" (null) instead — matching the `grounded` guard above and
-          // parseGrams, both of which already treat 0 as no grams.
-          grams: item.grams != null && item.grams > 0 ? item.grams : null,
+          // parseAmount, both of which already treat 0 as no portion.
+          amount: item.amount != null && item.amount > 0 ? item.amount : null,
           kcal: grounded?.kcal ?? item.kcal,
           protein_g: grounded?.protein_g ?? item.protein_g,
           carbs_g: grounded?.carbs_g ?? item.carbs_g,
@@ -243,7 +251,7 @@ export default function MealEstimateScreen() {
           fiber_g: grounded?.fiber_g ?? item.fiber_g,
           micros: grounded?.micros ?? item.micros,
         },
-        gramsText: item.grams != null && item.grams > 0 ? String(Math.round(item.grams)) : '',
+        amountText: item.amount != null && item.amount > 0 ? String(Math.round(item.amount)) : '',
       };
     });
     setRows(reviewRows);
@@ -360,8 +368,8 @@ export default function MealEstimateScreen() {
     }
   };
 
-  const setGrams = (key: string, text: string) => {
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, gramsText: text } : r)));
+  const setAmount = (key: string, text: string) => {
+    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, amountText: text } : r)));
   };
   const removeRow = (key: string) => {
     setRows((prev) => prev.filter((r) => r.key !== key));
@@ -374,7 +382,8 @@ export default function MealEstimateScreen() {
       return {
         food_id: row.foodId,
         name: row.name,
-        grams: p.grams,
+        amount: p.amount,
+        unit: row.unit,
         serving_qty: null,
         kcal: p.kcal,
         protein_g: p.protein_g,
@@ -430,7 +439,7 @@ export default function MealEstimateScreen() {
     );
   }
 
-  // The total of the rows actually on screen, at their live grams — a ledger
+  // The total of the rows actually on screen, at their live amount — a ledger
   // sums to its own total, so this moves with every edit and removal.
   const reviewKcal = rows.reduce<number | null>((sum, row) => {
     const kcal = currentPortion(row).kcal;
@@ -722,15 +731,19 @@ export default function MealEstimateScreen() {
                             </View>
                             <View className="flex-row items-center gap-1">
                               <TextInput
-                                value={row.gramsText}
-                                onChangeText={(t) => setGrams(row.key, t)}
+                                value={row.amountText}
+                                onChangeText={(t) => setAmount(row.key, t)}
                                 keyboardType="decimal-pad"
                                 returnKeyType={KEYPAD_DONE}
-                                {...selectAllOnFocus(row.gramsText)}
-                                accessibilityLabel={`${row.name} grams`}
+                                {...selectAllOnFocus(row.amountText)}
+                                accessibilityLabel={`${row.name} ${
+                                  row.unit === 'ml' ? 'millilitres' : 'grams'
+                                }`}
                                 className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
                               />
-                              <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
+                              <Text className="font-mono text-[11px] text-ink-secondary">
+                                {row.unit}
+                              </Text>
                             </View>
                             <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
                               {p.kcal != null ? fmtInt(p.kcal) : '—'}

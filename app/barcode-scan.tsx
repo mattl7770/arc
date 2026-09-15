@@ -10,6 +10,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import {
@@ -24,10 +25,11 @@ import {
   isCameraAvailable,
   useCameraPermission,
 } from '@/lib/media/camera';
-import { fmtInt, fmtQty, mealNameForProduct } from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt, fmtQty, mealNameForProduct } from '@/lib/nutrition/format';
 import { lookupOffProduct, normalizeBarcode, OffLookupError } from '@/lib/nutrition/openfoodfacts';
-import { gramsForQty, itemForPortion } from '@/lib/nutrition/servings';
+import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
+import type { VolumeUnit } from '@/lib/user/types';
 
 /**
  * Barcode scanning (docs/nutrition-subapp.md §7) — the one online-except-AI
@@ -87,7 +89,7 @@ import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
  * Conformed Set treatment: the resolved product opens on a **ruled plate** — it
  * is a catalog record (name, brand, energy, provenance), and the portion editor
  * inside it draws no device of its own, exactly as in app/food-search.tsx, which
- * is the same editor. Only its grams input takes the recessed treatment, because
+ * is the same editor. Only its amount input takes the recessed treatment, because
  * an input is a well at control scale; the steppers carry a hairline and no fill.
  * A `<Block device="well">` here would invert the surface system — a recessed
  * container can only hold raised controls, and an input is never `bg-paper-hi`
@@ -114,9 +116,9 @@ function daypartName(now: Date): string {
   return 'Snack';
 }
 
-function parseGrams(text: string): number | null {
-  const g = Number(text.trim());
-  return Number.isFinite(g) && g > 0 && g <= 5000 ? g : null;
+function parseAmount(text: string): number | null {
+  const n = Number(text.trim());
+  return Number.isFinite(n) && n > 0 && n <= 5000 ? n : null;
 }
 
 /** expo/fetch isn't needed for a plain GET+json — the global fetch works and
@@ -166,18 +168,20 @@ function ScanRow({
 function RecentBarcodeRow({
   recent,
   first,
+  volume,
   onPress,
 }: {
   recent: RecentFood;
   first: boolean;
+  volume: VolumeUnit;
   onPress: () => void;
 }) {
-  const { food, lastGrams, lastServingQty } = recent;
+  const { food, lastAmount, lastServingQty } = recent;
   const portion =
     lastServingQty != null && food.serving_name
       ? `${fmtQty(lastServingQty)} × ${food.serving_name}`
-      : lastGrams != null
-        ? `${fmtQty(lastGrams)} g`
+      : lastAmount != null
+        ? fmtAmount(lastAmount, food.basis, volume)
         : null;
   return (
     <View>
@@ -226,11 +230,15 @@ export default function BarcodeScanScreen() {
   // when the scanner opened, and re-reading it under the user's finger would
   // reorder the rows they are aiming at. It refreshes on the next visit.
   const [recents] = useState<RecentFood[]>(() => listRecentBarcodeFoods(getDb()));
+  // Display-only: whether a millilitre portion READS as ml or oz.
+  const { units } = useUnitPreferences();
   const [targetMealId, setTargetMealId] = useState<string | null>(mealId ?? null);
-  // Portion editor state (mirrors food search's).
-  const [mode, setMode] = useState<'serving' | 'grams'>('grams');
+  // Portion editor state (mirrors food search's). The typed amount is always in
+  // the FOOD'S own unit (g or ml) — the oz/ml preference governs read-only
+  // figures, never an entry box (see app/food-search.tsx's Portion type).
+  const [mode, setMode] = useState<'serving' | 'amount'>('amount');
   const [qty, setQty] = useState(1);
-  const [gramsText, setGramsText] = useState('100');
+  const [amountText, setAmountText] = useState('100');
   // onBarcodeScanned fires every frame the code is in view. This guards against
   // a burst of concurrent lookups for one scan, and against instantly
   // re-resolving the SAME code when the camera remounts (Scan another / after an
@@ -257,22 +265,22 @@ export default function BarcodeScanScreen() {
   const openPortion = (
     food: FoodRow,
     fromOff: boolean,
-    last?: { grams: number | null; servingQty: number | null }
+    last?: { amount: number | null; servingQty: number | null }
   ) => {
-    if (last?.servingQty != null && food.serving_grams != null) {
+    if (last?.servingQty != null && food.serving_amount != null) {
       setMode('serving');
       setQty(last.servingQty);
-      setGramsText(fmtQty(gramsForQty(food, last.servingQty) ?? food.serving_grams));
-    } else if (last?.grams != null) {
-      setMode('grams');
-      setGramsText(fmtQty(last.grams));
-    } else if (food.serving_grams != null) {
+      setAmountText(fmtQty(amountForQty(food, last.servingQty) ?? food.serving_amount));
+    } else if (last?.amount != null) {
+      setMode('amount');
+      setAmountText(fmtQty(last.amount));
+    } else if (food.serving_amount != null) {
       setMode('serving');
       setQty(1);
-      setGramsText(fmtQty(food.serving_grams));
+      setAmountText(fmtQty(food.serving_amount));
     } else {
-      setMode('grams');
-      setGramsText('100');
+      setMode('amount');
+      setAmountText('100');
     }
     setPhase({ kind: 'portion', food, fromOff });
   };
@@ -370,27 +378,27 @@ export default function BarcodeScanScreen() {
   };
 
   const addPortion = (food: FoodRow) => {
-    if (mode === 'serving' && food.serving_grams != null) {
+    if (mode === 'serving' && food.serving_amount != null) {
       if (qty <= 0) return;
       addItem(itemForPortion(food, { servingQty: qty }), food);
     } else {
-      const grams = parseGrams(gramsText);
-      if (grams === null) return;
-      addItem(itemForPortion(food, { grams }), food);
+      const amount = parseAmount(amountText);
+      if (amount === null) return;
+      addItem(itemForPortion(food, { amount }), food);
     }
   };
 
-  const gramsPreview =
+  const amountPreview =
     phase.kind === 'portion'
       ? mode === 'serving'
-        ? gramsForQty(phase.food, qty)
-        : parseGrams(gramsText)
+        ? amountForQty(phase.food, qty)
+        : parseAmount(amountText)
       : null;
   const kcalPreview =
-    phase.kind === 'portion' && gramsPreview != null && phase.food.kcal_100g != null
-      ? (phase.food.kcal_100g * gramsPreview) / 100
+    phase.kind === 'portion' && amountPreview != null && phase.food.kcal_100g != null
+      ? (phase.food.kcal_100g * amountPreview) / 100
       : null;
-  const canAdd = gramsPreview != null && gramsPreview > 0;
+  const canAdd = amountPreview != null && amountPreview > 0;
 
   return (
     <Screen scroll>
@@ -473,9 +481,10 @@ export default function BarcodeScanScreen() {
                       key={recent.food.id}
                       recent={recent}
                       first={index === 0}
+                      volume={units.volume}
                       onPress={() =>
                         openPortion(recent.food, false, {
-                          grams: recent.lastGrams,
+                          amount: recent.lastAmount,
                           servingQty: recent.lastServingQty,
                         })
                       }
@@ -515,12 +524,12 @@ export default function BarcodeScanScreen() {
             </Text>
             <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
               {phase.food.kcal_100g != null
-                ? `${fmtInt(phase.food.kcal_100g)} kcal / 100 g`
+                ? `${fmtInt(phase.food.kcal_100g)} kcal / 100 ${phase.food.basis}`
                 : 'no energy recorded'}
             </Text>
 
             <View className="mt-3 flex-row items-center gap-2">
-              {phase.food.serving_grams != null ? (
+              {phase.food.serving_amount != null ? (
                 <View className="flex-row items-center gap-1">
                   <Pressable
                     accessibilityRole="button"
@@ -530,8 +539,8 @@ export default function BarcodeScanScreen() {
                       const next = Math.min(50, Math.max(0.5, qty - 0.5));
                       setMode('serving');
                       setQty(next);
-                      const g = gramsForQty(phase.food, next);
-                      if (g != null) setGramsText(fmtQty(g));
+                      const a = amountForQty(phase.food, next);
+                      if (a != null) setAmountText(fmtQty(a));
                     }}
                     className="h-9 w-9 items-center justify-center rounded-btn border border-hairline active:opacity-60">
                     <Ionicons name="remove" size={16} color={palette.ink} />
@@ -547,8 +556,8 @@ export default function BarcodeScanScreen() {
                       const next = Math.min(50, Math.max(0.5, qty + 0.5));
                       setMode('serving');
                       setQty(next);
-                      const g = gramsForQty(phase.food, next);
-                      if (g != null) setGramsText(fmtQty(g));
+                      const a = amountForQty(phase.food, next);
+                      if (a != null) setAmountText(fmtQty(a));
                     }}
                     className="h-9 w-9 items-center justify-center rounded-btn border border-hairline active:opacity-60">
                     <Ionicons name="add" size={16} color={palette.ink} />
@@ -560,18 +569,18 @@ export default function BarcodeScanScreen() {
               ) : null}
               <View className="ml-auto flex-row items-center gap-2">
                 <TextInput
-                  value={gramsText}
+                  value={amountText}
                   onChangeText={(t) => {
-                    setMode('grams');
-                    setGramsText(t);
+                    setMode('amount');
+                    setAmountText(t);
                   }}
                   keyboardType="decimal-pad"
                   returnKeyType={KEYPAD_DONE}
-                  {...selectAllOnFocus(gramsText)}
-                  accessibilityLabel="Grams"
+                  {...selectAllOnFocus(amountText)}
+                  accessibilityLabel={phase.food.basis === 'ml' ? 'Millilitres' : 'Grams'}
                   className="w-16 border border-paper-deep bg-paper-dim px-2 py-2 text-right font-mono text-[13px] text-ink"
                 />
-                <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
+                <Text className="font-mono text-[11px] text-ink-secondary">{phase.food.basis}</Text>
               </View>
             </View>
 

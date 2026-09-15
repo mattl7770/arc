@@ -10,6 +10,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { getFood } from '@/lib/db/repositories/foods';
 import { getMeal, listMealItems, replaceMealItems } from '@/lib/db/repositories/nutrition';
@@ -20,9 +21,9 @@ import {
   MealEstimationUnavailableError,
   reviseMeal,
 } from '@/lib/nutrition/estimate';
-import { fmtInt } from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt } from '@/lib/nutrition/format';
 import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
-import type { FoodRow, MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
+import type { AmountUnit, FoodRow, MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
 
 /**
  * Correcting a logged meal in plain English (owner, 2026-08-12): *"I should be
@@ -57,7 +58,7 @@ import type { FoodRow, MealItemWithServing, NewMealItem } from '@/lib/nutrition/
  *   `replaceMealItems` never touches the meal's date, time, name, notes or
  *   source (src/lib/db/repositories/nutrition.ts).
  * - **The ledger sums to its own total.** The Items label carries the total of
- *   the rows visible beneath it, recomputed from each row's live grams.
+ *   the rows visible beneath it, recomputed from each row's live amount.
  * - **No data, no number.** A row the model could not price shows an em-dash,
  *   never a stand-in zero.
  *
@@ -87,7 +88,7 @@ type ReviewItem = {
   food: FoodRow | undefined;
   confidence: 'high' | 'medium' | 'low';
   base: {
-    grams: number | null;
+    amount: number | null;
     kcal: number | null;
     protein_g: number | null;
     carbs_g: number | null;
@@ -95,28 +96,32 @@ type ReviewItem = {
     fiber_g: number | null;
     micros: string | null;
   };
-  gramsText: string;
+  amountText: string;
+  /** What the amount counts (0047) — carried through the revision so an item
+   * the model was told not to change comes back in the unit it went in. */
+  unit: AmountUnit;
 };
 
-function parseGrams(text: string): number | null {
-  const g = Number(text.trim());
-  return Number.isFinite(g) && g > 0 && g <= 5000 ? g : null;
+function parseAmount(text: string): number | null {
+  const n = Number(text.trim());
+  return Number.isFinite(n) && n > 0 && n <= 5000 ? n : null;
 }
 
-/** Current macros/micros for a review row at its edited grams — via the same
+/** Current macros/micros for a review row at its edited amount — via the same
  *  tested rescale used everywhere; falls back to the base when it can't scale. */
 function currentPortion(row: ReviewItem) {
-  const grams = parseGrams(row.gramsText);
-  if (grams != null) {
-    const scaled = rescaleLoggedItem(row.base, row.food, { grams });
+  const amount = parseAmount(row.amountText);
+  if (amount != null) {
+    const scaled = rescaleLoggedItem(row.base, row.food, { amount });
     if (scaled) return scaled;
   }
   return {
     // A validly-typed portion is kept even when macros can't be re-scaled (an
-    // ungrounded, gramless item): the number the user entered is recorded rather
-    // than silently dropped, and — since parseGrams only yields >0 — this grams
-    // is always null or positive, so it can never violate meal_items CHECK(grams > 0).
-    grams: grams ?? row.base.grams,
+    // ungrounded, amountless item): the number the user entered is recorded
+    // rather than silently dropped, and — since parseAmount only yields >0 —
+    // this is always null or positive, so it can never violate the schema's
+    // CHECK(amount > 0).
+    amount: amount ?? row.base.amount,
     serving_qty: null,
     kcal: row.base.kcal,
     protein_g: row.base.protein_g,
@@ -137,6 +142,8 @@ export default function MealReviseScreen() {
   // would silently swap the "before" out from under an open proposal.
   const [meal] = useState(() => getMeal(getDb(), mealId));
   const [before] = useState<MealItemWithServing[]>(() => listMealItems(getDb(), mealId));
+  // Display-only: whether a millilitre portion READS as ml or oz.
+  const { units } = useUnitPreferences();
 
   const available = isMealEstimationAvailable();
   const [phase, setPhase] = useState<Phase>({ kind: 'input' });
@@ -153,8 +160,8 @@ export default function MealReviseScreen() {
       estimate.items.map((item, i) => {
         const food = item.foodId ? getFood(db, item.foodId) : undefined;
         const grounded =
-          food && item.grams != null && item.grams > 0
-            ? itemForPortion(food, { grams: item.grams })
+          food && item.amount != null && item.amount > 0
+            ? itemForPortion(food, { amount: item.amount })
             : null;
         return {
           key: `${i}-${item.name}`,
@@ -162,12 +169,13 @@ export default function MealReviseScreen() {
           foodId: item.foodId,
           food,
           confidence: item.confidence,
+          unit: item.unit,
           base: {
-            // A non-positive grams from the model would violate meal_items
-            // CHECK(grams > 0) and roll back the whole revision; store it as "not
-            // recorded" (null) instead — matching the `grounded` guard above and
-            // parseGrams, both of which already treat 0 as no grams.
-            grams: item.grams != null && item.grams > 0 ? item.grams : null,
+            // A non-positive amount from the model would violate meal_items
+            // CHECK(amount > 0) and roll back the whole revision; store it as
+            // "not recorded" (null) instead — matching the `grounded` guard
+            // above and parseAmount, both of which already treat 0 as none.
+            amount: item.amount != null && item.amount > 0 ? item.amount : null,
             kcal: grounded?.kcal ?? item.kcal,
             protein_g: grounded?.protein_g ?? item.protein_g,
             carbs_g: grounded?.carbs_g ?? item.carbs_g,
@@ -178,7 +186,7 @@ export default function MealReviseScreen() {
             // so a revision does not quietly drop them (backlog A8).
             micros: grounded?.micros ?? item.micros,
           },
-          gramsText: item.grams != null && item.grams > 0 ? String(Math.round(item.grams)) : '',
+          amountText: item.amount != null && item.amount > 0 ? String(Math.round(item.amount)) : '',
         };
       })
     );
@@ -199,7 +207,8 @@ export default function MealReviseScreen() {
           name: meal.name,
           items: before.map((i) => ({
             name: i.name,
-            grams: i.grams,
+            amount: i.amount,
+            unit: i.unit,
             kcal: i.kcal,
             protein_g: i.protein_g,
             carbs_g: i.carbs_g,
@@ -224,8 +233,8 @@ export default function MealReviseScreen() {
     }
   };
 
-  const setGrams = (key: string, text: string) => {
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, gramsText: text } : r)));
+  const setAmount = (key: string, text: string) => {
+    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, amountText: text } : r)));
   };
   const removeRow = (key: string) => {
     setRows((prev) => prev.filter((r) => r.key !== key));
@@ -238,7 +247,8 @@ export default function MealReviseScreen() {
       return {
         food_id: row.foodId,
         name: row.name,
-        grams: p.grams,
+        amount: p.amount,
+        unit: row.unit,
         serving_qty: null,
         kcal: p.kcal,
         protein_g: p.protein_g,
@@ -291,7 +301,7 @@ export default function MealReviseScreen() {
     );
   }
 
-  // The total of the rows actually on screen, at their live grams — a ledger
+  // The total of the rows actually on screen, at their live amount — a ledger
   // sums to its own total, so this moves with every edit and removal.
   const reviewKcal = rows.reduce<number | null>((sum, row) => {
     const kcal = currentPortion(row).kcal;
@@ -332,9 +342,9 @@ export default function MealReviseScreen() {
                         <Text className="flex-1 font-serif text-[15px] leading-5 text-ink">
                           {item.name}
                         </Text>
-                        {item.grams !== null ? (
+                        {item.amount !== null ? (
                           <Text className="font-mono text-[11px] text-ink-muted">
-                            {Math.round(item.grams)} g
+                            {fmtAmount(Math.round(item.amount), item.unit, units.volume)}
                           </Text>
                         ) : null}
                         <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
@@ -474,15 +484,19 @@ export default function MealReviseScreen() {
                           </View>
                           <View className="flex-row items-center gap-1">
                             <TextInput
-                              value={row.gramsText}
-                              onChangeText={(t) => setGrams(row.key, t)}
+                              value={row.amountText}
+                              onChangeText={(t) => setAmount(row.key, t)}
                               keyboardType="decimal-pad"
                               returnKeyType={KEYPAD_DONE}
-                              {...selectAllOnFocus(row.gramsText)}
-                              accessibilityLabel={`${row.name} grams`}
+                              {...selectAllOnFocus(row.amountText)}
+                              accessibilityLabel={`${row.name} ${
+                                row.unit === 'ml' ? 'millilitres' : 'grams'
+                              }`}
                               className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
                             />
-                            <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
+                            <Text className="font-mono text-[11px] text-ink-secondary">
+                              {row.unit}
+                            </Text>
                           </View>
                           <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
                             {p.kcal != null ? fmtInt(p.kcal) : '—'}

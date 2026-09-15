@@ -1,0 +1,123 @@
+-- ============================================================================
+-- ARC 0047 — `ml` as a second unit, and the end of a column that would lie
+--
+-- Owner, backlog B2: *"Let's start by implementing ml as a new unit type; the
+-- AI should estimate how many ML a drink is, instead of grams, when using ml
+-- instead of g."* With a scope fence stated in the same breath: *"it could get
+-- complex having too many and being too creative with it."*
+--
+-- So: ONE new unit. No density table, no general unit system, no `oz`/`cup`/
+-- `slice` in the schema. Two columns per table and a rename.
+--
+-- ── THE MODEL: A BASIS ON THE FOOD, A UNIT ON THE ITEM, NO CONVERSION ──
+--
+--   `foods.basis`               'g' | 'ml' — what this food is MEASURED IN.
+--                               Its per-100 macro columns are per 100 OF THAT
+--                               BASIS (see the next section).
+--   `meal_items.unit`           'g' | 'ml' — the SNAPSHOT of that basis at log
+--                               time, beside the portion it qualifies.
+--   `meal_template_items.unit`  the same pair, for a saved template.
+--
+-- **Nothing converts.** A drink is logged in ml and stays in ml, for its whole
+-- life, on every screen and in every total. There is no ml↔g factor anywhere in
+-- this codebase and adding one would be exactly the "too creative" the fence
+-- forbids: it needs a density per food (milk 1.03, oil 0.92, honey 1.42), which
+-- is a table of numbers nobody in this app has measured. The two units are two
+-- parallel ledgers of the same shape, never two views of one number.
+--
+-- That refusal costs nothing, because **energy and macros are already the
+-- common currency**. `meal_items.kcal` / `protein_g` / … are absolute amounts
+-- FOR THE PORTION, not per basis, so a day's totals sum across units by
+-- construction — 250 ml of milk contributes kcal exactly like 250 g of rice.
+-- The unit governs one thing only: the portion number and how it prints. That
+-- is why this migration touches no aggregate, no index and no trigger.
+--
+-- A food has exactly one basis, and a portion of it is always in that basis.
+-- There is deliberately NO "log this ml food in grams" path: offering one would
+-- immediately require the conversion this design refuses.
+--
+-- ── THE RENAME: `grams` → `amount`, `serving_grams` → `serving_amount` ──
+--
+-- A column named `grams` holding 250 for a 250 ml drink is precisely the class
+-- of lie the rest of this schema goes out of its way not to carry (0033's
+-- file_name-is-a-NAME-not-a-path; 0021's metric_type-is-free-text). It would be
+-- re-litigated by every future reader and need a comment at every read site. So
+-- the three portion columns are renamed to what they now are:
+--
+--   meal_items.grams           → meal_items.amount
+--   meal_template_items.grams  → meal_template_items.amount
+--   foods.serving_grams        → foods.serving_amount
+--
+-- SQLite's ALTER TABLE … RENAME COLUMN (3.25+; op-sqlite ships far newer)
+-- rewrites the references inside indexes, triggers and CHECK constraints for
+-- us — which matters here, because `foods` carries a table-level
+-- `CHECK ((serving_name IS NULL) = (serving_grams IS NULL))` that would
+-- otherwise dangle. Verified against node:sqlite in db/migrate.test.mjs §8.
+--
+-- **`recipe_ingredients.grams` is NOT renamed and does NOT gain a unit.** A
+-- recipe line is parsed from prose ("1 cup milk") and RESOLVED to a mass by
+-- src/lib/recipes/ingredients.ts — that resolution to one unit is what makes a
+-- recipe's nutrition summable at all — so its grams really are grams, always,
+-- and the name stays true. Leaving it alone also leaves the 0034 invariant
+-- `resolved_by IS NULL ⇔ grams IS NULL` untouched: same two columns, same
+-- repository writers, same pairing, not one byte moved. Whether a volumetric
+-- recipe line should stay volumetric (a cup of milk resolving to 244 g while
+-- the same milk logged as a drink is 250 ml) is a real question and it is NOT
+-- answered here; B2 is one unit in the LOGGING path.
+--
+-- ── WHY THE PER-100 MACRO COLUMNS KEPT THEIR NAMES ──
+--
+-- `kcal_100g`, `protein_g_100g`, … are not renamed, and that is a judgment
+-- rather than an oversight. Renaming them would rewrite ~120 further call sites
+-- for a name that stays true of every row that exists today and of every solid
+-- food forever; "_100g" now reads as "per 100 of the basis", and the basis sits
+-- one column away on the same row. The portion columns are different in kind: a
+-- portion is the number the USER types and the screen prints back, so its unit
+-- has to be legible at the point of use. Recorded so the asymmetry reads as a
+-- decision and not as a half-finished rename.
+--
+-- ── THE BACKFILL: EVERYTHING IS `g`, BECAUSE NOTHING WAS EVER ml ──
+--
+-- Both new columns are NOT NULL DEFAULT 'g', which backfills every existing row
+-- to 'g' as the column is added. That is not a guess about history — until this
+-- migration there was no other unit to have logged in, so 'g' is what happened.
+-- No UPDATE statement is needed or wanted.
+--
+-- The CHECK is single-column (`unit IN ('g','ml')`) and the DEFAULT satisfies
+-- it, so ADD COLUMN cannot fail on a populated table. 0034 records the trap
+-- that avoids: SQLite VALIDATES a CROSS-column CHECK on ADD COLUMN against
+-- existing rows, so such a constraint passes on a fresh fixture and rejects the
+-- whole ALTER on the one database that matters. db/migrate.test.mjs §8 stages a
+-- POPULATED database at 0046 and migrates it forward, which is the shape that
+-- would have caught that.
+--
+-- Conventions per CLAUDE.md §9: ARC-owned vocabulary → text + CHECK; no new
+-- table, index or trigger (0014's and 0018's AFTER UPDATE triggers already
+-- cover every column on these tables, including ones added later).
+--
+-- Numbered 0047: 0045 was the head at branch time and 0046 is spoken for by
+-- backlog B1 (exercise metric type). The runner is forward-only and silently
+-- SKIPS any file at or below a device's user_version, so a lower number would
+-- never run on the phone. The runner stamps PRAGMA user_version = 47.
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- foods — what this food is measured in. 'g' for everything that exists today.
+-- ----------------------------------------------------------------------------
+ALTER TABLE foods RENAME COLUMN serving_grams TO serving_amount;
+ALTER TABLE foods ADD COLUMN basis text NOT NULL DEFAULT 'g' CHECK (basis IN ('g', 'ml'));
+
+-- ----------------------------------------------------------------------------
+-- meal_items — the portion, and the unit it is in. Snapshotted like every other
+-- column on this table: a catalog food that is later edited or deleted must
+-- never be able to change what an eaten portion says it was.
+-- ----------------------------------------------------------------------------
+ALTER TABLE meal_items RENAME COLUMN grams TO amount;
+ALTER TABLE meal_items ADD COLUMN unit text NOT NULL DEFAULT 'g' CHECK (unit IN ('g', 'ml'));
+
+-- ----------------------------------------------------------------------------
+-- meal_template_items — the same pair, so a saved "Morning shake" round-trips
+-- through a template with its millilitres intact.
+-- ----------------------------------------------------------------------------
+ALTER TABLE meal_template_items RENAME COLUMN grams TO amount;
+ALTER TABLE meal_template_items ADD COLUMN unit text NOT NULL DEFAULT 'g' CHECK (unit IN ('g', 'ml'));

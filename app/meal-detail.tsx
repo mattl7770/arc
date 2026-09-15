@@ -10,6 +10,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { getFood } from '@/lib/db/repositories/foods';
@@ -31,8 +32,8 @@ import {
 } from '@/lib/media/meal-photo-store';
 import { fmtInt, fmtQty, macroLine, portionLabel } from '@/lib/nutrition/format';
 import { mealDayLabel, parseClockParts, partsFromClock, shiftDay } from '@/lib/nutrition/meal-time';
-import { gramsForQty, rescaleLoggedItem } from '@/lib/nutrition/servings';
-import type { FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/types';
+import { amountForQty, rescaleLoggedItem } from '@/lib/nutrition/servings';
+import type { AmountUnit, FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/types';
 
 /**
  * One meal's record (docs/nutrition-subapp.md §2): its items with portions and
@@ -154,9 +155,15 @@ type MealState = {
 type ItemEdit = {
   itemId: string;
   food: FoodRow | undefined;
-  mode: 'serving' | 'grams';
+  mode: 'serving' | 'amount';
   qty: number;
-  gramsText: string;
+  /** In the ITEM'S OWN unit (g or ml, 0047) — never converted for the oz/ml
+   * display preference, which governs read-only figures only. An entry box that
+   * converted would write 331.2 ml back over a 330 ml portion nobody edited. */
+  amountText: string;
+  /** What the field is counting — the item's logged unit, which re-portioning
+   * never changes. */
+  unit: AmountUnit;
 };
 
 /** The when-editor's draft. Held apart from the row so backing out writes
@@ -179,11 +186,12 @@ function readMeal(id: string): MealState {
   };
 }
 
-/** A typed grams value safe to log: finite, positive, under a sanity ceiling
- * (paste / hardware keyboards get past the numeric soft keyboard). */
-function parseGrams(text: string): number | null {
-  const g = Number(text.trim());
-  return Number.isFinite(g) && g > 0 && g <= 5000 ? g : null;
+/** A typed amount safe to log: finite, positive, under a sanity ceiling
+ * (paste / hardware keyboards get past the numeric soft keyboard). Unit-blind:
+ * 5000 ml is five litres, as implausible a single portion as 5000 g. */
+function parseAmount(text: string): number | null {
+  const n = Number(text.trim());
+  return Number.isFinite(n) && n > 0 && n <= 5000 ? n : null;
 }
 
 /**
@@ -257,6 +265,8 @@ export default function MealDetailScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
   const mealId = id ?? '';
 
+  // Display-only: it decides whether a millilitre portion READS as ml or oz.
+  const { units } = useUnitPreferences();
   const [state, setState] = useState<MealState>(() => readMeal(mealId));
   // Two-tap delete: first tap arms, second deletes. No native alert drama.
   const [deleteArmed, setDeleteArmed] = useState(false);
@@ -297,32 +307,36 @@ export default function MealDetailScreen() {
    * grams-only proportional editing otherwise. */
   const beginEdit = (item: MealItemWithServing) => {
     const food = item.food_id ? getFood(getDb(), item.food_id) : undefined;
-    // A food-less item with no grams has no portion to re-scale — leave it be.
-    if (!food && item.grams == null) return;
-    const canServing = food?.serving_grams != null;
-    const mode: 'serving' | 'grams' = canServing && item.serving_qty != null ? 'serving' : 'grams';
+    // A food-less item with no amount has no portion to re-scale — leave it be.
+    if (!food && item.amount == null) return;
+    const canServing = food?.serving_amount != null;
+    const mode: 'serving' | 'amount' =
+      canServing && item.serving_qty != null ? 'serving' : 'amount';
     const qty = item.serving_qty ?? 1;
     // One editor at a time — that is what keeps the accent budget a ceiling.
     setTimeEdit(null);
     setNameEdit(null);
-    // Seed the grams readout from what Save will actually persist, so the field
+    // Seed the amount readout from what Save will actually persist, so the field
     // never shows one number while Save writes another. In serving mode Save
-    // re-derives grams from the food's CURRENT serving_grams, so seed from that
-    // same live computation — not the stored snapshot, which drifts once the
-    // catalog serving_grams changes under an already-logged item. In grams mode
-    // seed the EXACT stored grams (not fmtQty's 1-dp rendering): tapping Save
-    // unedited then re-scales by a factor of exactly 1, instead of nudging a
-    // fractional grams value and every macro by the rounding delta.
-    const servingGrams = mode === 'serving' && food ? gramsForQty(food, qty) : null;
+    // re-derives the amount from the food's CURRENT serving_amount, so seed from
+    // that same live computation — not the stored snapshot, which drifts once
+    // the catalog serving_amount changes under an already-logged item. In amount
+    // mode seed the EXACT stored amount (not fmtQty's 1-dp rendering): tapping
+    // Save unedited then re-scales by a factor of exactly 1, instead of nudging
+    // a fractional amount and every macro by the rounding delta.
+    const servingAmount = mode === 'serving' && food ? amountForQty(food, qty) : null;
     setEditing({
       itemId: item.id,
       food,
       mode,
       qty,
-      gramsText:
+      amountText:
         mode === 'serving'
-          ? fmtQty(servingGrams ?? item.grams ?? food?.serving_grams ?? 100)
-          : String(item.grams ?? food?.serving_grams ?? 100),
+          ? fmtQty(servingAmount ?? item.amount ?? food?.serving_amount ?? 100)
+          : String(item.amount ?? food?.serving_amount ?? 100),
+      // The ITEM's unit, not the food's: a food re-declared as a drink after
+      // this portion was logged does not restate what was eaten.
+      unit: item.unit,
     });
   };
 
@@ -330,12 +344,12 @@ export default function MealDetailScreen() {
     setEditing((prev) => {
       if (!prev || !prev.food) return prev;
       const qty = Math.min(50, Math.max(0.5, prev.qty + delta));
-      const grams = gramsForQty(prev.food, qty);
+      const amount = amountForQty(prev.food, qty);
       return {
         ...prev,
         mode: 'serving',
         qty,
-        gramsText: grams != null ? fmtQty(grams) : prev.gramsText,
+        amountText: amount != null ? fmtQty(amount) : prev.amountText,
       };
     });
   };
@@ -348,16 +362,16 @@ export default function MealDetailScreen() {
     if (editing.mode === 'serving' && editing.food) {
       if (editing.qty <= 0) return;
       update = rescaleLoggedItem(item, editing.food, { servingQty: editing.qty });
-      // The serving-derived grams (qty × serving_grams) bypasses the grams
-      // field's ceiling: qty is clamped to 50 but serving_grams is unbounded,
+      // The serving-derived amount (qty × serving_amount) bypasses the amount
+      // field's ceiling: qty is clamped to 50 but serving_amount is unbounded,
       // so a 500 g serving stepped to 50 would write 25 000 g. Enforce the same
-      // finite/positive/≤5000 guard parseGrams applies below, so one ceiling
+      // finite/positive/≤5000 guard parseAmount applies below, so one ceiling
       // governs both entry modes.
-      if (update && !(update.grams != null && update.grams > 0 && update.grams <= 5000)) return;
+      if (update && !(update.amount != null && update.amount > 0 && update.amount <= 5000)) return;
     } else {
-      const grams = parseGrams(editing.gramsText);
-      if (grams === null) return;
-      update = rescaleLoggedItem(item, editing.food, { grams });
+      const amount = parseAmount(editing.amountText);
+      if (amount === null) return;
+      update = rescaleLoggedItem(item, editing.food, { amount });
     }
     if (!update) return setEditing(null);
     updateMealItemPortion(getDb(), editing.itemId, update);
@@ -643,11 +657,11 @@ export default function MealDetailScreen() {
           ) : (
             <View className="mt-1">
               {items.map((item, index) => {
-                const portion = portionLabel(item);
+                const portion = portionLabel(item, units.volume);
                 const line = macroLine(item);
                 // Editable when there's something to re-scale from: a catalog
-                // food (re-derive) or an existing grams (proportional).
-                const canEdit = item.food_id != null || item.grams != null;
+                // food (re-derive) or an existing amount (proportional).
+                const canEdit = item.food_id != null || item.amount != null;
                 const isEditing = editing?.itemId === item.id;
                 return (
                   <View key={item.id}>
@@ -696,9 +710,9 @@ export default function MealDetailScreen() {
                         edit={editing}
                         item={item}
                         onStep={stepQty}
-                        onEditGrams={(t) =>
+                        onEditAmount={(t) =>
                           setEditing((prev) =>
-                            prev ? { ...prev, mode: 'grams', gramsText: t } : prev
+                            prev ? { ...prev, mode: 'amount', amountText: t } : prev
                           )
                         }
                         onSave={saveEdit}
@@ -1136,12 +1150,12 @@ function MealTimeEditor({
 
 /**
  * The inline portion editor under a tapped item. Serving stepper when the
- * catalog food names a serving; a grams field always. The live "≈ kcal"
- * preview and the Save both go through rescaleLoggedItem, so what you see is
- * exactly what gets written.
+ * catalog food names a serving; an amount field always, suffixed with the
+ * item's own unit (0047). The live "≈ kcal" preview and the Save both go
+ * through rescaleLoggedItem, so what you see is exactly what gets written.
  *
  * It draws **no device of its own** — it lives inside the items plate, and
- * devices never nest (src/components/ui/block.tsx). Only the grams input takes
+ * devices never nest (src/components/ui/block.tsx). Only the amount input takes
  * the recessed treatment, because an input is a well at control scale.
  *
  * Save is this screen's one accent (only one editor is ever open at a time —
@@ -1151,26 +1165,26 @@ function PortionEditRow({
   edit,
   item,
   onStep,
-  onEditGrams,
+  onEditAmount,
   onSave,
 }: {
   edit: ItemEdit;
   item: MealItemWithServing;
   onStep: (delta: number) => void;
-  onEditGrams: (text: string) => void;
+  onEditAmount: (text: string) => void;
   onSave: () => void;
 }) {
-  const portion =
+  const portion: { servingQty: number } | { amount: number } =
     edit.mode === 'serving' && edit.food
       ? { servingQty: edit.qty }
-      : { grams: parseGrams(edit.gramsText) ?? 0 };
-  const valid = 'servingQty' in portion ? edit.qty > 0 : portion.grams > 0;
+      : { amount: parseAmount(edit.amountText) ?? 0 };
+  const valid = 'servingQty' in portion ? edit.qty > 0 : portion.amount > 0;
   const preview = valid ? rescaleLoggedItem(item, edit.food, portion) : null;
 
   return (
     <View className="pb-3">
       <View className="flex-row items-center gap-2">
-        {edit.food?.serving_grams != null ? (
+        {edit.food?.serving_amount != null ? (
           <View className="flex-row items-center gap-1">
             <Pressable
               accessibilityRole="button"
@@ -1198,15 +1212,15 @@ function PortionEditRow({
         ) : null}
         <View className="ml-auto flex-row items-center gap-2">
           <TextInput
-            value={edit.gramsText}
-            onChangeText={onEditGrams}
+            value={edit.amountText}
+            onChangeText={onEditAmount}
             keyboardType="decimal-pad"
             returnKeyType={KEYPAD_DONE}
-            {...selectAllOnFocus(edit.gramsText)}
-            accessibilityLabel="Grams"
+            {...selectAllOnFocus(edit.amountText)}
+            accessibilityLabel={edit.unit === 'ml' ? 'Millilitres' : 'Grams'}
             className="w-16 border border-paper-deep bg-paper-dim px-2 py-2 text-right font-mono text-[13px] text-ink"
           />
-          <Text className="font-mono text-[11px] text-ink-secondary">g</Text>
+          <Text className="font-mono text-[11px] text-ink-secondary">{edit.unit}</Text>
         </View>
       </View>
 

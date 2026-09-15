@@ -32,9 +32,9 @@ export function escapeLike(token: string): string {
 export function createFood(db: Database, food: NewFood): string {
   const id = newId(db);
   db.run(
-    `INSERT INTO foods (id, name, name_norm, brand, barcode, serving_name, serving_grams,
-       kcal_100g, protein_g_100g, carbs_g_100g, fat_g_100g, fiber_g_100g, micros, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO foods (id, name, name_norm, brand, barcode, serving_name, serving_amount,
+       kcal_100g, protein_g_100g, carbs_g_100g, fat_g_100g, fiber_g_100g, micros, source, basis)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       food.name,
@@ -42,7 +42,7 @@ export function createFood(db: Database, food: NewFood): string {
       food.brand ?? null,
       food.barcode ?? null,
       food.serving_name ?? null,
-      food.serving_grams ?? null,
+      food.serving_amount ?? null,
       food.kcal_100g ?? null,
       food.protein_g_100g ?? null,
       food.carbs_g_100g ?? null,
@@ -50,6 +50,9 @@ export function createFood(db: Database, food: NewFood): string {
       food.fiber_g_100g ?? null,
       food.micros ?? null,
       food.source ?? 'user',
+      // Absent basis is grams — a food nobody called a drink is a solid, which
+      // is what every row written before 0047 was.
+      food.basis ?? 'g',
     ]
   );
   return id;
@@ -59,12 +62,16 @@ export function createFood(db: Database, food: NewFood): string {
  * Full rewrite of a food's editable columns (the edit screen loads, merges,
  * saves). `source` is provenance and never changes; existing meal_items keep
  * their logged snapshots regardless — catalog edits only affect future adds.
+ *
+ * That includes `basis` (0047): correcting a food from grams to millilitres
+ * governs the next portion added, and leaves every already-logged item saying
+ * the unit it was actually logged in.
  */
 export function updateFood(db: Database, id: string, food: NewFood): void {
   db.run(
     `UPDATE foods SET name = ?, name_norm = ?, brand = ?, barcode = ?, serving_name = ?,
-       serving_grams = ?, kcal_100g = ?, protein_g_100g = ?, carbs_g_100g = ?,
-       fat_g_100g = ?, fiber_g_100g = ?, micros = ?
+       serving_amount = ?, kcal_100g = ?, protein_g_100g = ?, carbs_g_100g = ?,
+       fat_g_100g = ?, fiber_g_100g = ?, micros = ?, basis = ?
      WHERE id = ?`,
     [
       food.name,
@@ -72,13 +79,14 @@ export function updateFood(db: Database, id: string, food: NewFood): void {
       food.brand ?? null,
       food.barcode ?? null,
       food.serving_name ?? null,
-      food.serving_grams ?? null,
+      food.serving_amount ?? null,
       food.kcal_100g ?? null,
       food.protein_g_100g ?? null,
       food.carbs_g_100g ?? null,
       food.fat_g_100g ?? null,
       food.fiber_g_100g ?? null,
       food.micros ?? null,
+      food.basis ?? 'g',
       id,
     ]
   );
@@ -123,7 +131,7 @@ export function listFavoriteFoods(db: Database): FoodRow[] {
 
 /** One recents row before the {@link RecentFood} shape is assembled. */
 type RecentRow = FoodRow & {
-  last_grams: number | null;
+  last_amount: number | null;
   last_serving_qty: number | null;
   last_logged_at: string;
 };
@@ -132,12 +140,12 @@ type RecentRow = FoodRow & {
  * Foods most recently logged, newest first, each with the portion it was last
  * logged at — so the recents rail re-adds "what you had last time" in one tap.
  * Relies on SQLite's documented bare-column-with-max() behavior: the
- * last_grams / last_serving_qty values come from the same row that supplied
+ * last_amount / last_serving_qty values come from the same row that supplied
  * max(created_at).
  */
 export function listRecentFoods(db: Database, limit: number = 12): RecentFood[] {
   const rows = db.all<RecentRow>(
-    `SELECT f.*, mi.grams AS last_grams, mi.serving_qty AS last_serving_qty,
+    `SELECT f.*, mi.amount AS last_amount, mi.serving_qty AS last_serving_qty,
             max(mi.created_at) AS last_logged_at
      FROM meal_items mi
      JOIN foods f ON f.id = mi.food_id
@@ -146,9 +154,9 @@ export function listRecentFoods(db: Database, limit: number = 12): RecentFood[] 
      LIMIT ?`,
     [limit]
   );
-  return rows.map(({ last_grams, last_serving_qty, last_logged_at, ...food }) => ({
+  return rows.map(({ last_amount, last_serving_qty, last_logged_at, ...food }) => ({
     food,
-    lastGrams: last_grams,
+    lastAmount: last_amount,
     lastServingQty: last_serving_qty,
     lastLoggedAt: last_logged_at,
   }));
@@ -177,7 +185,7 @@ export function listRecentFoods(db: Database, limit: number = 12): RecentFood[] 
  */
 export function listRecentBarcodeFoods(db: Database, limit: number = 6): RecentFood[] {
   const rows = db.all<RecentRow>(
-    `SELECT f.*, mi.grams AS last_grams, mi.serving_qty AS last_serving_qty,
+    `SELECT f.*, mi.amount AS last_amount, mi.serving_qty AS last_serving_qty,
             max(mi.created_at) AS last_logged_at
      FROM meal_items mi
      JOIN foods f ON f.id = mi.food_id
@@ -187,9 +195,9 @@ export function listRecentBarcodeFoods(db: Database, limit: number = 6): RecentF
      LIMIT ?`,
     [limit]
   );
-  return rows.map(({ last_grams, last_serving_qty, last_logged_at, ...food }) => ({
+  return rows.map(({ last_amount, last_serving_qty, last_logged_at, ...food }) => ({
     food,
-    lastGrams: last_grams,
+    lastAmount: last_amount,
     lastServingQty: last_serving_qty,
     lastLoggedAt: last_logged_at,
   }));

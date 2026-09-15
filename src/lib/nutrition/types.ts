@@ -77,7 +77,20 @@ export type FoodSource = 'seed' | 'user' | 'ai' | 'openfoodfacts';
 /** Per-item confidence the AI estimation path stamps; manual items carry NULL. */
 export type EstimateConfidence = 'high' | 'medium' | 'low';
 
-/** A `foods` row as SELECT returns it. Macros are canonical per-100 g. */
+/**
+ * What a food is measured in, and what a logged portion of it is counted in —
+ * ARC's whole unit vocabulary (0047, backlog B2). `'g'` for anything solid,
+ * `'ml'` for a drink.
+ *
+ * **The two never convert.** A food declares one basis and every portion of it
+ * is in that basis for life; there is no ml↔g factor in this codebase, because
+ * one would need a density per food and nobody here has measured those. Energy
+ * and macros are the common currency instead — they are absolute amounts per
+ * portion, so a day's totals sum across units without knowing about either.
+ */
+export type AmountUnit = 'g' | 'ml';
+
+/** A `foods` row as SELECT returns it. Macros are canonical per 100 of `basis`. */
 export type FoodRow = {
   id: string;
   name: string;
@@ -86,16 +99,21 @@ export type FoodRow = {
   brand: string | null;
   barcode: string | null;
   serving_name: string | null;
-  serving_grams: number | null;
+  /** The named serving's size, in this food's {@link FoodRow.basis} (0047 —
+   * `serving_grams` until a drink could be one of these). */
+  serving_amount: number | null;
   kcal_100g: number | null;
   protein_g_100g: number | null;
   carbs_g_100g: number | null;
   fat_g_100g: number | null;
   fiber_g_100g: number | null;
-  /** JSON object of longevity-shortlist micros per 100 g (sodium_mg, …). */
+  /** JSON object of longevity-shortlist micros per 100 of `basis` (sodium_mg, …). */
   micros: JsonText | null;
   source: FoodSource;
   is_favorite: SqliteBool;
+  /** What this food is measured in — 'g' (the default, and every pre-0047 row)
+   * or 'ml' for a drink. The per-100 columns above are per 100 OF THIS. */
+  basis: AmountUnit;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -109,7 +127,7 @@ export type NewFood = {
   brand?: string | null;
   barcode?: string | null;
   serving_name?: string | null;
-  serving_grams?: number | null;
+  serving_amount?: number | null;
   kcal_100g?: number | null;
   protein_g_100g?: number | null;
   carbs_g_100g?: number | null;
@@ -118,12 +136,15 @@ export type NewFood = {
   micros?: JsonText | null;
   /** Defaults to 'user' — runtime creates are the user's own foods. */
   source?: FoodSource;
+  /** Defaults to 'g'. 'ml' marks a drink (0047). */
+  basis?: AmountUnit;
 };
 
-/** A catalog food + the portion it was last logged at (the recents rail). */
+/** A catalog food + the portion it was last logged at (the recents rail). The
+ * amount is in the food's own basis, which is what the item recorded. */
 export type RecentFood = {
   food: FoodRow;
-  lastGrams: number | null;
+  lastAmount: number | null;
   lastServingQty: number | null;
   lastLoggedAt: Timestamp;
 };
@@ -140,13 +161,18 @@ export type MealItemRow = {
   meal_id: string;
   food_id: string | null;
   name: string;
-  grams: number | null;
+  /** The portion, in {@link MealItemRow.unit} (0047 — `grams` until a drink
+   * could be one of these). */
+  amount: number | null;
   serving_qty: number | null;
   kcal: number | null;
   protein_g: number | null;
   carbs_g: number | null;
   fat_g: number | null;
   fiber_g: number | null;
+  /** What `amount` counts — snapshotted from the food's basis at log time, like
+   * every other column here, so catalog churn can never restate a portion. */
+  unit: AmountUnit;
   confidence: EstimateConfidence | null;
   /** Per-portion micronutrient snapshot (JSON), scaled from the food at log
    * time — added in 0014. NULL when the food had no micro data. */
@@ -164,13 +190,16 @@ export type MealItemWithServing = MealItemRow & { food_serving_name: string | nu
 export type NewMealItem = {
   food_id?: string | null;
   name: string;
-  grams?: number | null;
+  amount?: number | null;
   serving_qty?: number | null;
   kcal?: number | null;
   protein_g?: number | null;
   carbs_g?: number | null;
   fat_g?: number | null;
   fiber_g?: number | null;
+  /** Defaults to 'g' — an item with no stated unit is grams, which is what
+   * every item logged before 0047 was. */
+  unit?: AmountUnit;
   confidence?: EstimateConfidence | null;
   /** Per-portion micronutrient snapshot as a JSON string (serializeMicros). */
   micros?: JsonText | null;
@@ -276,13 +305,14 @@ export type MealTemplateItemRow = {
   template_id: string;
   food_id: string | null;
   name: string;
-  grams: number | null;
+  amount: number | null;
   serving_qty: number | null;
   kcal: number | null;
   protein_g: number | null;
   carbs_g: number | null;
   fat_g: number | null;
   fiber_g: number | null;
+  unit: AmountUnit;
   micros: JsonText | null;
   created_at: Timestamp;
   updated_at: Timestamp;

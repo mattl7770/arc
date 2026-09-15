@@ -3,7 +3,10 @@
  * doesn't ship it) and pure, mirroring src/lib/exercise/format.ts. The
  * Data-tab keeps its own local formatters; these are the Nutrition family's.
  */
-import type { MealItemWithServing } from './types';
+import { ML_PER_OZ } from '@/lib/log/metrics';
+import type { VolumeUnit } from '@/lib/user/types';
+
+import type { AmountUnit, MealItemWithServing } from './types';
 
 /** 1840 → "1,840" — the one thousands comma, without leaning on Intl. */
 export function fmtInt(n: number): string {
@@ -40,18 +43,39 @@ export function macroLine(row: {
 }
 
 /**
- * "2 × 1 egg (100 g)" · "1 × 1 cup" · "150 g" — the honest portion label. A
- * serving count only reads with its serving's name, so an item whose catalog
- * food is gone (food_serving_name NULL) falls back to grams.
+ * "250 ml" · "8.5 oz" · "150 g" — one amount printed in the unit it was logged
+ * in (0047), with the Settings › Units volume preference applied to millilitres
+ * exactly as it already is to water.
+ *
+ * **Grams are never touched by the preference.** The oz↔ml toggle is a VOLUME
+ * preference; a gram amount has no second unit in this app and passing one
+ * through here leaves it alone. And the conversion is display-only, at the last
+ * possible moment — the stored number stays ml, which is what makes flipping the
+ * toggle back lossless (src/lib/user/types.ts).
+ *
+ * `volume` defaults to `'ml'`, i.e. no conversion, so the pure/headless callers
+ * (and anything that has no preference in hand) print the stored number.
+ */
+export function fmtAmount(amount: number, unit: AmountUnit, volume: VolumeUnit = 'ml'): string {
+  if (unit === 'ml' && volume === 'oz') return `${fmtQty(amount / ML_PER_OZ)} oz`;
+  return `${fmtQty(amount)} ${unit}`;
+}
+
+/**
+ * "2 × 1 egg (100 g)" · "1 × 1 can (330 ml)" · "1 × 1 cup" · "150 g" — the
+ * honest portion label. A serving count only reads with its serving's name, so
+ * an item whose catalog food is gone (food_serving_name NULL) falls back to the
+ * bare amount.
  */
 export function portionLabel(
-  item: Pick<MealItemWithServing, 'grams' | 'serving_qty' | 'food_serving_name'>
+  item: Pick<MealItemWithServing, 'amount' | 'unit' | 'serving_qty' | 'food_serving_name'>,
+  volume: VolumeUnit = 'ml'
 ): string | null {
   if (item.serving_qty != null && item.food_serving_name != null) {
     const base = `${fmtQty(item.serving_qty)} × ${item.food_serving_name}`;
-    return item.grams != null ? `${base} (${fmtQty(item.grams)} g)` : base;
+    return item.amount != null ? `${base} (${fmtAmount(item.amount, item.unit, volume)})` : base;
   }
-  if (item.grams != null) return `${fmtQty(item.grams)} g`;
+  if (item.amount != null) return fmtAmount(item.amount, item.unit, volume);
   return null;
 }
 

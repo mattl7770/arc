@@ -41,7 +41,8 @@ import {
   todayTotals,
   updateMealItemPortion,
 } from '../src/lib/db/repositories/nutrition.ts';
-import { itemForPortion, macrosForGrams } from '../src/lib/nutrition/servings.ts';
+import { itemForPortion, macrosForAmount } from '../src/lib/nutrition/servings.ts';
+import { fmtAmount, portionLabel } from '../src/lib/nutrition/format.ts';
 
 let pass = 0;
 let fail = 0;
@@ -107,7 +108,7 @@ function testFood(db, overrides = {}) {
   return createFood(db, {
     name: 'Test food',
     serving_name: '1 unit',
-    serving_grams: 50,
+    serving_amount: 50,
     kcal_100g: 100,
     protein_g_100g: 10,
     carbs_g_100g: 5,
@@ -163,8 +164,8 @@ console.log('2. foods CHECKs reject bad data at the DB layer');
   throws(() => testFood(db, { source: 'carrier_pigeon' }))
     ? ok('unknown source rejected by the enum CHECK')
     : bad('source enum');
-  throws(() => testFood(db, { serving_name: '1 cup', serving_grams: null }))
-    ? ok('serving name without grams rejected (pair-or-none)')
+  throws(() => testFood(db, { serving_name: '1 cup', serving_amount: null }))
+    ? ok('serving name without an amount rejected (pair-or-none)')
     : bad('serving pair');
   throws(() => testFood(db, { barcode: '12AB56' }))
     ? ok('non-digit barcode rejected')
@@ -245,7 +246,7 @@ console.log('5. logMealWithItems: one transaction, meal totals = item sums');
       {
         food_id: foodId,
         name: 'Test food',
-        grams: 200,
+        amount: 200,
         serving_qty: 4,
         kcal: 200,
         protein_g: 20,
@@ -316,7 +317,7 @@ console.log('6. item add / portion edit / remove keep the meal totals honest');
       {
         food_id: foodId,
         name: 'Test food',
-        grams: 100,
+        amount: 100,
         kcal: 100,
         protein_g: 10,
         carbs_g: 5,
@@ -328,7 +329,7 @@ console.log('6. item add / portion edit / remove keep the meal totals honest');
   const itemId = addMealItem(db, mealId, {
     food_id: foodId,
     name: 'Test food',
-    grams: 50,
+    amount: 50,
     serving_qty: 1,
     kcal: 50,
     protein_g: 5,
@@ -340,7 +341,7 @@ console.log('6. item add / portion edit / remove keep the meal totals honest');
     ? ok('addMealItem folds the new item into the totals')
     : bad('add recompute', getMeal(db, mealId).kcal);
   updateMealItemPortion(db, itemId, {
-    grams: 100,
+    amount: 100,
     serving_qty: 2,
     kcal: 100,
     protein_g: 10,
@@ -406,7 +407,7 @@ console.log('7. delete semantics: meals cascade items; foods SET NULL and histor
       {
         food_id: foodId,
         name: 'Test food',
-        grams: 100,
+        amount: 100,
         kcal: 100,
         protein_g: 10,
         carbs_g: 5,
@@ -440,7 +441,7 @@ console.log('8. relogMeal duplicates a meal onto today — items and free-form b
       {
         food_id: foodId,
         name: 'Test food',
-        grams: 150,
+        amount: 150,
         kcal: 150,
         protein_g: 15,
         carbs_g: 7.5,
@@ -491,9 +492,9 @@ console.log('9. recents: newest-first, carrying the last-logged portion');
     date: TODAY,
     time: '08:00',
     name: 'Breakfast',
-    items: [{ food_id: a, name: 'Food A', grams: 100, serving_qty: 2, kcal: 100 }],
+    items: [{ food_id: a, name: 'Food A', amount: 100, serving_qty: 2, kcal: 100 }],
   });
-  addMealItem(db, mealId, { food_id: b, name: 'Food B', grams: 75, kcal: 75 });
+  addMealItem(db, mealId, { food_id: b, name: 'Food B', amount: 75, kcal: 75 });
   // Force distinct created_at stamps so "latest portion" is deterministic.
   raw
     .prepare('UPDATE meal_items SET created_at = ? WHERE food_id = ?')
@@ -501,7 +502,7 @@ console.log('9. recents: newest-first, carrying the last-logged portion');
   const later = addMealItem(db, mealId, {
     food_id: a,
     name: 'Food A',
-    grams: 30,
+    amount: 30,
     serving_qty: 0.5,
     kcal: 30,
   });
@@ -512,11 +513,11 @@ console.log('9. recents: newest-first, carrying the last-logged portion');
   recents.length === 2 && recents[0].food.id === a
     ? ok('most recently logged food first')
     : bad('recents order', JSON.stringify(recents.map((r) => r.food.name)));
-  near(recents[0].lastGrams, 30) && near(recents[0].lastServingQty, 0.5)
+  near(recents[0].lastAmount, 30) && near(recents[0].lastServingQty, 0.5)
     ? ok('recent carries the LATEST portion, not the first')
     : bad('last portion', JSON.stringify(recents[0]));
   const orphanFood = testFood(db, { name: 'Deleted later' });
-  addMealItem(db, mealId, { food_id: orphanFood, name: 'Deleted later', grams: 10, kcal: 10 });
+  addMealItem(db, mealId, { food_id: orphanFood, name: 'Deleted later', amount: 10, kcal: 10 });
   deleteFood(db, orphanFood);
   listRecentFoods(db).length === 2
     ? ok('items whose food is gone drop out of recents (join, no crash)')
@@ -572,14 +573,14 @@ console.log("10b. the scanner's running list — recently LOGGED barcodes (owner
     time: '08:00',
     name: 'Breakfast',
     items: [
-      itemForPortion({ ...getFood(db, older), id: older }, { grams: 250 }),
-      itemForPortion({ ...getFood(db, plain), id: plain }, { grams: 100 }),
+      itemForPortion({ ...getFood(db, older), id: older }, { amount: 250 }),
+      itemForPortion({ ...getFood(db, plain), id: plain }, { amount: 100 }),
     ],
   });
   const newest = addMealItem(db, mealId, {
     food_id: scanned,
     name: 'Scanned yoghurt',
-    grams: 170,
+    amount: 170,
     kcal: 100,
   });
   // Same-millisecond writes tie on created_at (the knowledge-base round's
@@ -595,7 +596,7 @@ console.log("10b. the scanner's running list — recently LOGGED barcodes (owner
   list[0] && list[0].food.id === scanned
     ? ok('most recently logged first')
     : bad('running-list order', JSON.stringify(list.map((r) => r.food.name)));
-  near(list[0].lastGrams, 170)
+  near(list[0].lastAmount, 170)
     ? ok('the row carries the portion it was last logged at')
     : bad('last portion on the running list', JSON.stringify(list[0]));
   !list.some((r) => r.food.id === cachedNeverEaten)
@@ -667,23 +668,23 @@ console.log('12. servings helpers: per-100 g × portion, NULLs preserved');
     fat_g_100g: 10,
     fiber_g_100g: null,
     serving_name: '1 cup',
-    serving_grams: 80,
+    serving_amount: 80,
   };
-  const m = macrosForGrams(food, 50);
+  const m = macrosForAmount(food, 50);
   near(m.kcal, 100) && near(m.protein_g, 10) && m.carbs_g === null && near(m.fat_g, 5)
-    ? ok('macrosForGrams scales knowns and preserves NULLs')
-    : bad('macrosForGrams', JSON.stringify(m));
+    ? ok('macrosForAmount scales knowns and preserves NULLs')
+    : bad('macrosForAmount', JSON.stringify(m));
   const item = itemForPortion({ ...food, id: 'f1', name: 'Cup food' }, { servingQty: 2 });
-  near(item.grams, 160) &&
+  near(item.amount, 160) &&
   near(item.serving_qty, 2) &&
   near(item.kcal, 320) &&
   item.food_id === 'f1'
     ? ok('itemForPortion builds a serving-based item (2 × 80 g)')
     : bad('itemForPortion serving', JSON.stringify(item));
-  const gramsItem = itemForPortion({ ...food, id: 'f1', name: 'Cup food' }, { grams: 25 });
-  near(gramsItem.grams, 25) && gramsItem.serving_qty === null && near(gramsItem.kcal, 50)
-    ? ok('itemForPortion builds a grams-based item')
-    : bad('itemForPortion grams', JSON.stringify(gramsItem));
+  const amountItem = itemForPortion({ ...food, id: 'f1', name: 'Cup food' }, { amount: 25 });
+  near(amountItem.amount, 25) && amountItem.serving_qty === null && near(amountItem.kcal, 50)
+    ? ok('itemForPortion builds an amount-based item')
+    : bad('itemForPortion amount', JSON.stringify(amountItem));
 }
 
 console.log('13. the 0016 seed catalog is present and sane');
@@ -706,7 +707,7 @@ console.log('13. the 0016 seed catalog is present and sane');
   )
     ? ok('every seed row records kcal + all three macros')
     : bad('seed completeness');
-  seeds.every((f) => f.serving_name !== null && f.serving_grams > 0)
+  seeds.every((f) => f.serving_name !== null && f.serving_amount > 0)
     ? ok('every seed row has a usable household serving')
     : bad('seed servings');
   // Energy consistency: kcal should sit near 4P + 4C + 9F. Alcohol carries
@@ -739,9 +740,123 @@ console.log('13. the 0016 seed catalog is present and sane');
     ? ok('seeded staple is findable by search')
     : bad('seed search', JSON.stringify(searchFoods(db, 'chicken breast').map((f) => f.name)));
   const egg = searchFoods(db, 'egg, whole')[0] ?? searchFoods(db, 'egg whole')[0];
-  egg && near(egg.serving_grams, 50)
+  egg && near(egg.serving_amount, 50)
     ? ok('seeded serving data survives round-trip (1 large egg = 50 g)')
     : bad('seed serving', JSON.stringify(egg));
+}
+
+// ===========================================================================
+// 14. `ml` — a drink is logged in millilitres and stays in millilitres (0047).
+//
+// The arithmetic is deliberately the SAME arithmetic as grams: per-100 values
+// times a portion. What is new is that the unit rides along with the number,
+// all the way from the catalog food to what the screen prints — and that
+// nothing anywhere converts it.
+// ===========================================================================
+console.log('14. ml as a unit: a drink prices, logs and reads in millilitres');
+{
+  const { db } = freshDb();
+
+  // 42 kcal / 100 ml is semi-skimmed milk. A 250 ml glass is 105 kcal.
+  const milk = createFood(db, {
+    name: 'Milk, semi-skimmed',
+    basis: 'ml',
+    serving_name: '1 glass',
+    serving_amount: 250,
+    kcal_100g: 42,
+    protein_g_100g: 3.4,
+    carbs_g_100g: 4.8,
+    fat_g_100g: 1.7,
+    micros: JSON.stringify({ calcium_mg: 120 }),
+  });
+  const milkRow = getFood(db, milk);
+  milkRow.basis === 'ml' && near(milkRow.serving_amount, 250)
+    ? ok('a food declares its basis, and its named serving is in that basis')
+    : bad('ml food', JSON.stringify(milkRow));
+
+  const glass = itemForPortion(milkRow, { amount: 250 });
+  glass.unit === 'ml' && near(glass.amount, 250) && near(glass.kcal, 105)
+    ? ok('250 ml of a per-100-ml food prices to 105 kcal and carries unit ml')
+    : bad('ml portion', JSON.stringify(glass));
+  near(glass.protein_g, 8.5) && near(JSON.parse(glass.micros).calcium_mg, 300)
+    ? ok('macros and micros scale by the same ratio — the unit changes nothing about the math')
+    : bad('ml macros', JSON.stringify(glass));
+  const stepped = itemForPortion(milkRow, { servingQty: 2 });
+  stepped.unit === 'ml' && near(stepped.amount, 500) && near(stepped.kcal, 210)
+    ? ok('and the serving stepper works in millilitres too (2 × 1 glass = 500 ml)')
+    : bad('ml serving', JSON.stringify(stepped));
+
+  // A gram food through the same code is untouched — the regression that
+  // matters most, since every food that exists today is one.
+  const oats = createFood(db, { name: 'Oats', kcal_100g: 379, protein_g_100g: 13 });
+  const bowl = itemForPortion(getFood(db, oats), { amount: 50 });
+  bowl.unit === 'g' && near(bowl.amount, 50) && near(bowl.kcal, 189.5)
+    ? ok('a gram food is unchanged: 50 g of oats is 189.5 kcal, unit g')
+    : bad('g portion', JSON.stringify(bowl));
+
+  // The day's totals sum ACROSS units, because kcal is kcal whatever the
+  // portion was measured in. This is the property that lets the two units
+  // coexist without a conversion anywhere.
+  const { mealId } = logMealWithItems(db, {
+    date: '2026-09-14',
+    time: '08:00',
+    name: 'Breakfast',
+    items: [glass, bowl],
+  });
+  const totals = todayTotals(db, '2026-09-14');
+  near(totals.kcal, 294.5)
+    ? ok('a millilitre item and a gram item sum into one day total (294.5 kcal)')
+    : bad('mixed totals', JSON.stringify(totals));
+
+  const items = listMealItems(db, mealId);
+  const logged = items.find((i) => i.name === 'Milk, semi-skimmed');
+  logged.unit === 'ml' && near(logged.amount, 250)
+    ? ok('the unit is snapshotted on the row, beside the amount it qualifies')
+    : bad('stored unit', JSON.stringify(logged));
+
+  // Deleting the catalog food must not take the unit with it: the item is the
+  // record of what was drunk, and it reads the same afterwards.
+  deleteFood(db, milk);
+  const orphan = listMealItems(db, mealId).find((i) => i.name === 'Milk, semi-skimmed');
+  orphan.food_id === null && orphan.unit === 'ml' && near(orphan.amount, 250)
+    ? ok('and it survives the food being deleted — history is not the catalog’s to rewrite')
+    : bad('orphaned unit', JSON.stringify(orphan));
+}
+
+console.log('15. the suffix a portion prints, and the oz preference over ml');
+{
+  fmtAmount(250, 'ml') === '250 ml' && fmtAmount(150, 'g') === '150 g'
+    ? ok('an amount prints with the unit it was logged in')
+    : bad('fmtAmount', `${fmtAmount(250, 'ml')} / ${fmtAmount(150, 'g')}`);
+  // The same preference water already honours (src/lib/log/metrics.ts owns the
+  // factor; there is exactly one copy of it). 250 / 29.5735 = 8.45 → 8.5.
+  fmtAmount(250, 'ml', 'oz') === '8.5 oz'
+    ? ok('the oz preference converts a millilitre READING, and only the reading')
+    : bad('oz preference', fmtAmount(250, 'ml', 'oz'));
+  fmtAmount(150, 'g', 'oz') === '150 g'
+    ? ok('a gram amount is untouched by it — the toggle is a VOLUME preference')
+    : bad('grams converted by volume preference', fmtAmount(150, 'g', 'oz'));
+
+  portionLabel({ amount: 250, unit: 'ml', serving_qty: null, food_serving_name: null }) === '250 ml'
+    ? ok('portionLabel prints a bare millilitre portion')
+    : bad('portionLabel ml');
+  portionLabel({ amount: 330, unit: 'ml', serving_qty: 1, food_serving_name: '1 can' }) ===
+  '1 × 1 can (330 ml)'
+    ? ok('and a named serving states what it comes to, in millilitres')
+    : bad(
+        'portionLabel serving',
+        portionLabel({ amount: 330, unit: 'ml', serving_qty: 1, food_serving_name: '1 can' })
+      );
+  portionLabel({ amount: 330, unit: 'ml', serving_qty: null, food_serving_name: null }, 'oz') ===
+  '11.2 oz'
+    ? ok('the preference reaches the portion label too')
+    : bad(
+        'portionLabel oz',
+        portionLabel({ amount: 330, unit: 'ml', serving_qty: null, food_serving_name: null }, 'oz')
+      );
+  portionLabel({ amount: 150, unit: 'g', serving_qty: null, food_serving_name: null }) === '150 g'
+    ? ok('a gram portion reads exactly as it did before 0047')
+    : bad('portionLabel g');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

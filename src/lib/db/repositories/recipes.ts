@@ -24,8 +24,8 @@ import { newId } from '../id';
 import { escapeLike, getFood, normalizeFoodName } from './foods';
 import { listMealItems, logMealWithItems } from './nutrition';
 import { parseIngredientLine } from '@/lib/recipes/ingredients';
-import { macrosForGrams, type FoodMacros } from '@/lib/nutrition/servings';
-import { microsForGrams, parseMicros, scaleMicros, serializeMicros } from '@/lib/nutrition/micros';
+import { macrosForAmount, type FoodMacros } from '@/lib/nutrition/servings';
+import { microsForAmount, parseMicros, scaleMicros, serializeMicros } from '@/lib/nutrition/micros';
 import type { NewMealItem } from '@/lib/nutrition/types';
 import type {
   NewRecipe,
@@ -382,7 +382,14 @@ export function resolveIngredient(
   if (food.kcal_100g === null) {
     throw new Error(`"${food.name}" has no energy data — it can't resolve an ingredient`);
   }
-  const macros = macrosForGrams(food as FoodMacros, grams);
+  // A recipe line is grams (0047: `recipe_ingredients.grams` was deliberately
+  // left alone), so pricing one from a per-100-ML food would multiply a mass by
+  // a volume's macros and call the result grams. Refused rather than converted:
+  // there is no density table in this app, by design.
+  if (food.basis !== 'g') {
+    throw new Error(`"${food.name}" is measured in ${food.basis} — a recipe line is in grams`);
+  }
+  const macros = macrosForAmount(food as FoodMacros, grams);
   db.run(
     `UPDATE recipe_ingredients SET food_id = ?, grams = ?, kcal = ?, protein_g = ?,
        carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?, resolved_by = ?
@@ -395,7 +402,7 @@ export function resolveIngredient(
       macros.carbs_g ?? null,
       macros.fat_g ?? null,
       macros.fiber_g ?? null,
-      serializeMicros(microsForGrams(food.micros, grams)),
+      serializeMicros(microsForAmount(food.micros, grams)),
       by,
       ingredientId,
     ]
@@ -670,7 +677,11 @@ export function logRecipe(
       items.push({
         food_id: line.food_id,
         name: line.name,
-        grams: line.grams,
+        // A recipe line resolves to GRAMS and only grams (0047), so the item it
+        // becomes is a gram item. The `unit` default would say the same; it is
+        // stated because this is the seam where the two worlds meet.
+        amount: line.grams,
+        unit: 'g',
         kcal: line.kcal,
         protein_g: line.protein_g,
         carbs_g: line.carbs_g,
@@ -719,14 +730,24 @@ export function saveMealAsRecipe(
       [id, title, normalizeFoodName(title), servings]
     );
     items.forEach((item, i) => {
-      const resolved = item.grams !== null && item.grams > 0 && item.kcal !== null;
+      // A recipe line's `grams` is grams (0047), so only a GRAM item can copy
+      // its snapshot across. A millilitre item keeps its number and its unit in
+      // the raw line — "250 ml Milk", exactly what a hand-typed volumetric line
+      // looks like — and lands UNRESOLVED, to be priced in grams by the same
+      // automatic pass every other volumetric line already goes through
+      // (src/lib/recipes/estimate.ts: mass units only, the model does the rest).
+      // Carrying the ml figure into a grams column instead would be a silent
+      // unit swap inside a number the whole rollup then trusts.
+      const resolved =
+        item.unit === 'g' && item.amount !== null && item.amount > 0 && item.kcal !== null;
       insertIngredient(db, id, i, {
-        raw_text: item.grams !== null ? `${Math.round(item.grams)} g ${item.name}` : item.name,
-        qty: item.grams,
-        unit: item.grams !== null ? 'g' : null,
+        raw_text:
+          item.amount !== null ? `${Math.round(item.amount)} ${item.unit} ${item.name}` : item.name,
+        qty: item.amount,
+        unit: item.amount !== null ? item.unit : null,
         name: item.name,
         food_id: resolved ? item.food_id : null,
-        grams: resolved ? item.grams : null,
+        grams: resolved ? item.amount : null,
         kcal: resolved ? item.kcal : null,
         protein_g: resolved ? item.protein_g : null,
         carbs_g: resolved ? item.carbs_g : null,

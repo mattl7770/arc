@@ -648,6 +648,30 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // was not quite, and these three are the last of that pattern. The next
   // addition trims the VOICE section or the schemas, because there is no fourth
   // fact-then-restatement left in here.
+  //
+  // ── 2026-09-14: `ml` AS A UNIT (0047, backlog B2). MEASURED DELTA: **0 / 0**.
+  // Neither ceiling moved and neither number moved: 9,223 / 3,668, the same
+  // figures the entry above recorded. Nothing was trimmed because nothing was
+  // spent — and the reason is a fact about this registry worth writing down
+  // rather than re-deriving:
+  //
+  //   **No Coach tool carries a food portion.** `log_meal` writes a free-form
+  //   meal (name, time, optional macro totals) and `meals` has no amount column
+  //   for a unit to qualify; `log_recipe`'s `grams` is a cooked DISH weight
+  //   against `total_weight_g`, and 0047 deliberately left `recipe_ingredients`
+  //   in grams; `save_recipe`'s ingredient `unit` is free text read off the
+  //   written line, normalisation-only and never a conversion. A `unit`
+  //   property added to any of them would describe a number that does not
+  //   exist, which is the one thing worse than an expensive property.
+  //
+  // What the unit had to survive instead is the READ path, and it does so for
+  // free: `meal_items.kcal` and the macro columns are absolute amounts for the
+  // portion, not per-basis, so a day's totals sum across g and ml by
+  // construction. db/coach-tools.test.mjs §37 asserts that end to end against
+  // the real tools — a 250 ml drink and a 50 g bowl summing to one day.
+  //
+  // Headroom is therefore unchanged: 27 tokens of schema, 32 of prompt. The
+  // next addition still digs in the four fat SCHEMAS named above.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(
