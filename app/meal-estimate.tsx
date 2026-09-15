@@ -349,7 +349,12 @@ export default function MealEstimateScreen() {
       // Downscale + recompress so only a small JPEG leaves the device — through
       // the shared pass in src/lib/media/photo-library.ts, which is also what
       // pulls `expo-image-manipulator` out of this ROUTE file's static imports.
-      const shrunk = await downscaleJpeg(shot.uri);
+      // The capture reports its own dimensions, so the shared pass bounds the
+      // LONG edge in one go rather than bounding the width (which on a portrait
+      // plate shot is ~3× the visual tokens for the same picture).
+      const shrunk = await downscaleJpeg(shot.uri, {
+        source: { width: shot.width, height: shot.height },
+      });
       if (!shrunk) return setPhase({ kind: 'error', message: 'Couldn’t process the photo.' });
       await estimateFromPhoto({ ...shrunk, source: 'camera' });
     } catch {

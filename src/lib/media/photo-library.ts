@@ -15,9 +15,16 @@
  *
  * **The downscale is not optional.** A modern iPhone screenshot base64s to
  * several megabytes; sending that to a vision model is slow, expensive, and
- * pointless — 1024px wide at quality 0.6 is more than a model needs to read a
- * plate or an ingredient list. `expo-image-manipulator` is already in the build
- * (the camera path uses it), so this costs no new dependency.
+ * pointless — a 1024px LONG EDGE at quality 0.6 is more than a model needs to
+ * read a plate or an ingredient list. `expo-image-manipulator` is already in the
+ * build (the camera path uses it), so this costs no new dependency.
+ *
+ * **Long edge, not width.** This shipped bounding the *width*, and almost
+ * everything a phone hands it is portrait — so 1024 was the SHORT edge and every
+ * frame went out at ~3× the visual tokens it needed (a 9:16 screenshot: 1024×1820
+ * ≈ 2,405 tokens against 576×1024 ≈ 777). Found by the D1 video spike,
+ * docs/spikes/video-recipe-import.md §3b, which costed it. See
+ * {@link longEdgeResize}.
  */
 
 type PickerModule = {
@@ -58,9 +65,53 @@ type ManipulatorModule = {
   SaveFormat: { JPEG: string };
 };
 
-/** The one downscale, so every path speaks the same JPEG. */
-const RESIZE_WIDTH = 1024;
+/**
+ * The one downscale, so every path speaks the same JPEG.
+ *
+ * **It bounds the LONGEST edge, not the width** — see {@link longEdgeResize}.
+ * It used to bound the width, and on a portrait frame that is the SHORT edge:
+ * a 9:16 screenshot went out at 1024×1820 and billed ~2,405 visual tokens where
+ * 576×1024 bills ~777 for the same legibility class. Roughly 3× the vision bill
+ * on every meal photo, every recipe screenshot and every progress-photo read.
+ */
+const RESIZE_EDGE = 1024;
 const COMPRESS = 0.6;
+
+/**
+ * Which dimension to hand the manipulator so the LONGEST edge lands on `edge`.
+ *
+ * The manipulator resizes by one dimension and preserves the aspect from it
+ * (passing both would stretch), so bounding the long edge is a choice *between*
+ * width and height — and it needs the source's shape to make it. Claude bills an
+ * image in 28×28 patches (`⌈w/28⌉ × ⌈h/28⌉`), so on a 9:16 frame the difference
+ * between bounding the width and bounding the height is ~3× the tokens for the
+ * same readable picture.
+ *
+ * Dimensions the caller did not have fall back to width — the conservative old
+ * contract, never a guess at portrait. {@link downscaleJpeg} then corrects that
+ * fallback from the manipulator's own report rather than living with it.
+ */
+export function longEdgeResize(
+  width: number | null | undefined,
+  height: number | null | undefined,
+  edge: number
+): { width: number } | { height: number } {
+  if (width != null && height != null && height > width) return { height: edge };
+  return { width: edge };
+}
+
+/**
+ * Did a width-bounded pass leave the long edge over budget? True only for a
+ * portrait result that is still taller than `edge` — i.e. exactly when the
+ * dimension-less fallback in {@link longEdgeResize} guessed wrong.
+ */
+export function overLongEdge(
+  width: number | null | undefined,
+  height: number | null | undefined,
+  edge: number
+): boolean {
+  return width != null && height != null && height > width && height > edge;
+}
 
 /**
  * A downscaled JPEG plus the dimensions it actually came out at.
@@ -133,19 +184,40 @@ export async function downscaleJpeg(
   const manipulator = loadManipulator();
   if (!manipulator) return null;
   const { quality = COMPRESS } = opts;
-  // Height wins only when it is the one that was asked for. Every existing
-  // caller passes a width or nothing, so the default path is unchanged.
-  const resize =
-    opts.height != null && opts.width == null
-      ? { height: opts.height }
-      : { width: opts.width ?? RESIZE_WIDTH };
+  const encode = { compress: quality, format: manipulator.SaveFormat.JPEG, base64: true };
+  const edge = opts.maxEdge ?? RESIZE_EDGE;
+  // An explicitly named dimension is honoured exactly and never second-guessed:
+  // it is the contract the workout importer and the progress-photo working copy
+  // are written against, and both have already decided which edge they mean.
+  const explicit =
+    opts.width != null
+      ? { width: opts.width }
+      : opts.height != null
+        ? { height: opts.height }
+        : null;
+  const knewShape = opts.source?.width != null && opts.source?.height != null;
+  const resize = explicit ?? longEdgeResize(opts.source?.width, opts.source?.height, edge);
   try {
-    const shrunk = await manipulator.manipulateAsync(uri, [{ resize }], {
-      compress: quality,
-      format: manipulator.SaveFormat.JPEG,
-      base64: true,
-    });
+    const shrunk = await manipulator.manipulateAsync(uri, [{ resize }], encode);
     if (!shrunk.base64) return null;
+    // The dimension-less fallback bounded the WIDTH, so a portrait source came
+    // out over budget on its long edge. Redo it from the ORIGINAL (re-shrinking
+    // the shrunk copy would compound the JPEG loss), bounded by height this
+    // time. One extra native pass, only on the guess that was wrong, and only
+    // for the callers that genuinely cannot know their source's shape — a
+    // screenshot off the share sheet, a stored progress photo. Everything that
+    // picks through `pickPhotoBase64` or the camera hands its dimensions over
+    // and never reaches here.
+    if (explicit === null && !knewShape && overLongEdge(shrunk.width, shrunk.height, edge)) {
+      const redone = await manipulator.manipulateAsync(uri, [{ resize: { height: edge } }], encode);
+      if (redone.base64) {
+        return {
+          base64Jpeg: redone.base64,
+          width: redone.width ?? null,
+          height: redone.height ?? null,
+        };
+      }
+    }
     return {
       base64Jpeg: shrunk.base64,
       width: shrunk.width ?? null,
@@ -157,9 +229,9 @@ export async function downscaleJpeg(
 }
 
 /**
- * How hard to shrink. The defaults above (1024 at 0.6) are the plate and
- * ingredient-list figure — more than a vision model needs to read a meal — and
- * they remain the only numbers most callers ever see.
+ * How hard to shrink. The defaults above (long edge 1024 at 0.6) are the plate
+ * and ingredient-list figure — more than a vision model needs to read a meal —
+ * and they remain the only numbers most callers ever see.
  *
  * It is a dial rather than a constant because the WORKOUT importer legitimately
  * needs more: it reads a screenshot of another app's set table, where the type
@@ -170,15 +242,34 @@ export async function downscaleJpeg(
  * two call sites where only one is guarded.
  */
 export type DownscaleOptions = {
+  /**
+   * Bound the WIDTH, whichever edge that is. The explicit contract, and it wins
+   * over {@link maxEdge}: the two callers that pass it have already decided
+   * which edge they mean. The workout importer keeps it deliberately — on a
+   * portrait set table the width is what carries the numbers, and a misread
+   * weight is a corrupted workout record, which is worth more than the tokens.
+   */
   width?: number;
   /**
-   * Resize by HEIGHT instead — used only where the constraint is the LONGEST
-   * edge rather than the width, which for a standing body photo is the height
-   * (src/lib/photos/import.ts::workingCopyResize). Ignored when `width` is also
-   * given: the manipulator preserves the aspect from one dimension, and passing
-   * both would stretch the image.
+   * Bound the HEIGHT. Explicit like {@link width} and ignored when `width` is
+   * also given: the manipulator preserves the aspect from one dimension, and
+   * passing both would stretch the image.
    */
   height?: number;
+  /**
+   * Bound the LONGEST edge at this many pixels — **the default shape**, and the
+   * one that costs what it should (see {@link longEdgeResize}). Pass `source`
+   * with it wherever the caller was handed the dimensions; without them the
+   * seam bounds the width and then corrects itself from the manipulator's
+   * report, which is right but costs a second pass.
+   */
+  maxEdge?: number;
+  /**
+   * The source's pixel dimensions, when the caller has them — the picker and the
+   * camera both report them. Purely an optimisation and a certainty: with them
+   * the long edge is chosen in one pass, without them it is corrected in two.
+   */
+  source?: { width?: number | null; height?: number | null };
   quality?: number;
 };
 
@@ -331,7 +422,13 @@ export async function pickPhotoBase64(opts: DownscaleOptions = {}): Promise<Pick
     const asset = result.assets?.[0];
     if (!asset) return { kind: 'canceled' };
     if (asset.uri) {
-      const shrunk = await downscaleJpeg(asset.uri, opts);
+      // The picker reports the asset's pixel dimensions, so the long edge is
+      // known here and the downscale never has to guess-then-correct. Callers
+      // that pass their own `source` keep it.
+      const shrunk = await downscaleJpeg(asset.uri, {
+        source: { width: asset.width ?? null, height: asset.height ?? null },
+        ...opts,
+      });
       if (shrunk) return { kind: 'photo', ...shrunk };
     }
     // The fallback carries no dimensions, so a meal photo stored from it draws

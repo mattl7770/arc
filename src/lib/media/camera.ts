@@ -35,9 +35,22 @@ export type ScannedBarcode = { type: string; data: string };
 
 /** The imperative half of `CameraView` — the only method ARC calls. */
 export type CameraHandle = {
-  takePictureAsync: (options?: {
-    quality?: number;
-  }) => Promise<{ uri?: string | null } | null | undefined>;
+  takePictureAsync: (options?: { quality?: number }) => Promise<
+    | {
+        uri?: string | null;
+        /**
+         * The capture's pixel dimensions. expo-camera declares both as required
+         * `number`s on `CameraCapturedPicture`; they are optional here because
+         * this seam declares only what ARC reads and reads it defensively.
+         * They tell {@link downscaleJpeg} which edge is the long one, so a
+         * portrait plate shot is not billed at ~3× the visual tokens it needs.
+         */
+        width?: number | null;
+        height?: number | null;
+      }
+    | null
+    | undefined
+  >;
 };
 
 /**

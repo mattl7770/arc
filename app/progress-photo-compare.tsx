@@ -178,8 +178,11 @@ export default function ProgressPhotoCompareScreen() {
   const buildInput = async () => {
     if (!earlier.uri || !later.uri) return null;
     const [one, two] = await Promise.all([
-      downscaleToJpegBase64(earlier.uri, { width: 1024, quality: 0.6 }),
-      downscaleToJpegBase64(later.uri, { width: 1024, quality: 0.6 }),
+      // maxEdge, not width: a standing body photo is portrait, so bounding the
+      // width sent ~1,813 visual tokens per image where ~1,036 reads the same.
+      // The STORED working copy is untouched — this is the model payload only.
+      downscaleToJpegBase64(earlier.uri, { maxEdge: 1024, quality: 0.6 }),
+      downscaleToJpegBase64(later.uri, { maxEdge: 1024, quality: 0.6 }),
     ]);
     if (!one || !two) return null;
     return {
