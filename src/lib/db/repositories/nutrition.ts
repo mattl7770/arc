@@ -157,13 +157,13 @@ function sumOrNull(values: (number | null | undefined)[]): number | null {
   return sum;
 }
 
-/** A composite header (0049) — an item supplied with parts beneath it. */
+/** A composite header (0058) — an item supplied with parts beneath it. */
 function isCompositeInput(item: NewMealItem): boolean {
   return Array.isArray(item.components) && item.components.length > 0;
 }
 
 /**
- * The rows that carry NUMBERS, flattened out of a supplied tree (0049).
+ * The rows that carry NUMBERS, flattened out of a supplied tree (0058).
  *
  * A composite HEADER contributes nothing — its macros are NULL by invariant 2
  * — so every place that sums a supplied list sums this instead. One helper, so
@@ -182,7 +182,7 @@ function insertMealItem(
   parentItemId: string | null = null
 ): string {
   const id = newId(db);
-  // A HEADER carries no numbers of its own (0049, invariant 2). Not "we ignore
+  // A HEADER carries no numbers of its own (0058, invariant 2). Not "we ignore
   // them at read time" — they are never written, so a query that forgets the
   // is_composite filter under-counts by zero instead of doubling the pizza.
   const header = parentItemId === null && isCompositeInput(item);
@@ -232,7 +232,7 @@ function insertMealItem(
  * this in the same transaction as the item change.
  */
 function recomputeMealTotals(db: Database, mealId: string): void {
-  // `AND is_composite = 0` — CHILDREN ONLY (0049). A composite header's macros
+  // `AND is_composite = 0` — CHILDREN ONLY (0058). A composite header's macros
   // are already NULL, so this filter is the second belt rather than the first;
   // it is here so the intent is legible at the call site and so the query stays
   // right if a header ever acquires a number.
@@ -268,7 +268,7 @@ export function logMealWithItems(
         meal.date,
         meal.time,
         meal.name,
-        // Leaves only — a composite header contributes nothing (0049).
+        // Leaves only — a composite header contributes nothing (0058).
         sumOrNull(leafItems(meal.items).map((i) => i.kcal)),
         sumOrNull(leafItems(meal.items).map((i) => i.protein_g)),
         sumOrNull(leafItems(meal.items).map((i) => i.carbs_g)),
@@ -397,7 +397,7 @@ export function replaceMealItems(db: Database, mealId: string, items: NewMealIte
 /**
  * Remove one item; the meal's totals follow (all-NULL once emptied).
  *
- * Removing a composite HEADER takes its parts with it, by the 0049 FK cascade
+ * Removing a composite HEADER takes its parts with it, by the 0058 FK cascade
  * (`PRAGMA foreign_keys = ON`, CLAUDE.md §9). Removing the LAST part of a
  * composite removes the composite too — invariant 4: a header over nothing is a
  * row named "Pepperoni pizza" with no numbers, which is indistinguishable from
@@ -424,7 +424,7 @@ export function removeMealItem(db: Database, itemId: string): void {
 
 /**
  * "I ate half the pizza": multiply every component of one composite by
- * `factor` — amount, macros and micros — in one transaction (0049).
+ * `factor` — amount, macros and micros — in one transaction (0058).
  *
  * **Proportional is the only honest reading.** Halving the crust and not the
  * cheese would be a claim about *which* half, which nothing knows.
@@ -495,7 +495,7 @@ export function listMealItems(db: Database, mealId: string): MealItemWithServing
  * meal_id → item count for one day — the "Eaten today" list's "· N items".
  *
  * `AND mi.parent_item_id IS NULL` — **a different filter from the sums, for a
- * different question** (0049). The sums want LEAVES, because leaves carry the
+ * different question** (0058). The sums want LEAVES, because leaves carry the
  * numbers; this tally wants what the collapsed ledger DRAWS, which is one row
  * per pizza. A meal holding one three-part composite reads "1 item", not "4",
  * because four is not a number anything on that screen shows. Both filters
@@ -532,7 +532,7 @@ export function mealItemCounts(db: Database, date: string): Record<string, numbe
  * A meal with no items at all (the manual-entry path) simply does not appear —
  * its columns are what the user typed, and NULL there is already handled.
  *
- * **`AND mi.is_composite = 0` (0049).** A composite HEADER's macros are NULL by
+ * **`AND mi.is_composite = 0` (0058).** A composite HEADER's macros are NULL by
  * design — it is a name over its parts, not a row of numbers — so without this
  * filter every meal holding a pizza would be marked knowingly short on every
  * metric, and the Eat tab's hero would quietly stop counting down for a meal
@@ -727,7 +727,7 @@ export function relogMeal(
     return id;
   }
   // "Log again" of a cooked recipe is cooking it again — provenance carries.
-  // The TREE carries too (0049): re-logging a pizza re-logs a pizza, not four
+  // The TREE carries too (0058): re-logging a pizza re-logs a pizza, not four
   // loose rows. `assembleMealItems` is the single reader that knows the shape.
   const copy = (i: MealItemWithServing) => ({
     food_id: i.food_id,

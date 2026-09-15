@@ -35,7 +35,7 @@ export type EstimateInput =
   | { kind: 'text'; description: string }
   | { kind: 'photo'; base64Jpeg: string; mediaType: 'image/jpeg'; description?: string };
 
-/** One part of a composite dish (0049, backlog C4) — a plain priced row that
+/** One part of a composite dish (0058, backlog C4) — a plain priced row that
  *  happens to live under a header. One level only: a part has no parts. */
 export type MealEstimateComponent = {
   name: string;
@@ -64,7 +64,7 @@ export type MealEstimateItem = {
    * (0047, backlog B2). Nothing downstream converts between the two. */
   unit: AmountUnit;
   /**
-   * The item's own energy — and **null on a composite header** (0049). A header
+   * The item's own energy — and **null on a composite header** (0058). A header
    * is a name over its parts, not a row of numbers: one fact gets one number,
    * and a headline that cannot disagree with its parts is one that is derived
    * from them. Every reader must branch on {@link MealEstimateItem.components}
@@ -90,7 +90,7 @@ export type MealEstimateItem = {
   micros: JsonText | null;
   /**
    * The parts of a composite dish — at most 4, capped by the parser rather than
-   * by hoping (0049, backlog C4). Null for a plain item, which is almost every
+   * by hoping (0058, backlog C4). Null for a plain item, which is almost every
    * item. Non-empty means this row is a HEADER and carries no macros.
    */
   components: MealEstimateComponent[] | null;
@@ -107,7 +107,7 @@ export function isCompositeEstimateItem(item: MealEstimateItem): boolean {
 
 /**
  * What choosing one button answer DOES to the estimate — a tiny closed
- * vocabulary the parser can validate (0049-adjacent, backlog C5).
+ * vocabulary the parser can validate (0058-adjacent, backlog C5).
  *
  * This is a **wire format for what the model decided**, not a decision table.
  * The model still decides whether to ask, what to ask, which answers are
@@ -191,7 +191,7 @@ export class MealEstimationUnavailableError extends Error {
  * Thrown by {@link parseMealEstimate} when the model answered and the answer
  * was unusable — no JSON, bad JSON, or no item with a name.
  *
- * A named class rather than a bare `Error` because the offline queue (0048) has
+ * A named class rather than a bare `Error` because the offline queue (0057) has
  * to tell a reply it could not read from a request that never left the phone:
  * the first will fail identically tomorrow, the second is exactly what waiting
  * fixes. See `isQueueableFailure`.
@@ -387,7 +387,7 @@ function num(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-/** At most this many parts hang off one composite (0049). A hard number, and
+/** At most this many parts hang off one composite (0058). A hard number, and
  *  the PARSER enforces it rather than the prompt hoping: a nine-row pizza is a
  *  data dump, not a record you can read at a glance. */
 export const MAX_COMPOSITE_COMPONENTS = 4;
@@ -593,7 +593,7 @@ export function parseMealEstimate(replyText: string): MealEstimate {
       : 'low';
     const components = parseComponents(e.components, confidence);
     // A COMPOSITE HEADER keeps no numbers of its own — they are DROPPED, not
-    // reconciled (0049). One fact gets one number, and the headline is derived
+    // reconciled (0058). One fact gets one number, and the headline is derived
     // from the parts, so it cannot come to disagree with them.
     items.push({
       name,
@@ -695,7 +695,7 @@ export type MealRevisionItem = {
   /** The item's stored micro snapshot, so sodium and caffeine can be shown to
    * the model and carried back on an item it was not asked to change. */
   micros?: JsonText | null;
-  /** The parts of a composite dish (0049) — printed indented beneath it, so a
+  /** The parts of a composite dish (0058) — printed indented beneath it, so a
    *  correction to the pepperoni is a correction to a part the model can see. */
   components?: MealRevisionItem[];
 };
@@ -785,7 +785,7 @@ export function buildMealRevisionRequest(
       micros.sodium_mg == null ? null : `sodium ${Math.round(micros.sodium_mg)} mg`,
       micros.caffeine_mg == null ? null : `caffeine ${Math.round(micros.caffeine_mg)} mg`,
     ].filter(Boolean);
-    // A composite header carries no numbers of its own (0049): it says how many
+    // A composite header carries no numbers of its own (0058): it says how many
     // parts it has, and the parts are printed beneath it. "no numbers recorded"
     // would be a lie about a dish that is fully priced by its components.
     const components = item.components ?? [];
@@ -921,7 +921,7 @@ export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEs
     };
   };
   const items = estimate.items.map((item) => {
-    // A COMPOSITE HEADER IS NEVER PRICED (0049). The seed catalog holds
+    // A COMPOSITE HEADER IS NEVER PRICED (0058). The seed catalog holds
     // whole-dish archetypes — 'Pizza, cheese slice', 'Cheeseburger, fast food',
     // 'Chicken burrito' — each one leading phrase away from what a model
     // actually writes, so grounding a header would re-price the dish into

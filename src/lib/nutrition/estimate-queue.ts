@@ -1,6 +1,6 @@
 /**
  * The offline estimate queue's behaviour — classify a failure, drain the queue
- * when the network returns (0048, backlog C3).
+ * when the network returns (0057, backlog C3).
  *
  * The owner's constraint is short: *"AI-dependent estimates queue until back
  * online."* Three decisions carry it.
@@ -129,7 +129,7 @@ export type DrainResult = {
 };
 
 /** The estimator items, as `meal_items` rows. One place, so a queued estimate
- *  and a reviewed one write the identical shape — the composite tree (0049)
+ *  and a reviewed one write the identical shape — the composite tree (0058)
  *  included, so a pizza drained from the queue is a pizza. */
 function toMealItems(estimate: MealEstimate): NewMealItem[] {
   const priced = (item: MealEstimateItem | MealEstimateComponent): NewMealItemComponent => ({
@@ -214,7 +214,7 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
         }
         // Read the items NOW — see the header. A hand-edit made while offline is
         // the "before" this correction applies to.
-        // The TREE (0049), so a composite goes to the model as one dish.
+        // The TREE (0058), so a composite goes to the model as one dish.
         const before = assembleMealItems(listMealItems(db, row.meal_id));
         const revised = groundMealEstimate(
           db,

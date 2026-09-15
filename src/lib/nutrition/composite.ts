@@ -1,5 +1,5 @@
 /**
- * Composite foods, read side (0049, backlog C4): a flat `meal_items` list
+ * Composite foods, read side (0058, backlog C4): a flat `meal_items` list
  * becomes the one-level tree every screen draws.
  *
  * Pure and DB-free, in the style of `servings.ts` / `remaining.ts`, so the same

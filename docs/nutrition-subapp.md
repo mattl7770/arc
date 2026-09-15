@@ -682,7 +682,9 @@ A scanned product's basis is **read off the product, not guessed from its name**
 
 ---
 
-## 12f. Offline food logging (C3, 2026-09-14, migration `0048`)
+## 12f. Offline food logging (C3, 2026-09-14, migration `0057`)
+
+> **On the number.** Written as `0048` — free then, free on `main` now — and renumbered to `0057` at the moment of commit because `main`’s head had moved 0047 → 0054 and `claude/c12-c13-exercise` holds 0055–0056 unmerged. The runner is forward-only and silently skips anything at or below a device’s `user_version`, so a free-looking number *below the head* is stranded on the phone forever while every test that starts from an empty database still passes. The rule is **the next number above main’s head, re-checked at commit**; the full argument lives in `0057`’s own header, once. C4 was renumbered `0049` → `0058` in the same pass.
 
 Owner, backlog C3: *"Catalog/manual path fully works with no network; AI-dependent estimates **queue until back online**."*
 
@@ -696,7 +698,7 @@ The one nutrition path that *does* use the network already degrades rather than 
 
 | | |
 | --- | --- |
-| Schema | `pending_estimates` (`0048`) — one row per meal (`meal_id` UNIQUE, `ON DELETE CASCADE`), `kind` ∈ `photo · text · revise`, the words in `description`, the JPEG as a **base name** in `file_name`, plus `attempts` / `last_error` |
+| Schema | `pending_estimates` (`0057`) — one row per meal (`meal_id` UNIQUE, `ON DELETE CASCADE`), `kind` ∈ `photo · text · revise`, the words in `description`, the JPEG as a **base name** in `file_name`, plus `attempts` / `last_error` |
 | Files | `pending-estimates/` — **its own directory**, because `meal-photos/` is swept against `meal_photos` rows in both directions on every app open and would delete a queued photo as an orphan on the very launch that needs it |
 | Placeholder | a real `meals` row, `source = 'ai_suggested'`, **NULL macros**, named with the user's own typed words (or `Photographed meal`) |
 | Drain | `runEstimateQueueDrain` on app open and on every foreground (`app/_layout.tsx`), oldest first, re-entrancy-guarded, never throws |
@@ -739,13 +741,13 @@ An interactive estimate lands in a review because **nothing has been written yet
 
 ---
 
-## 12g. Composite foods (C4, 2026-09-14, migration `0049`)
+## 12g. Composite foods (C4, 2026-09-14, migration `0058`)
 
 Owner, backlog C4: *"Take a photo of a pepperoni pizza… one composite item (pepperoni pizza) as well as rows below that are pizza crust, cheese, and pepperoni. If I ate the whole pizza but took the pepperoni off half, I could change just one thing. If I ate only half, I could change the entire thing together."* — with the scope fence in the same sentence: **specifically composite foods like pizza, not a general modifier system.** Design: `docs/spikes/composite-foods.md` (**built**).
 
 ### The schema: two columns, no new table
 
-`0049` adds `meal_items.parent_item_id` (→ `meal_items`, **`ON DELETE CASCADE`**) and `meal_items.is_composite`, plus one index. A component is a `meal_items` row in every other respect; a second table would duplicate the whole name/amount/unit/macro/micros/confidence set *and* put the parent's numbers somewhere `recomputeMealTotals` does not look.
+`0058` adds `meal_items.parent_item_id` (→ `meal_items`, **`ON DELETE CASCADE`**) and `meal_items.is_composite`, plus one index. A component is a `meal_items` row in every other respect; a second table would duplicate the whole name/amount/unit/macro/micros/confidence set *and* put the parent's numbers somewhere `recomputeMealTotals` does not look.
 
 CASCADE rather than SET NULL because a component has no meaning outside its composite — the rule that prefers SET NULL protects *execution history* from *catalog churn*, and a pizza's cheese is not execution history in its own right.
 

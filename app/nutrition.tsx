@@ -206,7 +206,7 @@ function MealRowItem({
 }: {
   meal: MealRow;
   itemCount: number;
-  /** A queued AI estimate owes this meal its numbers (0048). */
+  /** A queued AI estimate owes this meal its numbers (0057). */
   estimatePending: boolean;
   first: boolean;
   onPress: () => void;

@@ -45,7 +45,7 @@ export type PhotoFileStore = {
   /**
    * The file's bytes back as base64, or null when it is missing or unreadable.
    *
-   * The one reader in the codebase is the offline estimate queue (0048), which
+   * The one reader in the codebase is the offline estimate queue (0057), which
    * has to hand a plate photographed yesterday to the model today. Every other
    * consumer of a stored image points an `<Image>` at {@link PhotoFileStore.uri}
    * instead — a base64 round trip through JS for something the native image

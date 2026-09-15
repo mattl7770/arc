@@ -113,7 +113,7 @@ type Phase =
   | { kind: 'input' }
   | { kind: 'working' }
   | { kind: 'review'; notes: string | null }
-  /** The correction never reached the model, so it was kept (0048, backlog C3).
+  /** The correction never reached the model, so it was kept (0057, backlog C3).
    *  The meal keeps the items it has until the drain lands. */
   | { kind: 'queued' }
   | { kind: 'error'; message: string };
@@ -128,7 +128,7 @@ export default function MealReviseScreen() {
   // would silently swap the "before" out from under an open proposal.
   const [meal] = useState(() => getMeal(getDb(), mealId));
   const [before] = useState<MealItemWithServing[]>(() => listMealItems(getDb(), mealId));
-  // The same rows as the one-level tree (0049) — what "As logged" draws and
+  // The same rows as the one-level tree (0058) — what "As logged" draws and
   // what the model is shown.
   const beforeTree = assembleMealItems(before);
   // Display-only: whether a millilitre portion READS as ml or oz.
@@ -168,7 +168,7 @@ export default function MealReviseScreen() {
     setPhase({ kind: 'working' });
     try {
       const revised = await reviseMeal(
-        // The meal AS A TREE (0049): a composite goes to the model as one dish
+        // The meal AS A TREE (0058): a composite goes to the model as one dish
         // with its parts indented beneath it, so "that pizza had no pepperoni"
         // is a correction to a part it can see, and "leave everything else
         // byte-identical" can mean something for the other two.
@@ -181,7 +181,7 @@ export default function MealReviseScreen() {
       // A cancel is not a failure and gets no message — the screen is gone.
       if (controller.signal.aborted) return;
       // OFFLINE: keep the correction rather than making the user remember it
-      // (0048, backlog C3). The meal is untouched meanwhile — its current items
+      // (0057, backlog C3). The meal is untouched meanwhile — its current items
       // are still correct and still countable — and the drain sends this
       // sentence against the items AS THEY STAND THEN, so a hand-edit made in
       // between is what the correction applies to.

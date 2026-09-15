@@ -26,7 +26,7 @@ import type {
  * ## Why this is shared and not duplicated
  *
  * The two screens have always drawn the same table, and until C4 they did it
- * with two copies of the same forty lines. Composite foods (0049) turn that
+ * with two copies of the same forty lines. Composite foods (0058) turn that
  * table into a **tree** with a disclosure, proportional scaling and a
  * last-component rule — which is exactly the kind of logic that must not drift
  * between two screens that are supposed to guarantee the same thing. The
@@ -89,7 +89,7 @@ export type ReviewRow = {
 };
 
 /** A top-level review row. `components` is empty for a plain item and holds the
- *  parts for a composite (0049); one level only. */
+ *  parts for a composite (0058); one level only. */
 export type ReviewItem = ReviewRow & {
   components: ReviewRow[];
   expanded: boolean;

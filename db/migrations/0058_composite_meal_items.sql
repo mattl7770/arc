@@ -1,5 +1,5 @@
 -- ============================================================================
--- ARC 0049 — composite foods: a pizza is one row with its parts beneath it
+-- ARC 0058 — composite foods: a pizza is one row with its parts beneath it
 --
 -- Owner, backlog C4: *"Take a photo of a pepperoni pizza… one composite item
 -- (pepperoni pizza) as well as rows below that are pizza crust, cheese, and
@@ -90,11 +90,14 @@
 -- where it can say something useful when it breaks — the repository and the
 -- tests.
 --
--- Numbered 0049: `git ls-tree main -- db/migrations/` puts main's head at 0047,
--- 0046 is spoken for by backlog B1 (in flight), and 0048 is this branch's own
--- C3 queue. The runner is forward-only and SILENTLY SKIPS any file at or below
--- a device's `PRAGMA user_version`, so a collision strands a migration on the
--- phone forever — re-check at merge. The runner stamps user_version = 49.
+-- Numbered 0058, having been written as 0049 — the number the backlog reserved
+-- for C4, which was free at branch time and still is. It was renumbered at the
+-- moment of commit because `main`'s head had moved 0047 → 0054 in the meantime
+-- and `claude/c12-c13-exercise` holds 0055–0056 unmerged; the runner is
+-- forward-only and SILENTLY SKIPS any file at or below a device's
+-- `PRAGMA user_version`, so a "free" number below the head is stranded forever
+-- rather than merely late. 0057 is this branch's own C3 queue. The full
+-- argument is in 0057's header, once. The runner stamps user_version = 58.
 --
 -- Conventions per CLAUDE.md §9: no new table, index-only addition; 0014's
 -- AFTER UPDATE trigger already covers every column on `meal_items`, including

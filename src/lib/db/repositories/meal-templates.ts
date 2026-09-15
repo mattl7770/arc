@@ -73,7 +73,7 @@ export function createTemplate(db: Database, template: NewMealTemplate): string 
  * has no items (a free-form meal has nothing itemized to templatize).
  */
 export function saveMealAsTemplate(db: Database, mealId: string, name: string): string | null {
-  // LEAVES only (0049): `meal_template_items` cannot express a composite, so a
+  // LEAVES only (0058): `meal_template_items` cannot express a composite, so a
   // pizza saves as its parts rather than as a header with no numbers. Honest —
   // a template IS a curated list of priced lines — and nothing moves, because
   // the parts are exactly the rows the meal's own totals were summed from.

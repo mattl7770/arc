@@ -52,7 +52,7 @@ export type NutritionDay = {
   itemCounts: Record<string, number>;
   /** The target set governing today, or null until targets are first set. */
   targets: NutritionTargetsRow | null;
-  /** The meals whose numbers are owed by a QUEUED AI estimate (0048) — logged
+  /** The meals whose numbers are owed by a QUEUED AI estimate (0057) — logged
    *  offline, waiting on a connection. The row says so instead of wearing the
    *  "Nothing recorded — tap to fill it in" line, which would be advice the
    *  user cannot act on. Empty on every ordinary day. */
@@ -114,10 +114,10 @@ function readKitchen(db: ReturnType<typeof getDb>, today: string): KitchenCounts
 }
 
 /**
- * Which of today's meals are waiting on a queued estimate (0048).
+ * Which of today's meals are waiting on a queued estimate (0057).
  *
  * Guarded for the same reason readKitchen is: this runs synchronously in the
- * Eat TAB ROOT's first render, and a database that has not reached 0048 would
+ * Eat TAB ROOT's first render, and a database that has not reached 0057 would
  * throw where there is no screen above to catch it. An empty set costs the
  * placeholder its one authored line; a throw costs the tab.
  */

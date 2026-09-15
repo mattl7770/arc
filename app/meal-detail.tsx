@@ -405,14 +405,14 @@ export default function MealDetailScreen() {
   }
 
   const removeItem = (itemId: string) => {
-    // Removing a composite takes its parts (the 0049 cascade); removing the
+    // Removing a composite takes its parts (the 0058 cascade); removing the
     // LAST part takes the composite (invariant 4). Both live in the repository,
     // so this screen just re-reads.
     removeMealItem(getDb(), itemId);
     reload();
   };
 
-  /** The one-level tree the plate draws (0049). */
+  /** The one-level tree the plate draws (0058). */
   const nodes = assembleMealItems(items);
 
   const toggleParts = (id: string) => {
@@ -757,7 +757,7 @@ export default function MealDetailScreen() {
             </Text>
           ) : (
             <View className="mt-1">
-              {/* The one-level tree (0049): a composite is a disclosure row with
+              {/* The one-level tree (0058): a composite is a disclosure row with
                   its parts indented INSIDE this same plate. Not a nested plate —
                   a block gets exactly one device, and indentation on a ruled
                   table is this drawing set's answer to subordination. */}

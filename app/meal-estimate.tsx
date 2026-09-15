@@ -142,7 +142,7 @@ type Phase =
   | { kind: 'camera' }
   | { kind: 'estimating' }
   | { kind: 'review'; title: string; notes: string | null }
-  /** The request never left the phone, so it was kept (0048, backlog C3). The
+  /** The request never left the phone, so it was kept (0057, backlog C3). The
    *  meal is already in today's list under `name`; this phase says so. */
   | { kind: 'queued'; name: string; photoKept: boolean }
   | { kind: 'error'; message: string };
@@ -214,7 +214,7 @@ export default function MealEstimateScreen() {
       // A cancel is not a failure and gets no message — the screen is gone.
       if (controller.signal.aborted) return;
       // OFFLINE: the request never reached the model, so it is KEPT rather than
-      // lost (0048, backlog C3). ARC data has one copy — a plate photographed on
+      // lost (0057, backlog C3). ARC data has one copy — a plate photographed on
       // a plane and thrown away is a meal that never happened.
       if (isQueueableFailure(error) && queue(input, captured)) return;
       const message =

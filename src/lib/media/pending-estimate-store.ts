@@ -1,5 +1,5 @@
 /**
- * The file half of the offline estimate queue (0048) — a queued plate photo on
+ * The file half of the offline estimate queue (0057) — a queued plate photo on
  * disk, waiting for a network.
  *
  * ## Why its own directory, and not `meal-photos/`
@@ -100,7 +100,7 @@ export function sweepPendingEstimatePhotos(
 
 /**
  * The app-open pass. Total and silent, like the meal-photo sweep beside it: it
- * swallows everything, including a database that has not reached 0048.
+ * swallows everything, including a database that has not reached 0057.
  */
 export function runPendingEstimateSweep(db: Database): PendingEstimateSweep {
   try {

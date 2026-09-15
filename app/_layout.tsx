@@ -116,7 +116,7 @@ export default function RootLayout() {
   //    (the expo-file-system File API is) and total: it swallows everything,
   //    including a database that has not reached 0033;
   //  - reconcile the queued-estimate directory and DRAIN the offline estimate
-  //    queue (0048, backlog C3) — an AI estimate made with no network is kept
+  //    queue (0057, backlog C3) — an AI estimate made with no network is kept
   //    as a placeholder meal plus a request, and this is where the request is
   //    finally made. Runs on open and on every foreground, no-ops on the empty
   //    queue of an ordinary day, and never throws;
@@ -140,7 +140,7 @@ export default function RootLayout() {
     // readings — so a missing JPEG is reported and drawn as an authored empty,
     // never allowed to erase the history. See the sweep's own header.
     runProgressPhotoSweep(getDb());
-    // And the queued-estimate directory (0048). One direction only: a file no
+    // And the queued-estimate directory (0057). One direction only: a file no
     // queue row claims is an orphan and goes, but a ROW whose file has vanished
     // keeps its row — it still carries the words and the meal, and the drainer
     // degrades it to a text request rather than deleting the user's meal over a
@@ -170,7 +170,7 @@ export default function RootLayout() {
     const backupSub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
       void autoBackupIfDue(getDb());
-      // …and the offline estimate queue (0048, backlog C3). React Native has no
+      // …and the offline estimate queue (0057, backlog C3). React Native has no
       // reconnect event without a netinfo dependency, and returning to the app
       // is the moment that matters anyway: a drain nobody is present for helps
       // nobody, and every drain is a no-op on the empty queue of an ordinary

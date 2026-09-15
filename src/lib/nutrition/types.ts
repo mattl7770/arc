@@ -177,7 +177,7 @@ export type MealItemRow = {
   /** Per-portion micronutrient snapshot (JSON), scaled from the food at log
    * time — added in 0014. NULL when the food had no micro data. */
   micros: JsonText | null;
-  /** The composite this row is a PART of (0049), or NULL for a top-level row.
+  /** The composite this row is a PART of (0058), or NULL for a top-level row.
    * One level only — a component never has components of its own. */
   parent_item_id: string | null;
   /** 1 when this row is a composite HEADER: a name over its parts, carrying no
@@ -214,7 +214,7 @@ export type NewMealItemFields = {
   micros?: JsonText | null;
 };
 
-/** One part of a composite (0049). Deliberately NOT nestable: invariant 1 is
+/** One part of a composite (0058). Deliberately NOT nestable: invariant 1 is
  *  one level only, and the type is where that is easiest to keep true. */
 export type NewMealItemComponent = NewMealItemFields;
 
@@ -222,7 +222,7 @@ export type NewMealItemComponent = NewMealItemFields;
  * What the app supplies per item when logging.
  *
  * With `components` present and non-empty the row becomes a COMPOSITE HEADER
- * (0049): its own macros are ignored and stored NULL, and the parts are
+ * (0058): its own macros are ignored and stored NULL, and the parts are
  * inserted beneath it. A flat list of plain items is unchanged — which is why
  * every existing caller needed no edit.
  */
@@ -382,7 +382,7 @@ export type NutritionHistoryDay = {
   } | null;
 };
 
-// --- Queued AI estimates (0048) -----------------------------------------------
+// --- Queued AI estimates (0057) -----------------------------------------------
 
 /**
  * Which model call is waiting. `'photo'` and `'text'` create a meal that does
@@ -393,7 +393,7 @@ export type PendingEstimateKind = 'photo' | 'text' | 'revise';
 
 /**
  * A `pending_estimates` row — one AI request that could not be made because the
- * network was gone, kept until it can be (0048, backlog C3).
+ * network was gone, kept until it can be (0057, backlog C3).
  *
  * `file_name` is a BASE NAME inside the pending-estimate directory, never a
  * path (0033's rule), and the directory is deliberately not `meal-photos`:

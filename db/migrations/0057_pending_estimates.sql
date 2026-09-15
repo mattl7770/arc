@@ -1,5 +1,5 @@
 -- ============================================================================
--- ARC 0048 — pending_estimates: an AI estimate taken offline is queued, not lost
+-- ARC 0057 — pending_estimates: an AI estimate taken offline is queued, not lost
 --
 -- Owner, backlog C3: *"Offline food logging — catalog/manual path fully works
 -- with no network; AI-dependent estimates queue until back online."*
@@ -86,12 +86,25 @@
 -- on his behalf. The escape hatch is the one he already has — delete the
 -- placeholder meal, and CASCADE takes the entry with it.
 --
--- Numbered 0048: `git ls-tree main -- db/migrations/` puts main's head at 0047
--- (ml as a unit) with 0046 spoken for by backlog B1 (exercise metric type), in
--- flight on its own branch. The runner is forward-only and SILENTLY SKIPS any
--- file at or below a device's `PRAGMA user_version`, so a collision strands a
--- migration on the phone forever — re-check at merge (the backlog records seven
--- collisions in a week). The runner stamps PRAGMA user_version = 48.
+-- ── NUMBERED 0057, AND IT WAS 0048 UNTIL THE MOMENT OF COMMIT ──
+--
+-- This file was written as `0048_pending_estimates.sql`: at branch time `main`
+-- held up to 0047, so 0048 was the next free number and the backlog had even
+-- reserved it. By the time the work was committed `main` had taken 0046, 0050,
+-- 0053 and 0054, and `claude/c12-c13-exercise` held 0055 and 0056 in flight.
+--
+-- **0048 is STILL unused on main, and shipping it anyway would have stranded it
+-- forever.** The runner is forward-only and SILENTLY SKIPS any file at or below
+-- a device's `PRAGMA user_version`: a phone that has applied 0054 never looks at
+-- 0048 again, so this table would simply not exist and every read of it would
+-- throw on a screen with nothing above to catch it. Nothing fails at build time,
+-- in CI, or in any test that starts from an empty database — which is exactly
+-- why the backlog has recorded seven of these in a week.
+--
+-- So the rule is not "take the next free number". It is **take the next number
+-- ABOVE main's head, re-checked at the moment of commit, and above anything an
+-- unmerged branch already holds.** 0057 is that number. The runner stamps
+-- PRAGMA user_version = 57.
 --
 -- Conventions per CLAUDE.md §9 / 0001_init.sql: app-generated UUID text ids
 -- (PRIMARY KEY NOT NULL, no default — src/lib/db/id.ts, SQLite randomblob,

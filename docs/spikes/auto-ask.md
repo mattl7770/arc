@@ -8,7 +8,7 @@
 4. **The token cost was under-predicted.** §3.6's `+266` was measured before `ml` landed; against the real baseline the two rounds cost +149 (C4) and +279 (C5). The `ESTIMATOR_PROMPT_CEILING` §3.6 recommends was built, at 1,000, and **the rule it states was applied to this round**: three enumerations were trimmed back to three examples each, taking 970 → 922.
 
 The original proposal follows unchanged.
-**Migration:** **none.** Questions are a property of an estimate in flight, not of a logged record — nothing is persisted that `meal_items` cannot already hold.
+**Migration:** **none.** (Confirmed at build: C5 needed no schema at all. Its two branch-mates were renumbered `0048`→`0057` and `0049`→`0058` at commit — see `0057`’s header for why a *free* number below main’s head is worse than a taken one.) Questions are a property of an estimate in flight, not of a logged record — nothing is persisted that `meal_items` cannot already hold.
 **Citations verified against `main` at `950c846`.** `main` moves several times a day; if a line number below misses, the surrounding quote is the anchor.
 
 ---

@@ -1,5 +1,5 @@
 /**
- * The offline estimate queue's row half — `pending_estimates` (0048).
+ * The offline estimate queue's row half — `pending_estimates` (0057).
  *
  * Owner, backlog C3: the catalog and manual paths work with the network
  * unplugged (they always did — nothing on them calls `fetch`), and an

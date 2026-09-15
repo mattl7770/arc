@@ -721,7 +721,7 @@ export function saveMealAsRecipe(
   title: string,
   servings: number
 ): string | null {
-  // LEAVES only (0049): a recipe line cannot express a composite, so a pizza
+  // LEAVES only (0058): a recipe line cannot express a composite, so a pizza
   // captured from a meal becomes its parts. They are exactly the rows the
   // meal's own totals were summed from, so the recipe's rollup matches it.
   const items = leafMealItems(listMealItems(db, mealId));

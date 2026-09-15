@@ -1266,7 +1266,7 @@ console.log('22c. a revision is shown the meal in the units it was logged in');
     : bad('revision prompt missing the unit rail');
 }
 
-// === Offline food logging (0048, backlog C3) =================================
+// === Offline food logging (0057, backlog C3) =================================
 //
 // Two halves, tested as two different kinds of claim:
 //
@@ -1662,7 +1662,7 @@ console.log('29. C3: a queued REVISION is applied to the items as they stand the
     : bad('revision left in the queue');
 }
 
-// === Composite foods (0049, backlog C4) ======================================
+// === Composite foods (0058, backlog C4) ======================================
 //
 // The owner: *"one composite item (pepperoni pizza) as well as rows below that
 // are pizza crust, cheese, and pepperoni. If I ate the whole pizza but took the

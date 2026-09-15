@@ -695,7 +695,7 @@ const db = getDb();
     refute('nutrition hub (fallback)', html, ['kcal left', 'Protein left']);
   }
 
-  console.log('5b. The Eat tab — a meal waiting on a queued estimate (0048, C3)');
+  console.log('5b. The Eat tab — a meal waiting on a queued estimate (0057, C3)');
   {
     // An estimate taken offline logs a PLACEHOLDER: a meal the user can see,
     // with NULL macros. The row must say what it is waiting for rather than
@@ -778,7 +778,7 @@ const db = getDb();
     updateMealName(db, mealId, 'Render lunch');
   }
 
-  console.log('7b2. meal-detail draws a composite as ONE row with its parts folded (0049)');
+  console.log('7b2. meal-detail draws a composite as ONE row with its parts folded (0058)');
   {
     const { mealId: pizzaId } = logMealWithItems(db, {
       date: today,
@@ -2217,7 +2217,7 @@ console.log('17. A3 — every amount field in food logging highlights its value'
 
   // The sweep. Each file is a surface where a FOOD's amount gets changed.
   // The two estimator screens' amount fields moved into the SHARED review table
-  // when composites arrived (0049) — app/meal-estimate.tsx and
+  // when composites arrived (0058) — app/meal-estimate.tsx and
   // app/meal-revise.tsx now draw the identical tree, and the fields are in one
   // file rather than two copies. The sweep follows them: the rule is about
   // surfaces where a FOOD's amount gets changed, and that is now where they are.
@@ -2248,7 +2248,7 @@ console.log('17. A3 — every amount field in food logging highlights its value'
   // is asserted too. It was SEVEN across six surfaces; it is now SIX across
   // five, and the missing one is not a regression: the estimator's review row
   // and the composite's whole-dish handle share one `AmountField` component
-  // (0049), where app/meal-estimate.tsx and app/meal-revise.tsx previously held
+  // (0058), where app/meal-estimate.tsx and app/meal-revise.tsx previously held
   // a copy each. One field, two screens, two uses — the guarantee is unchanged
   // and there is one fewer place to forget it.
   swept >= 6
