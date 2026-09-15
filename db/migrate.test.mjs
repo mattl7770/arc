@@ -577,13 +577,14 @@ console.log('7. 0029 never runs twice (a re-purge cannot touch new rows)');
 // on `foods` — another thing that is indistinguishable from working until it
 // runs against real rows.
 //
-// So: stage at 0046 (i.e. everything through 0045), write the rows a phone
+// So: stage at 0045 — everything through 0045, the state a device sat in before
+// 0046 (exercise measures) and 0047 both landed on 2026-09-14 — write the rows a phone
 // would have, migrate forward, and read the result back.
 // ===========================================================================
 console.log('8. 0047 renames the portion columns and backfills every row to `g`');
 {
   const db = new DatabaseSync(':memory:');
-  stageAt(db, 46);
+  stageAt(db, 45);
 
   const before = db.prepare('PRAGMA user_version').get().user_version;
   before === 45
