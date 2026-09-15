@@ -25,6 +25,11 @@ import {
 } from '../src/lib/health/mapping.ts';
 import { deriveReadiness } from '../src/lib/home/readiness.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
+// §37-38 (C14): the retire path and the id bridge are only meaningful against
+// the real recall function and the real shipped pack.
+import { searchUserHistory } from '../src/lib/ai/history-search.ts';
+import { rememberFact } from '../src/lib/db/repositories/coach-memory.ts';
+import { ingestCorpus } from '../src/lib/rag/corpus.ts';
 import {
   COACH_TOOLS,
   READ_TOOLS,
@@ -2482,14 +2487,83 @@ console.log('35. save_knowledge_entry (docs/knowledge-subapp.md §6, migration 0
     ? ok('a blank body fails at the card')
     : bad('blank body accepted');
 
-  // Deliberately OUT of v1 (spec §6) — recorded here so removing them is a
-  // decision someone has to make on purpose rather than a drift nobody noticed.
+  // Still deliberately OUT (spec §6) — recorded here so adding one is a decision
+  // someone has to make on purpose. Reading a knowledge entry stays
+  // search_history's job, which returns the excerpt AND (C14) the id.
   !toolByName('get_knowledge_entry')
     ? ok('no get_knowledge_entry — search_history already returns knowledge excerpts')
     : bad('a read tool was added without the batched registry change');
-  !toolByName('edit_knowledge_entry') && !toolByName('archive_knowledge_entry')
-    ? ok('no Coach edit/archive path — editing is the user’s act in the UI')
-    : bad('a Coach edit path appeared');
+
+  // === C14: the same tool REVISES, given an id ==============================
+  //
+  // The owner's requirement is read AND write on both stores, and this half was
+  // write-once: the Coach could draft a page with him and then never correct it.
+  // A revision resends the whole entry — `title`, `topic`, `body` and `section`
+  // stay required — so what he approves on the card is the whole new text, and a
+  // CREATE can still never arrive without a body.
+  tool.inputSchema.properties.id && !tool.inputSchema.required.includes('id')
+    ? ok('`id` is an OPTIONAL property: present = rewrite, absent = new entry')
+    : bad('id is missing or required', JSON.stringify(tool.inputSchema.required));
+  tool.inputSchema.properties.id.description === undefined
+    ? ok('…carrying no description of its own — the tool’s last clause says what it does')
+    : bad('id restates the tool description (coach-eval §6 duplication)');
+
+  const revision = {
+    id: result.id,
+    title: 'Magnesium forms differ in absorption',
+    topic: 'supplements',
+    section: 'scientific',
+    body: 'Glycinate over citrate. Citrate is laxative at the doses people take.',
+  };
+  const revisionCard = summary('save_knowledge_entry', revision);
+  // The card must NOT read like the create card. Approving "Save …" for
+  // something that silently replaces a page you already have is exactly the
+  // failure a confirmation gate exists to prevent.
+  revisionCard.startsWith('Rewrite scientific entry "Magnesium forms differ in absorption"')
+    ? ok('a rewrite says REWRITE on the card, never "Save"')
+    : bad('rewrite card wording', revisionCard);
+  !revisionCard.includes('was “')
+    ? ok('…and does not name an old title when the title did not change')
+    : bad('noise on an unchanged title', revisionCard);
+  summary('save_knowledge_entry', { ...revision, title: 'Magnesium, revisited' }).includes(
+    'was “Magnesium forms differ in absorption”'
+  )
+    ? ok('…but does name it when the rewrite renames the entry')
+    : bad('a rename hid the entry it replaces');
+  throws(() => summary('save_knowledge_entry', { ...revision, id: 'nope' }))
+    ? ok('an unknown id fails at the card, before costing an Approve tap')
+    : bad('an unknown id reached the write path');
+  /search_history/.test(
+    (() => {
+      try {
+        summary('save_knowledge_entry', { ...revision, id: 'nope' });
+        return '';
+      } catch (e) {
+        return e.message;
+      }
+    })()
+  )
+    ? ok('…and the error names where ids come from')
+    : bad('the unknown-id error does not point at search_history');
+
+  const revised = run('save_knowledge_entry', db, revision);
+  revised.replaced === true && revised.id === result.id
+    ? ok('execute reports a replacement, on the SAME id — no orphan second entry')
+    : bad('revision result', JSON.stringify(revised));
+  db.get('SELECT count(*) c FROM knowledge_entries WHERE title = ?', [revision.title]).c === 1
+    ? ok('…and the base still holds one entry with that title, not two')
+    : bad('the rewrite added a row instead of replacing one');
+  db.get('SELECT body FROM knowledge_entries WHERE id = ?', [result.id]).body === revision.body
+    ? ok('the new body is what is stored')
+    : bad('body not replaced');
+  // THE ONE THAT MATTERS. Chunks are what the Coach retrieves; a rewrite that
+  // left the old passages behind would have the model citing a stance the user
+  // retracted, out of an entry whose visible text no longer says it.
+  db.all('SELECT body FROM knowledge_chunks WHERE entry_id = ?', [result.id]).every(
+    (c) => !/Elemental magnesium per gram/.test(c.body)
+  )
+    ? ok('the OLD passages are gone — a rewrite cannot leave stale doctrine retrievable')
+    : bad('stale chunks survived the rewrite');
 }
 
 console.log('36. the coverage manifest: the model is told what it CANNOT see');
@@ -2569,6 +2643,105 @@ console.log('36. the coverage manifest: the model is told what it CANNOT see');
     ? ok('a manifest entry naming an unregistered tool fails the check')
     : bad('guard does not guard', JSON.stringify(caught));
   coverageProblems().length === 0 ? ok('and the registry is clean again') : bad('cleanup');
+}
+
+console.log('37. retire_knowledge_entry (C14) — the Coach can take a page back out');
+{
+  const { db } = freshDb();
+  const summary = (name, input) => toolByName(name).confirmSummary(input, db, CTX);
+
+  const tool = toolByName('retire_knowledge_entry');
+  tool ? ok('retire_knowledge_entry is registered') : bad('not registered');
+  tool.readOnly === false ? ok('it is a WRITE tool — gated') : bad('registered read-only');
+  tool.inputSchema.additionalProperties === false
+    ? ok('additionalProperties: false')
+    : bad('schema is open');
+  // Separate from save_knowledge_entry for the same reason `forget` is separate
+  // from `remember`: taking something out is not a smaller version of putting
+  // something in, and it earns its own card.
+  JSON.stringify(tool.inputSchema.required) === JSON.stringify(['id'])
+    ? ok('id, and nothing else — the terse schema `forget` established')
+    : bad('required keys', JSON.stringify(tool.inputSchema.required));
+  /never to tidy/i.test(tool.description)
+    ? ok('the description forbids tidying — retiring is the user’s retraction, not housekeeping')
+    : bad('the tidy-up rail is missing', tool.description);
+
+  const id = run('save_knowledge_entry', db, {
+    title: 'Zone 2 three times a week',
+    topic: 'training',
+    section: 'scientific',
+    body: 'Three ninety-minute sessions a week, conversational pace, heart rate capped.',
+  }).id;
+
+  const card = summary('retire_knowledge_entry', { id });
+  card === 'Retire entry "Zone 2 three times a week"'
+    ? ok('the card names the entry by title, not by id')
+    : bad('card wording', card);
+  throws(() => summary('retire_knowledge_entry', { id: 'nope' }))
+    ? ok('an unknown id fails at the card')
+    : bad('unknown id accepted');
+
+  const out = run('retire_knowledge_entry', db, { id });
+  out.retired === true ? ok('execute reports the retirement') : bad(JSON.stringify(out));
+  db.get('SELECT archived_at FROM knowledge_entries WHERE id = ?', [id]).archived_at !== null
+    ? ok('the row is archived — SOFT, so the user can restore what the Coach retired')
+    : bad('the entry was not archived');
+  db.all('SELECT * FROM knowledge_chunks WHERE entry_id = ?', [id]).length === 0
+    ? ok('…and its chunks are gone, so it leaves every search with no archived_at join')
+    : bad('a retired entry is still retrievable');
+  searchUserHistory(db, 'zone conversational pace').length === 0
+    ? ok('search_history confirms it: a retired entry cannot be cited again')
+    : bad('a retired entry still comes back from search');
+
+  // Retiring twice is honest rather than a phantom success — the `forget` shape.
+  const again = run('retire_knowledge_entry', db, { id });
+  again.retired === false && /already retired/i.test(again.note)
+    ? ok('retiring an already-retired entry says so instead of claiming a second success')
+    : bad('double retire', JSON.stringify(again));
+}
+
+console.log('38. the id bridge (C14): a search hit the Coach can actually write back to');
+{
+  const { db } = freshDb();
+  // Before C14 a search hit was a DEAD END for both stores: the Coach could read
+  // an entry and had no way to name it again, and a memory past the prompt's 40
+  // could be found by text and never forgotten. "Read and write on both stores"
+  // was half-true, and the missing half was the id.
+  const entryId = run('save_knowledge_entry', db, {
+    title: 'Creatine at 5 g, daily, no loading',
+    topic: 'supplements',
+    section: 'scientific',
+    body: 'Five grams daily, every day, no loading phase. Timing does not matter.',
+  }).id;
+  const memoryId = rememberFact(db, {
+    content: 'Creatine gives him no stomach trouble at 5 g',
+    category: 'context',
+  });
+  ingestCorpus(db);
+
+  const hits = searchUserHistory(db, 'creatine loading stomach', 20);
+  const entryHit = hits.find((h) => /your knowledge/.test(h.source));
+  entryHit?.id === entryId
+    ? ok('a knowledge hit carries the ENTRY id — the address the write tools take')
+    : bad('entry hit id', JSON.stringify(entryHit));
+  const memoryHit = hits.find((h) => /^remembered/.test(h.source));
+  memoryHit?.id === memoryId
+    ? ok('a memory hit carries its id, so `forget` can reach past the prompt’s 40')
+    : bad('memory hit id', JSON.stringify(memoryHit));
+
+  // The pack is the user's to READ and never to revise, and the absent id is
+  // what enforces it — there is no address to hand a write tool.
+  const packHits = searchUserHistory(db, 'apob', 20).filter((h) => /ARC reference/.test(h.source));
+  packHits.length > 0 && packHits.every((h) => h.id === undefined)
+    ? ok('ARC’s shipped pack carries NO id — it is not the user’s to rewrite or retire')
+    : bad('a pack hit offered a writable id', JSON.stringify(packHits));
+
+  // And the id survives the round trip through the tool, which is the only path
+  // the model actually sees.
+  const toolHits = run('search_history', db, { query: 'creatine loading' }).results;
+  toolHits.some((h) => h.id === entryId)
+    ? ok('search_history’s own payload carries it — read leads to write in one call')
+    : bad('the tool dropped the id', JSON.stringify(toolHits));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

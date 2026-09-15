@@ -30,6 +30,8 @@ import {
   listMemories,
   rememberFact,
   restoreMemory,
+  searchMemories,
+  updateMemory,
 } from '../src/lib/db/repositories/coach-memory.ts';
 import { logNote } from '../src/lib/db/repositories/logs.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
@@ -40,6 +42,9 @@ import { buildRollingSummary, updateRollingSummary } from '../src/lib/ai/thread-
 import { buildTurnContext } from '../src/lib/ai/turn-context.ts';
 import { toolByName } from '../src/lib/ai/tools/index.ts';
 import { CORPUS, ingestCorpus } from '../src/lib/rag/corpus.ts';
+// §7 re-checks the reason search_knowledge stays unregistered, rather than
+// asserting the fact and leaving the reason to a comment.
+import { embedderStatus } from '../src/lib/rag/embedder.ts';
 
 let pass = 0;
 let fail = 0;
@@ -360,9 +365,22 @@ console.log('6. search_history recalls the user’s own words');
 
 console.log('7. search_knowledge is unregistered while it cannot work');
 {
+  // RE-EXAMINED AT C14 and left as it is. The owner's requirement that round was
+  // "coach needs to be able to interact with both of these on a read and write
+  // basis", and the obvious move was to register the read tool that names the
+  // knowledge base. It would not have delivered read access — it would have
+  // delivered a tool that answers `available: false` to every call, because the
+  // embedder is still a hardcoded null (src/lib/rag/embedder.ts: embedText
+  // returns null, embedderStatus returns 'model_not_installed'), and it would
+  // have spent ~180 tokens of the tool ceiling saying so on every request. The
+  // requirement is met by search_history, which reads BOTH stores by keyword,
+  // today, with no model — asserted below rather than merely believed.
   toolByName('search_knowledge') === undefined
     ? ok('the always-unavailable tool is no longer advertised to the model')
     : bad('search_knowledge still registered');
+  embedderStatus() === 'model_not_installed'
+    ? ok('…and the reason still holds: the embedder is not wired, so it could only fail')
+    : bad('the embedder shipped — re-register search_knowledge', embedderStatus());
   toolByName('search_history') !== undefined
     ? ok('…and real keyword recall took its place')
     : bad('search_history missing');
@@ -400,6 +418,70 @@ console.log('8. the curated corpus is real content, searchable today');
   CORPUS.every((e) => e.body.length > 400 && e.title.length > 0 && e.topic.length > 0)
     ? ok('every entry is substantive and tagged with a topic')
     : bad('thin entries');
+}
+
+console.log('9. C14: the owner writes memory too, from the Knowledge hub');
+{
+  const { db } = freshDb();
+
+  // The relocation's whole point. Before C14 the memory store was machine-only:
+  // the Coach proposed, the owner approved or deleted. He asked to be able to
+  // "manually add stuff to coach memory that it should know every turn", so the
+  // hub's editor writes directly — and the provenance has to survive it.
+  const mine = rememberFact(db, {
+    content: 'Trains fasted before 9am',
+    category: 'preference',
+    source: 'user',
+  });
+  db.get('SELECT source FROM coach_memories WHERE id = ?', [mine]).source === 'user'
+    ? ok("a memory the owner typed lands source='user', not 'coach'")
+    : bad('owner-written provenance lost');
+
+  // Editing is the OWNER's act only — a model correcting a line is forget then
+  // remember, which is two gates on the store that rides in every prompt and
+  // costs no schema tokens. The absence is asserted so adding one is a decision.
+  !toolByName('update_memory') && !toolByName('edit_memory')
+    ? ok('no Coach edit tool — a model correcting a memory is forget + remember')
+    : bad('a memory edit tool appeared without the budget accounting');
+
+  updateMemory(db, mine, { content: '  Trains   fasted   before 10am  ' })
+    ? ok('updateMemory reports the edit')
+    : bad('update returned false');
+  const edited = db.get('SELECT * FROM coach_memories WHERE id = ?', [mine]);
+  edited.content === 'Trains fasted before 10am'
+    ? ok('…and the text is normalized on the way in, exactly as an insert would be')
+    : bad('edit not normalized', edited.content);
+  edited.category === 'preference'
+    ? ok('an unspecified category is kept, never reset to the default')
+    : bad('category clobbered', edited.category);
+  updateMemory(db, mine, { category: 'constraint' }) &&
+  db.get('SELECT * FROM coach_memories WHERE id = ?', [mine]).category === 'constraint'
+    ? ok('…and re-filing a memory changes only its kind')
+    : bad('category edit failed');
+  throws(() => updateMemory(db, mine, { content: '   ' }))
+    ? ok('an edit cannot blank a memory — the same guard the insert path has')
+    : bad('blank edit accepted');
+  updateMemory(db, 'nope', { content: 'x' }) === false
+    ? ok('an unknown id is false, not a phantom success')
+    : bad('update invented a row');
+
+  // The hub draws three runs through one search field, so "matches" has to mean
+  // the same thing in all three: distinct-term ranking over the shared splitter.
+  rememberFact(db, { content: 'Sleeps badly after late caffeine', category: 'context' });
+  rememberFact(db, { content: 'Caffeine after 2pm is out', category: 'constraint' });
+  searchMemories(db).length === 3
+    ? ok('an empty query is the whole active list — what the hub draws at rest')
+    : bad('empty-query list', String(searchMemories(db).length));
+  searchMemories(db, 'caffeine').length === 2
+    ? ok('a one-term query narrows to the rows that contain it')
+    : bad('single term', JSON.stringify(searchMemories(db, 'caffeine').map((m) => m.content)));
+  searchMemories(db, 'caffeine sleeps')[0].content === 'Sleeps badly after late caffeine'
+    ? ok('…and two distinct terms outrank one, the entry runs’ ranking exactly')
+    : bad('ranking', JSON.stringify(searchMemories(db, 'caffeine sleeps').map((m) => m.content)));
+  forgetMemory(db, mine);
+  searchMemories(db, 'fasted').length === 0
+    ? ok('a forgotten memory leaves the run — the hub lists it under Forgotten instead')
+    : bad('archived memory still listed');
 }
 
 // ---------------------------------------------------------------------------

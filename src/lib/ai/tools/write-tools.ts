@@ -41,7 +41,14 @@ import {
   markScreeningDone,
 } from '@/lib/db/repositories/screenings';
 import { addVersion, getCurrentVersion, getProtocolBySlug } from '@/lib/db/repositories/protocols';
-import { KNOWLEDGE_SECTIONS, saveKnowledgeEntry } from '@/lib/db/repositories/knowledge';
+import {
+  archiveKnowledgeEntry,
+  getKnowledgeEntry,
+  KNOWLEDGE_SECTIONS,
+  saveKnowledgeEntry,
+  updateKnowledgeEntry,
+  type KnowledgeEntryRow,
+} from '@/lib/db/repositories/knowledge';
 import {
   completeReminder,
   createReminder,
@@ -992,9 +999,17 @@ const rememberTool: CoachTool = {
   name: 'remember',
   description:
     // The what-not-to-remember rail lives in the system prompt's Memory bullet.
-    'Store ONE durable fact so you still know it next conversation: a preference, a constraint ' +
-    'or adverse reaction ("magnesium citrate upsets his stomach"), stable context, or a goal. ' +
-    'One sentence per call; the user sees and can delete every memory.',
+    //
+    // TRIMMED BY C14 to help pay for retire_knowledge_entry (db/coach-eval.test
+    // .mjs §6: the next addition trims). "a preference, a constraint or adverse
+    // reaction (…), stable context, or a goal" spelled out the four values of
+    // the `category` enum declared three lines below — the description-recites-
+    // its-own-schema class the 2026-08-26 round established as the right thing
+    // to delete. The parenthetical EXAMPLE is the half that teaches (it shows
+    // the shape and the length, which no enum can), so it survives attached to
+    // the sentence it illustrates.
+    'Store ONE durable fact so you still know it next conversation — "magnesium citrate upsets ' +
+    'his stomach". One sentence per call; the user sees and can delete every memory.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1032,10 +1047,16 @@ const rememberTool: CoachTool = {
 const forgetTool: CoachTool = {
   name: 'forget',
   description:
+    // The "archived, not destroyed — the user can still see it in Settings"
+    // sentence went with C14, and it had to: memory moved out of Settings onto
+    // the Knowledge hub, so the claim had become false in the one place the
+    // model would repeat it to the user. Naming the new screen instead would
+    // have bought a fact the model has no use for — where a surface lives is
+    // the coverage manifest's job, and `forget` is soft either way.
     'Forget one durable memory by its id (ids come with the memories in your context block, ' +
-    'and from get_memories). Use when the user says something is no longer true or asks you ' +
-    'to drop it. The memory is archived, not destroyed — the user can still see it in ' +
-    'Settings. Prefer forgetting a stale fact over silently accumulating contradictions.',
+    'and from get_memories or search_history). Use when the user says something is no longer ' +
+    'true or asks you to drop it. Prefer forgetting a stale fact over silently accumulating ' +
+    'contradictions.',
   inputSchema: {
     type: 'object',
     properties: { id: { type: 'string' } },
@@ -2116,7 +2137,10 @@ const logScreeningDoneTool: CoachTool = {
   inputSchema: {
     type: 'object',
     properties: {
-      id: { type: 'string', description: 'From get_screenings.' },
+      // "From get_screenings." was this tool's own description verbatim, two
+      // lines above ("Get the id from get_screenings"). Cut by C14 — the fourth
+      // and smallest payment, and the purest example of the class.
+      id: { type: 'string' },
       ...DATE_PROPERTY,
     },
     required: ['id'],
@@ -2173,15 +2197,24 @@ const logScreeningDoneTool: CoachTool = {
  * would be a wall of text in a one-line slot, and the user would stop reading
  * it — which is the failure mode a confirmation gate exists to prevent.
  *
- * ## What it deliberately cannot do
+ * ## It edits too, since C14
  *
- * There is no `get_knowledge_entry` and no Coach edit/archive path. Reading is
- * covered by `search_history`, which already returns knowledge excerpts with
- * citations; editing is the user's act in the UI, consistent with "editing or
- * deleting anything already logged" living in UNCOVERED_DOMAINS. Both are
- * recorded as deliberately-out in the spec, with the revisit trigger: if real
- * transcripts show truncated-doctrine answers, add the read tool BATCHED with
- * the next registry change.
+ * The owner's requirement is read AND write on both stores, and the entry half
+ * was write-once: the Coach could create a page and then never touch it again,
+ * so a stance it had drafted with the user in March could only be corrected by
+ * writing a second entry that contradicted the first. `id` fixes that, and it is
+ * an OPTIONAL PROPERTY rather than a second tool on purpose — `title`, `topic`,
+ * `body` and `section` are required either way, so a revision resends the whole
+ * entry and the user approves the whole new text (the doctrine already makes the
+ * model print it first). A patch-shaped tool would have made all four optional,
+ * which would also have let a CREATE arrive with no body.
+ *
+ * Retiring is `retire_knowledge_entry` below, separate for the reason `forget`
+ * is separate from `remember`: taking something out of the base is not a smaller
+ * version of putting something in it, and it deserves its own card.
+ *
+ * Reading is `search_history`, which returns knowledge excerpts with citations —
+ * and, since C14, the entry `id` that these two tools need.
  */
 const saveKnowledgeEntryTool: CoachTool = {
   name: 'save_knowledge_entry',
@@ -2196,10 +2229,17 @@ const saveKnowledgeEntryTool: CoachTool = {
   description:
     'Save ONE entry to the user’s knowledge base. `personal` = a durable fact about THEM, too ' +
     'long for a one-line memory; `scientific` = how something works, or a stance they commit ' +
-    'to. Only on their request or invitation, and present the entry in your message first.',
+    'to. Only on their request or invitation, and present the entry in your message first. ' +
+    'With `id`, rewrites that entry whole instead of adding one.',
   inputSchema: {
     type: 'object',
     properties: {
+      // C14. No per-property description: the tool description's last clause
+      // says what passing it does, and where ids come from is the same answer
+      // for every id-taking tool in the registry (search_history, and the id
+      // this tool returns). A second copy here is the description-recites-its-
+      // own-schema duplication db/coach-eval.test.mjs §6 punishes.
+      id: { type: 'string' },
       title: { type: 'string', description: 'One line: what the entry commits to.' },
       // REQUIRED, with no per-property description of its own (0044). Required
       // rather than defaulted because the default would be wrong in exactly the
@@ -2226,7 +2266,7 @@ const saveKnowledgeEntryTool: CoachTool = {
     additionalProperties: false,
   },
   readOnly: false,
-  confirmSummary: (input) => {
+  confirmSummary: (input, db) => {
     const args = asRecord(input);
     const title = reqString(args, 'title');
     const topic = reqString(args, 'topic');
@@ -2236,21 +2276,74 @@ const saveKnowledgeEntryTool: CoachTool = {
     // approving: it decides which half of the base the entry can be found in
     // afterwards, and "personal" is the one he would want to catch being wrong.
     const section = reqEnum(args, 'section', KNOWLEDGE_SECTIONS);
-    return `Save ${section} entry "${title}" · ${topic} · ${words} words`;
+    const id = optString(args, 'id');
+    if (id === undefined) return `Save ${section} entry "${title}" · ${topic} · ${words} words`;
+    // A rewrite is a DIFFERENT act and the card has to say so — approving
+    // "Save …" for something that silently replaces a page the user already has
+    // is the failure a confirmation gate exists to prevent. The old title is
+    // named when it changed, because that is the entry about to disappear.
+    const existing = requireEntry(db, id);
+    const renamed = existing.title === title ? '' : ` (was “${existing.title}”)`;
+    return `Rewrite ${section} entry "${title}"${renamed} · ${topic} · ${words} words`;
   },
   execute: (db, input) => {
     const args = asRecord(input);
-    // The SAME repository path the editor and the import review screen use —
-    // chunking included — so a Coach-saved entry is indistinguishable from a
-    // hand-written one downstream, and is retrievable the moment it lands.
-    const id = saveKnowledgeEntry(db, {
+    const patch = {
       title: reqString(args, 'title'),
       topic: reqString(args, 'topic'),
       body: reqString(args, 'body'),
       section: reqEnum(args, 'section', KNOWLEDGE_SECTIONS),
-      source: 'coach',
+    };
+    const id = optString(args, 'id');
+    if (id !== undefined) {
+      requireEntry(db, id);
+      // The repository re-chunks on any change, so a rewritten entry can never
+      // leave a stale passage behind for a later turn to retrieve and cite.
+      updateKnowledgeEntry(db, id, patch);
+      return json({ saved: true, id, replaced: true });
+    }
+    // The SAME repository path the editor and the import review screen use —
+    // chunking included — so a Coach-saved entry is indistinguishable from a
+    // hand-written one downstream, and is retrievable the moment it lands.
+    return json({ saved: true, id: saveKnowledgeEntry(db, { ...patch, source: 'coach' }) });
+  },
+};
+
+// --- retire_knowledge_entry (C14) --------------------------------------------
+
+/** The entry behind an id, or an error naming the tool that hands ids out. */
+function requireEntry(db: Database, id: string): KnowledgeEntryRow {
+  const entry = getKnowledgeEntry(db, id);
+  if (!entry) throw new Error(`No knowledge entry with id ${id}. Find it with search_history.`);
+  return entry;
+}
+
+const retireKnowledgeEntryTool: CoachTool = {
+  name: 'retire_knowledge_entry',
+  description:
+    // Deliberately silent about restoring: the user can restore it, but saying
+    // so here invites the model to treat retiring as cheap, and the whole point
+    // of the separate tool is that it is not.
+    'Retire ONE knowledge entry by id — it leaves every search and you can no longer cite it. ' +
+    'Use when the user retracts something or it is superseded, never to tidy up.',
+  inputSchema: {
+    type: 'object',
+    properties: { id: { type: 'string' } },
+    required: ['id'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db) =>
+    `Retire entry "${requireEntry(db, reqString(asRecord(input), 'id')).title}"`,
+  execute: (db, input) => {
+    const id = reqString(asRecord(input), 'id');
+    requireEntry(db, id);
+    const retired = archiveKnowledgeEntry(db, id);
+    return json({
+      retired,
+      id,
+      ...(retired ? {} : { note: 'That entry was already retired.' }),
     });
-    return json({ saved: true, id });
   },
 };
 
@@ -2280,4 +2373,5 @@ export const WRITE_TOOLS: CoachTool[] = [
   logRecipeTool,
   saveRecipeTool,
   saveKnowledgeEntryTool,
+  retireKnowledgeEntryTool,
 ];

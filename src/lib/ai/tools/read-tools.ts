@@ -761,12 +761,16 @@ const getMetricSeries: CoachTool = {
   inputSchema: {
     type: 'object',
     properties: {
-      metric: {
-        type: 'string',
-        description:
-          'A body metric or a wearable metric_type; ' +
-          'get_today_snapshot.wearables.availableMetrics lists this device’s set.',
-      },
+      // TRIMMED BY C14, third of the three payments for retire_knowledge_entry.
+      // Its description was "A body metric or a wearable metric_type;
+      // get_today_snapshot.wearables.availableMetrics lists this device's set."
+      // The first clause is the tool description's own first clause, six words
+      // later and less specific (that one NAMES the three body metrics). The
+      // second offered a discovery path the tool description already beats:
+      // "an unknown name errors WITH the valid set" costs no extra call and
+      // arrives exactly when the model needs it, whereas availableMetrics is a
+      // second round trip to learn the same thing.
+      metric: { type: 'string' },
       days: { type: 'integer', minimum: 1, maximum: 365, description: 'Window, default 30.' },
     },
     required: ['metric'],
@@ -1958,9 +1962,15 @@ const getScreeningsTool: CoachTool = {
     'cadence, when it was last done and when it is next due (`status` overdue/due/scheduled/' +
     'untracked), plus upcoming appointments and any booking whose date passed without being ' +
     'closed out. Call this for "am I due for anything", "when was my last colonoscopy", ' +
-    'bloodwork timing, or any question about check-ups, scans and doctor visits. An empty ' +
-    'ledger means the user has tracked none — ARC does track them (Data › Screenings); never ' +
-    'report the feature as missing.',
+    'bloodwork timing, or any question about check-ups, scans and doctor visits.',
+  // TRIMMED BY C14 to pay for retire_knowledge_entry. The cut sentence — "An
+  // empty ledger means the user has tracked none — ARC does track them (Data ›
+  // Screenings); never report the feature as missing" — is stated AT RUNTIME by
+  // the payload itself, in the exact and only case where it is true: `execute`
+  // below emits `emptyNote` with that instruction, in those words, when both
+  // lists come back empty. Billing it on every request about screenings the
+  // user DOES track is the same duplication the 2026-08-11 get_metric_series
+  // and get_today_snapshot trims removed.
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   readOnly: true,
   execute: (db, _input, context) => {

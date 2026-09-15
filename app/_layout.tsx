@@ -261,9 +261,13 @@ export default function RootLayout() {
               status, the automatic-backup toggle, the recovery code, and the
               restore that replaces the database. */}
           <Stack.Screen name="settings-backups" />
-          {/* What the Coach durably knows about you — inspectable and deletable
-              (0030 coach_memories). Memory the user cannot read is memory the
-              user cannot trust. */}
+          {/* The editor for ONE durable memory (0030 coach_memories), pushed
+              from the Knowledge hub's first run with an `id` to edit or without
+              one to write. It used to be the whole memory surface under
+              Settings; C14 moved the LIST to app/knowledge.tsx and left this as
+              the write path, so there is no second list to drift. Registered
+              here rather than beside the knowledge routes below because
+              Settings still links at memory, and the stack is flat either way. */}
           <Stack.Screen name="coach-memory" />
           {/* INTEGRATOR-MERGE: wearables routes (docs/wearables-subapp.md). */}
           <Stack.Screen name="settings-health" />

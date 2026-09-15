@@ -648,6 +648,74 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // was not quite, and these three are the last of that pattern. The next
   // addition trims the VOICE section or the schemas, because there is no fourth
   // fact-then-restatement left in here.
+  //
+  // ── 2026-09-14: C14, COACH MEMORY → KNOWLEDGE BASE. NEITHER CEILING MOVED,
+  // and the tool side came out BELOW where it started. The owner's requirement
+  // was read AND write on both stores; the entry half was write-once, so
+  // save_knowledge_entry gained an optional `id` (present = rewrite the whole
+  // entry) and retire_knowledge_entry was added as the 44th tool.
+  //
+  // SCHEMA — WHAT IT COST: +148 tok. retire_knowledge_entry is 119 of that
+  // (desc 59, schema 36) and save_knowledge_entry's `id` is 29 (the property ~10
+  // plus ~19 on the tool description's new last clause). Two design choices held
+  // it down before any trim:
+  //   · `id` carries NO per-property description. Where ids come from is the
+  //     same answer for every id-taking tool in the registry, and the tool
+  //     description's own clause says what passing it does.
+  //   · retiring is its OWN tool rather than a `retire: true` flag on the save.
+  //     That reads like the expensive choice and is not: a flag would have made
+  //     title/topic/body/section optional (they cannot be required for a call
+  //     that only archives), which costs the correctness rail that stops a
+  //     CREATE arriving with no body — and a conditional-requirement sentence
+  //     explaining when each applies would have cost more than the 36-token
+  //     `{id}` schema it was trying to avoid.
+  //
+  // PAID FOR BY (−153 tok), four trims, three of them the same nameable class —
+  // A DESCRIPTION RECITING ITS OWN SCHEMA — and one the 2026-08-11 class, A
+  // DESCRIPTION RESTATING WHAT THE PAYLOAD SAYS AT RUNTIME:
+  //   · get_screenings, 239 → 193 (−46). "An empty ledger means the user has
+  //     tracked none — ARC does track them (Data › Screenings); never report the
+  //     feature as missing" is emitted BY `execute`, in those words, as
+  //     `emptyNote`, in the one case where it is true. Billing it on every
+  //     request about screenings the user does track is the get_metric_series
+  //     trim again.
+  //   · get_metric_series.metric, −45 (309 total after). Its description said "A
+  //     body metric or a wearable metric_type; …availableMetrics lists this
+  //     device's set." The first clause is the tool description's own first
+  //     clause, less specific (that one NAMES the three body metrics); the
+  //     second offers a discovery path the tool description already beats, since
+  //     "an unknown name errors WITH the valid set" costs no extra round trip.
+  //   · remember, 194 → 167 (−27). "a preference, a constraint or adverse
+  //     reaction (…), stable context, or a goal" spelled out the four values of
+  //     the `category` enum three lines below it. The parenthetical EXAMPLE
+  //     survives — it shows the shape and the LENGTH, which no enum can.
+  //   · forget, 175 → 153 (−22), and this one had to go regardless: "the user
+  //     can still see it in Settings" became FALSE when memory moved to the
+  //     Knowledge hub, in the one sentence the model would repeat to the user.
+  //   · log_screening_done.id, −13. Its description was "From get_screenings."
+  //     under a tool description reading "Get the id from get_screenings." The
+  //     purest example of the class in the registry.
+  //
+  // NET 9,223 → 9,218: **−5 tok for a 44th tool and a new capability.** 32
+  // tokens of headroom, up from 27. The prompt side moved +1 (3,668 → 3,669):
+  // one UNCOVERED_DOMAINS line had to be NARROWED because the feature made it
+  // false — "editing or deleting anything already logged, incl. your own writes
+  // and knowledge entries" now names only what is still true. A false line in
+  // that list is worse than a long one, and the swap was near-free.
+  //
+  // WHAT WAS NOT DONE, on purpose: search_knowledge stayed unregistered. It is
+  // the tool that names the knowledge base, so registering it looks like the
+  // direct answer to "the Coach needs read access" — but the embedder is still
+  // a hardcoded null, so every call returns `available: false`, and it would
+  // have spent ~180 tok advertising a dead end. Read access on both stores is
+  // search_history, which reads them by keyword today with no model, and which
+  // C14 gave the row ids so a read can lead to a write. Pinned in
+  // db/coach-memory.test.mjs §7, against `embedderStatus()` rather than against
+  // a comment.
+  //
+  // The next addition still digs where the 2026-08-26 entry pointed:
+  // update_protocol (424), log_workout (321) and adjust_today (348) are the
+  // three fattest schemas and none of them has been swept.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

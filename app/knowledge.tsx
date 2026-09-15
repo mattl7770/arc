@@ -10,6 +10,12 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import {
+  listAllMemories,
+  searchMemories,
+  MEMORY_PROMPT_LIMIT,
+  type CoachMemoryRow,
+} from '@/lib/db/repositories/coach-memory';
+import {
   deleteKnowledgeEntry,
   listKnowledgeEntries,
   listPackEntries,
@@ -32,12 +38,21 @@ import { provenanceLine } from '@/lib/knowledge/provenance';
  * cited, and yours outranks ARC's — which is the whole reason the second half
  * exists.
  *
- * ## The two sections (0044)
+ * ## The four runs (0044 split the entries; C14 added memory on top)
  *
  * Owner, 2026-08-26: *"two sections, one for scientific data and another for
  * personal data about the user that should be remembered."* So what the user
- * writes is partitioned in two, and the screen draws three runs:
+ * writes is partitioned in two. Owner again, C14: *"the coach shouldn't be
+ * reading every scientific article put in there every turn, but I should be
+ * able to manually add stuff to coach memory that it should know every turn."*
+ * So the memory store — which stayed a separate table, see §2c of the spec —
+ * moved its SURFACE here, and the screen draws four runs:
  *
+ *   COACH MEMORY one-line facts carried into EVERY turn, capped. The only run
+ *                on this screen the Coach does not have to go looking for, and
+ *                the reason it is drawn first: it is the smallest, the most
+ *                expensive per row, and the one whose cap has a consequence
+ *                the owner must be able to see.
  *   PERSONAL     pages about HIM — a surgical history, how he reacts to
  *                something, a constraint he has settled on.
  *   SCIENTIFIC   his own doctrine about how the world works.
@@ -45,6 +60,13 @@ import { provenanceLine } from '@/lib/knowledge/provenance';
  *                not something he writes into — hence its own run rather than a
  *                nested sub-heading. The sections partition HIS writing; the
  *                pack is the shipped half of the scientific one.
+ *
+ * The runs are ordered by how eagerly the Coach reads them: memory every turn,
+ * the user's own pages when they bear on the question, ARC's pack last. That is
+ * also the order of how much a row costs and how much it matters, which is why
+ * one ordering serves both. The LENGTH litmus that decides which store a fact
+ * belongs in (docs/knowledge-subapp.md §8) is stated in the memory run's own
+ * copy and again in its editor — where the owner is actually choosing.
  *
  * Two stacked runs rather than a toggle, because this screen is BROWSED: a
  * toggle hides half the base behind a tap and makes "what do I have?" a
@@ -107,6 +129,14 @@ const TOPIC_LABELS: Record<string, string> = {
 function topicLabel(topic: string): string {
   return TOPIC_LABELS[topic] ?? topic.charAt(0).toUpperCase() + topic.slice(1);
 }
+
+/** A memory's kind, as the eyebrow over its row (the 0030 CHECK vocabulary). */
+const CATEGORY_LABEL: Record<CoachMemoryRow['category'], string> = {
+  preference: 'Preference',
+  constraint: 'Constraint',
+  context: 'Context',
+  goal: 'Goal',
+};
 
 /** Pack entries bucketed by topic, in pack order within each bucket. */
 function groupByTopic(entries: PackEntry[]): { topic: string; items: PackEntry[] }[] {
@@ -177,16 +207,27 @@ export default function KnowledgeScreen() {
     listKnowledgeEntries(getDb(), { archived: true })
   );
   const [showArchived, setShowArchived] = useState(false);
+  const [memories, setMemories] = useState<CoachMemoryRow[]>(() => searchMemories(getDb()));
+  const [forgotten, setForgotten] = useState<CoachMemoryRow[]>(() =>
+    listAllMemories(getDb()).filter((m) => m.archived_at !== null)
+  );
+  const [showForgotten, setShowForgotten] = useState(false);
 
   const load = useCallback((text: string) => {
     const db = getDb();
+    // Memory is filtered by the same splitter and the same distinct-term
+    // ranking as the two entry runs (the repository shares `queryTerms`), so
+    // one search field means one thing across three stores.
+    setMemories(searchMemories(db, text));
     setPersonal(listKnowledgeEntries(db, { query: text, section: 'personal' }));
     setEntries(listKnowledgeEntries(db, { query: text, section: 'scientific' }));
     setPack(listPackEntries(db, text));
-    // The archived foot is NOT split by section: an archived entry is out of
-    // every search either way, so two headings there would be one fact told
-    // twice.
+    // Both feet are NOT filtered by the query and NOT split further: an
+    // archived entry and a forgotten memory are out of every search either way,
+    // so narrowing them by a search term would be a search over things that
+    // cannot be found.
     setArchived(listKnowledgeEntries(db, { archived: true }));
+    setForgotten(listAllMemories(db).filter((m) => m.archived_at !== null));
   }, []);
 
   // Re-read on focus so an entry written, edited or archived on a pushed screen
@@ -267,7 +308,7 @@ export default function KnowledgeScreen() {
               accessibilityLabel="Search the knowledge base"
               value={query}
               onChangeText={search}
-              placeholder="Search both stores"
+              placeholder="Search memory and entries"
               placeholderTextColor={palette.inkMuted}
               autoCapitalize="none"
               autoCorrect={false}
@@ -277,7 +318,144 @@ export default function KnowledgeScreen() {
         </Block>
       </View>
 
-      {/* PERSONAL — the section the owner asked for, drawn first. The plate
+      {/* COACH MEMORY (C14) — the store the Coach reads on EVERY turn, drawn
+          first for that reason. Rows are one line each, so the whole run is
+          browsable inline; writing and removing happen on the pushed editor
+          (/coach-memory), which is where the length rule can be stated beside
+          the field rather than as a preamble here.
+
+          The cap is stated IN WORDS and only when it bites. A store that has
+          silently stopped being carried is the failure this run exists to make
+          visible — the owner can read a fact on this screen and watch the Coach
+          behave as though it had never been told, and nothing else in the app
+          would explain why. */}
+      <View className="mt-7">
+        <SectionLabel
+          label={searching ? 'Coach memory — matches' : 'Coach memory'}
+          note={memories.length > 0 ? String(memories.length) : undefined}
+        />
+        {memories.length === 0 ? (
+          <View className="mt-2">
+            <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
+              {searching ? 'No memory matches.' : 'The Coach holds nothing yet.'}
+            </Text>
+            {searching ? null : (
+              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+                One line each, carried into every turn — how you like to train, something that
+                disagrees with you, what you’re working toward. Write one yourself, or tell the
+                Coach and it will ask to keep it.
+              </Text>
+            )}
+          </View>
+        ) : (
+          <>
+            <View className="mt-2">
+              <Block device="plate">
+                {memories.map((memory, index) => (
+                  <View key={memory.id}>
+                    <Divider first={index === 0} />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`${CATEGORY_LABEL[memory.category]}. ${memory.content}. Edit.`}
+                      onPress={() =>
+                        router.push({ pathname: '/coach-memory', params: { id: memory.id } })
+                      }
+                      className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
+                      <View className="flex-1">
+                        <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+                          {CATEGORY_LABEL[memory.category]}
+                        </Text>
+                        <Text className="mt-1 font-serif text-[15px] leading-5 text-ink">
+                          {memory.content}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={palette.inkSecondary} />
+                    </Pressable>
+                  </View>
+                ))}
+              </Block>
+            </View>
+            {/* Only past the cap, and phrased as a consequence rather than a
+                setting: the number alone would tell the owner nothing about
+                what it costs him. */}
+            {memories.length > MEMORY_PROMPT_LIMIT ? (
+              <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
+                The Coach carries the {MEMORY_PROMPT_LIMIT} most recent into every turn, so{' '}
+                {memories.length - MEMORY_PROMPT_LIMIT} of these are no longer riding along. They
+                stay here, and the Coach can still find them by searching — delete or forget the
+                ones that have stopped being true.
+              </Text>
+            ) : null}
+          </>
+        )}
+        {searching ? null : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Remember something"
+            onPress={() => router.push('/coach-memory')}
+            className="mt-3 min-h-[46px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+            <Ionicons name="bookmark-outline" size={17} color={palette.inkSecondary} />
+            <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink">
+              Remember something
+            </Text>
+          </Pressable>
+        )}
+        {/* FORGOTTEN — the memory store's own foot, mirroring Archived at the
+            bottom of the screen. It sits inside this run rather than merged
+            into that one because they are different stores with different
+            words for the same act, and one heading over both would have to
+            pick a word that lies about half its rows. */}
+        {forgotten.length > 0 ? (
+          <View className="mt-4">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showForgotten }}
+              accessibilityLabel={`Forgotten. ${forgotten.length}. ${showForgotten ? 'Collapse' : 'Expand'}.`}
+              onPress={() => setShowForgotten((prev) => !prev)}
+              className="min-h-[44px] flex-row items-center gap-2 active:opacity-60">
+              <View className="flex-1">
+                <SectionLabel label="Forgotten" note={String(forgotten.length)} />
+              </View>
+              <Ionicons
+                name={showForgotten ? 'chevron-up' : 'chevron-down'}
+                size={14}
+                color={palette.inkMuted}
+              />
+            </Pressable>
+            {showForgotten ? (
+              <View className="mt-2">
+                <Block device="plate">
+                  {forgotten.map((memory, index) => (
+                    <View key={memory.id}>
+                      <Divider first={index === 0} />
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`${memory.content}. Forgotten. Open.`}
+                        onPress={() =>
+                          router.push({ pathname: '/coach-memory', params: { id: memory.id } })
+                        }
+                        className="min-h-[46px] flex-row items-center gap-3 py-3 active:opacity-60">
+                        <View className="flex-1">
+                          <Text className="font-serif text-[14px] leading-5 text-ink-muted">
+                            {memory.content}
+                          </Text>
+                          <Text className="mt-0.5 font-mono text-[11px] text-ink-muted">
+                            forgotten {(memory.archived_at ?? '').slice(0, 10)}
+                          </Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={16} color={palette.inkSecondary} />
+                      </Pressable>
+                    </View>
+                  ))}
+                </Block>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+
+      {/* PERSONAL — the section the owner asked for, drawn first among the
+          written pages. The plate
           closes round the rows and never round the empty sentence: a plate
           encloses a record, and "nothing yet" is a sentence on the bare sheet
           under its label. */}
