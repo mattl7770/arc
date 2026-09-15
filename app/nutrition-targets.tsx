@@ -11,6 +11,8 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { activeNutritionTargets, setNutritionTargets } from '@/lib/db/repositories/nutrition';
+import { getGoalDirection, setGoalDirection } from '@/lib/db/repositories/user';
+import { GOAL_DIRECTIONS, type GoalDirection } from '@/lib/user/types';
 
 /**
  * Daily targets editor. Saving APPENDS a new immutable version effective today
@@ -117,9 +119,43 @@ function FormField({ label, value, onChange, keyboardType, fill }: FieldProps) {
   );
 }
 
+/**
+ * What each direction means to the reader, and to the pillar. The label is the
+ * verb the owner uses; the line under the row says what changes, because a
+ * setting whose effect is invisible is a setting nobody trusts.
+ */
+const DIRECTION_LABEL: Record<GoalDirection, string> = {
+  cut: 'Cutting',
+  maintain: 'Maintaining',
+  gain: 'Gaining',
+};
+
+const DIRECTION_EFFECT: Record<GoalDirection, string> = {
+  cut: 'Home reads a day under target as the point, and a day over it as a miss.',
+  maintain: 'Home reads over and under target as equally off — the symmetric bands.',
+  gain: 'Home reads a day over target as the point, up to +50%, and a day under it as a miss.',
+};
+
 export default function NutritionTargetsScreen() {
   const router = useRouter();
   const [active] = useState(() => activeNutritionTargets(getDb(), todayISODate()) ?? null);
+  const [direction, setDirection] = useState<GoalDirection>(() => getGoalDirection(getDb()));
+
+  /**
+   * Written on tap, not on Save — it is a live preference, the same category as
+   * the hydration goal and every Settings toggle, and NOT part of the immutable
+   * target version the button below appends. The two sit on one screen because
+   * the direction qualifies the numbers; they are still two different kinds of
+   * fact, and the labels say which is which.
+   */
+  const chooseDirection = (next: GoalDirection) => {
+    setDirection(next);
+    try {
+      setGoalDirection(getDb(), next);
+    } catch (error) {
+      console.warn('[nutrition-targets] direction save failed', error);
+    }
+  };
 
   const prefill = (v: number | null | undefined): string => (v == null ? '' : String(v));
   const [kcal, setKcal] = useState(() => prefill(active?.kcal));
@@ -180,6 +216,48 @@ export default function NutritionTargetsScreen() {
             </Text>
           )}
         </Block>
+      </View>
+
+      {/* The direction sits ABOVE the numbers because it qualifies them: 2,400
+          kcal means a different day depending on which way you are going, and
+          the pillar on Home grades it that way (src/lib/home/readiness.ts,
+          `kcalLevel`). Outlined chips in the treatment `Other ways to log`
+          wears — no accent, this is a settings surface, and the Save button is
+          the only action on it either way. */}
+      <View className="mt-5">
+        <SectionLabel label="Goal direction" note="Saved on tap" />
+
+        <View className="mt-2 flex-row gap-2">
+          {GOAL_DIRECTIONS.map((option) => {
+            const selected = option === direction;
+            return (
+              <Pressable
+                key={option}
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+                accessibilityLabel={DIRECTION_LABEL[option]}
+                onPress={() => chooseDirection(option)}
+                className={
+                  selected
+                    ? 'min-h-[44px] flex-1 items-center justify-center rounded-btn border border-ink bg-paper-hi px-2 py-3'
+                    : 'min-h-[44px] flex-1 items-center justify-center rounded-btn border border-hairline px-2 py-3 active:bg-paper-dim'
+                }>
+                <Text
+                  className={
+                    selected
+                      ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink'
+                      : 'font-label text-[12px] uppercase tracking-[1.2px] text-ink-secondary'
+                  }>
+                  {DIRECTION_LABEL[option]}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
+          {DIRECTION_EFFECT[direction]}
+        </Text>
       </View>
 
       <View className="mt-5">

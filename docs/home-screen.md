@@ -92,7 +92,7 @@ Originally: log something, chat with Coach, override modes, jump to Dashboard.
 **Shipped:** `app/(tabs)/index.tsx` renders five sections, and **every one of them is now real** — nothing on this screen is mock.
 
 - **Mission** — reads from and writes to on-device SQLite (`src/hooks/use-today-mission.ts` → repositories in `src/lib/db/`), generated from the user's own active protocols (`mission-generate.ts`).
-- **Readiness + pillars + metrics** — derived from `wearable_data` (`useReadiness` → `src/lib/home/readiness.ts`: 30-day baselines, a ≥5-day evidence gate, documented thresholds, and an honest "No recovery signal yet" when the data isn't there).
+- **Readiness + pillars + metrics** — derived from `wearable_data` (`useReadiness` → `src/lib/home/readiness.ts`: 30-day baselines, a ≥5-day evidence gate, documented thresholds, and an honest "No recovery signal yet" when the data isn't there). Two of the four pillars read something other than a wearable: **Strain** grades ARC's own logged sets, and **Nutrition** grades the day's meals against the user's versioned targets (below).
 - **Coach brief** — the deterministic insights engine (`useDailyBrief` → `generateDailyBrief`), so it is real even offline.
 
 Components live in `src/components/home/`; the pure mission derivation (sort + fold + hero) is in `src/lib/home/derive-mission.ts`.
@@ -120,3 +120,42 @@ Key design decisions:
 **Travel / sick / deload** are handled by **Modes**, not by bespoke Home states — see the mode control above.
 
 **Not yet built:** the **data-gappy** state; and the Home brief is not yet re-toned by mode (the Coach itself is, via `get_today_snapshot`).
+
+---
+
+## The Nutrition pillar — direction-aware bands on a pace curve (C7, 2026-09-14)
+
+The third cell of the readiness strip was the one the owner said had stopped earning its place: *"It provides almost no value right now; it only triggers late in the day and doesn't take in account my full goal (currently, exceeding my calorie goal is a good thing)."* Two complaints, both true of the code — before 20:00 exactly two things could produce a grade (a >10% overshoot, or a protein target already met), and the calorie band was `Math.abs`, so a bulking day at 2,800 on a 2,400 target read as a fault.
+
+The design round is `docs/spikes/nutrition-verdict.md` (Model A, approved); the Eat-tab side of it — where the goal direction is set — is `docs/nutrition-subapp.md` §12e. **No migration**, no model call: this pillar stays deterministic, so Home renders it on a plane with no key.
+
+### The two constants, which are the specification
+
+**The bands.** Gaining: **+20% optimal · +35% good · +50% caution · beyond that poor**, and the mirror image for cutting (under target is the point, over it is the fault). Maintaining is symmetric and is *exactly* the band this pillar graded with before C7 — which is what makes `maintain` the no-change default for a profile that never opens the setting. The loose side is deliberately not unbounded: a 3,700-kcal day on a 2,400 target is a binge whatever the goal, and a pillar that says `optimal` to anything above target has stopped being an instrument.
+
+**The pace curve.** How much of the day's target a normal day has taken by each hour: **~15% by 10:00 · 40% by 13:00 · 85% by 19:00**, with the day closed at 21:00, linearly interpolated and nowhere else. The pillar therefore **transmits from mid-morning** instead of from dinner — the first complaint, answered as a number: 500 kcal of 2,400 at 11:00 used to read `unknown / day in progress` and now reads a grade.
+
+Both tables live in `src/lib/home/readiness.ts` (`KCAL_BANDS`, `PACE_ANCHORS`) and are pinned row by row in `db/readiness.test.mjs` §10. Retuning either means editing the table and saying so — the discipline `strainLevel`'s ladder already sets.
+
+### What it grades, and why not the obvious thing
+
+The number both halves are graded on is the **projected end-of-day ratio if the rest of the day goes to plan** — `(eaten + the share still expected) ÷ target` — and *not* `eaten ÷ expected-by-now`. The naive ratio has a tiny denominator in the morning and explodes: a 700-kcal breakfast at 10:00 is 1.94× the 360 kcal expected by then, which lands in `poor` in every direction. A 700-kcal breakfast is not a bad day; it is a breakfast. Measuring the gap as a share of the day's whole budget keeps one constant denominator all day, and at the close the expression collapses to plain `eaten ÷ target`, so the band table means exactly what it says about a finished day.
+
+**Protein weighs alongside calories**, and the rule is one sentence in each direction: a **hit** protein target lifts a borderline calorie reading one step (`good` → `optimal`, `caution` → `good`) and cannot rescue a `poor` one; a **missed** one caps the pillar at protein's own level, via the same `worse()` every other pillar uses. Carbs, fat and fiber are not graded — a four-way `worse()` reads amber on nearly every real day, and composition belongs on the Eat tab's bars where it can be seen without being judged.
+
+### The pillar says what it graded against
+
+The note is a measuring sentence, not encouragement, and it always names the pace it judged: *"On pace — 1,140 of ~1,250 expected by 13:00"*. The `~` is not decoration — the expected figure is a point on an assumed curve, and once the day closes there is nothing approximate left, so the clause switches to the flat day figure. The direction is named **only when it changed the reading** (`strainNote`'s discipline): *"Over target — 2,800 of 2,400 kcal for the day · ahead of target, which is the point while gaining"*. So is protein, and only when it lifted or capped.
+
+### The four states that are not a grade
+
+- **Timezone changed today** → `unknown`, *"timezone changed today — not graded"*. A 31-hour day cannot be judged against a 24-hour target (`docs/spikes/timezone-days.md` §7 Q2(b): better quiet than clever). The marker itself is D4's (`0053`, another branch); the seam here is one predicate, `isTimezoneChangedDay(db, date)`, honestly false until it lands.
+- **No targets set** → `unknown`, and it names the fix. Never an invented denominator.
+- **Nothing logged** → `unknown`, reading differently once the day has closed.
+- **Before 10:00** → `unknown`, *"nothing expected yet — the pace clock starts at 10:00"*. The denominator would be zero and a verdict built on it would be manufactured.
+
+Every "now" here is the **local** clock measured against the **logical** day (`src/lib/db/date.ts`), so with a 04:00 boundary a 02:00 instant is the end of that day and not the small hours of the next.
+
+**The design firewall is unchanged.** These are signal colours on a biological reading; the pillar takes `signal-*` exactly as it did, and the Eat tab's own bars (C6) take the accent. Nothing in this change touches the strip's drawing.
+
+**Device-only:** the note is now up to three clauses and can run to two wrapped lines at 11px serif under a four-cell strip — the one thing typecheck and the headless tests cannot judge.

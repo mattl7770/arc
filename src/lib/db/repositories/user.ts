@@ -14,8 +14,17 @@ import type { Database } from '../database';
 import { normalizeDayStartsAt } from '../date';
 import { newId } from '../id';
 import type { BiologicalSex, UserRow } from '../types';
-import type { AppLockPreferences, Preferences, UnitPreferences } from '@/lib/user/types';
-import { DEFAULT_UNIT_PREFERENCES } from '@/lib/user/types';
+import type {
+  AppLockPreferences,
+  GoalDirection,
+  Preferences,
+  UnitPreferences,
+} from '@/lib/user/types';
+import {
+  DEFAULT_GOAL_DIRECTION,
+  DEFAULT_UNIT_PREFERENCES,
+  GOAL_DIRECTIONS,
+} from '@/lib/user/types';
 
 /**
  * The single profile row, creating a default one on first access. Deterministic
@@ -204,6 +213,42 @@ export function setWaterTarget(db: Database, ml: number | null): void {
   const obj = parseObject(user.preferences);
   const next = ml !== null && Number.isFinite(ml) && ml > 0 ? ml : null;
   obj.goals = { ...readSection(obj, 'goals'), waterMl: next };
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+}
+
+/**
+ * Which way the user is deliberately moving — `cut` | `maintain` | `gain`,
+ * defaulting to `maintain` when nothing has been chosen.
+ *
+ * Read by the Home nutrition pillar, which grades an over-target day as a fault
+ * while cutting and as the point while gaining (src/lib/home/readiness.ts,
+ * `kcalLevel`). Set on the targets screen rather than in Settings: it qualifies
+ * the numbers, so it belongs beside them.
+ *
+ * It sits in `preferences.goals` next to `waterMl` — a single durable thing the
+ * user *sets*, no migration — and takes the same trade that section already
+ * takes: it is live, so changing it re-judges history against the new
+ * direction. The alternative (a `goal_direction` column on `nutrition_targets`,
+ * versioned and immutable like the numbers) is better modelling and was
+ * deliberately not taken this round; see {@link GoalDirection}.
+ *
+ * Strict membership test, like every other reader of this blob: an unrecognised
+ * or corrupt value reads as `maintain`, never as a direction the user did not
+ * pick.
+ */
+export function getGoalDirection(db: Database): GoalDirection {
+  const obj = parseObject(getOrCreateUser(db).preferences);
+  const value = readSection(obj, 'goals').direction;
+  return GOAL_DIRECTIONS.includes(value as GoalDirection)
+    ? (value as GoalDirection)
+    : DEFAULT_GOAL_DIRECTION;
+}
+
+/** Set the goal direction, preserving unrelated preference keys (the hydration goal included). */
+export function setGoalDirection(db: Database, direction: GoalDirection): void {
+  const user = getOrCreateUser(db);
+  const obj = parseObject(user.preferences);
+  obj.goals = { ...readSection(obj, 'goals'), direction };
   db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
 }
 

@@ -8,9 +8,16 @@ import { DatabaseSync } from 'node:sqlite';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
+import { getGoalDirection, setGoalDirection } from '../src/lib/db/repositories/user.ts';
 import {
   deriveReadiness,
+  expectedDayFraction,
   hrvLevel,
+  isTimezoneChangedDay,
+  kcalLevel,
+  nutritionVerdict,
+  paceRatio,
+  proteinLevel,
   rhrLevel,
   sleepLevel,
   strainLevel,
@@ -551,7 +558,7 @@ console.log('9. "how many more days?" — the answer to the owner\'s question');
     : bad('no-reading note', note3);
 }
 
-console.log('10. nutrition is graded against targets, not against "did you open the app"');
+console.log('10. nutrition — direction-aware bands on an expected-by-now pace curve (C7)');
 {
   const setTargets = (db, kcal, protein) =>
     db.run(
@@ -565,88 +572,249 @@ console.log('10. nutrition is graded against targets, not against "did you open 
        VALUES ('m-' || abs(random()), ?, 'Meal', ?, ?)`,
       [TODAY, kcal, protein]
     );
-  const nutritionOf = (db, hour) =>
+  const nutritionOf = (db, hour, minute = 0) =>
     deriveReadiness(db, TODAY, {
       link: 'connected',
-      now: new Date(2026, 6, 29, hour, 0, 0),
+      now: new Date(2026, 6, 29, hour, minute, 0),
     }).pillars.find((p) => p.label === 'Nutrition');
 
-  // The old rule outright: one meal logged scored 'good'. It was a fact about
-  // whether the app had been opened.
+  // --- (a) The band table. The owner's numbers, asserted row by row ----------
+  //
+  // Gaining: +20% optimal · +35% good · +50% caution · beyond poor, mirrored
+  // for cutting, symmetric for maintaining. Ratios are end-of-day ratios, which
+  // is what paceRatio collapses to once the day has closed.
   {
-    const db = freshDb();
-    logMeal(db, 400, 30);
-    const pillar = nutritionOf(db, 12);
-    pillar.level === 'unknown' && pillar.note.includes('no daily targets set')
-      ? ok('one meal and NO targets is unknown, not "good"')
-      : bad('no-targets', JSON.stringify(pillar));
+    const table = [
+      // ratio, cut, maintain, gain
+      [1.0, 'optimal', 'optimal', 'optimal'],
+      [1.1, 'good', 'optimal', 'optimal'],
+      [1.25, 'poor', 'caution', 'good'],
+      [1.4, 'poor', 'poor', 'caution'],
+      [1.6, 'poor', 'poor', 'poor'],
+    ];
+    const wrong = table.filter(
+      ([ratio, cut, maintain, gain]) =>
+        kcalLevel(ratio, 'cut') !== cut ||
+        kcalLevel(ratio, 'maintain') !== maintain ||
+        kcalLevel(ratio, 'gain') !== gain
+    );
+    wrong.length === 0
+      ? ok('the band table holds at 0 / +10 / +25 / +40 / +60% for all three directions')
+      : bad(
+          'band table',
+          wrong
+            .map(
+              ([r]) =>
+                `${r}: ${kcalLevel(r, 'cut')}/${kcalLevel(r, 'maintain')}/${kcalLevel(r, 'gain')}`
+            )
+            .join(' ')
+        );
+
+    // The bolded row of the proposal: one day, three verdicts.
+    kcalLevel(2800 / 2400, 'cut') === 'caution' &&
+    kcalLevel(2800 / 2400, 'maintain') === 'good' &&
+    kcalLevel(2800 / 2400, 'gain') === 'optimal'
+      ? ok('2,800 on a 2,400 target: a fault cutting, unremarkable maintaining, the point gaining')
+      : bad('the owner’s sentence', kcalLevel(2800 / 2400, 'gain'));
+
+    // Mirrored, not merely loosened: the same 25% miss flips sides.
+    kcalLevel(0.75, 'cut') === 'good' &&
+    kcalLevel(0.75, 'maintain') === 'caution' &&
+    kcalLevel(0.75, 'gain') === 'poor'
+      ? ok('and −25% mirrors it — good on a cut, poor on a gain')
+      : bad('mirror', kcalLevel(0.75, 'cut'));
+
+    // The no-change default: `maintain` IS the symmetric band this pillar
+    // graded with before C7, and it is what an untouched profile reads.
+    kcalLevel(1.15) === 'good' && kcalLevel(0.85) === 'good' && kcalLevel(1.05) === 'optimal'
+      ? ok('maintain reproduces the pre-C7 symmetric bands exactly')
+      : bad('maintain default', kcalLevel(1.15));
+
+    const fresh = freshDb();
+    getGoalDirection(fresh) === 'maintain'
+      ? ok('and a profile that never set a direction reads maintain')
+      : bad('default direction', getGoalDirection(fresh));
   }
 
-  // A day at 11am is not a failed day.
+  // --- (b) The pace curve ----------------------------------------------------
+  {
+    const at = (hour, minute = 0, boundary = '00:00') =>
+      expectedDayFraction(new Date(2026, 6, 29, hour, minute, 0), boundary);
+    const near = (a, b) => Math.abs(a - b) < 1e-9;
+
+    at(9) === 0 && near(at(10), 0.15) && near(at(13), 0.4) && near(at(19), 0.85) && at(23) === 1
+      ? ok(
+          'the pace curve hits its anchors: 09:00 → 0, 10:00 → .15, 13:00 → .40, 19:00 → .85, 23:00 → 1'
+        )
+      : bad('anchors', [at(9), at(10), at(13), at(19), at(23)].join(' '));
+
+    near(at(11), 0.15 + (60 / 180) * 0.25) && near(at(20), 0.85 + (60 / 120) * 0.15)
+      ? ok('and interpolates linearly between them')
+      : bad('interpolation', [at(11), at(20)].join(' '));
+
+    // B3: the curve is measured from the user's day boundary, so a 02:00 snack
+    // on a 04:00 day is the END of that day, not the small hours of the next.
+    at(2, 0, '04:00') === 1 && at(5, 0, '04:00') === 0
+      ? ok('with a 04:00 boundary, 02:00 is a closed day and 05:00 is before the clock starts')
+      : bad('boundary rebase', [at(2, 0, '04:00'), at(5, 0, '04:00')].join(' '));
+  }
+
+  // --- (c) The projection, and why it is not eaten ÷ expected-by-now ---------
+  {
+    // A 700-kcal breakfast at 10:00 is 1.94× the 360 expected by then; as a
+    // share of the DAY's budget it is 14% ahead, which is what it actually is.
+    const r = paceRatio(700, 2400, 0.15);
+    Math.abs(r - (1 + (700 - 360) / 2400)) < 1e-9 &&
+    kcalLevel(r, 'maintain') === 'good' &&
+    kcalLevel(r, 'gain') === 'optimal'
+      ? ok('a 700-kcal breakfast at 10:00 is a breakfast, not a "poor" day')
+      : bad('projection', `${r} ${kcalLevel(r, 'maintain')}`);
+
+    Math.abs(paceRatio(2800, 2400, 1) - 2800 / 2400) < 1e-9
+      ? ok('and at the close the projection IS intake ÷ target')
+      : bad('closed projection', paceRatio(2800, 2400, 1));
+  }
+
+  // --- (d) The complaint, answered as a number -------------------------------
+  //
+  // 500 kcal of 2,400 at 11:00 graded `unknown` + "day in progress" before C7.
   {
     const db = freshDb();
     setTargets(db, 2400, 180);
     logMeal(db, 500, 35);
     const pillar = nutritionOf(db, 11);
-    pillar.level === 'unknown' && pillar.note.includes('day in progress')
-      ? ok('mid-morning, well under target → in progress, not "poor"')
-      : bad('in-progress', JSON.stringify(pillar));
-    pillar.note.includes('500 / 2,400 kcal') && pillar.note.includes('35 / 180 g protein')
-      ? ok('and it shows real progress against real denominators')
-      : bad('progress note', pillar.note);
+    pillar.level === 'good'
+      ? ok('mid-morning on an ordinary day now TRANSMITS — a grade, not a page-coloured em-dash')
+      : bad('transmits', JSON.stringify(pillar));
+    // Calories are on pace; 35 g of protein against the ~42 g expected by now
+    // is not, and the cap is why this reads `good` rather than `optimal`. Both
+    // halves are in the sentence, so the reading is reversible by eye.
+    pillar.note ===
+    'On pace — 500 of ~560 expected by 11:00 · protein 35 of 180 g — behind, which caps this'
+      ? ok('and the note says what pace it graded against, and what held it back')
+      : bad('pace note', pillar.note);
   }
 
-  // The ceiling IS judgable all day — eaten calories cannot be un-eaten.
+  // --- (e) The note, at three times of day -----------------------------------
   {
-    const db = freshDb();
-    setTargets(db, 2000, 150);
-    logMeal(db, 2800, 60);
-    const pillar = nutritionOf(db, 11);
-    pillar.level === 'poor' && pillar.note.includes('800 kcal over target')
-      ? ok('40% over target at 11am is already a completed fact')
-      : bad('ceiling', JSON.stringify(pillar));
-  }
-
-  // A protein target already met is also a completed fact.
-  {
-    const db = freshDb();
-    setTargets(db, 2400, 150);
-    logMeal(db, 1200, 160);
-    const pillar = nutritionOf(db, 13);
-    pillar.level === 'optimal' && pillar.note.includes('protein target met')
-      ? ok('protein hit early reads optimal without waiting for the day to end')
-      : bad('protein met', JSON.stringify(pillar));
-  }
-
-  // After the close hour both halves grade, and the WORSE one wins — a hit
-  // protein target must not paper over a large calorie shortfall.
-  {
+    // Before the first anchor: no denominator, so no grade and no pretending.
     const db = freshDb();
     setTargets(db, 2400, 180);
-    logMeal(db, 2350, 185);
-    nutritionOf(db, 21).level === 'optimal'
-      ? ok('a closed day on target both ways → optimal')
-      : bad('closed optimal', JSON.stringify(nutritionOf(db, 21)));
+    logMeal(db, 300, 25);
+    const early = nutritionOf(db, 9);
+    early.level === 'unknown' &&
+    early.note === 'nothing expected yet — the pace clock starts at 10:00'
+      ? ok('09:00 — unknown, and honest about why')
+      : bad('pre-clock', JSON.stringify(early));
+
+    // The owner's own example sentence, reproduced exactly.
+    const db2 = freshDb();
+    setTargets(db2, 3125, null);
+    logMeal(db2, 1140, 0);
+    const midday = nutritionOf(db2, 13);
+    midday.note === 'On pace — 1,140 of ~1,250 expected by 13:00' && midday.level === 'optimal'
+      ? ok('13:00 — "On pace — 1,140 of ~1,250 expected by 13:00"')
+      : bad('midday note', JSON.stringify(midday));
+
+    // Closed, over target, gaining: the direction is named BECAUSE it changed
+    // the reading (strainNote's discipline).
+    const db3 = freshDb();
+    setGoalDirection(db3, 'gain');
+    setTargets(db3, 2400, null);
+    logMeal(db3, 2800, 0);
+    const closed = nutritionOf(db3, 21);
+    closed.level === 'optimal' &&
+    closed.note ===
+      'Over target — 2,800 of 2,400 kcal for the day · ahead of target, which is the point while gaining'
+      ? ok('21:00 gaining — over target, optimal, and the note says the direction did it')
+      : bad('closed gain note', JSON.stringify(closed));
+
+    // The same day on maintain: same numbers, no direction clause, and `good`.
+    const db4 = freshDb();
+    setTargets(db4, 2400, null);
+    logMeal(db4, 2800, 0);
+    const level4 = nutritionOf(db4, 21);
+    level4.level === 'good' && !level4.note.includes('gaining') && !level4.note.includes('cut')
+      ? ok('and the direction is never named when it changed nothing')
+      : bad('silent direction', JSON.stringify(level4));
+  }
+
+  // --- (f) Protein weighs alongside calories ---------------------------------
+  {
+    // Met → lifts a borderline calorie reading one step (good → optimal).
+    const db = freshDb();
+    setTargets(db, 2400, 180);
+    logMeal(db, 2750, 185);
+    const lifted = nutritionOf(db, 21);
+    lifted.level === 'optimal' && lifted.note.includes('which lifts this a step')
+      ? ok('a hit protein target lifts a borderline calorie reading one step')
+      : bad('protein lift', JSON.stringify(lifted));
+
+    // Missed → caps it at protein's own level (optimal calories → good).
+    const db2 = freshDb();
+    setTargets(db2, 2400, 180);
+    logMeal(db2, 2400, 160);
+    const capped = nutritionOf(db2, 21);
+    capped.level === 'good' && capped.note.includes('behind, which caps this')
+      ? ok('a missed protein target caps an otherwise optimal day')
+      : bad('protein cap', JSON.stringify(capped));
+
+    // And a lift is never a rescue: `poor` is not borderline. This is the case
+    // that used to read `optimal` outright.
+    const db3 = freshDb();
+    setTargets(db3, 2400, 180);
+    logMeal(db3, 1200, 185);
+    nutritionOf(db3, 21).level === 'poor'
+      ? ok('protein met cannot rescue a half-eaten day — poor stays poor')
+      : bad('no rescue', JSON.stringify(nutritionOf(db3, 21)));
+
+    // The bands themselves, one-sided: overshooting protein is never a fault.
+    proteinLevel(1.4) === 'optimal' && proteinLevel(0.86) === 'good' && proteinLevel(0.5) === 'poor'
+      ? ok('protein is one-sided in every direction — there is no upper band')
+      : bad('protein bands', proteinLevel(1.4));
+  }
+
+  // --- (g) The states that were already right, preserved ---------------------
+  {
+    const db = freshDb();
+    logMeal(db, 400, 30);
+    const pillar = nutritionOf(db, 12);
+    pillar.level === 'unknown' && pillar.note.includes('no daily targets set')
+      ? ok('one meal and NO targets is unknown — never an invented denominator')
+      : bad('no-targets', JSON.stringify(pillar));
 
     const db2 = freshDb();
     setTargets(db2, 2400, 180);
-    logMeal(db2, 1200, 185); // protein met, calories 50% short
-    nutritionOf(db2, 21).level === 'poor'
-      ? ok('a closed day half-eaten is poor even with protein met — worst-of wins')
-      : bad('worst-of', JSON.stringify(nutritionOf(db2, 21)));
-  }
-
-  // Nothing logged is not a grade.
-  {
-    const db = freshDb();
-    setTargets(db, 2400, 180);
-    const open = nutritionOf(db, 11);
-    const closed = nutritionOf(db, 22);
+    const open = nutritionOf(db2, 11);
+    const shut = nutritionOf(db2, 22);
     open.level === 'unknown' &&
     open.note === 'nothing logged yet' &&
-    closed.note === 'nothing logged today'
+    shut.note === 'nothing logged today'
       ? ok('an empty day is unknown, and reads differently once the day has closed')
-      : bad('empty day', JSON.stringify([open, closed]));
+      : bad('empty day', JSON.stringify([open, shut]));
+  }
+
+  // --- (h) The D4 seam -------------------------------------------------------
+  {
+    const graded = {
+      totals: { kcal: 3400, protein_g: 40, mealCount: 3 },
+      targets: { kcal: 2400, protein_g: 180 },
+      direction: 'maintain',
+      expected: 1,
+      clock: '21:00',
+    };
+    nutritionVerdict(graded).level === 'poor'
+      ? ok('a 41%-over day with protein missed is poor…')
+      : bad('seam control', JSON.stringify(nutritionVerdict(graded)));
+
+    const quiet = nutritionVerdict({ ...graded, timezoneChanged: true });
+    quiet.level === 'unknown' && quiet.note === 'timezone changed today — not graded'
+      ? ok('…and the same day goes quiet when it is a timezone-change day')
+      : bad('timezone quiet', JSON.stringify(quiet));
+
+    isTimezoneChangedDay(freshDb(), TODAY) === false
+      ? ok('and the predicate is honestly false until D4 lands the marker')
+      : bad('seam default');
   }
 }
 

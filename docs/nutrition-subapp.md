@@ -577,3 +577,28 @@ The reply goes through the same vocabulary filter as stored JSON (`coerceMicros`
 - **No denominators until targets exist** (`docs/design-research/implementation/00-design-spec.md` §5). With no fiber target the fiber plate prints the figure alone: no denominator, no rule, and a label that says `no target set`. The old behaviour hid the plate entirely, which meant a profile that had never opened the targets screen could not see a number the day genuinely recorded.
 
 **Verification.** `db/nutrition-v2.test.mjs` §21 walks one caffeinated item end to end — model reply → parser (keys kept, junk dropped, empty → `NULL`) → grounding against a micro-less catalog food → logged meal → `dayMicroTotals` — and asserts both prompts ask for the two micros and that the revision request states them. `db/screens-render.test.mjs` §7c renders `app/nutrition-micros.tsx` over a real day: sodium `1,240`, caffeine `145`, `2 of 12 recorded`, the caveat, and the fiber plate in both of its states.
+
+
+## 12e. The readiness verdict, reworked — direction, and a pace curve (C7, 2026-09-14)
+
+The Home screen's Nutrition pillar is the one place in the app that *judges* a day's eating, and the owner's verdict on it was blunt: *"It provides almost no value right now; it only triggers late in the day and doesn't take in account my full goal (currently, exceeding my calorie goal is a good thing)."* (`docs/backlog-2026-09.md`, C7.) Both halves were true of the code. The design round, the three models weighed and the alternatives rejected are in **`docs/spikes/nutrition-verdict.md`**; **Model A** was approved and is what shipped. The pillar itself lives on Home — `src/lib/home/readiness.ts` — and its readiness-side write-up is in `docs/home-screen.md`. **No migration.**
+
+**What this changes on the Eat tab: nothing.** The verdict reads `nutrition_targets` and `meals` and writes neither. The one new control is on the targets screen.
+
+### The goal direction is set where the numbers are set
+
+`app/nutrition-targets.tsx` gains a three-chip row **above** the kcal field — Cutting · Maintaining · Gaining — with a line under it saying what the choice changes. It is stored at `users.preferences.goals.direction` (`getGoalDirection` / `setGoalDirection`, `src/lib/db/repositories/user.ts`), beside the hydration goal and in the same shape, so there is no migration and no new table.
+
+It sits here rather than in Settings because it **qualifies the numbers**: 2,400 kcal means a different day depending on which way you are going. It is written **on tap**, not on Save, and the section label says so (`Saved on tap`) — the direction is a live preference, the targets below it are an immutable version. Those are two different kinds of fact on one screen, and the labels are what keep them apart.
+
+The trade that comes with a live preference is the same one `getWaterTarget` already documents: changing it re-judges past days against today's direction. Taken deliberately — a direction changes far less often than the numbers it qualifies, and when it does change the user is usually also changing the numbers, which writes a new target version anyway. The versioned alternative (a `goal_direction` column on `nutrition_targets`) is better modelling and is recorded in the spike as the thing to do if history ever matters.
+
+### Targets are still never invented
+
+Unchanged and load-bearing: `nutrition_targets` seeds no default row, so a profile that has never opened this screen gets `unknown` and the sentence `no daily targets set yet (Eat › Targets)`. The pillar has no stock 2,000-kcal denominator and must not grow one — the same refusal `src/lib/nutrition/remaining.ts` makes for the tab's own hero.
+
+### Verification
+
+`db/readiness.test.mjs` §10 (the band table in all three directions, the pace curve and its anchors, the projection, the protein rule, the note wording at three times of day, no-targets, the empty day, the D4 seam) and `db/user.test.mjs` §12 (the direction's default, its round-trip, and that it and the hydration goal do not clobber each other inside the shared `goals` section).
+
+**Device-only:** the chip row itself — three 44pt chips across a phone's width with the longest label (`Maintaining`), and whether the selected chip's `border-ink bg-paper-hi` reads as chosen against the outlined pair beside it.

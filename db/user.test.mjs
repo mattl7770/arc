@@ -10,10 +10,14 @@ import { APP_LOCK_RELOCK_MS, relockRequired } from '../src/lib/security/app-lock
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
+  getGoalDirection,
   getOrCreateUser,
   getPreferences,
+  getWaterTarget,
   setAppLockEnabled,
+  setGoalDirection,
   setUnitPreference,
+  setWaterTarget,
   updateProfile,
 } from '../src/lib/db/repositories/user.ts';
 
@@ -260,6 +264,34 @@ console.log('11. the re-lock window is five minutes, and a rolled-back clock is 
   relockRequired(-1) === true && relockRequired(-86_400_000) === true
     ? ok('a wall clock wound back while away counts as expired')
     : bad('negative elapsed read as "briefly away"');
+}
+
+console.log('12. the goal direction shares `preferences.goals` with the hydration target');
+{
+  const { db } = freshDb();
+  getGoalDirection(db) === 'maintain'
+    ? ok('an untouched profile is maintaining — the no-change default')
+    : bad('default direction', getGoalDirection(db));
+
+  setGoalDirection(db, 'gain');
+  getGoalDirection(db) === 'gain' ? ok('a direction round-trips') : bad('direction round-trip');
+
+  // Both live under `goals`, so this is the merge most likely to eat the other.
+  setWaterTarget(db, 3000);
+  getGoalDirection(db) === 'gain' && getWaterTarget(db) === 3000
+    ? ok('a water goal written afterwards keeps the direction')
+    : bad('water clobbered direction', getGoalDirection(db));
+  setGoalDirection(db, 'cut');
+  getWaterTarget(db) === 3000 && getGoalDirection(db) === 'cut'
+    ? ok('...and a direction written afterwards keeps the water goal')
+    : bad('direction clobbered water', String(getWaterTarget(db)));
+
+  // A foreign value is not a direction. The pillar must never grade against one
+  // the user did not pick.
+  db.run(`UPDATE users SET preferences = '{"goals":{"direction":"bulk"}}'`);
+  getGoalDirection(db) === 'maintain'
+    ? ok('an unrecognised stored direction reads as maintain, never as itself')
+    : bad('junk direction', getGoalDirection(db));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
