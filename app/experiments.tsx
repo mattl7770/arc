@@ -161,29 +161,28 @@ export default function ExperimentsScreen() {
       <View className="pt-2">
         <StackHeader title="Experiments" />
       </View>
-      {/* Not a description of the screen — the one thing you can do on it. The
-          Coach designs and concludes experiments, so "ask the Coach" is the
-          only route in, and without this line there is nothing on the sheet
-          that says so. */}
-      <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
-        Ask the Coach to start one.
-      </Text>
-
       {isEmpty ? (
         // Empty is authored, never blank — and it keeps its plate: it stands
         // where the running/concluded plates below it would stand.
-        <View className="mt-8">
-          <Block device="plate">
-            <Text className="font-serif text-[16px] font-semibold text-ink">
-              No experiments yet
-            </Text>
-            <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-              An experiment is one deliberate change tested against your own data — &ldquo;does 400
-              mg magnesium at night lift my HRV?&rdquo; Ask the Coach to design one; it picks the
-              metrics, sets the window, and reads out the verdict when the window closes.
-            </Text>
-          </Block>
-        </View>
+        <>
+          {/* Not a description of the screen — the one thing you can do on it.
+              Shown only here: a populated screen has its own plates to read,
+              and this line would be the only chatty thing on it. */}
+          <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
+            Ask the Coach to start one.
+          </Text>
+          <View className="mt-8">
+            <Block device="plate">
+              <Text className="font-serif text-[16px] font-semibold text-ink">
+                No experiments yet
+              </Text>
+              <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
+                An experiment is one deliberate change tested against your own data — &ldquo;does
+                400 mg magnesium at night lift my HRV?&rdquo; Ask the Coach to design one.
+              </Text>
+            </Block>
+          </View>
+        </>
       ) : null}
 
       {running.length > 0 ? (

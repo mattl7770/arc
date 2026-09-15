@@ -307,9 +307,8 @@ export default function WorkoutImportScreen() {
         {phase.kind === 'pick' || phase.kind === 'error' ? (
           <>
             <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
-              Choose a photo of a workout logged somewhere else — a screenshot from another app, a
-              whiteboard, a card. ARC transcribes it, you review every number, then it saves like
-              any other session.
+              A screenshot from another app, a whiteboard, a card. Every number is reviewed before
+              it saves.
             </Text>
 
             {!available ? (
@@ -379,10 +378,6 @@ export default function WorkoutImportScreen() {
 
         {phase.kind === 'review' ? (
           <>
-            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-              Check every number against the photo — fix anything the transcription got wrong, then
-              save.
-            </Text>
             {parseNotes ? (
               <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
                 Transcriber notes: {parseNotes}

@@ -470,10 +470,6 @@ export default function GroceryScreen() {
           <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
             The list is clear.
           </Text>
-          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-            Add items above, ask the Coach (“we’re out of milk”), or open a recipe and add its
-            ingredients in one go.
-          </Text>
         </View>
       ) : (
         [

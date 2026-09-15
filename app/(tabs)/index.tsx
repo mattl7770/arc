@@ -124,7 +124,7 @@ function ProtocolsLink() {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Protocols — what builds this day"
+      accessibilityLabel="Protocols"
       onPress={() => router.push('/protocols')}
       className="min-h-[44px] flex-row items-center gap-2 self-start px-1 active:opacity-60">
       <Ionicons name="git-branch-outline" size={14} color={palette.inkMuted} />

@@ -204,8 +204,7 @@ export default function ProtocolVersionsScreen() {
                   No versions yet
                 </Text>
                 <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-                  This protocol has no saved content. The first save writes v1, and every save after
-                  it keeps the one before.
+                  This protocol has no saved content. The first save writes v1.
                 </Text>
               </View>
             ) : (

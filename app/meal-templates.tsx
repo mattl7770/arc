@@ -109,8 +109,7 @@ export default function MealTemplatesScreen() {
           <Block device="margin">
             <Text className="font-serif text-[15px] leading-6 text-ink">No templates yet.</Text>
             <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
-              Build a meal you eat often — add its foods, then open the meal and choose “Save as
-              template.” It’ll show up here to log again in one tap.
+              A meal saved from its detail screen appears here.
             </Text>
           </Block>
         </View>

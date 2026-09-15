@@ -431,7 +431,7 @@ export function MuscleFigureLegend(props: MuscleFigureLegendProps) {
       <View>
         <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
           {tally.neverTrained
-            ? 'No training in the last 14 days, so every muscle reads fresh. Log a session and the figure starts fading.'
+            ? 'No training in the last 14 days, so every muscle reads fresh.'
             : 'Every muscle is fresh — nothing to train around today.'}
         </Text>
         <InferredNote muscles={partInferred} />

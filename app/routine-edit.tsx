@@ -311,8 +311,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
           />
           {lines.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-              No exercises yet — add the movements this routine runs, with their target sets and rep
-              range.
+              No exercises yet.
             </Text>
           ) : (
             <View className="mt-1">

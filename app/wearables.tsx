@@ -141,7 +141,7 @@ export default function WearablesScreen() {
             </Text>
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
               {!supported
-                ? 'The HealthKit module rides the next dev build. Once it lands, connect Apple Health and your ring or watch data flows in here.'
+                ? 'The HealthKit module rides the next dev build. Connect Apple Health once it lands.'
                 : !enabled
                   ? 'Connect Apple Health in Settings and sleep, recovery, and activity history land here — all on-device.'
                   : 'Connected, but nothing has come through yet. If data looks missing, check Settings → Privacy & Security → Health → ARC — iOS doesn’t tell apps whether read access was granted.'}

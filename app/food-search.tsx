@@ -379,8 +379,7 @@ export default function FoodSearchScreen() {
 
           {base.recents.length === 0 && base.favorites.length === 0 ? (
             <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
-              Nothing logged yet. Search the catalog — foods you log appear here for one-tap
-              re-adds.
+              Nothing logged yet. Search the catalog.
             </Text>
           ) : null}
         </>

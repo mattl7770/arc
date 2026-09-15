@@ -118,7 +118,7 @@ export default function LogScreen() {
             <View className="flex-1">
               <Text className="font-label text-[13px] font-semibold text-ink">Log a symptom</Text>
               <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-muted">
-                Headache, pain, GI, energy — with severity
+                With severity
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />

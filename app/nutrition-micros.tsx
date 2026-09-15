@@ -112,8 +112,8 @@ export default function NutritionMicrosScreen() {
           claimed here, and the line below already names the catalog. */}
       {recorded === 0 ? (
         <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
-          Nothing recorded yet today. Log foods from the catalog (many seeded staples carry micros)
-          to see this fill in.
+          Nothing recorded yet today. Foods logged from the catalog contribute micronutrients; many
+          seeded staples carry them.
         </Text>
       ) : (
         <>

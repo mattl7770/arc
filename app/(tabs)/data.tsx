@@ -523,9 +523,6 @@ export default function DataScreen() {
             <Ionicons name="settings-outline" size={18} color={palette.inkSecondary} />
             <View className="flex-1">
               <Text className="font-serif text-[15px] text-ink">Settings</Text>
-              <Text className="mt-0.5 font-serif text-[12px] leading-4 text-ink-muted">
-                Profile, units, Coach model, Apple Health, app lock and export
-              </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
           </Pressable>

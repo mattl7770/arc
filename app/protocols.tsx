@@ -152,9 +152,7 @@ export default function ProtocolsScreen() {
                   No protocols yet
                 </Text>
                 <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-                  A protocol is a stack or routine you run — a supplement stack, a morning routine,
-                  an eight-week block. Build one and your days fill in from it. Every edit after
-                  that becomes a new version.
+                  A protocol is a stack, a routine, or a training block. Your days fill in from it.
                 </Text>
                 {/* The second way in, and the reason there is no template
                     library: this is a single-user app and the Coach IS the
