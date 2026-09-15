@@ -1,6 +1,14 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  Text,
+  TextInput,
+  type TextInputProps,
+  View,
+} from 'react-native';
 
 import { Block } from '@/components/ui/block';
 import { keypadDoneKey } from '@/components/ui/keyboard';
@@ -10,6 +18,13 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { createFood } from '@/lib/db/repositories/foods';
+import type { JsonText } from '@/lib/db/types';
+import {
+  estimateFoodEntry,
+  isMealEstimationAvailable,
+  MealEstimationUnavailableError,
+  type FoodEntryEstimate,
+} from '@/lib/nutrition/estimate';
 import type { AmountUnit } from '@/lib/nutrition/types';
 
 /**
@@ -36,7 +51,30 @@ import type { AmountUnit } from '@/lib/nutrition/types';
  * Field labels are the label voice, every numeric field is mono ("mono
  * measures"), and the entry-basis chips are controls, so they are label voice
  * too. **No accent on this screen**: creating a catalog entry is bookkeeping,
- * not the day's directive action.
+ * not the day's directive action — and that survives C2, because *Describe it*
+ * fills a form rather than committing a record. It wears the same outlined
+ * treatment as Save.
+ *
+ * ## Describe it (C2, 2026-09-14)
+ *
+ * Owner: *"Describe a food in words and AI fills the catalog entry's macros —
+ * yes."* Type "Costco rotisserie chicken thigh, skin on" and the model returns
+ * one catalog entry — name, brand, basis, a household serving, per-100 macros,
+ * and sodium/caffeine where they are plausible — which is **rendered into the
+ * fields below for review**. It has its own small prompt, not the meal
+ * estimator's (src/lib/nutrition/estimate.ts).
+ *
+ * **Nothing is written until Save.** The model's reply lands in the same
+ * `useState` the keyboard writes to, so every number is editable before it
+ * becomes a row, and the row it becomes is stamped `source: 'ai'` — an inferred
+ * number must never wear the face of one the user typed (the 0034 rule), and
+ * `app/food-search.tsx` prints `est` beside such an entry wherever it appears in
+ * the catalog.
+ *
+ * **Offline is a sentence, never a broken form.** With no model key the field is
+ * replaced by a line saying so and what still works; a call that cannot reach
+ * the model says that and leaves every field below it exactly as it was —
+ * typing the food in by hand is the path this screen already was.
  */
 
 function validNumber(text: string): boolean {
@@ -121,6 +159,13 @@ function FormField({ label, value, onChange, placeholder, keyboardType, mono, fi
   );
 }
 
+/** A model-proposed figure as the form's own text. Rounded to 2 dp — the same
+ *  precision the per-serving conversion below rounds to, and more than anyone
+ *  needs from an estimate. Null renders as the empty field it is. */
+function numText(value: number | null): string {
+  return value === null ? '' : String(Math.round(value * 100) / 100);
+}
+
 /** Per-100 g schema bounds, checked here so a save never throws a CHECK. */
 function per100Problem(kcal: number | null, macros: (number | null)[]): string | null {
   if (kcal !== null && kcal > 950) return 'kcal per 100 g can’t exceed 950 (pure fat is ~884).';
@@ -156,6 +201,70 @@ export default function FoodNewScreen() {
   const [carbs, setCarbs] = useState('');
   const [fat, setFat] = useState('');
   const [fiber, setFiber] = useState('');
+  /** The model's per-100 sodium/caffeine, carried straight to the row. There is
+   *  no field for these — the shortlist is read-only on the micros screen — so
+   *  they ride in state rather than through the form. Null for a typed food, and
+   *  for a described one the model had nothing plausible to say about. */
+  const [micros, setMicros] = useState<JsonText | null>(null);
+
+  // --- Describe it (C2) ----------------------------------------------------
+  const [description, setDescription] = useState('');
+  const [describing, setDescribing] = useState(false);
+  const [describeProblem, setDescribeProblem] = useState<string | null>(null);
+  /** True once a reply has filled the fields — it is what stamps `source: 'ai'`
+   *  on save, and what puts the estimate note above the fields. It survives the
+   *  user editing them: most of the numbers are still the model's, and a
+   *  half-corrected estimate is still an estimate. */
+  const [described, setDescribed] = useState(false);
+  const keySet = isMealEstimationAvailable();
+  // The model call is a live stream. Leaving mid-describe must stop it, or it
+  // runs to completion and is billed in full while its result lands on an
+  // unmounted screen — the same guard app/meal-estimate.tsx keeps.
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  /** Render one proposed entry into the form. Every field, including the ones
+   *  the model left null — a second description must not leave the first one's
+   *  numbers standing under a name they no longer belong to. */
+  const applyEntry = (entry: FoodEntryEstimate) => {
+    setName(entry.name);
+    setBrand(entry.brand ?? '');
+    setUnit(entry.basis);
+    setServingName(entry.serving_name ?? '');
+    setServingGrams(numText(entry.serving_amount));
+    // The reply is per 100 of the basis, which is what the form stores
+    // canonically — so the basis chip goes to per-100 and nothing is converted.
+    setEntryBasis('per100');
+    setKcal(numText(entry.kcal_100g));
+    setProtein(numText(entry.protein_g_100g));
+    setCarbs(numText(entry.carbs_g_100g));
+    setFat(numText(entry.fat_g_100g));
+    setFiber(numText(entry.fiber_g_100g));
+    setMicros(entry.micros);
+    setDescribed(true);
+  };
+
+  const describe = async () => {
+    const text = description.trim();
+    if (text === '' || describing) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setDescribing(true);
+    setDescribeProblem(null);
+    try {
+      applyEntry(await estimateFoodEntry(text, controller.signal));
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setDescribeProblem(
+        error instanceof MealEstimationUnavailableError
+          ? 'Describing a food needs a model key — the same one the Coach uses.'
+          : 'Couldn’t reach the model. Check your connection, or fill the fields in below by hand.'
+      );
+    } finally {
+      setDescribing(false);
+    }
+  };
 
   const numbersValid = [servingGrams, kcal, protein, carbs, fat, fiber].every(validNumber);
   const servingGramsNum = toNumber(servingGrams);
@@ -209,6 +318,12 @@ export default function FoodNewScreen() {
         carbs_g_100g: macros100[1] ?? null,
         fat_g_100g: macros100[2] ?? null,
         fiber_g_100g: macros100[3] ?? null,
+        micros,
+        // THE STAMP. A described entry is provenance-marked for life: the
+        // catalog prints `est` beside it, and nothing downstream has to infer
+        // from the numbers whether a human typed them. A typed food keeps the
+        // repository's own default ('user').
+        source: described ? 'ai' : 'user',
       });
       router.back();
     } catch (error) {
@@ -224,7 +339,81 @@ export default function FoodNewScreen() {
         <StackHeader title="Create a food" />
       </View>
 
+      {/* DESCRIBE IT — the C2 path, above the form it fills. It is first
+          because it is the shortcut PAST everything below; putting it under the
+          fields would be offering the shortcut after the walk.
+
+          No block: this screen carries none (form (b) of the capture-surface
+          rule), so the field wears the well's own tokens like every other input
+          here, and the labelled group is separated by whitespace. */}
       <View className="mt-2">
+        <SectionLabel label="Describe it" note={described ? 'Estimated' : undefined} />
+        {keySet ? (
+          <>
+            <TextInput
+              value={description}
+              onChangeText={setDescription}
+              placeholder="e.g. Costco rotisserie chicken thigh, skin on"
+              placeholderTextColor={palette.inkMuted}
+              multiline
+              accessibilityLabel="Describe the food"
+              className="mt-2 min-h-[64px] border border-paper-deep bg-paper-dim px-3 py-3 font-serif text-[15px] leading-6 text-ink"
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Fill the fields from this description"
+              accessibilityState={{ disabled: description.trim() === '' || describing }}
+              disabled={description.trim() === '' || describing}
+              onPress={() => void describe()}
+              className={
+                description.trim() === '' || describing
+                  ? 'mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-paper-deep py-3'
+                  : 'mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-ink bg-paper-hi py-3 active:opacity-70'
+              }>
+              {describing ? (
+                <ActivityIndicator color={palette.inkSecondary} />
+              ) : (
+                <Ionicons
+                  name="sparkles-outline"
+                  size={17}
+                  color={description.trim() === '' ? palette.inkMuted : palette.inkSecondary}
+                />
+              )}
+              <Text
+                className={
+                  description.trim() === '' || describing
+                    ? 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+                    : 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink'
+                }>
+                {describing ? 'Describing…' : 'Fill from description'}
+              </Text>
+            </Pressable>
+          </>
+        ) : (
+          /* The honest offline/unconfigured state: a sentence, and what still
+             works. Never a field that looks live and answers nothing. */
+          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+            Describing a food needs a model key — the same one the Coach uses. Add one in the Coach
+            tab; everything below works without it.
+          </Text>
+        )}
+        {describeProblem ? (
+          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+            {describeProblem}
+          </Text>
+        ) : null}
+        {described ? (
+          /* The 0034 rule, said out loud at the moment it applies: these are
+             inferred numbers, they are editable, and the row will carry the
+             mark. The future tense is deliberate — nothing has been written. */
+          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
+            Estimated by the model — check the numbers below. Nothing is saved until you tap Save
+            food, and the entry will be marked as an estimate in your catalog.
+          </Text>
+        ) : null}
+      </View>
+
+      <View className="mt-5">
         <SectionLabel label="Identity" note={barcode !== '' ? barcode : undefined} />
 
         {/* No `fill` on these two: they are alone in a column, and a flexed

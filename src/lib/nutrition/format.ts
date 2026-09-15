@@ -42,6 +42,35 @@ export function macroLine(row: {
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
+/** One macro column on a meal row: the metric it belongs to, and what to print
+ *  for it — or null when that macro was never recorded. */
+export type MacroCell = {
+  key: 'protein_g' | 'carbs_g' | 'fat_g';
+  text: string | null;
+};
+
+/**
+ * The same three macros {@link macroLine} joins, kept APART so the Eat tab can
+ * lay them out as fixed columns down the day (C6). The cells are always three
+ * and always in this order — a missing macro is a null cell, never a dropped
+ * one, because a column that shifts left when a value is absent is not a column.
+ *
+ * `null` is "not recorded" and is drawn as nothing at all; a `0` is "measured
+ * none" and prints as `0g`. They are different claims, and the schema keeps them
+ * apart, so this does too.
+ */
+export function macroCells(row: {
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+}): MacroCell[] {
+  return [
+    { key: 'protein_g', text: row.protein_g == null ? null : `P ${Math.round(row.protein_g)}g` },
+    { key: 'carbs_g', text: row.carbs_g == null ? null : `C ${Math.round(row.carbs_g)}g` },
+    { key: 'fat_g', text: row.fat_g == null ? null : `F ${Math.round(row.fat_g)}g` },
+  ];
+}
+
 /**
  * "250 ml" · "8.5 oz" · "150 g" — one amount printed in the unit it was logged
  * in (0047), with the Settings › Units volume preference applied to millilitres

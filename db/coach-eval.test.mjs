@@ -25,6 +25,10 @@ import { runCoachTurn } from '../src/lib/ai/model-client.ts';
 import { buildTurnContext } from '../src/lib/ai/turn-context.ts';
 import { toolByName, COACH_TOOLS, READ_TOOLS, toWireTools } from '../src/lib/ai/tools/index.ts';
 import { buildCoachSystemPrompt } from '../src/lib/ai/system-prompt.ts';
+import {
+  FOOD_ENTRY_SYSTEM_PROMPT,
+  MEAL_ESTIMATION_SYSTEM_PROMPT,
+} from '../src/lib/nutrition/estimate.ts';
 
 let pass = 0;
 let fail = 0;
@@ -787,6 +791,39 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // caching silently stops: no error, just cache_creation_input_tokens: 0 and
   // full price on every pass, forever. Trimming tool descriptions moves this
   // number DOWN, so the guard belongs right next to the budget above.
+  // ── 2026-09-14: C2's FOOD-ENTRY PROMPT (src/lib/nutrition/estimate.ts).
+  //
+  // A third prompt now leaves this app, and it is measured here because this is
+  // where prompts are measured — but it is NOT in the budgets above and must not
+  // be added to them. The two ceilings guard the **Coach's cached prefix**, the
+  // payload every chat turn carries; the nutrition prompts ride one-shot
+  // requests with no tools, no history and no cache, so they cost what they say
+  // once and nothing afterwards.
+  //
+  // Why it is its own prompt rather than a branch in the meal estimator's:
+  // a MEAL is a list of portions eaten now, priced per portion, with per-item
+  // confidence; a catalog ENTRY is one food priced PER 100 of its basis and kept
+  // for life. They share a model and nothing else, and every word one does not
+  // need is a word the other would pay for on every call — including the meal
+  // prompt's, which rides a photograph.
+  //
+  // MEASURED: **469 tok**, against the meal estimator's 542. Trimmed once before
+  // landing (507 → 469) by the same rule the entries above follow — delete the
+  // restatement, keep the instruction: "(pure fat is ~884)" (the parser enforces
+  // the bound anyway), "espresso drinks" (covered by coffee), and the second
+  // half of the null rule, which said in a clause what the first half had just
+  // said. The ceiling is 500, a deliberate ~6% of headroom rather than a round
+  // number well above the truth: a ceiling nothing can reach guards nothing.
+  const foodEntryTokens = proseTok(FOOD_ENTRY_SYSTEM_PROMPT);
+  const FOOD_ENTRY_PROMPT_CEILING = 500;
+  foodEntryTokens < FOOD_ENTRY_PROMPT_CEILING
+    ? ok(`the food-entry prompt fits its own ceiling (~${foodEntryTokens} tok < 500)`)
+    : bad('food-entry prompt over budget', String(foodEntryTokens));
+  FOOD_ENTRY_SYSTEM_PROMPT !== MEAL_ESTIMATION_SYSTEM_PROMPT &&
+  !buildCoachSystemPrompt({ notificationsLive: false }).includes(FOOD_ENTRY_SYSTEM_PROMPT)
+    ? ok('…and it is a separate one-shot prompt, not part of the Coach’s cached prefix')
+    : bad('the food-entry prompt has leaked into the cached prefix');
+
   const HAIKU_CACHE_MINIMUM = 4096;
   const passPrefix = systemTokens + readToolTokens;
   passPrefix > HAIKU_CACHE_MINIMUM

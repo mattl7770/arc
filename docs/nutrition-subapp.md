@@ -757,3 +757,131 @@ The screen now reads: picker → **the day** (a grid: the kcal reading, the thre
 1. **Whether the chin jitters between labels.** "Today" and "Tue 9 Sep" are different widths; the chin is centred in a flex-1 slot, so it should not move the arrows, but only hardware settles whether the text itself reads as steady while paging.
 2. **Whether two 44pt arrows and a 46pt return chip are the right amount of chrome** above a screen that already carries window chips. On the simulator it reads fine; the owner's thumb is the test.
 3. **Whether the by-day row's selected state is visible enough** — it is carried by ink weight on the date alone (`text-ink` vs `text-ink-muted`), deliberately, since the row already has a bar and a tally in it.
+
+---
+
+## 12f. Nutrition readability — the bars, and the macros on every meal row (C6, 2026-09-14, no migration)
+
+The owner, on the September list: *"Macro stats more visible (bars / colours against targets) **and** more macro information per individual meal on the overview."* The approved proposal is `docs/spikes/nutrition-readability.md`; this section records what was built from it and the three answers that were taken.
+
+**No migration, no model call, no prompt.** Every number drawn here was already stored, already summed and already on the screen's props. The estimator's token budgets are untouched by this half.
+
+### What was wrong
+
+`TargetRule` (the 3px rule under the kcal hero) was drawn **only when `kcal.mode === 'eaten'`** — and `eaten` is the *fallback* mode, the one a metric drops to when some meal could not be counted. On the ordinary, well-logged day the tab is in `remaining` mode, so **there was no bar anywhere on the screen**. The three macro cells had no bar in either mode. The feature existed and was unreachable on a good day.
+
+On the ledger below it, `const detail = meal.notes ?? [macros, itemCount].join(' · ')` meant a meal with a note showed **no macros at all** — and an AI-estimated meal always carries the model's note (`app/meal-estimate.tsx` writes it onto the meal), so the meals most worth inspecting were exactly the ones whose numbers were hidden.
+
+### What is built
+
+- **`src/lib/nutrition/bar.ts`** — `barFigure(eaten, target) → { fillPct, met }`, pure, beside `dayFigure`. The fill caps at 100% and `met` is what turns the fill pine *and* draws the terminator.
+- **`MacroBar`** (`app/nutrition.tsx`) replaces `TargetRule`: 4px, drawn under the kcal hero **and** under each of the three macro cells, in **both** modes, whenever a target governs that metric. A metric with no target still draws no bar — no denominators until targets exist.
+- **`macroCells`** (`src/lib/nutrition/format.ts`) — the same three macros `macroLine` joins, kept apart so a meal row can lay them out as **fixed 11px mono columns** down the day. Note and macros are both drawn now, on their own lines.
+
+The objection the old rule was built on — a countdown number over a filling bar is *"two opposite encodings of one quantity"* — is answered rather than overruled. They are two halves of one sentence: the bar draws `eaten`, the number states `left`, the denominator names `target`, and `eaten + left = target` reconciles on the cell. That is the ledger rule stated positively (`00-design-spec.md` §5). The reading that *would* have been two encodings is the one VoiceOver would have given, so the bar takes `accessibilityElementsHidden` and the cell keeps speaking the fact in words.
+
+### The colour, and why the terminator is load-bearing
+
+Progress against a target is **behaviour**, so it takes the accent. The firewall runs both ways (`00-design-spec.md` §2): a `bio-caution` carbs bar would breach it, and it would also be the "red numbers over target" this spec already rejected (§8) — actively wrong for a gaining goal, where over target is a good day.
+
+| part | token | on the rail (`paper-deep` `#C6C1B0`) |
+| --- | --- | --- |
+| fill, under target | `ink-secondary` `#443F30` | **5.83:1** ✓ |
+| fill, at/over target | `pine` `#12454E` | **5.87:1** ✓ |
+| terminator, at/over only | `ink` `#1C1911` | **9.74:1** ✓ (and **1.66:1** against the pine beside it) |
+| the rail on the sheet | `paper-deep` on `paper` | 1.42:1 — a ground, not a mark |
+
+And the measurement the design rests on: **`pine` against `ink-secondary` is 1.01:1** — the same luminance. A fill that only changes *hue* at target changes nothing anyone can see; it is the identical defect the pillar cells were rewritten to fix (`readiness-strip.tsx`, four swatches at 1.06–1.59:1). So completion carries three cues — **geometry** (a filled 2pt `ink` terminator at the rail's right end), **hue** (pine, which is what pine means everywhere else), and **words** (`PROTEIN LEFT` → `PROTEIN OVER`, and the hero's `kcal over`). Every mark that carries meaning clears WCAG 1.4.11's 3:1; the numbers are asserted, not merely documented, in `db/nutrition-remaining.test.mjs` §13.
+
+**This settles §2's contradiction in favour of the spec.** §2 has said "the fill turns pine" since round 1; the code shipped `bg-ink`. Pine wins, and the `ink` step is kept as the terminator — which is why the shipped code was not simply wrong: `ink` on `ink-secondary` is a real if small 1.66:1 step, more than pine alone gives. The terminator keeps that step *and* gets the meaning.
+
+**Accent budget: still one.** A met bar's pine fill is a *state mark* — the class the budget admits by name (completion stamps) — not a fourth claim to being the next action. Nothing is pine until a target is met, so a normal morning carries none.
+
+### The three answers taken
+
+1. **Over target, the bar stops at the mark** and the number keeps counting. Adherence-neutral, and how far past is "too far" depends on goal direction, which is C7's question.
+2. **All four readings get a bar** — the kcal hero and the three macro cells. Calories are the reading you look at first; leaving it the only bare number would be odd.
+3. **Macros replace the item count on a meal row.** They do not both fit on a narrow phone, and the count told you how the meal was *entered*, not what was in it. It still appears on the meal's own screen, under Items. `useNutrition` no longer computes `itemCounts`; `mealItemCounts` remains in the repository (and in `db/foods.test.mjs`) with no caller on this tab.
+
+Size is **11px**, not the 9.5–10px metadata band: a macro the owner has just asked to see *more* of is the row's second measurement, not metadata. It keeps the tab's existing 11px floor and still drops one step below the 12px line it replaces, which is what buys the column widths. The first two cells are fixed at 52pt so the macros form columns; the third takes what is left, so a narrow phone truncates instead of overflowing into the kcal figure. Absence stays absent — a meal that recorded only protein draws `P 31g` and an empty carbs cell, never a `0`.
+
+**No bar on a meal row**, deliberately: four gauges a row, twenty rows deep, is the data dump CLAUDE.md §5 exists to prevent. The boundary, written down: **per-meal gets numbers, the day gets bars.** Nothing on these rows prints a portion, so the `ml` unit (§12e) does not reach them — macro grams are macro grams whatever the portion was measured in.
+
+### Verification
+
+- `db/nutrition-remaining.test.mjs` §12 — `barFigure`: the empty day, the fraction, the cap at 100% with `met` still true, one gram short, and the non-positive/non-finite backstop drawing an *empty* bar rather than a full one.
+- `db/nutrition-remaining.test.mjs` §13 — the contrast table above, computed from `palette` and asserted to 0.005, including the 1.01:1 that makes the terminator load-bearing.
+- `db/screens-render.test.mjs` §4, §5, §5b — four bars in `remaining` mode (the regression that shipped as zero) and four in `eaten`; at target, exactly one bar at 100% carrying the terminator; a meal with **both** a note and macros rendering both; and the absence of the joined `P 42g · C 68g` string and of the item count.
+
+### What only a device can judge
+
+- **How much pine four bars plus two accent buttons puts on one screen.** It is the most this tab has ever carried, and it is rare by construction (nothing is pine until a target is met), but the balance is a hardware question.
+- **Whether a 4px bar reads as a rule or as a gauge** at @3x, and whether the 2pt terminator reads as a closing mark or as a nick in the fill.
+- **Whether three 11px mono cells scan as columns** down a twenty-row day, or as clutter under each meal name.
+
+---
+
+## 12g. AI add food — describe it, and the form fills itself (C2, 2026-09-14, no migration)
+
+The owner, backlog C2: *"Describe a food in words and AI fills the catalog entry's macros — yes."*
+
+Type *"Costco rotisserie chicken thigh, skin on"* into **Describe it**, at the top of `app/food-new.tsx`, and one catalog entry comes back — name, brand, basis, a household serving, per-100 macros, and sodium/caffeine where they are plausible — **rendered into the fields below for review**.
+
+**No migration.** `foods.source` has had `'ai'` in its CHECK since 0014, and `FoodSource` has had it in the type since; C2 is the first writer of it.
+
+### Its own prompt, and why
+
+`FOOD_ENTRY_SYSTEM_PROMPT` (`src/lib/nutrition/estimate.ts`) is a **separate, smaller prompt**, not a branch inside the meal estimator's:
+
+- a MEAL is a list of portions eaten now, priced per portion, carrying per-item confidence; a catalog ENTRY is **one** food priced **per 100 of its basis** and kept for life. The estimator's reply shape has no column in `foods` and vice versa;
+- every word one prompt does not need is a word the other pays for on every call — and the meal prompt is the expensive one, because it rides a photograph.
+
+**469 tokens**, measured with the same `length / 3.6` estimator the Coach budgets use, against the meal estimator's 542. Trimmed once before landing (507 → 469) by deleting restatement rather than instruction. It is asserted against a **500-token ceiling** in `db/coach-eval.test.mjs` §6, alongside an assertion that it has not leaked into the Coach's cached prefix — **the two Coach ceilings (9,250 / 3,700) are untouched and must stay untouched by this**, because they guard the payload every chat turn carries, while this one rides a single toolless request with no history and no cache.
+
+Three rules carry the work, stated rather than implied by the schema: **per 100 of the basis, never per serving**; **`ml` only for a drink** (0047 — and nothing converts); and **null rather than a guess**.
+
+### What the parser refuses
+
+`parseFoodEntry` is tolerant in the same places `parseMealEstimate` is and strict in one more:
+
+| reply | result |
+| --- | --- |
+| ```` ```json ```` fences, stray prose | the outermost object is extracted |
+| an unknown `basis` (`"cups"`, absent) | `g` — what every food was before 0047, and visible on the form |
+| `kcal_100` over 950, a macro over 100, a negative, a string | **dropped to null, never clamped** |
+| `serving_name` without `serving_amount` (or a 0 amount) | both dropped — the column pair is `CHECK`-ed pair-or-none |
+| a micro key the vocabulary has never heard of | dropped; a measured `0` survives |
+| no usable `name` | **throws** |
+
+Dropping rather than clamping is the honest half: a clamp invents a figure the model never gave and hides that it was wrong, while a blank is this catalog's own word for "not recorded" and is one tap from corrected. The one throw is for the one case review cannot rescue — a nameless row is a blank form with the typing already done wrong.
+
+### Nothing is saved until Save
+
+The reply lands in the same `useState` the keyboard writes to, so every number is editable before it becomes a row — and the row it becomes is stamped **`source: 'ai'`**. `app/food-search.tsx` prints a quiet `est` beside such an entry wherever it appears (label voice, 10px, `ink-muted` — *confidence is typography, not colour*, §2), so an inferred number never wears the face of one the owner typed. That is the 0034 rule, one screen over.
+
+The screen's own note says the same thing in future tense while the estimate is still a proposal: *"Estimated by the model — check the numbers below. Nothing is saved until you tap Save food, and the entry will be marked as an estimate in your catalog."*
+
+**No accent is spent.** Creating a catalog entry is bookkeeping, not the day's directive action, so *Fill from description* wears the same outlined treatment as *Save food* — it fills a form, it does not commit a record.
+
+### Offline is a sentence, never a broken form
+
+Two states, and neither is a spinner that never resolves:
+
+- **no model key** — the field is replaced by a line saying so and what still works (*"everything below works without it"*). The manual form underneath is untouched, because typing the food in by hand is what this screen already was;
+- **a call that cannot reach the model** — *"Couldn't reach the model. Check your connection, or fill the fields in below by hand."* Every field keeps exactly what it had.
+
+The call is aborted on unmount, like the estimator's: a live stream left running is billed in full and lands on a screen that is gone.
+
+### Verification
+
+- `db/nutrition-v2.test.mjs` §23 — the prompt states per-100, the `ml` rule and null-over-a-guess; the request is that prompt plus the description with no image block; a fenced reply parses into one entry with its serving; micros keep a measured `0` and drop an invented key; a drink comes back as `ml` and nothing converts; an unknown basis falls back to `g`.
+- `db/nutrition-v2.test.mjs` §23b — bounds dropped not clamped, half a serving claim dropped whole, a `0` serving refused, and four unusable replies throwing.
+- `db/nutrition-v2.test.mjs` §23c — parsing writes nothing, and the saved row carries `source: 'ai'`.
+- `db/screens-render.test.mjs` §7d — the no-key sentence with the whole manual form intact; the field and control with a key set; **no `foods` row written by either render**; and exactly one row in the catalog wearing `est`.
+- `db/coach-eval.test.mjs` §6 — 469 tok under a 500 ceiling, and not in the cached prefix.
+
+### What only a device can judge
+
+- **Whether the model's per-100 figures are any good** for the foods the owner actually describes. No real call is made on this branch (the harness is a mock); the first *"Costco rotisserie chicken thigh, skin on"* on hardware is the test, and the failure mode to watch for is a serving priced as a hundred — which shows up as a blank kcal field, because the parser drops it.
+- **Whether `est` reads as provenance or as noise** at 10px beside a food's name in a list of twenty.
+- **Whether Describe it belongs above the form or below it.** It is above because it is the shortcut *past* everything under it, but that puts a model call first on a screen whose whole job used to be typing.

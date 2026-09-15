@@ -9,6 +9,8 @@
  *
  * Pure module, no database. Run: npm run db:test.
  */
+import { palette } from '../src/constants/theme.ts';
+import { barFigure } from '../src/lib/nutrition/bar.ts';
 import {
   DAY_METRIC_LABELS,
   dayFigure,
@@ -297,6 +299,88 @@ console.log('\n12. a CLOSED day is a record, not a plan (C1 — the history scre
   over.mode === 'eaten' && over.eaten === 2412
     ? ok('an over-target day reads as its own total against the target')
     : bad('closed over-target day', JSON.stringify(over));
+}
+
+console.log('12. barFigure: the geometry of the Today-grid bars (C6)');
+{
+  const cases = [
+    ['an empty day inks nothing', barFigure(0, 2400), 0, false],
+    ['a part-logged day fills its fraction', barFigure(1620, 2400), 67.5, false],
+    [
+      'exactly on target is MET — the pine fill and the terminator',
+      barFigure(2400, 2400),
+      100,
+      true,
+    ],
+    ['past target CAPS at the mark and stays met', barFigure(2800, 2400), 100, true],
+    ['one gram short is not met', barFigure(179, 180), (179 / 180) * 100, false],
+  ];
+  for (const [name, figure, fillPct, met] of cases) {
+    Math.abs(figure.fillPct - fillPct) < 1e-9 && figure.met === met
+      ? ok(`${name} (${figure.fillPct.toFixed(1)}% · met ${figure.met})`)
+      : bad(name, JSON.stringify(figure));
+  }
+
+  // dayFigure already refuses a non-positive target, so a bar is never asked to
+  // divide by one. The backstop draws an EMPTY bar rather than a full one: with
+  // no frame of reference there is no progress to claim.
+  const noFrame = [barFigure(500, 0), barFigure(500, -100), barFigure(500, Number.NaN)];
+  noFrame.every((f) => f.fillPct === 0 && f.met === false)
+    ? ok('a non-positive or non-finite target draws an empty bar, never a full one')
+    : bad('no-frame guard', JSON.stringify(noFrame));
+
+  dayFigure([], 'kcal', 0).mode === 'eaten' && dayFigure([], 'kcal', 0).target === null
+    ? ok('…and dayFigure never lets one through in the first place')
+    : bad('dayFigure zero target', JSON.stringify(dayFigure([], 'kcal', 0)));
+}
+
+console.log('13. the bar’s colours, measured against the plate (C6)');
+{
+  // WCAG 1.4.11 asks 3:1 of a non-text visual against what it sits on. The
+  // numbers are asserted rather than documented because the whole design of the
+  // terminator rests on ONE of them — pine and ink-secondary are the same
+  // luminance, so a fill that only changes hue at target changes nothing anyone
+  // can see. If a future palette move makes them distinguishable, this test
+  // should be the thing that says so.
+  const luminance = (hex) => {
+    const channel = (i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+  };
+  const ratio = (a, b) => {
+    const [x, y] = [luminance(a), luminance(b)];
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  };
+  const { ink, inkSecondary, pine, paperDeep, paper } = palette;
+
+  const measured = [
+    ['fill under target — ink-secondary on the rail', ratio(inkSecondary, paperDeep), 5.83],
+    ['fill at/over target — pine on the rail', ratio(pine, paperDeep), 5.87],
+    ['the terminator — ink on the rail', ratio(ink, paperDeep), 9.74],
+    ['the terminator against the pine beside it', ratio(ink, pine), 1.66],
+    ['THE REASON FOR THE TERMINATOR — pine against ink-secondary', ratio(pine, inkSecondary), 1.01],
+    ['the rail itself on the sheet (a ground, not a mark)', ratio(paperDeep, paper), 1.42],
+  ];
+  for (const [name, value, expected] of measured) {
+    Math.abs(value - expected) < 0.005
+      ? ok(`${name}: ${value.toFixed(2)}:1`)
+      : bad(name, `${value.toFixed(3)} — the docblock in app/nutrition.tsx says ${expected}`);
+  }
+
+  // The three that carry information clear the non-text floor; the two that
+  // deliberately do not are the rail (a ground) and the hue step (which is why
+  // hue is never the only cue).
+  [ratio(inkSecondary, paperDeep), ratio(pine, paperDeep), ratio(ink, paperDeep)].every(
+    (r) => r >= 3
+  )
+    ? ok('every mark that carries meaning clears WCAG 1.4.11’s 3:1')
+    : bad('a bar mark is under the non-text floor');
+
+  ratio(pine, inkSecondary) < 1.1
+    ? ok('hue alone is NOT a visible state change — the terminator is load-bearing')
+    : bad('pine and ink-secondary have separated; revisit the terminator’s reasoning');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

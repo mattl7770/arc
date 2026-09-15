@@ -27,7 +27,8 @@ import { getDb } from './render-stubs/db-client.mjs';
 import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import { dayPhrase } from '../src/lib/utils/day-cursor.ts';
 import { estimateServings } from '../src/lib/recipes/servings.ts';
-import { createFood } from '../src/lib/db/repositories/foods.ts';
+import { createFood, setFoodFavorite } from '../src/lib/db/repositories/foods.ts';
+
 import {
   logMeal,
   logMealWithItems,
@@ -83,6 +84,8 @@ import MealDetailScreen from '../app/meal-detail.tsx';
 // import is a resolve failure under node, not a render failure.
 import BarcodeScanScreen from '../app/barcode-scan.tsx';
 import MealEstimateScreen from '../app/meal-estimate.tsx';
+import FoodNewScreen from '../app/food-new.tsx';
+import FoodSearchScreen from '../app/food-search.tsx';
 import { apiKeyStore } from '../src/lib/ai/api-key-store.ts';
 import ProgressPhotosScreen from '../app/progress-photos.tsx';
 import ProgressPhotoAddScreen from '../app/progress-photo-add.tsx';
@@ -227,6 +230,49 @@ function figureDrew(name, html) {
   html.includes('NaN')
     ? bad(`${name}: NaN in the rendered markup`)
     : ok(`${name}: no NaN reached the path data`);
+}
+
+/**
+ * The C6 progress bars, read out of the markup.
+ *
+ * NativeWind's className is a babel transform that does not run here, so colour
+ * is invisible in a server render — `bg-pine` and `bg-ink-secondary` both come
+ * out as the same empty `<div>`. What IS visible is the two things the bar
+ * computes: the fill's inline `style="width:N%"`, and whether the rail holds a
+ * SECOND child, which is the terminator. Those are one-to-one with the state —
+ * the fill reaches 100% exactly when `met` is true, which is exactly when the
+ * terminator is drawn — so the pair pins the render even though the hue does
+ * not survive. The hue and its contrast are asserted numerically in
+ * db/nutrition-remaining.test.mjs §13; what only a device can judge is how much
+ * pine four bars plus two buttons puts on one screen.
+ *
+ * The optional group cannot over-reach: when there is no terminator the next
+ * characters after the fill are the rail's own closing tag, which does not match.
+ */
+function readBars(html) {
+  const pattern =
+    /<div class="css-view-g5y9jx" style="width:([\d.]+)%"><\/div>(<div class="css-view-g5y9jx"><\/div>)?/g;
+  return [...html.matchAll(pattern)].map((m) => ({
+    pct: Number(m[1]),
+    terminator: m[2] !== undefined,
+  }));
+}
+
+function barsDrawn(name, html, count, metCount) {
+  if (html === null) return;
+  const bars = readBars(html);
+  bars.length === count
+    ? ok(
+        `${name}: ${count} progress bar(s) drawn (${bars.map((b) => `${b.pct.toFixed(0)}%`).join(' ')})`
+      )
+    : bad(`${name}: expected ${count} bars`, `found ${bars.length}`);
+  const met = bars.filter((b) => b.terminator);
+  met.length === metCount && met.every((b) => b.pct === 100)
+    ? ok(`${name}: ${metCount} of them carry the terminator, each at the mark`)
+    : bad(
+        `${name}: expected ${metCount} terminator(s) at 100%`,
+        JSON.stringify(bars.filter((b) => b.terminator || b.pct === 100))
+      );
 }
 
 function expect(name, html, substrings) {
@@ -671,6 +717,15 @@ const db = getDb();
     ]);
     // The setup affordance retires the moment it is satisfied.
     refute('nutrition hub (guarded)', html, ['Set daily targets', 'no targets set']);
+    // C6, AND THE REGRESSION IT FIXES: this is the well-logged day, the one
+    // `remaining` mode is for, and before C6 it carried no bar anywhere on the
+    // screen — the rule was drawn only under an EATEN reading, which is the
+    // fallback. Four now: the kcal hero and all three macro cells.
+    barsDrawn('nutrition hub (guarded)', html, 4, 0);
+    // Every meal's macros are on its row, as three cells rather than a joined
+    // string — the item count they replace is gone from the tab.
+    expect('nutrition hub (guarded) meal rows', html, ['P 42g', 'C 68g', 'F 20g', 'P 46g']);
+    refute('nutrition hub (guarded)', html, ['P 42g · C 68g', '1 item', '2 items']);
   }
 
   console.log('5. The Eat tab — the fallback, when a meal has no numbers');
@@ -694,6 +749,44 @@ const db = getDb();
     ]);
     // THE POINT OF THE GUARD: no remainder is drawn on a day it cannot compute.
     refute('nutrition hub (fallback)', html, ['kcal left', 'Protein left']);
+    // …and the bars survive the fallback: the number above them changed from a
+    // remainder to an eaten figure, the thing they draw did not.
+    barsDrawn('nutrition hub (fallback)', html, 4, 0);
+  }
+
+  console.log('5b. The bars at target, and a meal that carries BOTH a note and macros (C6)');
+  {
+    // Back to a day that can be counted down, so all three completion cues are
+    // on screen at once: the unmeasured meal §5 added is removed (it has no
+    // items to cascade), and a meal that takes protein past its target goes on.
+    // That is the only state that turns a fill pine and draws the terminator.
+    //
+    // The new meal also carries a NOTE, which is the silent loss C6 fixes:
+    // `meal.notes ?? macros` meant an AI-estimated meal — which always has the
+    // model's note — showed no macros at all, so the meals most worth
+    // inspecting were exactly the ones whose numbers were hidden.
+    db.run('DELETE FROM meals WHERE date = ? AND name = ?', [today, 'Dinner out']);
+    logMeal(db, {
+      date: today,
+      time: '20:10',
+      name: 'Post-lift shake',
+      kcal: 480,
+      protein_g: 95,
+      carbs_g: 40,
+      fat_g: 9,
+      notes: 'Two scoops; the milk was whole, not skim.',
+    });
+
+    const html = render('nutrition hub (at target)', NutritionScreen);
+    // 42 + 46 + 95 = 183 of a 180 g protein target.
+    barsDrawn('nutrition hub (at target)', html, 4, 1);
+    expect('nutrition hub (at target)', html, [
+      'Protein over', // the third cue, in words — the label already flips
+      'Two scoops; the milk was whole, not skim.', // the note, still drawn
+      'P 95g', // and the macros, on the same row, no longer displaced by it
+      'C 40g',
+      'F 9g',
+    ]);
   }
 
   console.log('6. Both routes of the same file still render');
@@ -890,6 +983,64 @@ const db = getDb();
     //    — nothing can set the flag. What this does prove is that the mode chip
     //    and banner still mount around the rewrapped modal.
     expect('home (after the ModalScreen rewrap)', render('home', HomeScreen), ['Today']);
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('7d. Create a food — the Describe-it path and the mark it leaves (C2)');
+  {
+    // a. NO KEY. The field is replaced by a sentence saying so and what still
+    //    works; the form below is untouched, because typing the food in by hand
+    //    is the path this screen already was. Never a live-looking box that
+    //    answers nothing.
+    const noKey = render('food-new (no key)', FoodNewScreen, { name: 'Overnight oats' });
+    expect('food-new (no key)', noKey, [
+      'Create a food',
+      'Describe it',
+      'Describing a food needs a model key',
+      'everything below works without it',
+      'Overnight oats', // the failed search still prefills the name
+      'Solid · g', // …and the whole manual form is still there
+      'Save food',
+    ]);
+    refute('food-new (no key)', noKey, ['Fill from description', 'Estimated by the model']);
+
+    // b. WITH A KEY, the field and its control. No model call is made here —
+    //    rendering does not describe anything — and the point of the count is
+    //    the C2 guarantee: the path up to the Save tap writes nothing at all.
+    const foodsBefore = db.get('SELECT count(*) AS n FROM foods').n;
+    await apiKeyStore.setKey('render-test-key');
+    const withKey = render('food-new (key set)', FoodNewScreen);
+    expect('food-new (key set)', withKey, [
+      'Describe it',
+      'Fill from description',
+      'Costco rotisserie chicken thigh, skin on', // the placeholder, in the owner's own words
+    ]);
+    refute('food-new (key set)', withKey, ['Describing a food needs a model key']);
+    await apiKeyStore.clearKey();
+    db.get('SELECT count(*) AS n FROM foods').n === foodsBefore
+      ? ok('food-new wrote no catalog row on either render — nothing is saved without Save')
+      : bad('food-new wrote a row on mount');
+
+    // c. THE MARK, in the catalog. A described entry says `est` wherever it
+    //    appears — typography, never a hue — so an inferred number is never
+    //    read as one the owner typed. Favorited so it shows with no query, the
+    //    search field's text being state this render cannot set.
+    const described = createFood(db, {
+      name: 'Render described soup',
+      kcal_100g: 60,
+      source: 'ai',
+    });
+    setFoodFavorite(db, described, true);
+    const search = render('food-search (an ai entry)', FoodSearchScreen);
+    expect('food-search (an ai entry)', search, [
+      'Render described soup',
+      '  est</span>', // the tag itself, not the letters in some other word
+    ]);
+    // The typed foods beside it carry no mark — the tag means something only if
+    // it is not on everything.
+    search !== null && (search.match(/ {2}est<\/span>/g) || []).length === 1
+      ? ok('food-search (an ai entry): exactly one row is marked est')
+      : bad('the est tag is on the wrong number of rows');
   }
 
   // -------------------------------------------------------------------------
@@ -1568,10 +1719,11 @@ const db = getDb();
   for (let i = 0; i < 41; i += 1) {
     overflow.push(rememberFact(db, { content: `Render memory filler ${i}`, category: 'context' }));
   }
-  expect('knowledge hub (over the prompt cap)', render('knowledge hub (over the prompt cap)', KnowledgeScreen), [
-    'no longer riding along',
-    'most recent into every turn',
-  ]);
+  expect(
+    'knowledge hub (over the prompt cap)',
+    render('knowledge hub (over the prompt cap)', KnowledgeScreen),
+    ['no longer riding along', 'most recent into every turn']
+  );
   for (const id of overflow) db.run('DELETE FROM coach_memories WHERE id = ?', [id]);
 
   // The editor the hub pushes at, both ways in.
