@@ -24,7 +24,9 @@ import { selectAllOnFocus } from '../src/components/ui/select-on-focus.ts';
 import { __setParams } from './render-stubs/expo-router.mjs';
 import { getDb } from './render-stubs/db-client.mjs';
 
-import { todayISODate } from '../src/lib/db/date.ts';
+import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
+import { dayPhrase } from '../src/lib/utils/day-cursor.ts';
+import { estimateServings } from '../src/lib/recipes/servings.ts';
 import { createFood } from '../src/lib/db/repositories/foods.ts';
 import {
   logMeal,
@@ -67,12 +69,13 @@ import ExerciseDetailScreen from '../app/exercise-detail.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
 import RecipeEditScreen from '../app/recipe-edit.tsx';
-import RecipeImportScreen from '../app/recipe-import.tsx';
+import RecipeImportScreen, { ReviewDraft } from '../app/recipe-import.tsx';
 import RecipeFoldersScreen from '../app/recipe-folders.tsx';
 import RecipeReviseScreen from '../app/recipe-revise.tsx';
 import GroceryScreen from '../app/grocery.tsx';
 import NutritionScreen from '../app/nutrition.tsx';
 import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
+import NutritionHistoryScreen from '../app/nutrition-history.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
 // The two camera screens. They could not be imported here until `expo-camera`
 // moved behind the guarded seam (src/lib/media/camera.ts) — a static native
@@ -2151,6 +2154,208 @@ console.log('17. A3 — every amount field in food logging highlights its value'
   missing.length === 0
     ? ok('every one of them highlights its value on focus')
     : bad(`${missing.length} amount field(s) without selectAllOnFocus`, missing.join(' · '));
+}
+
+/**
+ * 18. C1 — the nutrition history's day view.
+ *
+ * Three claims, and the third is the one that could have shipped a lie:
+ *   - a PAST day renders its own meals, reachable from nowhere before this;
+ *   - an EMPTY day is authored, not a row of zeros;
+ *   - a CLOSED day never counts down. The fixture is built so the difference is
+ *     visible: the past day is fully logged against a target it does not reach,
+ *     so without `recordFigure` the screen would print "820 kcal left" over a
+ *     day that is over.
+ */
+console.log('18. C1 — nutrition history: a day picker, a past day, and an authored empty');
+{
+  const now = todayISODate();
+  const threeBack = shiftISODate(now, -3);
+  const twoBack = shiftISODate(now, -2);
+
+  // Targets that governed the past day — DELIBERATELY different from today's
+  // 2,400, so the assertion below proves the day is judged by its own era's
+  // targets rather than by whatever is set now.
+  setNutritionTargets(db, {
+    effective_date: threeBack,
+    kcal: 2000,
+    protein_g: 150,
+    carbs_g: 200,
+    fat_g: 60,
+  });
+  logMeal(db, {
+    date: threeBack,
+    time: '07:50',
+    name: 'Past breakfast',
+    kcal: 620,
+    protein_g: 42,
+    carbs_g: 68,
+    fat_g: 20,
+  });
+  logMeal(db, {
+    date: threeBack,
+    time: '19:20',
+    name: 'Past dinner',
+    kcal: 560,
+    protein_g: 38,
+    carbs_g: 44,
+    fat_g: 24,
+  });
+
+  const past = render('nutrition-history (a past day)', NutritionHistoryScreen, {
+    date: threeBack,
+  });
+  expect('nutrition-history (a past day)', past, [
+    'Past breakfast',
+    'Past dinner',
+    'Meals',
+    // Judged by the targets that governed THAT day (2,000), not today's 2,400.
+    '1,180 of 2,000 kcal',
+    // The picker's controls and its way home, which exists only off today.
+    'Previous food log',
+    'Next food log',
+    'Back to today',
+  ]);
+  // THE CLOSED-DAY RULE. A remainder is a claim about a day you can still act
+  // on; Tuesday is over. Both readings are refuted, because the macro cells
+  // carry the mode in their own labels.
+  refute('nutrition-history (a past day)', past, [
+    'kcal left',
+    'kcal over',
+    'Protein left',
+    'Protein over',
+  ]);
+
+  // An empty day inside the record: authored, and not a zero. The sentence is
+  // composed through dayPhrase, so this also proves the screen and the phrase
+  // helper agree (the helper's own wording is pinned in db/day-boundary.test.mjs).
+  const empty = render('nutrition-history (an empty day)', NutritionHistoryScreen, {
+    date: twoBack,
+  });
+  expect('nutrition-history (an empty day)', empty, [
+    `Nothing logged ${dayPhrase(twoBack, now)}.`,
+    'Back to today',
+  ]);
+  refute('nutrition-history (an empty day)', empty, ['kcal left', 'Meals']);
+
+  // Today: the picker is home, so the return affordance has retired.
+  const todayView = render('nutrition-history (today)', NutritionHistoryScreen, {});
+  expect('nutrition-history (today)', todayView, ['Today', 'Over time', 'Daily average']);
+  refute('nutrition-history (today)', todayView, ['Back to today']);
+
+  // A `?date=` in the future cannot select a day that has not happened — the
+  // param is clamped the same way the arrow is.
+  const future = render('nutrition-history (a future param)', NutritionHistoryScreen, {
+    date: shiftISODate(now, 30),
+  });
+  expect('nutrition-history (a future param)', future, ['Today']);
+  refute('nutrition-history (a future param)', future, ['Back to today']);
+}
+
+/**
+ * 19. C8 — the review marks an estimate, and cannot save one unconfirmed.
+ *
+ * The review is the third phase of an async ladder (fetch → model turn), so it
+ * is unreachable from a server render of the whole screen. `ReviewDraft` is
+ * exported for exactly this, and this is the only claim in C8 that a headless
+ * unit test cannot make on its own: that the SCREEN leaves the field empty.
+ */
+console.log('19. C8 — the servings estimate is marked, and never pre-filled');
+{
+  /** The value actually sitting in the Servings field of a rendered review. */
+  const servingsValue = (html) => {
+    const tag = (html.match(/<input[^>]*aria-label="Servings"[^>]*>/) || [])[0] ?? '';
+    return (/value="([^"]*)"/.exec(tag) || [])[1] ?? null;
+  };
+
+  const lines = [
+    { raw_text: '800 g chicken thighs' },
+    { raw_text: '500 g white rice' },
+    { raw_text: '400 g broccoli' },
+    { raw_text: '2 tbsp soy sauce' },
+  ];
+  const estimate = estimateServings('Chicken & Rice Bowl', lines);
+  const baseDraft = {
+    title: 'Chicken & Rice Bowl',
+    servings: null,
+    prep_min: null,
+    cook_min: null,
+    ingredients: lines,
+    steps: ['Cook the rice.', 'Sear the chicken.'],
+    source_url: null,
+    source_platform: null,
+    source_author: null,
+    source_image_url: null,
+    notes: null,
+    deterministic: false,
+    servings_estimate: estimate,
+  };
+
+  // (a) The source said nothing: the estimate is OFFERED, marked, and the field
+  //     is empty — so the Save gate (which has always required a positive
+  //     servings) makes an unconfirmed estimate unsaveable, not merely unsaved.
+  const offered = render(
+    'recipe-import review (estimated)',
+    ReviewDraft,
+    {},
+    {
+      draft: baseDraft,
+      onSaved: () => {},
+    }
+  );
+  expect('recipe-import review (estimated)', offered, [
+    'ARC’s estimate',
+    '≈ estimate',
+    'About 3 servings.',
+    '3 of 4 lines', // the coverage — the direction of the error, said out loud
+    'main-course',
+    'Use 3',
+    'Use 3 servings', // the spoken label on the control that confirms it
+  ]);
+  servingsValue(offered) === ''
+    ? ok('recipe-import review: the estimate is NOT in the field — it must be confirmed')
+    : bad(
+        'an unconfirmed estimate was pre-filled into the servings field',
+        String(servingsValue(offered))
+      );
+  // The old sentence is the wrong one now: there IS something better than
+  // "set it" to say when ARC can propose a number.
+  refute('recipe-import review (estimated)', offered, ['The source didn’t say — set it.']);
+
+  // (b) The caption stated a yield: it wins outright, the field carries it, and
+  //     no estimate is drawn beside it to argue with the author.
+  const statedDraft = { ...baseDraft, servings: 6 };
+  const stated = render(
+    'recipe-import review (stated yield)',
+    ReviewDraft,
+    {},
+    {
+      draft: statedDraft,
+      onSaved: () => {},
+    }
+  );
+  servingsValue(stated) === '6'
+    ? ok('recipe-import review: a stated yield fills the field as it always did')
+    : bad('a stated yield did not reach the field', String(servingsValue(stated)));
+  refute('recipe-import review (stated yield)', stated, ['≈ estimate', 'ARC’s estimate', 'Use 3']);
+
+  // (c) Nothing stated and nothing estimable: the screen asks, exactly as it
+  //     did before C8.
+  const bare = render(
+    'recipe-import review (no estimate)',
+    ReviewDraft,
+    {},
+    {
+      draft: {
+        ...baseDraft,
+        ingredients: [{ raw_text: 'a handful of herbs' }],
+        servings_estimate: null,
+      },
+      onSaved: () => {},
+    }
+  );
+  expect('recipe-import review (no estimate)', bare, ['The source didn’t say — set it.']);
+  refute('recipe-import review (no estimate)', bare, ['≈ estimate']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

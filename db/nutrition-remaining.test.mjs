@@ -14,6 +14,7 @@ import {
   dayFigure,
   mealsMissingValues,
   metricIsComplete,
+  recordFigure,
   sumRounded,
   unguardedMetrics,
   unguardedNote,
@@ -247,6 +248,55 @@ console.log('11. a partially resolved recipe: the total is non-null AND knowingl
   mealsMissingValues(day, TARGETS, partial) === 1
     ? ok('the meal count sees a short total the same way it sees a NULL')
     : bad('partial meal count', String(mealsMissingValues(day, TARGETS, partial)));
+}
+
+console.log('\n12. a CLOSED day is a record, not a plan (C1 — the history screen’s day view)');
+{
+  // The defect this exists for, stated as the test that would have caught it:
+  // an EMPTY day passes metricIsComplete vacuously (no meals, so no meal is
+  // missing a value), so dayFigure hands back a full remainder — and the
+  // history screen would have printed "2,400 kcal left" over a Tuesday that is
+  // over and can never be eaten into again.
+  const emptyDay = dayFigure([], 'kcal', 2400, {});
+  emptyDay.mode === 'remaining' && emptyDay.remaining === 2400
+    ? ok('an empty day earns a remainder — correct for TODAY, and the trap for yesterday')
+    : bad('empty-day control', JSON.stringify(emptyDay));
+
+  const closedEmpty = recordFigure(emptyDay);
+  closedEmpty.mode === 'eaten' && closedEmpty.eaten === 0 && closedEmpty.target === 2400
+    ? ok('read as a record it eats nothing, against the target it was judged by')
+    : bad('closed empty day', JSON.stringify(closedEmpty));
+
+  // A day that WAS fully logged keeps every number; only the countdown goes.
+  const lived = dayFigure(FULL_DAY, 'kcal', 2400, {});
+  const closed = recordFigure(lived);
+  lived.mode === 'remaining' && lived.remaining === 780
+    ? ok('a full day counts down while it is today')
+    : bad('lived-day control', JSON.stringify(lived));
+  closed.mode === 'eaten' && closed.eaten === 1620 && closed.target === 2400
+    ? ok(
+        '…and reads 1,620 of 2,400 once it is closed — the target survives, the countdown does not'
+      )
+    : bad('closed full day', JSON.stringify(closed));
+
+  // Idempotent, and a no-op on a figure that was already a record: a screen
+  // that applies it twice, or applies it to an untargeted metric, must not
+  // change anything.
+  const alreadyEaten = dayFigure(FULL_DAY, 'kcal', null, {});
+  recordFigure(alreadyEaten) === alreadyEaten
+    ? ok('an eaten reading is returned untouched — the same object, not a copy')
+    : bad('recordFigure rewrote an eaten reading');
+  JSON.stringify(recordFigure(recordFigure(lived))) === JSON.stringify(closed)
+    ? ok('and applying it twice says the same thing')
+    : bad('recordFigure is not idempotent');
+
+  // An over-target day loses its "over" reading too, which is the point: "12
+  // kcal over" is a warning about a day you can still act on. A closed day's
+  // over-ness is visible in the ledger — 2,412 of 2,400 — without a countdown.
+  const over = recordFigure(dayFigure([meal(2412, 0, 0, 0)], 'kcal', 2400, {}));
+  over.mode === 'eaten' && over.eaten === 2412
+    ? ok('an over-target day reads as its own total against the target')
+    : bad('closed over-target day', JSON.stringify(over));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

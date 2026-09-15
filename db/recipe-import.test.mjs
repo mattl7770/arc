@@ -35,6 +35,13 @@ import {
   recipeSourceFromUrl,
 } from '../src/lib/recipes/import.ts';
 import {
+  classifyRecipe,
+  estimateServings,
+  servingsEstimateBasis,
+  servingsForReview,
+  SERVING_GRAMS,
+} from '../src/lib/recipes/servings.ts';
+import {
   firstUrlIn,
   recipeImportShareFromPayloads,
   VIDEO_SHARE_MESSAGE,
@@ -772,6 +779,217 @@ function fakeFetch(routes) {
   tree.children.some((child) => child.route === 'recipe-import')
     ? ok('a cold-start share resolves to a real screen above the anchored tabs')
     : bad('cold-start share target');
+}
+
+// --- 11. Servings estimated from the quantities (C8) --------------------------
+
+{
+  console.log('11. estimateServings — the table, the floors, and the caption that wins');
+
+  const eq = (name, actual, expected) =>
+    actual === expected
+      ? ok(name)
+      : bad(name, `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+
+  // THE TABLE, pinned. It is ARC's own portion convention (not a citation), and
+  // the point of pinning it here is that changing a row has to be a deliberate
+  // act with a test diff attached — a portion size quietly drifting is a yield
+  // quietly drifting on every import that follows.
+  eq('main-course serving is 500 g (C8 names a 400–600 g band)', SERVING_GRAMS.main, 500);
+  eq('a bowl of soup is 400 g', SERVING_GRAMS.soup, 400);
+  eq('a side is 200 g', SERVING_GRAMS.side, 200);
+  eq('a baked portion is 90 g', SERVING_GRAMS.baked, 90);
+  eq('a condiment portion is 60 g', SERVING_GRAMS.sauce, 60);
+  eq('a glass is 350 g', SERVING_GRAMS.drink, 350);
+
+  // The kind is read off the title, most specific keyword first.
+  eq('a soup is a soup', classifyRecipe('Chicken Noodle Soup'), 'soup');
+  eq('…so is a chili', classifyRecipe('Weeknight Turkey Chili'), 'soup');
+  eq('banana bread is baked, not a fruit', classifyRecipe('Banana Bread'), 'baked');
+  eq('a smoothie is a glass', classifyRecipe('Green Breakfast Smoothie'), 'drink');
+  eq('pesto is a condiment', classifyRecipe('Basil Pesto'), 'sauce');
+  eq('a slaw is a side', classifyRecipe('Red Cabbage Slaw'), 'side');
+  eq('anything unrecognised is a main', classifyRecipe('Chicken & Rice Bowl'), 'main');
+  eq('…and the match is case-insensitive', classifyRecipe('LENTIL STEW'), 'soup');
+
+  // The ordinary case: a weighed main. 800 + 500 + 400 = 1,700 g over three of
+  // four lines; the tablespoon of soy sauce is volumetric and contributes
+  // NOTHING, because this codebase has no density data and will not invent any.
+  const mainLines = [
+    { raw_text: '800 g chicken thighs' },
+    { raw_text: '500 g white rice' },
+    { raw_text: '400 g broccoli' },
+    { raw_text: '2 tbsp soy sauce' },
+  ];
+  const main = estimateServings('Chicken & Rice Bowl', mainLines);
+  if (!main) bad('a weighed main produced no estimate');
+  else {
+    eq('1,700 g of main course → 3 servings', main.servings, 3);
+    eq('…built on the mass it could read', Math.round(main.totalGrams), 1700);
+    eq('…from three of the four lines', main.linesCounted, 3);
+    eq('…and it says so', main.linesTotal, 4);
+    eq('…at the main-course portion', main.perServingG, 500);
+  }
+
+  // Mass units convert; volumetric and countable ones do not. 2 lb + 1 kg.
+  const mixed = estimateServings('Beef and Potatoes', [
+    { raw_text: '2 lb beef chuck' },
+    { raw_text: '1 kg potatoes' },
+    { raw_text: '3 cloves garlic' },
+    { raw_text: '1 cup stock' },
+  ]);
+  eq('pounds and kilos both convert', mixed && Math.round(mixed.totalGrams), 1907);
+  eq('…and that is 4 main-course servings', mixed && mixed.servings, 4);
+
+  // An attached unit ("100g") parses too — parseIngredientLine handles it, and
+  // this is the path a JSON-LD draft always takes (raw lines, no overlay).
+  const attached = estimateServings('Flatbreads', [
+    { raw_text: '500g strong flour' },
+    { raw_text: '300g water' },
+  ]);
+  eq('an attached unit still weighs', attached && Math.round(attached.totalGrams), 800);
+
+  // An overlay the extraction produced is preferred over re-parsing, so a model
+  // that read "two hundred grams" as qty 200 / unit g is honoured.
+  const overlaid = estimateServings('Braise', [
+    { raw_text: 'two hundred grams of shallots', qty: 200, unit: 'g' },
+    { raw_text: 'half a kilo of beef', qty: 0.5, unit: 'kg' },
+  ]);
+  eq('the extraction overlay is used when present', overlaid && overlaid.totalGrams, 700);
+
+  // The same mass under a different title is a different yield — which is the
+  // whole reason the kind is read at all. 1,800 g:
+  const table = [
+    { raw_text: '1000 g one' },
+    { raw_text: '500 g two' },
+    { raw_text: '300 g three' },
+  ];
+  eq('1,800 g as a main → 4', estimateServings('Braised Short Ribs', table)?.servings, 4);
+  eq('…as a soup → 5', estimateServings('Short Rib Soup', table)?.servings, 5);
+  eq('…as a bake → 20', estimateServings('Short Rib Pie', table)?.servings, 20);
+  eq('…as a glass → 5', estimateServings('Short Rib Smoothie', table)?.servings, 5);
+  // And the cap: 1,800 g of condiment is 30 portions, which is a number nobody
+  // wants suggested. A mis-parsed quantity must not run away.
+  eq('…as a sauce it hits the 24 cap', estimateServings('Short Rib Sauce', table)?.servings, 24);
+
+  // THE FLOORS — each one turns a confident wrong number into an honest absence.
+  eq(
+    'one weighed line in four is not the recipe’s mass',
+    estimateServings('Chickpea Curry', [
+      { raw_text: '400 g chickpeas' },
+      { raw_text: '2 tbsp curry paste' },
+      { raw_text: '1 can coconut milk' },
+      { raw_text: '2 cloves garlic' },
+    ]),
+    null
+  );
+  eq(
+    'two weighed lines in six is still a minority — the estimate would read low',
+    estimateServings('Big Curry', [
+      { raw_text: '400 g chickpeas' },
+      { raw_text: '400 g tomatoes' },
+      { raw_text: '2 tbsp curry paste' },
+      { raw_text: '1 can coconut milk' },
+      { raw_text: '2 cloves garlic' },
+      { raw_text: '1 bunch coriander' },
+    ]),
+    null
+  );
+  eq(
+    'exactly half the lines weighed is enough',
+    estimateServings('Half Curry', [
+      { raw_text: '400 g chickpeas' },
+      { raw_text: '400 g tomatoes' },
+      { raw_text: '2 tbsp curry paste' },
+      { raw_text: '2 cloves garlic' },
+    ])?.servings,
+    2
+  );
+  eq(
+    'under 100 g in total is a spice blend, not a meal',
+    estimateServings('House Rub', [{ raw_text: '50 g paprika' }, { raw_text: '20 g cumin' }]),
+    null
+  );
+  eq('no lines at all, no estimate', estimateServings('Nothing', []), null);
+  eq(
+    'blank lines are not lines',
+    estimateServings('Blanks', [{ raw_text: '   ' }, { raw_text: '' }]),
+    null
+  );
+  eq(
+    'a small recipe still yields at least one serving',
+    estimateServings('Two-egg Omelette', [
+      { raw_text: '120 g eggs' },
+      { raw_text: '180 g mushrooms' },
+    ])?.servings,
+    1
+  );
+
+  // THE CAPTION WINS, and an estimate is NEVER pre-filled. This is the 0034
+  // provenance rule for a column that has no provenance beside it: an inferred
+  // number must not wear the face of one the user asserted.
+  const estimate = estimateServings('Chicken & Rice Bowl', mainLines);
+  const stated = servingsForReview(4, estimate);
+  eq('a source that says "serves 4" wins outright', stated.value, 4);
+  eq('…and the estimate is not even offered beside it', stated.estimate, null);
+
+  const inferred = servingsForReview(null, estimate);
+  eq('with no stated yield the field starts EMPTY, never pre-filled', inferred.value, null);
+  inferred.estimate === estimate
+    ? ok('…and the estimate is offered as a suggestion instead')
+    : bad('the estimate was not offered');
+
+  const neither = servingsForReview(null, null);
+  eq('nothing stated and nothing estimable leaves the field empty', neither.value, null);
+  eq('…with nothing to offer', neither.estimate, null);
+
+  // A nonsense stated yield is not a yield.
+  eq('a zero stated yield does not win', servingsForReview(0, estimate).estimate, estimate);
+
+  // The basis sentence is what makes the suggestion checkable rather than
+  // obeyable: every input it was built from appears in it.
+  if (estimate) {
+    const basis = servingsEstimateBasis(estimate);
+    const says = (part) =>
+      basis.includes(part)
+        ? ok(`the basis states ${JSON.stringify(part)}`)
+        : bad(`the basis omits ${JSON.stringify(part)}`, basis);
+    says('1,700 g'); // the mass, with the hand-rolled comma (Hermes has no Intl)
+    says('3 of 4 lines'); // the coverage — the direction of the error
+    says('500 g'); // the portion size
+    says('main-course'); // the dish shape it was read as
+    says('cooks down'); // raw weights, not finished weights
+    basis.includes('undefined') || basis.includes('NaN')
+      ? bad('the basis sentence leaked an undefined', basis)
+      : ok('…and nothing leaked into it');
+    // Full coverage reads as "all N lines" rather than "4 of 4".
+    const full = estimateServings('Flatbreads', [
+      { raw_text: '500g strong flour' },
+      { raw_text: '300g water' },
+    ]);
+    full && servingsEstimateBasis(full).includes('all 2 lines')
+      ? ok('full coverage reads "all 2 lines", never "2 of 2"')
+      : bad('full-coverage phrasing', full ? servingsEstimateBasis(full) : 'no estimate');
+  }
+
+  // …and the pipeline actually attaches it. The JSON-LD rung is the one that
+  // runs with NO model at all, and its lines carry no overlay — so it is the
+  // strictest check that the estimator parses raw text for itself.
+  const jsonldDraft = (
+    await fetchRecipeSource(
+      'https://blog.example.com/adobo',
+      fakeFetch([['blog.example.com', page(JSONLD_SIMPLE, 'https://blog.example.com/adobo')]])
+    )
+  ).draft;
+  eq('the JSON-LD draft still carries the SOURCE’s stated yield', jsonldDraft.servings, 4);
+  // One weighed line ("1 kg chicken thighs") out of three — below the floor, so
+  // honestly nothing. The stated yield covers it, which is the ordinary case.
+  eq('…and no estimate, because only one line is weighed', jsonldDraft.servings_estimate, null);
+  eq(
+    '…so the review shows the source’s 4',
+    servingsForReview(jsonldDraft.servings, jsonldDraft.servings_estimate).value,
+    4
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

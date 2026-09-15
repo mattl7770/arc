@@ -16,6 +16,9 @@
  * §7  the day cursor only ever moves FORWARD — the westbound date-line case
  *     three subsystems each met separately, and the DST change that must not be
  *     mistaken for it
+ * §8  the day PICKER (C1) — its bounds are the logical today and the caller's
+ *     floor, it clamps a day that is already outside them, and its labels are
+ *     the hand-rolled ones Hermes leaves it no choice about
  *
  * **§3 pins the timezone.** The boundary rule is DST-sensitive by nature, so the
  * only way to test it is to run in a zone that has a transition. TZ is set to
@@ -42,6 +45,14 @@ import {
   shiftISODate,
   todayISODate,
 } from '../src/lib/db/date.ts';
+import {
+  canStepBack,
+  canStepForward,
+  dayLabel,
+  dayPhrase,
+  stepDay,
+  weekdayName,
+} from '../src/lib/utils/day-cursor.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { deriveReadiness } from '../src/lib/home/readiness.ts';
@@ -593,6 +604,98 @@ console.log('\n7. the day cursor only ever moves FORWARD');
   missing.length === 0
     ? ok('all three day-cursor sites route through forwardCursor')
     : bad('a cursor site dropped the guard', missing.join(', '));
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n8. the day picker — bounded by the LOGICAL today, never the calendar');
+{
+  // C1's picker (src/components/ui/day-picker.tsx) is the first control in the
+  // app that lets the user aim at a day OTHER than today, so it is the first
+  // thing that could offer a day the rest of ARC says has not started. Its
+  // arithmetic lives in src/lib/utils/day-cursor.ts and is all shiftISODate;
+  // what is tested here is the CLAMP and the words.
+  const today = '2026-09-14'; // a Monday
+  const open = { latest: today };
+  const floored = { latest: today, earliest: '2026-09-10' };
+
+  // The forward bound. Both halves: the arrow must know it is dead AND the
+  // step must refuse — a clamp alone leaves a live-looking arrow that does
+  // nothing, and a disabled arrow alone leaves another path free to step past.
+  eq('the forward arrow is dead on today', canStepForward(today, open), false);
+  eq('stepping forward from today stays on today', stepDay(today, 1, open), today);
+  eq('…and ten steps forward is still today', stepDay(today, 10, open), today);
+  eq('the forward arrow is live in the past', canStepForward('2026-09-13', open), true);
+  eq('stepping forward from yesterday lands on today', stepDay('2026-09-13', 1, open), today);
+
+  // The back bound is the caller's floor (the first meal ever logged).
+  eq('the back arrow is dead on the floor', canStepBack('2026-09-10', floored), false);
+  eq('stepping back from the floor stays put', stepDay('2026-09-10', -1, floored), '2026-09-10');
+  eq('the back arrow is live above the floor', canStepBack('2026-09-11', floored), true);
+  eq('with no floor the back arrow is always live', canStepBack('2019-01-01', open), true);
+
+  // A day that is ALREADY out of bounds is pulled back inside rather than kept
+  // there — a `?date=` param from a stale link, or a screen left open across
+  // midnight, must not become a way to select tomorrow.
+  eq('an out-of-bounds day clamps forward-bound', stepDay('2026-12-25', 0, open), today);
+  eq('an out-of-bounds day clamps to the floor', stepDay('2020-01-01', 0, floored), '2026-09-10');
+
+  // Month ends and leap days fall out of shiftISODate; asserted here because
+  // the picker is where a user actually walks across one.
+  eq(
+    'stepping back across a month end',
+    stepDay('2026-03-01', -1, { latest: today }),
+    '2026-02-28'
+  );
+  eq('…and across a leap day', stepDay('2024-03-01', -1, { latest: '2026-12-31' }), '2024-02-29');
+
+  // THE BOUND IS THE LOGICAL TODAY, which is the whole reason this section sits
+  // in the boundary suite. Under a 04:00 boundary, 01:00 on Tuesday the 15th is
+  // still Monday the 14th — so a picker bounded by todayISODate() refuses to
+  // step onto the 15th, and a picker bounded by the calendar would have allowed
+  // it. Asserted against the wrong answer too, so the test cannot pass by
+  // coincidence.
+  {
+    const smallHours = new Date(2026, 8, 15, 1, 0, 0); // local 01:00, Tue 15 Sep
+    const logical = todayISODate(smallHours, '04:00');
+    eq('under a 04:00 boundary, 01:00 Tuesday is still Monday', logical, '2026-09-14');
+    eq(
+      'and the picker cannot step onto the calendar day that has not started',
+      stepDay(logical, 1, { latest: logical }),
+      '2026-09-14'
+    );
+    eq(
+      'the calendar day is NOT the bound (the wrong answer, pinned)',
+      todayISODate(smallHours, DEFAULT_DAY_STARTS_AT),
+      '2026-09-15'
+    );
+  }
+
+  // The words. Hermes has no Intl, so these are hand-rolled tables; a screen
+  // reading "Nothing logged on undefined" is the failure they guard.
+  eq('the chin names today', dayLabel(today, today), 'Today');
+  eq('…and yesterday', dayLabel('2026-09-13', today), 'Yesterday');
+  eq('…and anything older by weekday AND date', dayLabel('2026-09-08', today), 'Tue 8 Sep');
+  eq('the weekday is the real one', weekdayName('2026-09-08'), 'Tuesday');
+  eq('…across a month end too', weekdayName('2026-03-01'), 'Sunday');
+
+  // The sentence form, which is what an empty day is authored with.
+  eq('a sentence says today', dayPhrase(today, today), 'today');
+  eq('…and yesterday', dayPhrase('2026-09-13', today), 'yesterday');
+  eq('…and names the weekday inside the week', dayPhrase('2026-09-09', today), 'on Wednesday');
+  // Past a week a bare weekday is ambiguous (there are two Tuesdays in play),
+  // so it degrades to the form that identifies exactly one day.
+  eq('…and degrades past a week', dayPhrase('2026-09-01', today), 'on Tue 1 Sep');
+  eq('the seventh day back is already ambiguous', dayPhrase('2026-09-07', today), 'on Mon 7 Sep');
+
+  // And the screen actually composes it — "Nothing logged on Wednesday.", never
+  // "Nothing logged on 2026-09-09." or a bare weekday for a day three weeks back.
+  const historySource = readFileSync(
+    join(import.meta.dirname, '..', 'app', 'nutrition-history.tsx'),
+    'utf8'
+  );
+  historySource.includes('Nothing logged ${dayPhrase(day, today)}')
+    ? ok('the history screen authors its empty day through dayPhrase')
+    : bad('the empty-day sentence no longer routes through dayPhrase');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

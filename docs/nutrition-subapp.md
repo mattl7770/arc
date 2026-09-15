@@ -577,3 +577,56 @@ The reply goes through the same vocabulary filter as stored JSON (`coerceMicros`
 - **No denominators until targets exist** (`docs/design-research/implementation/00-design-spec.md` §5). With no fiber target the fiber plate prints the figure alone: no denominator, no rule, and a label that says `no target set`. The old behaviour hid the plate entirely, which meant a profile that had never opened the targets screen could not see a number the day genuinely recorded.
 
 **Verification.** `db/nutrition-v2.test.mjs` §21 walks one caffeinated item end to end — model reply → parser (keys kept, junk dropped, empty → `NULL`) → grounding against a micro-less catalog food → logged meal → `dayMicroTotals` — and asserts both prompts ask for the two micros and that the revision request states them. `db/screens-render.test.mjs` §7c renders `app/nutrition-micros.tsx` over a real day: sodium `1,240`, caffeine `145`, `2 of 12 recorded`, the caveat, and the fiber plate in both of its states.
+
+## 12e. Past days' food logs — a day picker and a day view (C1, 2026-09-14)
+
+Owner: *"see past days food logs."* (backlog `docs/backlog-2026-09.md`, C1.) The Eat tab is today-only by design and must stay that way; `app/nutrition-history.tsx` showed **series** — a sparkline and a per-day ledger of totals — which answers *how has my protein been* and not *what did I eat on Tuesday*. Once a day rolled over, its meals were reachable from nowhere.
+
+**No migration** (head stays `0045`) and no new route. Every repository read in the nutrition family has taken a `date` since the day view shipped, so browsing the past costs the same four indexed queries today costs; what was missing was a way to say which day.
+
+### The shared day picker — `src/components/ui/day-picker.tsx`
+
+Built here, but built shared: Today's Mission is the next screen that will want one, and a second copy is how two pickers come to disagree about what "today" means. Nothing in it knows what is being paged.
+
+```ts
+<DayPicker
+  date={day}                                   // YYYY-MM-DD, the day in view
+  bounds={{ latest: today, earliest: recordStart }}
+  onChange={(next) => …}                       // always inside bounds
+  subject="food log"                           // "Previous food log" (screen reader)
+/>
+```
+
+`‹  Tue 9 Sep  ›` — two 44pt outlined arrows flanking a centred mono chin (a date is a measured value), with **Back to today** under the row and only while the cursor is behind today. It is not *in* the row on purpose: beside the forward arrow it either shifts the chin off centre when it appears or reserves an empty slot when it does not. It retires the moment it is satisfied, which is the rule the Eat tab's *Set daily targets* already follows. **No accent anywhere** — moving the day in view is navigation, not the screen's next action.
+
+The arithmetic is `src/lib/utils/day-cursor.ts` (`canStepBack` · `canStepForward` · `stepDay` · `dayLabel` · `dayPhrase` · `weekdayName`), which does all of *its* arithmetic through `src/lib/db/date.ts` — `shiftISODate`, plus a new `weekdayIndex` that `localWeekRange` now reads too, so there is one expression to get wrong rather than two. Nothing outside `date.ts` computes a day, which is what `db/day-boundary.test.mjs` §5's source scan enforces.
+
+**The forward bound is the LOGICAL today, not the calendar's.** Under the owner's 04:00 boundary (B3), 01:00 on Wednesday is still Tuesday everywhere else in the app; a picker bounded by the calendar would offer a day the rest of ARC says has not started, and let a meal be logged into it. Both halves are built: the arrow is disabled at the bound **and** `stepDay` clamps, because a live-looking arrow that does nothing is one failure and a caller that can step past from another path is the other. A day that is already out of bounds — a stale `?date=`, a screen left open across midnight — is pulled back inside rather than kept there.
+
+The back bound is the caller's floor. The history passes `firstMealDate(db)` (new, `min(date)` on an indexed text column), so the arrow stops at the first meal ever logged instead of stepping for ever through days that never existed. Same reasoning as `app/water.tsx` clipping its by-day list to `waterRecordStart`.
+
+### The day view — `app/nutrition-history.tsx`
+
+Route unchanged: `/nutrition-history`, now with an optional **`?date=YYYY-MM-DD`** param so a future caller (a Coach answer, a mission row) can open straight onto a day. No new route file — a day is a parameter of the history, not a screen of its own, and `.expo/` is gitignored so a new route would typecheck vacuously.
+
+The screen now reads: picker → **the day** (a grid: the kcal reading, the three macro cells, the day's own target ledger in the corner) → **Meals** (a ruled plate, each row opening the existing `/meal-detail`) → **Over time** (the window chips, the averages and the by-day ledger, unchanged). The by-day rows are now selectable and move the picker, exactly as `app/water.tsx`'s by-day list selects the day its editor works on — which is how a day three weeks back is reached without tapping the arrow twenty-one times.
+
+`readNutritionDay(date)` (in `src/hooks/use-nutrition.ts`) is the read: meals, item counts, the day's targets, the partial-meal map, and the record's start.
+
+**Three rules, each of which is a way this could have quietly lied.**
+
+1. **A closed day never counts down.** New `recordFigure` in `src/lib/nutrition/remaining.ts`. A remainder is a forward-looking claim — *there is this much of the target still to eat* — and last Tuesday cannot be eaten into. Worse, an **empty** day passes `metricIsComplete` *vacuously* (no meals, so no meal is missing a value), so the guard that protects the Eat tab waves it straight through and the screen would have printed **"2,400 kcal left" over a day that is over**. A past day therefore reads as eaten-against-target: the denominator survives, the countdown does not. Today keeps the countdown.
+2. **The day is judged by its own targets.** `activeNutritionTargets(db, date)` resolves the versioned target set (0015) that governed *that* day. Applying today's targets to a closed day silently re-judges it — the same mistake the day boundary refuses to make when it re-attributes no existing rows.
+3. **An empty day is authored, and it is not a zero.** `meals.length === 0`, never `kcal === 0`, selects it, and the sentence is composed through `dayPhrase`: *"Nothing logged yesterday."* · *"Nothing logged on Tuesday."* inside the week · *"Nothing logged on Tue 1 Sep."* past it, where a bare weekday stops identifying exactly one day. No grid of zeros is drawn at all — a grid of zeros claims the day was measured and empty.
+
+### Verification
+
+- `db/day-boundary.test.mjs` **§8** — the bounds (both halves), the clamp on an already-out-of-bounds day, month ends and leap days, the labels and the sentence forms, and **the 04:00 case asserted against the wrong answer as well as the right one**: `todayISODate(01:00 Tue, '04:00')` is Monday, the picker refuses to step to Tuesday, and the calendar day is pinned as what it must *not* be.
+- `db/nutrition-remaining.test.mjs` **§12** — `recordFigure`, including the empty-day trap stated as a control ("an empty day earns a remainder — correct for TODAY, and the trap for yesterday").
+- `db/screens-render.test.mjs` **§18** — a past day renders its own meals and `1,180 of 2,000 kcal` (its era's targets, deliberately different from today's 2,400) while **refuting** `kcal left` / `Protein left`; an empty day renders its authored sentence; today hides *Back to today*; a future `?date=` clamps to today.
+
+### What only a device can judge
+
+1. **Whether the chin jitters between labels.** "Today" and "Tue 9 Sep" are different widths; the chin is centred in a flex-1 slot, so it should not move the arrows, but only hardware settles whether the text itself reads as steady while paging.
+2. **Whether two 44pt arrows and a 46pt return chip are the right amount of chrome** above a screen that already carries window chips. On the simulator it reads fine; the owner's thumb is the test.
+3. **Whether the by-day row's selected state is visible enough** — it is carried by ink weight on the date alone (`text-ink` vs `text-ink-muted`), deliberately, since the row already has a bar and a tally in it.

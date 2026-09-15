@@ -115,6 +115,28 @@ export function dayFigure(
   return { mode: 'remaining', eaten, target, remaining: Math.round(target - eaten) };
 }
 
+/**
+ * The same figure read as a **record** rather than as a plan — what a day that
+ * is over is allowed to say about itself (C1, the history screen's day view).
+ *
+ * A remainder is a forward-looking claim: *there is this much of the day's
+ * target still to eat.* On today that is useful. On last Tuesday it is false —
+ * Tuesday is closed, nothing more will be eaten into it, and "2,400 kcal left"
+ * over an empty past day is the most confident wrong sentence this screen could
+ * print. Worse, an empty day passes {@link metricIsComplete} VACUOUSLY (there
+ * are no meals to be missing a value), so the guard that protects the Eat tab
+ * from an over-large remainder waves the empty past day straight through.
+ *
+ * So a closed day reads as eaten-with-its-denominator, which is the same
+ * fallback the Eat tab uses when it cannot trust a subtraction. The target
+ * survives — "1,840 of 2,400 kcal" is the frame of reference the day is judged
+ * in — only the countdown goes.
+ */
+export function recordFigure(figure: DayFigure): DayFigure {
+  if (figure.mode === 'eaten') return figure;
+  return { mode: 'eaten', eaten: figure.eaten, target: figure.target };
+}
+
 /** The targeted metrics — the only ones a note may name, because they are the
  *  only ones the screen was counting down. */
 function trackedMetrics(targets: Partial<Record<DayMetric, number | null>>): DayMetric[] {
