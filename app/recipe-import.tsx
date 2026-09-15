@@ -35,6 +35,16 @@ import { consumeIncomingShare, readSharedImageBase64 } from '@/lib/recipes/incom
  * without the module the result is `unavailable` — a sentence, never a crash —
  * and the paste rung covers the gap.
  *
+ * ## The link survives a failed fetch (2026-09-14 — backlog A6)
+ *
+ * The ladder's own failure path is the common one: a URL is shared, Instagram
+ * refuses the caption, this screen offers "Paste the caption" / "From a
+ * screenshot" — and the recipe that resulted was saved with `source_url` NULL,
+ * even though the link was in this component's state the whole time. Those two
+ * rungs now carry it (`startedFrom` → `ImportInput.sourceUrl`), so a pasted
+ * caption records the same provenance a successful fetch would have. Nothing
+ * fetches it; it is recorded and rendered (app/recipe-detail.tsx).
+ *
  * ## Conformed Set surface system (00-design-spec.md §1)
  *
  *   Source        → a **group of labelled fields, no device**: form (b) of the
@@ -158,6 +168,21 @@ export default function RecipeImportScreen() {
   }, []);
 
   /**
+   * The link this import started from, for the rungs that do not fetch (A6).
+   *
+   * The failure path is the common one: a URL is pasted or shared, Instagram
+   * refuses the caption, the screen offers "Paste the caption" / "From a
+   * screenshot" — and the recipe that results used to be saved with no source
+   * at all, even though the link was sitting in this component's state the
+   * whole time. Null when the field is empty, so a genuinely caption-only
+   * import still records nothing.
+   */
+  const startedFrom = (): string | null => {
+    const candidate = paramUrl ?? url;
+    return candidate.trim() === '' ? null : candidate.trim();
+  };
+
+  /**
    * The screenshot rung. Every branch of `PickedPhoto` is answered: a cancel is
    * not an error and says nothing, an absent module and an unreadable image both
    * become failure prose that routes to the paste rung.
@@ -182,7 +207,10 @@ export default function RecipeImportScreen() {
       });
       return;
     }
-    void run({ kind: 'photo', base64Jpeg: picked.base64Jpeg }, 'Reading the screenshot…');
+    void run(
+      { kind: 'photo', base64Jpeg: picked.base64Jpeg, sourceUrl: startedFrom() },
+      'Reading the screenshot…'
+    );
   };
 
   const ready = (mode === 'url' ? url.trim() : text.trim()) !== '';
@@ -297,7 +325,10 @@ export default function RecipeImportScreen() {
               onPress={() =>
                 mode === 'url'
                   ? void run({ kind: 'url', url }, 'Reading the link…')
-                  : void run({ kind: 'text', text }, 'Reading the recipe…')
+                  : void run(
+                      { kind: 'text', text, sourceUrl: startedFrom() },
+                      'Reading the recipe…'
+                    )
               }
               className={
                 ready

@@ -50,6 +50,42 @@ const arcNavTheme: Theme = {
   colors: { ...DefaultTheme.colors, ...navColors },
 };
 
+/**
+ * **The anchor — what sits UNDER a route the app was deep-linked into.**
+ *
+ * This is the fix for the owner's *"after saving a recipe, sometimes the back
+ * button doesn't work"* (backlog A2), and the bug was never in the save.
+ *
+ * `app/+native-intent.ts` redirects an `expo-sharing` delivery — share a reel
+ * from Instagram to ARC — to `/recipe-import`. When that delivery COLD-STARTS
+ * the app, expo-router builds the root stack from the deep link alone. Without
+ * an anchor this layout's `initialRouteName` is `undefined`: `getLayoutNode`
+ * only defaults it to a child whose name matches the layout's own GROUP, and
+ * the root layout is not in a group. So the stack is exactly one route deep,
+ * `[recipe-import]`. Saving the reviewed draft runs
+ * `router.replace('/recipe-detail')`, which swaps that single entry for another
+ * single entry — still one deep — and `StackHeader`'s `router.back()` then
+ * dispatches a `GO_BACK` that react-navigation silently drops (expo-router's
+ * `goBack` never checks `canGoBack`). A chevron that does nothing.
+ *
+ * **That is the whole of "sometimes."** The identical taps on the identical
+ * screens work when ARC was still resident — a warm share navigates onto the
+ * stack that already exists, tabs and all — and fail when iOS had reclaimed the
+ * app in the background since the last use. Nothing about the recipe, the save
+ * or the screen differs between the two runs, which is exactly why it read as
+ * random.
+ *
+ * With the anchor, a deep-linked cold start mounts `(tabs)` underneath first,
+ * so `back` always has somewhere to land. Declared app-wide on purpose: it is
+ * equally true of a tapped reminder notification and of any deep link added
+ * later, not only of the share extension.
+ *
+ * `anchor` is expo-router 57's spelling (`initialRouteName` is still read as a
+ * fallback). The value must name a real child of this layout — an unknown one
+ * throws while the route tree is built, which is the failure mode you want.
+ */
+export const unstable_settings = { anchor: '(tabs)' };
+
 export default function RootLayout() {
   // Face ID / passcode gate (CLAUDE.md §2: the app lock is the security
   // boundary). Must be the first hook so its synchronous enabled-check settles

@@ -130,7 +130,10 @@ export function normalizeSourceUrl(rawUrl: string): NormalizedSource {
   const host = hostOf(url);
   if (!host) throw new RecipeFetchError('not-found', 'That doesn’t look like a URL.');
   if (isPrivateHost(host))
-    throw new RecipeFetchError('blocked', 'That URL points to a private or local address ARC won’t fetch.');
+    throw new RecipeFetchError(
+      'blocked',
+      'That URL points to a private or local address ARC won’t fetch.'
+    );
 
   if (host === 'youtu.be') {
     const m = /^https?:\/\/[^/]+\/([A-Za-z0-9_-]{5,})/.exec(url);
@@ -153,6 +156,37 @@ export function normalizeSourceUrl(rawUrl: string): NormalizedSource {
     return { url, platform: 'tiktok' };
   }
   return { url, platform: 'website' };
+}
+
+/**
+ * The provenance a URL is worth STORING, for an import that did not come off a
+ * successful fetch of it (backlog A6).
+ *
+ * The ladder's lower rungs — paste the caption, import from a screenshot — used
+ * to land a recipe with `source_url IS NULL` even when the app was holding the
+ * link the whole time: the user pastes an Instagram URL, Instagram refuses the
+ * caption, the screen says "paste the caption instead", and the recipe that
+ * results has forgotten where it came from. The link is the one fact the app
+ * knew for certain in that whole sequence.
+ *
+ * Returns null rather than throwing — a URL that will not normalize is simply
+ * no provenance, and must never fail an import that otherwise worked. Stories
+ * collapse to `instagram`: `instagram-stories` is a FETCH classification, not a
+ * platform, and the column's CHECK does not admit it.
+ */
+export function recipeSourceFromUrl(
+  rawUrl: string | null | undefined
+): { source_url: string; source_platform: RecipePlatform } | null {
+  if (!rawUrl || rawUrl.trim() === '') return null;
+  try {
+    const { url, platform } = normalizeSourceUrl(rawUrl);
+    return {
+      source_url: url,
+      source_platform: platform === 'instagram-stories' ? 'instagram' : platform,
+    };
+  } catch {
+    return null;
+  }
 }
 
 // --- The fetch ladder ---------------------------------------------------------
@@ -316,8 +350,12 @@ export async function fetchRecipeSource(
           text: embedCaption,
           platform: 'instagram',
           url,
-          author: null,
-          image_url: null,
+          // The embed page carries its own og tags. These were hardcoded null,
+          // which silently threw away the author and thumbnail on the rung the
+          // shell-UA case always lands on (A6). Both stay null when the tags
+          // are absent, which is what they were before.
+          author: extractInstagramAuthor(embed.body),
+          image_url: extractOgImage(embed.body),
         };
       }
     }
@@ -367,7 +405,11 @@ export async function fetchRecipeSource(
     platform: 'youtube',
     url,
     author: null,
-    image_url: null,
+    // The watch page carries og:image (the video's own thumbnail) and this
+    // threw it away (A6). The channel name is NOT read from og tags: YouTube's
+    // og:title is the VIDEO title, and storing that as `source_author` would be
+    // a confident wrong answer rather than an honest blank.
+    image_url: extractOgImage(body),
   };
 }
 
@@ -600,8 +642,15 @@ async function runExtractionTurn(
 
 export type ImportInput =
   | { kind: 'url'; url: string }
-  | { kind: 'text'; text: string }
-  | { kind: 'photo'; base64Jpeg: string };
+  /**
+   * `sourceUrl` on the two lower rungs is the link the user STARTED from, when
+   * there was one — the Instagram URL whose caption the fetch could not reach,
+   * so they pasted it or screenshotted it instead (A6). It is provenance only:
+   * nothing here fetches it, and it is recorded exactly as it would have been
+   * had the fetch worked.
+   */
+  | { kind: 'text'; text: string; sourceUrl?: string | null }
+  | { kind: 'photo'; base64Jpeg: string; sourceUrl?: string | null };
 
 /**
  * The whole pipeline for one input → a review-ready {@link RecipeDraft}.
@@ -633,10 +682,14 @@ export async function importRecipe(
   }
   if (input.kind === 'text') {
     const extracted = await runExtractionTurn({ kind: 'text', text: input.text }, opts.signal);
+    const from = recipeSourceFromUrl(input.sourceUrl);
     return {
       ...extracted,
-      source_url: null,
-      source_platform: null,
+      source_url: from?.source_url ?? null,
+      source_platform: from?.source_platform ?? null,
+      // Nothing was fetched on this rung, so there is no author and no
+      // thumbnail to claim. A blank is the honest value; a guess from the URL
+      // would be provenance the app invented.
       source_author: null,
       source_image_url: null,
       deterministic: false,
@@ -646,10 +699,11 @@ export async function importRecipe(
     { kind: 'photo', base64Jpeg: input.base64Jpeg, mediaType: 'image/jpeg' },
     opts.signal
   );
+  const from = recipeSourceFromUrl(input.sourceUrl);
   return {
     ...extracted,
-    source_url: null,
-    source_platform: null,
+    source_url: from?.source_url ?? null,
+    source_platform: from?.source_platform ?? null,
     source_author: null,
     source_image_url: null,
     deterministic: false,

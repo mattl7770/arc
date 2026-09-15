@@ -9,6 +9,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { cacheBarcodeFood, findFoodByBarcode } from '../src/lib/db/repositories/foods.ts';
+import { getMeal, logMealWithItems, updateMealName } from '../src/lib/db/repositories/nutrition.ts';
+import { mealNameForProduct } from '../src/lib/nutrition/format.ts';
+import { itemForPortion } from '../src/lib/nutrition/servings.ts';
 import {
   lookupOffProduct,
   normalizeBarcode,
@@ -247,6 +250,56 @@ console.log('7. lookupOffProduct over a mocked fetch');
   (await lookupOffProduct('abc', async () => mkResponse(true, 200, GREEK_YOGURT))) === null
     ? ok('a non-numeric barcode short-circuits to null (no fetch)')
     : bad('lookup non-numeric');
+}
+
+/**
+ * 8. A4: what a scanned product's meal is CALLED.
+ *
+ * The owner's report: a barcode scan lands as a meal named "Snack". That came
+ * from `daypartName(now)` — the clock's answer to a question the barcode had
+ * already answered better. This pins the naming rule and the end-to-end write,
+ * because "the name is set at creation" is a fact about the row, not about a
+ * string function.
+ */
+console.log('8. A4 — a scanned product names its own meal');
+{
+  const food = parseOffProduct(GREEK_YOGURT, '0123456789012');
+
+  mealNameForProduct(food, 'Snack') === 'Greek Yogurt · Fage'
+    ? ok('name · brand, in the order the scanner already draws them')
+    : bad('product meal name', mealNameForProduct(food, 'Snack'));
+  mealNameForProduct({ name: 'Oat milk' }, 'Snack') === 'Oat milk'
+    ? ok('no brand → just the product')
+    : bad('brandless name');
+  mealNameForProduct({ name: 'Oatly', brand: 'oatly' }, 'Snack') === 'Oatly'
+    ? ok('a brand that only repeats the name is dropped')
+    : bad('repeated brand');
+  // meals.name is NOT NULL: a nameless product must still produce a name.
+  mealNameForProduct({ name: '   ', brand: 'Fage' }, 'Lunch') === 'Lunch'
+    ? ok('a blank product name falls back to the day part, never to an empty string')
+    : bad('blank product name');
+
+  // The write, as app/barcode-scan.tsx performs it on the add that creates the
+  // meal — and then the rename path on top, because A4 must not cost it.
+  const { db } = freshDb();
+  const cached = cacheBarcodeFood(db, food);
+  const { mealId } = logMealWithItems(db, {
+    date: '2026-09-14',
+    time: '10:15',
+    name: mealNameForProduct(cached, 'Snack'),
+    items: [itemForPortion(cached, { grams: 170 })],
+  });
+  const meal = getMeal(db, mealId);
+  meal && meal.name === 'Greek Yogurt · Fage'
+    ? ok('the meal row carries the product name, not the day part')
+    : bad('meal name at creation', meal && meal.name);
+  meal && meal.name !== 'Snack' && meal.name !== 'Breakfast'
+    ? ok('and no clock-derived placeholder survives anywhere on it')
+    : bad('placeholder name');
+  updateMealName(db, mealId, 'Second breakfast');
+  getMeal(db, mealId)?.name === 'Second breakfast'
+    ? ok('renaming by hand still works over an auto-named meal')
+    : bad('updateMealName after auto-naming');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -7,6 +7,7 @@ import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
+import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -586,6 +587,7 @@ function PortionEditor({
             onChangeText={onEditGrams}
             keyboardType="decimal-pad"
             returnKeyType={KEYPAD_DONE}
+            {...selectAllOnFocus(portion.gramsText)}
             accessibilityLabel="Grams"
             className="w-16 border border-paper-deep bg-paper-dim px-2 py-2 text-right font-mono text-[13px] text-ink"
           />
