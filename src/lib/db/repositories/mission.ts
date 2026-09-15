@@ -300,6 +300,19 @@ export function countMissionEntries(db: Database, dailyLogId: string): number {
  * The cost is that an excused day carries less weight in the window's rate
  * rather than pulling it up, which is correct: it is less evidence, not more
  * success.
+ *
+ * ## What counts as "a skip" here
+ *
+ * A hand-tapped skip **and**, once the day is over, an item that was simply
+ * never touched. The first version excused only the former, which made the
+ * record say something absurd: on a Travel day the item he deliberately marked
+ * skipped was forgiven and the identical item he never opened the app to touch
+ * was held against him. The tap is bookkeeping, not virtue — the mode already
+ * said that not doing this today was the right call. Found in passing by the
+ * protocol-carryover spike (docs/spikes/protocol-carryover.md §1).
+ *
+ * The denominator rule above is unchanged and applies to both: excused leaves
+ * the denominator, and never counts as met.
  */
 export function modeExcusesSkips(mode: ModeKey): boolean {
   return getModeDefinition(mode).excusesSkips;
@@ -333,9 +346,20 @@ export interface MissionDayPoint {
    */
   skipped: number;
   /**
-   * Skipped by hand and EXCUSED by the day's mode: rest while sick, a gym
-   * session missed in a foreign city. Never a miss, and never a completion —
-   * held out of the rate's denominator entirely ({@link missionOwed}).
+   * EXCUSED by the day's mode: rest while sick, a gym session missed in a
+   * foreign city. Never a miss, and never a completion — held out of the rate's
+   * denominator entirely ({@link missionOwed}).
+   *
+   * On an excusing day this covers **both** a hand-tapped skip and an item the
+   * user simply never touched, once the day is over. Only skips used to count,
+   * which made the ledger say something absurd: on a Travel day the item he
+   * deliberately marked skipped was forgiven, and the identical item he never
+   * opened the app to touch was held against him. The mode's whole claim is that
+   * not doing this today was the right call, and not-touching is the same fact
+   * as tapping skip — the tap is bookkeeping, not virtue.
+   *
+   * **Only on a settled day.** A pending item at 09:00 is a morning, not a
+   * decision, so the current day's untouched items stay pending until it ends.
    */
   excused: number;
 }
@@ -359,12 +383,15 @@ export interface MissionDayPoint {
  * rate compute it over days where {@link missionOwed} is positive — see
  * {@link missionAdherence}.
  *
- * **Each day carries its mode**, and skips under an excusing mode are split
- * out as `excused` rather than counted as `skipped` — see
- * {@link modeExcusesSkips}. One extra query for the whole window, not one per
- * day.
+ * **Each day carries its mode**, and what an excusing mode forgives is split out
+ * as `excused` rather than counted against the day — see
+ * {@link modeExcusesSkips}. That is a hand-tapped skip, and on a day that has
+ * ENDED an untouched item too: the mode's claim is that not doing this today was
+ * the right call, and never touching it is the same fact as tapping skip. One
+ * extra query for the whole window, not one per day.
  *
- * `today` is injectable so the headless tests are deterministic.
+ * `today` is injectable so the headless tests are deterministic — and it is also
+ * what makes "the day has ended" answerable here at all.
  */
 export function missionDailySeries(
   db: Database,
@@ -372,11 +399,18 @@ export function missionDailySeries(
   today: string = todayISODate()
 ): MissionDayPoint[] {
   const dates = localDaysList(today, days);
-  const rows = db.all<{ date: string; planned: number; completed: number; skipped: number }>(
+  const rows = db.all<{
+    date: string;
+    planned: number;
+    completed: number;
+    skipped: number;
+    pending: number;
+  }>(
     `SELECT d.date AS date,
        count(*) AS planned,
        sum(CASE WHEN e.status = 'completed' THEN 1 ELSE 0 END) AS completed,
-       sum(CASE WHEN e.status = 'skipped' THEN 1 ELSE 0 END) AS skipped
+       sum(CASE WHEN e.status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
+       sum(CASE WHEN e.status = 'pending' THEN 1 ELSE 0 END) AS pending
      FROM log_entries e
      JOIN daily_logs d ON d.id = e.daily_log_id
      WHERE d.date >= ? AND d.date <= ?
@@ -397,15 +431,21 @@ export function missionDailySeries(
     const row = byDate.get(date);
     const mode = modes.get(date) ?? 'normal';
     const skipped = row?.skipped ?? 0;
+    const excusing = modeExcusesSkips(mode);
     // A skip is either excused or a miss — never both, and never neither.
-    const excused = modeExcusesSkips(mode) ? skipped : 0;
+    const excusedSkips = excusing ? skipped : 0;
+    // An UNTOUCHED item is excused too, but only once the day is over: at 09:00
+    // a pending item is a morning, not a decision, and forgiving it early would
+    // flatter the day while it is still live. `date < today` is the same
+    // settled-day test app/mission-history.tsx grades over.
+    const excusedPending = excusing && date < today ? (row?.pending ?? 0) : 0;
     return {
       date,
       mode,
       planned: row?.planned ?? 0,
       completed: row?.completed ?? 0,
-      skipped: skipped - excused,
-      excused,
+      skipped: skipped - excusedSkips,
+      excused: excusedSkips + excusedPending,
     };
   });
 }
@@ -482,7 +522,11 @@ export interface MissionItemRecord {
   completed: number;
   /** Marked skipped on a day whose mode does NOT excuse skips — a real miss. */
   skipped: number;
-  /** Marked skipped on a Sick/Travel/Social day: the right call, not a miss. */
+  /**
+   * Excused by a Sick/Travel/Social day: the right call, not a miss. Both the
+   * skips the user tapped AND the days he simply never touched it — see
+   * {@link MissionDayPoint.excused} for why those are the same fact.
+   */
   excused: number;
   /** Marked partial — real progress, so it is neither a completion nor a miss. */
   partial: number;
@@ -505,7 +549,7 @@ export interface MissionSourceRecord {
   completed: number;
   /** Skips counted against the record — see {@link MissionItemRecord}. */
   skipped: number;
-  /** Skips a mode excused. Held out of the miss count AND of `planned - excused`. */
+  /** What a mode excused. Held out of the miss count AND of `planned - excused`. */
   excused: number;
   partial: number;
   /** This source's items, worst (most missed) first. */
@@ -524,10 +568,17 @@ type SourceQueryRow = {
   storedCategory: string | null;
   planned: number;
   completed: number;
-  /** ALL skips, excused or not. The split happens below, from `excusedCount`. */
+  /** ALL skips, excused or not. The split happens below, from `excusedSkips`. */
   skipped: number;
   /** Skips that fell on a day whose mode excuses them. */
-  excusedCount: number;
+  excusedSkips: number;
+  /**
+   * UNTOUCHED rows that fell on such a day. Counted separately from
+   * {@link excusedSkips} because they were never part of `skipped`, so the two
+   * cannot be summed into one column without corrupting the skip arithmetic
+   * below — and because they are the half this query used to miss entirely.
+   */
+  excusedPending: number;
   /** Aliased away from `partial` — SQL-standard `MATCH PARTIAL` makes the bare
    *  word a parser hazard not worth taking for a column alias. */
   partialCount: number;
@@ -538,8 +589,8 @@ type SourceQueryRow = {
  *
  * The mode-aware definition, and the reason "Where it's failing" no longer
  * ranks a protocol you correctly rested from during a sick week as one you are
- * failing: an excused skip leaves the denominator instead of counting as a
- * miss ({@link modeExcusesSkips}).
+ * failing: what the mode excused leaves the denominator instead of counting as
+ * a miss — a tapped skip and an untouched item alike ({@link modeExcusesSkips}).
  */
 const missedOf = (r: { planned: number; completed: number; excused: number }): number =>
   r.planned - r.completed - r.excused;
@@ -635,7 +686,14 @@ export function missionBySource(db: Database, from: string, to: string): Mission
             sum(CASE WHEN e.status = 'completed' THEN 1 ELSE 0 END) AS completed,
             sum(CASE WHEN e.status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
             sum(CASE WHEN e.status = 'skipped' AND ${isExcusedDay} THEN 1 ELSE 0 END)
-              AS excusedCount,
+              AS excusedSkips,
+            -- An untouched row on an excusing day is excused too: the mode said
+            -- skipping was the right call, and never touching it is the same
+            -- fact. This query is only ever given SETTLED days (see the header),
+            -- so there is no live-day case to guard here — unlike
+            -- missionDailySeries, whose window ends on today.
+            sum(CASE WHEN e.status = 'pending' AND ${isExcusedDay} THEN 1 ELSE 0 END)
+              AS excusedPending,
             sum(CASE WHEN e.status = 'partial' THEN 1 ELSE 0 END) AS partialCount
        FROM log_entries e
        JOIN daily_logs d ON d.id = e.daily_log_id
@@ -663,8 +721,9 @@ export function missionBySource(db: Database, from: string, to: string): Mission
           ELSE '' END,
         e.title`,
     // Bound in TEXTUAL order: the excused-day list sits in the SELECT list,
-    // which precedes the WHERE clause.
-    [...excusedDates, from, to]
+    // which precedes the WHERE clause — and it appears TWICE there now (the
+    // excused skips, then the excused untouched), so it is bound twice.
+    [...excusedDates, ...excusedDates, from, to]
   );
 
   const byKey = new Map<string, MissionSourceRecord>();
@@ -683,21 +742,24 @@ export function missionBySource(db: Database, from: string, to: string): Mission
       };
       byKey.set(source.key, record);
     }
-    // `skipped` arrives from SQL as ALL skips; the excused ones move out of it
-    // into their own bucket so `completed + skipped + excused + partial +
-    // untouched` still sums to `planned` with one more, truer term.
-    const skipped = row.skipped - row.excusedCount;
+    // `skipped` arrives from SQL as ALL skips; only the EXCUSED SKIPS move out
+    // of it. The excused untouched rows were never in `skipped` to begin with —
+    // they come out of the leftover `untouched` term — so the two are summed
+    // only into `excused`, and `completed + skipped + excused + partial +
+    // untouched` still sums to `planned`.
+    const skipped = row.skipped - row.excusedSkips;
+    const excused = row.excusedSkips + row.excusedPending;
     record.planned += row.planned;
     record.completed += row.completed;
     record.skipped += skipped;
-    record.excused += row.excusedCount;
+    record.excused += excused;
     record.partial += row.partialCount;
     record.items.push({
       title: row.title,
       planned: row.planned,
       completed: row.completed,
       skipped,
-      excused: row.excusedCount,
+      excused,
       partial: row.partialCount,
     });
   }

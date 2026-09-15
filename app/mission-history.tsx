@@ -147,7 +147,7 @@ type MissionRecordView = {
    */
   totals: {
     planned: number;
-    /** What was actually owed: planned minus the skips the day's mode excused. */
+    /** What was actually owed: planned minus what the day's mode excused. */
     owed: number;
     completed: number;
     skipped: number;
@@ -252,9 +252,11 @@ export default function MissionHistoryScreen() {
   }
 
   // The four judged terms sum to `totals.owed` — the denominator printed beside
-  // the rate — and adding `excused` gets back to `planned`. That is why excused
-  // sits directly after skipped: they are the two halves of "was skipped", and
-  // only one of them is a miss (lib/db/repositories/mission.ts).
+  // the rate — and adding `excused` gets back to `planned`. Excused sits
+  // directly after skipped because that is where most of it comes from, but it
+  // also holds the days an item was never touched under a Sick/Travel/Social
+  // mode: not touching it is the same fact as tapping skip, and only one of
+  // those used to be forgiven (lib/db/repositories/mission.ts).
   const ledger =
     totals.planned > 0
       ? [

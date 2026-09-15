@@ -47,11 +47,13 @@ owed, so it is neither a completion nor a miss"*, because *"counting it as met
 makes `completed` a lie"* and *"'I rested correctly' and 'I did it' are different
 facts and must never render identically."*
 
-`missedOf` (`:544-546`) is `planned − completed − excused`, so an **untouched**
-row counts as a miss exactly like a hand-skip. Only rows with `status = 'skipped'`
-can be excused (`:399-401`) — which means an untouched row on a Travel day is
-counted against the user today. That asymmetry is pre-existing; §3 notes where it
-touches this design but does not change it.
+`missedOf` is `planned − completed − excused`, so an **untouched** row counts as a
+miss exactly like a hand-skip. Only rows with `status = 'skipped'` could be
+excused — which meant an untouched row on a Travel day was counted against the
+user while the identical row he tapped skip on was not. That asymmetry was
+pre-existing; §3 noted where it touched this design without changing it.
+**Fixed 2026-09-14, out of band** — an untouched row on an excusing day that has
+ENDED is excused too. See the note in §3.
 
 `removeMissionItem` (`:235-254`) is the precedent for row-level markers: a removal
 is a **tombstone**, not a delete — `status = 'skipped'` plus `value.removed`, so
@@ -255,10 +257,23 @@ is the right call. So:
   type too — free, because the carry is computed inside `planForDay`, above the
   `def.dropTypes` filter at `:230`.
 
-Note in passing: an **untouched** row on a Travel day is not `skipped`, so
-`missionDailySeries` counts it as a miss today (`:399-401`). The carry rule above
-treats untouched-on-an-excusing-day humanely, which makes the existing asymmetry
-more visible rather than less. Worth a separate look; out of scope here.
+~~Note in passing: an **untouched** row on a Travel day is not `skipped`, so
+`missionDailySeries` counts it as a miss today. The carry rule above treats
+untouched-on-an-excusing-day humanely, which makes the existing asymmetry more
+visible rather than less. Worth a separate look; out of scope here.~~
+
+> **FIXED 2026-09-14** (`claude/fixes-sept`), separately from carryover. On a day
+> whose mode excuses skips, an untouched row is now excused too **once the day
+> has ended** — in `missionDailySeries` (guarded by `date < today`, because a
+> pending item at 09:00 is a morning, not a decision) and in `missionBySource`,
+> which is only ever given settled days. The denominator rule is unchanged:
+> excused leaves the denominator and never counts as met. The by-day ledger and
+> "Where it's failing" now agree row for row. Pinned in `db/data-trends.test.mjs`
+> §13d and §13d-ii (both states on an excusing day, on a live excusing day, and
+> on a normal day).
+>
+> This removes the asymmetry the carry rule would have had to reason around, so
+> the design above inherits a simpler ledger than the one it was written against.
 
 #### The ledger: what a carried item does to adherence
 
