@@ -7,6 +7,7 @@ import {
   activeNutritionTargets,
   dailyIntakeSeries,
   dayFiberTotal,
+  firstMealDate,
   listTodayMeals,
   mealItemCounts,
   partialMealMetrics,
@@ -158,4 +159,50 @@ export function useNutrition(): NutritionDay {
   useFocusEffect(reload);
 
   return { ...state, reload };
+}
+
+// --- One PAST day, for the history screen's day view (C1) --------------------
+
+/** One day's food log — the subset of {@link NutritionDay} that is about a day
+ *  rather than about the kitchen or the fortnight. */
+export type NutritionDayView = {
+  /** The day this describes, `YYYY-MM-DD`. Echoed back so a render can never
+   *  draw one day's meals under another day's heading. */
+  date: string;
+  meals: MealRow[];
+  itemCounts: Record<string, number>;
+  /** The targets that governed THAT day — not today's. */
+  targets: NutritionTargetsRow | null;
+  partialMeals: PartialMealMetrics;
+  /** The first day ever logged, or null — the day picker's back bound. */
+  recordStart: string | null;
+};
+
+/**
+ * Read one day, whichever day it is.
+ *
+ * Every read is already keyed by `date` (the repository has taken one since the
+ * day view shipped), so browsing the past costs the same four indexed queries
+ * today costs. The one thing this does NOT reuse from {@link useNutrition} is
+ * the Kitchen counts and the 14-day series: neither is about a day, and a
+ * picker that re-ran them on every arrow tap would be paying for a section it
+ * is not moving.
+ *
+ * **`activeNutritionTargets(db, date)` is the point of the whole hook.** Targets
+ * are versioned (0015), so a Tuesday two weeks ago is judged against the targets
+ * that governed it — not against the ones set since. A history screen that
+ * applied today's targets to an old day would silently re-judge a closed day,
+ * which is the same mistake the day boundary refuses to make when it re-attributes
+ * nothing (src/lib/db/date.ts).
+ */
+export function readNutritionDay(date: string): NutritionDayView {
+  const db = getDb();
+  return {
+    date,
+    meals: listTodayMeals(db, date),
+    itemCounts: mealItemCounts(db, date),
+    targets: activeNutritionTargets(db, date) ?? null,
+    partialMeals: partialMealMetrics(db, date),
+    recordStart: firstMealDate(db),
+  };
 }

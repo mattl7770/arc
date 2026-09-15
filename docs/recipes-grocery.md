@@ -421,6 +421,74 @@ gone" state, where a missing one would strand the user completely.
 
 ---
 
+## 5c. Servings, estimated from the quantities (2026-09-14 — backlog C8)
+
+**Owner:** *"estimate number of servings for recipe imports based on quantities."*
+
+`recipes.servings` is `real NOT NULL CHECK (servings > 0)` and every per-serving number in the sub-app divides by it, so every import has to land one. Until now the review simply asked, and a source that never stated a yield left the user to guess from a wall of ingredient lines — which is arithmetic a computer should be doing. **No migration** (head stays `0045`); the reason there is none is the whole design, and it is the last section below.
+
+### The mass: only what the lines actually weigh
+
+`src/lib/recipes/servings.ts` reuses **`lineGrams`** from `src/lib/recipes/estimate.ts` rather than re-deriving it, and that function converts **mass only** — g, kg, oz, lb. A cup of flour and a cup of oil differ by density; this codebase has no density data and will not pretend to (`src/lib/recipes/ingredients.ts` states the rule, and the catalog pricing pass obeys the same one). "2 tbsp butter" and "2 cloves garlic" contribute nothing.
+
+**That biases the estimate one way, and the bias is stated out loud rather than buried.** Unweighed lines make the total too small, so the estimate reads **low** — a curry whose only weighed lines are the chickpeas and the tomatoes suggests 2 servings where the cook makes 4. Hence the coverage floor below, the coverage clause printed beside the number on the review, and the fact that the number is a suggestion rather than a default. Two further limits, neither modelled and both named in the module: these are **raw** weights (a stew loses water, a grain gains it), and **inedible mass counts** (a whole chicken goes in whole, which pushes the other way and partly offsets the first).
+
+### The table
+
+`SERVING_GRAMS` is **ARC's own portion convention, not a citation**, and it says so: a convention is arguable and a measurement is not. Its anchor is the band the backlog names — ~400–600 g per main-course serving — and every other row is scaled off that by what the dish physically *is*, each stating the everyday object it is calibrated to, so a row that is wrong for this cook is wrong *legibly*.
+
+| kind | g / serving | calibrated to |
+| --- | --- | --- |
+| `main` | 500 | a plated main: protein + starch + vegetable. The midpoint of C8's band, and the default for anything unrecognised. |
+| `soup` | 400 | a bowl — ~400 ml of mostly water, and water is 1 g/ml. Covers stews and chilis. |
+| `side` | 200 | one component of a plate rather than the plate. |
+| `baked` | 90 | a slice of loaf, a muffin, two cookies. |
+| `sauce` | 60 | a condiment portion — dressing, pesto, dip. |
+| `drink` | 350 | a glass: a smoothie or a shake. |
+
+`classifyRecipe(title)` reads the kind off the **title** with a short keyword table, most specific first (`drink` → `sauce` → `soup` → `baked` → `side`), defaulting to `main`. A title is what the author chose to call the dish, which makes it the best single signal available offline — and a miss costs a suggestion the user is about to confirm or overrule, never a stored number.
+
+### Three floors, each turning a confident wrong number into an honest absence
+
+`estimateServings` returns **null** unless all three hold:
+
+1. **At least 2 lines state a mass.** One weighed line in nine is not the recipe's mass, it is one ingredient of it.
+2. **At least half the lines state a mass.** This is the floor that answers the low-reading bias: an estimate built on a minority of the lines is wrong by an unknown amount, so it is not offered at all.
+3. **At least 100 g in total.** Below that it is a spice blend or a bad parse.
+
+Then `servings = clamp(1 … 24, round(totalGrams / perServingG))`. The cap is there so a mis-parsed quantity suggests something rather than 40.
+
+### The caption wins, and an estimate is never pre-filled
+
+This is **the 0034 provenance rule applied to a column that has no provenance beside it**: an inferred number must not wear the face of one the user asserted. `recipes.servings` has no `resolved_by`, and C8 expects no migration — so the only place the distinction can be kept is *before* the write, and it is kept absolutely (`servingsForReview`):
+
+| | the Servings field | what is drawn beside it |
+| --- | --- | --- |
+| source stated a yield | **filled with it** | nothing — the estimate is not offered, and does not argue with the author |
+| nothing stated, an estimate exists | **empty** | *ARC's estimate* · `≈ estimate` · "About 3 servings." · the basis · one outlined **Use 3** |
+| neither | **empty** | "The source didn't say — set it." (unchanged) |
+
+The Save gate has always required a positive servings, so leaving the field empty makes an unconfirmed estimate **unsaveable**, not merely unsaved: there is no path by which it reaches the database without a tap that means *yes, three*. Once the field holds a number the mark and the control both go — a standing `≈ ESTIMATE` over a figure the user asserted would invert the rule this exists to keep — and the basis survives in the margin voice **only while the field still holds the suggested number**, because printing "estimated from 1,700 g" beside a figure the user typed would credit ARC with their answer.
+
+The weaker design — pre-fill the field and mark it — was rejected for one reason: a marked pre-fill is still a number sitting in the field when Save is tapped, and the mark is then decoration over a default. **And it is why nothing had to be stored on the saved recipe: an estimate that cannot be saved unconfirmed leaves no unconfirmed estimate on a recipe to mark.** That is the whole of "no migration".
+
+The basis sentence states every input, because a suggestion the user cannot check is one they can only obey: *"1,700 g across 3 of 4 lines that give a weight, at about 500 g a main-course serving. Ingredient weights, so a dish that cooks down yields less."* `fmtInt`, never `toLocaleString` — Hermes has no `Intl`.
+
+`RecipeDraft` carries `servings_estimate` as **its own field**, never folded into `servings`, and it is computed on all four rungs including the deterministic JSON-LD one (whose lines carry no qty/unit overlay — the estimator parses raw text itself, so the no-model rung gets the same estimate without a model).
+
+### Verification
+
+- `db/recipe-import.test.mjs` **§11** — the table pinned row by row (a portion size drifting quietly is a yield drifting quietly on every later import), the keyword classifier, unit conversion, the overlay-vs-reparse path, the same mass under five titles giving five yields including the 24 cap, all three floors, and the caption-wins matrix including a `0` stated yield. Plus the JSON-LD rung end to end: stated 4, no estimate (only one line is weighed), review shows 4.
+- `db/screens-render.test.mjs` **§19** — the review itself, rendered from the exported `ReviewDraft` (the phase is unreachable in a server render: it sits behind a fetch and a model turn). It asserts the mark, the offer and the basis; that the Servings **input's `value` is empty** while the estimate is unconfirmed; that a stated yield fills it and draws no estimate; and that a draft with nothing estimable falls back to the old sentence.
+
+### What only a device can judge
+
+1. **Whether "Use 3" is reachable without scrolling** on a long ingredient list — it sits under the Servings field, above the plate.
+2. **Whether the basis sentence is read or skipped.** It is three clauses; if the owner's eye slides off it, the coverage clause is the one worth keeping.
+3. **Whether the estimate is usually close enough to accept.** The table is a convention; a fortnight of real imports is what calibrates it, and changing a row means changing the pinned test with it.
+
+---
+
 ## 6. Coach tools
 
 Eight new tools, shipped **as one batch** (each tool-list change invalidates the cached prompt prefix — batch, don't dribble). Registry goes 24 → 32 (**14 read + 18 write**). All follow the house contract: JSON-Schema inputs with `additionalProperties:false`, validation helpers, `execute` returns compact JSON (caps + omitted-count pattern — never dump a whole recipe book into a turn), every write's `confirmSummary` resolves names (never bare ids) and takes the required `CoachToolContext {now}`. **Every id a write tool consumes is an id a read tool returned** — the `list_reminders → complete_reminder` contract.

@@ -83,6 +83,22 @@ export function todayTotals(db: Database, date: string): DayTotals {
   return row ?? { kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, mealCount: 0 };
 }
 
+/**
+ * The first day a meal was ever logged, or null on a database that holds none —
+ * the back bound of the history screen's day picker (C1).
+ *
+ * The picker needs a floor for the same reason app/water.tsx clips its by-day
+ * list to `waterRecordStart`: without one the back arrow steps for ever through
+ * days that never existed, and "Nothing logged on Tuesday" stops being a fact
+ * about the record and becomes a fact about the calendar. `date` sorts
+ * chronologically as text, which is the whole reason the schema stores it that
+ * way, so this is `min()` and an index hit rather than a scan through rows.
+ */
+export function firstMealDate(db: Database): string | null {
+  const row = db.get<{ date: string | null }>(`SELECT min(date) AS date FROM meals`);
+  return row?.date ?? null;
+}
+
 export interface DayIntakePoint {
   date: string;
   kcal: number;

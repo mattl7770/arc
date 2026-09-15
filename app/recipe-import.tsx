@@ -7,6 +7,7 @@ import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
+import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -20,6 +21,7 @@ import {
   RecipeImportUnavailableError,
   type RecipeDraft,
 } from '@/lib/recipes/import';
+import { servingsEstimateBasis, servingsForReview } from '@/lib/recipes/servings';
 import { consumeIncomingShare, readSharedImageBase64 } from '@/lib/recipes/incoming-share';
 import { VIDEO_SHARE_MESSAGE } from '@/lib/recipes/share-payload';
 
@@ -439,9 +441,40 @@ function ingredientNote(lines: ReviewLine[]): string {
   return `${kept} of ${lines.length} lines`;
 }
 
-function ReviewDraft({ draft, onSaved }: { draft: RecipeDraft; onSaved: (id: string) => void }) {
+/**
+ * Exported for db/screens-render.test.mjs, and only for that.
+ *
+ * The review is the third phase of an async ladder — a fetch, then a model
+ * turn — so it is unreachable from a server render of the screen, where no
+ * effect runs and there is neither network nor key. It is also the phase that
+ * carries C8's whole provenance rule (an estimate is marked, and is unsaveable
+ * until confirmed), which is exactly the sort of claim that must not rest on a
+ * source scan. Expo Router reads a route module's DEFAULT export; a named one
+ * beside it is inert.
+ */
+export function ReviewDraft({
+  draft,
+  onSaved,
+}: {
+  draft: RecipeDraft;
+  onSaved: (id: string) => void;
+}) {
   const [title, setTitle] = useState(draft.title);
-  const [servings, setServings] = useState(draft.servings !== null ? String(draft.servings) : '');
+  /**
+   * The servings field, and the one rule that governs it (C8).
+   *
+   * `servingsForReview` reconciles the two facts a draft can carry: the yield
+   * the SOURCE stated, and ARC's own estimate from the ingredient weights. The
+   * source always wins; an estimate NEVER pre-fills. So when there is only an
+   * estimate this starts EMPTY, and the Save gate below — which has always
+   * required a positive servings — is what makes an unconfirmed estimate
+   * unsaveable rather than merely un-saved. The full argument is at
+   * `servingsForReview`.
+   */
+  const [{ value: initialServings, estimate }] = useState(() =>
+    servingsForReview(draft.servings, draft.servings_estimate)
+  );
+  const [servings, setServings] = useState(initialServings !== null ? String(initialServings) : '');
   const [lines, setLines] = useState<ReviewLine[]>(
     draft.ingredients.map((i) => ({
       raw: i.raw_text,
@@ -526,12 +559,74 @@ function ReviewDraft({ draft, onSaved }: { draft: RecipeDraft; onSaved: (id: str
             onChangeText={setServings}
             keyboardType="decimal-pad"
             returnKeyType={KEYPAD_DONE}
+            // An amount field that arrives filled — by the estimate's own
+            // control, or by the source — is one the user replaces wholesale.
+            {...selectAllOnFocus(servings)}
             placeholder="4"
             placeholderTextColor={palette.inkMuted}
             className="mt-2 min-h-[46px] border border-paper-deep bg-paper-dim px-2.5 py-2 text-center font-mono text-[15px] text-ink"
           />
         </View>
-        {draft.servings === null ? (
+
+        {/* THE ESTIMATE (C8). Present only when the source stated no yield and
+            enough of the lines carry a weight to guess from — so it never
+            argues with a caption that said "serves 4".
+
+            It is drawn as an unconfirmed reading and marked as one: the `≈` and
+            the muted eyebrow are the same treatment every AI-derived number in
+            this sub-app wears, and the basis sentence states every input so the
+            suggestion can be CHECKED rather than only obeyed. The control is
+            outlined, never pine: the accent of this phase is the write, and
+            accepting a suggestion is not the write.
+
+            Once the field holds a number the mark comes off and the control
+            goes — the number in the field is the user's now, whether they took
+            the suggestion or typed over it, and a standing "≈ ESTIMATE" over a
+            figure the user asserted would be the exact inversion of the rule
+            this whole thing exists to keep.
+
+            The basis survives in the margin voice, but ONLY while the field
+            still holds the suggested number: it is provenance, and printing
+            "estimated from 1,850 g" beside a figure the user typed themselves
+            would credit ARC with their answer. */}
+        {estimate ? (
+          servings.trim() === '' ? (
+            <View className="mt-3">
+              <SectionLabel
+                label="ARC’s estimate"
+                accessory={
+                  <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                    ≈ estimate
+                  </Text>
+                }
+              />
+              <Text className="mt-1.5 font-serif text-[14px] leading-6 text-ink">
+                {`About ${estimate.servings} serving${estimate.servings === 1 ? '' : 's'}.`}
+              </Text>
+              <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
+                {servingsEstimateBasis(estimate)}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Use ${estimate.servings} servings`}
+                onPress={() => setServings(String(estimate.servings))}
+                className="mt-3 min-h-[46px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+                <Ionicons name="checkmark" size={16} color={palette.inkSecondary} />
+                <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
+                  {`Use ${estimate.servings}`}
+                </Text>
+              </Pressable>
+            </View>
+          ) : servings.trim() === String(estimate.servings) ? (
+            <View className="mt-3">
+              <Block device="margin">
+                <Text className="font-serif text-[13px] leading-5 text-ink-muted">
+                  {`Estimated from ${servingsEstimateBasis(estimate)}`}
+                </Text>
+              </Block>
+            </View>
+          ) : null
+        ) : draft.servings === null ? (
           <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
             The source didn’t say — set it.
           </Text>

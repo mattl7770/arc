@@ -188,6 +188,26 @@ export function shiftISODate(date: string, delta: number): string {
 }
 
 /**
+ * The day of the week a `YYYY-MM-DD` falls on, as `Date`'s own index
+ * (0 = Sunday … 6 = Saturday). Calendar arithmetic over a day that has already
+ * been attributed, so — like {@link shiftISODate} — the boundary has no say.
+ *
+ * The arithmetic half lives here because this file is where day arithmetic is
+ * done: parsed componentwise (never `new Date('YYYY-MM-DD')`, which some
+ * runtimes read as UTC midnight and would print Monday's name over a Sunday
+ * west of Greenwich) and noon-anchored, so a zone that shifts at midnight
+ * cannot move it. {@link localWeekRange} made exactly this call inline and now
+ * reads it from here, so there is one expression to get wrong rather than two.
+ *
+ * The weekday NAMES are a display table and stay with whatever is displaying
+ * them (src/lib/utils/day-cursor.ts, for the day picker).
+ */
+export function weekdayIndex(date: string): number {
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  return new Date(y, m - 1, d, 12, 0, 0, 0).getDay();
+}
+
+/**
  * The UTC instant range `[startUtc, endUtc)` covering the LOGICAL day `now`
  * falls in — from the boundary on that day to the boundary on the next. Tables
  * keyed by a `date` column (daily_logs, wearable_data) filter on that column
@@ -228,8 +248,7 @@ export function localWeekRange(
   dayStartsAt: string = installedDayStartsAt
 ): { start: string; end: string } {
   const today = logicalDate(now, dayStartsAt);
-  const [y, m, d] = today.split('-').map(Number) as [number, number, number];
-  const sinceMonday = (new Date(y, m - 1, d, 12, 0, 0, 0).getDay() + 6) % 7; // getDay: 0 = Sunday
+  const sinceMonday = (weekdayIndex(today) + 6) % 7; // weekdayIndex: 0 = Sunday
   return { start: shiftISODate(today, -sinceMonday), end: shiftISODate(today, 6 - sinceMonday) };
 }
 

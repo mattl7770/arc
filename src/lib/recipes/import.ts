@@ -32,6 +32,7 @@ import {
   pageTextForModel,
 } from './extract';
 import { parseIngredientLine } from './ingredients';
+import { estimateServings, type ServingsEstimate } from './servings';
 import type { NewRecipeIngredient, RecipePlatform } from './types';
 
 // --- Draft: what every import path hands the review screen -------------------
@@ -39,6 +40,8 @@ import type { NewRecipeIngredient, RecipePlatform } from './types';
 /** A review-ready draft — nothing here has touched the database. */
 export type RecipeDraft = {
   title: string;
+  /** The yield the SOURCE stated, or null. Never ARC's estimate — those are
+   *  two different facts and the review must be able to tell them apart. */
   servings: number | null;
   prep_min: number | null;
   cook_min: number | null;
@@ -52,6 +55,17 @@ export type RecipeDraft = {
   notes: string | null;
   /** True when the draft came from deterministic JSON-LD (no model involved). */
   deterministic: boolean;
+  /**
+   * ARC's own guess at the yield from the ingredient weights (C8), or null when
+   * too little is weighed to guess from. **Deliberately a separate field from
+   * `servings`**, and never folded into it: the review offers this as a
+   * suggestion the user confirms, and `servingsForReview`
+   * (src/lib/recipes/servings.ts) is where the two are reconciled — the source's
+   * stated yield always wins, and an unconfirmed estimate never reaches the
+   * database. Populated even when `servings` is stated, so the rule stays a
+   * rule the review applies rather than one the pipeline pre-applied.
+   */
+  servings_estimate: ServingsEstimate | null;
 };
 
 // --- Errors: the honest tri-state + unavailability ----------------------------
@@ -305,6 +319,14 @@ export async function fetchRecipeSource(
           source_image_url: jsonld.image_url,
           notes: null,
           deterministic: true,
+          // A JSON-LD draft carries RAW lines only (no qty/unit overlay), which
+          // estimateServings handles by parsing each line itself — so the
+          // no-model rung gets the same estimate the model rungs do, without a
+          // model.
+          servings_estimate: estimateServings(
+            jsonld.title,
+            jsonld.ingredients.map((raw) => ({ raw_text: raw }))
+          ),
         },
       };
     }
@@ -678,6 +700,7 @@ export async function importRecipe(
       source_author: source.author,
       source_image_url: source.image_url,
       deterministic: false,
+      servings_estimate: estimateServings(extracted.title, extracted.ingredients),
     };
   }
   if (input.kind === 'text') {
@@ -693,6 +716,7 @@ export async function importRecipe(
       source_author: null,
       source_image_url: null,
       deterministic: false,
+      servings_estimate: estimateServings(extracted.title, extracted.ingredients),
     };
   }
   const extracted = await runExtractionTurn(
@@ -707,5 +731,6 @@ export async function importRecipe(
     source_author: null,
     source_image_url: null,
     deterministic: false,
+    servings_estimate: estimateServings(extracted.title, extracted.ingredients),
   };
 }
