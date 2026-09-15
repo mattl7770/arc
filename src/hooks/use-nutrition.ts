@@ -8,7 +8,6 @@ import {
   dailyIntakeSeries,
   dayFiberTotal,
   listTodayMeals,
-  mealItemCounts,
   partialMealMetrics,
   todayTotals,
   type DayIntakePoint,
@@ -47,8 +46,6 @@ export type NutritionDay = {
   totals: DayTotals;
   /** Day fiber summed from meal items (manual meals never record it). */
   fiberTotal: number;
-  /** meal_id → item count, for the "· N items" meta on itemized meals. */
-  itemCounts: Record<string, number>;
   /** The target set governing today, or null until targets are first set. */
   targets: NutritionTargetsRow | null;
   /** meal_id → metrics that meal is knowingly SHORT on (an item was never
@@ -117,7 +114,6 @@ function readToday(): Omit<NutritionDay, 'reload'> {
     meals: listTodayMeals(db, date),
     totals: todayTotals(db, date),
     fiberTotal: dayFiberTotal(db, date),
-    itemCounts: mealItemCounts(db, date),
     targets: activeNutritionTargets(db, date) ?? null,
     partialMeals: partialMealMetrics(db, date),
     kitchen: readKitchen(db, date),

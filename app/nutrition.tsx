@@ -16,7 +16,8 @@ import {
   type KitchenCounts,
   type OverTime,
 } from '@/hooks/use-nutrition';
-import { fmtInt, macroLine } from '@/lib/nutrition/format';
+import { barFigure } from '@/lib/nutrition/bar';
+import { fmtInt, macroCells } from '@/lib/nutrition/format';
 import {
   dayFigure,
   unguardedNote,
@@ -115,7 +116,35 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  * `Photo` and `Describe` are the screen's only accent in every state; `Set
  * daily targets` and `Other ways to log` are outlined and stay outlined. The
  * full argument for why two pine buttons is one claim and not two is at the
- * buttons.
+ * buttons. A met macro bar's pine fill is a **state mark** (the class the budget
+ * admits by name — completion stamps, 00-design-spec.md §2), not a fourth claim
+ * to being the next action.
+ *
+ * ## Readability (C6, 2026-09-14 — docs/spikes/nutrition-readability.md)
+ *
+ * *"Macro stats more visible (bars / colours against targets) and more macro
+ * information per individual meal on the overview."* Two requests, answered
+ * separately:
+ *
+ * 1. **A bar under the kcal figure and under every macro cell, in BOTH modes.**
+ *    The shipped rule was drawn once, under the hero, and only in `eaten` mode —
+ *    which is the FALLBACK mode, so a well-logged day had no bar anywhere on the
+ *    screen. The withheld-in-`remaining` reasoning (a countdown over a filling
+ *    bar is "two opposite encodings of one quantity") is answered rather than
+ *    overruled: they are two halves of one sentence, not two encodings. The bar
+ *    draws `eaten` against `target`, the number states `left`, the denominator
+ *    names `target`, and `eaten + left = target` reconciles on the cell — the
+ *    ledger rule stated positively (00-design-spec.md §5). See {@link MacroBar}.
+ * 2. **Per-meal macros, always, as aligned mono cells.** They used to lose to
+ *    the meal's note outright (`meal.notes ?? macros`), so an AI-estimated meal —
+ *    which always carries the model's note — showed no macros at all. Both are
+ *    drawn now, and the macros are three fixed columns rather than a joined
+ *    string, because a table's value is its columns. See {@link MealRowItem}.
+ *
+ * **The boundary, written down:** per-meal gets NUMBERS, the day gets BARS. Four
+ * gauges a row, twenty rows deep, is the data dump CLAUDE.md §5 exists to
+ * prevent — and the bars here replace bare numbers rather than adding a second
+ * dashboard.
  */
 
 /** The Today grid's three counted-down macros. Fiber is deliberately absent —
@@ -143,7 +172,10 @@ function MacroCell({ label, figure }: { label: string; figure: DayFigure }) {
   const over = remaining && figure.remaining < 0;
   const value = remaining ? Math.abs(figure.remaining) : figure.eaten;
   const mode = over ? `${label} over` : remaining ? `${label} left` : label;
-  const denominator = figure.target !== null ? `of ${Math.round(figure.target)} g` : 'g';
+  // Bound once: `DayFigure` is a union whose `eaten` branch may carry a null
+  // target, and the same narrowing serves the denominator and the bar.
+  const target = figure.target;
+  const denominator = target !== null ? `of ${Math.round(target)} g` : 'g';
   return (
     <View>
       <Text
@@ -155,6 +187,10 @@ function MacroCell({ label, figure }: { label: string; figure: DayFigure }) {
       {/* The target survives the over case: "12 / of 180 g" keeps the frame of
           reference the cell exists to provide. */}
       <Text className="mt-0.5 font-mono text-[11px] text-ink-secondary">{denominator}</Text>
+      {/* The picture of the term that has no picture. `eaten` against `target`,
+          whichever mode the NUMBER above is in — a cell showing "86 left" is
+          showing 94 of 180 eaten, and the two reconcile. */}
+      {target !== null ? <MacroBar eaten={figure.eaten} target={target} /> : null}
     </View>
   );
 }
@@ -180,40 +216,142 @@ function targetsCorner(
   return { label: 'Edit targets', mono: false };
 }
 
-/** A square progress rule — drawn only under an EATEN reading, where a bar that
- *  fills as you eat agrees with the number above it. A remainder counts down, so
- *  it carries no rule: two opposite encodings of one quantity, adjacent, is the
- *  kind of mark §5 rules out. Neutral ink, never the accent, never a signal. */
-function TargetRule({ value, target }: { value: number; target: number }) {
-  const met = value >= target;
+/**
+ * One progress bar: what has been eaten against what the target is. Drawn under
+ * the kcal hero and under each macro cell, in BOTH modes, whenever a target
+ * governs the metric — a metric with no target draws no bar, because there are
+ * no denominators until targets exist (00-design-spec.md §5).
+ *
+ * ## Colour — the accent, never a signal, and never hue alone
+ *
+ * Progress against a target is BEHAVIOUR, so it takes the accent. The firewall
+ * (00-design-spec.md §2) runs in both directions: *"Signal colours mark
+ * biological state only… Conversely the accent never marks biology."* A
+ * `bio-caution` carbs bar would breach the rule the spec calls sacred, and it
+ * would also be the "red numbers over target" the sub-app rejected on cited
+ * behavioural grounds (docs/nutrition-subapp.md §8) — actively wrong for a
+ * gaining goal, where over target is a good day.
+ *
+ * **Measured against the plate, 2026-09-14 (WCAG 1.4.11 asks 3:1 for non-text):**
+ *
+ * | part | token | on the rail |
+ * | --- | --- | --- |
+ * | rail | `paper-deep` `#C6C1B0` | — (it is the ground) |
+ * | fill, under target | `ink-secondary` `#443F30` | **5.83:1** ✓ |
+ * | fill, at/over target | `pine` `#12454E` | **5.87:1** ✓ |
+ * | terminator (at/over only) | `ink` `#1C1911` | **9.74:1** ✓, and **1.66:1** against the pine beside it |
+ *
+ * and the pair that decides the design: **`pine` against `ink-secondary` is
+ * 1.01:1** — the same luminance. Switching the fill's hue at target is, on its
+ * own, an invisible state change; it is the identical defect the pillar cells
+ * were rewritten to fix (src/components/home/readiness-strip.tsx — four signal
+ * swatches at 1.06–1.59:1, *"to anyone not perceiving hue they are one grey"*).
+ * So completion carries **three** cues, only one of which is hue:
+ *
+ *   1. **geometry** — a filled 2pt `ink` terminator appears at the rail's right
+ *      end. A drafting mark: this measurement is closed.
+ *   2. **hue** — the fill turns pine, which is what pine means everywhere else
+ *      (completion stamps).
+ *   3. **words** — the cell's label already flips `PROTEIN LEFT` → `PROTEIN
+ *      OVER`, and the hero already says `kcal over`.
+ *
+ * The rail itself is `paper-deep` on the sheet, 1.42:1 — deliberately under
+ * threshold and deliberately not a mark: a rail is the GROUND a reading sits in,
+ * the way a well is the ground an input sits in. What has to be legible is the
+ * fill against it, and that is the table above.
+ *
+ * **This settles docs/nutrition-subapp.md §2 (pine at target) against the
+ * shipped `bg-ink`, in favour of the spec** — and explains why the code's `ink`
+ * was not simply wrong: `ink` on `ink-secondary` is 1.66:1, a real if small
+ * luminance step, which is more than pine alone gives. The terminator keeps that
+ * step *and* gets the meaning.
+ *
+ * 4px, up from 3px: 3px is 9 device pixels at @3x and reads as a hairline, while
+ * 6–8px would cross from rule into gauge — layering here is borders and the
+ * paper triad, and a fat filled bar is the one thing on this sheet that would
+ * read as a widget.
+ *
+ * Filled views on a filled track, never a border: a one-sided border width
+ * beside a border colour is the shape that drops RN off its CoreAnimation border
+ * path (src/components/ui/block.tsx).
+ *
+ * **It says nothing to VoiceOver.** The cell above already speaks the same fact
+ * in words; a bar that read as "seventy-two percent" beside a number that says
+ * "86 left" would be two readings of one quantity — which is, for once, exactly
+ * what the old withheld-in-`remaining` rule was right to worry about.
+ */
+function MacroBar({ eaten, target }: { eaten: number; target: number }) {
+  const { fillPct, met } = barFigure(eaten, target);
   return (
-    <View className="mt-1.5 h-[3px] bg-paper-deep">
+    <View
+      accessibilityElementsHidden
+      importantForAccessibility="no"
+      className="relative mt-1.5 h-[4px] bg-paper-deep">
       <View
-        className={met ? 'h-[3px] bg-ink' : 'h-[3px] bg-ink-secondary'}
-        style={{ width: `${Math.min(100, (value / target) * 100)}%` }}
+        className={met ? 'h-[4px] bg-pine' : 'h-[4px] bg-ink-secondary'}
+        style={{ width: `${fillPct}%` }}
       />
+      {/* The terminator. Absolutely positioned at the rail's right end rather
+          than appended after the fill, so it marks where the TARGET is and not
+          where the fill happens to stop — they are the same point only because
+          the fill caps at 100%, and the mark must not move if that ever changes. */}
+      {met ? <View className="absolute right-0 top-0 h-[4px] w-[2px] bg-ink" /> : null}
     </View>
   );
 }
 
-/** One "Eaten today" row — the whole row pushes the meal's detail screen. */
+/** Whole class literals — Tailwind's scanner never sees a built fragment. The
+ *  first two cells are fixed so the macros form COLUMNS down the day (a record
+ *  is a table, and a table's value is its columns); the last one takes what is
+ *  left, which is what keeps a narrow phone truncating instead of overflowing
+ *  into the kcal figure. 52pt fits a three-digit carb figure at 11px mono. */
+const MACRO_CELL = 'w-[52px]';
+const MACRO_CELL_LAST = 'flex-1';
+
+/**
+ * One "Eaten today" row — the whole row pushes the meal's detail screen.
+ *
+ * ## The note no longer eats the macros (C6)
+ *
+ * The body used to be `meal.notes ?? [macros, itemCount].join(' · ')`, and that
+ * `??` was a silent loss: an AI-estimated meal ALWAYS carries the model's note
+ * (app/meal-estimate.tsx writes it onto the meal), so the meals most worth
+ * inspecting were exactly the ones whose macros were never drawn. Both are drawn
+ * now, on their own lines — the note in the reading face, the macros in the
+ * measuring one.
+ *
+ * ## Three cells, not a joined string
+ *
+ * `P 31g  C 28g  F 19g` at **11px mono**, each in its own fixed cell, so protein
+ * is scannable straight down the day. 11px is deliberate: the metadata band is
+ * 9.5–10px and it is for labels, captions and timestamps, while a macro the
+ * owner has just asked to see MORE of is the row's second measurement, not
+ * metadata. It keeps this tab's existing 11px floor and still drops one step
+ * below the 12px line it replaces, which is what buys the column widths.
+ *
+ * **Absence stays absent.** A meal that recorded only protein draws `P 31g` and
+ * an empty carbs cell — never a fabricated `0` — and a meal with no macros at
+ * all draws no strip. Macro grams are macro grams whatever the portion was
+ * measured in, so nothing here is touched by the `ml` unit (0047); this row
+ * prints no portion at all, which is the reason it cannot be.
+ *
+ * **The item count is gone from this row**, per the spike's recommended answer:
+ * it told you how the meal was ENTERED, not what was in it, and the two do not
+ * both fit on a narrow phone. It is still on the meal's own screen, under Items.
+ *
+ * No bar here, deliberately — see the boundary in this file's header.
+ */
 function MealRowItem({
   meal,
-  itemCount,
   first,
   onPress,
 }: {
   meal: MealRow;
-  itemCount: number;
   first: boolean;
   onPress: () => void;
 }) {
-  const macros = macroLine(meal);
-  const detail =
-    meal.notes ??
-    [macros, itemCount > 0 ? `${itemCount} item${itemCount === 1 ? '' : 's'}` : null]
-      .filter(Boolean)
-      .join(' · ');
+  const cells = macroCells(meal);
+  const hasMacros = cells.some((cell) => cell.text !== null);
   const unrecorded = meal.kcal == null;
   return (
     <View>
@@ -235,16 +373,32 @@ function MealRowItem({
             <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
               Nothing recorded — tap to fill it in
             </Text>
-          ) : detail !== '' ? (
-            <Text
-              className={
-                meal.notes
-                  ? 'mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary'
-                  : 'mt-0.5 font-mono text-[12px] leading-4 text-ink-secondary'
-              }>
-              {detail}
-            </Text>
-          ) : null}
+          ) : (
+            <>
+              {meal.notes ? (
+                <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+                  {meal.notes}
+                </Text>
+              ) : null}
+              {hasMacros ? (
+                <View className="mt-0.5 flex-row">
+                  {cells.map((cell, index) => (
+                    <View
+                      key={cell.key}
+                      className={index === cells.length - 1 ? MACRO_CELL_LAST : MACRO_CELL}>
+                      {cell.text !== null ? (
+                        <Text
+                          numberOfLines={1}
+                          className="font-mono text-[11px] leading-4 text-ink-secondary">
+                          {cell.text}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+            </>
+          )}
         </View>
         {/* The rounding site of record: `fmtInt` rounds here, and the Today
             corner totals these rounded rows rather than rounding again from the
@@ -394,7 +548,7 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
   // Which of this file's two routes is rendering — passed in by the one that
   // knows (app/(tabs)/eat.tsx), never inferred. See the header note above.
   const isTabRoot = asTab;
-  const { meals, itemCounts, targets, partialMeals, kitchen, overTime, reload } = useNutrition();
+  const { meals, targets, partialMeals, kitchen, overTime, reload } = useNutrition();
   const [logOpen, setLogOpen] = useState(false);
 
   const targetFor = (metric: DayMetric): number | null => {
@@ -417,6 +571,9 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     },
     partialMeals
   );
+  // Narrowed once, for the hero's bar: `DayFigure`'s `eaten` branch may carry a
+  // null target, its `remaining` branch never does.
+  const kcalTarget = kcal.target;
   const corner = targetsCorner(targets, kcal.eaten);
   const recipes = recipeDetail(kitchen);
   const grocery = groceryDetail(kitchen);
@@ -480,9 +637,11 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                 </Text>
               </View>
 
-              {kcal.mode === 'eaten' && kcal.target !== null ? (
-                <TargetRule value={kcal.eaten} target={kcal.target} />
-              ) : null}
+              {/* In BOTH modes now (C6). The hero says what is LEFT and the bar
+                  says how much of the target is EATEN; the corner above states
+                  the same ledger in words. Three statements of one day, none of
+                  them the same encoding. */}
+              {kcalTarget !== null ? <MacroBar eaten={kcal.eaten} target={kcalTarget} /> : null}
 
               {/* THE BOXES ARE THE DEVICE'S NOW. The owner asked for boxes on
                   2026-08-11 while the grid device drew nothing; the same week
@@ -626,7 +785,6 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                 <MealRowItem
                   key={meal.id}
                   meal={meal}
-                  itemCount={itemCounts[meal.id] ?? 0}
                   first={index === 0}
                   onPress={() => router.push({ pathname: '/meal-detail', params: { id: meal.id } })}
                 />
