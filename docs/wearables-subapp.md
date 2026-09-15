@@ -1007,3 +1007,97 @@ ambient zone, so history recomputed after a timezone change genuinely *changes* 
 converges cleanly instead of leaving debris, which is a different and smaller claim than
 being correct. The spike's §10 (an offset parameter on the mapper, so the move can be tested
 without a child process carrying `TZ=`) remains the open work.
+
+---
+
+## 17. Ingested workouts are joined to ARC's own (D3, 2026-09-14, migration 0054)
+
+Backlog **D3**, and the first slice of `docs/spikes/ingested-workouts.md`. The owner's ask:
+*"auto-pair an ingested session with a manually logged one by time, pulling calories and other
+data into the manual session."*
+
+### 17.1 The defect it closes
+
+§13 argued for keeping the workout log because *"the Coach reads these rows"*. That is true,
+and it was also the bug: the Coach reads `metric_type = 'workout'` minutes through
+`get_metric_series`, **and** reads `workouts` through `get_training_summary`. A session logged
+in ARC and also recorded by the watch appeared in both, with nothing able to reconcile them —
+one 60-minute lift plus a 40-minute walk could be reported as 100 minutes of training for the
+lift alone. Pairing is what finally makes the subtraction possible.
+
+### 17.2 The rule
+
+**Overlap, not duration, and exactly one definition of it.** A manual session and an ingested
+one are the same session when their spans share at least `SAME_SESSION_OVERLAP` (0.5) of the
+*shorter* one — the identical predicate `recentWearableWorkouts` already uses to collapse the
+two-recorder duplicate (§4). `overlapFraction`, `workoutSpan` and `SOURCE_PRIORITY` are now
+exported from the wearables repository so pairing borrows them whole; a second threshold would
+agree with the first only until one of them was tuned.
+
+The manual side needs a span, which a `workouts` row did not have. **0054 adds
+`workouts.started_at`**, nullable, and only the live logger writes it. Null means "no knowable
+span", so a backdated log, a photo import and anything the Coach writes **never auto-pair** —
+a wrong pair would pull a run's 600 kcal into a lifting session and no screen would show that
+as wrong. The migration backfills `created_at − duration_min` only where the row was written
+on the day it is about, the duration is present and under six hours.
+
+**The day is an index filter; the overlap is the rule.** Candidates are pre-filtered to the
+session's day ±1, because `workouts.date` is a LOGICAL day (it can start at 04:00) and
+`wearable_data.date` is the calendar day the workout *ended* — one hour of training can
+legitimately carry two day strings. Widening the filter cannot create a false pair: two
+genuinely different sessions do not share a clock.
+
+**Ties, stated and deterministic.** Two ingested rows over one session resolve by
+`SOURCE_PRIORITY`, then the longer span, then `created_at`, then `id` — 0042's own ordering.
+Two sessions over one ingested row resolve by iteration order (`date`, `started_at`,
+`created_at`, `id`). Re-running the pass is a no-op: both sides exclude what is already
+linked.
+
+**When it runs:** at the end of every HealthKit sync *and* on workout save, because either
+side can arrive second.
+
+### 17.3 The link table, and why nothing is copied
+
+`workout_ingest_links` (0054) holds `workout_id`, `wearable_id`, `linked_by` (`auto` | `user`)
+and the `overlap` that justified an automatic link. **Its two unique indexes ARE the
+one-to-one guarantee** — not the pairing code, because code is where a one-to-one guarantee
+goes to die. Both sides `ON DELETE CASCADE`: deleting the ARC session frees the mirror to
+re-pair, and deleting the ingested row (which a re-sync legitimately does) leaves the session
+whole.
+
+kcal, distance, duration and activity are **joined at read time, never copied**.
+`wearable_data` is a mirror that corrects itself on the trailing window, so a copied calorie
+figure would go stale with nothing to repair it — and it would be a second source of truth for
+a number the app already holds. A hand link (`linked_by = 'user'`, written when the owner fills
+in a blank) replaces an automatic one: an assertion outranks an inference.
+
+### 17.4 What changed for the reader
+
+- **Data › Wearables** still lists a paired session — this screen *is* the ingest record — but
+  marks it `· logged in ARC`, so nobody counts it as a second workout.
+- **The Coach's `workout` metric** now reports only sessions ARC has no log for, and its label
+  and `aggregation` say so in words. `get_training_summary` gains `ingestedSessions` listing
+  exactly those, with a note that they are already excluded from the totals above.
+- **The Train hub** shows what the watch measured beside what the owner typed, and asks about
+  strength-coded sessions it refuses to guess at (`docs/exercise-subapp.md` §11).
+
+### 17.5 HR is deferred, and it is the one thing that is not free
+
+kcal, distance, duration and activity are already stored by `workoutRows`. Avg/max HR *during*
+a workout is not: it needs `HKQuantityTypeIdentifierHeartRate` added to the read scopes, a row
+in `METRIC_COVERAGE` (its tripwire refuses a scope with no audit row, §12) and a per-session
+sample query over the span. The owner's call was **ship pairing now, add HR once pairing is
+observed working on device**.
+
+### 17.6 Tests
+
+`db/wearables.test.mjs` §21: two overlapping recorders produce exactly one link, attached to
+the logged session, resolved to the `SOURCE_PRIORITY` winner, carrying `linked_by` and the
+overlap; re-running links nothing new; a re-sync corrects the row in place without re-pairing,
+and the corrected kcal is visible *through* the link; both unique indexes refuse a second link;
+a non-overlapping hour and the same hour a day earlier refuse to pair; a session with no
+`started_at` never auto-pairs; one watch record can only ever be claimed once; the
+double-count goes from 100 minutes to 40; the wearables list marks rather than hides; both
+CASCADEs behave; a hand link replaces an automatic one and records no overlap.
+`db/coach-tools.test.mjs` §38 pins the same defect at the tool boundary, across both tools and
+the snapshot.

@@ -16,7 +16,8 @@ import type { Database } from '../database';
 import { getExercise, listExercises } from './exercise-catalog';
 import { listMuscleAnchors } from './muscle-anchors';
 import { getRoutine, listRoutines } from './routines';
-import { exerciseSessionTops, recentMuscleLoads, weeklyMuscleSets } from './training-stats';
+import { exerciseSessionTops, weeklyMuscleSets } from './training-stats';
+import { muscleLoadsForFreshness } from './workout-ingest';
 import {
   ANCHOR_MUSCLES,
   FRESHNESS_LOOKBACK_DAYS,
@@ -153,8 +154,12 @@ export function buildRecommendation(
   // Hand-set anchors ride along (0037): a correction made on the freshness
   // screen has to reach what the app RECOMMENDS, or the figure and the session
   // it proposes are reading two different bodies.
+  // Logged sets AND the loads inferred from unpaired ingested sessions (0054) —
+  // what the owner did, however ARC found out about it. A run the watch recorded
+  // has to reach what the app RECOMMENDS, or it will happily offer legs the
+  // morning after one.
   const ledger = muscleFreshness(
-    recentMuscleLoads(db, FRESHNESS_LOOKBACK_DAYS, now),
+    muscleLoadsForFreshness(db, FRESHNESS_LOOKBACK_DAYS, now),
     now,
     listMuscleAnchors(db)
   );

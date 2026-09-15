@@ -10,7 +10,7 @@
  * exercises.measures + workout_sets.distance_m).
  */
 import type { Measures } from './measures';
-import type { DateString, Timestamp } from '@/lib/db/types';
+import type { DateString, Timestamp, WearableDevice } from '@/lib/db/types';
 
 // ---------------------------------------------------------------------------
 // workouts / workout_sets (0003, enriched by 0013)
@@ -31,6 +31,13 @@ export type WorkoutRow = {
   duration_min: number | null;
   notes: string | null;
   routine_id: string | null;
+  /**
+   * When the session began (0054), or null when it has no knowable span — a
+   * backdated log, a photo import, anything written before 0054. Only the live
+   * logger writes it, and pairing with an ingested HealthKit session is the only
+   * thing that reads it.
+   */
+  started_at: Timestamp | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -70,6 +77,13 @@ export type LogWorkoutInput = {
   notes?: string | null;
   /** Set when the session was started from a routine (0013). */
   routineId?: string | null;
+  /**
+   * ISO instant the session began (0054). The live logger passes the instant it
+   * really started; every other writer omits it, and omitted means "this session
+   * has no knowable span", which is what keeps a backdated log from auto-pairing
+   * with whatever the watch happened to record that day.
+   */
+  startedAt?: Timestamp | null;
 };
 
 /**
@@ -95,6 +109,30 @@ export type SetInput = {
   supersetGroup?: number | null;
 };
 
+/**
+ * The ingested HealthKit session PAIRED to a manual one (0054), read through the
+ * link rather than copied onto it.
+ *
+ * Every field here came from the watch, and the screens that print it say so by
+ * name ("Garmin · 612 kcal · 8.4 km") — that is what makes it visibly
+ * not-typed-by-you, the same rule `anchoredAt` applies to a hand-set freshness.
+ * It is absent, never zeroed, when a session has no pair.
+ */
+export type PairedIngest = {
+  /** `wearable_data.id` of the paired row. */
+  wearableId: string;
+  /** HealthKit's own activity label ("Running", "Strength training"). */
+  activity: string | null;
+  /** True duration in minutes as the watch measured it (pauses excluded). */
+  durationMin: number;
+  kcal: number | null;
+  distanceKm: number | null;
+  /** The `source_device` bucket, for `deviceLabel`. */
+  sourceDevice: WearableDevice;
+  /** Who made the link — 'auto' from overlapping clocks, 'user' by hand. */
+  linkedBy: 'auto' | 'user';
+};
+
 /** One row of the "Recent sessions" list — a workout plus its set count. */
 export type RecentSession = {
   id: string;
@@ -117,6 +155,8 @@ export type RecentSession = {
    */
   movements: string[];
   createdAt: Timestamp;
+  /** The watch's record of this same session (0054), when one is linked. */
+  ingested?: PairedIngest;
 };
 
 /** One stored set, as the past-workout editor loads it back. */
@@ -145,6 +185,8 @@ export type WorkoutDetail = {
   routineId: string | null;
   createdAt: Timestamp;
   sets: StoredSet[];
+  /** The watch's record of this same session (0054), when one is linked. */
+  ingested?: PairedIngest;
 };
 
 /** "This week" aggregates for the Exercise screen's stat strip. */
@@ -421,6 +463,20 @@ export type MuscleLoad = {
    */
   measures?: Measures | null;
   durationSec?: number | null;
+  /**
+   * WHERE this load came from (0054). `'set'` — the default, so every existing
+   * construction site is untouched — means the owner logged the set. `'ingested'`
+   * means ARC INFERRED it from a HealthKit workout's activity type, and nobody
+   * typed anything.
+   *
+   * It exists for the rule 0034 wrote down: the danger is *"a number of unknown
+   * origin entering the rollup … wearing the same face as a number the user
+   * asserted"*. A 45-minute walk genuinely fatigues the legs and the recovery
+   * model should know it — but the ledger has to be able to say which half of
+   * its reading was measured and which was guessed, which is what
+   * {@link MuscleFreshness.inferredShare} carries out to the screens.
+   */
+  origin?: 'set' | 'ingested';
 };
 
 /**
@@ -454,6 +510,17 @@ export type MuscleFreshness = {
    * reading rests on.
    */
   anchoredAt: Timestamp | null;
+  /**
+   * The fraction of THIS reading's fatigue that came from an INFERRED load —
+   * a HealthKit workout ARC read a muscle table against, rather than a set the
+   * owner logged (0054). 0 when every contribution was typed, 1 when none was.
+   *
+   * It sits beside {@link anchoredAt} and is read the same way: both say what
+   * the number rests on, because a derived figure and an asserted one must not
+   * wear the same face. A muscle at 100 has no fatigue to apportion, so it
+   * reports 0 — "nothing inferred", which is true.
+   */
+  inferredShare: number;
 };
 
 /** A per-exercise estimated 1RM data point (for the detail sparkline). */

@@ -21,7 +21,7 @@ import {
   listMuscleAnchors,
   setMuscleAnchor,
 } from '@/lib/db/repositories/muscle-anchors';
-import { recentMuscleLoads } from '@/lib/db/repositories/training-stats';
+import { muscleLoadsForFreshness } from '@/lib/db/repositories/workout-ingest';
 import { FRESHNESS_LOOKBACK_DAYS, MUSCLE_LABEL } from '@/lib/exercise/constants';
 import { muscleFreshness } from '@/lib/exercise/freshness';
 import type { Muscle, MuscleFreshness } from '@/lib/exercise/types';
@@ -71,7 +71,7 @@ import type { Muscle, MuscleFreshness } from '@/lib/exercise/types';
 const read = (): MuscleFreshness[] => {
   const db = getDb();
   return muscleFreshness(
-    recentMuscleLoads(db, FRESHNESS_LOOKBACK_DAYS),
+    muscleLoadsForFreshness(db, FRESHNESS_LOOKBACK_DAYS),
     new Date(),
     listMuscleAnchors(db)
   );
@@ -135,7 +135,9 @@ export default function MuscleFreshnessScreen() {
       <Text className="mt-4 font-serif text-[12px] leading-5 text-ink-muted">
         Freshness decays with every hard set and recovers on each muscle&rsquo;s own timescale —
         large muscles take ~72 h, small ones ~36 h. 100 means fully recovered. A value set by hand
-        recovers from that moment on the same clock, and the next logged set takes it back down.
+        recovers from that moment on the same clock, and the next logged set takes it back down. A
+        muscle marked <Text className="font-semibold">part inferred</Text> also carries load ARC
+        read off an Apple Health workout — a run, a walk, a ride — rather than off sets you typed.
       </Text>
     </Screen>
   );
@@ -164,6 +166,13 @@ function MuscleRow({
   onChanged: () => void;
 }) {
   const anchored = entry.anchoredAt != null;
+  // Provenance, one slot, and the ANCHOR wins it when both are true: a number
+  // the owner asserted outranks one ARC derived, and two stacked qualifiers on a
+  // 9pt line under a muscle name is noise rather than honesty. The legend under
+  // the figure still names every part-inferred muscle, so nothing is hidden —
+  // only de-duplicated. Rounded, because "part inferred" is the claim; the exact
+  // fraction of a fatigue figure is not a number anyone can act on.
+  const inferred = !anchored && entry.inferredShare > 0;
   const name = MUSCLE_LABEL[entry.muscle];
 
   return (
@@ -173,7 +182,7 @@ function MuscleRow({
         accessibilityRole="button"
         accessibilityState={{ expanded: editing }}
         accessibilityLabel={`${name} ${entry.freshness} percent, ${FRESHNESS_SPOKEN[entry.state]}${
-          anchored ? ', set by hand' : ''
+          anchored ? ', set by hand' : inferred ? ', part inferred from Apple Health' : ''
         }. Adjust it.`}
         onPress={onToggle}
         className="min-h-[44px] flex-row items-center gap-3 py-2 active:opacity-60">
@@ -182,6 +191,10 @@ function MuscleRow({
           {anchored ? (
             <Text className="mt-0.5 font-label text-[9px] font-semibold uppercase tracking-[0.8px] text-ink-secondary">
               Set by hand
+            </Text>
+          ) : inferred ? (
+            <Text className="mt-0.5 font-label text-[9px] font-semibold uppercase tracking-[0.8px] text-ink-muted">
+              Part inferred
             </Text>
           ) : null}
         </View>

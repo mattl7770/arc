@@ -7,6 +7,10 @@ import { getRoutine, listRoutines } from '@/lib/db/repositories/routines';
 import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
 import { readWorkoutDraft } from '@/lib/db/repositories/workout-drafts';
 import {
+  pendingIngestedStrength,
+  type IngestedWorkout,
+} from '@/lib/db/repositories/workout-ingest';
+import {
   liveDraftHasData,
   parseLiveDraft,
   parseManualDraft,
@@ -31,6 +35,12 @@ export type TrainingHub = {
   ledger: MuscleFreshness[];
   volume: MuscleVolume[];
   recommendation: Recommendation;
+  /**
+   * Strength-coded sessions Apple Health recorded that ARC has no log for
+   * (0054) — the blanks the owner is asked to fill. Empty on any device with no
+   * watch, and on every device where the sessions are already paired.
+   */
+  blanks: IngestedWorkout[];
   /** Re-read after a save/finish. */
   reload: () => void;
 };
@@ -45,6 +55,7 @@ const read = () => {
     ledger,
     volume,
     recommendation,
+    blanks: pendingIngestedStrength(db),
   };
 };
 

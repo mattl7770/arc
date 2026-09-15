@@ -20,6 +20,15 @@ import {
   weeklyMuscleSets,
 } from '../src/lib/db/repositories/training-stats.ts';
 import { buildRecommendation } from '../src/lib/db/repositories/training-recommend.ts';
+import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
+import {
+  ingestedMuscleLoads,
+  linkIngestedWorkout,
+  muscleLoadsForFreshness,
+  pairIngestedWorkouts,
+  pendingIngestedStrength,
+} from '../src/lib/db/repositories/workout-ingest.ts';
+import { activityLoad } from '../src/lib/exercise/activity-load.ts';
 import {
   countsForE1rm,
   e1rmForSet,
@@ -590,6 +599,195 @@ console.log('8. buildRecommendation fallback: no routines → freshest muscles')
   recommendation.exercises.every((e) => e.primaryMuscles.length > 0)
     ? ok('each fallback movement has primary muscles')
     : bad('fallback muscles');
+}
+
+// ---------------------------------------------------------------------------
+console.log('9. ingested workouts → inferred muscle load (0054, backlog D3)');
+{
+  /** Write one HealthKit workout row through the real ingest path. */
+  const ingest = (db, { uuid, raw, minutes, endsHoursAgo = 0, device = 'garmin', date }) => {
+    const end = new Date(NOW.getTime() - endsHoursAgo * 3_600_000);
+    const start = new Date(end.getTime() - minutes * 60_000);
+    upsertWearableRows(db, [
+      {
+        date,
+        metricType: 'workout',
+        value: minutes,
+        unit: 'min',
+        sourceDevice: device,
+        sourceRawId: uuid,
+        startTime: start.toISOString(),
+        endTime: end.toISOString(),
+        metadata: { activity: `type ${raw}`, activity_type_raw: raw, kcal: 300, distance_km: 4 },
+      },
+    ]);
+    return { start, end };
+  };
+  const DAY = '2026-07-26';
+  const freshnessOf = (db, muscle) =>
+    muscleFreshness(muscleLoadsForFreshness(db, 14, NOW), NOW).find((m) => m.muscle === muscle);
+
+  // --- the owner's own example: a walk minorly affects the legs, nothing else -
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'walk-45', raw: 52, minutes: 45, date: DAY });
+    const ledger = muscleFreshness(muscleLoadsForFreshness(db, 14, NOW), NOW);
+    const at = (m) => ledger.find((e) => e.muscle === m).freshness;
+    // 45 min ÷ 10 min-per-set = 4.5 effort units (0046's endurance rule), times
+    // the table's role weights: quads/calves 0.25, glutes 0.2, hamstrings 0.15.
+    at('quads') === 87 && at('calves') === 87 && at('glutes') === 89 && at('hamstrings') === 92
+      ? ok('a 45-min walk: quads/calves 87, glutes 89, hamstrings 92 — a dent, not a leg day')
+      : bad('walk load', JSON.stringify(ledger.filter((e) => e.freshness < 100)));
+    ledger.every(
+      (e) => e.freshness === 100 || ['quads', 'calves', 'glutes', 'hamstrings'].includes(e.muscle)
+    )
+      ? ok('…and nothing else moves at all')
+      : bad('walk touched a non-leg muscle');
+    ledger.find((e) => e.muscle === 'quads').inferredShare === 1
+      ? ok('the reading is labelled inferred (inferredShare 1 — nothing was typed)')
+      : bad('inferredShare', JSON.stringify(ledger.find((e) => e.muscle === 'quads')));
+    ledger.find((e) => e.muscle === 'chest').inferredShare === 0
+      ? ok('an untouched muscle reports inferredShare 0, not a division by zero')
+      : bad('inferredShare of an untouched muscle');
+  }
+
+  // --- an INGESTED 45-min run reads exactly as a LOGGED one ------------------
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'run-45', raw: 37, minutes: 45, date: DAY });
+    // The calibration pinned on ENDURANCE_MINUTES_PER_SET: a 45-minute run at
+    // role weight 1.0 is 4.5 units → 57. The activity table is on the SAME scale
+    // exercise_muscles uses, which is what makes these two numbers equal rather
+    // than merely similar.
+    freshnessOf(db, 'quads').freshness === 57
+      ? ok('an ingested 45-min run puts quads at 57 — the logged run’s own figure')
+      : bad('run parity', freshnessOf(db, 'quads').freshness);
+  }
+
+  // --- the floor and the cap -------------------------------------------------
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'walk-5', raw: 52, minutes: 5, date: DAY });
+    ingestedMuscleLoads(db, 14, NOW).length === 0
+      ? ok('a 5-minute walk is under the floor and contributes nothing')
+      : bad('floor');
+  }
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'walk-6h', raw: 52, minutes: 360, date: DAY });
+    // 36 raw units, clamped to ENDURANCE_EFFORT_CAP = 18, × 0.25 = 4.5 → 57.
+    freshnessOf(db, 'quads').freshness === 57
+      ? ok('a six-hour walk hits 0046’s cap and reads 57 — a long day, not a leg day')
+      : bad('cap', freshnessOf(db, 'quads').freshness);
+  }
+
+  // --- refused ≠ blank, and neither contributes load -------------------------
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'hiit', raw: 63, minutes: 45, date: DAY });
+    ingest(db, { uuid: 'yoga', raw: 57, minutes: 60, date: DAY });
+    ingest(db, { uuid: 'unknown', raw: 9999, minutes: 60, date: DAY });
+    ingestedMuscleLoads(db, 14, NOW).length === 0
+      ? ok('HIIT, yoga and an unmapped type all contribute zero load')
+      : bad('refusals loaded something');
+    pendingIngestedStrength(db, NOW).length === 0
+      ? ok('…and NONE of them enters the blank inbox — refused is not blank')
+      : bad('a refused type asked a question');
+    activityLoad(63).kind === 'refused' && activityLoad(50).kind === 'blank'
+      ? ok('HIIT is refused; Strength training is blank — the two stay distinguishable')
+      : bad('outcome kinds');
+  }
+
+  // --- the blank: strength-coded asks, and carries the span ------------------
+  {
+    const { db } = freshDb();
+    const span = ingest(db, { uuid: 'lift-47', raw: 50, minutes: 47, date: DAY });
+    ingestedMuscleLoads(db, 14, NOW).length === 0
+      ? ok('a strength-coded session contributes no inferred load')
+      : bad('strength inferred something');
+    const blanks = pendingIngestedStrength(db, NOW);
+    blanks.length === 1 && blanks[0].durationMin === 47
+      ? ok('…it enters the blank inbox instead, at 47 min')
+      : bad('blank inbox', JSON.stringify(blanks));
+    blanks[0].startTime === span.start.toISOString() &&
+    blanks[0].endTime === span.end.toISOString() &&
+    blanks[0].date === DAY
+      ? ok('the blank carries the SPAN the logger prefills from (start, end, day)')
+      : bad('blank span', JSON.stringify(blanks[0]));
+    // And filling it in links the two, so the blank stops asking.
+    const workoutId = logWorkout(
+      db,
+      {
+        date: blanks[0].date,
+        kind: 'strength',
+        durationMin: blanks[0].durationMin,
+        startedAt: blanks[0].startTime,
+      },
+      [
+        {
+          exercise: 'Barbell Bench Press',
+          exerciseId: 'barbell-bench-press',
+          reps: 8,
+          weightKg: 80,
+        },
+      ]
+    );
+    linkIngestedWorkout(db, workoutId, blanks[0].id);
+    pendingIngestedStrength(db, NOW).length === 0
+      ? ok('…and once the sets are logged the blank is answered, not re-asked')
+      : bad('blank still asking after a fill');
+  }
+
+  // --- a PAIRED session infers nothing: the sets are the truth ---------------
+  {
+    const { db, raw } = freshDb();
+    // The owner logs a 45-minute session; the watch recorded the same hour as a
+    // RUN, which on its own would move four leg muscles.
+    const startedAt = new Date(NOW.getTime() - 45 * 60_000).toISOString();
+    const workoutId = logWorkout(db, { date: DAY, kind: 'cardio', durationMin: 45, startedAt }, [
+      {
+        exercise: 'Treadmill Run',
+        exerciseId: 'treadmill-run',
+        durationSec: 2700,
+        distanceM: 8000,
+      },
+    ]);
+    raw
+      .prepare('UPDATE workouts SET created_at = ? WHERE id = ?')
+      .run(NOW.toISOString(), workoutId);
+    const before = JSON.stringify(muscleFreshness(muscleLoadsForFreshness(db, 14, NOW), NOW));
+
+    ingest(db, { uuid: 'paired-run', raw: 37, minutes: 45, date: DAY });
+    pairIngestedWorkouts(db, NOW) === 1
+      ? ok('the watch’s copy of a logged session auto-pairs with it')
+      : bad('did not pair');
+    ingestedMuscleLoads(db, 14, NOW).length === 0
+      ? ok('a paired session contributes ZERO inferred load — the sets are the session')
+      : bad('paired session inferred a load');
+    JSON.stringify(muscleFreshness(muscleLoadsForFreshness(db, 14, NOW), NOW)) === before
+      ? ok('…so the ledger is byte-identical to the manual-only reading')
+      : bad('paired ledger drifted');
+  }
+
+  // --- the VOLUME firewall ---------------------------------------------------
+  {
+    const { db, raw } = freshDb();
+    logAt(db, raw, hoursAgo(6), DAY, '', 'strength', [
+      { exercise: 'Barbell Back Squat', exerciseId: 'barbell-back-squat', reps: 5, weightKg: 100 },
+    ]);
+    const before = JSON.stringify(weeklyMuscleSets(db, NOW));
+    ingest(db, { uuid: 'vol-walk', raw: 52, minutes: 90, date: DAY });
+    ingest(db, { uuid: 'vol-run', raw: 37, minutes: 60, date: DAY });
+    // Freshness moved; volume must not. "12 sets of quads" keeps meaning twelve
+    // sets the owner performed — the landmarks it is measured against (MEV/MAV/
+    // MRV) are derived from resistance sets alone.
+    freshnessOf(db, 'quads').freshness < 100
+      ? ok('the ingested sessions moved the freshness figure')
+      : bad('inference did nothing');
+    JSON.stringify(weeklyMuscleSets(db, NOW)) === before
+      ? ok('…and weekly VOLUME is byte-identical — inference never counts as a set')
+      : bad('volume moved', JSON.stringify(weeklyMuscleSets(db, NOW)));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

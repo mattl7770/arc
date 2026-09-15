@@ -44,6 +44,7 @@ import {
   type WearableUpsert,
 } from '@/lib/db/repositories/wearables';
 import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
+import { pairIngestedWorkouts } from '@/lib/db/repositories/workout-ingest';
 
 import { upsertHealthBodyRows } from '@/lib/db/repositories/body';
 
@@ -389,6 +390,17 @@ export async function syncHealthData(
         ? { first, last, metricTypes: [...reconcilable] }
         : undefined
     ) + bodyWritten;
+
+  // Pair ingested sessions with the ones ARC logged (0054). It runs HERE as well
+  // as on workout save because either side can arrive second, and the mirror is
+  // usually the one that does: the owner finishes a session in ARC and the watch
+  // hands the same hour to HealthKit minutes later. Idempotent by construction —
+  // anything already linked is excluded from both sides of the pass — so a
+  // fifteen-minute foreground sync re-pairs nothing and duplicates nothing.
+  //
+  // After the upsert, deliberately: pairing reads the rows this pass just wrote,
+  // and their spans are what it matches on.
+  pairIngestedWorkouts(db, now);
 
   const syncedAt = now.toISOString();
   setHealthSyncState(db, {

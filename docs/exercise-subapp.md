@@ -425,3 +425,112 @@ Three traps the name passes are written around, all real: `*run*` matches "t**ru
 - **Three value columns at 375 pt.** Nothing in the shipped catalog measures three things, so the `Prev`-column fallback is untested by the owner's own use.
 - **Whether a session of only endurance movements should log as `kind: 'cardio'`.** The live logger still writes `'strength'` for everything; changing it would move the hub's Zone-2 minutes, so it is left for the owner to call.
 - **The ten-minutes-per-set calibration itself.** It is anchored to one reading (45 min → quads 57), and the only test that matters is whether, the morning after a long run, the figure matches how his legs feel.
+
+---
+
+## 11. Phase 7 — ingested workouts reach the training data (D3, 2026-09-14, migration 0054)
+
+Backlog **D3**, first slice of `docs/spikes/ingested-workouts.md`. The pairing half — the link
+table, the overlap rule, the de-duplication of the Coach's two training reads — is documented
+in `docs/wearables-subapp.md` §17. This is what it means on the Train side.
+
+### 11.1 Three outcomes, and they stay distinguishable
+
+`src/lib/exercise/activity-load.ts` maps a raw `HKWorkoutActivityType` int — never the label,
+because `mapping.ts` says the names churn across SDK versions — to one of three answers:
+
+| outcome | types | behaviour |
+| --- | --- | --- |
+| **inferred** | 52 Walking · 24 Hiking · 37 Running · 13 Cycling · 35 Rowing · 46 Swimming · 16 Elliptical · 44/68 Stairs · 60 XC skiing · 64 Jump rope · 9 Climbing · 61 Downhill skiing | contributes fractional load, **marked inferred** |
+| **blank** | 50 Strength training · 20 Functional strength · 59 Core training | contributes nothing and **asks** (§11.3) |
+| **refused** | 62 Flexibility · 33 Prep & recovery · 80 Cooldown · 29 Mind & body · 57 Yoga · 66 Pilates · 63 HIIT · 28 Martial arts · 73 Mixed cardio · 11 Cross training · 69 Step training · 3000 Other · anything unmapped | contributes nothing and **never asks** |
+
+Separating *refused* from *blank* is the honesty rule in operational form. A HIIT session left
+"blank" would sit in an inbox forever asking a question ARC cannot frame — burpees or an
+assault bike are not the same body — and a stretch is not fatigue, so yoga contributes a real,
+deliberate zero rather than an absence.
+
+### 11.2 The numbers are role weights, and the dose is 0046's
+
+Each entry is a **role weight** on exactly the scale `exercise_muscles` already uses: 1.0 is a
+primary mover, 0.5 an assist. Duration is applied afterwards by the endurance rule from §10 —
+ten minutes per working set, capped at `ENDURANCE_EFFORT_CAP` — which is the same arithmetic a
+run *logged in ARC* already gets.
+
+That shared scale is the point. **A 45-minute run ingested from the watch reads exactly as a
+45-minute run typed into the logger does** (quads 57), because it is the same calculation on
+the same units. A per-hour table of "fractional sets" would have been a second dose model for
+the same hour. The cap comes free with the rule: a six-hour walk reaches 18 effort units ×
+0.25 = 4.5 → quads 57, a long day on the feet rather than a leg day. A session under ten
+minutes contributes nothing — HealthKit emits a workout object every time the Watch decides
+you walked to the car.
+
+Walking is the owner's own calibration (*"minorly effect the legs and not much else"*): quads
+0.25 · calves 0.25 · glutes 0.2 · hamstrings 0.15, i.e. a 45-minute walk puts quads at **87**.
+Everything else is scaled against running, whose primaries sit at a full 1.0.
+
+### 11.3 Provenance, and the two firewalls
+
+**`MuscleLoad.origin`** (`'set'` | `'ingested'`, defaulting to `'set'`) and
+**`MuscleFreshness.inferredShare`** are 0034's rule in its third application: *"a number of
+unknown origin entering the rollup … wearing the same face as a number the user asserted"*. A
+part-inferred muscle says **Part inferred** under its name in the ledger, the body figure's key
+names every such muscle, and `freshnessSummary` says it aloud for VoiceOver. A hand-set anchor
+still wins the one provenance slot on the row — an assertion outranks a derivation, and two
+stacked qualifiers on a 9 pt line is noise rather than honesty.
+
+Two firewalls, both structural rather than remembered:
+
+1. **A paired session infers nothing.** The sets are the session; the owner typed them.
+   Without this, a workout logged in ARC and recorded by the watch would deplete its muscles
+   twice — the fatigue-model version of the Coach's double-count.
+2. **Weekly VOLUME takes no inferred load at all.** `muscleSetsInRange` counts *sets worked*
+   and is printed to the owner as a set count; a walk contributes no sets, and the MEV/MAV/MRV
+   landmarks it is measured against are derived from resistance training alone. The firewall
+   needs no predicate: volume reads `workout_sets`, and an ingested session has none.
+
+Both halves of the ledger are assembled by one function, `muscleLoadsForFreshness` — the hub's
+body figure and the per-muscle screen must never be able to concatenate different halves.
+
+### 11.4 The blank
+
+An unpaired, strength-coded ingested session is an open question, so it appears on the **Train
+hub** — a training task, not a Data-tab reference row — as a ruled plate headed *From your
+watch*, one row per session: *"Strength session from Apple Health · 47 min · Garmin · muscles
+unknown"*, with **Log sets** opening `workout-live` seeded with the ingested row's id.
+
+That seeded session takes its **day, duration and start instant from the watch**, not from the
+elapsed clock: the session happened this morning and is being typed up now, so timing the
+typing would be the wrong number. On Finish it writes the `workouts` row and the link together,
+`linked_by = 'user'`. The id rides in the live draft (`LiveDraft.ingestId`) for the same reason
+`routineId` does — an app kill mid-fill must not forget which session the sets belong to.
+
+Two bounds keep it from becoming an inbox nobody opens: a **14-day horizon** (switching this on
+against the 90-day backfill would otherwise produce forty questions on day one), and the plate
+renders **only when there is something to ask** — unlike Saved workouts and Recent sessions, an
+inbox with nothing in it is not a record standing empty, it is a permanent "nothing to do"
+panel on the hub of a phone with no watch.
+
+A paired session shows **once**: the Train hub's Recent-sessions row prints what the watch
+measured (`Garmin · 612 kcal · 8.4 km`) on its own line under what the owner typed, and the
+Data tab marks its copy *logged in ARC* rather than presenting a second workout.
+
+### 11.5 Tests
+
+`db/training-engine.test.mjs` §9: the walk's four muscles and nothing else, at the stated
+weights, labelled inferred; the ingested/logged run parity at 57; the floor and the cap; HIIT,
+yoga and an unmapped type contributing zero and never asking; a strength session contributing
+zero and entering the inbox with its span; the blank answered by a fill; a paired session
+inferring nothing and the ledger staying byte-identical; weekly volume byte-identical while
+freshness moves.
+
+### 11.6 What only a device can settle
+
+- **The twelve role weights.** They are judgement, like the recovery windows beside them, and
+  the only test that matters is whether the figure the morning after a long walk matches how
+  the owner's legs feel.
+- **Whether `Core training` belongs in *blank* rather than *inferred*.** "Abs, primary" is
+  tempting; a session coded Core training on a Garmin is frequently a whole circuit.
+- **The 14-day blank horizon**, against a real backfill on a real device.
+- **Avg/max HR**, deferred: it needs a new read scope, a `METRIC_COVERAGE` row and a
+  per-session sample query, and the owner's call was to ship pairing first.

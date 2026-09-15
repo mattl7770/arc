@@ -415,6 +415,12 @@ export function MuscleFigureLegend(props: MuscleFigureLegendProps) {
       { state: 'recovering', muscles: tally.recovering },
     ] as const
   ).filter((r) => r.muscles.length > 0);
+  // Provenance (0054): which of these readings rest partly on a load ARC
+  // INFERRED from an Apple Health workout rather than on sets the owner logged.
+  // It rides in the key and not on the drawing, for the same reason the state
+  // names do — a second visual encoding on the figure would be a second thing to
+  // decode, and this is a fact about the number's BASIS, not about the body.
+  const partInferred = props.ledger.filter((m) => m.inferredShare > 0).map((m) => m.muscle);
 
   // Empty is AUTHORED, never blank (00-design-spec.md §5) — and the two empties
   // are not the same fact. "Nothing is depleted" is a reading; "nothing has ever
@@ -422,11 +428,14 @@ export function MuscleFigureLegend(props: MuscleFigureLegendProps) {
   // identically by construction. Same caveat the Train-today gauge prints.
   if (rows.length === 0) {
     return (
-      <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
-        {tally.neverTrained
-          ? 'No training in the last 14 days, so every muscle reads fresh. Log a session and the figure starts fading.'
-          : 'Every muscle is fresh — nothing to train around today.'}
-      </Text>
+      <View>
+        <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
+          {tally.neverTrained
+            ? 'No training in the last 14 days, so every muscle reads fresh. Log a session and the figure starts fading.'
+            : 'Every muscle is fresh — nothing to train around today.'}
+        </Text>
+        <InferredNote muscles={partInferred} />
+      </View>
     );
   }
 
@@ -452,7 +461,26 @@ export function MuscleFigureLegend(props: MuscleFigureLegendProps) {
           </Text>
         </View>
       ))}
+      <InferredNote muscles={partInferred} />
     </View>
+  );
+}
+
+/**
+ * "Part inferred — quads · calves · glutes".
+ *
+ * The 0034 rule at its display end: a reading ARC derived from an Apple Health
+ * workout must not wear the face of one the owner typed. Mono at 10pt, the
+ * metadata voice `SectionLabel`'s own note uses — this is a caveat on the key,
+ * not a fourth state, so it must not read as one. Renders nothing when nothing
+ * is inferred; an empty caveat is worse than none.
+ */
+function InferredNote({ muscles }: { muscles: Muscle[] }) {
+  if (muscles.length === 0) return null;
+  return (
+    <Text className="mt-2 font-mono text-[10px] leading-4 text-ink-muted">
+      Part inferred from Apple Health workouts — {muscleNames(muscles).toLowerCase()}
+    </Text>
   );
 }
 

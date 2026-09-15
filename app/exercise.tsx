@@ -26,10 +26,13 @@ import {
   liveDraftSetsDone,
   type ManualDraft,
 } from '@/lib/exercise/draft';
-import { dayLabel, sessionDetail, sessionTitle } from '@/lib/exercise/format';
+import { dayLabel, ingestDetail, sessionDetail, sessionTitle } from '@/lib/exercise/format';
 import { volumeAttention } from '@/lib/exercise/volume';
 import type { MuscleVolume, Recommendation, RoutineListItem } from '@/lib/exercise/types';
+import type { IngestedWorkout } from '@/lib/db/repositories/workout-ingest';
+import { deviceLabel } from '@/lib/db/repositories/wearables';
 import { useTrainingHub, useWorkoutDrafts } from '@/hooks/use-training';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
 /**
  * Exercise sub-app hub (docs/exercise-subapp.md). It renders at two routes: as
@@ -93,8 +96,9 @@ export default function ExerciseScreen() {
   // `(tabs)` leads the segments only when this file is rendering AS the Train
   // tab root; the pushed route is plain `/exercise`. See the header note above.
   const isTabRoot = useSegments()[0] === '(tabs)';
-  const { week, sessions, routines, ledger, volume, recommendation } = useTrainingHub();
+  const { week, sessions, routines, ledger, volume, recommendation, blanks } = useTrainingHub();
   const drafts = useWorkoutDrafts();
+  const { units } = useUnitPreferences();
   const today = todayISODate();
 
   const stats: { label: string; value: string; unit: string; sub?: string }[] = [
@@ -180,6 +184,18 @@ export default function ExerciseScreen() {
   const startEmpty = () => startLive();
 
   /**
+   * Fill in the sets for a strength session the watch recorded (0054). The same
+   * live logger, seeded with the ingested row's id — from which it takes the
+   * day, the duration and the start instant, because the watch already measured
+   * all three. It goes through `guardedStart` like every other door into a
+   * logger: an unfinished session must never be clobbered by a tap.
+   */
+  const fillBlank = (ingest: IngestedWorkout) =>
+    guardedStart('live', resumeLive, () =>
+      router.push({ pathname: '/workout-live', params: { ingestId: ingest.id } })
+    );
+
+  /**
    * Throw an unfinished session away from the hub. Two taps and a named
    * consequence, the pattern every other destructive control in the app uses —
    * a draft is the only copy of those sets, exactly like a logged session.
@@ -263,6 +279,70 @@ export default function ExerciseScreen() {
           onStartEmpty={startEmpty}
         />
       </View>
+
+      {/*
+        From your watch — the BLANK (0054, docs/spikes/ingested-workouts.md §3.G).
+
+        Apple Health recorded a strength session and ARC deliberately does not
+        guess what it worked (owner: strength-coded workouts *"leave a blank for
+        the user"*). So it is a question with a one-tap answer, not a fact.
+
+        A **ruled plate**, because it is a record list, and NO accent: the
+        screen's one accent belongs to Train today, and an inbox arguing with the
+        primary action at the top of a screen is exactly the noise the accent
+        budget exists to prevent. Rows navigate, like every other row in a plate
+        here.
+
+        Rendered only when there is something to ask. Unlike Saved workouts and
+        Recent sessions, this plate is not a record that stands empty — an inbox
+        with nothing in it is not an inbox, and drawing one would put a permanent
+        "nothing to do" panel on the hub of a phone with no watch. A REFUSED type
+        (yoga, HIIT, "Other") never reaches here at all; it stays a plain record
+        on the Data tab and asks nothing, ever.
+      */}
+      {blanks.length > 0 ? (
+        <View className="mt-7">
+          <Block device="plate">
+            <SectionLabel label="From your watch" note={String(blanks.length)} />
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              Apple Health recorded these as strength sessions. ARC won&rsquo;t guess which muscles
+              they worked — add the sets and they join your history.
+            </Text>
+            <View className="mt-1">
+              {blanks.map((blank, index) => (
+                <View key={blank.id}>
+                  <Divider first={index === 0} />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${blank.activity ?? 'Strength session'} from Apple Health, ${dayLabel(
+                      blank.date,
+                      today
+                    )}, ${Math.round(blank.durationMin)} minutes, muscles unknown. Log the sets.`}
+                    onPress={() => fillBlank(blank)}
+                    className="min-h-[44px] flex-row items-center gap-3 py-2.5 active:opacity-60">
+                    <Text className="w-16 pt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                      {dayLabel(blank.date, today)}
+                    </Text>
+                    <View className="flex-1">
+                      <Text className="font-serif text-[15px] leading-5 text-ink">
+                        {blank.activity ?? 'Strength session'} from Apple Health
+                      </Text>
+                      <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">
+                        {Math.round(blank.durationMin)} min · {deviceLabel(blank.sourceDevice)} ·
+                        muscles unknown
+                      </Text>
+                    </View>
+                    <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink">
+                      Log sets
+                    </Text>
+                    <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          </Block>
+        </View>
+      ) : null}
 
       {/* Weekly volume vs landmarks — advisory prose, so: margin annotation. */}
       <View className="mt-7">
@@ -452,33 +532,45 @@ export default function ExerciseScreen() {
             </Text>
           ) : (
             <View className="mt-1">
-              {sessions.map((s, index) => (
-                <View key={s.id}>
-                  <Divider first={index === 0} />
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`${dayLabel(s.date, today)}: ${sessionTitle(s)}, ${sessionDetail(
-                      s
-                    )}. Open to view or edit.`}
-                    onPress={() =>
-                      router.push({ pathname: '/workout-live', params: { workoutId: s.id } })
-                    }
-                    className="min-h-[44px] flex-row items-center gap-3 py-2.5 active:opacity-60">
-                    <Text className="w-16 pt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                      {dayLabel(s.date, today)}
-                    </Text>
-                    <View className="flex-1">
-                      <Text className="font-serif text-[15px] leading-5 text-ink">
-                        {sessionTitle(s)}
+              {sessions.map((s, index) => {
+                // What the WATCH measured about this same session (0054), on its
+                // own line under what the owner typed. A paired session appears
+                // ONCE here, not twice: the Data tab's ingest list marks its copy
+                // "logged in ARC" rather than presenting a second workout.
+                const watch = s.ingested ? ingestDetail(s.ingested, units) : null;
+                return (
+                  <View key={s.id}>
+                    <Divider first={index === 0} />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`${dayLabel(s.date, today)}: ${sessionTitle(s)}, ${sessionDetail(
+                        s
+                      )}${watch ? `. From your watch: ${watch}` : ''}. Open to view or edit.`}
+                      onPress={() =>
+                        router.push({ pathname: '/workout-live', params: { workoutId: s.id } })
+                      }
+                      className="min-h-[44px] flex-row items-center gap-3 py-2.5 active:opacity-60">
+                      <Text className="w-16 pt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                        {dayLabel(s.date, today)}
                       </Text>
-                      <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">
-                        {sessionDetail(s)}
-                      </Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
-                  </Pressable>
-                </View>
-              ))}
+                      <View className="flex-1">
+                        <Text className="font-serif text-[15px] leading-5 text-ink">
+                          {sessionTitle(s)}
+                        </Text>
+                        <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">
+                          {sessionDetail(s)}
+                        </Text>
+                        {watch ? (
+                          <Text className="mt-0.5 font-mono text-[10px] leading-4 text-ink-muted">
+                            {watch}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+                    </Pressable>
+                  </View>
+                );
+              })}
             </View>
           )}
         </Block>

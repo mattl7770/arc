@@ -30,6 +30,12 @@ import {
   personalRecords,
   type PrevSet,
 } from '@/lib/db/repositories/training-stats';
+import { deviceLabel } from '@/lib/db/repositories/wearables';
+import {
+  getIngestedWorkout,
+  linkIngestedWorkout,
+  pairIngestedWorkouts,
+} from '@/lib/db/repositories/workout-ingest';
 import { restSecFor } from '@/lib/exercise/constants';
 import {
   DRAFT_VERSION,
@@ -483,18 +489,21 @@ export default function WorkoutLiveScreen() {
     workoutId?: string | string[];
     exerciseIds?: string | string[];
     resume?: string | string[];
+    ingestId?: string | string[];
   }>();
   const routineId = Array.isArray(params.routineId) ? params.routineId[0] : params.routineId;
   const workoutId = Array.isArray(params.workoutId) ? params.workoutId[0] : params.workoutId;
   const idsParam = Array.isArray(params.exerciseIds) ? params.exerciseIds[0] : params.exerciseIds;
   const exerciseIds = idsParam ? idsParam.split(',').filter(Boolean) : [];
   const resumeParam = Array.isArray(params.resume) ? params.resume[0] : params.resume;
+  const ingestId = Array.isArray(params.ingestId) ? params.ingestId[0] : params.ingestId;
   return (
     <WorkoutLive
       routineId={routineId}
       workoutId={workoutId}
       exerciseIds={exerciseIds}
       resume={resumeParam === '1'}
+      ingestId={ingestId}
     />
   );
 }
@@ -504,12 +513,20 @@ function WorkoutLive({
   workoutId,
   exerciseIds,
   resume,
+  ingestId,
 }: {
   routineId?: string;
   workoutId?: string;
   exerciseIds: string[];
   /** Reopen the stored draft instead of starting a session (the hub's Resume). */
   resume: boolean;
+  /**
+   * `wearable_data.id` of a strength-coded session the watch recorded and ARC
+   * refused to guess at (0054) — the hub's "From your watch" blank. The span is
+   * already known, so this session is NOT timed: the owner is filling in the
+   * sets for an hour that has already happened.
+   */
+  ingestId?: string;
 }) {
   const router = useRouter();
   const navigation = useNavigation();
@@ -531,6 +548,24 @@ function WorkoutLive({
   const [draft] = useState<LiveDraft | null>(() =>
     resume && !workoutId ? readResumableDraft() : null
   );
+
+  // The watch's record of a session the owner is filling in (0054). Read once,
+  // in the initializer, like `stored` — op-sqlite is synchronous, so there is no
+  // loading state to render. An id that names nothing (the row aged out of the
+  // re-sync window between the hub reading it and this screen opening) reads
+  // null, and the screen is simply an ordinary new session.
+  //
+  // It falls back to the DRAFT's id for the same reason `routineId` does: iOS
+  // can kill the app between tapping the blank and finishing the sets, and a
+  // resumed fill that forgot which session it was filling would save as an
+  // ordinary workout dated today — leaving the blank still asking and a second
+  // session beside it.
+  const [ingest] = useState(() => {
+    const id = ingestId ?? draft?.ingestId ?? null;
+    return id && !workoutId ? getIngestedWorkout(getDb(), id) : null;
+  });
+  /** Filling in a session the watch already measured: its span is a fact, not a clock to run. */
+  const filling = ingest != null && !editing;
 
   // A resumed session keeps the instant it really started, so the elapsed clock
   // says how long this workout has been going, not how long the app has been
@@ -676,6 +711,7 @@ function WorkoutLive({
         version: DRAFT_VERSION,
         startedAt,
         routineId: draftRoutineId ?? null,
+        ingestId: ingest?.id ?? null,
         restEndsAt,
         blocks,
       };
@@ -688,7 +724,7 @@ function WorkoutLive({
       // in — the session is still on screen and Finish still saves it.
       console.warn('[exercise] draft write failed', error);
     }
-  }, [blocks, restEndsAt, hasData, editing, startedAt, draftRoutineId]);
+  }, [blocks, restEndsAt, hasData, editing, startedAt, draftRoutineId, ingest]);
 
   // Guard an accidental back from vaporising unsaved work.
   useEffect(() => {
@@ -888,20 +924,44 @@ function WorkoutLive({
       } else {
         // No name: workouts don't have them (owner, 2026-08-14). The column
         // takes '' from the repository and nothing renders it.
-        logWorkout(
+        //
+        // **Filling in the watch's blank takes the WATCH's span, not the
+        // clock.** The session happened this morning and is being typed up now,
+        // so the elapsed timer would record however long the typing took. The
+        // day, the duration and the start instant are all facts the watch
+        // already measured; the sets are the only thing the owner is adding.
+        const newId = logWorkout(
           db,
           {
-            date: todayISODate(),
+            date: ingest ? ingest.date : todayISODate(),
             kind: 'strength',
-            durationMin: durationMin > 0 ? durationMin : null,
+            durationMin: ingest ? ingest.durationMin : durationMin > 0 ? durationMin : null,
             // A resumed session still belongs to the saved workout it started
             // from, so Finish stamps that workout used exactly as it would have
             // before the app closed.
             routineId: draftRoutineId ?? null,
+            // 0054 — the span pairing matches on. A live session knows when it
+            // began; a filled-in one takes the watch's own start. Null when the
+            // duration was discarded as implausible, because a start with no
+            // credible end is not a span.
+            startedAt: ingest
+              ? ingest.startTime
+              : durationMin > 0
+                ? new Date(startedAt).toISOString()
+                : null,
           },
           sets
         );
         if (draftRoutineId) touchRoutineStarted(db, draftRoutineId, new Date().toISOString());
+        if (ingest) {
+          // An assertion, not an inference: the owner said these sets are that
+          // session. `linked_by = 'user'`, and it replaces any automatic link.
+          linkIngestedWorkout(db, newId, ingest.id);
+        } else {
+          // Pair-on-save — the other half of pair-on-sync. The watch's copy of
+          // the session just finished is usually already in `wearable_data`.
+          pairIngestedWorkouts(db);
+        }
       }
       disarmRestAlert();
       savedRef.current = true;
@@ -992,6 +1052,17 @@ function WorkoutLive({
                 </Text>
               ) : null}
             </>
+          ) : filling ? (
+            /* The watch's span, stated rather than timed — this session already
+               happened, and the clock would only measure the typing. */
+            <>
+              <Text className="font-mono text-2xl text-ink">
+                {dayLabel(ingest.date, todayISODate())}
+              </Text>
+              <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                {Math.round(ingest.durationMin)} min
+              </Text>
+            </>
           ) : (
             <>
               <Text className="font-mono text-2xl text-ink">
@@ -1003,6 +1074,16 @@ function WorkoutLive({
             </>
           )}
         </View>
+
+        {/* What is being filled in, and where it came from. Mono metadata, one
+            line — the owner tapped a row that said this, and the screen has to
+            confirm it landed on the right session before he types anything. */}
+        {filling ? (
+          <Text className="mt-1 font-mono text-[11px] leading-4 text-ink-muted">
+            {ingest.activity ?? 'Workout'} from Apple Health · {deviceLabel(ingest.sourceDevice)} ·
+            add the sets you did
+          </Text>
+        ) : null}
 
         {/*
           Exercise blocks — one ruled plate per exercise, and THE BIND for

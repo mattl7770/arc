@@ -204,6 +204,13 @@ function anchorFatigue(anchor: FreshnessAnchor, nowMs: number): number | null {
  * It is the THIRD parameter, after `now`, so that every existing call site and
  * every headless test that passes an injected clock positionally keeps working
  * unchanged. Ugly order, zero-risk change.
+ *
+ * A load carrying `origin: 'ingested'` (0054) — one ARC inferred from a
+ * HealthKit workout's activity type rather than one the owner logged — depletes
+ * exactly as a logged set does, and is additionally apportioned into
+ * `inferredShare` so the screens can say which part of a reading was guessed.
+ * That is the only difference: the model does not treat an inferred hour of
+ * running as cheaper than a logged one, because the legs do not either.
  */
 export function muscleFreshness(
   loads: MuscleLoad[],
@@ -212,6 +219,13 @@ export function muscleFreshness(
 ): MuscleFreshness[] {
   const nowMs = now.getTime();
   const fatigue = new Map<Muscle, number>();
+  // The INFERRED half of `fatigue`, accumulated in parallel rather than derived
+  // afterwards — the decay has already been applied by then, so the share has to
+  // be taken from the same contributions at the same instants or it would be a
+  // ratio of two different numbers. An anchor is an ASSERTION, so its fatigue
+  // joins the denominator and never the numerator: the owner saying "quads are
+  // spent" is the opposite of ARC inferring it.
+  const inferred = new Map<Muscle, number>();
   const lastHours = new Map<Muscle, number>();
   const anchoredAt = new Map<Muscle, string>();
 
@@ -237,6 +251,9 @@ export function muscleFreshness(
     const contrib =
       load.roleWeight * loadEffortWeight(load) * Math.exp(-dh / recoveryTauHours(load.muscle));
     fatigue.set(load.muscle, (fatigue.get(load.muscle) ?? 0) + contrib);
+    if (load.origin === 'ingested') {
+      inferred.set(load.muscle, (inferred.get(load.muscle) ?? 0) + contrib);
+    }
     const prev = lastHours.get(load.muscle);
     if (prev == null || dh < prev) lastHours.set(load.muscle, dh);
   }
@@ -251,6 +268,8 @@ export function muscleFreshness(
       state: bucket(freshness),
       hoursSinceLast: lh == null ? null : Math.floor(lh),
       anchoredAt: anchoredAt.get(muscle) ?? null,
+      // Zero fatigue has no origin to apportion — say 0 rather than divide by it.
+      inferredShare: f > 0 ? Math.min(1, (inferred.get(muscle) ?? 0) / f) : 0,
     };
   });
 }
