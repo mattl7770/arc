@@ -76,7 +76,18 @@ Versioned protocols / stacks / routines.
 - type (daily_routine, supplement_stack, meal_template, training_block, therapy_protocol, etc.)
 - is_active
 - current_version_id
+- started_on (date, 0043) — the day the PHASE CLOCK starts
+- carry_over (0|1, **0050**) — whether a missed item is re-offered on a later day
+- checkoff_mode (strict | adjusting, **0050**) — whether a completion moves the every-N-days clock
 - created_at, updated_at
+
+The last three are **execution POLICY and live on the row, not in the version**,
+for one reason stated three ways: editing the plan must not restart a titration
+(0043), must not change whether yesterday's miss is still owed, and a version
+*restore* must bring back the plan and not the policy. Both 0050 columns default
+to today's behaviour (`0`, `'strict'`), so the migration changes nothing that
+lands on a day. Full reasoning: `db/migrations/0050_protocol_carry_over.sql` and
+`docs/spikes/protocol-carryover.md`.
 
 ### protocol_versions
 - id
@@ -86,6 +97,17 @@ Versioned protocols / stacks / routines.
 - change_notes
 - created_at
 - created_by (user | ai)
+
+**Content is schema 2** (`src/lib/protocols/types.ts`): ordered `phases`, each
+with a `duration_days` (null = open-ended, legal only on the last), each holding
+`items` of `{ id, title, scheduled_time, dose, notes, cadence, remind }`.
+`cadence` is one of daily · specific weekdays · every-N-days · an N-per-week
+quota. `remind` (**C10**) is whether the item asks iOS for a notification at its
+`scheduled_time`; it is in the CONTENT, unlike the two policy columns above,
+because it is a fact about one item and items exist nowhere else — so restoring
+a version restores which items nudged you, and the diff says a reminder was
+turned on. It is forced off whenever `scheduled_time` is null: a notification
+needs a moment to fire at.
 
 ### daily_logs
 The execution layer.

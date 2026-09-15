@@ -23,6 +23,7 @@ import { todayISODate } from '../date';
 import { newId } from '../id';
 import type {
   Authorship,
+  CheckoffMode,
   ProtocolRow,
   ProtocolType,
   ProtocolVersionRow,
@@ -62,8 +63,8 @@ function uniqueSlug(db: Database, name: string): string {
  */
 function insertProtocolRow(db: Database, id: string, input: NewProtocol): void {
   db.run(
-    `INSERT INTO protocols (id, slug, name, description, type, started_on)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO protocols (id, slug, name, description, type, started_on, carry_over, checkoff_mode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       uniqueSlug(db, input.name),
@@ -78,6 +79,11 @@ function insertProtocolRow(db: Database, id: string, input: NewProtocol): void {
       // mid-titration after a gap between creating a protocol and running it.
       // Only the editor passes a date, and only for a phased protocol.
       input.startedOn ?? null,
+      // Execution policy (0050). Passed explicitly rather than left to the
+      // column defaults so the create path and the edit path write the same
+      // two facts through the same two arguments.
+      input.carryOver === true ? 1 : 0,
+      input.checkoffMode ?? 'strict',
     ]
   );
 }
@@ -171,6 +177,13 @@ export type ProtocolRevision = {
    * existing anchor alone.
    */
   startedOn?: string | null;
+  /**
+   * Execution policy (0050). Omit either to leave it alone — the Coach's
+   * `update_protocol` revises the PLAN and has no business flipping how the
+   * plan is run, so "unset" has to mean "unchanged" and not "back to default".
+   */
+  carryOver?: boolean;
+  checkoffMode?: CheckoffMode;
   changeNotes?: string | null;
   createdBy?: Authorship;
 };
@@ -206,6 +219,15 @@ export function reviseProtocol(
         todayISODate(),
         id,
       ]);
+    }
+    // Policy, same "omitted means unchanged" rule as the anchor above — and
+    // deliberately OUTSIDE the version write: turning carry-over on is not a
+    // revision of the plan, and must not write one.
+    if (revision.carryOver !== undefined) {
+      db.run('UPDATE protocols SET carry_over = ? WHERE id = ?', [revision.carryOver ? 1 : 0, id]);
+    }
+    if (revision.checkoffMode !== undefined) {
+      db.run('UPDATE protocols SET checkoff_mode = ? WHERE id = ?', [revision.checkoffMode, id]);
     }
     if (revision.content !== null) {
       versionId = insertVersionRow(
@@ -354,6 +376,8 @@ export function listProtocols(db: Database): ProtocolListItem[] {
       itemCount: content === null ? 0 : allItems(content).length,
       phaseCount: content === null ? 0 : content.phases.length,
       startedOn: r.started_on,
+      carryOver: r.carry_over === 1,
+      checkoffMode: r.checkoff_mode,
       updatedAt: r.updated_at,
     };
   });

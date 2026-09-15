@@ -28,18 +28,20 @@
  */
 import type { Database } from '../database';
 import { newId } from '../id';
-import type { LogEntryType, ProtocolType } from '../types';
-import { cadenceLandsOn, weekStart } from '@/lib/protocols/cadence';
+import type { CheckoffMode, LogEntryType, ProtocolType } from '../types';
+import { addDays, cadenceLandsOn, daysBetween, weekStart } from '@/lib/protocols/cadence';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import { phaseOn } from '@/lib/protocols/phase';
 import type { ProtocolItem } from '@/lib/protocols/types';
 import { getModeDefinition, type ModeItem, type ModeKey } from '@/lib/modes/registry';
 
-import { getActiveMode } from './day-modes';
+import { activeModesIn, getActiveMode } from './day-modes';
 import { experimentsRunningOn } from './experiments';
 import {
   countMissionEntries,
   getOrCreateDailyLog,
+  modeExcusesSkips,
+  NOT_CARRIED_SQL,
   NOT_REMOVED_SQL,
   PLANNED_ROW_SQL,
 } from './mission';
@@ -100,6 +102,29 @@ type GeneratedExtras = {
   mode?: ModeKey;
   /** Present on a running experiment's intervention row (its experiment id). */
   experiment?: string;
+  /**
+   * This item asks the OS for a notification at its `scheduled_time` (C10).
+   * Stamped on the ROW so the notification layer can read one uniform shape —
+   * today's committed rows and a future day's computed plan entries alike —
+   * instead of re-opening each protocol's live content to ask.
+   */
+  remind?: true;
+  /**
+   * ── The carry marks (0050) ───────────────────────────────────────────────
+   * `carried` is the predicate flag {@link NOT_CARRIED_SQL} keys on, and it is
+   * what holds this row out of every adherence denominator.
+   */
+  carried?: true;
+  /** The day and row id this debt is owed from. */
+  carried_from?: { date: string; entry: string };
+  /** 1 on the first carry, 2 on the second … — what the row prints. */
+  carried_days?: number;
+  /**
+   * On a NATIVE row whose own cadence superseded outstanding debts: how many
+   * earlier days of this item are still untouched. Informational only — it
+   * settles nothing, because completing today is not doing Monday.
+   */
+  missed_days?: number;
 };
 
 /** Insert one generated mission entry; returns nothing, bumps the caller's count. */
@@ -130,8 +155,15 @@ function insertGenerated(
   );
 }
 
-/** One entry the day's plan calls for, before it exists as a row. */
-type PlannedEntry = {
+/**
+ * One entry the day's plan calls for, before it exists as a row.
+ *
+ * Exported because {@link planForDay} is — the notification scheduler asks it
+ * what a FUTURE day would contain, without committing anything, so that an
+ * item's reminder can be set for its next occurrence rather than only for today
+ * (src/lib/notifications/protocol-reminders.ts).
+ */
+export type PlannedEntry = {
   type: LogEntryType;
   protocolId: string | null;
   title: string;
@@ -189,22 +221,181 @@ function quotaCompletionsThisWeek(db: Database, date: string): Map<string, numbe
 }
 
 /**
- * Whether an item's cadence puts it on `date`. Everything except a quota is
- * decided by pure arithmetic in src/lib/protocols/cadence.ts; a quota needs the
- * week's completions, which is why this one lives here.
+ * How long a debt lives past the day it was missed (0050).
+ *
+ * The supersede rule already caps most cadences at the item's next occurrence,
+ * so this only bites on items whose next occurrence is far away — a fortnightly
+ * therapy, a Monday-only session. Seven days is the owner's call: an unbounded
+ * carry is the failure mode of every task application, and a protocol item you
+ * have not done in a week is a fact about the PROTOCOL, which is what
+ * app/mission-history.tsx's "Where it's failing" already answers.
+ *
+ * The cap is enforced in ONE place — the window {@link outstandingCarries}
+ * reads over — and deliberately writes nothing. Settling the aged-out original
+ * as `skipped` was considered and rejected: an untouched row is already an
+ * honest record of a miss (every adherence read counts it as one), and
+ * rewriting week-old history on every app open to add an annotation no surface
+ * needs is the worse trade. Out of the window simply means out of the window.
+ */
+export const CARRY_MAX_DAYS = 7;
+
+/** One item's outstanding debt, as of a given day. */
+type CarryDebt = {
+  /** The MOST RECENT untouched day — what the carry's age counts from. */
+  missedOn: string;
+  /** That day's row id, so the carried row can name where it is owed from. */
+  entryId: string;
+  /** How many earlier days of this item are outstanding inside the window. */
+  misses: number;
+};
+
+/**
+ * Every protocol item with an untouched earlier day inside the carry window,
+ * keyed like the quota count so the two can be read side by side.
+ *
+ * One query for the whole day, not one per item — the same shape
+ * {@link quotaCompletionsThisWeek} settles on, and the reason the carry can sit
+ * inside `planForDay` without turning it into an N+1.
+ *
+ * What counts as a debt, and each exclusion's reason:
+ *
+ *   - **`status = 'pending'` only.** A hand-tapped skip is a DECISION not to do
+ *     it; re-levying it tomorrow would make the skip button meaningless, and it
+ *     gives the user an explicit "not this one" gesture that needs no new
+ *     control. A `partial` is real progress and is not re-offered whole either.
+ *   - **Not an excused day.** `modeExcusesSkips` says a miss under Sick /
+ *     Travel / Social was the right call; carrying it would re-levy a debt the
+ *     mode just forgave and make Travel mode produce a pile of work waiting on
+ *     the day you get home — exactly the nag the mode exists to prevent.
+ *   - **Not itself carried** ({@link NOT_CARRIED_SQL}). The debt is always the
+ *     ORIGINAL day; an untouched carried copy is a second view of the same
+ *     obligation, and counting it would let one miss breed.
+ *   - **Protocol rows only** (`protocol_id` and `value.item` both present). A
+ *     mode item and an experiment's intervention belong to their day.
+ *   - The two standing predicates, so "a planned row" means what it means
+ *     everywhere else.
+ *
+ * `late_on` rows are excluded for free: settling a debt flips the original to
+ * `skipped`.
+ */
+function outstandingCarries(db: Database, date: string): Map<string, CarryDebt> {
+  const from = addDays(date, -CARRY_MAX_DAYS);
+  // Resolved once in JS from the registry rather than restated in SQL, exactly
+  // as missionBySource does it, so the excusal rule has one definition. `'0'` —
+  // a false literal — covers the ordinary case of no excusing day in the
+  // window; the list is bounded by CARRY_MAX_DAYS.
+  const excusedDates = [...activeModesIn(db, from, addDays(date, -1))]
+    .filter(([, mode]) => modeExcusesSkips(mode))
+    .map(([day]) => day);
+  const isExcusedDay =
+    excusedDates.length > 0 ? `d.date IN (${excusedDates.map(() => '?').join(', ')})` : '0';
+
+  const rows = db.all<{ id: string; protocolId: string; item: string; date: string }>(
+    `SELECT e.id AS id,
+            e.protocol_id AS protocolId,
+            json_extract(e.value, '$.item') AS item,
+            d.date AS date
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date >= ? AND d.date < ?
+        AND e.status = 'pending'
+        AND e.protocol_id IS NOT NULL
+        AND json_extract(e.value, '$.item') IS NOT NULL
+        AND NOT (${isExcusedDay})
+        AND ${PLANNED_ROW_SQL}
+        AND ${NOT_REMOVED_SQL}
+        AND ${NOT_CARRIED_SQL}
+      ORDER BY d.date`,
+    [from, date, ...excusedDates]
+  );
+
+  const debts = new Map<string, CarryDebt>();
+  for (const row of rows) {
+    const key = quotaKey(row.protocolId, row.item);
+    const seen = debts.get(key);
+    // Rows arrive oldest-first, so the last one wins the anchor: the carry ages
+    // from the MOST RECENT miss. Anchoring on the oldest would leave a stale
+    // debt shadowing a fresher one that the user can actually still act on.
+    debts.set(key, {
+      missedOn: row.date,
+      entryId: row.id,
+      misses: (seen?.misses ?? 0) + 1,
+    });
+  }
+  return debts;
+}
+
+/**
+ * The most recent day each protocol item was COMPLETED, strictly before `date`
+ * — the clock `checkoff_mode = 'adjusting'` re-bases `every_n_days` on.
+ *
+ * **Carried completions count**, which is the entire point: a debt paid late
+ * IS the item's last completion, so under `adjusting` a late completion moves
+ * the next occurrence and under `strict` it does not. That is the one place the
+ * two toggles meet, and it is why {@link NOT_CARRIED_SQL} is deliberately
+ * absent here — this asks what was DONE, not what was owed.
+ *
+ * **Strictly before `date`**, like the quota count and for the same reason: a
+ * row already standing on `date` is preserved by the re-derive whatever this
+ * says, so counting today's completion would compute the next occurrence as
+ * `today + n` and have the plan remove the item from its own day.
+ */
+function lastCompletions(db: Database, date: string): Map<string, string> {
+  const rows = db.all<{ protocolId: string; item: string; last: string }>(
+    `SELECT e.protocol_id AS protocolId,
+            json_extract(e.value, '$.item') AS item,
+            max(d.date) AS last
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date < ?
+        AND e.status = 'completed'
+        AND e.protocol_id IS NOT NULL
+        AND json_extract(e.value, '$.item') IS NOT NULL
+        AND ${PLANNED_ROW_SQL}
+        AND ${NOT_REMOVED_SQL}
+      GROUP BY e.protocol_id, json_extract(e.value, '$.item')`,
+    [date]
+  );
+  const last = new Map<string, string>();
+  for (const row of rows) last.set(quotaKey(row.protocolId, row.item), row.last);
+  return last;
+}
+
+/**
+ * Whether an item's cadence puts it on `date`. Everything except a quota — and,
+ * under `adjusting`, an every-N-days item that has been completed at least once
+ * — is decided by pure arithmetic in src/lib/protocols/cadence.ts; the two
+ * exceptions need facts about `log_entries`, which is why they live here.
  *
  * A quota item lands on EVERY remaining day of the week until its quota is met,
  * then stops appearing — which also means that if the days left equal the quota
  * left, it is on every one of them. That is the whole behaviour: ARC surfaces
  * it, the user picks the days.
+ *
+ * `adjusting` re-reads `every_n_days` as *n days after the last completion*,
+ * falling back to the phase clock when there has never been one — so an item
+ * never completed behaves exactly as `strict` does, and nothing about
+ * `protocols.started_on` or phase day 0 is touched (the invariant, pinned by a
+ * test). It is deliberately a no-op for the other three kinds: `daily` has
+ * n = 1, a weekday list is a calendar statement rather than an interval, and a
+ * quota is already anchored to the calendar week.
  */
 function landsOn(
   item: ProtocolItem,
   date: string,
   dayInPhase: number,
   protocolId: string,
-  quotaDone: Map<string, number>
+  quotaDone: Map<string, number>,
+  checkoffMode: CheckoffMode,
+  lastDone: Map<string, string>
 ): boolean {
+  if (checkoffMode === 'adjusting' && item.cadence.kind === 'every_n_days') {
+    const last = lastDone.get(quotaKey(protocolId, item.id));
+    if (last !== undefined) {
+      const since = daysBetween(last, date);
+      return since > 0 && since % item.cadence.n === 0;
+    }
+  }
   const pure = cadenceLandsOn(item.cadence, date, dayInPhase);
   if (pure !== null) return pure;
   const done = quotaDone.get(quotaKey(protocolId, item.id)) ?? 0;
@@ -214,15 +405,58 @@ function landsOn(
 /**
  * What `date` SHOULD contain under its currently-active mode: every active
  * protocol's live PHASE's items whose CADENCE lands on this day, MINUS the
- * types the mode drops, PLUS the mode's own standard items. Pure computation —
- * reads, never writes — so the first generation and the mid-day re-derive share
- * ONE definition of the day's plan and can't drift.
+ * types the mode drops, PLUS the mode's own standard items, PLUS anything a
+ * carry-over protocol still owes from an earlier day. Pure computation — reads,
+ * never writes — so the first generation and the mid-day re-derive share ONE
+ * definition of the day's plan and can't drift.
+ *
+ * ## The carry is a FOURTH SOURCE here and nowhere else (0050)
+ *
+ * That placement is the most important structural call in the feature. This
+ * function is the one definition of "what this day should contain"; the first
+ * generation and the re-derive both read it; a carry computed anywhere else
+ * would drift from it inside a release. Everything the carry has to respect
+ * then falls out for free rather than needing a rule of its own:
+ *
+ *   - **the phase boundary** — the loop below only ever sees the LIVE phase's
+ *     items, so a debt from phase 1 cannot be carried into phase 2 (which asks
+ *     for a different dose);
+ *   - **a paused, ended, not-yet-started or version-less protocol** — filtered
+ *     above, and its debts with it;
+ *   - **a mode that drops the whole type** — `def.dropTypes` is checked before
+ *     any of this;
+ *   - **an item deleted in an edit** — the carried row is `generated` and
+ *     `pending`, so the re-derive classifies it as replaceable and removes it.
+ *
+ * ## The supersede rule, stated once
+ *
+ * > **A carried item is dropped the moment its own cadence puts the item on
+ * > that day.** A debt and its own recurrence are one obligation, and two rows
+ * > for one obligation is the multiset-collision bug arriving through a new
+ * > door.
+ *
+ * It is written below as one `if (lands)` / `else` and each cadence falls out
+ * of it with no special case: `daily` lands every day, so it can never grow a
+ * second row and instead marks today's own row with what is outstanding;
+ * `weekdays` and `every_n_days` carry until the cap or their next occurrence,
+ * whichever is sooner; `quota` never carries, because the quota already IS the
+ * carry (`landsOn` puts it on every remaining day of the week until it is met)
+ * and a second row would let `quotaCompletionsThisWeek` count one week's
+ * session twice.
  */
-function planForDay(db: Database, date: string): PlannedEntry[] {
+export function planForDay(db: Database, date: string): PlannedEntry[] {
   const def = getModeDefinition(getActiveMode(db, date));
   const active = listProtocols(db).filter((p) => p.isActive && p.versionNumber !== null);
   const plan: PlannedEntry[] = [];
   const quotaDone = quotaCompletionsThisWeek(db, date);
+  // Both are one query for the whole day, read only when a protocol on the
+  // device actually asks for them — the default of every protocol is
+  // `carry_over = 0, checkoff_mode = 'strict'`, which is a database with
+  // neither behaviour and therefore neither query.
+  const wantsCarry = active.some((p) => p.carryOver);
+  const wantsAdjusting = active.some((p) => p.checkoffMode === 'adjusting');
+  const carries = wantsCarry ? outstandingCarries(db, date) : new Map<string, CarryDebt>();
+  const lastDone = wantsAdjusting ? lastCompletions(db, date) : new Map<string, string>();
 
   for (const protocol of active) {
     const type = LOG_TYPE_BY_PROTOCOL[protocol.type];
@@ -237,24 +471,53 @@ function planForDay(db: Database, date: string): PlannedEntry[] {
     if (state.kind !== 'running') continue; // ended, or not started yet
     const { phase, dayInPhase } = state.window;
     for (const item of phase.items) {
-      if (!landsOn(item, date, dayInPhase, protocol.id, quotaDone)) continue;
+      const lands = landsOn(
+        item,
+        date,
+        dayInPhase,
+        protocol.id,
+        quotaDone,
+        protocol.checkoffMode,
+        lastDone
+      );
+      // A quota is its own carry mechanism, so it is excluded here rather than
+      // inside the branch below: it must neither grow a carried row nor wear a
+      // "missed" mark for days it deliberately left open.
+      const debt =
+        protocol.carryOver && item.cadence.kind !== 'quota'
+          ? carries.get(quotaKey(protocol.id, item.id))
+          : undefined;
+      if (!lands && debt === undefined) continue;
       // Carried apart, not flattened. `dose ?? notes` threw away which one this
       // was one line before the hero had to know, and the hero guessed it back
       // from the string's shape.
       const dose = item.dose ?? undefined;
       const why = item.notes ?? undefined;
+      const base: GeneratedExtras = {
+        protocol: protocol.name,
+        ...(dose ? { dose } : {}),
+        ...(why ? { why } : {}),
+        generated: true,
+        item: item.id,
+        ...(item.remind && item.scheduled_time ? ({ remind: true } as const) : {}),
+      };
       plan.push({
         type,
         protocolId: protocol.id,
         title: item.title,
         scheduledTime: item.scheduled_time ?? null,
-        extras: {
-          protocol: protocol.name,
-          ...(dose ? { dose } : {}),
-          ...(why ? { why } : {}),
-          generated: true,
-          item: item.id,
-        },
+        extras: lands
+          ? // Today's own occurrence. It SUPERSEDES the debt — one obligation,
+            // one row — and merely says what is still outstanding behind it.
+            // Completing it settles nothing earlier: you did not take Monday's
+            // magnesium by taking Tuesday's.
+            { ...base, ...(debt ? { missed_days: debt.misses } : {}) }
+          : {
+              ...base,
+              carried: true,
+              carried_from: { date: debt!.missedOn, entry: debt!.entryId },
+              carried_days: Math.max(1, daysBetween(debt!.missedOn, date)),
+            },
       });
     }
   }
@@ -387,8 +650,13 @@ export type RederiveResult = {
  * The key is in-memory only — a Map key inside one call, never persisted, never
  * logged — so nothing ever depended on the byte reaching a screen or a row.
  */
-export const planKey = (title: string, protocolId: string | null): string =>
-  `${protocolId ?? '-'}\u0000${title}`;
+export const planKey = (
+  title: string,
+  protocolId: string | null,
+  /** Whether this entry is a CARRIED debt rather than the day's own occurrence. */
+  carried = false
+): string =>
+  `${protocolId ?? '-'}\u0000${title}\u0000${carried ? 'carried' : 'native'}`;
 
 /**
  * Re-shape `date`'s ALREADY-GENERATED mission to its currently-active mode
@@ -462,25 +730,33 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
   // (`seed: true`, planted by ensureTodaySeeded on a protocol-less first run) is
   // exactly such a row — treating it as ours would delete the entire first-run
   // mission on any mode change and nothing would ever put it back.
-  const replaceable: Row[] = [];
-  const preservedRows: Row[] = [];
+  // `carried` is read off the row here and carried alongside it, because it is
+  // the THIRD component of the match key below and the value json is already
+  // being parsed once. A carried row and a native row of the same item under
+  // the same protocol are two different obligations that happen to share a
+  // title, and letting either claim the other's slot in the multiset would
+  // either duplicate the item or silently delete today's own occurrence.
+  type Classified = Row & { carried: boolean };
+  const replaceable: Classified[] = [];
+  const preservedRows: Classified[] = [];
   for (const row of rows) {
-    let extras: { generated?: boolean; seed?: boolean } = {};
+    let extras: { generated?: boolean; seed?: boolean; carried?: boolean } = {};
     try {
       extras = row.value ? (JSON.parse(row.value) as typeof extras) : {};
     } catch {
       extras = {}; // unparseable value → treat as hand-made, i.e. preserve it
     }
+    const classified: Classified = { ...row, carried: extras.carried === true };
     if (row.status !== 'pending') {
-      preservedRows.push(row); // acted on: completed / skipped / partial
+      preservedRows.push(classified); // acted on: completed / skipped / partial
     } else if (extras.generated === true) {
-      replaceable.push(row); // ours — the plan decides whether it stays
+      replaceable.push(classified); // ours — the plan decides whether it stays
     } else if (extras.seed === true && def.dropTypes.includes(row.type)) {
       // A mock row whose whole TYPE the mode pulls (Sick drops training) is the
       // one seed case worth removing — the mode is explicit about that type.
-      replaceable.push(row);
+      replaceable.push(classified);
     } else {
-      preservedRows.push(row); // seed the mode doesn't touch, or hand-added
+      preservedRows.push(classified); // seed the mode doesn't touch, or hand-added
     }
   }
 
@@ -492,7 +768,7 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
   // row can be paired to the specific plan entry it should re-sync to.
   const planByKey = new Map<string, PlannedEntry[]>();
   for (const p of plan) {
-    const key = planKey(p.title, p.protocolId);
+    const key = planKey(p.title, p.protocolId, p.extras.carried === true);
     const queue = planByKey.get(key);
     if (queue) queue.push(p);
     else planByKey.set(key, [p]);
@@ -504,7 +780,7 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
   // preserved pending row be duplicated by its matching plan entry). They are
   // left untouched — settled or hand-made — so we drop the slot, never the row.
   for (const row of preservedRows) {
-    planByKey.get(planKey(row.title, row.protocol_id))?.shift();
+    planByKey.get(planKey(row.title, row.protocol_id, row.carried))?.shift();
   }
 
   // Replaceable (ours, pending) rows: KEEP and re-sync to the matching plan
@@ -518,7 +794,7 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
   const toRemove: string[] = [];
   const toUpdate: { id: string; value: string; scheduledTime: string | null }[] = [];
   for (const row of replaceable) {
-    const entry = planByKey.get(planKey(row.title, row.protocol_id))?.shift();
+    const entry = planByKey.get(planKey(row.title, row.protocol_id, row.carried))?.shift();
     if (!entry) {
       toRemove.push(row.id);
       continue;

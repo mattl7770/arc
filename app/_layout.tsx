@@ -164,6 +164,11 @@ export default function RootLayout() {
       // A check-in tap opens the tab as a plain conversation.
       if (route.kind === 'reminder') {
         router.push({ pathname: '/(tabs)/coach', params: { reminderId: route.id } });
+      } else if (route.kind === 'mission') {
+        // A protocol item's own nudge (C10). It lands on HOME, not on
+        // protocol-detail: the phone buzzed to say "do this", and Home is where
+        // the row is ticked. The detail screen is a reference surface.
+        router.push('/(tabs)/');
       } else {
         router.push('/(tabs)/coach');
       }

@@ -33,7 +33,7 @@
  * normalised at the parse boundary and never travels further as itself, so no
  * screen, repository or tool has to know which schema a version was written in.
  */
-import type { ProtocolType, TimeString, Timestamp } from '@/lib/db/types';
+import type { CheckoffMode, ProtocolType, TimeString, Timestamp } from '@/lib/db/types';
 
 /**
  * How often one item comes round. All four kinds are evaluated in LOCAL
@@ -81,6 +81,19 @@ export type ProtocolItem = {
   /** Longer context — the rationale line the mission renders as `why`. */
   notes: string | null;
   cadence: Cadence;
+  /**
+   * Whether this item asks the OS for a notification at its `scheduled_time`
+   * (C10). Off by default, and **meaningless without a time** — a notification
+   * needs a moment to fire at, so `normalizeItem` forces this back to false
+   * whenever `scheduled_time` is null rather than storing an intent the
+   * scheduler could never honour.
+   *
+   * It lives in the VERSIONED content, unlike the two 0050 policy toggles,
+   * because it is a fact about one ITEM and items exist only here. That also
+   * gives it the behaviour you want from it: restoring an old version restores
+   * which items nudged you, and the version diff says a reminder was turned on.
+   */
+  remind: boolean;
 };
 
 /**
@@ -133,6 +146,10 @@ export type NewProtocol = {
    * header of db/migrations/0043_protocol_started_on.sql.
    */
   startedOn?: string | null;
+  /** Execution policy (0050). Omitted, the columns take their defaults — which
+   *  are exactly today's behaviour: no carry, strict clock. */
+  carryOver?: boolean;
+  checkoffMode?: CheckoffMode;
 };
 
 /** One row of the Protocols hub — protocol + its live version's stats. */
@@ -151,5 +168,8 @@ export type ProtocolListItem = {
   phaseCount: number;
   /** The day the phase clock starts. Null on a protocol never activated. */
   startedOn: string | null;
+  /** Execution policy (0050) — read by the generator, set in the editor. */
+  carryOver: boolean;
+  checkoffMode: CheckoffMode;
   updatedAt: Timestamp;
 };

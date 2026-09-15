@@ -1,0 +1,92 @@
+-- ============================================================================
+-- ARC 0050 — protocols.carry_over + protocols.checkoff_mode: execution POLICY
+--
+-- Backlog C11, and the spike that designed it: docs/spikes/protocol-carryover.md.
+-- Owner's words: *"if you miss something, it stays tomorrow until you check it
+-- off, versus currently it is just attached to each specific day"* — and a
+-- second toggle for how a check-off moves the cadence clock. **Both per
+-- protocol.**
+--
+-- ── WHY THESE ARE COLUMNS ON THE ROW AND NOT KEYS IN THE VERSIONED CONTENT ──
+--
+-- Exactly the argument 0043 made for `started_on`, and it is the same fact
+-- wearing a different hat: this is the protocol's EXECUTION POLICY, not its
+-- plan. Four consequences, in order of weight:
+--
+--   1. Editing the plan must not silently change whether yesterday's miss is
+--      still owed. 0043's header: a new version "must not restart a titration
+--      the user is six weeks into". A carry rule is the same kind of promise.
+--   2. A version RESTORE must restore the PLAN, not the policy. `restoreVersion`
+--      writes an old content document as a new version; if the toggles lived in
+--      content, restoring v3 would silently flip carry-over — and could orphan
+--      carried rows generated under v5's rule with nothing left to resolve them.
+--   3. Carried rows CROSS version boundaries by construction. A row carried from
+--      Monday into Thursday can span a Tuesday edit; if the policy were
+--      versioned, that row's origin and its resolution would be governed by two
+--      different documents.
+--   4. src/lib/protocols/diff.ts renders "changed from … to …" for plan
+--      content. "Persistence: off → on" beside a dose change mixes two
+--      vocabularies on one screen.
+--
+-- The accepted cost: there is no history of WHEN a toggle changed.
+-- `protocols.updated_at` moves and that is all. These are two facts about how
+-- the protocol is RUN, not a revision of what it asks for.
+--
+-- ── WHY THE DEFAULTS REPRODUCE TODAY EXACTLY ──
+--
+-- `carry_over = 0` and `checkoff_mode = 'strict'` are what the app does now: a
+-- missed item stays on the day it was planned for, and the every-N-days clock
+-- counts from the phase's first day whatever the user actually did. So this
+-- migration changes NOTHING that lands on a day for any protocol already on the
+-- device; the behaviour exists only once the owner turns it on, per protocol, in
+-- the editor. db/mission-generate.test.mjs pins that no-op guarantee first.
+--
+-- ── WHAT THE TWO VALUES MEAN, PRECISELY ──
+--
+-- `carry_over = 1`: an item this protocol planned on an earlier day and that the
+-- user never touched is re-offered as a NEW row on a later day, marked
+-- `value.carried`, for at most CARRY_MAX_DAYS (7) days past the miss. The
+-- original row is never re-dated — `daily_log_id` IS the day, and moving the row
+-- would erase the fact that that day planned it and that day did not do it. The
+-- carried row is held OUT of every adherence denominator (`NOT_CARRIED_SQL` in
+-- src/lib/db/repositories/mission.ts), so using the feature can never make a
+-- rate look worse; completing it settles the ORIGINAL `skipped` +
+-- `value.late_on`, which reads as "done late" and earns no rate credit. The
+-- missed day stays a miss (owner's call, 2026-09-14).
+--
+-- `checkoff_mode = 'adjusting'`: `every_n_days` is re-read as *n days after this
+-- item's LAST COMPLETION*, falling back to the phase clock when it has never
+-- been completed. It needs no storage of its own — the last completion is
+-- already a `log_entries` row, already indexed, already joined on `value.item`
+-- by the quota counter — and it degrades exactly right: an item never completed
+-- behaves precisely as `strict` does. `'strict'` keeps the original calendar.
+-- The invariant, with a test: adjusting NEVER writes `protocols.started_on` and
+-- never moves phase day 0. Which phase is live is a fact about the PROTOCOL;
+-- when one item comes round is a fact about the ITEM. It is a no-op for `daily`
+-- (n = 1), `weekdays` (a calendar statement, not an interval) and `quota`
+-- (already anchored to the calendar week).
+--
+-- ── SHAPE ──
+--
+-- Boolean as `integer 0|1` with a CHECK, enum vocabulary as `text` + CHECK
+-- (CLAUDE.md §9), both `NOT NULL DEFAULT`. SQLite's ALTER TABLE ADD COLUMN
+-- accepts a NOT NULL column only when its default is a non-null constant, which
+-- is also what makes the backfill free: every existing row reads the default
+-- with no UPDATE at all.
+--
+-- Numbered 0050, the number this item reserved in docs/backlog-2026-09.md, and
+-- re-checked against `git ls-tree main -- db/migrations/` at commit: main now
+-- carries 0046 (B1 exercise measures), 0047 (B2 ml unit) and 0053 (D4 timezone
+-- changes, which took its own reserved number early), leaving 0048-0052 free.
+-- This branch was cut BEFORE those three landed, so the merge must re-run
+-- `npm run db:bundle` — the bundle on this branch holds 38 migrations and
+-- main's holds more. The runner SILENTLY SKIPS any number at or below a
+-- device's `PRAGMA user_version`, so a collision strands a migration forever:
+-- re-check once more at merge (five collisions in two days). Never edit a
+-- shipped migration.
+-- ============================================================================
+ALTER TABLE protocols ADD COLUMN carry_over integer NOT NULL DEFAULT 0
+  CHECK (carry_over IN (0, 1));
+
+ALTER TABLE protocols ADD COLUMN checkoff_mode text NOT NULL DEFAULT 'strict'
+  CHECK (checkoff_mode IN ('strict', 'adjusting'));

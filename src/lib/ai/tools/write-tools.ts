@@ -820,6 +820,20 @@ function parseProtocolContentInput(
   const idFor = (title: string): string =>
     inherited.get(title.trim().toLowerCase())?.shift() ?? newId(db);
 
+  // `remind` (C10) is INHERITED, not accepted from the model.
+  //
+  // The tool contract is "anything you omit is DROPPED", which is right for the
+  // PLAN — the model is shown the plan and re-sends it. It is wrong for this:
+  // whether an item nudges the phone is the owner's setting, `get_protocols`
+  // does not spend prompt tokens saying so, and a model that cannot see a field
+  // cannot re-send it. Without this, any Coach edit would silently switch off
+  // every reminder in the protocol. Keyed on the id `idFor` just resolved, so a
+  // renamed item that inherits an id keeps its reminder and a genuinely new
+  // item starts off. An item the edit leaves untimed has it forced off by
+  // `normalizeItem` regardless — a notification needs a moment to fire at.
+  const remindById = new Map<string, boolean>();
+  for (const item of allItems(live)) remindById.set(item.id, item.remind);
+
   const content = normalizeContent({
     phases: raw.map((entry, p) => {
       const phase = asRecord(entry);
@@ -839,13 +853,15 @@ function parseProtocolContentInput(
           if (typeof item['title'] !== 'string' || item['title'].trim().length === 0) {
             throw new Error(`phases[${p}].items[${i}].title must be a non-empty string.`);
           }
+          const id = idFor(item['title']);
           return {
-            id: idFor(item['title']),
+            id,
             title: item['title'],
             scheduled_time: optTime(item, 'scheduled_time') ?? null,
             dose: optString(item, 'dose') ?? null,
             notes: optString(item, 'notes') ?? null,
             cadence: parseCadence(optString(item, 'cadence'), `phases[${p}].items[${i}]`),
+            remind: remindById.get(id) ?? false,
           };
         }),
       };

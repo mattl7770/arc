@@ -52,6 +52,20 @@ export type MissionItem = {
    * stops claiming "do this next" so the screen keeps moving.
    */
   snoozed?: boolean;
+  /**
+   * This row is a DEBT carried forward from an earlier day (0050) — 1 on the
+   * first carry, 2 on the second. It renders as one label-voice mark beside the
+   * category ("SUPPLEMENTS · 2 DAYS LATE"), never as a signal colour: adherence
+   * is behaviour, not biology.
+   */
+  carriedDays?: number;
+  /**
+   * This row is today's OWN occurrence, and it superseded an outstanding debt
+   * of `missedDays` earlier days. A different fact from {@link carriedDays} —
+   * "you are behind on this" rather than "this is the thing you are behind on"
+   * — and the reason a `daily` item never grows a second row.
+   */
+  missedDays?: number;
 };
 
 export type Readiness = {

@@ -36,7 +36,7 @@ import { cadenceText } from './cadence';
 import type { ProtocolContent, ProtocolItem, ProtocolPhase } from './types';
 
 /** The item fields the diff reports individually. */
-export type ItemField = 'title' | 'scheduled_time' | 'dose' | 'notes' | 'cadence';
+export type ItemField = 'title' | 'scheduled_time' | 'dose' | 'notes' | 'cadence' | 'remind';
 
 export type ItemChange =
   | { kind: 'added'; before: null; after: ProtocolItem }
@@ -62,7 +62,7 @@ export type ContentDiff = {
   identical: boolean;
 };
 
-const FIELDS: ItemField[] = ['title', 'scheduled_time', 'dose', 'notes', 'cadence'];
+const FIELDS: ItemField[] = ['title', 'scheduled_time', 'dose', 'notes', 'cadence', 'remind'];
 
 /** Which of an item's fields differ. Cadence compares by its canonical text. */
 function changedFields(before: ProtocolItem, after: ProtocolItem): ItemField[] {
@@ -207,6 +207,9 @@ export function phaseLengthText(phase: ProtocolPhase): string {
 /** An item field's value as one short string, for the "x → y" line. */
 function fieldText(item: ProtocolItem, field: ItemField): string {
   if (field === 'cadence') return cadenceText(item.cadence);
+  // A boolean has no "none": a reminder is on or it is off, and printing
+  // "reminder none → true" would read as a third state that does not exist.
+  if (field === 'remind') return item.remind ? 'on' : 'off';
   return item[field] ?? 'none';
 }
 
@@ -261,4 +264,5 @@ const FIELD_LABEL: Record<Exclude<ItemField, 'title'>, string> = {
   dose: 'dose',
   notes: 'note',
   cadence: 'cadence',
+  remind: 'reminder',
 };

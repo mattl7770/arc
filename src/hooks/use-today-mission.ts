@@ -9,6 +9,7 @@ import { listProtocols } from '@/lib/db/repositories/protocols';
 import { ensureTodaySeeded } from '@/lib/db/seed';
 import { deriveMissionView, type MissionView } from '@/lib/home/derive-mission';
 import { subscribeModeChange } from '@/lib/modes/store';
+import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
 export type TodayMission = MissionView & {
@@ -101,11 +102,18 @@ export function useTodayMission(): TodayMission {
   // history screens are for — it is the implicit write target that must not move.
   const refresh = useCallback(() => {
     const day = forwardCursor(dayRef.current, todayISODate());
-    if (day !== dayRef.current) {
+    const rolled = day !== dayRef.current;
+    if (rolled) {
       dayRef.current = day;
       setSnoozed(EMPTY_SNOOZED);
     }
     setDay(readDay(day));
+    // A new day has a new plan, so its items' reminders (C10) have new moments
+    // to fire at. Only on the ROLLOVER: this runs on every focus of Home, and
+    // the sync cancels the whole OS schedule before rebuilding it — doing that
+    // thirty times a day would be churn for no new information. Boot covers the
+    // first day (app/_layout.tsx); a status write covers the rest.
+    if (rolled) void syncReminderNotifications(getDb());
   }, []);
 
   useEffect(() => {
@@ -126,11 +134,17 @@ export function useTodayMission(): TodayMission {
   // modal presented OVER Home, so Home never loses (or regains) focus.
   useEffect(() => subscribeModeChange(reload), [reload]);
 
+  // Ticking an item is what silences its reminder (C10): the scheduler lists
+  // only PENDING rows, so re-running the sync after a status write drops the
+  // notification for anything just settled — and puts it back if the user
+  // un-ticks. Fire-and-forget, and a no-op in any build without the native
+  // module.
   const setStatus = useCallback(
     (id: string, status: MissionStatus) => {
       setMissionStatus(getDb(), id, status);
       setSnoozed((prev) => withoutId(prev, id));
       reload();
+      void syncReminderNotifications(getDb());
     },
     [reload]
   );
@@ -140,6 +154,7 @@ export function useTodayMission(): TodayMission {
       toggleMission(getDb(), id);
       setSnoozed((prev) => withoutId(prev, id));
       reload();
+      void syncReminderNotifications(getDb());
     },
     [reload]
   );

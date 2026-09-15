@@ -810,5 +810,73 @@ console.log('\n14f. missionBySource: modes/experiments attribute by category; no
     : bad('exclusions', JSON.stringify(sources));
 }
 
+console.log('\n14g. carry-over: the carried row is out of every denominator (0050)');
+{
+  const { db } = freshDb();
+  // Mon/Fri lower body, carry-over ON. Monday is left untouched; Tuesday
+  // re-offers it and Tuesday is where it actually gets done.
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'lower',
+              title: 'Lower body',
+              scheduled_time: '17:30',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'weekdays', days: [1, 5] },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  generateMissionForDay(db, '2026-08-03');
+  generateMissionForDay(db, '2026-08-04');
+  const carriedId = db.get(
+    `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = '2026-08-04' AND json_extract(e.value, '$.carried') IS NOT NULL`
+  ).id;
+  setMissionStatus(db, carriedId, 'completed');
+
+  const series = missionDailySeries(db, 7, '2026-08-05');
+  const mon = series.find((p) => p.date === '2026-08-03');
+  const tue = series.find((p) => p.date === '2026-08-04');
+  mon.planned === 1 && mon.completed === 0 && mon.skipped === 1
+    ? ok('Monday still reads 1 planned, 0 completed — the day it was missed stays a miss')
+    : bad('monday', JSON.stringify(mon));
+  mon.doneLate === 1
+    ? ok('…and says so as "done late" rather than as a bare skip')
+    : bad('doneLate', JSON.stringify(mon));
+  tue.planned === 0
+    ? ok('Tuesday owed nothing from this item — a carried row is a reminder, not an obligation')
+    : bad('tuesday', JSON.stringify(tue));
+
+  const judged = series.filter((p) => p.date >= '2026-08-03' && p.date <= '2026-08-04');
+  missionAdherence(judged) === 0
+    ? ok('the two days together are 0 of 1 — not 1/2, and not 0/2. A late finish earns no credit')
+    : bad('adherence', String(missionAdherence(judged)));
+
+  const sources = missionBySource(db, '2026-08-03', '2026-08-04');
+  sources.length === 1 && sources[0].planned === 1 && sources[0].doneLate === 1
+    ? ok('"Where it’s failing" counts the obligation once and names the late finish')
+    : bad('bySource', JSON.stringify(sources));
+  sources[0].completed +
+    sources[0].skipped +
+    sources[0].excused +
+    sources[0].partial ===
+  sources[0].planned
+    ? ok('the ledger still sums to planned — done-late is a subset of skipped, not a fifth term')
+    : bad('ledger does not sum', JSON.stringify(sources[0]));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -53,6 +53,17 @@ export type ProtocolType =
   | 'sleep_protocol'
   | 'other';
 
+/**
+ * How a check-off moves an item's cadence clock (0050).
+ *
+ * `strict` keeps the original calendar: the every-N-days counter runs off the
+ * phase clock whatever the user actually did. `adjusting` re-reads
+ * `every_n_days` as *n days after this item's last completion*, so a late (or
+ * early) completion moves the next occurrence. It is a no-op for the other
+ * three cadence kinds — see the migration header for why.
+ */
+export type CheckoffMode = 'strict' | 'adjusting';
+
 export type Authorship = 'user' | 'ai';
 
 export type LogEntryType =
@@ -185,6 +196,14 @@ export type ProtocolRow = {
    * repositories/protocols.ts.
    */
   started_on: DateString | null;
+  /**
+   * Whether a missed item is re-offered on a later day (0050). Policy, not
+   * plan — see the migration header for why it is on the row and not in the
+   * versioned content.
+   */
+  carry_over: SqliteBool;
+  /** Whether a completion moves the every-N-days clock (0050). */
+  checkoff_mode: CheckoffMode;
   created_at: Timestamp;
   updated_at: Timestamp;
 };

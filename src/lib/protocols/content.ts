@@ -121,6 +121,7 @@ export type ItemDraft = {
   dose?: string | null;
   notes?: string | null;
   cadence?: unknown;
+  remind?: unknown;
 };
 
 /**
@@ -128,16 +129,29 @@ export type ItemDraft = {
  * absent, keys always in the same order. Both the parser and the editor build
  * items through this, so JSON.stringify on two contents with the same meaning
  * yields the same string.
+ *
+ * `remind` is forced OFF when there is no `scheduled_time`, structurally rather
+ * than by validation: a notification needs a moment to fire at, and storing an
+ * intent the scheduler can never honour would leave the editor showing a
+ * reminder the phone will not give. Clearing an item's time therefore clears its
+ * reminder, which is the only reading that keeps the two in step.
+ *
+ * Every document reaching a screen is normalised through here — including every
+ * stored one, via `parseProtocolContent` — so adding this key did NOT change any
+ * canonical string in a way that could force a spurious version: both sides of
+ * the editor's no-op compare gain it together.
  */
 export function normalizeItem(item: ItemDraft): ProtocolItem {
   const time = asOptionalText(item.scheduled_time ?? null);
+  const scheduled = time !== null && TIME_SHAPE.test(time) ? time : null;
   return {
     id: item.id,
     title: item.title.trim(),
-    scheduled_time: time !== null && TIME_SHAPE.test(time) ? time : null,
+    scheduled_time: scheduled,
     dose: asOptionalText(item.dose ?? null),
     notes: asOptionalText(item.notes ?? null),
     cadence: normalizeCadence(item.cadence),
+    remind: scheduled !== null && item.remind === true,
   };
 }
 
@@ -207,6 +221,10 @@ function itemFrom(raw: Record<string, unknown>, index: number, cadence: unknown)
     dose: typeof raw['dose'] === 'string' ? raw['dose'] : null,
     notes: typeof raw['notes'] === 'string' ? raw['notes'] : null,
     cadence,
+    // Absent on every document written before C10, which reads as off — the
+    // default, and the only safe one: a stored protocol must never start
+    // buzzing the phone because the app was updated.
+    remind: raw['remind'],
   });
 }
 

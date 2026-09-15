@@ -67,4 +67,6 @@
 
 ## Migration numbers reserved (head is `0044`; re-check `git ls-tree main -- db/migrations/` at merge — seven collisions in a week)
 
-`0045` A8 micros (only if the JSON column proves insufficient) · `0046` B1 exercise metric type · `0047` B2 ml unit · `0048` B3 day boundary (if a preference column is needed) · `0049` C4 composite foods · `0050` C11 protocol toggles (if not expressible in content JSON) · `0051` C13 gym note · `0052` D3 ingested-workout pairing · `0053` D4 timezone.
+`0045` A8 micros (only if the JSON column proves insufficient) · `0046` B1 exercise metric type · `0047` B2 ml unit · `0048` B3 day boundary (if a preference column is needed) · `0049` C4 composite foods · ~~`0050` C11 protocol toggles~~ — **taken 2026-09-14**, `0050_protocol_carry_over.sql` (`protocols.carry_over`, `protocols.checkoff_mode`) · `0051` C13 gym note · `0052` D3 ingested-workout pairing · `0053` D4 timezone.
+
+**C9 / C10 / C11 shipped together on 2026-09-14**, on one migration. C9 (time selector) and C10 (reminders) needed none — the time was already `scheduled_time` and the reminder flag rides in the versioned content. C11's answered spec, and the five places the build departs from it, are in `docs/spikes/protocol-carryover.md`. Future check-off (C11's second toggle as originally framed) is still **deferred** to the mission day picker C1 wants; what shipped is the *adjusting* clock, which a late completion reaches without a future-day surface.

@@ -23,7 +23,7 @@
 import type { Database } from '../database';
 import { addDays, daysBetween } from '@/lib/protocols/cadence';
 
-import { NOT_REMOVED_SQL, PLANNED_ROW_SQL } from './mission';
+import { DONE_LATE_SQL, NOT_CARRIED_SQL, NOT_REMOVED_SQL, PLANNED_ROW_SQL } from './mission';
 
 /** One repeated item's record under a protocol, across the window. */
 export type ProtocolItemRecord = {
@@ -40,6 +40,14 @@ export type ProtocolItemRecord = {
   skipped: number;
   /** Marked partial — real progress, so neither a completion nor a miss. */
   partial: number;
+  /**
+   * Of `skipped`, the ones a CARRIED row finally paid on a later day (0050).
+   * A subset, never a fifth term: the day it was missed is still a miss and the
+   * late completion earns no rate credit. It exists so the ledger can say
+   * "2 skipped (1 done late)" instead of rendering two different facts
+   * identically.
+   */
+  doneLate: number;
 };
 
 export type ProtocolAdherence = {
@@ -52,6 +60,8 @@ export type ProtocolAdherence = {
   completed: number;
   skipped: number;
   partial: number;
+  /** Of `skipped`, the ones a carried row finally paid. A subset, not a term. */
+  doneLate: number;
   /**
    * completed ÷ planned, or **null when nothing was ever planned**. A rate over
    * a window that asked nothing of you is undefined, and "0%" for a fortnight
@@ -70,6 +80,7 @@ const EMPTY: ProtocolAdherence = {
   completed: 0,
   skipped: 0,
   partial: 0,
+  doneLate: 0,
   rate: null,
   items: [],
 };
@@ -101,6 +112,7 @@ export function protocolAdherence(
     completed: number;
     skipped: number;
     partialCount: number;
+    doneLate: number;
   }>(
     `SELECT json_extract(e.value, '$.item') AS itemId,
             e.title AS title,
@@ -109,13 +121,20 @@ export function protocolAdherence(
             sum(CASE WHEN e.status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
             -- Aliased away from a bare \`partial\`: SQL-standard MATCH PARTIAL
             -- makes the word a parser hazard not worth taking for an alias.
-            sum(CASE WHEN e.status = 'partial' THEN 1 ELSE 0 END) AS partialCount
+            sum(CASE WHEN e.status = 'partial' THEN 1 ELSE 0 END) AS partialCount,
+            -- A SUBSET of skipped, not a fifth term — the ledger still sums to
+            -- the denominator printed beside it.
+            sum(CASE WHEN e.status = 'skipped' AND ${DONE_LATE_SQL} THEN 1 ELSE 0 END) AS doneLate
        FROM log_entries e
        JOIN daily_logs d ON d.id = e.daily_log_id
       WHERE e.protocol_id = ?
         AND d.date >= ? AND d.date <= ?
         AND ${PLANNED_ROW_SQL}
         AND ${NOT_REMOVED_SQL}
+        -- A carried row is a reminder of an earlier day's obligation, never a
+        -- new one: counting it here would make a protocol's rate WORSE for
+        -- having carry-over on, which is the opposite of what it is for.
+        AND ${NOT_CARRIED_SQL}
       GROUP BY json_extract(e.value, '$.item'), e.title`,
     [protocolId, from, to]
   );
@@ -127,6 +146,7 @@ export function protocolAdherence(
     completed: r.completed,
     skipped: r.skipped,
     partial: r.partialCount,
+    doneLate: r.doneLate,
   }));
   items.sort((a, b) => {
     const missed = b.planned - b.completed - (a.planned - a.completed);
@@ -142,8 +162,9 @@ export function protocolAdherence(
       completed: acc.completed + item.completed,
       skipped: acc.skipped + item.skipped,
       partial: acc.partial + item.partial,
+      doneLate: acc.doneLate + item.doneLate,
     }),
-    { planned: 0, completed: 0, skipped: 0, partial: 0 }
+    { planned: 0, completed: 0, skipped: 0, partial: 0, doneLate: 0 }
   );
 
   return {

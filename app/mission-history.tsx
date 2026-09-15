@@ -154,6 +154,8 @@ type MissionRecordView = {
     excused: number;
     partial: number;
     untouched: number;
+    /** Of `skipped`, the ones a carried row finally paid (0050). A subset. */
+    doneLate: number;
   };
   sources: MissionSourceRecord[];
   /** Protocols that WILL contribute to a mission — the generator's own filter. */
@@ -187,12 +189,14 @@ function read(): MissionRecordView {
   let skipped = 0;
   let excused = 0;
   let partial = 0;
+  let doneLate = 0;
   for (const source of sources) {
     planned += source.planned;
     completed += source.completed;
     skipped += source.skipped;
     excused += source.excused;
     partial += source.partial;
+    doneLate += source.doneLate;
   }
 
   return {
@@ -215,6 +219,7 @@ function read(): MissionRecordView {
       excused,
       partial,
       untouched: planned - completed - skipped - excused - partial,
+      doneLate,
     },
     sources,
     activeProtocols: listProtocols(db).filter((p) => p.isActive && p.versionNumber !== null).length,
@@ -261,7 +266,14 @@ export default function MissionHistoryScreen() {
     totals.planned > 0
       ? [
           `${totals.completed} done`,
-          `${totals.skipped} skipped`,
+          // "done late" is a PARENTHETICAL inside skipped, never a sixth term:
+          // a debt paid on a later day leaves the day it was missed a miss
+          // (0050), so the arithmetic is unchanged and only the reading is
+          // sharper — "I never did it" and "I did it a day late" are different
+          // facts and must not render identically.
+          totals.doneLate > 0
+            ? `${totals.skipped} skipped (${totals.doneLate} done late)`
+            : `${totals.skipped} skipped`,
           ...(totals.excused > 0 ? [`${totals.excused} excused`] : []),
           ...(totals.partial > 0 ? [`${totals.partial} partial`] : []),
           `${totals.untouched} untouched`,
@@ -368,6 +380,15 @@ export default function MissionHistoryScreen() {
                   const worst = source.items[0];
                   const worstMissed = worst ? worst.planned - worst.completed - worst.excused : 0;
                   const navigable = source.protocolId !== null;
+                  // One string, built here — never JSX interpolation split
+                  // across children (see the note above `extent`). "done late"
+                  // rides beside "excused" because both are qualifications of
+                  // the miss count above, not terms of their own.
+                  const breakdown = [
+                    source.excused > 0 ? `of ${owed} owed` : `of ${source.planned} planned`,
+                    ...(source.excused > 0 ? [`${source.excused} excused`] : []),
+                    ...(source.doneLate > 0 ? [`${source.doneLate} done late`] : []),
+                  ].join(' · ');
 
                   const body = (
                     <>
@@ -406,9 +427,7 @@ export default function MissionHistoryScreen() {
                             and the excused ones are named rather than
                             disappearing into a smaller denominator. */}
                         <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                          {source.excused > 0
-                            ? `of ${owed} owed · ${source.excused} excused`
-                            : `of ${source.planned} planned`}
+                          {breakdown}
                         </Text>
                       </View>
                       {navigable ? (
@@ -424,7 +443,7 @@ export default function MissionHistoryScreen() {
                       {navigable ? (
                         <Pressable
                           accessibilityRole="button"
-                          accessibilityLabel={`${source.name}. ${missed} of ${owed} owed items missed${source.excused > 0 ? `, ${source.excused} excused by the day’s mode` : ''}. Open the protocol.`}
+                          accessibilityLabel={`${source.name}. ${missed} of ${owed} owed items missed${source.excused > 0 ? `, ${source.excused} excused by the day’s mode` : ''}${source.doneLate > 0 ? `, ${source.doneLate} done late` : ''}. Open the protocol.`}
                           onPress={() =>
                             router.push({
                               pathname: '/protocol-detail',
@@ -506,6 +525,16 @@ export default function MissionHistoryScreen() {
                         {point.excused > 0 ? (
                           <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
                             {`${point.excused} excused · ${getModeDefinition(point.mode).label}`}
+                          </Text>
+                        ) : null}
+                        {/* The day still reads as a miss — it is — but it can
+                            say the item was eventually done (0050). Without
+                            this, "never did it" and "did it a day late" render
+                            identically, which is the confusion the excused
+                            term exists one line up to prevent. */}
+                        {point.doneLate > 0 ? (
+                          <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                            {`${point.doneLate} done late`}
                           </Text>
                         ) : null}
                         {point.date === today ? (
