@@ -226,8 +226,14 @@ export default function ProtocolDetailScreen() {
                   </Text>
                   {/* The ledger reconciles: the four terms sum to the
                       denominator printed beside them. */}
+                  {/* `done late` is a PARENTHETICAL inside skipped, not a fifth
+                      term: a debt paid on a later day leaves the day it was
+                      missed a miss and earns no rate credit (0050). The four
+                      terms still reconcile to the denominator printed below. */}
                   <Text className="mt-1.5 font-mono text-[11px] leading-5 text-ink-muted">
-                    {`${adherence.completed} done · ${adherence.skipped} skipped · ${adherence.partial} partial · ${untouched} untouched`}
+                    {`${adherence.completed} done · ${adherence.skipped} skipped${
+                      adherence.doneLate > 0 ? ` (${adherence.doneLate} done late)` : ''
+                    } · ${adherence.partial} partial · ${untouched} untouched`}
                   </Text>
                   <Text className="font-mono text-[11px] text-ink-muted">
                     {`of ${adherence.planned} planned, ${shortDate(adherence.from ?? '')} → ${shortDate(adherence.to ?? '')}`}

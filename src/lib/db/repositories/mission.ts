@@ -35,6 +35,17 @@ type MissionExtras = {
   protocol?: string;
   /** True for demo rows planted by the seed — purgeable once real data exists. */
   seed?: boolean;
+  /**
+   * A CARRIED row (0050): a debt from an earlier day, re-offered here. It is
+   * shown on Home like anything else and is deliberately held out of every
+   * denominator — see {@link NOT_CARRIED_SQL}.
+   */
+  carried?: boolean;
+  /** 1 on the first carry, 2 on the second … — what the row prints. */
+  carried_days?: number;
+  /** On a NATIVE row whose own cadence superseded an outstanding debt: how many
+   *  days of it are outstanding. Informational; it settles nothing. */
+  missed_days?: number;
 };
 
 /** Fallback display label when an entry has no stored `category`. */
@@ -71,6 +82,11 @@ export function toMissionItem(row: LogEntryRow): MissionItem {
     why: extras.why,
     estimatedMinutes: extras.estimatedMinutes,
     protocol: extras.protocol,
+    // Two different facts, and they must not render identically: `carriedDays`
+    // is "this row is a debt, N days old"; `missedDays` is "today's own
+    // occurrence, with N days of it still outstanding behind it".
+    carriedDays: extras.carried === true ? (extras.carried_days ?? 1) : undefined,
+    missedDays: extras.carried === true ? undefined : extras.missed_days,
   };
 }
 
@@ -111,6 +127,40 @@ export const PLANNED_ROW_SQL = "json_extract(value, '$.adhoc') IS NULL";
  */
 export const NOT_REMOVED_SQL = "json_extract(value, '$.removed') IS NULL";
 
+/**
+ * A CARRIED row — a debt from an earlier day, re-offered on this one (0050,
+ * backlog C11). The third shared predicate, and the one that keeps the feature
+ * from punishing the user for using it.
+ *
+ * ## The rule, stated once
+ *
+ * > **The original day keeps the obligation. A carried row is a REMINDER, not a
+ * > new obligation.**
+ *
+ * Tuesday did not owe you Monday's creatine; Monday did. So every query that
+ * counts what a day **owed** carries this predicate — {@link missionDailySeries},
+ * {@link missionBySource}, and the protocol-detail adherence read
+ * (./protocol-adherence.ts). Without it one item asked for once reads as
+ * *3 planned, 1 completed*, and turning carry-over on would make the rate worse
+ * than leaving it off: the exact opposite of what it is for.
+ *
+ * {@link listMission} deliberately does NOT carry it — a carried row renders on
+ * Home, it just is not an obligation of that day. Neither does the quota count
+ * or the adjusting clock's last-completion read (mission-generate.ts): a late
+ * completion IS a completion, and both of those ask what was done, not what was
+ * owed.
+ */
+export const NOT_CARRIED_SQL = "json_extract(value, '$.carried') IS NULL";
+
+/**
+ * The ORIGINAL row of a debt that was finally paid on a later day — `late_on`
+ * holds the day the carried copy was completed. It stays `skipped`, so it is
+ * still a miss on the day it was missed; this only lets a surface say so out
+ * loud ("2 skipped (1 done late)") rather than filing a late completion and a
+ * flat refusal under one word.
+ */
+export const DONE_LATE_SQL = "json_extract(value, '$.late_on') IS NOT NULL";
+
 export function listMission(db: Database, date: string): MissionItem[] {
   const log = db.get<{ id: string }>('SELECT id FROM daily_logs WHERE date = ?', [date]);
   if (!log) return [];
@@ -121,6 +171,55 @@ export function listMission(db: Database, date: string): MissionItem[] {
     [log.id]
   );
   return rows.map(toMissionItem);
+}
+
+/** One mission row that has asked for an OS notification (C10). */
+export type RemindableEntry = {
+  id: string;
+  protocolId: string;
+  /** The `ProtocolItem.id` — half of the key the scheduler dedupes on. */
+  itemId: string;
+  title: string;
+  /** Always non-null: `remind` is meaningless without a moment to fire at. */
+  scheduledTime: string;
+  /** The item's rationale line, used as the notification body. */
+  why: string | null;
+};
+
+/**
+ * The rows on `date` that are still PENDING and have asked for a notification.
+ *
+ * `status = 'pending'` is the whole of "a completed item's reminder must not
+ * fire": the scheduler re-runs on every status write, and a ticked item simply
+ * stops appearing here, so the next reconciliation drops its notification. The
+ * same is true of a skip and of a tombstoned removal — all three are decisions,
+ * and none of them should buzz the phone three hours later.
+ *
+ * Carried rows are deliberately INCLUDED (no {@link NOT_CARRIED_SQL}): a debt
+ * you asked to be reminded about is exactly the thing worth a nudge. This asks
+ * what is still to be DONE, not what the day owed.
+ */
+export function remindableEntries(db: Database, date: string): RemindableEntry[] {
+  return db.all<RemindableEntry>(
+    `SELECT e.id AS id,
+            e.protocol_id AS protocolId,
+            json_extract(e.value, '$.item') AS itemId,
+            e.title AS title,
+            e.scheduled_time AS scheduledTime,
+            json_extract(e.value, '$.why') AS why
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ?
+        AND e.status = 'pending'
+        AND e.scheduled_time IS NOT NULL
+        AND e.protocol_id IS NOT NULL
+        AND json_extract(e.value, '$.item') IS NOT NULL
+        AND json_extract(e.value, '$.remind') = 1
+        AND ${PLANNED_ROW_SQL}
+        AND ${NOT_REMOVED_SQL}
+      ORDER BY e.scheduled_time, e.created_at, e.id`,
+    [date]
+  );
 }
 
 /**
@@ -136,11 +235,75 @@ export function setMissionStatus(db: Database, id: string, status: MissionStatus
       status as LogEntryStatus,
       id,
     ]);
+    settleCarriedOriginal(db, id, null);
     return;
   }
   db.run(
     "UPDATE log_entries SET status = 'completed', completed_at = COALESCE(completed_at, ?) WHERE id = ?",
     [new Date().toISOString(), id]
+  );
+  settleCarriedOriginal(db, id, dayOfEntry(db, id));
+}
+
+/** The calendar day a log entry sits under, via its parent daily_log. */
+function dayOfEntry(db: Database, id: string): string | null {
+  const row = db.get<{ date: string }>(
+    'SELECT d.date AS date FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id WHERE e.id = ?',
+    [id]
+  );
+  return row?.date ?? null;
+}
+
+/**
+ * Close (or re-open) the debt behind a CARRIED row.
+ *
+ * Completing a carried row is a statement about the day it came FROM, not only
+ * about today, so the original row is settled in the same breath: `skipped`,
+ * plus `value.late_on = <the day it was actually done>`. Every existing query
+ * then does the right thing with no change at all — a skipped row on a
+ * non-excusing day is already a miss — and the only new surface is an
+ * annotation. **The missed day stays a miss and the late completion earns no
+ * rate credit** (owner's call, 2026-09-14: "did it late" and "did it on time"
+ * must not produce the same number).
+ *
+ * `day = null` UNDOES that: un-ticking a carried row on Home puts the original
+ * back to `pending` and clears the stamp, so the debt is live again and the
+ * generator re-carries it tomorrow. Without this the toggle would be one-way —
+ * a mis-tap would permanently convert an untouched row into a skip.
+ *
+ * NOT wrapped in a transaction of its own: `Database.transaction` is a plain
+ * BEGIN and does not nest, and the Coach's mission-ops batch already calls
+ * {@link setMissionStatus} from inside one. The two statements are sequential
+ * and the divergence if the second never ran is self-healing — the debt is
+ * simply still outstanding, and the next generation carries it again.
+ *
+ * Every guard is defence in depth on a statement that reaches a row the caller
+ * never named: it can only touch the row this one was carried FROM, and only
+ * while that row is in the state this function itself put it in.
+ */
+function settleCarriedOriginal(db: Database, id: string, day: string | null): void {
+  const row = db.get<{ origin: string | null }>(
+    `SELECT json_extract(value, '$.carried_from.entry') AS origin FROM log_entries WHERE id = ?`,
+    [id]
+  );
+  const origin = row?.origin;
+  if (typeof origin !== 'string' || origin === '') return;
+  if (day === null) {
+    db.run(
+      `UPDATE log_entries
+          SET status = 'pending',
+              value = json_remove(value, '$.late_on')
+        WHERE id = ? AND status = 'skipped' AND ${DONE_LATE_SQL}`,
+      [origin]
+    );
+    return;
+  }
+  db.run(
+    `UPDATE log_entries
+        SET status = 'skipped',
+            value = json_set(COALESCE(value, '{}'), '$.late_on', ?)
+      WHERE id = ? AND status = 'pending' AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`,
+    [day, origin]
   );
 }
 
@@ -393,6 +556,14 @@ export interface MissionDayPoint {
    * decision, so the current day's untouched items stay pending until it ends.
    */
   excused: number;
+  /**
+   * Of `skipped`, the ones that were finally DONE on a later day through a
+   * carried row (0050). A subset, never an extra term — the ledger still sums
+   * to `planned`, and the day is still a miss. It exists so a surface can say
+   * "2 skipped (1 done late)" instead of filing a late completion and a flat
+   * refusal under one word.
+   */
+  doneLate: number;
 }
 
 /**
@@ -436,23 +607,30 @@ export function missionDailySeries(
     completed: number;
     skipped: number;
     pending: number;
+    doneLate: number;
   }>(
     `SELECT d.date AS date,
        count(*) AS planned,
        sum(CASE WHEN e.status = 'completed' THEN 1 ELSE 0 END) AS completed,
        sum(CASE WHEN e.status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
-       sum(CASE WHEN e.status = 'pending' THEN 1 ELSE 0 END) AS pending
+       sum(CASE WHEN e.status = 'pending' THEN 1 ELSE 0 END) AS pending,
+       -- A SUBSET of skipped, never a term of its own: the day stayed a miss.
+       sum(CASE WHEN e.status = 'skipped' AND ${DONE_LATE_SQL} THEN 1 ELSE 0 END) AS doneLate
      FROM log_entries e
      JOIN daily_logs d ON d.id = e.daily_log_id
      WHERE d.date >= ? AND d.date <= ?
-       -- The two shared predicates go in VERBATIM, unqualified "value" and all.
-       -- That is safe here and only here because daily_logs has no "value"
+       -- The three shared predicates go in VERBATIM, unqualified "value" and
+       -- all. That is safe here and only here because daily_logs has no "value"
        -- column, so the name resolves unambiguously to log_entries.value --
        -- and interpolating them verbatim is the point: a rewritten copy would
        -- be a fourth definition of "is this a mission row", which is exactly
        -- what the constants exist to prevent.
        AND ${PLANNED_ROW_SQL}
        AND ${NOT_REMOVED_SQL}
+       -- A carried row is a reminder of an older day's obligation, not a new
+       -- one. Counting it here would make one item asked for once read as
+       -- "3 planned, 1 completed" and punish the user for using carry-over.
+       AND ${NOT_CARRIED_SQL}
      GROUP BY d.date`,
     [dates[0] ?? today, today]
   );
@@ -479,6 +657,7 @@ export function missionDailySeries(
       completed: row?.completed ?? 0,
       skipped: skipped - excusedSkips,
       excused: excusedSkips + excusedPending,
+      doneLate: row?.doneLate ?? 0,
     };
   });
 }
@@ -563,6 +742,8 @@ export interface MissionItemRecord {
   excused: number;
   /** Marked partial — real progress, so it is neither a completion nor a miss. */
   partial: number;
+  /** Of `skipped`, the ones a carried row finally paid. A subset, not a term. */
+  doneLate: number;
 }
 
 /**
@@ -585,6 +766,8 @@ export interface MissionSourceRecord {
   /** What a mode excused. Held out of the miss count AND of `planned - excused`. */
   excused: number;
   partial: number;
+  /** Of `skipped`, the ones a carried row finally paid. A subset, not a term. */
+  doneLate: number;
   /** This source's items, worst (most missed) first. */
   items: MissionItemRecord[];
 }
@@ -615,6 +798,8 @@ type SourceQueryRow = {
   /** Aliased away from `partial` — SQL-standard `MATCH PARTIAL` makes the bare
    *  word a parser hazard not worth taking for a column alias. */
   partialCount: number;
+  /** Skips a carried row finally paid, on a day that was NOT excused. */
+  doneLate: number;
 };
 
 /**
@@ -726,13 +911,21 @@ export function missionBySource(db: Database, from: string, to: string): Mission
             -- missionDailySeries, whose window ends on today.
             sum(CASE WHEN e.status = 'pending' AND ${isExcusedDay} THEN 1 ELSE 0 END)
               AS excusedPending,
-            sum(CASE WHEN e.status = 'partial' THEN 1 ELSE 0 END) AS partialCount
+            sum(CASE WHEN e.status = 'partial' THEN 1 ELSE 0 END) AS partialCount,
+            -- Of the skips counted AGAINST the record, the ones a carried row
+            -- finally paid. A SUBSET of the skips, so the four terms still sum
+            -- to the planned count; the day it was missed is still a miss.
+            sum(CASE WHEN e.status = 'skipped' AND NOT (${isExcusedDay}) AND ${DONE_LATE_SQL}
+                     THEN 1 ELSE 0 END) AS doneLate
        FROM log_entries e
        JOIN daily_logs d ON d.id = e.daily_log_id
        LEFT JOIN protocols p ON p.id = e.protocol_id
       WHERE d.date >= ? AND d.date <= ?
         AND ${PLANNED_ROW_SQL}
         AND ${NOT_REMOVED_SQL}
+        -- The carried copy renders on Home but is never an obligation of the
+        -- day it appears on. See NOT_CARRIED_SQL.
+        AND ${NOT_CARRIED_SQL}
       -- For PROTOCOL rows (protocol_id present): by (protocol_id, title), NOT by
       -- the display names — a protocol renamed mid-window is one protocol, and
       -- grouping on its name would split its record in two at the rename.
@@ -753,9 +946,10 @@ export function missionBySource(db: Database, from: string, to: string): Mission
           ELSE '' END,
         e.title`,
     // Bound in TEXTUAL order: the excused-day list sits in the SELECT list,
-    // which precedes the WHERE clause — and it appears TWICE there now (the
-    // excused skips, then the excused untouched), so it is bound twice.
-    [...excusedDates, ...excusedDates, from, to]
+    // which precedes the WHERE clause — and it appears THREE times there now
+    // (the excused skips, the excused untouched, then the done-late skips that
+    // were NOT excused), so it is bound three times, in that order.
+    [...excusedDates, ...excusedDates, ...excusedDates, from, to]
   );
 
   const byKey = new Map<string, MissionSourceRecord>();
@@ -770,6 +964,7 @@ export function missionBySource(db: Database, from: string, to: string): Mission
         skipped: 0,
         excused: 0,
         partial: 0,
+        doneLate: 0,
         items: [],
       };
       byKey.set(source.key, record);
@@ -786,6 +981,7 @@ export function missionBySource(db: Database, from: string, to: string): Mission
     record.skipped += skipped;
     record.excused += excused;
     record.partial += row.partialCount;
+    record.doneLate += row.doneLate;
     record.items.push({
       title: row.title,
       planned: row.planned,
@@ -793,6 +989,7 @@ export function missionBySource(db: Database, from: string, to: string): Mission
       skipped,
       excused,
       partial: row.partialCount,
+      doneLate: row.doneLate,
     });
   }
 

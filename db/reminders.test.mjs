@@ -32,6 +32,17 @@ import {
   listActiveReminders,
 } from '../src/lib/db/repositories/reminders.ts';
 import { reminderTrigger } from '../src/lib/notifications/reminders.ts';
+import {
+  fireInstant,
+  protocolReminderKey,
+  protocolRemindersDue,
+} from '../src/lib/notifications/protocol-reminders.ts';
+import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
+import {
+  generateMissionForDay,
+  rederiveMissionForDay,
+} from '../src/lib/db/repositories/mission-generate.ts';
+import { addVersion, createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 
 let pass = 0;
 let fail = 0;
@@ -392,6 +403,118 @@ console.log('6. one-off LIFECYCLE: the day is pinned at creation, then it fires 
   !isDueOn(retired, '2028-01-01') && reminderTrigger(retired, wayLater[0]) === null
     ? ok('  → completing it is what stops the nagging (status gates both paths)')
     : bad('completed one-off still due');
+}
+
+// ---------------------------------------------------------------------------
+// 7 — PROTOCOL ITEM REMINDERS (backlog C10, src/lib/notifications/
+// protocol-reminders.ts). A second source feeding the SAME OS reconciliation
+// pass as the reminders above; only the pure "what should fire and when" half
+// is exercised here, exactly as §6 does for one-offs.
+//
+// 2026-08-03 is a MONDAY. `NOW` is Monday 08:00 local, so an item at 07:00 is
+// already spent and one at 21:00 is still ahead.
+// ---------------------------------------------------------------------------
+
+/** One item in a schema-2 document, built the way the editor builds one. */
+const protocolItem = (over = {}) => ({
+  id: over.id ?? 'item-1',
+  title: over.title ?? 'Magnesium',
+  scheduled_time: over.time ?? '21:00',
+  dose: over.dose ?? null,
+  notes: over.notes ?? null,
+  cadence: over.cadence ?? { kind: 'daily' },
+  remind: over.remind ?? true,
+});
+const protocolDoc = (items) => ({
+  schema: 2,
+  phases: [{ id: 'p1', title: null, duration_days: null, items }],
+});
+
+console.log('7. protocol item reminders: scheduled, silenced, cancelled');
+{
+  const { db } = freshDb();
+  const MONDAY = '2026-08-03';
+  const NOW = new Date(2026, 7, 3, 8, 0, 0, 0);
+  const pid = createProtocolWithVersion(
+    db,
+    { name: 'Evening stack', type: 'supplement_stack', startedOn: MONDAY },
+    protocolDoc([
+      protocolItem({ id: 'mag', title: 'Magnesium', time: '21:00', notes: 'Sleep latency' }),
+      // Same protocol, reminder OFF — the default, and the thing that must not
+      // start buzzing merely because the item has a time.
+      protocolItem({ id: 'd3', title: 'Vitamin D3', time: '22:00', remind: false }),
+      // Timed, reminded, but ALREADY PAST at 08:00. Never schedule a moment in
+      // the past: the OS fires it immediately.
+      protocolItem({ id: 'am', title: 'Creatine', time: '07:00' }),
+    ])
+  );
+  generateMissionForDay(db, MONDAY);
+
+  const due = protocolRemindersDue(db, NOW, '00:00');
+  const keys = due.map((r) => r.key);
+  keys.includes(protocolReminderKey(pid, 'mag'))
+    ? ok('an item with a time and remind on is scheduled')
+    : bad('magnesium not scheduled', JSON.stringify(keys));
+  !keys.includes(protocolReminderKey(pid, 'd3'))
+    ? ok('an item with remind OFF is not — off by default, and it stays off')
+    : bad('D3 scheduled with remind off');
+  !due.some((r) => r.day === MONDAY && r.itemId === 'am')
+    ? ok('a moment already past today is not scheduled for today')
+    : bad('past moment scheduled');
+  const mag = due.find((r) => r.key === protocolReminderKey(pid, 'mag'));
+  mag.when.getHours() === 21 && mag.when.getDate() === 3 && mag.body === 'Sleep latency'
+    ? ok('it fires at 21:00 on the day itself, carrying the item’s why as the body')
+    : bad('magnesium moment', JSON.stringify({ when: String(mag.when), body: mag.body }));
+  // A daily item that is spent today is still due TOMORROW — the horizon reads
+  // future days from planForDay, which commits nothing.
+  const amNext = due.find((r) => r.itemId === 'am');
+  amNext && amNext.day === '2026-08-04'
+    ? ok('…and the same item is scheduled for its NEXT occurrence instead')
+    : bad('no next occurrence', JSON.stringify(amNext));
+
+  // SILENCE AFTER COMPLETION. The scheduler lists pending rows only, so ticking
+  // the row is the whole of it — no per-notification bookkeeping.
+  const magRow = db.get(
+    `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND e.title = 'Magnesium'`,
+    [MONDAY]
+  );
+  setMissionStatus(db, magRow.id, 'completed');
+  const afterDone = protocolRemindersDue(db, NOW, '00:00').find(
+    (r) => r.key === protocolReminderKey(pid, 'mag') && r.day === MONDAY
+  );
+  afterDone === undefined
+    ? ok('a completed item’s reminder does not fire — today’s moment is gone')
+    : bad('completed item still scheduled', JSON.stringify(afterDone));
+
+  // CANCELLED ON REMOVAL. An edit that drops the item re-derives the day and
+  // re-runs the sync; both sources then stop naming it.
+  addVersion(db, pid, protocolDoc([protocolItem({ id: 'd3', title: 'Vitamin D3', remind: false })]));
+  rederiveMissionForDay(db, MONDAY);
+  const afterEdit = protocolRemindersDue(db, NOW, '00:00').map((r) => r.itemId);
+  !afterEdit.includes('am')
+    ? ok('an item the edit removed is no longer scheduled at all')
+    : bad('removed item still scheduled', JSON.stringify(afterEdit));
+}
+
+console.log('7b. the fire time is the OS CLOCK, not the logical day');
+{
+  // Under a 04:00 boundary the logical day 2026-08-03 runs from calendar
+  // 08-03 04:00 to 08-04 04:00. An item at 02:00 is late at night on the day
+  // the user counts as Monday — so it fires on calendar TUESDAY. Dating it to
+  // calendar Monday would put it 22 hours in the past.
+  fireInstant('2026-08-03', '02:00', '04:00')?.getDate() === 4
+    ? ok('a clock time before the boundary fires on the NEXT calendar day')
+    : bad('02:00 under a 04:00 boundary', String(fireInstant('2026-08-03', '02:00', '04:00')));
+  fireInstant('2026-08-03', '21:00', '04:00')?.getDate() === 3
+    ? ok('a clock time after it fires on the logical day’s own calendar day')
+    : bad('21:00 under a 04:00 boundary', String(fireInstant('2026-08-03', '21:00', '04:00')));
+  fireInstant('2026-08-03', '02:00', '00:00')?.getDate() === 3
+    ? ok('and under the default midnight boundary the two are the same day')
+    : bad('02:00 under midnight', String(fireInstant('2026-08-03', '02:00', '00:00')));
+  fireInstant('2026-08-03', '99:99', '00:00') === null
+    ? ok('a non-clock time is not a moment')
+    : bad('bad time accepted');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

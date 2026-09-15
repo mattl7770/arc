@@ -139,6 +139,7 @@ function read(): DataOverviewState {
     completed: 0,
     skipped: 0,
     excused: 0,
+    doneLate: 0,
   };
   const adherence = missionAdherence(missionPoints.filter((p) => p.date < today));
   const mission: DataTrend = {

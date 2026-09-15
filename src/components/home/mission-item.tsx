@@ -63,15 +63,43 @@ type Props = {
  * here and it is the owner's call, not an agent's. Weight and the why-line carry
  * the same hierarchy without spending anything.
  */
+/**
+ * The carry mark (0050), or null. Two different facts, and the row must not
+ * render them identically:
+ *
+ *   - `carriedDays` — **this row IS the debt**, re-offered N days after the day
+ *     it was missed. "2 DAYS LATE".
+ *   - `missedDays` — this row is today's own occurrence, and N earlier days of
+ *     it are still untouched behind it. "2 MISSED".
+ *
+ * Label voice in the category slot, never a signal colour and never an accent:
+ * adherence is BEHAVIOUR, not biology (app/protocol-detail.tsx), and Home's
+ * accent budget is already spent.
+ */
+function carryMark(item: MissionItem): string | null {
+  if (item.carriedDays !== undefined && item.carriedDays > 0) {
+    return item.carriedDays === 1 ? '1 day late' : `${item.carriedDays} days late`;
+  }
+  if (item.missedDays !== undefined && item.missedDays > 0) return `${item.missedDays} missed`;
+  return null;
+}
+
 export function MissionItemRow({ item, active = false, onToggle }: Props) {
   const done = item.status === 'completed';
   const skipped = item.status === 'skipped';
   const muted = done || skipped;
+  const mark = carryMark(item);
 
   // Time first because the list is chronological, then what it is, then what
   // kind of thing it is, then its state. Longer than the title alone, and
   // deliberately so: every part carries information the row shows visually.
-  const spokenRow = [item.scheduledTime, item.title, item.category, STATUS_SPOKEN[item.status]]
+  const spokenRow = [
+    item.scheduledTime,
+    item.title,
+    item.category,
+    mark,
+    STATUS_SPOKEN[item.status],
+  ]
     .filter(Boolean)
     .join(', ');
 
@@ -105,9 +133,13 @@ export function MissionItemRow({ item, active = false, onToggle }: Props) {
           <Text
             numberOfLines={1}
             className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-            {item.snoozed && item.status === 'pending'
-              ? `${item.category} · Snoozed`
-              : item.category}
+            {[
+              item.category,
+              mark,
+              item.snoozed && item.status === 'pending' ? 'Snoozed' : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
           </Text>
         </View>
 

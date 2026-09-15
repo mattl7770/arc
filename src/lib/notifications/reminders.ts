@@ -29,6 +29,8 @@ import type { Database } from '@/lib/db/database';
 import { listActiveReminders } from '@/lib/db/repositories/reminders';
 import type { ReminderRow } from '@/lib/reminders/types';
 
+import { protocolRemindersDue } from './protocol-reminders';
+
 /**
  * An `expo-notifications` schedulable trigger. The `type` strings are the values
  * of `SchedulableTriggerInputTypes` (DATE='date', DAILY='daily', WEEKLY='weekly')
@@ -200,7 +202,12 @@ export function configureNotificationPresentation(): void {
 }
 
 /** What a tapped notification wants ARC to open. */
-export type NotificationRoute = { kind: 'reminder'; id: string } | { kind: 'coach' };
+export type NotificationRoute =
+  | { kind: 'reminder'; id: string }
+  | { kind: 'coach' }
+  /** A protocol item's own nudge (C10) — the tap belongs on the mission, where
+   *  the item can actually be ticked, not on the protocol's reference screen. */
+  | { kind: 'mission' };
 
 /** Map a notification's data payload to where the tap should land. */
 export function routeForNotification(
@@ -208,6 +215,7 @@ export function routeForNotification(
 ): NotificationRoute | null {
   if (!data) return null;
   if (data.kind === 'checkin') return { kind: 'coach' };
+  if (typeof data.protocolItem === 'string') return { kind: 'mission' };
   if (typeof data.reminderId === 'string') return { kind: 'reminder', id: data.reminderId };
   return null;
 }
@@ -255,18 +263,42 @@ export type NotificationSyncResult = {
   permissionGranted: boolean | null;
   /** Ids an OS notification was really scheduled for, this sync. */
   scheduledIds: string[];
+  /**
+   * Protocol ITEM keys (`protocolId:itemId`) an OS notification was really
+   * scheduled for. Separate from {@link scheduledIds} because the two are
+   * different namespaces and `syncAndReportForReminder` answers about the
+   * first — folding them together would let a protocol item's key satisfy a
+   * question about a reminder.
+   */
+  scheduledProtocolItems: string[];
   /** A native call threw; scheduling was abandoned mid-way. */
   failed: boolean;
 };
 
 /**
- * Make the OS notification schedule mirror the active reminders. Cancels every
- * app-scheduled notification, then (if there's anything timed to schedule and
- * permission is granted) reschedules from the DB. Best-effort: any failure is
- * swallowed — a missed OS nudge must never break the in-app reminder, which is
- * the source of truth — but it is REPORTED in the returned result rather than
- * disappearing. Permission is only requested when there's actually a timed
- * reminder to deliver, so a user with none is never prompted.
+ * Make the OS notification schedule mirror the database — the active reminders
+ * AND the protocol items that asked for a nudge (C10, ./protocol-reminders.ts).
+ *
+ * Cancels every app-scheduled notification, then (if there is anything to
+ * schedule and permission is granted) reschedules from both sources. That
+ * cancel-all is why the two live in ONE pass: a second scheduler's work would
+ * be wiped by the next Coach turn.
+ *
+ * It is also what makes the whole protocol-reminder LIFECYCLE fall out with no
+ * bookkeeping of its own. Every caller that changes the plan re-runs this, and
+ * each case is then simply "the source no longer lists it":
+ *
+ *   - an edit that turns the reminder off, retimes the item, or deletes it →
+ *     the re-derive rewrites today's rows and `planForDay` stops naming it;
+ *   - a completed / skipped / removed item → `remindableEntries` is
+ *     `status = 'pending'` only;
+ *   - a paused, ended or deleted protocol → it never reaches `planForDay`.
+ *
+ * Best-effort: any failure is swallowed — a missed OS nudge must never break
+ * the in-app reminder, which is the source of truth — but it is REPORTED in the
+ * returned result rather than disappearing. Permission is only requested when
+ * there is actually something to deliver, so a user with neither is never
+ * prompted.
  */
 export async function syncReminderNotifications(
   db: Database,
@@ -277,6 +309,7 @@ export async function syncReminderNotifications(
     moduleAvailable: Boolean(mod) && typeof mod?.scheduleNotificationAsync === 'function',
     permissionGranted: null,
     scheduledIds: [],
+    scheduledProtocolItems: [],
     failed: false,
   };
   if (!mod || !result.moduleAvailable) return result;
@@ -290,7 +323,8 @@ export async function syncReminderNotifications(
       .filter((entry): entry is { reminder: ReminderRow; trigger: ReminderTrigger } =>
         Boolean(entry.trigger)
       );
-    if (timed.length === 0) return result;
+    const items = protocolRemindersDue(db, now);
+    if (timed.length === 0 && items.length === 0) return result;
 
     result.permissionGranted = await ensurePermission(mod);
     if (!result.permissionGranted) return result;
@@ -306,6 +340,22 @@ export async function syncReminderNotifications(
         trigger,
       });
       result.scheduledIds.push(reminder.id);
+    }
+
+    for (const item of items) {
+      await mod.scheduleNotificationAsync({
+        content: {
+          title: item.title,
+          body: item.body ?? undefined,
+          sound: 'default',
+          data: { protocolItem: item.key, protocolId: item.protocolId },
+        },
+        // One dated moment, never a repeating trigger: a repeat would keep
+        // firing on days the item was already done, and nothing about a
+        // recurring OS trigger can be told that the plan changed.
+        trigger: { type: 'date', date: item.when },
+      });
+      result.scheduledProtocolItems.push(item.key);
     }
   } catch {
     // Notifications are a best-effort layer over the in-app reminders — swallow,

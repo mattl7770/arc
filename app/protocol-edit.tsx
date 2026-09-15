@@ -17,7 +17,8 @@ import {
   deleteProtocol,
   reviseProtocol,
 } from '@/lib/db/repositories/protocols';
-import type { ProtocolType } from '@/lib/db/types';
+import type { CheckoffMode, ProtocolType } from '@/lib/db/types';
+import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import { WEEKDAY_LABELS } from '@/lib/protocols/cadence';
 import { normalizeContent, validateContent } from '@/lib/protocols/content';
 import { cadenceLabel, PROTOCOL_TYPES } from '@/lib/protocols/format';
@@ -99,6 +100,8 @@ type EditItem = {
   /** Not edited here (Coach territory) — carried so a save never drops it. */
   notes: string;
   cadence: Cadence;
+  /** Whether this item asks the OS for a notification at its time (C10). */
+  remind: boolean;
 };
 
 /** One phase under edit. `days` is text so the field can be empty = open-ended. */
@@ -113,7 +116,7 @@ type EditPhase = {
 const DAILY: Cadence = { kind: 'daily' };
 
 function blankItem(key: number): EditItem {
-  return { key, id: '', title: '', time: '', dose: '', notes: '', cadence: DAILY };
+  return { key, id: '', title: '', time: '', dose: '', notes: '', cadence: DAILY, remind: false };
 }
 
 function initialPhases(detail: ProtocolDetail | null): EditPhase[] {
@@ -135,6 +138,7 @@ function initialPhases(detail: ProtocolDetail | null): EditPhase[] {
             dose: it.dose ?? '',
             notes: it.notes ?? '',
             cadence: it.cadence,
+            remind: it.remind,
           })),
   }));
 }
@@ -264,6 +268,150 @@ function FormField({
         fill ? 'flex-1' : ''
       } ${mono ? 'font-mono' : ''} ${multiline ? 'max-h-28 min-h-[64px] leading-5' : ''}`}
     />
+  );
+}
+
+/**
+ * Anchor times offered as one tap each (C9).
+ *
+ * Six, three hours apart across the waking day. They are deliberately round and
+ * evenly spaced rather than tuned to any routine: a preset that guesses at the
+ * user's morning would be wrong for most items and would read as advice. These
+ * are a coarse jump to the right part of the day; the field beside them is how
+ * you say 07:45.
+ */
+const TIME_PRESETS = ['07:00', '09:00', '12:00', '15:00', '18:00', '21:00'] as const;
+
+/**
+ * When one item happens, and whether it nudges (C9 + C10).
+ *
+ * Collapsed to a single line that STATES the time, exactly like
+ * {@link CadenceControl} one row below it — the two lines under an item read
+ * "when" then "how often", which is the order the questions come in. A stack of
+ * eight items would otherwise carry eight open time fields, and the common case
+ * (no time at all) would cost as much room as the rare one.
+ *
+ * **Reused, not invented.** The typed field is the app's existing time entry —
+ * mono, `numbers-and-punctuation`, five characters — as on the appointment form
+ * and in the meal editor. That keyboard is a FULL keyboard and already carries
+ * a return key, which is why it does not take `KEYPAD_DONE`; `FormField` derives
+ * that from `keyboardType` so a field cannot get the rule half-right
+ * (src/components/ui/keyboard.ts).
+ *
+ * **Clearing is a first-class action**, not a matter of selecting five
+ * characters and deleting them on a phone: an untimed item is a normal thing to
+ * want, and it sorts to the end of the day exactly as it always has
+ * (src/lib/home/derive-mission.ts). Clearing also turns the reminder off,
+ * because a notification with no moment to fire at is an intent the scheduler
+ * can never honour — `normalizeItem` enforces the same thing at the storage
+ * boundary, so the two cannot disagree.
+ */
+function TimeControl({
+  time,
+  remind,
+  onChange,
+  itemLabel,
+}: {
+  time: string;
+  remind: boolean;
+  onChange: (next: { time: string; remind: boolean }) => void;
+  itemLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const normalized = normalizeTime(time);
+  const timed = normalized !== null;
+  const spoken = time.trim() === '' ? 'any time' : time;
+
+  return (
+    <View className="mt-2">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`Time for ${itemLabel}: ${spoken}${
+          remind ? ', reminder on' : ''
+        }. ${open ? 'Hide options' : 'Change'}`}
+        onPress={() => setOpen((shown) => !shown)}
+        className="min-h-[44px] flex-row items-center gap-2 py-2 active:opacity-60">
+        <Ionicons name="time-outline" size={15} color={palette.inkMuted} />
+        <Text className="flex-1 text-[12px] text-ink-secondary">
+          {/* A clock time is a measured value, so it is set in mono; "Any time"
+              is a label, so it is not. */}
+          {time.trim() === '' ? (
+            <Text className="font-label">Any time</Text>
+          ) : (
+            <Text className="font-mono">{time}</Text>
+          )}
+          {remind ? <Text className="font-label">{'  ·  Reminder'}</Text> : null}
+        </Text>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={13} color={palette.inkMuted} />
+      </Pressable>
+
+      {open ? (
+        <View className="mt-1">
+          <View className="flex-row flex-wrap gap-1.5">
+            {TIME_PRESETS.map((preset) => (
+              <Chip
+                key={preset}
+                label={preset}
+                compact
+                on={normalized === preset}
+                onPress={() => onChange({ time: preset, remind })}
+              />
+            ))}
+            <Chip
+              label="Clear"
+              compact
+              on={false}
+              accessibilityLabel="Clear the time"
+              onPress={() => onChange({ time: '', remind: false })}
+            />
+          </View>
+
+          <View className="mt-2 flex-row items-center gap-2">
+            <View className="w-24">
+              <FormField
+                value={time}
+                onChange={(next) => onChange({ time: next, remind })}
+                placeholder="07:30"
+                keyboardType="numbers-and-punctuation"
+                maxLength={5}
+                mono
+                accessibilityLabel="Item time"
+              />
+            </View>
+            {timed ? (
+              <Chip
+                label={remind ? 'Reminder on' : 'Remind me'}
+                on={remind}
+                accessibilityLabel={`Reminder at ${normalized} for ${itemLabel}${
+                  remind ? ', on' : ', off'
+                }`}
+                onPress={() => onChange({ time, remind: !remind })}
+              />
+            ) : (
+              /* Authored, never blank: the slot says why the control it would
+                 otherwise hold is not here. */
+              <Text className="flex-1 font-serif text-[12px] leading-4 text-ink-muted">
+                Give it a time to set a reminder.
+              </Text>
+            )}
+          </View>
+
+          {remind ? (
+            /* The same one-line device the quota control uses, and for the same
+               reason: the control cannot state its own limits. Whether a phone
+               alert actually fires is a runtime fact (the module in the build,
+               permission granted, a moment still ahead) — see
+               src/lib/notifications/reminders.ts — so this says what ARC will
+               ASK for and promises nothing. */
+            <Text className="mt-1.5 font-serif text-[11.5px] leading-4 text-ink-muted">
+              iOS alerts at {normalized} on the days this lands, unless you have already ticked it.
+              Notifications must be allowed for ARC.
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -438,6 +586,12 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
   const [active, setActiveState] = useState(detail ? detail.protocol.is_active === 1 : true);
   const [phases, setPhases] = useState<EditPhase[]>(() => initialPhases(detail));
   const [startedOn, setStartedOn] = useState(detail?.protocol.started_on ?? todayISODate());
+  // Execution policy (0050). It lives on the protocols ROW, not in the version,
+  // so changing it writes no revision — see the migration header.
+  const [carryOver, setCarryOver] = useState(detail?.protocol.carry_over === 1);
+  const [checkoffMode, setCheckoffMode] = useState<CheckoffMode>(
+    detail?.protocol.checkoff_mode ?? 'strict'
+  );
   const [changeNotes, setChangeNotes] = useState('');
   const nextKey = useRef(1000);
   // Re-entrancy guard: the screen stays touchable during the pop transition,
@@ -540,6 +694,7 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
             dose: it.dose,
             notes: it.notes,
             cadence: it.cadence,
+            remind: it.remind,
           })),
       })),
     });
@@ -571,6 +726,8 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
           // phase the anchor changes nothing that lands on a day, and passing
           // null leaves whatever anchor the protocol already had.
           startedOn: phased ? startedOn.trim() : null,
+          carryOver,
+          checkoffMode,
           changeNotes: changeNotes.trim() || null,
         });
       } else {
@@ -591,6 +748,11 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
       // a mode change uses: untouched machine-made rows follow the new content,
       // and anything completed / skipped / partial / ad-hoc is preserved.
       rederiveMissionForDay(db, todayISODate());
+      // …and the OS schedule follows the plan (C10). This is what cancels the
+      // notification of an item the edit just removed, retimed, or turned the
+      // reminder off for: the sync cancels everything and rebuilds from the new
+      // plan, so there is nothing per-item to remember to undo.
+      void syncReminderNotifications(db);
       router.back();
     } catch (error) {
       // Atomic writes: nothing partial persisted. Keep the form, say so, and
@@ -615,7 +777,10 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
             if (inFlight.current) return;
             inFlight.current = true;
             try {
-              deleteProtocol(getDb(), detail.protocol.id);
+              const db = getDb();
+              deleteProtocol(db, detail.protocol.id);
+              // A deleted protocol must stop buzzing the phone. Same rebuild.
+              void syncReminderNotifications(db);
               router.back();
             } catch (error) {
               inFlight.current = false;
@@ -750,27 +915,25 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
                   <Ionicons name="close" size={18} color={palette.inkMuted} />
                 </Pressable>
               </View>
-              <View className="mt-2 flex-row gap-2">
-                <View className="w-24">
-                  <FormField
-                    value={it.time}
-                    onChange={(time) => updateItem(phase.key, it.key, { time })}
-                    placeholder="07:30"
-                    keyboardType="numbers-and-punctuation"
-                    maxLength={5}
-                    mono
-                    accessibilityLabel="Item time"
-                  />
-                </View>
-                {/* `fill` because this shares a row with the fixed-width time. */}
+              {/* The dose now takes the whole width: the time moved into its
+                  own collapsed control below, beside the cadence, so an item
+                  reads title → dose → when → how often. No `fill` here — this
+                  is a child of a COLUMN, and `flex-1` in a column is what drew
+                  boxes over other boxes (see FormField). */}
+              <View className="mt-2">
                 <FormField
                   value={it.dose}
                   onChange={(dose) => updateItem(phase.key, it.key, { dose })}
                   placeholder="Dose or note — 5 g, with food…"
-                  fill
                   accessibilityLabel="Item dose or note"
                 />
               </View>
+              <TimeControl
+                time={it.time}
+                remind={it.remind}
+                itemLabel={it.title.trim() || 'this item'}
+                onChange={(next) => updateItem(phase.key, it.key, next)}
+              />
               <CadenceControl
                 cadence={it.cadence}
                 itemLabel={it.title.trim() || 'this item'}
@@ -839,6 +1002,65 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
                 />
               ))}
             </View>
+          </View>
+
+          {/* Execution POLICY (0050), between the protocol's other identity
+              facts and the version note — because that is what it is. It writes
+              the `protocols` row, never a version: turning carry-over on is not
+              a revision of the plan, and a restore must bring back the plan and
+              not the policy (see db/migrations/0050_protocol_carry_over.sql).
+
+              Only on the EDIT path, like Status and the change notes. A policy
+              for running a protocol you have not run yet is furniture on the
+              create form, which opens as one open-ended phase for a reason.
+
+              A form carries no block: a `SectionLabel`, the controls, air
+              (src/components/ui/block.tsx, form (b)). Both pairs are the
+              neutral `Chip` — the Status pair's exact shape — so the accent
+              budget is unchanged at exactly one, Save. */}
+          <View className="mt-8">
+            <SectionLabel label="If you miss it" />
+            <View className="mt-2 flex-row gap-2">
+              {(
+                [
+                  { label: 'Stays until done', value: true },
+                  { label: 'Stays on its day', value: false },
+                ] as const
+              ).map((option) => (
+                <Chip
+                  key={option.label}
+                  label={option.label}
+                  on={carryOver === option.value}
+                  onPress={() => setCarryOver(option.value)}
+                />
+              ))}
+            </View>
+            <Text className="mt-1.5 font-serif text-[12px] leading-4 text-ink-muted">
+              A missed item is offered again for up to 7 days. The day you missed it still counts
+              as a miss.
+            </Text>
+          </View>
+
+          <View className="mt-8">
+            <SectionLabel label="When you check it off" />
+            <View className="mt-2 flex-row gap-2">
+              {(
+                [
+                  { label: 'Keep the schedule', value: 'strict' },
+                  { label: 'Count from when I did it', value: 'adjusting' },
+                ] as const
+              ).map((option) => (
+                <Chip
+                  key={option.label}
+                  label={option.label}
+                  on={checkoffMode === option.value}
+                  onPress={() => setCheckoffMode(option.value)}
+                />
+              ))}
+            </View>
+            <Text className="mt-1.5 font-serif text-[12px] leading-4 text-ink-muted">
+              Only changes items set to every N days.
+            </Text>
           </View>
 
           <View className="mt-8">

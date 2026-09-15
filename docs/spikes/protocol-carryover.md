@@ -1,8 +1,35 @@
 # C11 — Protocol carry-over and check-off behaviour
 
-**Status:** proposal, for the owner. No code written.
-**Backlog:** `docs/backlog-2026-09.md` C11 (Phase C, marked **[spec]**).
-**Reserved migration:** `0050`, *"protocol toggles (if not expressible in content JSON)"*.
+**Status: BUILT** (2026-09-14), migration **`0050_protocol_carry_over.sql`**.
+The owner answered §6 and the persistence half shipped with it. This document
+stays as the reasoning record; §3 is the design that was implemented and §1 is
+still an accurate reading of the code it describes.
+**Backlog:** `docs/backlog-2026-09.md` C11 (Phase C, was marked **[spec]**).
+
+## What shipped, and where it departs from this proposal
+
+The owner's answers to §6: **1 → (c)**, **2 → (a)**, **3 → (a)**. So carry-over
+persistence shipped whole, the missed day stays a miss, and a debt lives 7 days.
+Five deliberate departures, each argued in the code it lives in:
+
+| # | The proposal | What shipped | Why |
+| --- | --- | --- | --- |
+| 1 | the second column is `early_checkoff` | **`checkoff_mode`** (`strict` / `adjusting`) | it is not only about checking ahead: a LATE completion through a carried row moves the clock under `adjusting` too, which is the only way the toggle is reachable without a future-day surface |
+| 2 | future check-off needs a day picker first (§3.3, question 1) | **no future-day surface**, per answer (c) — but `adjusting` ships, redefined as *n days after the item's last completion* | §3.3 found `every_n_days` to be the one cadence the toggle changes, and a carried completion is a completion. The surface is still deferred to the mission day picker (C1) |
+| 3 | on day 8 the original is settled `skipped` + `value.carry_expired` | **no write at all** — the cap is the window `outstandingCarries` reads over | an untouched row is already an honest record of a miss and every adherence read counts it as one. Rewriting week-old history on every app open to add an annotation nothing reads is the worse trade, and it would have made `planForDay`'s inputs impure |
+| 4 | `missed_yesterday` on a native `daily` row, meaning consecutive missed days | **`missed_days`** on ANY native row that supersedes a debt, meaning outstanding days inside the window | the general rule the spike itself argued for — `daily` stops being a special case — and the field's name no longer contradicts a value of 2 |
+| 5 | a debt is any day that ended without a completion | **an untouched (`pending`) row only** | a hand-tapped skip is a DECISION not to do it. Re-levying it would make the skip button meaningless, and it gives the owner an explicit "not this one" gesture that costs no new control |
+
+`NOT_CARRIED_SQL` landed exactly as §3.2 describes it, through
+`missionDailySeries`, `missionBySource` and `protocolAdherence`, with
+`listMission` deliberately not carrying it. So did the fourth-source placement
+inside `planForDay`, the supersede rule, the phase / mode / pause exclusions and
+the settle-on-late-completion write — which is also reversible, so un-ticking a
+carried row re-opens the debt rather than converting an untouched row into a
+permanent skip.
+
+Tests live where §3.5 said they would: `db/mission-generate.test.mjs` §§15–21
+and `db/data-trends.test.mjs` §14g.
 
 ---
 
@@ -558,7 +585,13 @@ screen exists to use it on.
 
 ---
 
-## 6. Questions only the owner can answer
+## 6. Questions only the owner can answer — ANSWERED 2026-09-14
+
+**(1) → (c)**, **(2) → (a)**, **(3) → (a)**. All three recommendations were
+taken. The future-day surface stays deferred to C1's mission day picker; the
+missed day stays a miss and reads "done late"; a debt lives 7 days. See the
+banner at the top of this file for the five places the build departs from what
+is written below.
 
 **1. Future check-off needs a screen showing a future day — none exists.**
 Home is today-only (`use-today-mission.ts`) and mission history looks backwards.

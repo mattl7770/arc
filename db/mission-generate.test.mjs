@@ -337,9 +337,17 @@ console.log('8. no tracked text file carries a literal NUL byte (the unsearchabl
     : bad('NUL scan does not scan');
   // And the replacement is not a workaround with a caveat — it is the same
   // value, so nothing that used the delimiter had to change.
-  planKey('Creatine', 'p1') === `p1${NUL}Creatine`
+  planKey('Creatine', 'p1') === `p1${NUL}Creatine${NUL}native`
     ? ok('the escape still produces U+0000 — the delimiter is byte-for-byte unchanged')
     : bad('planKey delimiter changed', JSON.stringify(planKey('Creatine', 'p1')));
+  // The third component (0050): a CARRIED entry and the day's own occurrence of
+  // the same item under the same protocol are two obligations that share a
+  // title. Without it either could claim the other's slot in the re-derive's
+  // multiset — duplicating the item, or silently deleting today's own row.
+  planKey('Creatine', 'p1', true) !== planKey('Creatine', 'p1') &&
+  planKey('Creatine', 'p1', true) === `p1${NUL}Creatine${NUL}carried`
+    ? ok('a carried entry and a native entry key apart')
+    : bad('carried keys collide', JSON.stringify(planKey('Creatine', 'p1', true)));
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +662,345 @@ console.log('14. an UNANCHORED active protocol is anchored by the first generati
   JSON.parse(rows(raw, DATE).find((r) => r.title === 'Peptide').value).dose === '0.5 mg'
     ? ok('…and that day is day 0 of phase 1, so the user starts at the bottom of the ramp')
     : bad('wrong phase on first day');
+}
+
+// ---------------------------------------------------------------------------
+// 0050 — CARRY-OVER and CHECK-OFF MODE (backlog C11, docs/spikes/protocol-
+// carryover.md). Two per-protocol columns of execution POLICY, both defaulting
+// to exactly today's behaviour.
+//
+// Dates again chosen and stated: 2026-08-03 is a MONDAY, so 08-04 Tue, 08-05
+// Wed, 08-07 Fri. Every case below leaves a day's row UNTOUCHED to create the
+// debt — an untouched row is what the owner means by "if you miss something".
+// ---------------------------------------------------------------------------
+
+/** Generate a day and return its rows, newest plan first. */
+const entriesOn = (db, raw, date) => {
+  generateMissionForDay(db, date);
+  return rows(raw, date);
+};
+const valueOf = (row) => JSON.parse(row.value ?? '{}');
+const carriedOn = (db, raw, date, title) =>
+  entriesOn(db, raw, date).filter((r) => r.title === title && valueOf(r).carried === true);
+
+console.log('15. carry-over is OFF by default and changes nothing');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03' },
+    content([{ items: [{ title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 5] } }] }])
+  );
+  const carry = raw.prepare('SELECT carry_over, checkoff_mode FROM protocols').get();
+  carry.carry_over === 0 && carry.checkoff_mode === 'strict'
+    ? ok('0050 leaves an existing protocol at carry_over 0 / strict')
+    : bad('defaults moved', JSON.stringify(carry));
+
+  entriesOn(db, raw, '2026-08-03'); // Monday plans it; nothing touches it.
+  const tue = entriesOn(db, raw, '2026-08-04');
+  tue.length === 0
+    ? ok('Tuesday is empty — a miss stays attached to the day it was planned for')
+    : bad('carried with the toggle off', JSON.stringify(tue.map((r) => r.title)));
+  const mon = rows(raw, '2026-08-03')[0];
+  valueOf(mon).carried === undefined && valueOf(mon).missed_days === undefined
+    ? ok('…and no marks are written anywhere')
+    : bad('marks written with the toggle off', mon.value);
+}
+
+console.log('16. a weekday miss carries as ONE row, verbatim, and ages');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    {
+      name: 'Training',
+      type: 'training_block',
+      startedOn: '2026-08-03',
+      carryOver: true,
+    },
+    content([
+      {
+        items: [
+          {
+            title: 'Lower body',
+            time: '17:30',
+            dose: '4x8 @ RPE 7',
+            notes: 'Legs are the lever here',
+            cadence: { kind: 'weekdays', days: [1, 5] },
+          },
+        ],
+      },
+    ])
+  );
+  const monday = entriesOn(db, raw, '2026-08-03')[0];
+  monday && valueOf(monday).carried === undefined
+    ? ok('Monday plans its own occurrence, uncarried')
+    : bad('monday', JSON.stringify(monday));
+
+  const tue = entriesOn(db, raw, '2026-08-04');
+  const carried = tue.filter((r) => r.title === 'Lower body');
+  const extras = carried[0] ? valueOf(carried[0]) : {};
+  carried.length === 1 && extras.carried === true
+    ? ok('Tuesday holds exactly ONE row for it, marked carried')
+    : bad('tuesday carry', JSON.stringify(tue.map((r) => [r.title, r.value])));
+  extras.carried_days === 1 &&
+  extras.carried_from?.date === '2026-08-03' &&
+  extras.carried_from?.entry === monday.id
+    ? ok('it names the day and the row it is owed from, one day old')
+    : bad('carried_from', JSON.stringify(extras));
+  carried[0].scheduled_time === '17:30' &&
+  extras.dose === '4x8 @ RPE 7' &&
+  extras.why === 'Legs are the lever here'
+    ? ok('the item comes across verbatim — same time, dose and why')
+    : bad('carry lost fields', JSON.stringify(carried[0]));
+
+  const before = rows(raw, '2026-08-04').length;
+  rederiveMissionForDay(db, '2026-08-04');
+  rows(raw, '2026-08-04').length === before
+    ? ok('a second re-derive of the same day adds nothing')
+    : bad('re-derive duplicated the carry', `${before} → ${rows(raw, '2026-08-04').length}`);
+
+  const wed = carriedOn(db, raw, '2026-08-05', 'Lower body');
+  wed.length === 1 && valueOf(wed[0]).carried_days === 2
+    ? ok('Wednesday holds ONE carried row, now two days old')
+    : bad('wednesday', JSON.stringify(wed.map((r) => r.value)));
+
+  // Friday: the cadence's own occurrence SUPERSEDES the debt — one obligation,
+  // one row — and merely says what is still outstanding behind it.
+  const fri = entriesOn(db, raw, '2026-08-07').filter((r) => r.title === 'Lower body');
+  fri.length === 1 && valueOf(fri[0]).carried === undefined
+    ? ok('Friday holds exactly one row and it is the NATIVE occurrence, not a carry')
+    : bad('supersede failed', JSON.stringify(fri.map((r) => r.value)));
+  valueOf(fri[0]).missed_days === 1
+    ? ok('…marked with the one earlier day still untouched behind it')
+    : bad('missed_days', fri[0].value);
+}
+
+console.log('17. completing a carried row settles the ORIGINAL as done-late');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    content([{ items: [{ title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 5] } }] }])
+  );
+  const monday = entriesOn(db, raw, '2026-08-03')[0];
+  const carried = carriedOn(db, raw, '2026-08-04', 'Lower body')[0];
+  setMissionStatus(db, carried.id, 'completed');
+
+  const settled = raw.prepare('SELECT * FROM log_entries WHERE id = ?').get(monday.id);
+  settled.status === 'skipped' && valueOf(settled).late_on === '2026-08-04'
+    ? ok('Monday is settled skipped, stamped with the day it was finally done')
+    : bad('original not settled', JSON.stringify(settled));
+
+  // …and the debt is closed, so nothing carries into Wednesday.
+  carriedOn(db, raw, '2026-08-05', 'Lower body').length === 0
+    ? ok('the debt is closed — Wednesday carries nothing')
+    : bad('carry survived its own payment');
+
+  // Un-ticking must be able to undo it, or a mis-tap permanently converts an
+  // untouched row into a skip.
+  setMissionStatus(db, carried.id, 'pending');
+  const reopened = raw.prepare('SELECT * FROM log_entries WHERE id = ?').get(monday.id);
+  reopened.status === 'pending' && valueOf(reopened).late_on === undefined
+    ? ok('un-ticking the carried row re-opens the debt and clears the stamp')
+    : bad('undo failed', JSON.stringify(reopened));
+}
+
+console.log('18. daily marks, never a second row; a quota never carries at all');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Evening stack', type: 'supplement_stack', startedOn: '2026-08-03', carryOver: true },
+    content([
+      { items: [{ title: 'Magnesium', cadence: { kind: 'daily' } }] },
+    ])
+  );
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    content([{ items: [{ title: 'Lift', cadence: { kind: 'quota', per_week: 3 } }] }])
+  );
+  entriesOn(db, raw, '2026-08-03'); // both planned, both left untouched
+
+  const tue = entriesOn(db, raw, '2026-08-04');
+  const mag = tue.filter((r) => r.title === 'Magnesium');
+  mag.length === 1 && valueOf(mag[0]).carried === undefined
+    ? ok('daily: ONE row on Tuesday — its own cadence always supersedes the debt')
+    : bad('daily grew a second row', JSON.stringify(mag.map((r) => r.value)));
+  valueOf(mag[0]).missed_days === 1
+    ? ok('…and today’s row carries the mark instead')
+    : bad('daily missed_days', mag[0].value);
+
+  const lift = tue.filter((r) => r.title === 'Lift');
+  lift.length === 1 &&
+  valueOf(lift[0]).carried === undefined &&
+  valueOf(lift[0]).missed_days === undefined
+    ? ok('quota: one row, never carried and never marked — the quota IS the carry')
+    : bad('quota carried', JSON.stringify(lift.map((r) => r.value)));
+}
+
+console.log('19. the 7-day cap, the phase boundary, an excused day, and a pause');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Therapy', type: 'therapy_protocol', startedOn: '2026-08-03', carryOver: true },
+    content([{ items: [{ title: 'Peptide', cadence: { kind: 'every_n_days', n: 14 } }] }])
+  );
+  entriesOn(db, raw, '2026-08-03'); // phase day 0 — lands, untouched
+  const day7 = carriedOn(db, raw, '2026-08-10', 'Peptide');
+  day7.length === 1 && valueOf(day7[0]).carried_days === 7
+    ? ok('seven days past the miss it is still carried')
+    : bad('day 7', JSON.stringify(day7.map((r) => r.value)));
+  const day8 = entriesOn(db, raw, '2026-08-11').filter((r) => r.title === 'Peptide');
+  day8.length === 0
+    ? ok('on day 8 the debt is out of the window and nothing is carried')
+    : bad('cap not applied', JSON.stringify(day8.map((r) => r.value)));
+}
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Creatine', type: 'supplement_stack', startedOn: '2026-08-03', carryOver: true },
+    content([
+      { title: 'Loading', days: 5, items: [{ title: 'Creatine', dose: '2 caps' }] },
+      { title: 'Maintenance', items: [{ title: 'Creatine', dose: '1 cap' }] },
+    ])
+  );
+  entriesOn(db, raw, '2026-08-07'); // day 4 — the LAST day of phase 1, untouched
+  const next = entriesOn(db, raw, '2026-08-08').filter((r) => r.title === 'Creatine');
+  next.length === 1 && valueOf(next[0]).carried === undefined && valueOf(next[0]).dose === '1 cap'
+    ? ok('a miss on the last day of phase 1 does not carry into phase 2')
+    : bad('phase boundary crossed', JSON.stringify(next.map((r) => r.value)));
+}
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    content([{ items: [{ title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 5] } }] }])
+  );
+  // Travel excuses a skip, so nothing is owed out of Monday.
+  setMode(db, { mode: 'travel', startDate: '2026-08-03', endDate: '2026-08-03' });
+  entriesOn(db, raw, '2026-08-03');
+  carriedOn(db, raw, '2026-08-04', 'Lower body').length === 0
+    ? ok('nothing carries out of a day whose mode excuses the miss')
+    : bad('carried out of an excused day');
+}
+{
+  const { db, raw } = freshDb();
+  const id = createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    content([{ items: [{ title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 5] } }] }])
+  );
+  entriesOn(db, raw, '2026-08-03');
+  setActive(db, id, false);
+  entriesOn(db, raw, '2026-08-04').length === 0
+    ? ok('a paused protocol carries nothing')
+    : bad('paused protocol carried');
+}
+
+console.log('20. checkoff_mode: adjusting re-bases every-N on the last completion');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    {
+      name: 'Sauna strict',
+      type: 'therapy_protocol',
+      startedOn: '2026-08-03',
+      carryOver: true,
+      checkoffMode: 'strict',
+    },
+    content([{ items: [{ title: 'Sauna strict', cadence: { kind: 'every_n_days', n: 3 } }] }])
+  );
+  createProtocolWithVersion(
+    db,
+    {
+      name: 'Sauna adjusting',
+      type: 'therapy_protocol',
+      startedOn: '2026-08-03',
+      carryOver: true,
+      checkoffMode: 'adjusting',
+    },
+    content([{ items: [{ title: 'Sauna adjusting', cadence: { kind: 'every_n_days', n: 3 } }] }])
+  );
+  const anchorsBefore = raw
+    .prepare('SELECT id, started_on FROM protocols ORDER BY id')
+    .all()
+    .map((r) => r.started_on)
+    .join(',');
+
+  entriesOn(db, raw, '2026-08-03'); // phase day 0 — both land, both untouched
+  // Both are done a day LATE, through their carried rows.
+  for (const row of entriesOn(db, raw, '2026-08-04')) setMissionStatus(db, row.id, 'completed');
+
+  const day3 = entriesOn(db, raw, '2026-08-06').map((r) => r.title);
+  day3.includes('Sauna strict') && !day3.includes('Sauna adjusting')
+    ? ok('phase day 3: strict asks again on the original calendar; adjusting does not')
+    : bad('day 3', JSON.stringify(day3));
+  // Day 4 is read by NATIVENESS, not by presence: strict asked on day 3 and was
+  // left untouched, so it is on this day too — as a CARRY, which is the other
+  // toggle doing its own job and not the clock moving.
+  const day4 = entriesOn(db, raw, '2026-08-07');
+  const adjusting = day4.find((r) => r.title === 'Sauna adjusting');
+  const strict = day4.find((r) => r.title === 'Sauna strict');
+  adjusting &&
+  valueOf(adjusting).carried === undefined &&
+  strict &&
+  valueOf(strict).carried === true
+    ? ok('phase day 4: adjusting asks NATIVELY three days after it was done; strict only carries')
+    : bad('day 4', JSON.stringify(day4.map((r) => [r.title, r.value])));
+
+  const anchorsAfter = raw
+    .prepare('SELECT id, started_on FROM protocols ORDER BY id')
+    .all()
+    .map((r) => r.started_on)
+    .join(',');
+  anchorsAfter === anchorsBefore
+    ? ok('THE INVARIANT: adjusting never writes started_on, so phase day 0 never moves')
+    : bad('started_on moved', `${anchorsBefore} → ${anchorsAfter}`);
+}
+
+console.log('21. adjusting is a no-op for daily, weekdays and quota');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    {
+      name: 'Mixed',
+      type: 'daily_routine',
+      startedOn: '2026-08-03',
+      checkoffMode: 'adjusting',
+    },
+    content([
+      {
+        items: [
+          { title: 'Creatine' },
+          { title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 3, 5] } },
+          { title: 'Lift', cadence: { kind: 'quota', per_week: 3 } },
+        ],
+      },
+    ])
+  );
+  for (const row of entriesOn(db, raw, '2026-08-03')) setMissionStatus(db, row.id, 'completed');
+  const tue = entriesOn(db, raw, '2026-08-04').map((r) => r.title);
+  tue.includes('Creatine')
+    ? ok('daily still lands the next day — n is 1, so there is nothing to re-base')
+    : bad('daily moved', JSON.stringify(tue));
+  !tue.includes('Lower body')
+    ? ok('a weekday list is a calendar statement: Tuesday is still not on it')
+    : bad('weekdays re-based', JSON.stringify(tue));
+  tue.includes('Lift')
+    ? ok('a quota is anchored to the calendar week: 1 of 3 done, still asked for')
+    : bad('quota re-based', JSON.stringify(tue));
+  const wed = entriesOn(db, raw, '2026-08-05').map((r) => r.title);
+  wed.includes('Lower body')
+    ? ok('…and Wednesday still comes round exactly when the list says')
+    : bad('weekdays moved', JSON.stringify(wed));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
