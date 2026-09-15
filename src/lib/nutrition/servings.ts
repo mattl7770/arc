@@ -1,15 +1,21 @@
 /**
- * Portion math for the foods catalog: per-100 g canonical values × a portion →
+ * Portion math for the foods catalog: per-100 canonical values × a portion →
  * the macro snapshot a meal_item stores. Pure and DB-free, so the same code
  * runs in the UI, the repositories, and the headless tests (db/foods.test.mjs).
  *
  * NULL discipline matches the schema: a food that doesn't record a macro
  * yields NULL for it at any portion — "not recorded" never becomes 0.
+ *
+ * **Unit-blind by construction (0047).** A food's per-100 values are per 100 of
+ * its own `basis` and every portion of it is in that same basis, so the ratio
+ * below is identical arithmetic for 250 ml of milk and 250 g of rice. The unit
+ * is carried onto the item so it can be PRINTED, never so it can be converted —
+ * there is no ml↔g factor here or anywhere else.
  */
-import { microsForGrams, parseMicros, scaleMicros, serializeMicros } from './micros';
+import { microsForAmount, parseMicros, scaleMicros, serializeMicros } from './micros';
 import type { FoodRow, MealItemRow, NewMealItem } from './types';
 
-/** The per-100 g columns portion math reads — satisfied by a full FoodRow. */
+/** The per-100 columns portion math reads — satisfied by a full FoodRow. */
 export type FoodMacros = Pick<
   FoodRow,
   | 'kcal_100g'
@@ -18,84 +24,97 @@ export type FoodMacros = Pick<
   | 'fat_g_100g'
   | 'fiber_g_100g'
   | 'serving_name'
-  | 'serving_grams'
+  | 'serving_amount'
 >;
 
-/** Grams for `qty` of the food's named serving; null when it has none. */
-export function gramsForQty(food: FoodMacros, qty: number): number | null {
-  return food.serving_grams === null ? null : qty * food.serving_grams;
+/** The food's own amount for `qty` of its named serving; null when it has none.
+ * In the food's basis, like every other amount it carries. */
+export function amountForQty(food: FoodMacros, qty: number): number | null {
+  return food.serving_amount === null ? null : qty * food.serving_amount;
 }
 
-const scale = (per100: number | null, grams: number): number | null =>
-  per100 === null ? null : (per100 * grams) / 100;
+const scale = (per100: number | null, amount: number): number | null =>
+  per100 === null ? null : (per100 * amount) / 100;
 
-/** The macro snapshot for `grams` of a food — what a meal_item stores. */
-export function macrosForGrams(
+/** The macro snapshot for `amount` of a food — what a meal_item stores. */
+export function macrosForAmount(
   food: FoodMacros,
-  grams: number
+  amount: number
 ): Pick<NewMealItem, 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g'> {
   return {
-    kcal: scale(food.kcal_100g, grams),
-    protein_g: scale(food.protein_g_100g, grams),
-    carbs_g: scale(food.carbs_g_100g, grams),
-    fat_g: scale(food.fat_g_100g, grams),
-    fiber_g: scale(food.fiber_g_100g, grams),
+    kcal: scale(food.kcal_100g, amount),
+    protein_g: scale(food.protein_g_100g, amount),
+    carbs_g: scale(food.carbs_g_100g, amount),
+    fat_g: scale(food.fat_g_100g, amount),
+    fiber_g: scale(food.fiber_g_100g, amount),
   };
 }
 
 /**
- * A ready-to-insert item for `qty` servings (when the food names one) or for
- * `grams` directly — the one place the search screen's "Add" builds its row.
+ * A ready-to-insert item for `qty` servings (when the food names one) or for an
+ * `amount` directly — the one place the search screen's "Add" builds its row.
+ *
+ * The item's `unit` is the food's `basis`, SNAPSHOTTED here: editing a food's
+ * basis later (or deleting the food) must not restate what an eaten portion was.
  */
 export function itemForPortion(
   food: FoodRow,
-  portion: { servingQty: number } | { grams: number }
+  portion: { servingQty: number } | { amount: number }
 ): NewMealItem {
-  const grams = 'grams' in portion ? portion.grams : (gramsForQty(food, portion.servingQty) ?? 0);
+  const amount =
+    'amount' in portion ? portion.amount : (amountForQty(food, portion.servingQty) ?? 0);
   return {
     food_id: food.id,
     name: food.name,
-    grams: grams > 0 ? grams : null,
+    amount: amount > 0 ? amount : null,
     serving_qty: 'servingQty' in portion ? portion.servingQty : null,
-    ...(grams > 0
-      ? macrosForGrams(food, grams)
+    unit: food.basis,
+    ...(amount > 0
+      ? macrosForAmount(food, amount)
       : { kcal: null, protein_g: null, carbs_g: null, fat_g: null, fiber_g: null }),
     // Snapshot the food's micros scaled to this portion (0017); NULL when the
     // food carries none, so "not recorded" never becomes a fake zero.
-    micros: grams > 0 ? serializeMicros(microsForGrams(food.micros, grams)) : null,
+    micros: amount > 0 ? serializeMicros(microsForAmount(food.micros, amount)) : null,
   };
 }
 
 /** The columns updateMealItemPortion rewrites for a re-portioned logged item. */
 export type PortionUpdate = Pick<
   NewMealItem,
-  'grams' | 'serving_qty' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
+  'amount' | 'serving_qty' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
 >;
 
 /**
  * Recompute a logged item's macro/micro snapshot for a new portion — what
  * meal-detail's inline editor feeds updateMealItemPortion.
  *
- * When the catalog food is still present it RE-DERIVES from the food's per-100 g
+ * When the catalog food is still present it RE-DERIVES from the food's per-100
  * values (accurate, and the only way to honour a serving stepper). When the food
  * is gone or the item was never linked (a free-form or AI item), it scales the
- * item's own snapshot PROPORTIONALLY by grams — the best that can be done from a
+ * item's own snapshot PROPORTIONALLY by amount — the best that can be done from a
  * snapshot alone. Returns null when neither basis exists (a food-less item
- * logged without grams, e.g. an "≈300 kcal" AI estimate): such an item has no
+ * logged without an amount, e.g. an "≈300 kcal" AI estimate): such an item has no
  * portion to re-scale, so the UI must not offer inline editing for it.
+ *
+ * **The unit is never rewritten.** It is absent from {@link PortionUpdate}
+ * entirely: re-portioning answers "how much", and a food does not change what it
+ * is measured in because the user typed a different number. A catalog food whose
+ * basis was edited after the fact therefore re-prices the item at its new
+ * per-100 values while the item keeps the unit it was logged in — which is the
+ * same rule the name and the macro snapshot already follow.
  */
 export function rescaleLoggedItem(
   item: Pick<
     MealItemRow,
-    'grams' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
+    'amount' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
   >,
   food: FoodRow | undefined,
-  portion: { grams: number } | { servingQty: number }
+  portion: { amount: number } | { servingQty: number }
 ): PortionUpdate | null {
   if (food) {
     const next = itemForPortion(food, portion);
     return {
-      grams: next.grams ?? null,
+      amount: next.amount ?? null,
       serving_qty: next.serving_qty ?? null,
       kcal: next.kcal ?? null,
       protein_g: next.protein_g ?? null,
@@ -106,14 +125,14 @@ export function rescaleLoggedItem(
     };
   }
   // No catalog food: a serving stepper is impossible, and proportional scaling
-  // needs a positive old grams to divide by.
-  if (!('grams' in portion)) return null;
-  const oldGrams = item.grams;
-  if (oldGrams == null || oldGrams <= 0 || portion.grams <= 0) return null;
-  const ratio = portion.grams / oldGrams;
+  // needs a positive old amount to divide by.
+  if (!('amount' in portion)) return null;
+  const oldAmount = item.amount;
+  if (oldAmount == null || oldAmount <= 0 || portion.amount <= 0) return null;
+  const ratio = portion.amount / oldAmount;
   const s = (v: number | null): number | null => (v == null ? null : v * ratio);
   return {
-    grams: portion.grams,
+    amount: portion.amount,
     serving_qty: null,
     kcal: s(item.kcal),
     protein_g: s(item.protein_g),

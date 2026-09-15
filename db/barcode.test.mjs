@@ -105,7 +105,7 @@ console.log('1. parseOffProduct maps a found product to a NewFood');
   f.brand === 'Fage' &&
   f.barcode === '0123456789012' &&
   f.serving_name === '170 g' &&
-  near(f.serving_grams, 170) &&
+  near(f.serving_amount, 170) &&
   near(f.kcal_100g, 97) &&
   near(f.protein_g_100g, 9) &&
   near(f.carbs_g_100g, 4) &&
@@ -179,7 +179,7 @@ console.log('5. parseOffProduct: pair-or-none serving (no gram quantity → no s
     },
     '1'
   );
-  f && f.serving_name === null && f.serving_grams === null
+  f && f.serving_name === null && f.serving_amount === null
     ? ok('serving text without grams stores no serving')
     : bad('serving pair', JSON.stringify(f));
 }
@@ -300,6 +300,99 @@ console.log('8. A4 — a scanned product names its own meal');
   getMeal(db, mealId)?.name === 'Second breakfast'
     ? ok('renaming by hand still works over an auto-named meal')
     : bad('updateMealName after auto-naming');
+}
+
+console.log('9. B2 — a scanned DRINK is cached in millilitres (0047)');
+{
+  // OFF states its own answer in `nutrition_data_per`, and it is authoritative
+  // for the very per-100 numbers being cached — so it is read before anything
+  // is guessed from the product's name.
+  const drink = parseOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Oat Drink',
+        brands: 'Oatly',
+        nutrition_data_per: '100ml',
+        serving_size: '250 ml',
+        serving_quantity: 250,
+        nutriments: { 'energy-kcal_100g': 46, proteins_100g: 1, carbohydrates_100g: 6.7 },
+      },
+    },
+    '7394376616037'
+  );
+  drink.basis === 'ml' && near(drink.serving_amount, 250)
+    ? ok('nutrition_data_per "100ml" makes it a drink, serving in ml')
+    : bad('drink basis', JSON.stringify(drink));
+
+  // The fallback: no nutrition_data_per, but the label's serving string is a
+  // volume. OFF writes that string the way the package does.
+  const fallback = parseOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Cola',
+        serving_size: '330 ml',
+        serving_quantity: 330,
+        nutriments: {},
+      },
+    },
+    '5449000000996'
+  );
+  fallback.basis === 'ml'
+    ? ok('and a volumetric serving_size is the fallback when OFF states no basis')
+    : bad('serving_size fallback', JSON.stringify(fallback));
+
+  // "serving" says nothing about a unit. A loose match would read its `g` as an
+  // answer and mark a solid food as… still a solid, but for the wrong reason,
+  // ignoring a serving_size that did know.
+  const perServing = parseOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Smoothie',
+        nutrition_data_per: 'serving',
+        serving_size: '250 ml',
+        serving_quantity: 250,
+        nutriments: {},
+      },
+    },
+    '5060000000017'
+  );
+  perServing.basis === 'ml'
+    ? ok('nutrition_data_per "serving" is not an answer — the serving_size still is')
+    : bad('per-serving basis', JSON.stringify(perServing));
+
+  // A solid is untouched, and a `cl` product falls back to grams rather than
+  // being converted — there is no unit table in this app, by design.
+  const solid = parseOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Crisps',
+        nutrition_data_per: '100g',
+        serving_size: '30 g',
+        serving_quantity: 30,
+        nutriments: {},
+      },
+    },
+    '5000000000001'
+  );
+  const cl = parseOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Beer',
+        serving_size: '33 cl',
+        serving_quantity: 33,
+        nutriments: {},
+      },
+    },
+    '5000000000002'
+  );
+  solid.basis === 'g' && cl.basis === 'g'
+    ? ok('a solid stays g, and a `cl` product falls back to g rather than converting')
+    : bad('solid/cl basis', `${solid.basis} / ${cl.basis}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

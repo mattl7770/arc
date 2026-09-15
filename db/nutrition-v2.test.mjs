@@ -52,7 +52,7 @@ import {
   parseMealEstimate,
 } from '../src/lib/nutrition/estimate.ts';
 import {
-  microsForGrams,
+  microsForAmount,
   MICROS,
   parseMicros,
   scaleMicros,
@@ -125,7 +125,7 @@ function microFood(db, overrides = {}) {
   return createFood(db, {
     name: 'Micro food',
     serving_name: '1 unit',
-    serving_grams: 50,
+    serving_amount: 50,
     kcal_100g: 100,
     protein_g_100g: 10,
     carbs_g_100g: 5,
@@ -169,10 +169,10 @@ console.log('1. micros pure helpers: parse / serialize / scale / sum');
     ? ok('serializeMicros keeps a real zero')
     : bad('serialize zero', serializeMicros({ sodium_mg: 0 }));
   serializeMicros({}) === null ? ok('serializeMicros({}) is null') : bad('serialize empty');
-  const scaled = microsForGrams(JSON.stringify({ sodium_mg: 200, calcium_mg: 120 }), 50);
+  const scaled = microsForAmount(JSON.stringify({ sodium_mg: 200, calcium_mg: 120 }), 50);
   near(scaled.sodium_mg, 100) && near(scaled.calcium_mg, 60)
-    ? ok('microsForGrams scales per-100 g to the portion')
-    : bad('microsForGrams', JSON.stringify(scaled));
+    ? ok('microsForAmount scales per-100 g to the portion')
+    : bad('microsForAmount', JSON.stringify(scaled));
   const summed = sumMicros([{ sodium_mg: 100, iron_mg: 2 }, { sodium_mg: 50 }, {}]);
   near(summed.sodium_mg, 150) && near(summed.iron_mg, 2)
     ? ok('sumMicros folds payloads, skipping absent keys')
@@ -189,12 +189,12 @@ console.log('2. itemForPortion snapshots scaled micros onto the item');
   near(m.sodium_mg, 200) && near(m.calcium_mg, 120) && near(m.b12_mcg, 0.8)
     ? ok('a 100 g portion snapshots the full per-100 g micros')
     : bad('item micros', item.micros);
-  const half = itemForPortion(food, { grams: 25 });
+  const half = itemForPortion(food, { amount: 25 });
   near(parseMicros(half.micros).sodium_mg, 50)
     ? ok('a 25 g portion snapshots a quarter of the micros')
     : bad('item micros scaled', half.micros);
   const plain = createFood(db, { name: 'Plain', kcal_100g: 100 });
-  itemForPortion(db.get('SELECT * FROM foods WHERE id = ?', [plain]), { grams: 100 }).micros ===
+  itemForPortion(db.get('SELECT * FROM foods WHERE id = ?', [plain]), { amount: 100 }).micros ===
   null
     ? ok('a food with no micros yields NULL micros (not a fake {})')
     : bad('plain micros not null');
@@ -209,7 +209,7 @@ console.log('3. dayMicroTotals sums the day’s item micros; free-form days are 
     date: TODAY,
     time: '08:00',
     name: 'Breakfast',
-    items: [itemForPortion(food, { grams: 100 }), itemForPortion(food, { grams: 50 })],
+    items: [itemForPortion(food, { amount: 100 }), itemForPortion(food, { amount: 50 })],
   });
   const totals = dayMicroTotals(db, TODAY);
   near(totals.sodium_mg, 300) && near(totals.calcium_mg, 180) && near(totals.b12_mcg, 1.2)
@@ -233,9 +233,9 @@ console.log('4. addMealItem + relog carry micros through');
     date: TODAY,
     time: '08:00',
     name: 'Breakfast',
-    items: [itemForPortion(food, { grams: 100 })],
+    items: [itemForPortion(food, { amount: 100 })],
   });
-  addMealItem(db, mealId, itemForPortion(food, { grams: 50 }));
+  addMealItem(db, mealId, itemForPortion(food, { amount: 50 }));
   near(dayMicroTotals(db, TODAY).sodium_mg, 300)
     ? ok('addMealItem folds the new item’s micros in')
     : bad('add micros');
@@ -251,7 +251,7 @@ console.log('5. templates: create, list rollup, log-from, cascade delete');
   const food = db.get('SELECT * FROM foods WHERE id = ?', [microFood(db)]);
   const templateId = createTemplate(db, {
     name: 'Protein Oats',
-    items: [itemForPortion(food, { grams: 100 }), { name: 'Berries', kcal: 50, carbs_g: 12 }],
+    items: [itemForPortion(food, { amount: 100 }), { name: 'Berries', kcal: 50, carbs_g: 12 }],
   });
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(templateId)
     ? ok('createTemplate returns a v4 id')
@@ -293,7 +293,7 @@ console.log('6. saveMealAsTemplate captures a logged meal; free-form meals can�
     date: TODAY,
     time: '12:00',
     name: 'Lunch',
-    items: [itemForPortion(food, { grams: 100 })],
+    items: [itemForPortion(food, { amount: 100 })],
   });
   const templateId = saveMealAsTemplate(db, mealId, 'My lunch');
   const items = listTemplateItems(db, templateId);
@@ -325,7 +325,7 @@ console.log('7. nutritionHistory: per-day totals + each day’s own targets');
     date: anchor,
     time: '12:00',
     name: 'Lunch',
-    items: [itemForPortion(food, { grams: 200 })], // 200 kcal, 20 P
+    items: [itemForPortion(food, { amount: 200 })], // 200 kcal, 20 P
   });
   const hist = nutritionHistory(db, 3, '2026-06-16');
   hist.length === 3
@@ -399,7 +399,7 @@ console.log('9. existing exports still behave (no regression from micros/templat
     date: TODAY,
     time: '08:00',
     name: 'B',
-    items: [itemForPortion(food, { grams: 100 })],
+    items: [itemForPortion(food, { amount: 100 })],
   });
   const t = todayTotals(db, TODAY);
   near(t.kcal, 100) && near(t.protein_g, 10) && t.mealCount === 1
@@ -421,9 +421,9 @@ console.log('11. rescaleLoggedItem: re-derive from a food; else proportional; nu
   const food = db.get('SELECT * FROM foods WHERE id = ?', [microFood(db)]);
   // With the catalog food (100 kcal/100 g, sodium 200/100 g): re-derive at 200 g.
   const fromFood = rescaleLoggedItem(
-    { grams: 100, kcal: 100, protein_g: 10, carbs_g: 5, fat_g: 2, fiber_g: 1, micros: null },
+    { amount: 100, kcal: 100, protein_g: 10, carbs_g: 5, fat_g: 2, fiber_g: 1, micros: null },
     food,
-    { grams: 200 }
+    { amount: 200 }
   );
   fromFood &&
   near(fromFood.kcal, 200) &&
@@ -432,14 +432,14 @@ console.log('11. rescaleLoggedItem: re-derive from a food; else proportional; nu
     ? ok('food present → macros + micros re-derived from the catalog')
     : bad('rescale food', JSON.stringify(fromFood));
   // Serving stepper needs the food; 2 servings of a 50 g serving = 100 g.
-  const fromServing = rescaleLoggedItem({ grams: 50 }, food, { servingQty: 2 });
-  fromServing && near(fromServing.grams, 100) && near(fromServing.kcal, 100)
+  const fromServing = rescaleLoggedItem({ amount: 50 }, food, { servingQty: 2 });
+  fromServing && near(fromServing.amount, 100) && near(fromServing.kcal, 100)
     ? ok('food present → serving qty re-derives')
     : bad('rescale serving', JSON.stringify(fromServing));
   // No food: scale the snapshot proportionally (doubling 150 g → 300 g).
   const proportional = rescaleLoggedItem(
     {
-      grams: 150,
+      amount: 150,
       kcal: 300,
       protein_g: 30,
       carbs_g: null,
@@ -448,7 +448,7 @@ console.log('11. rescaleLoggedItem: re-derive from a food; else proportional; nu
       micros: '{"sodium_mg":90}',
     },
     undefined,
-    { grams: 300 }
+    { amount: 300 }
   );
   proportional &&
   near(proportional.kcal, 600) &&
@@ -457,10 +457,10 @@ console.log('11. rescaleLoggedItem: re-derive from a food; else proportional; nu
   near(parseMicros(proportional.micros).sodium_mg, 180)
     ? ok('no food → snapshot scaled proportionally, NULLs preserved')
     : bad('rescale proportional', JSON.stringify(proportional));
-  rescaleLoggedItem({ grams: null }, undefined, { grams: 100 }) === null
-    ? ok('no food + no grams → null (nothing to re-scale)')
+  rescaleLoggedItem({ amount: null }, undefined, { amount: 100 }) === null
+    ? ok('no food + no amount → null (nothing to re-scale)')
     : bad('rescale null');
-  rescaleLoggedItem({ grams: 100 }, undefined, { servingQty: 2 }) === null
+  rescaleLoggedItem({ amount: 100 }, undefined, { servingQty: 2 }) === null
     ? ok('no food + serving qty → null (a serving needs a food)')
     : bad('rescale serving-no-food');
 }
@@ -474,10 +474,10 @@ console.log('12. updateMealItemPortion via rescaleLoggedItem keeps meal totals h
     date: TODAY,
     time: '08:00',
     name: 'Breakfast',
-    items: [itemForPortion(food, { grams: 100 })],
+    items: [itemForPortion(food, { amount: 100 })],
   });
   const item = listMealItems(db, mealId)[0];
-  const update = rescaleLoggedItem(item, food, { grams: 250 });
+  const update = rescaleLoggedItem(item, food, { amount: 250 });
   updateMealItemPortion(db, item.id, update);
   near(getMeal(db, mealId).kcal, 250) && near(dayMicroTotals(db, TODAY).sodium_mg, 500)
     ? ok('re-portioning an item re-derives its macros + micros and the meal total')
@@ -503,7 +503,8 @@ console.log('13. groundMealEstimate matches items to the catalog and re-prices t
       // Model guessed 250 kcal for 150 g; grounding should re-price to 150 kcal.
       {
         name: 'Grilled chicken',
-        grams: 150,
+        amount: 150,
+        unit: 'g',
         kcal: 250,
         protein_g: 25,
         carbs_g: 0,
@@ -515,7 +516,7 @@ console.log('13. groundMealEstimate matches items to the catalog and re-prices t
       // No catalog match → left as the model gave it.
       {
         name: 'Mystery sauce',
-        grams: 30,
+        amount: 30,
         kcal: 90,
         protein_g: 0,
         carbs_g: 5,
@@ -551,7 +552,7 @@ console.log('13b. grounding is conservative — generic single words never mis-g
     items: [
       {
         name: 'rice',
-        grams: 150,
+        amount: 150,
         kcal: 200,
         protein_g: 4,
         carbs_g: 44,
@@ -562,7 +563,7 @@ console.log('13b. grounding is conservative — generic single words never mis-g
       },
       {
         name: 'chicken',
-        grams: 120,
+        amount: 120,
         kcal: 200,
         protein_g: 37,
         carbs_g: 0,
@@ -584,7 +585,7 @@ console.log('13b. grounding is conservative — generic single words never mis-g
     items: [
       {
         name: 'Overnight oats mix',
-        grams: 100,
+        amount: 100,
         kcal: 250,
         protein_g: 10,
         carbs_g: 40,
@@ -898,15 +899,15 @@ console.log('\n20. replaceMealItems: swaps the items and nothing else');
     notes: 'felt heavy',
     source: 'ai_suggested',
     items: [
-      { name: 'Ribeye', grams: 300, kcal: 800, protein_g: 60, carbs_g: 0, fat_g: 62 },
-      { name: 'Butter', grams: 28, kcal: 200, protein_g: 0, carbs_g: 0, fat_g: 23 },
+      { name: 'Ribeye', amount: 300, kcal: 800, protein_g: 60, carbs_g: 0, fat_g: 62 },
+      { name: 'Butter', amount: 28, kcal: 200, protein_g: 0, carbs_g: 0, fat_g: 23 },
     ],
   });
   const beforeMeal = getMeal(db, mealId);
 
   const ids = replaceMealItems(db, mealId, [
-    { name: 'Ribeye', grams: 300, kcal: 800, protein_g: 60, carbs_g: 0, fat_g: 62 },
-    { name: 'Olive oil', grams: 28, kcal: 248, protein_g: 0, carbs_g: 0, fat_g: 28 },
+    { name: 'Ribeye', amount: 300, kcal: 800, protein_g: 60, carbs_g: 0, fat_g: 62 },
+    { name: 'Olive oil', amount: 28, kcal: 248, protein_g: 0, carbs_g: 0, fat_g: 28 },
   ]);
   const items = listMealItems(db, mealId);
   const after = getMeal(db, mealId);
@@ -945,11 +946,12 @@ console.log('\n20b. buildMealRevisionRequest: the model sees the meal it is corr
     {
       name: 'Steak dinner',
       items: [
-        { name: 'Ribeye', grams: 300, kcal: 800, protein_g: 60, carbs_g: 0, fat_g: 62 },
+        { name: 'Ribeye', amount: 300, unit: 'g', kcal: 800, protein_g: 60, carbs_g: 0, fat_g: 62 },
         // The unpriced case: a blank tail would read as zero and come back zero.
         {
           name: 'Side salad',
-          grams: null,
+          amount: null,
+          unit: 'g',
           kcal: null,
           protein_g: null,
           carbs_g: null,
@@ -1041,7 +1043,7 @@ console.log('\n21. caffeine and sodium: from an estimated item to the day’s to
     name: grounded.title,
     items: grounded.items.map((i) => ({
       name: i.name,
-      grams: i.grams,
+      amount: i.amount,
       kcal: i.kcal,
       protein_g: i.protein_g,
       carbs_g: i.carbs_g,
@@ -1067,7 +1069,7 @@ console.log('\n21. caffeine and sodium: from an estimated item to the day’s to
       items: [
         {
           name: 'Flat white',
-          grams: 240,
+          amount: 240,
           kcal: 120,
           protein_g: 7,
           carbs_g: 10,
@@ -1081,6 +1083,147 @@ console.log('\n21. caffeine and sodium: from an estimated item to the day’s to
   revisionText.includes('sodium 90 mg') && revisionText.includes('caffeine 145 mg')
     ? ok('the revision request states each item’s sodium and caffeine')
     : bad('revision row micros', revisionText);
+}
+
+// ===========================================================================
+// 22. The estimator speaks `ml` (0047, backlog B2).
+//
+// The owner's ask in full: *"the AI should estimate how many ML a drink is,
+// instead of grams, when using ml instead of g."* Three things have to hold for
+// that to be true end to end — the prompt asks for it, the parser keeps it, and
+// grounding cannot quietly swap a volume for a mass on the way past.
+// ===========================================================================
+console.log('22. the estimator returns, and the parser keeps, a drink in millilitres');
+{
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('"unit": "g"|"ml"') &&
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('"ml" for anything DRUNK')
+    ? ok('the prompt asks for a unit and says when it is ml')
+    : bad('estimation prompt missing the unit rule');
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('never convert it to grams')
+    ? ok('and forbids the conversion this whole design refuses')
+    : bad('estimation prompt allows conversion');
+
+  const est = parseMealEstimate(
+    '{"title":"Flat white and toast","items":[' +
+      '{"name":"Flat white","amount":240,"unit":"ml","kcal":120,"protein_g":7,"carbs_g":10,' +
+      '"fat_g":6,"fiber_g":0,"micros":{"caffeine_mg":130},"confidence":"high"},' +
+      '{"name":"Sourdough toast","amount":60,"unit":"g","kcal":160,"protein_g":6,"carbs_g":30,' +
+      '"fat_g":1,"fiber_g":2,"confidence":"medium"}],"notes":null}'
+  );
+  est.items[0].unit === 'ml' && near(est.items[0].amount, 240)
+    ? ok('a drink parses as 240 ml, not 240 of nothing')
+    : bad('parsed drink', JSON.stringify(est.items[0]));
+  est.items[1].unit === 'g' && near(est.items[1].amount, 60)
+    ? ok('and the solid beside it is still grams')
+    : bad('parsed solid', JSON.stringify(est.items[1]));
+
+  // Two coercions, both deliberately permissive rather than throwing: an
+  // estimate always lands on an editable review screen, so a wrong unit is
+  // visible and one tap from fixed, while a refusal loses the whole meal.
+  const legacy = parseMealEstimate(
+    '{"items":[{"name":"Egg","grams":100,"kcal":155,"protein_g":13,"carbs_g":1,"fat_g":11,' +
+      '"confidence":"high"}]}'
+  );
+  near(legacy.items[0].amount, 100) && legacy.items[0].unit === 'g'
+    ? ok('a reply that still says "grams" lands as a gram amount rather than as no portion')
+    : bad('legacy grams key', JSON.stringify(legacy.items[0]));
+  const nonsense = parseMealEstimate(
+    '{"items":[{"name":"Soup","amount":300,"unit":"cups","kcal":200,"protein_g":5,"carbs_g":20,' +
+      '"fat_g":10,"confidence":"low"}]}'
+  );
+  nonsense.items[0].unit === 'g'
+    ? ok('an unknown unit falls back to g — the review screen is where that gets corrected')
+    : bad('unknown unit', nonsense.items[0].unit);
+}
+
+console.log('22b. grounding will not price a volume from a mass (or the reverse)');
+{
+  const { db } = freshDb();
+  // Two foods with the SAME name, one per 100 g and one per 100 ml, is the
+  // sharpest form of the trap: the name match is perfect, and only the unit
+  // tells them apart.
+  createFood(db, {
+    name: 'Oat drink',
+    basis: 'ml',
+    kcal_100g: 46,
+    protein_g_100g: 1,
+    carbs_g_100g: 6.7,
+    fat_g_100g: 1.5,
+  });
+  const mlHit = groundMealEstimate(db, {
+    title: 'Coffee',
+    notes: null,
+    items: [
+      {
+        name: 'Oat drink',
+        amount: 200,
+        unit: 'ml',
+        kcal: 120,
+        protein_g: 3,
+        carbs_g: 15,
+        fat_g: 4,
+        fiber_g: null,
+        confidence: 'medium',
+        foodId: null,
+        micros: null,
+      },
+    ],
+  }).items[0];
+  mlHit.foodId !== null && near(mlHit.kcal, 92)
+    ? ok('a millilitre item grounds to a per-100-ml food and is re-priced (200 ml → 92 kcal)')
+    : bad('ml grounding', JSON.stringify(mlHit));
+
+  const gMiss = groundMealEstimate(db, {
+    title: 'Baking',
+    notes: null,
+    items: [
+      {
+        name: 'Oat drink',
+        amount: 200,
+        unit: 'g',
+        kcal: 120,
+        protein_g: 3,
+        carbs_g: 15,
+        fat_g: 4,
+        fiber_g: null,
+        confidence: 'medium',
+        foodId: null,
+        micros: null,
+      },
+    ],
+  }).items[0];
+  gMiss.foodId === null && near(gMiss.kcal, 120)
+    ? ok('the same name at the wrong unit does NOT ground — the model’s own numbers stand')
+    : bad('unit mismatch grounded anyway', JSON.stringify(gMiss));
+}
+
+console.log('22c. a revision is shown the meal in the units it was logged in');
+{
+  const req = buildMealRevisionRequest(
+    {
+      name: 'Afternoon',
+      items: [
+        {
+          name: 'Flat white',
+          amount: 240,
+          unit: 'ml',
+          kcal: 120,
+          protein_g: 7,
+          carbs_g: 10,
+          fat_g: 6,
+        },
+        { name: 'Almonds', amount: 30, unit: 'g', kcal: 174, protein_g: 6, carbs_g: 6, fat_g: 15 },
+      ],
+    },
+    'the flat white was a double'
+  );
+  const text = req.messages[0].content[0].text;
+  text.includes('- Flat white — 240 ml, 120 kcal') && text.includes('- Almonds — 30 g, 174 kcal')
+    ? ok('each item is stated in its own unit, so "leave it unchanged" can mean something')
+    : bad('revision units', text);
+  req.system.includes('restate a millilitre amount as grams')
+    ? ok('and the revision prompt forbids re-uniting an item it was not asked about')
+    : bad('revision prompt missing the unit rail');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

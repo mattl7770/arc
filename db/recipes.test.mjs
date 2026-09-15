@@ -430,7 +430,7 @@ function fixtureFood(db, overrides = {}) {
   if (items.length === 2) ok('negligible line skipped; counted + uncounted stamped');
   else bad('item count', String(items.length));
   const uncounted = items.find((i) => i.kcal === null);
-  if (uncounted && uncounted.name === 'mystery marinade' && uncounted.grams === null) {
+  if (uncounted && uncounted.name === 'mystery marinade' && uncounted.amount === null) {
     ok('unresolved line lands as a name-only NULL-macro item');
   } else bad('uncounted item', JSON.stringify(uncounted));
 
@@ -493,7 +493,7 @@ function fixtureFood(db, overrides = {}) {
     time: '12:00',
     name: 'Lunch bowl',
     items: [
-      { food_id: foodId, name: 'Test chicken breast', grams: 150, kcal: 247.5, protein_g: 46.5 },
+      { food_id: foodId, name: 'Test chicken breast', amount: 150, kcal: 247.5, protein_g: 46.5 },
       { name: 'splash of dressing' }, // no grams/kcal — must land unresolved
     ],
   });

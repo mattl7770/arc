@@ -10,12 +10,18 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { createFood } from '@/lib/db/repositories/foods';
+import type { AmountUnit } from '@/lib/nutrition/types';
 
 /**
  * Create a custom catalog food (source='user'), reached from food search with
  * the failed query prefilled. Macros can be typed per serving (the label way)
- * or per 100 g (the database way); storage is always canonical per-100 g
+ * or per 100 (the database way); storage is always canonical per-100
  * (docs/nutrition-subapp.md §3), so the per-serving path converts on save.
+ *
+ * Per 100 of WHAT is the Solid/Drink toggle (0047): a food is measured in grams
+ * or in millilitres, one or the other for life, and nothing in ARC converts
+ * between them. Solid is the default and every food created before the toggle
+ * existed is one.
  *
  * Conformed Set treatment — **form (b) of the capture-surface rule** in
  * src/components/ui/block.tsx: this is a group of eleven labelled fields, so it
@@ -138,7 +144,13 @@ export default function FoodNewScreen() {
   const [brand, setBrand] = useState('');
   const [servingName, setServingName] = useState('');
   const [servingGrams, setServingGrams] = useState('');
-  const [basis, setBasis] = useState<'serving' | 'per100'>('per100');
+  const [entryBasis, setEntryBasis] = useState<'serving' | 'per100'>('per100');
+  /** What this food is measured in (0047). Solid by default — most foods are,
+   * and every food that existed before this toggle was. Choosing Drink changes
+   * the unit of EVERY amount the food carries: its serving size, its per-100
+   * macros, and every portion logged from it. Nothing converts between the two,
+   * so this is a property of the food, not a display choice. */
+  const [unit, setUnit] = useState<AmountUnit>('g');
   const [kcal, setKcal] = useState('');
   const [protein, setProtein] = useState('');
   const [carbs, setCarbs] = useState('');
@@ -152,7 +164,7 @@ export default function FoodNewScreen() {
   // grams ABOVE ZERO and vice versa — "1 cup" of 0 g would pass a null-based
   // pairing check and then trip the DB CHECK into a silent dead end.
   const servingPaired = (servingName.trim() === '') === !servingUsable;
-  const basisOk = basis === 'per100' || servingUsable;
+  const entryBasisOk = entryBasis === 'per100' || servingUsable;
 
   // Per-serving entries convert to canonical per-100 g on save. Only that path
   // multiplies by a non-integer factor, and IEEE-754 overshoots on it: 14 g of
@@ -161,25 +173,25 @@ export default function FoodNewScreen() {
   // staple (olive oil, sugar, an isolate) could not be saved. Round the
   // converted value to 2 dp; a per-100 g entry is factor 1 and stored verbatim.
   const round2 = (v: number): number => Math.round(v * 100) / 100;
-  const factor = basis === 'serving' && servingUsable ? 100 / servingGramsNum : 1;
+  const factor = entryBasis === 'serving' && servingUsable ? 100 / servingGramsNum : 1;
   const per100 = (text: string): number | null => {
     const n = toNumber(text);
     if (n === null) return null;
-    return basis === 'serving' ? round2(n * factor) : n;
+    return entryBasis === 'serving' ? round2(n * factor) : n;
   };
   const kcal100 = per100(kcal);
   const macros100 = [per100(protein), per100(carbs), per100(fat), per100(fiber)];
-  const boundsProblem = numbersValid && basisOk ? per100Problem(kcal100, macros100) : null;
+  const boundsProblem = numbersValid && entryBasisOk ? per100Problem(kcal100, macros100) : null;
 
   const canSave =
-    name.trim() !== '' && numbersValid && servingPaired && basisOk && boundsProblem === null;
+    name.trim() !== '' && numbersValid && servingPaired && entryBasisOk && boundsProblem === null;
 
   const problem = !numbersValid
     ? 'Numbers only — leave a field blank if you don’t know it.'
     : !servingPaired
-      ? 'A serving needs both a name and its grams above zero (or leave both blank).'
-      : !basisOk
-        ? 'Per-serving entry needs the serving grams filled in first.'
+      ? `A serving needs both a name and its ${unit} above zero (or leave both blank).`
+      : !entryBasisOk
+        ? `Per-serving entry needs the serving ${unit} filled in first.`
         : boundsProblem;
 
   const save = () => {
@@ -190,7 +202,8 @@ export default function FoodNewScreen() {
         brand: brand.trim() === '' ? null : brand.trim(),
         barcode: barcode === '' ? null : barcode,
         serving_name: servingName.trim() === '' ? null : servingName.trim(),
-        serving_grams: servingUsable ? servingGramsNum : null,
+        serving_amount: servingUsable ? servingGramsNum : null,
+        basis: unit,
         kcal_100g: kcal100,
         protein_g_100g: macros100[0] ?? null,
         carbs_g_100g: macros100[1] ?? null,
@@ -228,17 +241,51 @@ export default function FoodNewScreen() {
         <View className="mt-3">
           <FormField label="Brand (optional)" value={brand} onChange={setBrand} placeholder="—" />
         </View>
+        {/* Solid or drink — the food's unit (0047). It sits ABOVE the serving
+            row because it names what that row's number counts, and above the
+            macros because they are per 100 of it. Two whole class strings, never
+            a built fragment: Tailwind's scanner only sees literal names. */}
+        <View className="mt-3 flex-row gap-2">
+          {(
+            [
+              ['g', 'Solid · g'],
+              ['ml', 'Drink · ml'],
+            ] as const
+          ).map(([key, label]) => (
+            <Pressable
+              key={key}
+              accessibilityRole="button"
+              accessibilityLabel={key === 'ml' ? 'Measured in millilitres' : 'Measured in grams'}
+              accessibilityState={{ selected: unit === key }}
+              onPress={() => setUnit(key)}
+              className={
+                unit === key
+                  ? 'min-h-[44px] items-center justify-center rounded-btn border border-ink bg-paper-hi px-4'
+                  : 'min-h-[44px] items-center justify-center rounded-btn border border-paper-deep px-4 active:opacity-60'
+              }>
+              <Text
+                className={
+                  unit === key
+                    ? 'font-label text-[11px] font-semibold uppercase tracking-[1.2px] text-ink'
+                    : 'font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary'
+                }>
+                {label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
         {/* `fill` on both: this row splits its width between them. */}
         <View className="mt-3 flex-row gap-3">
           <FormField
             label="Serving name"
             value={servingName}
             onChange={setServingName}
-            placeholder="e.g. 1 jar"
+            placeholder={unit === 'ml' ? 'e.g. 1 can' : 'e.g. 1 jar'}
             fill
           />
           <FormField
-            label="Serving grams"
+            label={unit === 'ml' ? 'Serving ml' : 'Serving grams'}
             value={servingGrams}
             onChange={setServingGrams}
             placeholder="—"
@@ -249,14 +296,14 @@ export default function FoodNewScreen() {
         </View>
 
         <View className="mt-5">
-          <SectionLabel label="Macros" note="Stored per 100 g" />
+          <SectionLabel label="Macros" note={`Stored per 100 ${unit}`} />
         </View>
 
-        {/* Entry basis — stored per-100 g either way. */}
+        {/* Entry basis — stored per-100 of the food's unit either way. */}
         <View className="mt-2 flex-row gap-2">
           {(
             [
-              ['per100', 'Per 100 g'],
+              ['per100', unit === 'ml' ? 'Per 100 ml' : 'Per 100 g'],
               ['serving', 'Per serving'],
             ] as const
           ).map(([key, label]) => (
@@ -264,16 +311,16 @@ export default function FoodNewScreen() {
               key={key}
               accessibilityRole="button"
               accessibilityLabel={`Enter macros ${label}`}
-              accessibilityState={{ selected: basis === key }}
-              onPress={() => setBasis(key)}
+              accessibilityState={{ selected: entryBasis === key }}
+              onPress={() => setEntryBasis(key)}
               className={
-                basis === key
+                entryBasis === key
                   ? 'min-h-[44px] items-center justify-center rounded-btn border border-ink bg-paper-hi px-4'
                   : 'min-h-[44px] items-center justify-center rounded-btn border border-paper-deep px-4 active:opacity-60'
               }>
               <Text
                 className={
-                  basis === key
+                  entryBasis === key
                     ? 'font-label text-[11px] font-semibold uppercase tracking-[1.2px] text-ink'
                     : 'font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary'
                 }>

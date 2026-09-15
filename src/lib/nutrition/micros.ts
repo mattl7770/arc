@@ -133,13 +133,19 @@ export function serializeMicros(micros: Micros): string | null {
   return entries.length === 0 ? null : JSON.stringify(Object.fromEntries(entries));
 }
 
-/** Scale a per-100 g micros payload to `grams` (the per-portion snapshot). */
-export function microsForGrams(per100Json: string | null | undefined, grams: number): Micros {
+/**
+ * Scale a per-100 micros payload to `amount` (the per-portion snapshot).
+ *
+ * Unit-blind on purpose: the payload is per 100 of the FOOD'S BASIS and the
+ * amount is in that same basis (0047), so the ratio is the same arithmetic for
+ * a 250 ml drink as for 250 g of rice. Nothing here needs to know which.
+ */
+export function microsForAmount(per100Json: string | null | undefined, amount: number): Micros {
   const per100 = parseMicros(per100Json);
   const out: Micros = {};
   for (const m of MICROS) {
     const v = per100[m.key];
-    if (v != null) out[m.key] = (v * grams) / 100;
+    if (v != null) out[m.key] = (v * amount) / 100;
   }
   return out;
 }

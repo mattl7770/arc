@@ -2571,5 +2571,86 @@ console.log('36. the coverage manifest: the model is told what it CANNOT see');
   coverageProblems().length === 0 ? ok('and the registry is clean again') : bad('cleanup');
 }
 
+// ===========================================================================
+// 37. `ml` and the Coach (0047, backlog B2).
+//
+// THE FINDING, recorded because it is the answer to "make the Coach's food and
+// meal tools speak the unit": **no Coach tool carries a food portion at all.**
+//
+//   · `log_meal` writes a FREE-FORM meal — a name, a time and optional macro
+//     totals. There is no amount on it to qualify, and `meals` has no portion
+//     column for one to live in. Adding a `unit` here would be a property the
+//     model can only mis-fill, describing a number that does not exist.
+//   · `log_recipe` takes `grams` — the cooked weight of a DISH, against the
+//     recipe's own `total_weight_g`. 0047 deliberately left `recipe_ingredients`
+//     in grams (see its header), so that argument is still exactly grams.
+//   · `save_recipe`'s ingredient `unit` is free text off the written line
+//     ("1 cup milk") and is normalisation-only, never a conversion.
+//
+// So the honest change to the tool schemas is NO change, and the measured
+// delta is 0 tokens on both ceilings — §6 above still reads 9,223 / 3,668.
+// Nothing was raised and nothing had to be trimmed to pay for it.
+//
+// What DOES have to hold is that a millilitre meal is not invisible or
+// distorted to a Coach that reads the day. That is what this section asserts,
+// through the real tools against a real database.
+// ===========================================================================
+console.log('37. a millilitre meal reads correctly through the Coach’s eyes');
+{
+  const { createFood, getFood } = await import('../src/lib/db/repositories/foods.ts');
+  const { logMealWithItems } = await import('../src/lib/db/repositories/nutrition.ts');
+  const { itemForPortion } = await import('../src/lib/nutrition/servings.ts');
+  const { db } = freshDb();
+  const today = todayISODate();
+
+  const milk = createFood(db, {
+    name: 'Oat drink',
+    basis: 'ml',
+    kcal_100g: 46,
+    protein_g_100g: 1,
+    carbs_g_100g: 6.7,
+    fat_g_100g: 1.5,
+  });
+  const oats = createFood(db, { name: 'Oats', kcal_100g: 379, protein_g_100g: 13 });
+  logMealWithItems(db, {
+    date: today,
+    time: '08:00',
+    name: 'Breakfast',
+    items: [
+      itemForPortion(getFood(db, milk), { amount: 250 }),
+      itemForPortion(getFood(db, oats), { amount: 50 }),
+    ],
+  });
+
+  // 250 ml × 0.46 = 115 kcal; 50 g × 3.79 = 189.5. The point is that they SUM —
+  // kcal is the common currency, so the Coach never has to know about units to
+  // count a day correctly, which is why no tool needed a new property.
+  const snap = run('get_today_snapshot', db);
+  near(snap.nutritionTotals.kcal, 304.5)
+    ? ok('the day’s kcal include the drink — a millilitre item is not invisible to the Coach')
+    : bad('snapshot totals', JSON.stringify(snap.nutritionTotals));
+  near(snap.nutritionTotals.protein_g, 9)
+    ? ok('and so do its macros (2.5 g from the drink, 6.5 g from the oats)')
+    : bad('snapshot protein', JSON.stringify(snap.nutritionTotals));
+
+  const summary = run('get_nutrition_summary', db, { days: 2 });
+  const day = summary.perDay.find((d) => d.date === today);
+  day && near(day.kcal, 304.5)
+    ? ok('get_nutrition_summary counts the same day the same way')
+    : bad('nutrition summary', JSON.stringify(summary.perDay));
+
+  // And the tool the model WOULD reach for when the user says "I drank a
+  // smoothie" is unchanged — it logs a free-form meal, with no portion to
+  // mis-unit. Stated as an assertion so that adding an amount to this schema
+  // later has to come past this line and the accounting above it.
+  const logMealSchema = toolByName('log_meal').inputSchema.properties;
+  !('unit' in logMealSchema) && !('grams' in logMealSchema) && !('amount' in logMealSchema)
+    ? ok('log_meal still carries no portion at all, so it carries no unit either')
+    : bad('log_meal grew a portion', JSON.stringify(Object.keys(logMealSchema)));
+  toolByName('log_recipe').inputSchema.properties.grams.description.includes('Cooked grams')
+    ? ok('log_recipe’s grams is still a dish weight in grams — 0047 left recipes alone')
+    : bad('log_recipe grams description moved');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

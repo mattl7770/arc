@@ -20,10 +20,14 @@
  * rollup) — so a garbage entry is dropped rather than stored or thrown on.
  */
 import { serializeMicros } from './micros';
-import type { NewFood } from './types';
+import type { AmountUnit, NewFood } from './types';
 
 const OFF_BASE = 'https://world.openfoodfacts.org/api/v2/product';
-const OFF_FIELDS = 'product_name,product_name_en,brands,nutriments,serving_size,serving_quantity';
+// `nutrition_data_per` is what makes a scanned drink a DRINK (0047): OFF states
+// "100g" or "100ml" for the per-100 figures it publishes, so the basis is read
+// off the product rather than guessed from its name.
+const OFF_FIELDS =
+  'product_name,product_name_en,brands,nutriments,serving_size,serving_quantity,nutrition_data_per';
 
 /** OFF etiquette: identify the app — no personal data. Nothing that leaves the
  * device may carry PII except the AI call (local-first stance), so the contact
@@ -73,6 +77,32 @@ function mgFromGrams(nutriments: OffNutriments, key: string): number | undefined
   if (g == null) return undefined;
   const mg = g * 1000;
   return mg <= MG_CEILING_PER_100G ? mg : undefined;
+}
+
+/**
+ * What a scanned product is measured in (0047).
+ *
+ * OFF publishes its own answer in `nutrition_data_per` — `"100g"` or `"100ml"` —
+ * and that field is authoritative for the very numbers being cached, so it is
+ * read first. Where it is absent (older or sparser entries), the SERVING SIZE
+ * string is the fallback: `"330 ml"` is a volume and `"30 g"` is a mass, and OFF
+ * writes that string the way the label does.
+ *
+ * Both checks look only for a literal `ml`. A `cl` or `l` product falls back to
+ * grams rather than being converted, because converting is what this whole
+ * design refuses — and the user can correct the food's basis in one tap on the
+ * edit screen, which is cheaper than a units table nobody audits.
+ *
+ * `nutrition_data_per` is only believed when it actually says `100g` / `100ml`.
+ * OFF also writes `"serving"` there, which says nothing about the unit — and a
+ * loose match would read the `g` in "serving" as an answer.
+ */
+function offBasis(product: Record<string, unknown>): AmountUnit {
+  const per = typeof product.nutrition_data_per === 'string' ? product.nutrition_data_per : '';
+  if (/^\s*100\s*ml/i.test(per)) return 'ml';
+  if (/^\s*100\s*g/i.test(per)) return 'g';
+  const serving = typeof product.serving_size === 'string' ? product.serving_size : '';
+  return /\bml\b/i.test(serving) ? 'ml' : 'g';
 }
 
 /**
@@ -127,7 +157,7 @@ export function parseOffProduct(response: unknown, barcode: string): NewFood | n
       : {}),
   });
 
-  // Serving: pair-or-none — only set both when the gram quantity is usable.
+  // Serving: pair-or-none — only set both when the quantity is usable.
   const servingQty =
     typeof product.serving_quantity === 'number'
       ? product.serving_quantity
@@ -143,7 +173,8 @@ export function parseOffProduct(response: unknown, barcode: string): NewFood | n
     brand,
     barcode,
     serving_name: hasServing ? servingName : null,
-    serving_grams: hasServing ? servingQty : null,
+    serving_amount: hasServing ? servingQty : null,
+    basis: offBasis(product),
     kcal_100g,
     protein_g_100g: per100(nutriments, 'proteins_100g'),
     carbs_g_100g: per100(nutriments, 'carbohydrates_100g'),

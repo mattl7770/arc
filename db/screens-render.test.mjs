@@ -474,16 +474,21 @@ const db = getDb();
     date: '2026-08-08',
     time: '12:00',
     name: 'Render lunch',
-    items: [{ food_id: chicken, name: 'Render chicken', grams: 150, kcal: 247.5, protein_g: 46.5 }],
+    items: [
+      { food_id: chicken, name: 'Render chicken', amount: 150, kcal: 247.5, protein_g: 46.5 },
+    ],
   });
 
   // A BARCODED food, logged — the two facts the scanner's running list joins
   // (§7b). `Render chicken` above is deliberately left barcode-less, so the
   // list's narrowing is proved by an exclusion and not only by an inclusion.
+  // …and it is a DRINK (0047), so the running list is also where a millilitre
+  // portion has to survive a real render — including through the oz preference.
   const oatDrink = createFood(db, {
     name: 'Render oat drink',
     brand: 'Oatly-ish',
     barcode: '5060000000000',
+    basis: 'ml',
     kcal_100g: 46,
     protein_g_100g: 1,
     carbs_g_100g: 6.7,
@@ -493,7 +498,7 @@ const db = getDb();
     date: '2026-08-08',
     time: '07:30',
     name: 'Render breakfast',
-    items: [{ food_id: oatDrink, name: 'Render oat drink', grams: 250, kcal: 115 }],
+    items: [{ food_id: oatDrink, name: 'Render oat drink', amount: 250, unit: 'ml', kcal: 115 }],
   });
 
   ok('fixtures seeded (recipes, grocery, meal)');
@@ -750,7 +755,7 @@ const db = getDb();
       items: [
         {
           name: 'Flat white',
-          grams: 240,
+          amount: 240,
           kcal: 120,
           protein_g: 7,
           fiber_g: 0,
@@ -765,7 +770,7 @@ const db = getDb();
       items: [
         {
           name: 'Lentil soup',
-          grams: 400,
+          amount: 400,
           kcal: 320,
           protein_g: 18,
           fiber_g: 21,
@@ -828,8 +833,18 @@ const db = getDb();
       'Recently logged',
       'Render oat drink',
       'Oatly-ish',
-      '250 g',
+      // A drink logged in millilitres (0047), printed under the DEFAULT volume
+      // preference, which is oz — 250 ml ÷ 29.5735 = 8.5. The stored number is
+      // still 250; only the reading converts, exactly as water already does.
+      '8.5 oz',
     ]);
+    // …and the same row under ml. Two renders rather than one assertion about a
+    // formatter, because the preference reaching THIS screen is the thing that
+    // could break, and it is invisible in a unit test of fmtAmount.
+    refute('barcode-scan', scan, ['250 ml']);
+    setUnitPreference(db, 'volume', 'ml');
+    expect('barcode-scan (ml)', render('barcode-scan (ml)', BarcodeScanScreen), ['250 ml']);
+    setUnitPreference(db, 'volume', 'oz');
     // A barcode number means nothing to a human, so the list never prints one;
     // and a food with no barcode is not on this list however recently it was
     // eaten — the query is narrowed to barcoded rows on purpose.
@@ -2080,7 +2095,14 @@ console.log('16. A2 — every screen in the recipe save path can be left again')
  * `onFocus` prop leaves no trace in HTML either — so unlike the number-pad rule
  * above, this one cannot be read off a render. The sweep keys on the spoken
  * label, which is what makes a field an AMOUNT field rather than a clock or a
- * name: every `decimal-pad` input whose label says "grams" must carry it.
+ * name: every `decimal-pad` input whose label says "grams" — or, since 0047,
+ * "millilitres" — must carry it.
+ *
+ * The label match spans NEWLINES, and that is the second thing this rule has
+ * learned the hard way. When the unit became a choice the labels became
+ * expressions, prettier wrapped them across three lines, and a `[^\n]*` pattern
+ * silently stopped matching two of the seven fields — a coverage rule failing
+ * OPEN. The count assertion below is what caught it, which is why it is there.
  */
 console.log('17. A3 — every amount field in food logging highlights its value');
 {
@@ -2135,7 +2157,7 @@ console.log('17. A3 — every amount field in food logging highlights its value'
       const element = chunk.slice(0, chunk.indexOf('/>'));
       const isAmount =
         /keyboardType="decimal-pad"/.test(element) &&
-        /accessibilityLabel=[^\n]*grams/i.test(element);
+        /accessibilityLabel=[\s\S]*?(?:grams|millilitres)/i.test(element);
       if (!isAmount) continue;
       swept++;
       if (!element.includes('selectAllOnFocus(')) {

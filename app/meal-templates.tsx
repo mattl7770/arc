@@ -8,6 +8,7 @@ import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import {
@@ -16,8 +17,9 @@ import {
   listTemplates,
   logMealFromTemplate,
 } from '@/lib/db/repositories/meal-templates';
-import { fmtInt, fmtQty, macroLine } from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt, fmtQty, macroLine } from '@/lib/nutrition/format';
 import type { MealTemplateItemRow, MealTemplateSummary } from '@/lib/nutrition/types';
+import type { VolumeUnit } from '@/lib/user/types';
 
 /**
  * Meal templates (0015) — reusable named meals, logged in one tap.
@@ -40,10 +42,11 @@ import type { MealTemplateItemRow, MealTemplateSummary } from '@/lib/nutrition/t
  * template is ever expanded, so only one accent is ever on screen.
  */
 
-/** "150 g" / "1.5 ×" — a template item's portion, best-effort without the
- * catalog serving name (template_items snapshot the food, not its serving). */
-function itemPortion(item: MealTemplateItemRow): string | null {
-  if (item.grams != null) return `${fmtQty(item.grams)} g`;
+/** "150 g" / "250 ml" / "1.5 ×" — a template item's portion, best-effort
+ * without the catalog serving name (template_items snapshot the food, not its
+ * serving), and under the user's volume preference. */
+function itemPortion(item: MealTemplateItemRow, volume: VolumeUnit): string | null {
+  if (item.amount != null) return fmtAmount(item.amount, item.unit, volume);
   if (item.serving_qty != null) return `${fmtQty(item.serving_qty)} ×`;
   return null;
 }
@@ -60,6 +63,8 @@ export default function MealTemplatesScreen() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [items, setItems] = useState<MealTemplateItemRow[]>([]);
   const [deleteArmed, setDeleteArmed] = useState(false);
+  // Display-only: whether a millilitre portion READS as ml or oz.
+  const { units } = useUnitPreferences();
 
   const reload = useCallback(() => {
     setTemplates(listTemplates(getDb()));
@@ -146,7 +151,7 @@ export default function MealTemplatesScreen() {
                     {expanded ? (
                       <View className="pb-3 pl-3">
                         {items.map((item, itemIndex) => {
-                          const portion = itemPortion(item);
+                          const portion = itemPortion(item, units.volume);
                           const line = macroLine(item);
                           return (
                             <View key={item.id}>

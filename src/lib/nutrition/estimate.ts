@@ -29,7 +29,7 @@ import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-c
 
 import { coerceMicros, parseMicros, serializeMicros } from './micros';
 import { itemForPortion } from './servings';
-import type { EstimateConfidence, FoodRow } from './types';
+import type { AmountUnit, EstimateConfidence, FoodRow } from './types';
 
 export type EstimateInput =
   | { kind: 'text'; description: string }
@@ -37,8 +37,13 @@ export type EstimateInput =
 
 export type MealEstimateItem = {
   name: string;
-  /** Estimated portion in grams; null when the model can only price energy. */
-  grams: number | null;
+  /** Estimated portion in {@link MealEstimateItem.unit}; null when the model can
+   * only price energy. */
+  amount: number | null;
+  /** What the model judged this item to be measured in — `'ml'` when it decided
+   * the item is a DRINK, `'g'` otherwise and whenever it said nothing usable
+   * (0047, backlog B2). Nothing downstream converts between the two. */
+  unit: AmountUnit;
   kcal: number;
   protein_g: number;
   carbs_g: number;
@@ -131,8 +136,12 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '',
   'Rules:',
   '- Itemize the meal: one entry per distinct food, not one blob.',
-  '- Estimate each portion in grams from visual cues (plate size, utensils) and any text.',
+  '- Estimate each portion from visual cues (glass and plate size, utensils) and any text,',
+  '  as "amount" plus the "unit" it is measured in: "ml" for anything DRUNK — coffee,',
+  '  tea, juice, soda, beer, wine, milk, a smoothie or shake — and "g" for everything',
+  '  eaten. Estimate a drink in millilitres directly; never convert it to grams.',
   '- Give kcal and protein/carbs/fat grams per item; fiber grams when inferable, else null.',
+  '  Those are always grams of macronutrient, whatever the portion unit is.',
   '- Set per-item confidence: "high" for clearly identified packaged/simple foods, "medium"',
   '  for typical mixed dishes, "low" when the food or portion is genuinely uncertain.',
   '- Account for likely hidden fats (cooking oil, butter, dressing) and say so in notes when',
@@ -145,11 +154,12 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '- Prefer underestimating an unknown over inventing precision.',
   '',
   'Respond with ONLY a JSON object, no prose, matching:',
-  '{"title": string, "items": [{"name": string, "grams": number|null, "kcal": number,',
-  ' "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null,',
+  '{"title": string, "items": [{"name": string, "amount": number|null, "unit": "g"|"ml",',
+  ' "kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number,',
+  ' "fiber_g": number|null,',
   ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
   ' "confidence": "high"|"medium"|"low"}], "notes": string|null}',
-  'Micro amounts are for the portion you estimated, not per 100 g.',
+  'Micro amounts are for the portion you estimated, not per 100.',
 ].join('\n');
 
 /**
@@ -180,6 +190,18 @@ export function buildMealEstimationRequest(input: EstimateInput): MealEstimation
 }
 
 const CONFIDENCES: EstimateConfidence[] = ['high', 'medium', 'low'];
+
+/**
+ * The model's `unit`, or `'g'` for anything else it said.
+ *
+ * Grams is the safe default rather than a refusal: it is what every item was
+ * before 0047, it is what the overwhelming majority of items are, and a
+ * mis-defaulted unit is visible and fixable on the review screen — which is
+ * where every estimate lands anyway.
+ */
+function amountUnit(value: unknown): AmountUnit {
+  return value === 'ml' ? 'ml' : 'g';
+}
 
 function num(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
@@ -224,7 +246,11 @@ export function parseMealEstimate(replyText: string): MealEstimate {
       : 'low';
     items.push({
       name,
-      grams: num(e.grams),
+      // `grams` is read as a fallback for `amount`: an older prompt's shape (and
+      // a model that reaches for the word anyway) still lands on the row, as
+      // grams, rather than silently becoming an unportioned item.
+      amount: num(e.amount) ?? num(e.grams),
+      unit: amountUnit(e.unit),
       kcal: num(e.kcal) ?? 0,
       protein_g: num(e.protein_g) ?? 0,
       carbs_g: num(e.carbs_g) ?? 0,
@@ -310,7 +336,8 @@ export type MealRevisionSubject = {
   name: string;
   items: {
     name: string;
-    grams: number | null;
+    amount: number | null;
+    unit: AmountUnit;
     kcal: number | null;
     protein_g: number | null;
     carbs_g: number | null;
@@ -338,7 +365,10 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   'Rules:',
   '- Return the COMPLETE revised item list, not a patch.',
   '- Change ONLY what the correction implies. Every other item must come back with the same',
-  '  name, grams, macros and micros it went in with — do not re-estimate the meal.',
+  '  name, amount, unit, macros and micros it went in with — do not re-estimate the meal.',
+  '- An item\'s "unit" is "ml" for anything drunk and "g" for anything eaten. Keep the unit',
+  '  each item arrived with unless the correction itself changes what the item is; never',
+  '  restate a millilitre amount as grams.',
   '- A correction may remove an item, add one, rename one, or change its portion. Apply what',
   '  was actually said and nothing more.',
   '- When a swap changes the cooking fat, carry the portion across sensibly (the same amount',
@@ -351,8 +381,9 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '- Use the notes field to say what you changed, in one short sentence.',
   '',
   'Respond with ONLY a JSON object, no prose, matching:',
-  '{"title": string, "items": [{"name": string, "grams": number|null, "kcal": number,',
-  ' "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null,',
+  '{"title": string, "items": [{"name": string, "amount": number|null, "unit": "g"|"ml",',
+  ' "kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number,',
+  ' "fiber_g": number|null,',
   ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
   ' "confidence": "high"|"medium"|"low"}], "notes": string|null}',
 ].join('\n');
@@ -368,7 +399,10 @@ export function buildMealRevisionRequest(
     // invite the model to restate numbers it never estimated.
     const micros = parseMicros(item.micros);
     const parts = [
-      item.grams === null ? null : `${Math.round(item.grams)} g`,
+      // The stored unit, printed as it stands. The model is shown the meal in
+      // the units it was logged in, which is the only way "leave it byte-
+      // identical" can mean anything for a drink.
+      item.amount === null ? null : `${Math.round(item.amount)} ${item.unit}`,
       item.kcal === null ? null : `${Math.round(item.kcal)} kcal`,
       item.protein_g === null ? null : `P ${Math.round(item.protein_g)}`,
       item.carbs_g === null ? null : `C ${Math.round(item.carbs_g)}`,
@@ -447,20 +481,26 @@ function isConfidentMatch(itemNorm: string, foodNorm: string): boolean {
 
 /**
  * Ground an estimate against the on-device catalog: for a CONFIDENT name match
- * to a food with complete macros, RE-PRICE the whole item from that food's
- * per-100 g values at the estimated grams (setting foodId), so a "Chicken
- * breast" estimate inherits the seeded food's real macros. Everything else —
- * an ambiguous name, no match, or a match with incomplete macros — keeps the
- * model's own numbers verbatim, so grounding never produces a half-catalog,
- * half-model item. Confidence is untouched (portion uncertainty remains); the
+ * to a food with complete macros AND THE SAME UNIT, RE-PRICE the whole item from
+ * that food's per-100 values at the estimated amount (setting foodId), so a
+ * "Chicken breast" estimate inherits the seeded food's real macros. Everything
+ * else — an ambiguous name, no match, a unit mismatch, or a match with
+ * incomplete macros — keeps the model's own numbers verbatim, so grounding never
+ * produces a half-catalog, half-model item. Confidence is untouched (portion uncertainty remains); the
  * review screen is the safety net for a wrong portion. Pure over the Database
  * interface, so it's headless-testable.
  */
 export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEstimate {
   const items = estimate.items.map((item) => {
-    if (item.grams == null || item.grams <= 0) return item;
+    if (item.amount == null || item.amount <= 0) return item;
     const match: FoodRow | undefined = searchFoods(db, item.name, 1)[0];
     if (!match || !isConfidentMatch(normalizeFoodName(item.name), match.name_norm)) return item;
+    // The UNITS have to agree, not just the name. Re-pricing a 250 ml coffee
+    // from a per-100-g food would multiply a volume by a mass's macros and show
+    // the result under the same name and confidence — the exact silent-worsening
+    // this function's name rule exists to prevent, one axis over. A mismatch
+    // keeps the model's own numbers, which are at least self-consistent.
+    if (match.basis !== item.unit) return item;
     // Only ground when the food carries every macro — a partial food would
     // leave the item's kcal contradicting its (kept-from-model) macros.
     if (
@@ -471,7 +511,7 @@ export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEs
     ) {
       return item;
     }
-    const priced = itemForPortion(match, { grams: item.grams });
+    const priced = itemForPortion(match, { amount: item.amount });
     return {
       ...item,
       kcal: priced.kcal ?? item.kcal,
