@@ -6,6 +6,12 @@
  * model, no op-sqlite — fixtures are pinned payloads shaped like the
  * empirically verified real ones (2026-08-08). Run: npm run db:test.
  */
+import { existsSync, readFileSync } from 'node:fs';
+
+// expo-router's real route-tree builder — §10 drives it rather than asserting a
+// string, so the A2 fix is proved by the library that had the bug.
+import { getRoutes } from 'expo-router/build/getRoutes.js';
+
 import {
   decodeHtmlEntities,
   extractInstagramCaption,
@@ -26,6 +32,7 @@ import {
   normalizeSourceUrl,
   parseRecipeExtraction,
   RecipeFetchError,
+  recipeSourceFromUrl,
 } from '../src/lib/recipes/import.ts';
 import { firstUrlIn, recipeImportShareFromPayloads } from '../src/lib/recipes/share-payload.ts';
 import {
@@ -85,7 +92,13 @@ Recipe -2 tbsp oil -2 garlic cloves, minced -2 cups pasta
 
 const IG_SHELL = `<html><head><title>Instagram</title></head><body><script>window._sharedData={}</script></body></html>`;
 
-const IG_EMBED = `<html><body><div class="Embed"><div class="Caption">
+// The embed page carries og tags of its own. It did not in the original
+// fixture, which is how the rung's hardcoded `author: null, image_url: null`
+// went unnoticed (A6).
+const IG_EMBED = `<html><head>
+<meta property="og:title" content="Flavors by Frangipane on Instagram" />
+<meta property="og:image" content="https://scontent.cdninstagram.com/v/embed.jpg" />
+</head><body><div class="Embed"><div class="Caption">
 <a class="CaptionUsername" href="#">flavorsbyfrangipane</a>
 Him: no protein?<br><br>Recipe<br>-2 tbsp oil<br>-2 garlic cloves<br>
 <div class="CaptionComments"><a href="#">view comments</a></div>
@@ -101,7 +114,10 @@ const TIKTOK_OEMBED = JSON.stringify({
   provider_name: 'TikTok',
 });
 
-const YT_WATCH = `<html><body><script>var ytInitialPlayerResponse = {"videoDetails":{"videoId":"abc12345","shortDescription":"Full recipe below!\\n\\nIngredients:\\n- 2 cups flour\\n- 3 eggs\\n\\nMethod: mix and bake."}};</script></body></html>`;
+const YT_WATCH = `<html><head>
+<meta property="og:title" content="The only pancake recipe you need" />
+<meta property="og:image" content="https://i.ytimg.com/vi/abc12345/maxresdefault.jpg" />
+</head><body><script>var ytInitialPlayerResponse = {"videoDetails":{"videoId":"abc12345","shortDescription":"Full recipe below!\\n\\nIngredients:\\n- 2 cups flour\\n- 3 eggs\\n\\nMethod: mix and bake."}};</script></body></html>`;
 
 const WEBSITE_PLAIN = `<html><head><meta property="og:image" content="https://example.com/hero.jpg"></head>
 <body><nav>Home | About</nav><article><h1>Best pancakes</h1>
@@ -384,6 +400,16 @@ function fakeFetch(routes) {
   if (source.kind === 'text' && source.text.includes('-2 tbsp oil')) {
     ok('shell page falls through to /embed/captioned/');
   } else bad('ig embed rung', JSON.stringify(source).slice(0, 200));
+  // A6: the rung used to hardcode `author: null, image_url: null` and throw
+  // away the embed page's own og tags — on the exact path the shell-UA case
+  // always lands on.
+  if (
+    source.kind === 'text' &&
+    source.author === 'Flavors by Frangipane' &&
+    source.image_url === 'https://scontent.cdninstagram.com/v/embed.jpg'
+  ) {
+    ok('the embed rung keeps the author and thumbnail its own page carries');
+  } else bad('ig embed provenance', JSON.stringify(source).slice(0, 200));
 
   // Rung 3c: both shells → typed blocked error.
   try {
@@ -457,6 +483,16 @@ function fakeFetch(routes) {
   if (source.kind === 'text' && source.text.includes('- 2 cups flour')) {
     ok('Shorts URL → watch page → description');
   } else bad('youtube rung', JSON.stringify(source).slice(0, 200));
+  // A6: the video's own thumbnail, which this rung used to discard. The author
+  // stays null on purpose — YouTube's og:title is the VIDEO title, and storing
+  // that as `source_author` would be a confident wrong answer.
+  if (
+    source.kind === 'text' &&
+    source.image_url === 'https://i.ytimg.com/vi/abc12345/maxresdefault.jpg' &&
+    source.author === null
+  ) {
+    ok('the YouTube rung keeps og:image and refuses to guess an author');
+  } else bad('youtube provenance', JSON.stringify(source).slice(0, 200));
 
   // Failures: offline, 404, stories.
   try {
@@ -546,6 +582,146 @@ function fakeFetch(routes) {
   ) {
     ok('+native-intent routes expo-sharing links to /recipe-import, others pass through');
   } else bad('native-intent redirect');
+}
+
+// --- 9. A6: the link survives the rungs that don't fetch ----------------------
+
+{
+  console.log('9. recipeSourceFromUrl — provenance without a fetch');
+
+  // The owner's path: a URL is shared, Instagram refuses the caption, he pastes
+  // it instead. The recipe used to be saved with source_url NULL even though
+  // the app was holding the link the whole time.
+  const cases = [
+    [
+      'https://www.instagram.com/reel/DHOQJh3udh9/',
+      { source_url: 'https://www.instagram.com/reel/DHOQJh3udh9/', source_platform: 'instagram' },
+    ],
+    [
+      'youtu.be/abc12345',
+      { source_url: 'https://www.youtube.com/watch?v=abc12345', source_platform: 'youtube' },
+    ],
+    [
+      'https://www.tiktok.com/@cook/video/1',
+      { source_url: 'https://www.tiktok.com/@cook/video/1', source_platform: 'tiktok' },
+    ],
+    [
+      'https://seriouseats.com/x',
+      { source_url: 'https://seriouseats.com/x', source_platform: 'website' },
+    ],
+    // Stories are a FETCH classification, not a platform: `instagram-stories`
+    // would violate the 0031 CHECK, so it collapses to instagram.
+    [
+      'https://www.instagram.com/stories/chef/1/',
+      { source_url: 'https://www.instagram.com/stories/chef/1/', source_platform: 'instagram' },
+    ],
+    // No provenance is a real answer, and must never fail an import.
+    ['', null],
+    ['   ', null],
+    [null, null],
+    [undefined, null],
+    ['http://127.0.0.1/recipe', null], // the SSRF guard throws; that is "no provenance"
+  ];
+  for (const [input, want] of cases) {
+    const got = recipeSourceFromUrl(input);
+    if (JSON.stringify(got) === JSON.stringify(want)) {
+      ok(`recipeSourceFromUrl(${JSON.stringify(input)}) → ${want ? want.source_platform : 'null'}`);
+    } else bad(`recipeSourceFromUrl(${JSON.stringify(input)})`, JSON.stringify(got));
+  }
+
+  // Every platform it can return must be one the 0031 CHECK admits.
+  const allowed = new Set(['instagram', 'tiktok', 'youtube', 'website']);
+  const platforms = cases
+    .map(([input]) => recipeSourceFromUrl(input)?.source_platform)
+    .filter((p) => p !== undefined);
+  platforms.length > 0 && platforms.every((p) => allowed.has(p))
+    ? ok(`every platform returned (${platforms.length}) satisfies the recipes CHECK`)
+    : bad('platform vocabulary', platforms.join(','));
+}
+
+// --- 10. A2: a deep-linked cold start has the tabs underneath ----------------
+
+/**
+ * The root layout must declare an ANCHOR, and this is asserted beside the
+ * redirect above because the two together ARE the bug the owner reported as
+ * *"after saving a recipe, sometimes the back button doesn't work"*.
+ *
+ * `redirectSystemPath` sends an `expo-sharing` delivery to `/recipe-import`.
+ * On a COLD start that deep link is the whole root stack unless the layout names
+ * an anchor — expo-router's `getLayoutNode` only defaults `initialRouteName` to
+ * a child matching the layout's own group, and the root layout is in no group.
+ * One route deep, `router.replace` after the save keeps it one route deep, and
+ * `StackHeader`'s `router.back()` dispatches a GO_BACK that react-navigation
+ * drops. The same taps work on a warm start, which is the whole of "sometimes".
+ *
+ * Read as source rather than imported: `app/_layout.tsx` pulls in global.css,
+ * the app lock, the health sync and the backup scheduler, none of which loads
+ * under node — and the anchor is a static export, so its declaration is exactly
+ * what needs pinning.
+ */
+{
+  console.log('10. The root layout anchors deep links on the tabs');
+
+  // The declaration, read as source. `app/_layout.tsx` itself cannot be
+  // imported here — it pulls in global.css, the app lock, the health sync and
+  // the backup scheduler, none of which loads under node — but `unstable_settings`
+  // is a static export, so the literal is exactly what needs reading.
+  const layout = readFileSync(new URL('../app/_layout.tsx', import.meta.url), 'utf8');
+  const declared = /export const unstable_settings\s*=\s*\{[^}]*\banchor\s*:\s*'([^']+)'/.exec(
+    layout
+  );
+  declared
+    ? ok(`app/_layout.tsx anchors the root stack on '${declared[1]}'`)
+    : bad('app/_layout.tsx exports no unstable_settings anchor');
+  const anchor = declared ? declared[1] : null;
+
+  // The anchor must name a route that exists, or expo-router throws while it
+  // builds the route tree.
+  anchor && existsSync(new URL(`../app/${anchor}/_layout.tsx`, import.meta.url))
+    ? ok(`the '${anchor}' anchor names a real route group`)
+    : bad('the anchor names no route group', String(anchor));
+
+  /**
+   * And now the mechanism itself, through expo-router's OWN route-tree builder
+   * rather than through a string match: a synthetic context shaped like ARC's
+   * `app/` directory, built twice — once with the anchor this repo declares,
+   * once without it.
+   *
+   * Without, `initialRouteName` is undefined, which is the bug: a cold-start
+   * share deep-links to `/recipe-import`, and that route is then the whole root
+   * stack. With, the tabs sit underneath and `router.back()` has somewhere to
+   * land after the save's `router.replace`.
+   */
+  const routeTree = (settings) => {
+    const files = {
+      './_layout.tsx': settings
+        ? { default: () => null, unstable_settings: settings }
+        : { default: () => null },
+      './(tabs)/_layout.tsx': { default: () => null },
+      './(tabs)/index.tsx': { default: () => null },
+      './recipe-import.tsx': { default: () => null },
+      './recipe-detail.tsx': { default: () => null },
+    };
+    const ctx = (key) => files[key];
+    ctx.keys = () => Object.keys(files);
+    ctx.resolve = (key) => key;
+    return getRoutes(ctx, { platform: 'ios' });
+  };
+
+  routeTree(null).initialRouteName === undefined
+    ? ok('WITHOUT an anchor the root stack has no initial route — the shape the bug needed')
+    : bad('the unanchored root stack already had an initial route');
+  anchor && routeTree({ anchor }).initialRouteName === anchor
+    ? ok(`WITH it, expo-router's own builder mounts '${anchor}' under every deep link`)
+    : bad('anchor not applied by getRoutes', String(routeTree({ anchor }).initialRouteName));
+
+  // And the redirect it protects still points at a screen that sits in that
+  // stack, on the cold start specifically (`initial: true`).
+  const tree = anchor ? routeTree({ anchor }) : routeTree(null);
+  redirectSystemPath({ path: 'arc://expo-sharing', initial: true }) === '/recipe-import' &&
+  tree.children.some((child) => child.route === 'recipe-import')
+    ? ok('a cold-start share resolves to a real screen above the anchored tabs')
+    : bad('cold-start share target');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

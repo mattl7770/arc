@@ -457,3 +457,92 @@ Headless renders prove a component body does not throw and that the strings are 
 4. **Both cameras at all.** `expo-camera` is in the *current* binary, but every path here is new. In particular: does the metadata output slow `takePictureAsync`, and does the handoff to `/barcode-scan` leave exactly one live session?
 5. **The handoff resolve.** `/barcode-scan?code=…` runs in a `useEffect`, which a server render never executes.
 6. **The running list's ordering under real use** — the snapshot-on-open decision is a feel judgment, not a correctness one.
+
+---
+
+## 13. Round 7 — two logging papercuts (2026-09-14, backlog A3 + A4)
+
+Both came off two weeks of daily use on the TestFlight build. Neither needed a
+migration; head stays `0044`.
+
+### A4 — a scanned product names its own meal
+
+**Owner:** *"Name meals properly from a barcode scan — use the product name, not
+a placeholder."*
+
+A scan that created a meal named it `daypartName(now)` — `Breakfast`, `Lunch`,
+`Dinner`, `Snack`. That is the clock's answer to a question the barcode had
+already answered better, and it is printed twice over: the meal row carries its
+own timestamp. `app/barcode-scan.tsx` now titles the meal from the resolved
+product via `mealNameForProduct` (`src/lib/nutrition/format.ts`).
+
+- **`name · brand`**, in the order the scanner's own rows and the portion plate
+  already draw them, so the meal is titled the way it was chosen. A brand that
+  merely repeats the name is dropped (`Oatly · Oatly`).
+- **The first product only.** A second scan added to the same meal leaves the
+  title alone: a meal named after the thing that started it is a record; one
+  that renames itself under the user is not. A meal reached with a `mealId`
+  param is someone else's record and is never retitled.
+- **The day part survives as the fallback**, because `meals.name` is `NOT NULL`
+  and a product with a blank name must still produce one.
+- **The rename path is untouched** — `updateMealName` from `app/meal-detail.tsx`
+  still overrides it, and that is pinned over an auto-named meal.
+
+`app/food-search.tsx`'s day-part naming is deliberately **left alone**: the
+owner's report was about the scanner, and a catalog search has no single product
+to name the meal after.
+
+**Tests:** `db/barcode.test.mjs` §8 — the naming table, then the real
+`logMealWithItems` write asserting the row carries the product name and no
+clock-derived placeholder, then `updateMealName` on top of it.
+
+### A3 — the amount highlights itself
+
+**Owner:** *"Auto highlight the value when changing amount for a food for ease
+of use."*
+
+Every amount field in food logging arrives prefilled — `100`, the last portion,
+the estimator's guess — so the first act is always to delete what is there.
+`selectAllOnFocus(value)` (`src/components/ui/select-on-focus.ts`) is spread onto
+all seven of them: the portion sheets on `app/barcode-scan.tsx` and
+`app/food-search.tsx`, the meal-item editor on `app/meal-detail.tsx`, the review
+rows on `app/meal-estimate.tsx` and `app/meal-revise.tsx`, and both grams fields
+on `app/recipe-detail.tsx`.
+
+**`selectTextOnFocus` alone does not do this on iOS**, and that is the whole
+reason the helper exists rather than a bare prop at seven call sites. On the New
+Architecture (RN 0.86, which Expo SDK 57 ships) the trait is read in exactly one
+place — inside `-[RCTTextInputComponentView focus]`, the *imperative* focus
+command. A user TAP never goes through it: UIKit makes the field first responder
+itself and the component hears about it in `-textInputDidBeginEditing`, which
+only emits `onFocus`. The same file says so outright. So the helper also returns
+an `onFocus` that calls the input's own `setSelection(0, value.length)` —
+`TextInput` mutates its native instance with that method, and that instance is
+what React hands back as the event's `currentTarget`, so no `ref` is needed at
+any call site. Both halves are kept: the prop is what `react-native-web`, an
+imperative `focus()`, and a future RN that fixes the tap path honour.
+
+**Scope:** amount and quantity fields only. Not names, not notes, and
+specifically **not** the hour/minute pair on `app/meal-detail.tsx` — selecting a
+two-digit hour someone is half-way through correcting would destroy the edit
+they came to make.
+
+**Tests:** `db/screens-render.test.mjs` §17 — the handler is driven with a fake
+focus event and asked what it selected (filled → `(0, len)`; empty → nothing; a
+host without the method → no throw), plus a **source sweep** asserting that
+every `decimal-pad` input whose spoken label says "grams" across the six
+surfaces carries the helper, with the match count asserted so the pattern cannot
+go stale and pass vacuously. It is a source sweep and not a markup assertion
+because `react-native-web` consumes `selectTextOnFocus` in its own focus handler
+and an `onFocus` prop leaves no trace in HTML — unlike the number-pad rule
+above, this one is invisible to a render.
+
+### What only a device can judge (round 7)
+
+1. **Whether the selection survives the caret UIKit places at the tap point.**
+   The render suite cannot see a selection at all. Tap any grams field with a
+   value in it: the digits should go blue and the first keystroke should replace
+   them.
+2. **Whether `name · brand` is the right meal title at a glance** on the Eat
+   tab's list, where meal names are read in a column. Long product names may
+   want truncating.

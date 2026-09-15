@@ -2,12 +2,13 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Linking, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
+import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -46,6 +47,7 @@ import {
   unpricedLines,
 } from '@/lib/recipes/estimate';
 import { formatQty } from '@/lib/recipes/ingredients';
+import { isOpenableSourceUrl, recipeSourceLine, sourceThumbnailUrl } from '@/lib/recipes/source';
 import type { FoodRow } from '@/lib/nutrition/types';
 import type {
   RecipeFolderSummary,
@@ -104,6 +106,21 @@ import type {
  * pair. It pushes app/recipe-revise.tsx, which proposes a diff and writes
  * nothing until it is accepted — a recipe may hold lines the owner priced by
  * hand, and those must never be replaced by a model without being shown first.
+ *
+ * ## Where it came from, at last (2026-09-14 — backlog A6)
+ *
+ * 0031 has held `source_url` / `source_platform` / `source_author` /
+ * `source_image_url` since the importer shipped, and this screen printed only
+ * the middle two, as dead text, with the raw enum after the author
+ * ("renderchef · instagram"). The owner's ask was to *"keep the source URL (+
+ * source photo) when importing a recipe"*, and the reading half is here: a
+ * **tappable** line that names the platform the way it names itself (a website
+ * by its host, which is the attribution a recipe blog actually has), and the
+ * source's own thumbnail in the same 4:3 frame the recipe photo uses —
+ * **only** when the recipe has no photo of its own, and labelled, because a
+ * poster's promotional still and a photograph of the thing you cooked are not
+ * the same claim. The decision that allowed the thumbnail to be drawn at all,
+ * and its limits, is in src/lib/recipes/source.ts.
  *
  * **A folder** (0035) is drawn with the provenance at the top, not with the
  * actions: where a document lives is a fact about the document. Tapping it
@@ -201,6 +218,12 @@ export default function RecipeDetailScreen() {
   const [addedNote, setAddedNote] = useState<number | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(false);
+  // A remote source thumbnail that would not load. Once true the frame is not
+  // drawn at all, which is the A6 requirement: "if the image fails to load,
+  // nothing broken is drawn" — no grey box, no placeholder, no retry loop.
+  // Per-visit state on purpose: a transient failure is re-tried next open, and
+  // nothing about a CDN hiccup belongs in the database.
+  const [thumbFailed, setThumbFailed] = useState(false);
   const [pricing, setPricing] = useState(false);
   /** The model's own assumptions from the pricing pass ("2 tbsp butter assumed
    *  at 28 g"). Shown with the figures — an estimate that cannot state its
@@ -315,6 +338,11 @@ export default function RecipeDetailScreen() {
   const { recipe, lines, nutrition, photoUri } = data;
   const steps = parseSteps(recipe.steps);
   const per = nutrition.perServing;
+  const sourceText = recipeSourceLine(recipe);
+  // The remote thumbnail, once the local photo has had first refusal
+  // (src/lib/recipes/source.ts owns that precedence) and once the image has not
+  // already failed to load on this visit.
+  const thumbUrl = thumbFailed ? null : sourceThumbnailUrl(recipe, photoUri);
 
   const toggleStep = (index: number) => {
     setDoneSteps((prev) => {
@@ -401,10 +429,33 @@ export default function RecipeDetailScreen() {
           />
         </Pressable>
       </View>
-      {recipe.source_author || recipe.source_platform ? (
-        <Text className="mt-1 font-serif text-[13px] text-ink-secondary">
-          {[recipe.source_author, recipe.source_platform].filter(Boolean).join(' · ')}
-        </Text>
+      {/* WHERE IT CAME FROM (0031, wired and rendered 2026-09-14 — backlog A6).
+          The line used to be dead text that printed the raw enum ("instagram")
+          after the author and could not be acted on; the one thing a reader
+          wants from it is the post itself. It is a link when the stored URL is
+          http(s) and plain text otherwise — the scheme allow-list sits at the
+          point the stored string becomes an OS action, not at the writers.
+
+          Pine, because a link is the one place this palette's accent means
+          "tappable text" rather than "the screen's action" (the precedent is
+          app/knowledge-entry.tsx's source URL); it does not spend the accent
+          budget, which `Log it` still owns. */}
+      {sourceText ? (
+        isOpenableSourceUrl(recipe.source_url) ? (
+          <Pressable
+            accessibilityRole="link"
+            accessibilityLabel={`Open the source of this recipe, ${sourceText}, in the browser`}
+            onPress={() => {
+              const url = recipe.source_url;
+              if (url && isOpenableSourceUrl(url)) void Linking.openURL(url);
+            }}
+            className="mt-1 min-h-[44px] flex-row items-center gap-1.5 self-start active:opacity-60">
+            <Text className="font-serif text-[13px] text-pine">{sourceText}</Text>
+            <Ionicons name="open-outline" size={13} color={palette.pine} />
+          </Pressable>
+        ) : (
+          <Text className="mt-1 font-serif text-[13px] text-ink-secondary">{sourceText}</Text>
+        )
       ) : null}
 
       {/* WHERE IT IS FILED (0035). Up here with the provenance rather than down
@@ -506,6 +557,32 @@ export default function RecipeDetailScreen() {
               style={{ width: '100%', aspectRatio: 4 / 3 }}
             />
           </View>
+        </View>
+      ) : thumbUrl ? (
+        /* THE SOURCE'S OWN THUMBNAIL (0031 `source_image_url`, rendered from
+           2026-09-14 — the decision and its limits are in
+           src/lib/recipes/source.ts). Drawn ONLY when the recipe has no photo
+           of its own, in the same 4:3 frame, so the page looks the same whether
+           the picture is the cook's or the poster's — and it says which, in the
+           label voice, because those are not the same claim: one is a
+           photograph of the thing that was made, the other is an advert for it.
+
+           `onError` unmounts the frame entirely rather than leaving an empty
+           box. Same hairline, same no-device treatment: a photograph is
+           content. */
+        <View className="mt-4">
+          <View className="w-full overflow-hidden border border-hairline bg-paper-dim">
+            <Image
+              source={{ uri: thumbUrl }}
+              resizeMode="cover"
+              onError={() => setThumbFailed(true)}
+              accessibilityLabel={`Image from the source of ${recipe.title}`}
+              style={{ width: '100%', aspectRatio: 4 / 3 }}
+            />
+          </View>
+          <Text className="mt-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+            From the source
+          </Text>
         </View>
       ) : null}
 
@@ -1084,6 +1161,7 @@ function LineEditor({ line, onChanged }: { line: RecipeIngredientRow; onChanged:
                   onChangeText={setGrams}
                   keyboardType="decimal-pad"
                   returnKeyType={KEYPAD_DONE}
+                  {...selectAllOnFocus(grams)}
                   placeholder="grams"
                   placeholderTextColor={palette.inkMuted}
                   className="w-24 border border-paper-deep bg-paper-dim px-2.5 py-3 text-right font-mono text-[16px] text-ink"
@@ -1258,6 +1336,7 @@ function LogSheet({
             onChangeText={setGrams}
             keyboardType="decimal-pad"
             returnKeyType={KEYPAD_DONE}
+            {...selectAllOnFocus(grams)}
             placeholder="250"
             placeholderTextColor={palette.inkMuted}
             className="w-24 border border-paper-deep bg-paper-dim px-2.5 py-3 text-right font-mono text-[16px] text-ink"

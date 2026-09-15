@@ -54,3 +54,40 @@ export function portionLabel(
   if (item.grams != null) return `${fmtQty(item.grams)} g`;
   return null;
 }
+
+/**
+ * What to call the meal a scanned product creates (backlog A4).
+ *
+ * The owner's complaint: a barcode scan landed as *"Snack"*. That name came
+ * from the clock — `daypartName(now)` in app/barcode-scan.tsx — and it was the
+ * one thing on the record that the scan itself could have answered better than
+ * anything else in the app. A barcode resolves to a product with a name and
+ * usually a brand; the day part is a guess about the same meal that the
+ * timestamp already carries, printed twice.
+ *
+ * `meals.name` is free `text` and `NOT NULL` (0002), so this must always return
+ * something: it falls back to the day part when the product name is blank,
+ * which is the pre-2026-09 behaviour and still better than an empty string the
+ * schema would refuse.
+ *
+ * `name · brand`, in that order, because the name is what is being eaten and
+ * the brand qualifies it — the same anatomy the scanner's own rows and the
+ * portion plate already use, so the meal is titled the way it was chosen. The
+ * brand is dropped when it merely repeats the name ("Oatly · Oatly").
+ *
+ * **Names the FIRST product only.** A second scan added to the same meal does
+ * not rewrite the title: a meal called after the thing that started it is a
+ * record; one that renames itself under the user is not. Renaming by hand stays
+ * the way to change it (app/meal-detail.tsx → `updateMealName`), and that path
+ * is untouched by this.
+ */
+export function mealNameForProduct(
+  food: { name: string; brand?: string | null },
+  fallback: string
+): string {
+  const name = food.name.trim();
+  if (name === '') return fallback;
+  const brand = (food.brand ?? '').trim();
+  if (brand === '' || brand.toLowerCase() === name.toLowerCase()) return name;
+  return `${name} · ${brand}`;
+}

@@ -7,6 +7,7 @@ import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
+import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -724,6 +725,7 @@ export default function MealEstimateScreen() {
                                 onChangeText={(t) => setGrams(row.key, t)}
                                 keyboardType="decimal-pad"
                                 returnKeyType={KEYPAD_DONE}
+                                {...selectAllOnFocus(row.gramsText)}
                                 accessibilityLabel={`${row.name} grams`}
                                 className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
                               />

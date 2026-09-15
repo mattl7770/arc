@@ -71,6 +71,11 @@ import {
   parseIngredientLine,
   scaleIngredientLine,
 } from '../src/lib/recipes/ingredients.ts';
+import {
+  isOpenableSourceUrl,
+  recipeSourceLine,
+  sourceThumbnailUrl,
+} from '../src/lib/recipes/source.ts';
 
 let pass = 0;
 let fail = 0;
@@ -1321,6 +1326,96 @@ console.log('\n19d. The review-pass regressions');
   /already a folder/.test(friendly.message)
     ? ok('and createFolder answers in a sentence, never in SQLite’s')
     : bad('raw driver message escaped', friendly && friendly.message);
+}
+
+// --- 20. A6: the source line, and the thumbnail precedence -------------------
+
+/**
+ * The 0031 provenance columns were written at import and then never read. This
+ * pins the reading half (src/lib/recipes/source.ts) against rows that actually
+ * went through `createRecipe`, so the assertions are about STORED columns and
+ * not about a hand-built object the screen never sees.
+ */
+console.log('\n20. Where a recipe came from (A6) — the line, and what outranks the thumbnail');
+{
+  const { db } = freshDb();
+
+  const igId = createRecipe(db, {
+    title: 'Garlic pasta',
+    source: 'import',
+    source_url: 'https://www.instagram.com/reel/TEST/',
+    source_platform: 'instagram',
+    source_author: 'flavorsbyfrangipane',
+    source_image_url: 'https://scontent.cdninstagram.com/v/test.jpg',
+    servings: 2,
+    ingredients: [{ raw_text: '200 g pasta' }],
+  });
+  const ig = getRecipe(db, igId);
+  recipeSourceLine(ig) === 'Instagram · flavorsbyfrangipane'
+    ? ok('the platform is written the way it writes itself, author after it')
+    : bad('instagram source line', recipeSourceLine(ig));
+
+  // A blog has no platform name worth printing; its host IS the attribution.
+  const webId = createRecipe(db, {
+    title: 'Pancakes',
+    source: 'import',
+    source_url: 'https://www.seriouseats.com/best-pancakes',
+    source_platform: 'website',
+    source_author: 'Kenji',
+    servings: 4,
+    ingredients: [{ raw_text: '2 cups flour' }],
+  });
+  const web = getRecipe(db, webId);
+  recipeSourceLine(web) === 'seriouseats.com · Kenji'
+    ? ok('a website is named by its host, www stripped')
+    : bad('website source line', recipeSourceLine(web));
+
+  // The paste/screenshot rungs record the URL and nothing else (A6's other
+  // half) — the line must still say something useful from a URL alone.
+  const urlOnlyId = createRecipe(db, {
+    title: 'Pasted reel',
+    source: 'import',
+    source_url: 'https://www.tiktok.com/@cook/video/1',
+    source_platform: 'tiktok',
+    servings: 1,
+    ingredients: [],
+  });
+  recipeSourceLine(getRecipe(db, urlOnlyId)) === 'TikTok'
+    ? ok('a URL with no author still names where it came from')
+    : bad('url-only source line', recipeSourceLine(getRecipe(db, urlOnlyId)));
+
+  // A hand-typed recipe has no provenance, and prints no stand-in for one.
+  const mineId = createRecipe(db, {
+    title: 'My own chili',
+    servings: 4,
+    ingredients: [{ raw_text: '500 g beef' }],
+  });
+  const mine = getRecipe(db, mineId);
+  recipeSourceLine(mine) === null
+    ? ok('a recipe of your own shows no source line at all')
+    : bad('hand-typed source line', recipeSourceLine(mine));
+
+  // Only http(s) is ever handed to the OS.
+  isOpenableSourceUrl(ig.source_url) &&
+  !isOpenableSourceUrl(mine.source_url) &&
+  !isOpenableSourceUrl('javascript:alert(1)') &&
+  !isOpenableSourceUrl('file:///etc/passwd')
+    ? ok('the scheme allow-list admits http(s) and nothing else')
+    : bad('openable allow-list');
+
+  // THE PRECEDENCE (0034 photo vs the poster's still) and the https floor.
+  sourceThumbnailUrl(ig, null) === 'https://scontent.cdninstagram.com/v/test.jpg'
+    ? ok('with no photo of its own, the source thumbnail is what gets drawn')
+    : bad('thumbnail with no local photo', sourceThumbnailUrl(ig, null));
+  sourceThumbnailUrl(ig, 'file:///Documents/recipe-photos/x.jpg') === null
+    ? ok('the cook’s own photo outranks the source thumbnail, so the remote host is never hit')
+    : bad('local photo precedence');
+  sourceThumbnailUrl(mine, null) === null
+    ? ok('no stored thumbnail draws no frame')
+    : bad('absent thumbnail');
+  sourceThumbnailUrl({ source_image_url: 'http://cdn.example.com/x.jpg' }, null) === null
+    ? ok('a cleartext thumbnail is refused rather than drawn as an empty frame (ATS)')
+    : bad('http thumbnail admitted');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

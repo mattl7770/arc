@@ -7,6 +7,7 @@ import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
+import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
@@ -23,7 +24,7 @@ import {
   isCameraAvailable,
   useCameraPermission,
 } from '@/lib/media/camera';
-import { fmtInt, fmtQty } from '@/lib/nutrition/format';
+import { fmtInt, fmtQty, mealNameForProduct } from '@/lib/nutrition/format';
 import { lookupOffProduct, normalizeBarcode, OffLookupError } from '@/lib/nutrition/openfoodfacts';
 import { gramsForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
@@ -64,6 +65,16 @@ import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
  *   is the same sheet a live scan lands in. One confirmation surface, not two.
  * - **No new table, no migration.** The data was already there: the scan caches
  *   a `foods` row and the log writes a `meal_items` row.
+ *
+ * ## The meal a scan creates is named after the product (owner, backlog A4)
+ *
+ * It used to be named after the clock — `daypartName(now)` — so a scan landed
+ * as "Snack", which is a worse answer than the one the barcode had just given
+ * and is the same fact the meal's own timestamp already carries. The first add
+ * that CREATES a meal now titles it `name · brand` from the resolved product
+ * (`mealNameForProduct`); a second scan into the same meal leaves the title
+ * alone, and a meal arriving by `mealId` is never retitled. The day part
+ * survives as the fallback, because `meals.name` is NOT NULL.
  *
  * ## The `code` param — the merged camera's handoff
  *
@@ -324,7 +335,18 @@ export default function BarcodeScanScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const addItem = (item: NewMealItem) => {
+  /**
+   * Write the portion. `food` is carried through only to NAME the meal when
+   * this add is the one that creates it (backlog A4) — a scan used to land as
+   * "Snack", which is the clock's answer to a question the barcode had already
+   * answered better. `mealNameForProduct` keeps the day part as the fallback
+   * for a nameless product, because `meals.name` is NOT NULL.
+   *
+   * Only at CREATION: adding a second scan to the meal this screen already
+   * created leaves the title alone (see the helper's header), and a meal pushed
+   * in via `mealId` is someone else's record and is never retitled here.
+   */
+  const addItem = (item: NewMealItem, food: FoodRow) => {
     const db = getDb();
     try {
       if (targetMealId !== null) {
@@ -334,7 +356,7 @@ export default function BarcodeScanScreen() {
         const { mealId: created } = logMealWithItems(db, {
           date: todayISODate(),
           time: clockFromISO(now.toISOString()),
-          name: daypartName(now),
+          name: mealNameForProduct(food, daypartName(now)),
           items: [item],
         });
         setTargetMealId(created);
@@ -350,11 +372,11 @@ export default function BarcodeScanScreen() {
   const addPortion = (food: FoodRow) => {
     if (mode === 'serving' && food.serving_grams != null) {
       if (qty <= 0) return;
-      addItem(itemForPortion(food, { servingQty: qty }));
+      addItem(itemForPortion(food, { servingQty: qty }), food);
     } else {
       const grams = parseGrams(gramsText);
       if (grams === null) return;
-      addItem(itemForPortion(food, { grams }));
+      addItem(itemForPortion(food, { grams }), food);
     }
   };
 
@@ -545,6 +567,7 @@ export default function BarcodeScanScreen() {
                   }}
                   keyboardType="decimal-pad"
                   returnKeyType={KEYPAD_DONE}
+                  {...selectAllOnFocus(gramsText)}
                   accessibilityLabel="Grams"
                   className="w-16 border border-paper-deep bg-paper-dim px-2 py-2 text-right font-mono text-[13px] text-ink"
                 />

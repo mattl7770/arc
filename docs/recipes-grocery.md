@@ -200,7 +200,7 @@ All house conventions apply: `text` PK `NOT NULL` with app v4 UUIDs via `newId` 
 | `source_url` | text | the shared/pasted URL, when imported |
 | `source_platform` | text | NULL or CHECK IN (`'instagram','tiktok','youtube','website'`) |
 | `source_author` | text | creator/site attribution |
-| `source_image_url` | text | og:image / oEmbed thumbnail URL, stored now, **rendered later** (media handling is Phase 4; no silent network fetch to display it before the ADR covers it) |
+| `source_image_url` | text | og:image / oEmbed thumbnail URL. **Rendered since 2026-09-14** on `app/recipe-detail.tsx` only — see §5a for the decision that discharged the "rendered later" condition |
 | `servings` | real NOT NULL | > 0 — the batch yield; the scaling denominator |
 | `total_weight_g` | real | NULL or > 0 — final cooked weight; enables log-by-grams |
 | `prep_min` / `cook_min` | integer | NULL or ≥ 0 |
@@ -300,7 +300,7 @@ Five new flat kebab-case routes, registered as siblings in the nutrition family 
 | Route | Screen |
 | --- | --- |
 | `app/recipes.tsx` | The book: search field, favorites row, list rows (title · serif; per-serving kcal when complete · mono; source badge · muted; last cooked). One pine action: **Import a recipe**. |
-| `app/recipe-detail.tsx` | Title + source attribution line · servings/time row (mono) · ingredients (raw line; resolved lines show mono macros; unresolved show a quiet "link" affordance; `negligible` renders struck-muted) · steps (numbered, generous line-height — this is where Porcelain Ledger shines) · nutrition block (complete → per-serving mono table with per-macro "—" honesty; else the honest unresolved line) · actions: **Log it** (the one pine action; servings stepper sheet **with the undercount disclosure when partially resolved**), Add to grocery list (ghost), Edit, Save as favorite. Cook mode v1 = `useKeepAwake` while the screen is open + tap-to-mark-step (kept deliberately modest; a full-screen step mode is a later slice). |
+| `app/recipe-detail.tsx` | Title + **tappable** source line and source thumbnail (§5a) · servings/time row (mono) · ingredients (raw line; resolved lines show mono macros; unresolved show a quiet "link" affordance; `negligible` renders struck-muted) · steps (numbered, generous line-height — this is where Porcelain Ledger shines) · nutrition block (complete → per-serving mono table with per-macro "—" honesty; else the honest unresolved line) · actions: **Log it** (the one pine action; servings stepper sheet **with the undercount disclosure when partially resolved**), Add to grocery list (ghost), Edit, Save as favorite. Cook mode v1 = `useKeepAwake` while the screen is open + tap-to-mark-step (kept deliberately modest; a full-screen step mode is a later slice). |
 | `app/recipe-edit.tsx` | Manual create/edit: meta fields, ingredient line editor (add/reorder/remove; per-line parsed-overlay fields), steps editor. |
 | `app/recipe-import.tsx` | The ladder UI: URL field (prefilled by share intent) · paste-text mode · photo mode → fetching → **editable review** (never auto-commit) → Save. Failure states are typeset instructions, not alerts ("This caption doesn't contain the recipe. Paste it, or share a screenshot of the ingredient list."). |
 | `app/grocery.tsx` | Add field (autocomplete dropdown from history) · Staples chips · category sections with check-off rows (tap row = check; mono qty right-aligned) · collapsed "N in cart" section with Clear. No pine on this screen except nothing — check-off marks use the standard completion stamp semantics. **Since 2026-08-12** the line expands to its OWN editor (name · qty · aisle · remove), with its entries beneath only when there is more than one. |
@@ -309,7 +309,115 @@ Five new flat kebab-case routes, registered as siblings in the nutrition family 
 
 **Entry points (as built, 2026-08-11):** the Eat tab carries a **Kitchen** section — a plate of two rows, **Recipe book** and **Grocery list**, each with its live state in the row BODY (`24 recipes · 3 cooked this month`, `12 to buy · 3 in the cart`), never in the chevron slot. The grocery figure is `openGroceryLineCount` — the LINES `/grocery` draws — not `openGroceryCount`'s raw rows, which double the moment two recipes both want milk. **Import is NOT a hub row** (owner call, 2026-08-11): it is the recipe book's own primary action, and the share sheet reaches `/recipe-import` without passing through the hub. **Cook a recipe** is also a row in the Eat tab's Log sheet, so logging from the book no longer requires opening the recipe first. `app/meal-detail.tsx` gains "Save as recipe". No Log-tab tile changes (locked 3×2 grid), no Home changes (sacred; a "cook X tonight" can reach Home only as a protocol/mode mission item or via the Coach's brief channel — both already exist and need nothing from this plan).
 
-**Design notes:** adherence-neutral throughout (no red states, no streaks); numbers mono; serif headings; one pine action per screen; `≈` + muted `est` for AI-derived values; two-tap arm/confirm deletes; every Pressable carries accessibility props. Recipe hero images are **not rendered in v1** (`source_image_url` is stored; display waits for the Phase 4 media decision — no quiet network image fetches).
+**Design notes:** adherence-neutral throughout (no red states, no streaks); numbers mono; serif headings; one pine action per screen; `≈` + muted `est` for AI-derived values; two-tap arm/confirm deletes; every Pressable carries accessibility props.
+
+---
+
+## 5a. Provenance, wired and rendered (2026-09-14 — backlog A6)
+
+**Owner:** *"Keep source URL (+ source photo) when importing a recipe."* Four
+columns had existed since 0031 and nothing read them; two of the import rungs
+were also throwing away metadata the page they had just fetched was carrying.
+
+### What was captured but lost
+
+- The **Instagram embed-captioned rung** — the one every shell-UA fetch falls
+  through to — hardcoded `author: null, image_url: null` and ignored the embed
+  page's own og tags.
+- The **YouTube rung** did the same with the watch page's `og:image`. Its
+  author stays deliberately null: YouTube's `og:title` is the *video* title, and
+  storing that as `source_author` would be a confident wrong answer.
+- The **paste-the-caption and screenshot rungs** recorded no source at all —
+  even when the user had pasted an Instagram URL seconds earlier and the fetch
+  had failed, which is precisely the sequence those rungs exist for. The link
+  the screen was already holding now rides along
+  (`recipeSourceFromUrl`, `ImportInput.sourceUrl`). `instagram-stories` is a
+  fetch classification, not a platform, so it collapses to `instagram` — the
+  0031 CHECK does not admit it.
+
+### What is rendered
+
+`app/recipe-detail.tsx`, via the pure `src/lib/recipes/source.ts`:
+
+- **A tappable source line** — `Instagram · flavorsbyfrangipane`,
+  `seriouseats.com · Kenji` — opened with `Linking.openURL`. A platform names
+  itself; a `website` is named by its **host**, because a host is the
+  attribution a recipe blog actually has and "website" is not. `role="link"`,
+  pine (the one place this palette's accent means *tappable text*), and it does
+  not spend the screen's accent budget, which `Log it` still owns. Only http(s)
+  is ever handed to the OS, checked at the point of action rather than trusted
+  from the writers.
+- **The source thumbnail**, in the same 4:3 frame the recipe's own photo uses,
+  labelled **"From the source"** — because a poster's promotional still and a
+  photograph of the thing you cooked are not the same claim.
+
+### The 0031 condition, and how it was discharged
+
+0031's column comment read *"NOT rendered until the Phase 4 media decision
+sanctions the fetch"*, and §5 of this file said what it was protecting: **"no
+quiet network image fetches"**, alongside the import ADR's **"never media
+downloads"** (§7). The owner's A6 ask **is** that decision, and it is taken
+narrowly so both sentences stay true:
+
+1. **Nothing is downloaded.** The URL goes to the OS image loader for display.
+   No disk copy, no prefetch, no background load, no `fetch`/`File` call — which
+   is what "media download" meant.
+2. **One renderer.** The detail screen only. The book's list rows do not draw
+   it, so opening the recipe book never fans out a request per row.
+3. **It is not quiet.** It sits under a source line naming the platform and
+   author, on a recipe the user imported from a link they shared.
+4. **The local photo wins.** 0034's `photo_file_name` takes precedence, so the
+   moment the owner adds his own photo that remote host is never contacted for
+   this recipe again.
+5. **https only, and failure draws nothing.** iOS ATS blocks cleartext anyway;
+   requiring https means a stored `http://` thumbnail draws no frame instead of
+   an empty one, and `onError` unmounts the frame entirely rather than leaving a
+   grey box on a cookbook page.
+
+**The cost, stated rather than buried:** rendering a remote thumbnail tells that
+CDN the device opened this recipe. That is the whole of it, it is bounded by (2)
+and (4), and it is the reason the condition existed.
+
+**Tests:** `db/recipes.test.mjs` §20 (the line from stored columns, the scheme
+allow-list, the photo-outranks-thumbnail precedence, the https floor),
+`db/recipe-import.test.mjs` §7 + §9 (the two rungs' recovered metadata;
+`recipeSourceFromUrl`'s table, including that every platform it can return
+satisfies the 0031 CHECK), `db/screens-render.test.mjs` §2 (the line and the
+frame render; the raw enum never reaches the reader again).
+
+---
+
+## 5b. The back button after a save (2026-09-14 — backlog A2)
+
+**Owner:** *"After saving a recipe, sometimes the back button doesn't work."*
+
+**Root cause: a missing route anchor, not anything in the save.**
+`app/+native-intent.ts` redirects an `expo-sharing` delivery to
+`/recipe-import`. On a **cold start** — iOS had reclaimed ARC in the background
+since the last use — expo-router built the root stack from that deep link alone:
+`app/_layout.tsx` declared no `unstable_settings`, and `getLayoutNode` only
+defaults `initialRouteName` to a child matching the layout's own *group*, which
+the root layout is not in. The stack was one route deep. The save's
+`router.replace('/recipe-detail')` swapped one entry for one entry — still one
+deep — and `StackHeader`'s `router.back()` dispatched a `GO_BACK` that
+react-navigation drops silently (expo-router's `goBack` never checks
+`canGoBack`). A chevron that did nothing.
+
+**"Sometimes" is fully explained:** the identical taps on the identical screens
+work on a *warm* share, which navigates onto the stack that already exists, tabs
+and all. Nothing about the recipe or the save differs between the two runs,
+which is why it read as random.
+
+**Fix:** `export const unstable_settings = { anchor: '(tabs)' }` in
+`app/_layout.tsx`. App-wide on purpose — equally true of a tapped reminder
+notification and of any deep link added later.
+
+**Tests:** `db/recipe-import.test.mjs` §10 pins the anchor beside the redirect it
+protects (the two together are the bug), and that `(tabs)` names a real route
+group — an unknown anchor throws while the route tree is built.
+`db/screens-render.test.mjs` §16 pins that all four screens in the save path
+still draw a spoken back control, including `recipe-detail`'s "this recipe is
+gone" state, where a missing one would strand the user completely.
 
 ---
 

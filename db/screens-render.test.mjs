@@ -14,8 +14,12 @@
  *
  * Run: npm run db:test (via node --import ./db/register-render-hooks.mjs).
  */
+import { readFileSync } from 'node:fs';
+
 import React from 'react';
 import { renderToString } from 'react-dom/server';
+
+import { selectAllOnFocus } from '../src/components/ui/select-on-focus.ts';
 
 import { __setParams } from './render-stubs/expo-router.mjs';
 import { getDb } from './render-stubs/db-client.mjs';
@@ -380,8 +384,13 @@ const db = getDb();
   const adobo = createRecipe(db, {
     title: 'Chicken Adobo',
     source: 'import',
+    // All four 0031 provenance columns, because since 2026-09-14 the detail
+    // screen READS them (A6): the source line is a link, and the og:image is
+    // drawn when the recipe has no photo of its own.
+    source_url: 'https://www.instagram.com/reel/RENDER1/',
     source_platform: 'instagram',
     source_author: 'renderchef',
+    source_image_url: 'https://scontent.cdninstagram.com/v/render.jpg',
     servings: 2,
     steps: ['Brown the chicken pieces.', 'Simmer in the sauce.'],
     ingredients: [
@@ -463,6 +472,44 @@ const db = getDb();
       'priced', // the Ingredients tally
     ]
   );
+  /**
+   * A6 — the source line and the source photo, both READ from stored columns.
+   *
+   * 0031 has held `source_url` / `source_platform` / `source_author` /
+   * `source_image_url` since the importer shipped, and the screen printed only
+   * the last two, as dead text, with the raw enum ("instagram") after the
+   * author. Now the line names the platform the way it names itself, the whole
+   * line is a link, and the og:image is drawn because this fixture has no photo
+   * of its own.
+   */
+  {
+    const html = render('recipe-detail (source)', RecipeDetailScreen, { id: adobo });
+    expect('recipe-detail (source)', html, [
+      'Instagram · renderchef',
+      'role="link"', // it is an affordance, not the dead text it used to be
+      'Open the source of this recipe', // …and it says so out loud
+      'Image from the source of Chicken Adobo', // the og:image frame mounted
+      'From the source', // labelled, so the poster's still is never mistaken
+    ]); //                   for a photo of the thing the owner cooked
+    // (The URL itself is never printed — the line names the platform and the
+    // author, which is what a reader can use. That `source_url` is what gets
+    // opened, and that only http(s) ever is, is pinned in db/recipes.test.mjs
+    // §20 against `isOpenableSourceUrl`; react-native-web puts an Image's URI
+    // in a generated stylesheet rather than in the markup, so the frame is
+    // asserted by its label.)
+    // The raw enum must never reach the reader again.
+    refute('recipe-detail (source)', html, ['· instagram', 'instagram · renderchef']);
+    // The recipe with NO provenance draws no source chrome at all — the line is
+    // absent, not an empty stand-in.
+    refute(
+      'recipe-detail (no source)',
+      render('recipe-detail (no source)', RecipeDetailScreen, {
+        id: draft,
+      }),
+      ['From the source', 'Open the source of this recipe']
+    );
+  }
+
   // Incomplete recipe. The headless runtime has no model key, so the model pass
   // never fires and the screen must say WHY the lines are unpriced rather than
   // handing the user a chore — which is the whole point of the 0034 change.
@@ -1719,6 +1766,156 @@ const db = getDb();
   // The armed pass attempted nothing, so no type may appear claiming it was
   // refused — a fabricated finding is worse than a missing one.
   refute('settings-health (logged)', logged, ['Waist circumference. 0 / 0']);
+}
+
+/**
+ * 16. A2 — the back affordance, on every screen the recipe save path passes
+ * through.
+ *
+ * The owner's *"after saving a recipe, sometimes the back button doesn't work"*
+ * had two halves, and a headless render can see one of them. The half it sees:
+ * the control EXISTS and is spoken as a back control on each of the four
+ * screens a saved recipe is reached through. The half it cannot: whether the
+ * stack it pops has anything under it — that is navigation state, and it is
+ * pinned instead in db/recipe-import.test.mjs §10, which asserts the root
+ * layout's anchor so a cold-start deep link is never the only route on the
+ * stack. Together they cover the bug; neither does alone.
+ *
+ * `render()` is not re-used here because the point is the header, which every
+ * one of these screens draws unconditionally — including the "this recipe is
+ * gone" state, where a missing back control would strand the user completely.
+ */
+console.log('16. A2 — every screen in the recipe save path can be left again');
+{
+  const backAffordance = (name, html) => {
+    if (html === null) return;
+    // react-native-web renders StackHeader's Pressable as role="button" with
+    // the spoken label; `parent` screens say "Back to <where>".
+    const labels = [...html.matchAll(/aria-label="(Back(?: to [^"]*)?)"/g)].map((m) => m[1]);
+    labels.length > 0
+      ? ok(`${name}: the header's back control is present and spoken ("${labels[0]}")`)
+      : bad(`${name}: no back affordance in the rendered header`);
+  };
+
+  const saved = createRecipe(db, {
+    title: 'Saved from a share',
+    source: 'import',
+    source_url: 'https://www.instagram.com/reel/SAVED1/',
+    source_platform: 'instagram',
+    servings: 2,
+    ingredients: [{ raw_text: '1 onion' }],
+  });
+
+  // The four screens: where a save lands, and the three that can perform one.
+  backAffordance(
+    'recipe-detail (after a save)',
+    render('recipe-detail (after a save)', RecipeDetailScreen, { id: saved })
+  );
+  backAffordance(
+    'recipe-detail (deleted under it)',
+    render('recipe-detail (deleted under it)', RecipeDetailScreen, { id: 'gone' })
+  );
+  backAffordance('recipe-edit (new)', render('recipe-edit (back)', RecipeEditScreen));
+  backAffordance(
+    'recipe-edit (existing)',
+    render('recipe-edit (back, existing)', RecipeEditScreen, { id: saved })
+  );
+  backAffordance('recipe-import', render('recipe-import (back)', RecipeImportScreen));
+  backAffordance(
+    'recipe-revise',
+    render('recipe-revise (back)', RecipeReviseScreen, { id: saved })
+  );
+}
+
+/**
+ * 17. A3 — the amount fields select themselves on focus.
+ *
+ * Two halves, because neither is visible on its own.
+ *
+ * The BEHAVIOUR is asserted directly: `selectAllOnFocus` is a pure props
+ * builder, so the handler it returns can be driven with a fake focus event and
+ * asked what it did. That is the half that matters on device — iOS's New
+ * Architecture reads `selectTextOnFocus` only inside the imperative `-focus`
+ * command, so a TAP needs the `setSelection` call (the whole mechanism, with
+ * the RN source it was read off, is in src/components/ui/select-on-focus.ts).
+ *
+ * The COVERAGE is asserted over source, not markup, and that is a real
+ * limitation stated rather than hidden: react-native-web consumes
+ * `selectTextOnFocus` in its own focus handler and emits nothing for it, and an
+ * `onFocus` prop leaves no trace in HTML either — so unlike the number-pad rule
+ * above, this one cannot be read off a render. The sweep keys on the spoken
+ * label, which is what makes a field an AMOUNT field rather than a clock or a
+ * name: every `decimal-pad` input whose label says "grams" must carry it.
+ */
+console.log('17. A3 — every amount field in food logging highlights its value');
+{
+  const ev = (captured) => ({
+    currentTarget: {
+      setSelection: (start, end) => {
+        captured.push([start, end]);
+      },
+    },
+    target: null,
+  });
+
+  const props = selectAllOnFocus('250');
+  props.selectTextOnFocus === true
+    ? ok('the declarative half is set (web, Android, and an imperative focus())')
+    : bad('selectTextOnFocus missing');
+  let calls = [];
+  props.onFocus(ev(calls));
+  JSON.stringify(calls) === '[[0,3]]'
+    ? ok('focusing a filled field selects the whole value (the iOS tap path)')
+    : bad('setSelection on focus', JSON.stringify(calls));
+  calls = [];
+  selectAllOnFocus('').onFocus(ev(calls));
+  calls.length === 0
+    ? ok('an empty field selects nothing rather than spending a bridge command')
+    : bad('empty field selected');
+  // A host that predates the method must not crash the tap.
+  let threw = null;
+  try {
+    selectAllOnFocus('12').onFocus({ currentTarget: {}, target: null });
+  } catch (e) {
+    threw = e;
+  }
+  threw === null
+    ? ok('a host instance without setSelection degrades to the declarative half')
+    : bad('onFocus threw', String(threw));
+
+  // The sweep. Each file is a surface where a FOOD's amount gets changed.
+  const SURFACES = [
+    'app/barcode-scan.tsx',
+    'app/food-search.tsx',
+    'app/meal-detail.tsx',
+    'app/meal-estimate.tsx',
+    'app/meal-revise.tsx',
+    'app/recipe-detail.tsx',
+  ];
+  let swept = 0;
+  let missing = [];
+  for (const file of SURFACES) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+    for (const chunk of source.split('<TextInput').slice(1)) {
+      const element = chunk.slice(0, chunk.indexOf('/>'));
+      const isAmount =
+        /keyboardType="decimal-pad"/.test(element) &&
+        /accessibilityLabel=[^\n]*grams/i.test(element);
+      if (!isAmount) continue;
+      swept++;
+      if (!element.includes('selectAllOnFocus(')) {
+        missing.push(`${file}: ${(/accessibilityLabel=([^\n]*)/.exec(element) ?? [])[1]}`);
+      }
+    }
+  }
+  // A regex that stopped matching anything would pass vacuously, so the count
+  // is asserted too — seven amount fields across the six surfaces.
+  swept >= 7
+    ? ok(`${swept} amount fields found across ${SURFACES.length} food-logging surfaces`)
+    : bad(`the sweep matched only ${swept} amount fields — the pattern has gone stale`);
+  missing.length === 0
+    ? ok('every one of them highlights its value on focus')
+    : bad(`${missing.length} amount field(s) without selectAllOnFocus`, missing.join(' · '));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
