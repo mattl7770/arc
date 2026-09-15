@@ -47,10 +47,13 @@ import {
   buildMealEstimationRequest,
   buildMealRevisionRequest,
   groundMealEstimate,
+  MEAL_ESTIMATION_SYSTEM_PROMPT,
+  MEAL_REVISION_SYSTEM_PROMPT,
   parseMealEstimate,
 } from '../src/lib/nutrition/estimate.ts';
 import {
   microsForGrams,
+  MICROS,
   parseMicros,
   scaleMicros,
   serializeMicros,
@@ -980,6 +983,104 @@ console.log('\n20b. buildMealRevisionRequest: the model sees the meal it is corr
   parsed.items.length === 2 && parsed.items[1].name === 'Olive oil' && parsed.notes !== null
     ? ok('a revision reply parses through the estimator’s own parser')
     : bad('revision parse', JSON.stringify(parsed));
+}
+
+console.log('\n21. caffeine and sodium: from an estimated item to the day’s total (A8)');
+{
+  // The owner's three are caffeine, fiber and sodium. Fiber has a column and a
+  // target; the other two ride the micros JSON, which is why A8 needed no
+  // migration. This walks one caffeinated item the whole way: model reply →
+  // parser → grounding → logged meal → day total.
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('"caffeine_mg"') &&
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('sodium') &&
+  MEAL_REVISION_SYSTEM_PROMPT.includes('"caffeine_mg"')
+    ? ok('both system prompts ask for sodium and caffeine in micros')
+    : bad('prompts do not request the two micros');
+
+  const parsed = parseMealEstimate(
+    '{"title":"Afternoon","items":[{"name":"Flat white","grams":240,"kcal":120,"protein_g":7,' +
+      '"carbs_g":10,"fat_g":6,"fiber_g":0,"confidence":"high",' +
+      // sodium and caffeine survive; the invented key and the non-number do not.
+      '"micros":{"caffeine_mg":145,"sodium_mg":90,"vitamin_q_mg":3,"iron_mg":"lots"}},' +
+      '{"name":"Rice cake","grams":9,"kcal":35,"protein_g":1,"carbs_g":7,"fat_g":0,' +
+      '"fiber_g":0,"confidence":"medium"}],"notes":null}'
+  );
+  const coffeeMicros = parseMicros(parsed.items[0].micros);
+  near(coffeeMicros.caffeine_mg, 145) &&
+  near(coffeeMicros.sodium_mg, 90) &&
+  coffeeMicros.iron_mg === undefined &&
+  Object.keys(coffeeMicros).length === 2
+    ? ok('parseMealEstimate keeps the model’s caffeine/sodium and drops the rest')
+    : bad('parsed micros', parsed.items[0].micros);
+  parsed.items[1].micros === null
+    ? ok('an item that returned no micros stays NULL, never a fake {}')
+    : bad('empty micros not null', parsed.items[1].micros);
+
+  const { db } = freshDb();
+  // A catalog coffee with macros but NO micros row — the seeded "Coffee, black"
+  // is exactly this (0016). Grounding re-prices the macros and must leave the
+  // model's caffeine standing, or the most caffeinated food in the catalog
+  // would be the one that loses its caffeine.
+  createFood(db, {
+    name: 'Flat white',
+    kcal_100g: 50,
+    protein_g_100g: 3,
+    carbs_g_100g: 4,
+    fat_g_100g: 2.5,
+  });
+  const grounded = groundMealEstimate(db, parsed);
+  const coffee = grounded.items[0];
+  const groundedMicros = parseMicros(coffee.micros);
+  coffee.foodId != null && near(coffee.kcal, 120) && near(groundedMicros.caffeine_mg, 145)
+    ? ok('grounding to a micro-less food keeps the model’s caffeine')
+    : bad('grounded coffee', JSON.stringify(coffee));
+
+  logMealWithItems(db, {
+    date: TODAY,
+    time: '15:10',
+    name: grounded.title,
+    items: grounded.items.map((i) => ({
+      name: i.name,
+      grams: i.grams,
+      kcal: i.kcal,
+      protein_g: i.protein_g,
+      carbs_g: i.carbs_g,
+      fat_g: i.fat_g,
+      fiber_g: i.fiber_g,
+      micros: i.micros,
+      confidence: i.confidence,
+    })),
+  });
+  const totals = dayMicroTotals(db, TODAY);
+  near(totals.caffeine_mg, 145) && near(totals.sodium_mg, 90)
+    ? ok('the day’s totals carry caffeine and sodium from the estimate')
+    : bad('day totals', JSON.stringify(totals));
+  MICROS.some((m) => m.key === 'caffeine_mg' && m.reference === 400 && m.ceiling === true)
+    ? ok('caffeine is in the vocabulary, referenced at the FDA’s 400 mg ceiling')
+    : bad('caffeine descriptor missing or wrong');
+
+  // And a revision SHOWS the model what it must hand back untouched — without
+  // this, correcting one item would silently strip the caffeine off the others.
+  const revisionText = buildMealRevisionRequest(
+    {
+      name: 'Afternoon',
+      items: [
+        {
+          name: 'Flat white',
+          grams: 240,
+          kcal: 120,
+          protein_g: 7,
+          carbs_g: 10,
+          fat_g: 6,
+          micros: parsed.items[0].micros,
+        },
+      ],
+    },
+    'it was a double shot'
+  ).messages[0].content[0].text;
+  revisionText.includes('sodium 90 mg') && revisionText.includes('caffeine 145 mg')
+    ? ok('the revision request states each item’s sodium and caffeine')
+    : bad('revision row micros', revisionText);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

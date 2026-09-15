@@ -172,7 +172,10 @@ export default function MealReviseScreen() {
             carbs_g: grounded?.carbs_g ?? item.carbs_g,
             fat_g: grounded?.fat_g ?? item.fat_g,
             fiber_g: grounded?.fiber_g ?? item.fiber_g,
-            micros: grounded?.micros ?? null,
+            // Ungrounded items keep the model's sodium/caffeine — the same two
+            // the request showed it for every item it was told not to change,
+            // so a revision does not quietly drop them (backlog A8).
+            micros: grounded?.micros ?? item.micros,
           },
           gramsText: item.grams != null && item.grams > 0 ? String(Math.round(item.grams)) : '',
         };
@@ -200,6 +203,7 @@ export default function MealReviseScreen() {
             protein_g: i.protein_g,
             carbs_g: i.carbs_g,
             fat_g: i.fat_g,
+            micros: i.micros,
           })),
         },
         text,

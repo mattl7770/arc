@@ -4,9 +4,9 @@ import { AppState } from 'react-native';
 import { getDb } from '@/lib/db/client';
 import { getPreferences } from '@/lib/db/repositories/user';
 import {
-  APP_LOCK_RELOCK_MS,
   authenticateForAppLock,
   isAppLockSupported,
+  relockRequired,
 } from '@/lib/security/app-lock';
 
 /**
@@ -27,11 +27,11 @@ import {
  * cost is that a quick app-switcher peek (inactive, never backgrounded) shows
  * live content — accepted for a single-user device.
  *
- * Returning: away >= {@link APP_LOCK_RELOCK_MS} — or a NEGATIVE elapsed time,
- * so winding the clock back can't dodge the timer — escalates the cover to
- * `locked` (auth required); a shorter hop just lifts the cover. The preference
- * is re-read from the DB on each transition, so a toggle flipped in Settings
- * takes effect without any cross-component wiring.
+ * Returning: {@link relockRequired} rules on the time away — the window, or a
+ * NEGATIVE elapsed time, so winding the clock back can't dodge the timer — and
+ * escalates the cover to `locked` (auth required); a shorter hop just lifts the
+ * cover. The preference is re-read from the DB on each transition, so a toggle
+ * flipped in Settings takes effect without any cross-component wiring.
  *
  * A failed or cancelled prompt keeps `locked` true — the only paths out are a
  * successful auth or the two documented fail-open outcomes (module absent /
@@ -100,9 +100,9 @@ export function useAppLock(): {
         backgroundedAt.current = null;
         if (away === null) return;
         const elapsed = Date.now() - away;
-        // Negative elapsed = the wall clock moved backwards while away; treat
-        // it as expired, or setting the clock back would skip the lock.
-        if ((elapsed < 0 || elapsed >= APP_LOCK_RELOCK_MS) && isLockEnabled()) {
+        // The window and the clock-rollback rule both live in
+        // relockRequired (src/lib/security/app-lock.ts), where they are tested.
+        if (relockRequired(elapsed) && isLockEnabled()) {
           setState((prev) => ({ ...prev, locked: true, covered: true }));
         } else {
           // Short hop: lift the cover — unless auth is still owed from before.

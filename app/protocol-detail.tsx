@@ -31,7 +31,7 @@ import {
  * 1. **Where it is up to** — a `field` verdict: the live phase, how far into
  *    it, and what the phase actually asks for. A protocol is a plan, and the
  *    first thing to know about a plan is which part of it is running.
- * 2. **How it is going** — a `plate`: the rate since the LIVE VERSION landed,
+ * 2. **Adherence** — a `plate`: the rate since the LIVE VERSION landed,
  *    its four-way ledger (`done · skipped · partial · untouched`) summing to
  *    the denominator beside it, and then one row per item, worst-missed first.
  *    Bounded at the live version deliberately: adherence to a protocol you have
@@ -43,9 +43,20 @@ import {
  *
  * "Nothing was skipped" is not "nothing was ever logged", and this codebase has
  * shipped that confusion twice. So a protocol whose live version landed today
- * says **"v4 landed today — nothing has settled yet"** and prints no rate at
- * all; a protocol with a window but no planned rows in it says the window
- * asked for nothing. Neither renders a zero.
+ * says **"v4 landed today"** and prints no rate at all; a protocol with a
+ * window but no planned rows in it says the window asked for nothing. Neither
+ * renders a zero.
+ *
+ * ## The plate's copy was re-set on 2026-09-14 (backlog A9)
+ *
+ * The label read **"How it is going"** and the empty states answered in kind —
+ * *"Nothing settled to judge yet"*, *"There is no rate to state"*. The owner
+ * named this plate as the archetype of the AI slop across the app, and he was
+ * right about it: a section label is a name for what is filed under it, not an
+ * assistant asking after you, and a screen that measures does not narrate its
+ * own patience. The label is now the noun — **Adherence** — and every sentence
+ * under it states the fact and stops. The numbers were never the problem and
+ * did not change.
  *
  * Accent budget: **zero.** This is a reference surface — you read it, you do not
  * act inside it — and the rows into the editor and the history are navigation,
@@ -83,8 +94,7 @@ export default function ProtocolDetailScreen() {
   const items = phase.kind === 'running' ? phase.window.phase.items : [];
   // planned − completed − skipped − partial: the rows that simply ran out the
   // day. Named rather than implied, so the ledger reconciles to the denominator.
-  const untouched =
-    adherence.planned - adherence.completed - adherence.skipped - adherence.partial;
+  const untouched = adherence.planned - adherence.completed - adherence.skipped - adherence.partial;
 
   return (
     <Screen scroll>
@@ -104,10 +114,7 @@ export default function ProtocolDetailScreen() {
 
       {/* 1. Where it is up to. */}
       <View className="mt-7">
-        <SectionLabel
-          label="Now"
-          note={version ? `v${version.version_number}` : undefined}
-        />
+        <SectionLabel label="Now" note={version ? `v${version.version_number}` : undefined} />
         <View className="mt-3">
           <Block device="field">
             {phase.kind === 'ended' ? (
@@ -176,10 +183,10 @@ export default function ProtocolDetailScreen() {
         </View>
       </View>
 
-      {/* 2. How it is going. */}
+      {/* 2. Adherence. */}
       <View className="mt-7">
         <SectionLabel
-          label="How it is going"
+          label="Adherence"
           note={adherence.planned > 0 ? rateText(adherence.rate) : undefined}
         />
         <View className="mt-3">
@@ -187,11 +194,10 @@ export default function ProtocolDetailScreen() {
             {version === null ? (
               <View className="py-1">
                 <Text className="font-serif text-[15px] font-semibold text-ink">
-                  Nothing saved yet
+                  No version saved
                 </Text>
                 <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
-                  This protocol has no version, so it has never put anything on a day. The first
-                  save writes v1.
+                  This protocol has never put an item on a day. The first save writes v1.
                 </Text>
               </View>
             ) : adherence.planned === 0 ? (
@@ -202,12 +208,12 @@ export default function ProtocolDetailScreen() {
                 <Text className="font-serif text-[15px] font-semibold text-ink">
                   {adherence.days <= 1
                     ? `v${version.version_number} landed today`
-                    : 'Nothing settled to judge yet'}
+                    : 'No planned items yet'}
                 </Text>
                 <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
                   {adherence.days <= 1
-                    ? 'Adherence starts counting from tomorrow — today is still open, and an item you have not reached yet is not a miss.'
-                    : 'Since this version landed, no day it covered put an item on the plan. There is no rate to state.'}
+                    ? 'Counting starts tomorrow. Today is still open, and an item not yet due is not a miss.'
+                    : 'No day since this version landed has put an item on the plan, so there is no rate.'}
                 </Text>
               </View>
             ) : (

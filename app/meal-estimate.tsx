@@ -216,8 +216,9 @@ export default function MealEstimateScreen() {
       const food = item.foodId ? getFood(db, item.foodId) : undefined;
       // A grounded item's base is derived from the food so macros AND micros are
       // consistent — including when the user clears the grams field (currentPortion
-      // falls back to base). An ungrounded item keeps the model's numbers; the
-      // model returns no micros, so those stay null.
+      // falls back to base). An ungrounded item keeps the model's numbers,
+      // including the sodium/caffeine it now returns (backlog A8); those scale
+      // with a grams edit like every other figure on the row.
       const grounded =
         food && item.grams != null && item.grams > 0
           ? itemForPortion(food, { grams: item.grams })
@@ -239,7 +240,7 @@ export default function MealEstimateScreen() {
           carbs_g: grounded?.carbs_g ?? item.carbs_g,
           fat_g: grounded?.fat_g ?? item.fat_g,
           fiber_g: grounded?.fiber_g ?? item.fiber_g,
-          micros: grounded?.micros ?? null,
+          micros: grounded?.micros ?? item.micros,
         },
         gramsText: item.grams != null && item.grams > 0 ? String(Math.round(item.grams)) : '',
       };
