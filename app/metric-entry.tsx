@@ -17,6 +17,7 @@ import {
   type MetricDescriptor,
   type MetricKey,
 } from '@/lib/log/metrics';
+import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
 
 /**
  * Single-number entry — the "calibrated instrument" drill-in (direction F,
@@ -91,19 +92,14 @@ const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'] as c
  * The `+` is load-bearing: these ADD to whatever is on the readout rather than
  * replacing it, so three taps of Glass is 24 oz. Without the sign a tile reading
  * "8 oz" would promise a set, not an add.
+ *
+ * **The amounts themselves come from the shared table** and are no longer
+ * declared here: since the Log tab's Water tile landed, three surfaces offer
+ * Glass / Bottle / Large and they have to agree about what a bottle is. The
+ * additive semantics above remain this screen's alone — the tile and the water
+ * record both COMMIT their amounts.
  */
-const WATER_QUICK: Record<'oz' | 'ml', readonly { label: string; amount: number }[]> = {
-  oz: [
-    { label: 'Glass', amount: 8 },
-    { label: 'Bottle', amount: 16 },
-    { label: 'Large', amount: 24 },
-  ],
-  ml: [
-    { label: 'Glass', amount: 240 },
-    { label: 'Bottle', amount: 500 },
-    { label: 'Large', amount: 750 },
-  ],
-};
+const WATER_QUICK = WATER_QUICK_AMOUNTS;
 
 /** Cap significant digits so the big readout can't overflow its row. */
 function withinCap(next: string): boolean {

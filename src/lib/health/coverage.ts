@@ -107,7 +107,7 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     use: "Home's metrics strip and the Wearables ledger",
     garmin: 'yes',
     garminNote:
-      "Syncs — Garmin publishes a dedicated FAQ about step counts DIFFERING between the two apps, which presupposes it.",
+      'Syncs — Garmin publishes a dedicated FAQ about step counts DIFFERING between the two apps, which presupposes it.',
     verdictDays: null,
   },
   {
@@ -134,7 +134,7 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     use: 'The Wearables ledger',
     garmin: 'no',
     garminNote:
-      "Pulse Ox is not exportable — the toggle does not exist in Garmin Connect, confirmed by Garmin staff on the forums as recently as 2024. CIRQA measures Pulse Ox2; it stays in Garmin Connect.",
+      'Pulse Ox is not exportable — the toggle does not exist in Garmin Connect, confirmed by Garmin staff on the forums as recently as 2024. CIRQA measures Pulse Ox2; it stays in Garmin Connect.',
     verdictDays: null,
   },
   {
@@ -153,6 +153,15 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     garmin: 'no',
     garminNote:
       'Named in the same long-running, still-unimplemented Garmin feature request as blood oxygen and respiratory rate.',
+    verdictDays: null,
+  },
+  {
+    hkIdentifier: 'HKQuantityTypeIdentifierDietaryWater',
+    label: 'Water',
+    use: "The Water record's day total, beside manual captures — read only, never published",
+    garmin: 'unverified',
+    garminNote:
+      'Nothing in this repository establishes that Garmin writes hydration to Apple Health, and no source was checked when the scope was added — the premise is plausible and unconfirmed. The test is one evening: log a hydration entry on the watch, sync, and see whether a row lands. Any other hydration app on the phone will also fill this, which is the point of reading it.',
     verdictDays: null,
   },
   {

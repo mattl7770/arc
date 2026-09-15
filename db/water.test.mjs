@@ -28,10 +28,15 @@ import {
   listWaterEntries,
   logWater,
   updateWaterEntry,
+  usualWaterAmount,
+  USUAL_WINDOW_DAYS,
   waterDaySeries,
   waterRecordStart,
 } from '../src/lib/db/repositories/water.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
+import { metricByKey, resolveDisplay, roundToSpec } from '../src/lib/log/metrics.ts';
+import { WATER_QUICK_AMOUNTS } from '../src/lib/log/water-amounts.ts';
+import { STATISTIC_METRICS, statisticDailyRows } from '../src/lib/health/mapping.ts';
 
 let pass = 0;
 let fail = 0;
@@ -336,6 +341,196 @@ console.log('\n6. The hydration goal: absent by default, never invented');
   getWaterTarget(db) === 2500 && getPreferences(db).units.volume === 'oz'
     ? ok('...and changing a unit afterwards preserves the goal')
     : bad('units must not clobber goal', JSON.stringify(getWaterTarget(db)));
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n7. The remembered amount — what the Log tab’s Water tile logs in one tap');
+{
+  // Resolved through the real display spec, so the values under test are the
+  // exact doubles the tile would store rather than hand-picked round numbers.
+  const specFor = (db) => resolveDisplay(metricByKey('water'), getPreferences(db).units);
+
+  {
+    const { db } = freshDb();
+    usualWaterAmount(db, TODAY) === null
+      ? ok('an empty record has no usual amount — the caller falls back to a Glass')
+      : bad('empty record must be null', String(usualWaterAmount(db, TODAY)));
+  }
+
+  {
+    const { db } = freshDb();
+    const spec = specFor(db);
+    const oz16 = spec.toCanonical(16);
+    const oz8 = spec.toCanonical(8);
+    for (let i = 0; i < 5; i++) logWater(db, TODAY, oz16);
+    logWater(db, TODAY, oz8);
+    logWater(db, TODAY, oz8);
+    usualWaterAmount(db, TODAY) === oz16
+      ? ok('five 16 oz against two 8 oz resolves to the 16 oz canonical value')
+      : bad('most frequent wins', String(usualWaterAmount(db, TODAY)));
+
+    // The invariant the tile rests on: the number it PRINTS is the number it
+    // logs. Print = round(fromCanonical(usual)); log = toCanonical(print).
+    const printed = roundToSpec(spec, spec.fromCanonical(usualWaterAmount(db, TODAY)));
+    printed === 16 && spec.toCanonical(printed) === usualWaterAmount(db, TODAY)
+      ? ok('...and it round-trips exactly: the printed 16 oz converts back to the stored value')
+      : bad('print/log round trip', String(printed));
+  }
+
+  {
+    // Not "last logged": one small dose must not retrain the button.
+    const { db } = freshDb();
+    const spec = specFor(db);
+    for (let i = 0; i < 3; i++) logWater(db, TODAY, spec.toCanonical(16));
+    logWater(db, TODAY, spec.toCanonical(4));
+    usualWaterAmount(db, TODAY) === spec.toCanonical(16)
+      ? ok('a single 4 oz pill-swallow logged last does NOT become the usual')
+      : bad('frequency, not recency', String(usualWaterAmount(db, TODAY)));
+  }
+
+  {
+    // A genuine tie goes to the more recent. created_at resolves to the
+    // millisecond and both of these land inside one, so this is really pinning
+    // the rowid tie-break.
+    const { db } = freshDb();
+    const spec = specFor(db);
+    logWater(db, TODAY, spec.toCanonical(8));
+    logWater(db, TODAY, spec.toCanonical(24));
+    usualWaterAmount(db, TODAY) === spec.toCanonical(24)
+      ? ok('a one-all tie goes to the more recent amount')
+      : bad('tie-break', String(usualWaterAmount(db, TODAY)));
+  }
+
+  {
+    // The window agrees with the water screen's WINDOW_DAYS. Three 8 oz logs
+    // twenty days back must not outvote one 16 oz today.
+    const { db } = freshDb();
+    const spec = specFor(db);
+    USUAL_WINDOW_DAYS === 14
+      ? ok('the learning window is 14 days, matching the water screen')
+      : bad('window drifted', String(USUAL_WINDOW_DAYS));
+    for (let i = 0; i < 3; i++) logWater(db, dayBefore(20), spec.toCanonical(8));
+    logWater(db, TODAY, spec.toCanonical(16));
+    usualWaterAmount(db, TODAY) === spec.toCanonical(16)
+      ? ok('captures outside the 14-day window are ignored, however many there are')
+      : bad('window bound', String(usualWaterAmount(db, TODAY)));
+  }
+
+  {
+    // An Apple Health DAY BUCKET is not a vessel and must never be learned
+    // from. Inserted AFTER the manual row and far larger, so a missing filter
+    // would let it win on both the count tie-break and the recency one.
+    const { db } = freshDb();
+    const spec = specFor(db);
+    logWater(db, TODAY, spec.toCanonical(8));
+    upsertWearableRows(db, [
+      {
+        date: TODAY,
+        metricType: 'water_ml',
+        value: 2400,
+        unit: 'ml',
+        sourceDevice: 'apple_health',
+        sourceRawId: `hk:water_ml:${TODAY}`,
+        startTime: null,
+        endTime: null,
+        metadata: { hk: { merged: true } },
+      },
+    ]);
+    usualWaterAmount(db, TODAY) === spec.toCanonical(8)
+      ? ok('a synced day bucket is ignored even when it is the largest and the most recent')
+      : bad('device rows must not train the tile', String(usualWaterAmount(db, TODAY)));
+  }
+
+  {
+    // The ml side. Under a metric preference the literals are the metric ones,
+    // and nothing converts: 500 is a bottle, not 473.
+    const { db } = freshDb();
+    setUnitPreference(db, 'volume', 'ml');
+    const spec = specFor(db);
+    spec.unit === 'ml' && WATER_QUICK_AMOUNTS.ml[1].amount === 500
+      ? ok('under ml the shared table offers 240 / 500 / 750, never a converted oz figure')
+      : bad('ml literals', JSON.stringify(WATER_QUICK_AMOUNTS.ml));
+    logWater(db, TODAY, spec.toCanonical(500));
+    logWater(db, TODAY, spec.toCanonical(500));
+    logWater(db, TODAY, spec.toCanonical(240));
+    const usual = usualWaterAmount(db, TODAY);
+    usual === 500 && roundToSpec(spec, spec.fromCanonical(usual)) === 500
+      ? ok('...and the usual amount is stored and printed as 500 ml, unconverted')
+      : bad('ml usual', String(usual));
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n8. Apple Health hydration lands beside manual captures — and is NOT deduped');
+{
+  const { db } = freshDb();
+  const spec = resolveDisplay(metricByKey('water'), getPreferences(db).units);
+
+  // The real ingest path, not a hand-built row: the water spec out of
+  // STATISTIC_METRICS, mapped by the same function the sync pass uses.
+  const waterSpec = STATISTIC_METRICS.find((m) => m.metricType === 'water_ml');
+  waterSpec &&
+  waterSpec.hkIdentifier === 'HKQuantityTypeIdentifierDietaryWater' &&
+  waterSpec.hkUnit === 'mL' &&
+  waterSpec.unit === 'ml'
+    ? ok("water rides the statistics pipeline as DietaryWater in 'mL', stored canonical ml")
+    : bad('water statistic spec', JSON.stringify(waterSpec));
+
+  const manual = logWater(db, TODAY, 500);
+  const mapped = statisticDailyRows(waterSpec, [{ date: TODAY, value: 1200 }]);
+  mapped.length === 1 &&
+  mapped[0].sourceDevice === 'apple_health' &&
+  mapped[0].sourceRawId === `hk:water_ml:${TODAY}` &&
+  mapped[0].unit === 'ml'
+    ? ok(`the mapper emits one apple_health row per day under hk:water_ml:<date>`)
+    : bad('mapped water row', JSON.stringify(mapped));
+  upsertWearableRows(db, mapped);
+
+  // THE RULE. Two sources, two rows, one total, no reconciliation: a merged day
+  // bucket carries no per-drink identity to match a manual capture against, and
+  // ARC publishes no water, so the bucket does not contain what was logged here.
+  const day = waterDaySeries(db, 1, TODAY)[0];
+  day.ml === 1700 && day.entries === 2
+    ? ok('the day total SUMS both sources (500 manual + 1,200 synced = 1,700, 2 entries)')
+    : bad('day total across sources', JSON.stringify(day));
+
+  const entries = listWaterEntries(db, TODAY);
+  const synced = entries.find((e) => e.source === 'apple_health');
+  entries.length === 2 && synced && synced.editable === false
+    ? ok('both rows are listed, and the synced one is flagged non-editable')
+    : bad('entry listing', JSON.stringify(entries));
+  entries.find((e) => e.id === manual).editable === true
+    ? ok('the manual capture beside it stays editable — that is how a double is corrected')
+    : bad('manual row editable');
+
+  updateWaterEntry(db, synced.id, 100) === false && deleteWaterEntry(db, synced.id) === false
+    ? ok('the screen cannot offer an edit the next sync would silently revert')
+    : bad('synced water row must refuse edits');
+  db.get(`SELECT value FROM wearable_data WHERE id = ?`, [synced.id]).value === 1200
+    ? ok('...and the synced value is genuinely untouched')
+    : bad('synced value must survive');
+
+  // A zero day is an ABSENCE, not a claim of drinking nothing.
+  statisticDailyRows(waterSpec, [{ date: TODAY, value: 0 }]).length === 0
+    ? ok('a zero-hydration day yields NO row — "0 ml" would be a claim, not an absence')
+    : bad('zero day must be skipped');
+
+  // Re-syncing the same day UPDATEs the one bucket rather than inserting a
+  // second — the deterministic raw id doing its job — and the manual capture is
+  // never touched by a sync.
+  upsertWearableRows(db, statisticDailyRows(waterSpec, [{ date: TODAY, value: 1500 }]));
+  const after = waterDaySeries(db, 1, TODAY)[0];
+  after.entries === 2 && after.ml === 2000
+    ? ok('a re-sync updates the one bucket (500 + 1,500), never appends a second')
+    : bad('re-sync idempotency', JSON.stringify(after));
+  db.get(`SELECT value FROM wearable_data WHERE id = ?`, [manual]).value === 500
+    ? ok('...and the manual capture is untouched by the sync')
+    : bad('manual row survives a sync');
+
+  // The display unit is a render concern, not a storage one, on both rows.
+  spec.unit === 'oz' && roundToSpec(spec, spec.fromCanonical(2000)) === 68
+    ? ok('the summed day renders in the user’s unit (2,000 ml = 68 oz)')
+    : bad('display of the summed day', String(roundToSpec(spec, spec.fromCanonical(2000))));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

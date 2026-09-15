@@ -242,6 +242,57 @@ console.log('2. cumulative statistics rows — merged label, zero-day skip');
     ? ok("merged totals labelled 'apple_health'")
     : bad('merged label', JSON.stringify(rows.map((r) => r.sourceDevice)));
   rows[0].value === 8123 ? ok('steps rounded to integers') : bad('rounding', rows[0].value);
+
+  // Hydration (2026-09-14). The unit string is the load-bearing detail and it
+  // is pinned to the library's own generated canonical-unit map rather than to
+  // memory: QUANTITY_IDENTIFIER_CANONICAL_UNITS.HKQuantityTypeIdentifierDietaryWater
+  // is "mL". Lowercase 'ml' is what the library's hand-written VolumeUnit union
+  // would suggest, and it is NOT what HKUnit(from:) is handed here — getting it
+  // wrong is a factor of a thousand into a health record, silently.
+  const water = STATISTIC_METRICS.find((m) => m.metricType === 'water_ml');
+  water &&
+  water.hkIdentifier === 'HKQuantityTypeIdentifierDietaryWater' &&
+  water.hkUnit === 'mL' &&
+  water.unit === 'ml' &&
+  water.decimals === 0
+    ? ok("dietaryWater reads as a cumulative statistic in 'mL', stored as canonical ml")
+    : bad('water statistic spec', JSON.stringify(water));
+
+  const waterRows = statisticDailyRows(water, [
+    { date: '2026-09-12', value: 1893.4 },
+    { date: '2026-09-13', value: 0 },
+  ]);
+  waterRows.length === 1 &&
+  waterRows[0].metricType === 'water_ml' &&
+  waterRows[0].unit === 'ml' &&
+  waterRows[0].sourceDevice === 'apple_health' &&
+  waterRows[0].sourceRawId === 'hk:water_ml:2026-09-12' &&
+  waterRows[0].value === 1893
+    ? ok('a hydration day becomes one apple_health row under hk:water_ml:<date>')
+    : bad('water rows', JSON.stringify(waterRows));
+  waterRows.every((r) => r.date !== '2026-09-13')
+    ? ok('a zero-hydration day yields no row (0 ml is a claim, not an absence)')
+    : bad('zero water day emitted');
+
+  // The unit string is checked against the INSTALLED library rather than
+  // against this file's own literal — the whole point of the note above. Read
+  // from node_modules so the assertion fails if an upgrade moves it.
+  const generated = readFileSync(
+    new URL(
+      '../node_modules/@kingstinct/react-native-healthkit/lib/typescript/generated/healthkit.generated.d.ts',
+      import.meta.url
+    ),
+    'utf8'
+  );
+  // Scoped to the canonical-units constant. The file declares the identifier
+  // several times — an iOS-availability map ("9.0") sits above it — so an
+  // unanchored search reads a version number as a unit.
+  const unitsStart = generated.indexOf('QUANTITY_IDENTIFIER_CANONICAL_UNITS');
+  const unitsBlock = generated.slice(unitsStart, generated.indexOf('\n};', unitsStart));
+  const declared = /HKQuantityTypeIdentifierDietaryWater:\s*"([^"]+)"/.exec(unitsBlock);
+  declared && declared[1] === water.hkUnit
+    ? ok(`the library's generated canonical unit agrees: "${declared[1]}"`)
+    : bad('HKUnit string drifted from the library', declared ? declared[1] : 'not found');
 }
 
 console.log('3. sleep — sessions, stages, attribution (spec §3)');
@@ -705,9 +756,11 @@ console.log('7. read scopes cover the spec');
     'HKQuantityTypeIdentifierBodyMass',
     'HKQuantityTypeIdentifierBodyFatPercentage',
     'HKQuantityTypeIdentifierWaistCircumference',
+    // Hydration (2026-09-14) — read only, and §8 asserts the "only" by name.
+    'HKQuantityTypeIdentifierDietaryWater',
   ];
   const missing = want.filter((id) => !HEALTH_READ_IDENTIFIERS.includes(id));
-  missing.length === 0 ? ok('all 15 scopes present') : bad('scopes', missing.join(','));
+  missing.length === 0 ? ok(`all ${want.length} scopes present`) : bad('scopes', missing.join(','));
   dayRawId('hrv', '2026-07-29') === 'hk:hrv:2026-07-29' ? ok('dayRawId shape') : bad('dayRawId');
 
   // A scope ARC ASKS for but never ingests is a permission prompt with nothing
@@ -786,6 +839,50 @@ console.log('8. write scopes + the echo-loop tripwire (spec §10)');
   forbidden.length === 0
     ? ok('no workout or nutrition write scopes')
     : bad('out-of-scope write', forbidden.join(','));
+
+  // --- WATER IS READ AND NEVER PUBLISHED (2026-09-14) ----------------------
+  //
+  // This is the assertion the hydration read scope rests on, spelled out by
+  // name rather than left to the generic Dietary check above — because the
+  // consequence is specific and unrecoverable. A cumulativeSum statistics query
+  // CANNOT exclude ARC's own samples (Apple merges before the predicate; see
+  // readDailyCumulative), so if ARC ever published water it would read its own
+  // total straight back and double it, with no suppression available anywhere
+  // in the ladder. The only defence is that water is never written at all.
+  const WATER = 'HKQuantityTypeIdentifierDietaryWater';
+  HEALTH_READ_IDENTIFIERS.includes(WATER) && !HEALTH_WRITE_IDENTIFIERS.includes(WATER)
+    ? ok('water is a READ scope and is absent from the write scopes')
+    : bad('WATER ECHO LOOP', 'DietaryWater appears in HEALTH_WRITE_IDENTIFIERS');
+  !readWriteScopeOverlap().includes(WATER)
+    ? ok('...so it never appears in the read/write overlap at all')
+    : bad('water in the overlap');
+
+  // Structural, not merely declarative: the write list is DERIVED from
+  // BODY_PUBLISH_METRICS, which is keyed to the three body_metrics columns, so
+  // water could only become a write scope by being given one. Proven by
+  // behaviour rather than by reading the list — a body row carrying every
+  // column emits exactly three samples and none of them is dietary.
+  const emitted = bodySamplesFor({
+    id: 'row-1',
+    createdAt: '2026-09-14T08:00:00.000Z',
+    measuredAt: '2026-09-14T08:00:00.000Z',
+    weightKg: 82.4,
+    bodyFatPct: 18.5,
+    waistCm: 84,
+  }).map((s) => s.hkIdentifier);
+  emitted.length === 3 && emitted.every((id) => !id.startsWith('HKQuantityTypeIdentifierDietary'))
+    ? ok('the publish walk can only ever emit the three body types — never a dietary one')
+    : bad('publish emitted a dietary sample', emitted.join(','));
+  BODY_PUBLISH_METRICS.every((m) => m.column !== 'water_ml') &&
+  BODY_PUBLISH_METRICS.length === HEALTH_WRITE_IDENTIFIERS.length
+    ? ok('no publish spec owns water, and the write list is exactly the publish specs')
+    : bad('publish specs drifted');
+
+  // And the tripwire still reads empty WITH the new read scope present. This is
+  // the assertion the hydration feature most needs to keep passing.
+  unsuppressedEchoIdentifiers().length === 0
+    ? ok('unsuppressedEchoIdentifiers() is still empty with DietaryWater in READ')
+    : bad('UNSUPPRESSED ECHO PATH', unsuppressedEchoIdentifiers().join(','));
 }
 
 console.log('9. body publish mapping — units are the whole job');
@@ -1147,6 +1244,13 @@ console.log('13. accumulating metrics — ONE list, and it cannot quietly grow a
   // (c) The exact membership, as a regression lock. Sleep is the one that has
   //     to be argued for: a night is written once against the WAKE day, so it
   //     is a whole fact, not a running total.
+  //
+  //     `water_ml` is here by DERIVATION as of 2026-09-14 — it used to be the
+  //     one hand-written entry ("no HealthKit ingest spec to derive from") and
+  //     DietaryWater gave it one. The membership is unchanged, which is the
+  //     point: the classification did not move, only where it comes from. Had
+  //     the literal been left beside the derived entry the set would carry
+  //     water_ml twice, and this assertion is what catches that.
   const expected = ['steps', 'active_energy_kcal', 'resting_energy_kcal', 'workout', 'water_ml'];
   const actual = [...ACCUMULATING_METRIC_TYPES].sort();
   actual.join(',') === [...expected].sort().join(',')

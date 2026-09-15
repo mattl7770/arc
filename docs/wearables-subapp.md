@@ -90,6 +90,7 @@ Requested lazily — only when the user flips Settings › Apple Health on, neve
 | `HKQuantityTypeIdentifierBodyTemperature` | Illness signal (manual/BT thermometer) |
 | `HKQuantityTypeIdentifierAppleSleepingWristTemperature` | Nightly temp trend (read-only type) |
 | `HKQuantityTypeIdentifierVO2Max` | Fitness marker (project-status "Exercise as measured data") |
+| `HKQuantityTypeIdentifierDietaryWater` | **Hydration — IN only (§15).** A wrist tap, the Health app, or any hydration app already on the phone |
 | `HKWorkoutTypeIdentifier` | Sessions from other apps/devices |
 | `HKQuantityTypeIdentifierBodyMass` | **Body — two-way (§11).** A smart scale's weight |
 | `HKQuantityTypeIdentifierBodyFatPercentage` | **Body — two-way (§11).** Scale body-fat estimate |
@@ -122,6 +123,7 @@ local day × source** (except workouts: one row per workout).
 | `steps` | StepCount **statistics** | daily sum · `count` | local-midnight buckets |
 | `active_energy_kcal` | ActiveEnergyBurned statistics | daily sum · `kcal` | local-midnight buckets |
 | `resting_energy_kcal` | BasalEnergyBurned statistics | daily sum · `kcal` | local-midnight buckets |
+| `water_ml` | DietaryWater **statistics** | daily sum · `ml` (HKUnit `mL` — §15) | local-midnight buckets |
 | `respiratory_rate` | RespiratoryRate samples | daily mean · `brpm` | local day |
 | `spo2_pct` | OxygenSaturation samples | daily mean **×100** · `pct` (HK stores fraction 0–1) | local day |
 | `body_temp_c` | BodyTemperature samples | daily mean · `c` | local day |
@@ -132,8 +134,10 @@ local day × source** (except workouts: one row per workout).
 | `workout` | HKWorkout samples | `duration` minutes (not end−start; pauses differ) · `min`; metadata: activity type raw int + name, kcal, distance_km, source name | local day of workout **end** |
 
 Already-shipping metric types are untouched and merge naturally: manual keypad `hrv`/`rhr`
-rows and `water_ml` live in the same table (a smart-bottle later lands on `water_ml` via
-HealthKit by adding `DietaryWater` to the scopes — no migration).
+rows and `water_ml` live in the same table. **That last one stopped being hypothetical on
+2026-09-14** — `DietaryWater` is a read scope now, it landed by adding three literals to
+`STATISTIC_METRICS`, and no migration was needed, exactly as this paragraph predicted. What
+the prediction did not cover is what happens when two sources fill one metric: see §15.
 
 **Sleep attribution — the night ending on the morning of day D belongs to D.** Query window
 `[D−1 12:00, D 12:00)` local (noon exists in every timezone on every day; midnight doesn't
@@ -371,6 +375,16 @@ instead of wiring HealthKit straight into screens.
 
 Write-back moved from "deferred, assess first" (§9) to shipped. `body_metrics` owns the three
 columns below and Apple Health gets a copy so the rest of the phone can see it.
+
+**Three columns, and the list is structurally closed.** `HEALTH_WRITE_IDENTIFIERS` is
+*derived* from `BODY_PUBLISH_METRICS`, which is keyed to `body_metrics` columns, so a type can
+only become a write scope by being given a body column. That is what keeps water out
+(§15): `DietaryWater` is read-only and must stay read-only, because a `cumulativeSum`
+statistics query carries no own-write exclusion — Apple merges before the predicate — so a
+published water total would be read straight back and doubled with nothing in the ladder able
+to stop it. `db/health-mapping.test.mjs` §8 asserts water's absence from the write list by
+name, and proves it behaviourally: a `body_metrics` row carrying all three columns emits
+exactly three samples, none of them dietary.
 
 **No single VALUE is ever owned in two places** — that is what makes the two-way link (§11)
 safe. Each `body_metrics` row records where it came from, and this pass publishes only rows
@@ -617,9 +631,18 @@ row and every row names a real read scope, so the two cannot drift apart.
 | `VO2Max` | Ledger only | NEVER | — |
 | `BodyTemperature` | Ledger only | Unverified | 1 |
 | `AppleSleepingWristTemperature` | Ledger only | Unverified | 1 |
+| `DietaryWater` | The Water record's day total, beside manual captures | **Unverified — nothing checked** | 1 |
 | `BodyMass` | Body metrics, weight trend (also published **out**) | Sends | 1 |
 | `BodyFatPercentage` | Body metrics (also published **out**) | Sends, flaky | 1 |
 | `WaistCircumference` | Body metrics (also published **out**) | Unverified, leans no | 1 |
+
+`DietaryWater`'s verdict is the weakest in the table and says so on purpose. It is not
+"unverified after looking" like `BasalEnergyBurned` — **nothing was checked at all**, because
+the scope did not exist when this audit was written and no source has been consulted since.
+The premise that a Garmin writes hydration is plausible and unestablished. The test is one
+evening: log a hydration entry on the watch, sync, see whether a row lands. It also matters
+less than the others, because unlike HRV this scope has a second filler — any hydration app
+already on the phone writes the same type, and that is most of the reason to read it.
 
 **Never leaves Garmin Connect at all** — Body Battery and Training Readiness / training status.
 Neither has *any* HealthKit type, so this is a platform fact, not a Garmin policy ARC could
@@ -845,3 +868,142 @@ either answer, and the log means the next run *names* the answer instead of leav
 inferred from a number that stopped moving. If the owner's next sync shows Weight as `0 → 0` with
 *"Apple Health refused both echo-suppression filters"*, both predicates are out and the fix is a
 different exclusion mechanism — not more retries.
+
+---
+
+## 15. Hydration comes in, and never goes out (D2, 2026-09-14)
+
+`HKQuantityTypeIdentifierDietaryWater` is a read scope. A hydration tap on a watch, in the
+Health app, or in any hydration app already installed becomes an ARC row on the next sync —
+which is the only path in the whole water feature that works when the phone is in another
+room. The in-app half (the Log tab's Water tile) is in `docs/information-architecture.md`;
+the spike that ranked both is `docs/spikes/water-fast-logging.md`.
+
+**Three literals and an audit row. That was the whole change.**
+
+| Where | What |
+| --- | --- |
+| `mapping.ts` → `STATISTIC_METRICS` | `{ water_ml, DietaryWater, hkUnit 'mL', unit 'ml', decimals 0 }` |
+| `coverage.ts` → `METRIC_COVERAGE` | a row, `garmin: 'unverified'` (§12) |
+| `settings-health.tsx` → `SYNC_SCOPES` | *Water (hydration)* · **In** |
+
+No migration (`metric_type` is free text), no new dependency, no Info.plist key — a READ
+scope needs `NSHealthShareUsageDescription`, which the plugin already supplies; it is
+`NSHealthUpdateUsageDescription` that would force a rebuild, and that one is for `toShare`.
+It rides the existing statistics pass: `sync.ts` already loops `STATISTIC_METRICS` through
+`readDailyCumulative`, which is generic over the identifier and takes the HKUnit as a
+parameter.
+
+### The unit string is the load-bearing detail
+
+**`'mL'`, capital L.** It is handed to `HKUnit(from:)` on the native side
+(`ios/Helpers.swift` → `parseUnitStringSafe`, which throws on a string HealthKit will not
+parse), so the authority is the library's generated `QUANTITY_IDENTIFIER_CANONICAL_UNITS`,
+where `HKQuantityTypeIdentifierDietaryWater` is `"mL"`. That constant reproduces every other
+spec in this file exactly — including VO2Max's parenthesised `ml/(kg*min)` — so it is
+trustworthy here.
+
+The library's **hand-written** `VolumeUnit` union disagrees: it is prefix-plus-lowercase-`l`,
+which would suggest `'ml'`. The generated constant wins — it is derived from the real HKUnit
+and the union is not, and `QuantityUnitByIdentifierMap` types this identifier as a bare
+`string` precisely because the union does not cover it. A test reads the unit out of
+`node_modules` and asserts it matches the spec, so a library upgrade that moves it fails the
+gate rather than shipping a factor of a thousand into a health record.
+
+### Why it must never be published — the echo argument, pinned
+
+A statistics query **cannot** filter out ARC's own samples: Apple merges across sources
+before the predicate runs, which is why `readDailyCumulative` reports `exclusion: 'none'`
+rather than pretending otherwise. So if ARC ever published water, reading it back would
+double it with no rung of the exclusion ladder able to intervene.
+
+It cannot happen by accident: `publish.ts` walks `body_metrics` only, and
+`HEALTH_WRITE_IDENTIFIERS` is derived from `BODY_PUBLISH_METRICS` (§10). Water lives in
+`wearable_data`. Making water publishable would mean giving it a `body_metrics` column on
+purpose. Three assertions keep it that way — water present in READ and absent from WRITE,
+`bodySamplesFor` unable to emit a dietary identifier, and `unsuppressedEchoIdentifiers()`
+still empty with the new scope in place.
+
+### Two sources, one total, and NO dedupe
+
+An inbound bucket is **one `apple_health` row per day** under `hk:water_ml:<date>`, in the
+same table manual captures use. The day total sums both, and that is a decision, not an
+oversight:
+
+- there is nothing to match on — a merged day total has no per-drink identity;
+- subtracting ARC's manual total would assume the bucket contains it, and it does not,
+  because ARC publishes nothing;
+- any heuristic dedupe (nearest amount, nearest minute) is a guess that silently deletes real
+  intake.
+
+So the rule is **behavioural: pick one door**, and Settings › Apple Health says so in a
+sentence. A double is legible rather than mysterious — `/water` lists the two rows side by
+side, the synced one marked *"From apple_health — edit it there"* and refused for editing by
+the repository (`AND source_raw_id IS NULL`), so the correction is deleting the manual
+duplicate. That the mistake is visible is what makes summing honest rather than a shrug.
+
+Two further consequences, both accepted:
+
+- **It does not appear on the Log tab's feed**, which filters `source_device = 'manual'`.
+  Leave that filter alone: the Log tab is a record of what you *captured*, and a merged Apple
+  total is a *reading*. `/water` is where the whole record lives.
+- **Its `created_at` is the sync instant, not drink o'clock**, so it sorts into the day's
+  entry list at sync time. A merged day total has no drink time to report; inventing one
+  would be worse.
+
+---
+
+## 16. The re-window pass now DELETES what it did not produce (2026-09-14)
+
+`docs/spikes/timezone-days.md` §1c named a defect the ingest path had from the start:
+
+> *"`upsertWearableRows` only INSERTs and UPDATEs — there is no DELETE anywhere in the ingest
+> path. If every sample that used to fall on a day migrates off it, no row is emitted for
+> that day and the stale row from the previous zone is left standing, now describing
+> nothing."*
+
+The bucket key `hk:<metric>:<date>` embeds the date, so a sample that re-buckets from the 1st
+to the 2nd writes a new row on the 2nd and orphans the row on the 1st. Readiness baselines
+and every Coach correlation keep reading the orphan. A timezone trip is only the loudest
+cause — a sample deleted in the Health app strands a bucket exactly the same way, and always
+did. §4's claim that *"timezone shifts all converge on the next pass"* was true of the rows
+the pass rewrites and silent about the rows it abandons.
+
+**The fix.** When `upsertWearableRows` is given a `prune` window, the same transaction that
+writes the batch also deletes every `hk:` bucket inside that window, for a metric the batch
+produced, that the batch did not produce. Four scoping rules, each the difference between a
+fix and a data loss:
+
+1. **`hk:` raw ids only** (`GLOB 'hk:*'`, case-sensitive where `LIKE` is not). A manual
+   capture leaves `source_raw_id` NULL and is untouched — the same line water's editability
+   draws. A hand-logged glass is never deleted by a sync.
+2. **Per metric, allow-listed by the caller AND produced by the batch.** Two independent
+   guards. `sync.ts` allow-lists only metrics whose read reported no error; the repository
+   additionally refuses to prune a metric that produced nothing. So a refused predicate, a
+   denied permission or a native throw prunes nothing, and an empty batch can never empty the
+   window whatever it was handed.
+3. **Inside `[first, last]` only** — the same bounds `clampRowsToWindow` uses, so the
+   half-day noon lead-in cannot reach back and delete settled history.
+4. **Identity is `(source_device, source_raw_id)`**, matching the conflict key. Two devices
+   reporting one metric on one day are reconciled independently: the read is not
+   source-filtered, so anything still in HealthKit was re-emitted, and a device whose samples
+   are gone loses its own row while the other keeps its own.
+
+Workouts are out of reach by construction — their raw id is a HealthKit UUID, not an `hk:`
+bucket key — and `sync.ts` leaves `workout` off the allow-list anyway so the intent is stated
+rather than implied by a GLOB.
+
+Deletions count into `rowsWritten`, because a delete is a change the pass made and a run that
+only cleaned up would otherwise report *"0 rows changed"* on the one occasion that mattered.
+
+`db/wearables.test.mjs` §20 pins all of it: the orphan goes, the moved row stands in its
+place, the day reads as nothing rather than as a stale 60 ms, a manual capture in the window
+survives, an out-of-window bucket survives, an unread metric survives, an empty batch prunes
+nothing, a partial pass prunes only what it read, a UUID-keyed workout is untouched even when
+allow-listed, and a rejected batch writes nothing and deletes nothing.
+
+**Still open**, and explicitly not fixed here: the re-bucketing itself. `localDayOf` reads the
+ambient zone, so history recomputed after a timezone change genuinely *changes* — it now
+converges cleanly instead of leaving debris, which is a different and smaller claim than
+being correct. The spike's §10 (an offset parameter on the mapper, so the move can be tested
+without a child process carrying `TZ=`) remains the open work.

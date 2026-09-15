@@ -99,10 +99,82 @@ const WORKOUT_UPSERT_SQL = `${UPSERT_COLUMNS}
     OR wearable_data.source_device IS NOT excluded.source_device`;
 
 /**
+ * The window a pass is reconciling, and which metrics it may reconcile.
+ *
+ * See {@link upsertWearableRows}'s "re-window" note. `metricTypes` is an
+ * allow-list, never derived from `rows` inside this function: the caller is the
+ * only party that knows whether a metric produced NOTHING because there is
+ * nothing there, or because the read failed.
+ */
+export type DayBucketWindow = {
+  /** Inclusive first local day of the pass's window. */
+  first: string;
+  /** Inclusive last local day of the pass's window (today). */
+  last: string;
+  /** Metric types this pass read cleanly and may therefore prune. */
+  metricTypes: readonly string[];
+};
+
+/** Day-bucket raw ids are `hk:<metric>:<date>`; GLOB is case-sensitive where
+ *  LIKE is not, and `hk:*` contains no GLOB metacharacter. */
+const HK_BUCKET_GLOB = 'hk:*';
+
+/**
  * Insert-or-update a batch of ingested rows in one transaction. The DO UPDATE
  * only fires a real write (and the updated_at trigger) when something actually
  * changed, so a quiet re-sync of an unchanged fortnight doesn't churn every
  * row's updated_at.
+ *
+ * ## The re-window pass also DELETES what it did not produce (2026-09-14)
+ *
+ * Until now this function only INSERTed and UPDATEd, and
+ * docs/spikes/timezone-days.md §1c named the defect that leaves:
+ *
+ * > *"If every sample that used to fall on a day migrates off it, no row is
+ * > emitted for that day and the stale row from the previous zone is left
+ * > standing, now describing nothing."*
+ *
+ * The 14-day pass re-buckets samples into the CURRENT zone's calendar days, and
+ * the bucket key `hk:<metric>:<date>` embeds the date — so a sample that moves
+ * from the 1st to the 2nd writes a new row on the 2nd and orphans the row on the
+ * 1st. Readiness baselines and every Coach correlation read those rows. A
+ * timezone trip is only the loudest cause; a sample deleted in the Health app
+ * strands a bucket exactly the same way, and always did.
+ *
+ * So when `prune` is supplied, the pass reconciles rather than merely adding:
+ * **every `hk:` bucket inside the window, for a metric this pass produced, that
+ * this pass did NOT produce, is deleted** — in the same transaction as the
+ * upserts, so a reader can never observe the half-state.
+ *
+ * Four scoping rules, each of which is the difference between a fix and a data
+ * loss:
+ *
+ *   1. **`hk:` raw ids only.** A manual capture leaves `source_raw_id` NULL and
+ *      is untouched — the same line water's editability already draws. A
+ *      hand-logged glass must never be deleted by a sync.
+ *   2. **Per metric; only metrics the caller allow-lists, AND only metrics this
+ *      batch actually produced a bucket for.** A pass that read nothing for HRV
+ *      — a refused predicate, a denied permission, a native throw — must not
+ *      read that as "HealthKit has no HRV" and delete the fortnight. Two
+ *      independent guards, deliberately: the caller allow-lists only metrics
+ *      whose read reported no error (`sync.ts`), and this function additionally
+ *      refuses to prune a metric that produced nothing, so an empty batch can
+ *      never empty the window whatever it was handed.
+ *   3. **Inside the window only.** The same `[first, last]` bounds
+ *      `clampRowsToWindow` uses, so the half-day lead-in that produces rows for
+ *      the day BEFORE the window cannot reach back and delete settled history.
+ *   4. **Identity is `(source_device, source_raw_id)`**, matching the conflict
+ *      key. Two devices reporting HRV on one day are two rows the read side
+ *      arbitrates between, so they are reconciled independently: the device that
+ *      still reports keeps its row, and the one whose samples are no longer in
+ *      HealthKit for that day loses its own — which is the case, because the
+ *      read is not source-filtered, so anything still there was re-emitted.
+ *      Keying on the raw id alone would instead let one device's fresh row
+ *      shelter another's orphan under the same key.
+ *
+ * Workouts are excluded by construction: their raw id is a HealthKit UUID, not
+ * an `hk:` bucket key, so rule 1 skips them. That is deliberate — a workout row
+ * is per-object, and `recentWearableWorkouts` already arbitrates duplicates.
  *
  * **Two conflict targets, because there are two kinds of identity here** (see
  * {@link GLOBAL_IDENTITY_METRIC}). Day-bucket rows conflict on the 0001
@@ -126,7 +198,11 @@ const WORKOUT_UPSERT_SQL = `${UPSERT_COLUMNS}
  * conflict key (the same approach `upsertHealthBodyRows` takes in body.ts),
  * which keeps `HealthSyncResult.rowsWritten` honest across both halves.
  */
-export function upsertWearableRows(db: Database, rows: WearableUpsert[]): number {
+export function upsertWearableRows(
+  db: Database,
+  rows: WearableUpsert[],
+  prune?: DayBucketWindow
+): number {
   if (rows.length === 0) return 0;
   for (const row of rows) {
     if (!METRIC_TYPE_SHAPE.test(row.metricType)) {
@@ -158,8 +234,60 @@ export function upsertWearableRows(db: Database, rows: WearableUpsert[]): number
         metadata,
       ]);
     }
+    if (prune) written += pruneStaleDayBuckets(db, rows, prune);
   });
   return written;
+}
+
+/**
+ * Delete the `hk:` day buckets this pass was responsible for and did not
+ * produce. Called INSIDE {@link upsertWearableRows}' transaction, after the
+ * upserts, so the keep-set rows are already present and no reader sees a window
+ * mid-reconciliation. Returns the number of rows removed, which joins
+ * `rowsWritten` — a delete is a change the pass made, and reporting it as
+ * nothing would make "0 rows changed" a lie on the one pass that mattered.
+ *
+ * The keep-set is keyed `${device}|${rawId}` because that is the conflict key
+ * (see rule 4 above). `rows` is the CLAMPED batch, so the keep-set and the
+ * window agree by construction.
+ *
+ * Nothing is pruned for a metric this batch produced no bucket for, even when
+ * the caller allow-listed it — that is the "a pass that PRODUCES buckets"
+ * half of the rule, and it is enforced here rather than trusted to the caller.
+ */
+function pruneStaleDayBuckets(
+  db: Database,
+  rows: readonly WearableUpsert[],
+  prune: DayBucketWindow
+): number {
+  const allowed = new Set(prune.metricTypes);
+  if (allowed.size === 0) return 0;
+  // **A metric is reconciled only if this batch PRODUCED a bucket for it.** The
+  // caller's allow-list says "I read this cleanly"; this says "and it returned
+  // something". Both halves are needed, and this half lives here because it is
+  // the one that cannot be got wrong by a future caller: an empty batch can
+  // never empty the window, whatever it allow-lists.
+  const produced = new Map<string, Set<string>>();
+  for (const row of rows) {
+    if (!allowed.has(row.metricType)) continue;
+    const keys = produced.get(row.metricType) ?? new Set<string>();
+    keys.add(`${row.sourceDevice}|${row.sourceRawId}`);
+    produced.set(row.metricType, keys);
+  }
+  let removed = 0;
+  for (const [metricType, keep] of produced) {
+    const existing = db.all<{ id: string; source_device: string; source_raw_id: string }>(
+      `SELECT id, source_device, source_raw_id FROM wearable_data
+       WHERE metric_type = ? AND date >= ? AND date <= ? AND source_raw_id GLOB ?`,
+      [metricType, prune.first, prune.last, HK_BUCKET_GLOB]
+    );
+    for (const row of existing) {
+      if (keep.has(`${row.source_device}|${row.source_raw_id}`)) continue;
+      db.run('DELETE FROM wearable_data WHERE id = ?', [row.id]);
+      removed++;
+    }
+  }
+  return removed;
 }
 
 /** The columns the upsert compares — the CHANGED guard, read back as a row. */
