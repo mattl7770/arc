@@ -67,13 +67,22 @@ import {
   removePendingEstimatePhoto,
 } from '@/lib/media/pending-estimate-store';
 import type { PhotoFileStore } from '@/lib/media/photo-file-store';
-import type { NewMealItem, PendingEstimateRow } from '@/lib/nutrition/types';
+import { assembleMealItems } from '@/lib/nutrition/composite';
+import type {
+  MealItemWithServing,
+  NewMealItem,
+  NewMealItemComponent,
+  PendingEstimateRow,
+} from '@/lib/nutrition/types';
 
 import {
   type EstimateInput,
   estimateMeal,
   groundMealEstimate,
+  isCompositeEstimateItem,
   type MealEstimate,
+  type MealEstimateComponent,
+  type MealEstimateItem,
   MealEstimateParseError,
   MealEstimationUnavailableError,
   type MealRevisionSubject,
@@ -120,9 +129,10 @@ export type DrainResult = {
 };
 
 /** The estimator items, as `meal_items` rows. One place, so a queued estimate
- *  and a reviewed one write the identical shape. */
+ *  and a reviewed one write the identical shape — the composite tree (0049)
+ *  included, so a pizza drained from the queue is a pizza. */
 function toMealItems(estimate: MealEstimate): NewMealItem[] {
-  return estimate.items.map((item) => ({
+  const priced = (item: MealEstimateItem | MealEstimateComponent): NewMealItemComponent => ({
     food_id: item.foodId,
     name: item.name,
     amount: item.amount != null && item.amount > 0 ? item.amount : null,
@@ -135,7 +145,28 @@ function toMealItems(estimate: MealEstimate): NewMealItem[] {
     fiber_g: item.fiber_g,
     confidence: item.confidence,
     micros: item.micros,
-  }));
+  });
+  return estimate.items.map((item) =>
+    isCompositeEstimateItem(item)
+      ? // The header's own numbers are null by construction; sending them would
+        // suggest they mean something.
+        { name: item.name, unit: item.unit, components: (item.components ?? []).map(priced) }
+      : priced(item)
+  );
+}
+
+/** One logged row, as the revision model is shown it. */
+function revisionRow(i: MealItemWithServing) {
+  return {
+    name: i.name,
+    amount: i.amount,
+    unit: i.unit,
+    kcal: i.kcal,
+    protein_g: i.protein_g,
+    carbs_g: i.carbs_g,
+    fat_g: i.fat_g,
+    micros: i.micros,
+  };
 }
 
 /** The request a queued row represents, or null when it cannot be reconstructed
@@ -183,22 +214,18 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
         }
         // Read the items NOW — see the header. A hand-edit made while offline is
         // the "before" this correction applies to.
-        const before = listMealItems(db, row.meal_id);
+        // The TREE (0049), so a composite goes to the model as one dish.
+        const before = assembleMealItems(listMealItems(db, row.meal_id));
         const revised = groundMealEstimate(
           db,
           await deps.estimators.revise(
             {
               name: meal.name,
-              items: before.map((i) => ({
-                name: i.name,
-                amount: i.amount,
-                unit: i.unit,
-                kcal: i.kcal,
-                protein_g: i.protein_g,
-                carbs_g: i.carbs_g,
-                fat_g: i.fat_g,
-                micros: i.micros,
-              })),
+              items: before.map((node) =>
+                node.kind === 'composite'
+                  ? { ...revisionRow(node.item), components: node.components.map(revisionRow) }
+                  : revisionRow(node.item)
+              ),
             },
             instruction
           )

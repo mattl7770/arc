@@ -31,9 +31,15 @@ import {
   latestMealPhoto,
   listMealItems,
   logMeal,
+  listTodayMeals,
   logMealWithItems,
+  mealItemCounts,
   nutritionHistory,
+  partialMealMetrics,
+  relogMeal,
+  removeMealItem,
   replaceMealItems,
+  scaleCompositeItem,
   setNutritionTargets,
   todayTotals,
   updateMealItemPortion,
@@ -63,11 +69,14 @@ import {
   mealPhotoView,
   sweepMealPhotos,
 } from '../src/lib/media/meal-photo-store.ts';
+import { assembleMealItems } from '../src/lib/nutrition/composite.ts';
+import { dayFigure } from '../src/lib/nutrition/remaining.ts';
 import {
   buildMealEstimationRequest,
   buildMealRevisionRequest,
   groundMealEstimate,
   MEAL_ESTIMATION_SYSTEM_PROMPT,
+  ESTIMATOR_PROMPT_CEILING,
   MEAL_REVISION_SYSTEM_PROMPT,
   MealEstimateParseError,
   MealEstimationUnavailableError,
@@ -1644,6 +1653,418 @@ console.log('29. C3: a queued REVISION is applied to the items as they stand the
   listPendingEstimates(db).length === 0
     ? ok('the queue is empty afterwards')
     : bad('revision left in the queue');
+}
+
+// === Composite foods (0049, backlog C4) ======================================
+//
+// The owner: *"one composite item (pepperoni pizza) as well as rows below that
+// are pizza crust, cheese, and pepperoni. If I ate the whole pizza but took the
+// pepperoni off half, I could change just one thing. If I ate only half, I
+// could change the entire thing together."*
+//
+// The asymmetry that shapes every assertion below: a header carrying its
+// children's sum would let a forgetful query DOUBLE the pizza in the day's
+// calories, while a NULL-macro header makes a forgetful query under-count by
+// zero. So the numbers are asserted as numbers, twice — once through
+// `meals.kcal`, once through `partialMealMetrics`, which is the read that would
+// otherwise fail silently.
+
+/** A three-part pizza in a meal that also holds a beer. */
+function pizzaMeal(db, date = TODAY) {
+  return logMealWithItems(db, {
+    date,
+    time: '19:30',
+    name: 'Dinner',
+    items: [
+      {
+        name: 'Pepperoni pizza',
+        // Deliberately supplied WITH numbers, to prove they are dropped.
+        kcal: 9999,
+        protein_g: 999,
+        amount: 9999,
+        components: [
+          { name: 'Pizza crust', amount: 300, kcal: 800, protein_g: 26, carbs_g: 160, fat_g: 6 },
+          { name: 'Mozzarella', amount: 150, kcal: 450, protein_g: 33, carbs_g: 5, fat_g: 33 },
+          { name: 'Pepperoni', amount: 60, kcal: 300, protein_g: 12, carbs_g: 2, fat_g: 27 },
+        ],
+      },
+      { name: 'Lager', amount: 330, unit: 'ml', kcal: 140, protein_g: 1, carbs_g: 11, fat_g: 0 },
+    ],
+  });
+}
+
+/** One tree node as the revision model is shown it. */
+function toSubject(node) {
+  const plain = (i) => ({
+    name: i.name,
+    amount: i.amount,
+    unit: i.unit,
+    kcal: i.kcal,
+    protein_g: i.protein_g,
+    carbs_g: i.carbs_g,
+    fat_g: i.fat_g,
+  });
+  return node.kind === 'composite'
+    ? { ...plain(node.item), components: node.components.map(plain) }
+    : plain(node.item);
+}
+
+console.log('30. C4: the totals count the PARTS, and the header carries nothing');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+  const rows = listMealItems(db, mealId);
+  const header = rows.find((r) => r.is_composite === 1);
+
+  header &&
+  header.kcal === null &&
+  header.protein_g === null &&
+  header.amount === null &&
+  header.confidence === null &&
+  header.parent_item_id === null
+    ? ok('a composite header stores no numbers of its own — invariants 1 and 2')
+    : bad('header carries numbers', JSON.stringify(header));
+  rows.filter((r) => r.parent_item_id === header.id).length === 3
+    ? ok('its three parts hang off it')
+    : bad('parts missing');
+
+  // THE DOUBLE-COUNT GUARD, as a number: 800 + 450 + 300 + 140 = 1,690. The
+  // header's 9,999 was supplied and dropped.
+  near(getMeal(db, mealId).kcal, 1690) && near(todayTotals(db, TODAY).kcal, 1690)
+    ? ok('the meal and the day count the parts only (1,690 kcal, not 11,689)')
+    : bad('double count', String(getMeal(db, mealId).kcal));
+  near(getMeal(db, mealId).protein_g, 72)
+    ? ok('…and the same for protein')
+    : bad('protein', String(getMeal(db, mealId).protein_g));
+
+  // THE REGRESSION THAT WOULD OTHERWISE SHIP SILENTLY. A macro-less header
+  // trips partialMealMetrics on every metric, and the Eat tab's hero stops
+  // counting down for a meal that is fully priced.
+  const partial = partialMealMetrics(db, TODAY);
+  partial[mealId] === undefined
+    ? ok('a NULL-macro header does NOT mark the meal knowingly short')
+    : bad('composite marked partial', JSON.stringify(partial[mealId]));
+  setNutritionTargets(db, { effective_date: TODAY, kcal: 2400 });
+  const figure = dayFigure(listTodayMeals(db, TODAY), 'kcal', 2400, partial);
+  figure.mode === 'remaining' && figure.remaining === 710
+    ? ok('…so the day stays in countdown mode: 710 kcal left of 2,400')
+    : bad('countdown mode lost', JSON.stringify(figure));
+
+  // The tally answers a DIFFERENT question from the sums: it counts what the
+  // collapsed ledger draws, which is one row per pizza.
+  mealItemCounts(db, TODAY)[mealId] === 2
+    ? ok('the Eat-tab tally reads "2 items" — the pizza and the beer, as drawn')
+    : bad('item count', String(mealItemCounts(db, TODAY)[mealId]));
+}
+
+console.log('31. C4: the tree the screens read');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+  const nodes = assembleMealItems(listMealItems(db, mealId));
+
+  nodes.length === 2 && nodes[0].kind === 'composite' && nodes[1].kind === 'item'
+    ? ok('assembleMealItems returns the pizza as one node and the beer as another')
+    : bad('tree shape', JSON.stringify(nodes.map((n) => n.kind)));
+  const rolledUp = nodes[0].rolled;
+  near(rolledUp.kcal, 1550) && near(rolledUp.amount, 510) && rolledUp.unit === 'g'
+    ? ok('the collapsed headline IS the parts’ sum — 510 g, 1,550 kcal')
+    : bad('rollup', JSON.stringify(rolledUp));
+
+  // Nothing converts (B2/0047): parts in two units do not sum to an amount.
+  const mixed = logMealWithItems(db, {
+    date: TODAY,
+    time: '10:00',
+    name: 'Odd',
+    items: [
+      {
+        name: 'Affogato',
+        components: [
+          { name: 'Espresso', amount: 60, unit: 'ml', kcal: 5 },
+          { name: 'Gelato', amount: 90, unit: 'g', kcal: 200 },
+        ],
+      },
+    ],
+  });
+  const mixedRoll = assembleMealItems(listMealItems(db, mixed.mealId))[0].rolled;
+  mixedRoll.amount === null && near(mixedRoll.kcal, 205)
+    ? ok('parts in ml and g roll up their energy but NOT their amount — nothing converts')
+    : bad('units converted', JSON.stringify(mixedRoll));
+
+  // A ledger never silently loses a row it is holding.
+  const all = listMealItems(db, mealId);
+  const orphaned = all
+    .filter((r) => r.parent_item_id === null || r.is_composite === 0)
+    .filter((r) => r.is_composite === 0);
+  const withOrphan = assembleMealItems([
+    ...orphaned,
+    { ...all.find((r) => r.parent_item_id !== null), parent_item_id: 'gone' },
+  ]);
+  withOrphan.some((n) => n.item.parent_item_id === 'gone')
+    ? ok('a component whose parent is absent is emitted top-level, never dropped')
+    : bad('orphan dropped');
+}
+
+console.log('32. C4: editing — one part, the whole dish, and the last part');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+  const rows = listMealItems(db, mealId);
+  const header = rows.find((r) => r.is_composite === 1);
+  const pepperoni = rows.find((r) => r.name === 'Pepperoni');
+  const crustBefore = rows.find((r) => r.name === 'Pizza crust');
+
+  // "I took the pepperoni off half": one part, 60 g → 30 g.
+  updateMealItemPortion(db, pepperoni.id, rescaleLoggedItem(pepperoni, undefined, { amount: 30 }));
+  const afterOne = listMealItems(db, mealId);
+  const crustAfter = afterOne.find((r) => r.name === 'Pizza crust');
+  near(afterOne.find((r) => r.name === 'Pepperoni').kcal, 150) &&
+  near(crustAfter.kcal, crustBefore.kcal) &&
+  near(crustAfter.amount, crustBefore.amount)
+    ? ok('editing one part leaves its siblings byte-identical')
+    : bad('sibling moved', JSON.stringify(crustAfter));
+  near(getMeal(db, mealId).kcal, 1540)
+    ? ok('…and moves only the totals: 1,690 − 150 = 1,540')
+    : bad('totals after part edit', String(getMeal(db, mealId).kcal));
+
+  // "I only ate half" — AFTER the hand-correction, so it halves the CORRECTED
+  // pepperoni (the owner's own answer to that question).
+  scaleCompositeItem(db, header.id, 0.5);
+  const halved = listMealItems(db, mealId);
+  near(halved.find((r) => r.name === 'Pepperoni').kcal, 75) &&
+  near(halved.find((r) => r.name === 'Pepperoni').amount, 15) &&
+  near(halved.find((r) => r.name === 'Pizza crust').kcal, 400)
+    ? ok('“I ate half” halves the CORRECTED values, not the originals')
+    : bad('scale', JSON.stringify(halved.map((r) => [r.name, r.kcal])));
+  near(getMeal(db, mealId).kcal, 840)
+    ? ok('…and the meal follows: (800+450+150)/2 + 140 = 840')
+    : bad('totals after scale', String(getMeal(db, mealId).kcal));
+
+  // No rounding on write, so changing your mind costs nothing.
+  scaleCompositeItem(db, header.id, 2);
+  const back = listMealItems(db, mealId);
+  near(back.find((r) => r.name === 'Pepperoni').amount, 30) &&
+  near(back.find((r) => r.name === 'Pizza crust').amount, 300)
+    ? ok('×0.5 then ×2 round-trips EXACTLY — nothing is rounded on write')
+    : bad('round trip lost precision', JSON.stringify(back.map((r) => [r.name, r.amount])));
+
+  // Removing parts: a non-last one leaves the composite; the last takes it.
+  removeMealItem(db, back.find((r) => r.name === 'Pepperoni').id);
+  listMealItems(db, mealId).some((r) => r.is_composite === 1)
+    ? ok('removing one part of three leaves the composite standing')
+    : bad('composite removed too early');
+  removeMealItem(db, listMealItems(db, mealId).find((r) => r.name === 'Mozzarella').id);
+  removeMealItem(db, listMealItems(db, mealId).find((r) => r.name === 'Pizza crust').id);
+  const left = listMealItems(db, mealId);
+  left.length === 1 && left[0].name === 'Lager'
+    ? ok('removing the LAST part removes the composite with it (invariant 4)')
+    : bad('header left over nothing', JSON.stringify(left.map((r) => r.name)));
+  near(getMeal(db, mealId).kcal, 140)
+    ? ok('…and the meal is left holding the beer alone')
+    : bad('totals after emptying', String(getMeal(db, mealId).kcal));
+}
+
+console.log('33. C4: deleting a composite takes its parts (the FK cascade)');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+  const header = listMealItems(db, mealId).find((r) => r.is_composite === 1);
+  removeMealItem(db, header.id);
+  const left = listMealItems(db, mealId);
+  left.length === 1 && left[0].name === 'Lager' && near(getMeal(db, mealId).kcal, 140)
+    ? ok('removing the header cascades its three parts away, and the totals follow')
+    : bad('cascade', JSON.stringify(left.map((r) => r.name)));
+}
+
+console.log('34. C4: the estimator returns a composite, and grounding will not price it');
+{
+  const { db } = freshDb();
+  // The seeded whole-dish archetype most likely to be matched wrongly.
+  createFood(db, {
+    name: 'Cheeseburger, fast food',
+    kcal_100g: 250,
+    protein_g_100g: 13,
+    carbs_g_100g: 20,
+    fat_g_100g: 13,
+  });
+  createFood(db, {
+    name: 'Beef patty, grilled',
+    kcal_100g: 250,
+    protein_g_100g: 26,
+    carbs_g_100g: 0,
+    fat_g_100g: 17,
+  });
+
+  const parsed = parseMealEstimate(
+    JSON.stringify({
+      title: 'Burger and fries',
+      items: [
+        {
+          name: 'Cheeseburger',
+          amount: 220,
+          kcal: 550,
+          protein_g: 30,
+          carbs_g: 40,
+          fat_g: 28,
+          confidence: 'medium',
+          micros: { sodium_mg: 900 },
+          components: [
+            { name: 'Bun', amount: 80, kcal: 210, protein_g: 7, carbs_g: 40, fat_g: 2 },
+            { name: 'Beef patty', amount: 110, kcal: 275, protein_g: 29, carbs_g: 0, fat_g: 19 },
+            { name: 'Cheese slice', amount: 20, kcal: 70, protein_g: 4, carbs_g: 1, fat_g: 6 },
+            { name: 'Sauce', amount: 10, kcal: 50, protein_g: 0, carbs_g: 2, fat_g: 5 },
+            { name: 'Pickle', amount: 5, kcal: 1, protein_g: 0, carbs_g: 0, fat_g: 0 },
+          ],
+        },
+        { name: 'Fries', amount: 120, kcal: 380, protein_g: 4, carbs_g: 48, fat_g: 19 },
+      ],
+      notes: null,
+    })
+  );
+  const burger = parsed.items[0];
+  burger.kcal === null && burger.amount === null && burger.micros === null
+    ? ok('the header’s own macros are DROPPED, not reconciled')
+    : bad('header kept numbers', JSON.stringify(burger));
+  burger.components.length === 4
+    ? ok('five parts are capped at four — the parser enforces it, not the prompt')
+    : bad('cap', String(burger.components?.length));
+  burger.components.every((c) => c.confidence === 'medium')
+    ? ok('each part inherits the dish’s confidence')
+    : bad('confidence not inherited');
+  parsed.items[1].components === null && parsed.items[1].kcal === 380
+    ? ok('a plain item beside it is untouched')
+    : bad('plain item changed');
+
+  // A one-part "composite" is not a composite — it is the item wearing a header.
+  parseMealEstimate(
+    JSON.stringify({
+      title: 'X',
+      items: [{ name: 'Toast', amount: 40, kcal: 100, components: [{ name: 'Bread', kcal: 100 }] }],
+    })
+  ).items[0].components === null
+    ? ok('a single-part components array collapses — a chevron over nothing is noise')
+    : bad('one-part composite kept');
+  parseMealEstimate(
+    JSON.stringify({ title: 'X', items: [{ name: 'Toast', kcal: 100, components: [] }] })
+  ).items[0].kcal === 100
+    ? ok('an empty components array is a plain item, with its macros intact')
+    : bad('empty components mishandled');
+
+  const grounded = groundMealEstimate(db, parsed);
+  grounded.items[0].foodId === null && grounded.items[0].kcal === null
+    ? ok('grounding NEVER prices a header — not even against "Cheeseburger, fast food"')
+    : bad('header grounded', JSON.stringify(grounded.items[0]));
+  const patty = grounded.items[0].components.find((c) => c.name === 'Beef patty');
+  patty.foodId !== null && near(patty.kcal, 275)
+    ? ok('…while its parts DO ground: the beef patty re-prices from the catalog')
+    : bad('component not grounded', JSON.stringify(patty));
+}
+
+console.log('35. C4: a composite round-trips through a revision, a re-log and a template');
+{
+  const { db } = freshDb();
+  const { mealId } = pizzaMeal(db);
+
+  // The revision path (app/meal-revise.tsx → replaceMealItems) takes a TREE.
+  const tree = assembleMealItems(listMealItems(db, mealId));
+  replaceMealItems(
+    db,
+    mealId,
+    tree.map((node) =>
+      node.kind === 'composite'
+        ? {
+            name: node.item.name,
+            components: node.components.map((c) => ({
+              name: c.name,
+              amount: c.amount,
+              unit: c.unit,
+              kcal: c.kcal,
+              protein_g: c.protein_g,
+              carbs_g: c.carbs_g,
+              fat_g: c.fat_g,
+            })),
+          }
+        : {
+            name: node.item.name,
+            amount: node.item.amount,
+            unit: node.item.unit,
+            kcal: node.item.kcal,
+          }
+    )
+  );
+  const after = assembleMealItems(listMealItems(db, mealId));
+  after.length === 2 && after[0].kind === 'composite' && after[0].components.length === 3
+    ? ok('replaceMealItems round-trips a tree without flattening it')
+    : bad('revision flattened the pizza', JSON.stringify(after.map((n) => n.kind)));
+
+  // The model is SHOWN the tree, indented, so a correction can name a part.
+  const req = buildMealRevisionRequest(
+    { name: 'Dinner', items: [toSubject(after[0]), toSubject(after[1])] },
+    'no pepperoni'
+  );
+  const text = req.messages[0].content[0].text;
+  text.includes('- Pepperoni pizza — 3 parts') && text.includes('  - Pepperoni — 60 g')
+    ? ok('the revision request prints the dish with its parts indented beneath it')
+    : bad('revision text', text);
+  req.system.includes('is ONE composite dish')
+    ? ok('and the revision prompt tells the model to keep it composite')
+    : bad('revision prompt missing the composite rail');
+
+  // "Log again" re-logs a pizza, not four loose rows.
+  const again = relogMeal(db, mealId, TODAY, '20:00');
+  const relogged = assembleMealItems(listMealItems(db, again));
+  relogged.length === 2 && relogged[0].kind === 'composite' && near(getMeal(db, again).kcal, 1690)
+    ? ok('“Log again” carries the tree, and the copy totals the same 1,690 kcal')
+    : bad('relog flattened', JSON.stringify(relogged.map((n) => n.kind)));
+
+  // A template cannot express a composite, so it saves the PARTS — honest, and
+  // the rollup is unchanged because the parts are what the totals summed.
+  const templateId = saveMealAsTemplate(db, mealId, 'Pizza night');
+  listTemplateItems(db, templateId).length === 4
+    ? ok('a template flattens the pizza to its parts (4 priced lines), never a null header')
+    : bad('template items', String(listTemplateItems(db, templateId).length));
+  const logged = logMealFromTemplate(db, templateId, TODAY, '21:00');
+  near(getMeal(db, logged).kcal, 1690)
+    ? ok('…and logging that template comes to the same 1,690 kcal')
+    : bad('template totals', String(getMeal(db, logged).kcal));
+}
+
+console.log('36. C4/C5: the estimator prompts have a ceiling now');
+{
+  // ~3.6 chars/token for prose — db/coach-eval.test.mjs §6's own estimator.
+  const proseTok = (s) => Math.round(s.length / 3.6);
+  const estimation = proseTok(MEAL_ESTIMATION_SYSTEM_PROMPT);
+  const revision = proseTok(MEAL_REVISION_SYSTEM_PROMPT);
+
+  // THE ACCOUNTING. This prompt was guarded by NOTHING until this round, and it
+  // grew 296 → 449 tokens in a single day (backlog A8's caffeine/sodium lines),
+  // then 449 → 542 when `ml` landed (0047) — 83% in a week, unnoticed, because
+  // the two Coach ceilings measure buildCoachSystemPrompt and toWireTools and
+  // the estimator is neither: a different system prompt, on a tool-less turn.
+  //
+  //   542  the head of `main` when this branch started
+  //   +149 C4: the composite rule (4 lines) + the "components" schema clause
+  //   +200 C5: the question rules (5 lines) + the "questions" schema clause
+  //   ---
+  //   ~891, against a ceiling of 1,000.
+  //
+  // The rule the Coach's own budget note states applies verbatim: **the next
+  // addition trims rather than raises this.** The two cheapest trims are named
+  // on ESTIMATOR_PROMPT_CEILING itself.
+  estimation < ESTIMATOR_PROMPT_CEILING
+    ? ok(
+        `the estimation prompt fits its budget (~${estimation} tok of ${ESTIMATOR_PROMPT_CEILING})`
+      )
+    : bad('estimation prompt over budget', `${estimation} tok — trim before adding more`);
+  revision < ESTIMATOR_PROMPT_CEILING
+    ? ok(`and so does the revision prompt (~${revision} tok)`)
+    : bad('revision prompt over budget', `${revision} tok`);
+
+  // A ceiling nothing approaches is not a guard. If this trips, the prompts
+  // were cut and the ceiling should come down with them.
+  estimation > ESTIMATOR_PROMPT_CEILING * 0.6
+    ? ok('…and the ceiling is close enough to the real size to actually bite')
+    : bad('ceiling is vacuous', `${estimation} tok is far under ${ESTIMATOR_PROMPT_CEILING}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

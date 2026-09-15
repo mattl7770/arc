@@ -3,29 +3,42 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
+import {
+  beginCompositeScale,
+  endCompositeScale,
+  removeRow,
+  reviewKcal,
+  type ReviewHandlers,
+  type ReviewItem,
+  ReviewItemsPlate,
+  rowsFromEstimate,
+  rowsToMealItems,
+  scaleComposite,
+  scaleCompositeTo,
+  setRowAmount,
+  toggleExpanded,
+} from '@/components/nutrition/estimate-review';
 import { Block, Divider } from '@/components/ui/block';
-import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
-import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
-import { getFood } from '@/lib/db/repositories/foods';
 import { getMeal, listMealItems, replaceMealItems } from '@/lib/db/repositories/nutrition';
+import { assembleMealItems, type MealItemNode } from '@/lib/nutrition/composite';
 import { queueMealRevision } from '@/lib/db/repositories/pending-estimates';
 import {
   groundMealEstimate,
   isMealEstimationAvailable,
   type MealEstimate,
   MealEstimationUnavailableError,
+  type MealRevisionItem,
   reviseMeal,
 } from '@/lib/nutrition/estimate';
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
 import { fmtAmount, fmtInt } from '@/lib/nutrition/format';
-import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
-import type { AmountUnit, FoodRow, MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
+import type { MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
 
 /**
  * Correcting a logged meal in plain English (owner, 2026-08-12): *"I should be
@@ -76,6 +89,24 @@ import type { AmountUnit, FoodRow, MealItemWithServing, NewMealItem } from '@/li
  * phases are exclusive.
  */
 
+/** One logged row, as the model is shown it. A composite goes as a header with
+ *  its parts; nothing about the units is restated (0047's rule). */
+function toRevisionItem(node: MealItemNode): MealRevisionItem {
+  const plain = (i: MealItemWithServing): MealRevisionItem => ({
+    name: i.name,
+    amount: i.amount,
+    unit: i.unit,
+    kcal: i.kcal,
+    protein_g: i.protein_g,
+    carbs_g: i.carbs_g,
+    fat_g: i.fat_g,
+    micros: i.micros,
+  });
+  return node.kind === 'composite'
+    ? { ...plain(node.item), components: node.components.map(plain) }
+    : plain(node.item);
+}
+
 type Phase =
   | { kind: 'input' }
   | { kind: 'working' }
@@ -84,58 +115,6 @@ type Phase =
    *  The meal keeps the items it has until the drain lands. */
   | { kind: 'queued' }
   | { kind: 'error'; message: string };
-
-/** One editable review row — the estimator's shape, so the two screens agree. */
-type ReviewItem = {
-  key: string;
-  name: string;
-  foodId: string | null;
-  food: FoodRow | undefined;
-  confidence: 'high' | 'medium' | 'low';
-  base: {
-    amount: number | null;
-    kcal: number | null;
-    protein_g: number | null;
-    carbs_g: number | null;
-    fat_g: number | null;
-    fiber_g: number | null;
-    micros: string | null;
-  };
-  amountText: string;
-  /** What the amount counts (0047) — carried through the revision so an item
-   * the model was told not to change comes back in the unit it went in. */
-  unit: AmountUnit;
-};
-
-function parseAmount(text: string): number | null {
-  const n = Number(text.trim());
-  return Number.isFinite(n) && n > 0 && n <= 5000 ? n : null;
-}
-
-/** Current macros/micros for a review row at its edited amount — via the same
- *  tested rescale used everywhere; falls back to the base when it can't scale. */
-function currentPortion(row: ReviewItem) {
-  const amount = parseAmount(row.amountText);
-  if (amount != null) {
-    const scaled = rescaleLoggedItem(row.base, row.food, { amount });
-    if (scaled) return scaled;
-  }
-  return {
-    // A validly-typed portion is kept even when macros can't be re-scaled (an
-    // ungrounded, amountless item): the number the user entered is recorded
-    // rather than silently dropped, and — since parseAmount only yields >0 —
-    // this is always null or positive, so it can never violate the schema's
-    // CHECK(amount > 0).
-    amount: amount ?? row.base.amount,
-    serving_qty: null,
-    kcal: row.base.kcal,
-    protein_g: row.base.protein_g,
-    carbs_g: row.base.carbs_g,
-    fat_g: row.base.fat_g,
-    fiber_g: row.base.fiber_g,
-    micros: row.base.micros,
-  };
-}
 
 export default function MealReviseScreen() {
   const router = useRouter();
@@ -147,6 +126,9 @@ export default function MealReviseScreen() {
   // would silently swap the "before" out from under an open proposal.
   const [meal] = useState(() => getMeal(getDb(), mealId));
   const [before] = useState<MealItemWithServing[]>(() => listMealItems(getDb(), mealId));
+  // The same rows as the one-level tree (0049) — what "As logged" draws and
+  // what the model is shown.
+  const beforeTree = assembleMealItems(before);
   // Display-only: whether a millilitre portion READS as ml or oz.
   const { units } = useUnitPreferences();
 
@@ -157,44 +139,11 @@ export default function MealReviseScreen() {
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  /** Turn a grounded revision into editable review rows (the estimator's own
-   *  toReview, so the two screens cannot drift apart in how they price). */
+  /** Turn a grounded revision into editable review rows — the estimator's own
+   *  builder, so the two screens cannot drift apart in how they price or nest
+   *  (src/components/nutrition/estimate-review.tsx). */
   const toReview = (estimate: MealEstimate) => {
-    const db = getDb();
-    setRows(
-      estimate.items.map((item, i) => {
-        const food = item.foodId ? getFood(db, item.foodId) : undefined;
-        const grounded =
-          food && item.amount != null && item.amount > 0
-            ? itemForPortion(food, { amount: item.amount })
-            : null;
-        return {
-          key: `${i}-${item.name}`,
-          name: item.name,
-          foodId: item.foodId,
-          food,
-          confidence: item.confidence,
-          unit: item.unit,
-          base: {
-            // A non-positive amount from the model would violate meal_items
-            // CHECK(amount > 0) and roll back the whole revision; store it as
-            // "not recorded" (null) instead — matching the `grounded` guard
-            // above and parseAmount, both of which already treat 0 as none.
-            amount: item.amount != null && item.amount > 0 ? item.amount : null,
-            kcal: grounded?.kcal ?? item.kcal,
-            protein_g: grounded?.protein_g ?? item.protein_g,
-            carbs_g: grounded?.carbs_g ?? item.carbs_g,
-            fat_g: grounded?.fat_g ?? item.fat_g,
-            fiber_g: grounded?.fiber_g ?? item.fiber_g,
-            // Ungrounded items keep the model's sodium/caffeine — the same two
-            // the request showed it for every item it was told not to change,
-            // so a revision does not quietly drop them (backlog A8).
-            micros: grounded?.micros ?? item.micros,
-          },
-          amountText: item.amount != null && item.amount > 0 ? String(Math.round(item.amount)) : '',
-        };
-      })
-    );
+    setRows(rowsFromEstimate(getDb(), estimate));
     setPhase({ kind: 'review', notes: estimate.notes });
   };
 
@@ -208,19 +157,11 @@ export default function MealReviseScreen() {
     setPhase({ kind: 'working' });
     try {
       const revised = await reviseMeal(
-        {
-          name: meal.name,
-          items: before.map((i) => ({
-            name: i.name,
-            amount: i.amount,
-            unit: i.unit,
-            kcal: i.kcal,
-            protein_g: i.protein_g,
-            carbs_g: i.carbs_g,
-            fat_g: i.fat_g,
-            micros: i.micros,
-          })),
-        },
+        // The meal AS A TREE (0049): a composite goes to the model as one dish
+        // with its parts indented beneath it, so "that pizza had no pepperoni"
+        // is a correction to a part it can see, and "leave everything else
+        // byte-identical" can mean something for the other two.
+        { name: meal.name, items: beforeTree.map(toRevisionItem) },
         text,
         controller.signal
       );
@@ -251,32 +192,20 @@ export default function MealReviseScreen() {
     }
   };
 
-  const setAmount = (key: string, text: string) => {
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, amountText: text } : r)));
-  };
-  const removeRow = (key: string) => {
-    setRows((prev) => prev.filter((r) => r.key !== key));
+  /** Every edit the review table can make — the shared plate's whole contract. */
+  const handlers: ReviewHandlers = {
+    onAmountChange: (key, text) => setRows((prev) => setRowAmount(prev, key, text)),
+    onRemove: (key) => setRows((prev) => removeRow(prev, key)),
+    onToggle: (key) => setRows((prev) => toggleExpanded(prev, key)),
+    onScale: (key, factor) => setRows((prev) => scaleComposite(prev, key, factor)),
+    onScaleTo: (key, text) => setRows((prev) => scaleCompositeTo(prev, key, text)),
+    onScaleBegin: (key) => setRows((prev) => beginCompositeScale(prev, key)),
+    onScaleEnd: (key) => setRows((prev) => endCompositeScale(prev, key)),
   };
 
   const save = () => {
     if (rows.length === 0) return;
-    const items: NewMealItem[] = rows.map((row) => {
-      const p = currentPortion(row);
-      return {
-        food_id: row.foodId,
-        name: row.name,
-        amount: p.amount,
-        unit: row.unit,
-        serving_qty: null,
-        kcal: p.kcal,
-        protein_g: p.protein_g,
-        carbs_g: p.carbs_g,
-        fat_g: p.fat_g,
-        fiber_g: p.fiber_g,
-        confidence: row.confidence,
-        micros: p.micros,
-      };
-    });
+    const items: NewMealItem[] = rowsToMealItems(rows);
     try {
       replaceMealItems(getDb(), mealId, items);
       router.back();
@@ -320,11 +249,9 @@ export default function MealReviseScreen() {
   }
 
   // The total of the rows actually on screen, at their live amount — a ledger
-  // sums to its own total, so this moves with every edit and removal.
-  const reviewKcal = rows.reduce<number | null>((sum, row) => {
-    const kcal = currentPortion(row).kcal;
-    return kcal == null ? sum : (sum ?? 0) + kcal;
-  }, null);
+  // sums to its own total, so this moves with every edit and removal, and a
+  // composite contributes its parts rather than a stored headline.
+  const reviewTotal = reviewKcal(rows);
   const beforeKcal = meal.kcal;
 
   return (
@@ -344,7 +271,9 @@ export default function MealReviseScreen() {
           {/* AS LOGGED — the "before" the correction is about. Drawn first, so
               the user is describing a change to something they can see. */}
           <View className="mt-6">
-            <SectionLabel label="As logged" note={String(before.length)} />
+            {/* The tally counts what the plate DRAWS — one row per pizza, not
+                one per part (the same question `mealItemCounts` answers). */}
+            <SectionLabel label="As logged" note={String(beforeTree.length)} />
             {before.length === 0 ? (
               <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
                 This meal has no items — its totals were typed in directly. A correction here can
@@ -353,24 +282,62 @@ export default function MealReviseScreen() {
             ) : (
               <View className="mt-2">
                 <Block device="plate">
-                  {before.map((item, index) => (
-                    <View key={item.id}>
-                      <Divider first={index === 0} />
-                      <View className="min-h-[44px] flex-row items-center gap-3 py-2.5">
-                        <Text className="flex-1 font-serif text-[15px] leading-5 text-ink">
-                          {item.name}
-                        </Text>
-                        {item.amount !== null ? (
-                          <Text className="font-mono text-[11px] text-ink-muted">
-                            {fmtAmount(Math.round(item.amount), item.unit, units.volume)}
+                  {beforeTree.map((node, index) => {
+                    // A composite's numbers are its parts'. Drawn open, because
+                    // this plate is read-only context for a sentence the user is
+                    // about to write — hiding the pepperoni would hide the very
+                    // row he means to correct.
+                    const shown =
+                      node.kind === 'composite'
+                        ? {
+                            amount: node.rolled.amount,
+                            unit: node.rolled.unit,
+                            kcal: node.rolled.kcal,
+                          }
+                        : { amount: node.item.amount, unit: node.item.unit, kcal: node.item.kcal };
+                    const parts = node.kind === 'composite' ? node.components : [];
+                    return (
+                      <View key={node.item.id}>
+                        <Divider first={index === 0} />
+                        <View className="min-h-[44px] flex-row items-center gap-3 py-2.5">
+                          <Text className="flex-1 font-serif text-[15px] leading-5 text-ink">
+                            {node.item.name}
+                            {parts.length > 0 ? (
+                              <Text className="font-mono text-[10px] text-ink-muted">
+                                {'  '}
+                                {parts.length} parts
+                              </Text>
+                            ) : null}
                           </Text>
-                        ) : null}
-                        <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
-                          {item.kcal !== null ? fmtInt(item.kcal) : '—'}
-                        </Text>
+                          {shown.amount !== null ? (
+                            <Text className="font-mono text-[11px] text-ink-muted">
+                              {fmtAmount(Math.round(shown.amount), shown.unit, units.volume)}
+                            </Text>
+                          ) : null}
+                          <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
+                            {shown.kcal !== null ? fmtInt(shown.kcal) : '—'}
+                          </Text>
+                        </View>
+                        {parts.map((part) => (
+                          <View
+                            key={part.id}
+                            className="min-h-[36px] flex-row items-center gap-3 pb-2.5 pl-6">
+                            <Text className="flex-1 font-serif text-[14px] leading-5 text-ink-secondary">
+                              {part.name}
+                            </Text>
+                            {part.amount !== null ? (
+                              <Text className="font-mono text-[11px] text-ink-muted">
+                                {fmtAmount(Math.round(part.amount), part.unit, units.volume)}
+                              </Text>
+                            ) : null}
+                            <Text className="w-12 text-right font-mono text-[12px] text-ink-muted">
+                              {part.kcal !== null ? fmtInt(part.kcal) : '—'}
+                            </Text>
+                          </View>
+                        ))}
                       </View>
-                    </View>
-                  ))}
+                    );
+                  })}
                 </Block>
               </View>
             )}
@@ -498,82 +465,20 @@ export default function MealReviseScreen() {
             </View>
           ) : null}
 
-          <Block device="plate">
-            <SectionLabel
-              label="Revised"
-              note={reviewKcal !== null ? `${fmtInt(reviewKcal)} kcal` : undefined}
-            />
-            {rows.length === 0 ? (
-              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                No items left. Go back and try a different correction — a meal cannot be saved
-                empty.
-              </Text>
-            ) : (
-              <View className="mt-1">
-                {rows.map((row, index) => {
-                  const p = currentPortion(row);
-                  return (
-                    <View key={row.key}>
-                      <Divider first={index === 0} />
-                      <View className="py-3">
-                        <View className="min-h-[44px] flex-row items-center gap-3">
-                          <View className="flex-1">
-                            <Text className="font-serif text-[15px] leading-5 text-ink">
-                              {row.name}
-                              <Text className="font-mono text-[10px] text-ink-muted">
-                                {'  '}≈ {row.confidence}
-                                {row.foodId ? ' · matched' : ''}
-                              </Text>
-                            </Text>
-                          </View>
-                          <View className="flex-row items-center gap-1">
-                            <TextInput
-                              value={row.amountText}
-                              onChangeText={(t) => setAmount(row.key, t)}
-                              keyboardType="decimal-pad"
-                              returnKeyType={KEYPAD_DONE}
-                              {...selectAllOnFocus(row.amountText)}
-                              accessibilityLabel={`${row.name} ${
-                                row.unit === 'ml' ? 'millilitres' : 'grams'
-                              }`}
-                              className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
-                            />
-                            <Text className="font-mono text-[11px] text-ink-secondary">
-                              {row.unit}
-                            </Text>
-                          </View>
-                          <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
-                            {p.kcal != null ? fmtInt(p.kcal) : '—'}
-                          </Text>
-                          <Pressable
-                            accessibilityRole="button"
-                            accessibilityLabel={`Remove ${row.name}`}
-                            hitSlop={12}
-                            onPress={() => removeRow(row.key)}
-                            className="h-8 w-8 items-center justify-center rounded-btn active:opacity-60">
-                            <Ionicons name="close" size={16} color={palette.inkMuted} />
-                          </Pressable>
-                        </View>
-                        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                          {p.protein_g != null ? `P ${Math.round(p.protein_g)}g` : ''}
-                          {p.carbs_g != null ? ` · C ${Math.round(p.carbs_g)}g` : ''}
-                          {p.fat_g != null ? ` · F ${Math.round(p.fat_g)}g` : ''}
-                        </Text>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-          </Block>
+          <ReviewItemsPlate
+            rows={rows}
+            label="Revised"
+            emptyNote="No items left. Go back and try a different correction — a meal cannot be saved empty."
+            handlers={handlers}
+          />
 
           {/* The decision, in future tense, immediately above the control that
               makes it — and nothing after it but its other branch. */}
           <Text className="mt-5 font-serif text-[13px] leading-5 text-ink-muted">
             On save: these {rows.length} item{rows.length === 1 ? '' : 's'} replace what the meal
             holds now
-            {beforeKcal !== null && reviewKcal !== null
-              ? `, moving it from ${fmtInt(beforeKcal)} to ${fmtInt(reviewKcal)} kcal`
+            {beforeKcal !== null && reviewTotal !== null
+              ? `, moving it from ${fmtInt(beforeKcal)} to ${fmtInt(reviewTotal)} kcal`
               : ''}
             . Its date, time and name are untouched. Going back writes nothing.
           </Text>

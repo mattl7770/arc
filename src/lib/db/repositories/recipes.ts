@@ -22,6 +22,8 @@
 import type { Database } from '../database';
 import { newId } from '../id';
 import { escapeLike, getFood, normalizeFoodName } from './foods';
+import { leafMealItems } from '@/lib/nutrition/composite';
+
 import { listMealItems, logMealWithItems } from './nutrition';
 import { parseIngredientLine } from '@/lib/recipes/ingredients';
 import { macrosForAmount, type FoodMacros } from '@/lib/nutrition/servings';
@@ -719,7 +721,10 @@ export function saveMealAsRecipe(
   title: string,
   servings: number
 ): string | null {
-  const items = listMealItems(db, mealId);
+  // LEAVES only (0049): a recipe line cannot express a composite, so a pizza
+  // captured from a meal becomes its parts. They are exactly the rows the
+  // meal's own totals were summed from, so the recipe's rollup matches it.
+  const items = leafMealItems(listMealItems(db, mealId));
   if (items.length === 0) return null;
   if (!(servings > 0)) throw new Error('servings must be > 0');
   const id = newId(db);

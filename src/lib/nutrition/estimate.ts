@@ -35,23 +35,50 @@ export type EstimateInput =
   | { kind: 'text'; description: string }
   | { kind: 'photo'; base64Jpeg: string; mediaType: 'image/jpeg'; description?: string };
 
-export type MealEstimateItem = {
+/** One part of a composite dish (0049, backlog C4) — a plain priced row that
+ *  happens to live under a header. One level only: a part has no parts. */
+export type MealEstimateComponent = {
   name: string;
-  /** Estimated portion in {@link MealEstimateItem.unit}; null when the model can
-   * only price energy. */
   amount: number | null;
-  /** What the model judged this item to be measured in — `'ml'` when it decided
-   * the item is a DRINK, `'g'` otherwise and whenever it said nothing usable
-   * (0047, backlog B2). Nothing downstream converts between the two. */
   unit: AmountUnit;
   kcal: number;
   protein_g: number;
   carbs_g: number;
   fat_g: number;
   fiber_g: number | null;
+  /** Inherited from the dish the model priced — it stated one confidence for
+   *  the pizza, and that is as true of the cheese as of the crust. */
+  confidence: EstimateConfidence;
+  foodId: string | null;
+  micros: JsonText | null;
+};
+
+export type MealEstimateItem = {
+  name: string;
+  /** Estimated portion in {@link MealEstimateItem.unit}; null when the model can
+   * only price energy — and always null on a composite HEADER, whose amount is
+   * derived from its parts. */
+  amount: number | null;
+  /** What the model judged this item to be measured in — `'ml'` when it decided
+   * the item is a DRINK, `'g'` otherwise and whenever it said nothing usable
+   * (0047, backlog B2). Nothing downstream converts between the two. */
+  unit: AmountUnit;
+  /**
+   * The item's own energy — and **null on a composite header** (0049). A header
+   * is a name over its parts, not a row of numbers: one fact gets one number,
+   * and a headline that cannot disagree with its parts is one that is derived
+   * from them. Every reader must branch on {@link MealEstimateItem.components}
+   * rather than treating a null as a zero.
+   */
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  fiber_g: number | null;
   confidence: EstimateConfidence;
   /** Set when the item was grounded to a catalog food (macros re-priced from
-   * its per-100 g values); null means raw model numbers. */
+   * its per-100 g values); null means raw model numbers. Never set on a
+   * composite header — a dish is not a catalog food. */
   foodId: string | null;
   /**
    * Per-portion micronutrient snapshot (JSON), or null when nothing was
@@ -61,7 +88,22 @@ export type MealEstimateItem = {
    * estimated (backlog A8). Null is "not recorded" and never a zero.
    */
   micros: JsonText | null;
+  /**
+   * The parts of a composite dish — at most 4, capped by the parser rather than
+   * by hoping (0049, backlog C4). Null for a plain item, which is almost every
+   * item. Non-empty means this row is a HEADER and carries no macros.
+   */
+  components: MealEstimateComponent[] | null;
 };
+
+/** Does this estimate item stand over parts? The one predicate every reader
+ *  branches on, so "null kcal" is never mistaken for "zero kcal". */
+export function isCompositeEstimateItem(item: MealEstimateItem): boolean {
+  // `Array.isArray` rather than `!== null`: an estimate built by hand — a test
+  // fixture, a future caller — omits the key entirely, and an undefined must
+  // read as "a plain item", never crash a grounding pass.
+  return Array.isArray(item.components) && item.components.length > 0;
+}
 
 export type MealEstimate = {
   /** A short meal title, e.g. "Salmon, rice and greens". */
@@ -152,6 +194,10 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '',
   'Rules:',
   '- Itemize the meal: one entry per distinct food, not one blob.',
+  '- A named prepared dish whose parts a person would change separately — a pizza, a burger,',
+  '  a burrito, a sandwich, a salad with dressing — comes back as ONE item carrying a',
+  '  "components" array of at most 4 parts, and NO macros of its own. Everything else is a',
+  '  plain item with no "components". Never decompose a single ingredient or a packaged product.',
   '- Estimate each portion from visual cues (glass and plate size, utensils) and any text,',
   '  as "amount" plus the "unit" it is measured in: "ml" for anything DRUNK — coffee,',
   '  tea, juice, soda, beer, wine, milk, a smoothie or shake — and "g" for everything',
@@ -174,9 +220,32 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   ' "kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number,',
   ' "fiber_g": number|null,',
   ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
-  ' "confidence": "high"|"medium"|"low"}], "notes": string|null}',
+  ' "confidence": "high"|"medium"|"low",',
+  ' "components": [{"name": string, "amount": number|null, "unit": "g"|"ml", "kcal": number,',
+  '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null}]|null}],',
+  ' "notes": string|null}',
   'Micro amounts are for the portion you estimated, not per 100.',
 ].join('\n');
+
+/**
+ * The ceiling on {@link MEAL_ESTIMATION_SYSTEM_PROMPT}, in the estimator
+ * db/coach-eval.test.mjs §6 uses (~3.6 chars per prose token).
+ *
+ * **This prompt had no guard at all until C4/C5, and it drifted 296 → 449
+ * tokens in a single day** — backlog A8 (caffeine / fiber / sodium) merged five
+ * lines and a schema key, a 52% growth nobody noticed, because the two Coach
+ * ceilings measure `buildCoachSystemPrompt` and `toWireTools(COACH_TOOLS)` and
+ * the estimator is neither: it is a different system prompt on a tool-less turn
+ * (`tools: []`).
+ *
+ * So the number is here, it is asserted in db/nutrition-v2.test.mjs, and the
+ * rule the Coach's own budget note states applies to it verbatim: **the next
+ * addition trims rather than raises it.** The cheapest trims, when that day
+ * comes, are the six-line drinks enumeration (coffee/tea/juice/soda/beer/wine/
+ * milk/smoothie teaches by example, and three examples would teach as well) and
+ * the micros bullet's list of what plausibly carries sodium.
+ */
+export const ESTIMATOR_PROMPT_CEILING = 1000;
 
 /**
  * Build the model request for a meal estimate — the exact shape the Coach
@@ -223,6 +292,53 @@ function num(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
+/** At most this many parts hang off one composite (0049). A hard number, and
+ *  the PARSER enforces it rather than the prompt hoping: a nine-row pizza is a
+ *  data dump, not a record you can read at a glance. */
+export const MAX_COMPOSITE_COMPONENTS = 4;
+
+/**
+ * The model's `components` array, validated into parts — or null when there is
+ * nothing usable, which is the overwhelmingly common case.
+ *
+ * Every part inherits the dish's `confidence`: the model stated one confidence
+ * for the pizza, and that is as true of the cheese as of the crust. Asking for
+ * a per-part confidence would cost tokens for a number that would only ever
+ * repeat the parent's.
+ */
+function parseComponents(
+  raw: unknown,
+  confidence: EstimateConfidence
+): MealEstimateComponent[] | null {
+  if (!Array.isArray(raw)) return null;
+  const parts: MealEstimateComponent[] = [];
+  for (const entry of raw) {
+    if (parts.length >= MAX_COMPOSITE_COMPONENTS) break;
+    if (typeof entry !== 'object' || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    const name = typeof e.name === 'string' ? e.name.trim() : '';
+    if (name === '') continue;
+    parts.push({
+      name,
+      amount: num(e.amount) ?? num(e.grams),
+      unit: amountUnit(e.unit),
+      kcal: num(e.kcal) ?? 0,
+      protein_g: num(e.protein_g) ?? 0,
+      carbs_g: num(e.carbs_g) ?? 0,
+      fat_g: num(e.fat_g) ?? 0,
+      fiber_g: num(e.fiber_g),
+      confidence,
+      foodId: null,
+      micros: serializeMicros(coerceMicros(e.micros)),
+    });
+  }
+  // A single part is not a composite — it is the item itself, wearing a header.
+  // Collapsing it here keeps invariant 4 ("a composite always has ≥ 1
+  // component") from becoming "a composite that is only ever one component",
+  // which is a disclosure chevron over nothing worth disclosing.
+  return parts.length >= 2 ? parts : null;
+}
+
 /**
  * Parse and validate the model's JSON reply into a {@link MealEstimate}. Never
  * trusts the model's shape: unknown fields are dropped, missing macros default
@@ -260,24 +376,29 @@ export function parseMealEstimate(replyText: string): MealEstimate {
     const confidence: EstimateConfidence = CONFIDENCES.includes(e.confidence as EstimateConfidence)
       ? (e.confidence as EstimateConfidence)
       : 'low';
+    const components = parseComponents(e.components, confidence);
+    // A COMPOSITE HEADER keeps no numbers of its own — they are DROPPED, not
+    // reconciled (0049). One fact gets one number, and the headline is derived
+    // from the parts, so it cannot come to disagree with them.
     items.push({
       name,
       // `grams` is read as a fallback for `amount`: an older prompt's shape (and
       // a model that reaches for the word anyway) still lands on the row, as
       // grams, rather than silently becoming an unportioned item.
-      amount: num(e.amount) ?? num(e.grams),
+      amount: components ? null : (num(e.amount) ?? num(e.grams)),
       unit: amountUnit(e.unit),
-      kcal: num(e.kcal) ?? 0,
-      protein_g: num(e.protein_g) ?? 0,
-      carbs_g: num(e.carbs_g) ?? 0,
-      fat_g: num(e.fat_g) ?? 0,
-      fiber_g: num(e.fiber_g),
+      kcal: components ? null : (num(e.kcal) ?? 0),
+      protein_g: components ? null : (num(e.protein_g) ?? 0),
+      carbs_g: components ? null : (num(e.carbs_g) ?? 0),
+      fat_g: components ? null : (num(e.fat_g) ?? 0),
+      fiber_g: components ? null : num(e.fiber_g),
       confidence,
       foodId: null,
       // The model's own sodium/caffeine, put through the same vocabulary filter
       // as stored micros: unknown keys and non-numbers are dropped, and an item
       // that returned nothing usable serialises back to NULL rather than {}.
-      micros: serializeMicros(coerceMicros(e.micros)),
+      micros: components ? null : serializeMicros(coerceMicros(e.micros)),
+      components,
     });
   }
   if (items.length === 0) {
@@ -347,21 +468,27 @@ export async function estimateMeal(
 // until the user confirms it on the review screen — which matters more here
 // than for a new meal, because this one REPLACES a record that already exists.
 
+/** One row of the meal as the model is shown it. */
+export type MealRevisionItem = {
+  name: string;
+  amount: number | null;
+  unit: AmountUnit;
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  /** The item's stored micro snapshot, so sodium and caffeine can be shown to
+   * the model and carried back on an item it was not asked to change. */
+  micros?: JsonText | null;
+  /** The parts of a composite dish (0049) — printed indented beneath it, so a
+   *  correction to the pepperoni is a correction to a part the model can see. */
+  components?: MealRevisionItem[];
+};
+
 /** The meal as it stands, the way the model is shown it. */
 export type MealRevisionSubject = {
   name: string;
-  items: {
-    name: string;
-    amount: number | null;
-    unit: AmountUnit;
-    kcal: number | null;
-    protein_g: number | null;
-    carbs_g: number | null;
-    fat_g: number | null;
-    /** The item's stored micro snapshot, so sodium and caffeine can be shown to
-     * the model and carried back on an item it was not asked to change. */
-    micros?: JsonText | null;
-  }[];
+  items: MealRevisionItem[];
 };
 
 /**
@@ -387,6 +514,9 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '  restate a millilitre amount as grams.',
   '- A correction may remove an item, add one, rename one, or change its portion. Apply what',
   '  was actually said and nothing more.',
+  '- An item shown with parts indented under it is ONE composite dish. Return it as one item',
+  '  with those parts in "components" and NO macros of its own, unless the correction is that',
+  '  it was never a composite. A correction to one part changes that part only.',
   '- When a swap changes the cooking fat, carry the portion across sensibly (the same amount',
   '  of oil as there was butter) unless the user gave an amount.',
   '- Keep per-item confidence honest: an item the user has just corrected is usually more',
@@ -401,7 +531,10 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   ' "kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number,',
   ' "fiber_g": number|null,',
   ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
-  ' "confidence": "high"|"medium"|"low"}], "notes": string|null}',
+  ' "confidence": "high"|"medium"|"low",',
+  ' "components": [{"name": string, "amount": number|null, "unit": "g"|"ml", "kcal": number,',
+  '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null}]|null}],',
+  ' "notes": string|null}',
 ].join('\n');
 
 /** Build the revision request: the meal as it stands, then the correction. */
@@ -409,7 +542,7 @@ export function buildMealRevisionRequest(
   meal: MealRevisionSubject,
   instruction: string
 ): MealEstimationRequest {
-  const rows = meal.items.map((item) => {
+  const line = (item: MealRevisionItem, indent: string): string[] => {
     // Only the two micros the model is asked for. The rest of the vocabulary
     // comes off the catalog food at grounding time, so showing it here would
     // invite the model to restate numbers it never estimated.
@@ -426,10 +559,24 @@ export function buildMealRevisionRequest(
       micros.sodium_mg == null ? null : `sodium ${Math.round(micros.sodium_mg)} mg`,
       micros.caffeine_mg == null ? null : `caffeine ${Math.round(micros.caffeine_mg)} mg`,
     ].filter(Boolean);
-    // An unpriced item says so in words. A blank tail would read as zero, and
-    // the model would return zeros for it.
-    return `- ${item.name}${parts.length > 0 ? ` — ${parts.join(', ')}` : ' — no numbers recorded'}`;
-  });
+    // A composite header carries no numbers of its own (0049): it says how many
+    // parts it has, and the parts are printed beneath it. "no numbers recorded"
+    // would be a lie about a dish that is fully priced by its components.
+    const components = item.components ?? [];
+    const tail =
+      components.length > 0
+        ? ` — ${components.length} parts`
+        : parts.length > 0
+          ? ` — ${parts.join(', ')}`
+          : // An unpriced item says so in words. A blank tail would read as
+            // zero, and the model would return zeros for it.
+            ' — no numbers recorded';
+    return [
+      `${indent}- ${item.name}${tail}`,
+      ...components.flatMap((part) => line(part, `${indent}  `)),
+    ];
+  };
+  const rows = meal.items.flatMap((item) => line(item, ''));
   const text = [
     `Logged meal: ${meal.name}`,
     'Items as they stand:',
@@ -507,7 +654,7 @@ function isConfidentMatch(itemNorm: string, foodNorm: string): boolean {
  * interface, so it's headless-testable.
  */
 export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEstimate {
-  const items = estimate.items.map((item) => {
+  const priceOne = <T extends MealEstimateItem | MealEstimateComponent>(item: T): T => {
     if (item.amount == null || item.amount <= 0) return item;
     const match: FoodRow | undefined = searchFoods(db, item.name, 1)[0];
     if (!match || !isConfidentMatch(normalizeFoodName(item.name), match.name_norm)) return item;
@@ -546,6 +693,19 @@ export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEs
       micros: priced.micros ?? item.micros,
       foodId: match.id,
     };
+  };
+  const items = estimate.items.map((item) => {
+    // A COMPOSITE HEADER IS NEVER PRICED (0049). The seed catalog holds
+    // whole-dish archetypes — 'Pizza, cheese slice', 'Cheeseburger, fast food',
+    // 'Chicken burrito' — each one leading phrase away from what a model
+    // actually writes, so grounding a header would re-price the dish into
+    // numbers that contradict the parts drawn beneath it. The parts ARE
+    // grounded: a single-token name ("cheese", "crust") fails isConfidentMatch
+    // by design and keeps the model's numbers, which is the correct outcome.
+    if (isCompositeEstimateItem(item)) {
+      return { ...item, components: (item.components ?? []).map(priceOne) };
+    }
+    return priceOne(item);
   });
   return { ...estimate, items };
 }

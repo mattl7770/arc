@@ -778,6 +778,45 @@ const db = getDb();
     updateMealName(db, mealId, 'Render lunch');
   }
 
+  console.log('7b2. meal-detail draws a composite as ONE row with its parts folded (0049)');
+  {
+    const { mealId: pizzaId } = logMealWithItems(db, {
+      date: today,
+      time: '19:30',
+      name: 'Pizza night',
+      items: [
+        {
+          name: 'Pepperoni pizza',
+          components: [
+            { name: 'Pizza crust', amount: 300, kcal: 800, protein_g: 26, carbs_g: 160, fat_g: 6 },
+            { name: 'Mozzarella', amount: 150, kcal: 450, protein_g: 33, carbs_g: 5, fat_g: 33 },
+            { name: 'Pepperoni', amount: 60, kcal: 300, protein_g: 12, carbs_g: 2, fat_g: 27 },
+          ],
+        },
+        { name: 'Lager', amount: 330, unit: 'ml', kcal: 140, protein_g: 1, carbs_g: 11, fat_g: 0 },
+      ],
+    });
+    const pizza = render('meal-detail (composite)', MealDetailScreen, { id: pizzaId });
+    expect('meal-detail (composite)', pizza, [
+      'Pepperoni pizza',
+      '3 parts',
+      // The headline IS the parts' sum, derived at read time — 800+450+300.
+      '1,550',
+      // …and the meal's own total counts the parts, never the header: 1,690.
+      '1,690',
+      // The disclosure, spoken as one phrase.
+      'Pepperoni pizza, 3 parts, 1,550 kcal',
+    ]);
+    // COLLAPSED BY DEFAULT — the table stays a table, and a pizza reads as one
+    // thing you ate until you ask about its parts. The fraction chips live
+    // inside the disclosure, so they are absent too.
+    refute('meal-detail (composite)', pizza, [
+      'Pizza crust',
+      'Mozzarella',
+      'I ate half of the Pepperoni pizza',
+    ]);
+  }
+
   console.log('7c. Micronutrients — the owner’s three: caffeine, fiber, sodium');
   {
     // Backlog A8. Two itemized meals on today, carrying the two micros the
@@ -2177,13 +2216,17 @@ console.log('17. A3 — every amount field in food logging highlights its value'
     : bad('onFocus threw', String(threw));
 
   // The sweep. Each file is a surface where a FOOD's amount gets changed.
+  // The two estimator screens' amount fields moved into the SHARED review table
+  // when composites arrived (0049) — app/meal-estimate.tsx and
+  // app/meal-revise.tsx now draw the identical tree, and the fields are in one
+  // file rather than two copies. The sweep follows them: the rule is about
+  // surfaces where a FOOD's amount gets changed, and that is now where they are.
   const SURFACES = [
     'app/barcode-scan.tsx',
     'app/food-search.tsx',
     'app/meal-detail.tsx',
-    'app/meal-estimate.tsx',
-    'app/meal-revise.tsx',
     'app/recipe-detail.tsx',
+    'src/components/nutrition/estimate-review.tsx',
   ];
   let swept = 0;
   let missing = [];
@@ -2202,8 +2245,13 @@ console.log('17. A3 — every amount field in food logging highlights its value'
     }
   }
   // A regex that stopped matching anything would pass vacuously, so the count
-  // is asserted too — seven amount fields across the six surfaces.
-  swept >= 7
+  // is asserted too. It was SEVEN across six surfaces; it is now SIX across
+  // five, and the missing one is not a regression: the estimator's review row
+  // and the composite's whole-dish handle share one `AmountField` component
+  // (0049), where app/meal-estimate.tsx and app/meal-revise.tsx previously held
+  // a copy each. One field, two screens, two uses — the guarantee is unchanged
+  // and there is one fewer place to forget it.
+  swept >= 6
     ? ok(`${swept} amount fields found across ${SURFACES.length} food-logging surfaces`)
     : bad(`the sweep matched only ${swept} amount fields — the pattern has gone stale`);
   missing.length === 0

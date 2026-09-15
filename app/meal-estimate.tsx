@@ -3,16 +3,28 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
-import { Block, Divider } from '@/components/ui/block';
-import { KEYPAD_DONE } from '@/components/ui/keyboard';
+import {
+  beginCompositeScale,
+  endCompositeScale,
+  removeRow,
+  type ReviewHandlers,
+  type ReviewItem,
+  ReviewItemsPlate,
+  rowsFromEstimate,
+  rowsToMealItems,
+  scaleComposite,
+  scaleCompositeTo,
+  setRowAmount,
+  toggleExpanded,
+} from '@/components/nutrition/estimate-review';
+import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
-import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
-import { findFoodByBarcode, getFood } from '@/lib/db/repositories/foods';
+import { findFoodByBarcode } from '@/lib/db/repositories/foods';
 import { logMealWithItems } from '@/lib/db/repositories/nutrition';
 import { placeholderMealName, queueNewMealEstimate } from '@/lib/db/repositories/pending-estimates';
 import { writePendingEstimatePhoto } from '@/lib/media/pending-estimate-store';
@@ -33,15 +45,13 @@ import {
   type MealEstimate,
   MealEstimationUnavailableError,
 } from '@/lib/nutrition/estimate';
-import { fmtInt } from '@/lib/nutrition/format';
 import {
   attachMealPhoto,
   MEAL_PHOTO_RETENTION_DAYS,
   type CapturedPhoto,
 } from '@/lib/media/meal-photo-store';
 import { downscaleJpeg, pickPhotoBase64 } from '@/lib/media/photo-library';
-import { itemForPortion, rescaleLoggedItem } from '@/lib/nutrition/servings';
-import type { AmountUnit, FoodRow, NewMealItem } from '@/lib/nutrition/types';
+import type { NewMealItem } from '@/lib/nutrition/types';
 
 /**
  * AI meal estimation → editable review (docs/nutrition-subapp.md §6). Describe a
@@ -138,60 +148,6 @@ type Phase =
 /** A code sitting in the viewfinder, with whatever the local catalog knows. */
 type SeenCode = { code: string; name: string | null; brand: string | null };
 
-/** One editable review row: the model's item, grounded, with a live amount edit. */
-type ReviewItem = {
-  key: string;
-  name: string;
-  foodId: string | null;
-  food: FoodRow | undefined;
-  confidence: 'high' | 'medium' | 'low';
-  /** The base snapshot the amount edit re-scales from. */
-  base: {
-    amount: number | null;
-    kcal: number | null;
-    protein_g: number | null;
-    carbs_g: number | null;
-    fat_g: number | null;
-    fiber_g: number | null;
-    micros: string | null;
-  };
-  amountText: string;
-  /** What the amount counts — the model's own call (0047, backlog B2: "ml" when
-   * it judged this item a drink). Shown beside the field and written onto the
-   * item; the field itself is never converted for the oz/ml preference. */
-  unit: AmountUnit;
-};
-
-function parseAmount(text: string): number | null {
-  const n = Number(text.trim());
-  return Number.isFinite(n) && n > 0 && n <= 5000 ? n : null;
-}
-
-/** Current macros/micros for a review row at its edited amount — via the same
- * tested rescale used everywhere; falls back to the base when it can't scale. */
-function currentPortion(row: ReviewItem) {
-  const amount = parseAmount(row.amountText);
-  if (amount != null) {
-    const scaled = rescaleLoggedItem(row.base, row.food, { amount });
-    if (scaled) return scaled;
-  }
-  return {
-    // A validly-typed portion is kept even when macros can't be re-scaled (an
-    // ungrounded, amountless item): the number the user entered is recorded
-    // rather than silently dropped, and — since parseAmount only yields >0 —
-    // this is always null or positive, so it can never violate the schema's
-    // CHECK(amount > 0).
-    amount: amount ?? row.base.amount,
-    serving_qty: null,
-    kcal: row.base.kcal,
-    protein_g: row.base.protein_g,
-    carbs_g: row.base.carbs_g,
-    fat_g: row.base.fat_g,
-    fiber_g: row.base.fiber_g,
-    micros: row.base.micros,
-  };
-}
-
 export default function MealEstimateScreen() {
   const router = useRouter();
   // `start=camera` opens straight into the viewfinder — the Eat tab's Photo
@@ -220,47 +176,11 @@ export default function MealEstimateScreen() {
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  /** Turn a grounded estimate into editable review rows (loads each grounded
-   * food so amount edits re-price from it). */
+  /** Turn a grounded estimate into editable review rows — the shared builder,
+   * so this screen and app/meal-revise.tsx price and nest identically
+   * (src/components/nutrition/estimate-review.tsx). */
   const toReview = (estimate: MealEstimate) => {
-    const db = getDb();
-    const reviewRows: ReviewItem[] = estimate.items.map((item, i) => {
-      const food = item.foodId ? getFood(db, item.foodId) : undefined;
-      // A grounded item's base is derived from the food so macros AND micros are
-      // consistent — including when the user clears the amount field
-      // (currentPortion falls back to base). An ungrounded item keeps the
-      // model's numbers, including the sodium/caffeine it now returns (backlog
-      // A8); those scale with an amount edit like every other figure on the row.
-      // groundMealEstimate only sets foodId when the food's basis MATCHES the
-      // item's unit, so re-pricing here can never cross the two.
-      const grounded =
-        food && item.amount != null && item.amount > 0
-          ? itemForPortion(food, { amount: item.amount })
-          : null;
-      return {
-        key: `${i}-${item.name}`,
-        name: item.name,
-        foodId: item.foodId,
-        food,
-        confidence: item.confidence,
-        unit: item.unit,
-        base: {
-          // A non-positive amount from the model would violate meal_items
-          // CHECK(amount > 0) and roll back the whole save; store it as "not
-          // recorded" (null) instead — matching the `grounded` guard above and
-          // parseAmount, both of which already treat 0 as no portion.
-          amount: item.amount != null && item.amount > 0 ? item.amount : null,
-          kcal: grounded?.kcal ?? item.kcal,
-          protein_g: grounded?.protein_g ?? item.protein_g,
-          carbs_g: grounded?.carbs_g ?? item.carbs_g,
-          fat_g: grounded?.fat_g ?? item.fat_g,
-          fiber_g: grounded?.fiber_g ?? item.fiber_g,
-          micros: grounded?.micros ?? item.micros,
-        },
-        amountText: item.amount != null && item.amount > 0 ? String(Math.round(item.amount)) : '',
-      };
-    });
-    setRows(reviewRows);
+    setRows(rowsFromEstimate(getDb(), estimate));
     setPhase({ kind: 'review', title: estimate.title, notes: estimate.notes });
   };
 
@@ -422,32 +342,21 @@ export default function MealEstimateScreen() {
     }
   };
 
-  const setAmount = (key: string, text: string) => {
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, amountText: text } : r)));
-  };
-  const removeRow = (key: string) => {
-    setRows((prev) => prev.filter((r) => r.key !== key));
+  /** Every edit the review table can make, in one object — the shared plate's
+   *  whole contract (src/components/nutrition/estimate-review.tsx). */
+  const handlers: ReviewHandlers = {
+    onAmountChange: (key, text) => setRows((prev) => setRowAmount(prev, key, text)),
+    onRemove: (key) => setRows((prev) => removeRow(prev, key)),
+    onToggle: (key) => setRows((prev) => toggleExpanded(prev, key)),
+    onScale: (key, factor) => setRows((prev) => scaleComposite(prev, key, factor)),
+    onScaleTo: (key, text) => setRows((prev) => scaleCompositeTo(prev, key, text)),
+    onScaleBegin: (key) => setRows((prev) => beginCompositeScale(prev, key)),
+    onScaleEnd: (key) => setRows((prev) => endCompositeScale(prev, key)),
   };
 
   const save = () => {
     if (rows.length === 0) return;
-    const items: NewMealItem[] = rows.map((row) => {
-      const p = currentPortion(row);
-      return {
-        food_id: row.foodId,
-        name: row.name,
-        amount: p.amount,
-        unit: row.unit,
-        serving_qty: null,
-        kcal: p.kcal,
-        protein_g: p.protein_g,
-        carbs_g: p.carbs_g,
-        fat_g: p.fat_g,
-        fiber_g: p.fiber_g,
-        confidence: row.confidence,
-        micros: p.micros,
-      };
-    });
+    const items: NewMealItem[] = rowsToMealItems(rows);
     const now = new Date();
     const title = phase.kind === 'review' ? phase.title : 'Meal';
     try {
@@ -492,13 +401,6 @@ export default function MealEstimateScreen() {
       </Screen>
     );
   }
-
-  // The total of the rows actually on screen, at their live amount — a ledger
-  // sums to its own total, so this moves with every edit and removal.
-  const reviewKcal = rows.reduce<number | null>((sum, row) => {
-    const kcal = currentPortion(row).kcal;
-    return kcal == null ? sum : (sum ?? 0) + kcal;
-  }, null);
 
   return (
     <Screen scroll>
@@ -786,76 +688,16 @@ export default function MealEstimateScreen() {
           {/* The plate holds in both states: with every row removed the block
               still stands where the draft record stands. (The sweep of
               2026-08-10 made it conditional; reverted at the owner's
-              instruction.) */}
+              instruction.) The tree, the disclosure and the fraction chips are
+              the SHARED review table — one copy, so this screen and
+              app/meal-revise.tsx cannot drift apart on what a composite means. */}
           <View className="mt-4">
-            <Block device="plate">
-              <SectionLabel
-                label="Items"
-                note={reviewKcal !== null ? `${fmtInt(reviewKcal)} kcal` : undefined}
-              />
-
-              {rows.length === 0 ? (
-                <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                  No items left. Discard, or go back and re-estimate.
-                </Text>
-              ) : (
-                <View className="mt-1">
-                  {rows.map((row, index) => {
-                    const p = currentPortion(row);
-                    return (
-                      <View key={row.key}>
-                        <Divider first={index === 0} />
-                        <View className="py-3">
-                          <View className="min-h-[44px] flex-row items-center gap-3">
-                            <View className="flex-1">
-                              <Text className="font-serif text-[15px] leading-5 text-ink">
-                                {row.name}
-                                <Text className="font-mono text-[10px] text-ink-muted">
-                                  {'  '}≈ {row.confidence}
-                                  {row.foodId ? ' · matched' : ''}
-                                </Text>
-                              </Text>
-                            </View>
-                            <View className="flex-row items-center gap-1">
-                              <TextInput
-                                value={row.amountText}
-                                onChangeText={(t) => setAmount(row.key, t)}
-                                keyboardType="decimal-pad"
-                                returnKeyType={KEYPAD_DONE}
-                                {...selectAllOnFocus(row.amountText)}
-                                accessibilityLabel={`${row.name} ${
-                                  row.unit === 'ml' ? 'millilitres' : 'grams'
-                                }`}
-                                className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
-                              />
-                              <Text className="font-mono text-[11px] text-ink-secondary">
-                                {row.unit}
-                              </Text>
-                            </View>
-                            <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
-                              {p.kcal != null ? fmtInt(p.kcal) : '—'}
-                            </Text>
-                            <Pressable
-                              accessibilityRole="button"
-                              accessibilityLabel={`Remove ${row.name}`}
-                              hitSlop={12}
-                              onPress={() => removeRow(row.key)}
-                              className="h-8 w-8 items-center justify-center rounded-btn active:opacity-60">
-                              <Ionicons name="close" size={16} color={palette.inkMuted} />
-                            </Pressable>
-                          </View>
-                          <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                            {p.protein_g != null ? `P ${Math.round(p.protein_g)}g` : ''}
-                            {p.carbs_g != null ? ` · C ${Math.round(p.carbs_g)}g` : ''}
-                            {p.fat_g != null ? ` · F ${Math.round(p.fat_g)}g` : ''}
-                          </Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-            </Block>
+            <ReviewItemsPlate
+              rows={rows}
+              label="Items"
+              emptyNote="No items left. Discard, or go back and re-estimate."
+              handlers={handlers}
+            />
           </View>
 
           {/* The decision, in future tense, immediately above the control that

@@ -15,15 +15,24 @@ import type { Database } from '../database';
 import { localDaysList, todayISODate } from '../date';
 import { newId } from '../id';
 import type { DateString, TimeString } from '../types';
+import { assembleMealItems } from '@/lib/nutrition/composite';
 import { isValidClock } from '@/lib/nutrition/meal-time';
-import { type Micros, parseMicros, sumMicros } from '@/lib/nutrition/micros';
+import {
+  type Micros,
+  parseMicros,
+  scaleMicros,
+  serializeMicros,
+  sumMicros,
+} from '@/lib/nutrition/micros';
 import type {
   DayTotals,
+  MealItemRow,
   MealItemWithServing,
   MealPhotoRow,
   MealRow,
   NewMeal,
   NewMealItem,
+  NewMealItemComponent,
   NewMealPhoto,
   NewMealWithItems,
   NewNutritionTargets,
@@ -148,31 +157,71 @@ function sumOrNull(values: (number | null | undefined)[]): number | null {
   return sum;
 }
 
-function insertMealItem(db: Database, mealId: string, item: NewMealItem): string {
+/** A composite header (0049) — an item supplied with parts beneath it. */
+function isCompositeInput(item: NewMealItem): boolean {
+  return Array.isArray(item.components) && item.components.length > 0;
+}
+
+/**
+ * The rows that carry NUMBERS, flattened out of a supplied tree (0049).
+ *
+ * A composite HEADER contributes nothing — its macros are NULL by invariant 2
+ * — so every place that sums a supplied list sums this instead. One helper, so
+ * the two places that pre-compute a meal's totals cannot disagree with the
+ * `is_composite = 0` filter the recompute uses.
+ */
+function leafItems(items: NewMealItem[]): NewMealItemComponent[] {
+  return items.flatMap((item) => (isCompositeInput(item) ? (item.components ?? []) : [item]));
+}
+
+function insertMealItem(
+  db: Database,
+  mealId: string,
+  item: NewMealItem,
+  /** The composite this row is a part of, or null for a top-level row. */
+  parentItemId: string | null = null
+): string {
   const id = newId(db);
+  // A HEADER carries no numbers of its own (0049, invariant 2). Not "we ignore
+  // them at read time" — they are never written, so a query that forgets the
+  // is_composite filter under-counts by zero instead of doubling the pizza.
+  const header = parentItemId === null && isCompositeInput(item);
   db.run(
     `INSERT INTO meal_items (id, meal_id, food_id, name, amount, unit, serving_qty,
-       kcal, protein_g, carbs_g, fat_g, fiber_g, confidence, micros)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       kcal, protein_g, carbs_g, fat_g, fiber_g, confidence, micros,
+       parent_item_id, is_composite)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       mealId,
-      item.food_id ?? null,
+      // A header is a dish, not a catalog food: grounding never prices one
+      // (groundMealEstimate skips an item that has components), so it carries
+      // no food_id to mislead a later re-price.
+      header ? null : (item.food_id ?? null),
       item.name,
-      item.amount ?? null,
+      // Invariant 5: the amount IS summable, so a header keeps its own null and
+      // the reader derives the total from the parts.
+      header ? null : (item.amount ?? null),
       // Absent unit is grams (0047) — every item logged before that column
       // existed was grams, and so is every caller that never states one.
       item.unit ?? 'g',
-      item.serving_qty ?? null,
-      item.kcal ?? null,
-      item.protein_g ?? null,
-      item.carbs_g ?? null,
-      item.fat_g ?? null,
-      item.fiber_g ?? null,
-      item.confidence ?? null,
-      item.micros ?? null,
+      header ? null : (item.serving_qty ?? null),
+      header ? null : (item.kcal ?? null),
+      header ? null : (item.protein_g ?? null),
+      header ? null : (item.carbs_g ?? null),
+      header ? null : (item.fat_g ?? null),
+      header ? null : (item.fiber_g ?? null),
+      header ? null : (item.confidence ?? null),
+      header ? null : (item.micros ?? null),
+      parentItemId,
+      header ? 1 : 0,
     ]
   );
+  if (header) {
+    for (const component of item.components ?? []) {
+      insertMealItem(db, mealId, component, id);
+    }
+  }
   return id;
 }
 
@@ -183,12 +232,16 @@ function insertMealItem(db: Database, mealId: string, item: NewMealItem): string
  * this in the same transaction as the item change.
  */
 function recomputeMealTotals(db: Database, mealId: string): void {
+  // `AND is_composite = 0` — CHILDREN ONLY (0049). A composite header's macros
+  // are already NULL, so this filter is the second belt rather than the first;
+  // it is here so the intent is legible at the call site and so the query stays
+  // right if a header ever acquires a number.
   db.run(
     `UPDATE meals SET
-       kcal      = (SELECT sum(kcal)      FROM meal_items WHERE meal_id = ?),
-       protein_g = (SELECT sum(protein_g) FROM meal_items WHERE meal_id = ?),
-       carbs_g   = (SELECT sum(carbs_g)   FROM meal_items WHERE meal_id = ?),
-       fat_g     = (SELECT sum(fat_g)     FROM meal_items WHERE meal_id = ?)
+       kcal      = (SELECT sum(kcal)      FROM meal_items WHERE meal_id = ? AND is_composite = 0),
+       protein_g = (SELECT sum(protein_g) FROM meal_items WHERE meal_id = ? AND is_composite = 0),
+       carbs_g   = (SELECT sum(carbs_g)   FROM meal_items WHERE meal_id = ? AND is_composite = 0),
+       fat_g     = (SELECT sum(fat_g)     FROM meal_items WHERE meal_id = ? AND is_composite = 0)
      WHERE id = ?`,
     [mealId, mealId, mealId, mealId, mealId]
   );
@@ -215,10 +268,11 @@ export function logMealWithItems(
         meal.date,
         meal.time,
         meal.name,
-        sumOrNull(meal.items.map((i) => i.kcal)),
-        sumOrNull(meal.items.map((i) => i.protein_g)),
-        sumOrNull(meal.items.map((i) => i.carbs_g)),
-        sumOrNull(meal.items.map((i) => i.fat_g)),
+        // Leaves only — a composite header contributes nothing (0049).
+        sumOrNull(leafItems(meal.items).map((i) => i.kcal)),
+        sumOrNull(leafItems(meal.items).map((i) => i.protein_g)),
+        sumOrNull(leafItems(meal.items).map((i) => i.carbs_g)),
+        sumOrNull(leafItems(meal.items).map((i) => i.fat_g)),
         meal.source ?? 'manual',
         meal.notes ?? null,
         meal.recipe_id ?? null,
@@ -340,13 +394,87 @@ export function replaceMealItems(db: Database, mealId: string, items: NewMealIte
   return itemIds;
 }
 
-/** Remove one item; the meal's totals follow (all-NULL once emptied). */
+/**
+ * Remove one item; the meal's totals follow (all-NULL once emptied).
+ *
+ * Removing a composite HEADER takes its parts with it, by the 0049 FK cascade
+ * (`PRAGMA foreign_keys = ON`, CLAUDE.md §9). Removing the LAST part of a
+ * composite removes the composite too — invariant 4: a header over nothing is a
+ * row named "Pepperoni pizza" with no numbers, which is indistinguishable from
+ * an unpriced item and would silently drop the meal out of countdown mode.
+ */
 export function removeMealItem(db: Database, itemId: string): void {
-  const row = db.get<{ meal_id: string }>('SELECT meal_id FROM meal_items WHERE id = ?', [itemId]);
+  const row = db.get<{ meal_id: string; parent_item_id: string | null }>(
+    'SELECT meal_id, parent_item_id FROM meal_items WHERE id = ?',
+    [itemId]
+  );
   if (!row) return;
   db.transaction(() => {
     db.run('DELETE FROM meal_items WHERE id = ?', [itemId]);
+    if (row.parent_item_id !== null) {
+      const left = db.get<{ n: number }>(
+        'SELECT count(*) AS n FROM meal_items WHERE parent_item_id = ?',
+        [row.parent_item_id]
+      );
+      if ((left?.n ?? 0) === 0) db.run('DELETE FROM meal_items WHERE id = ?', [row.parent_item_id]);
+    }
     recomputeMealTotals(db, row.meal_id);
+  });
+}
+
+/**
+ * "I ate half the pizza": multiply every component of one composite by
+ * `factor` — amount, macros and micros — in one transaction (0049).
+ *
+ * **Proportional is the only honest reading.** Halving the crust and not the
+ * cheese would be a claim about *which* half, which nothing knows.
+ *
+ * **Nothing is rounded on write.** The macro columns are `real` and rendering
+ * rounds, so ×0.5 then ×2 returns exactly where it started. Round here and the
+ * pizza loses a gram every time the owner changes his mind.
+ *
+ * **It scales the components' CURRENT values, not a hidden original.** There is
+ * no base column and there should not be one: the current state is the only
+ * state the record has, and a hidden original would make the visible numbers
+ * stop being the record. So a part corrected by hand first (the pepperoni taken
+ * off half) is halved from the corrected number, which is the owner's own
+ * answer to this question.
+ */
+export function scaleCompositeItem(db: Database, parentItemId: string, factor: number): void {
+  if (!Number.isFinite(factor) || factor <= 0) {
+    throw new Error(`scaleCompositeItem: ${factor} is not a portion of anything.`);
+  }
+  const parent = db.get<{ meal_id: string; is_composite: number }>(
+    'SELECT meal_id, is_composite FROM meal_items WHERE id = ?',
+    [parentItemId]
+  );
+  if (!parent || parent.is_composite !== 1) return;
+  const components = db.all<MealItemRow>(
+    'SELECT * FROM meal_items WHERE parent_item_id = ? ORDER BY created_at, rowid',
+    [parentItemId]
+  );
+  db.transaction(() => {
+    for (const c of components) {
+      const s = (v: number | null): number | null => (v == null ? null : v * factor);
+      db.run(
+        `UPDATE meal_items SET amount = ?, serving_qty = NULL, kcal = ?, protein_g = ?,
+           carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?
+         WHERE id = ?`,
+        [
+          // A component with no amount still scales its macros — an "≈300 kcal"
+          // part has no portion to move, but it is still half as much food.
+          s(c.amount),
+          s(c.kcal),
+          s(c.protein_g),
+          s(c.carbs_g),
+          s(c.fat_g),
+          s(c.fiber_g),
+          serializeMicros(scaleMicros(parseMicros(c.micros), factor)),
+          c.id,
+        ]
+      );
+    }
+    recomputeMealTotals(db, parent.meal_id);
   });
 }
 
@@ -363,13 +491,22 @@ export function listMealItems(db: Database, mealId: string): MealItemWithServing
   );
 }
 
-/** meal_id → item count for one day — the "Eaten today" list's "· N items". */
+/**
+ * meal_id → item count for one day — the "Eaten today" list's "· N items".
+ *
+ * `AND mi.parent_item_id IS NULL` — **a different filter from the sums, for a
+ * different question** (0049). The sums want LEAVES, because leaves carry the
+ * numbers; this tally wants what the collapsed ledger DRAWS, which is one row
+ * per pizza. A meal holding one three-part composite reads "1 item", not "4",
+ * because four is not a number anything on that screen shows. Both filters
+ * carry this note, because they will otherwise be "corrected" to match.
+ */
 export function mealItemCounts(db: Database, date: string): Record<string, number> {
   const rows = db.all<{ meal_id: string; n: number }>(
     `SELECT mi.meal_id, count(*) AS n
      FROM meal_items mi
      JOIN meals m ON m.id = mi.meal_id
-     WHERE m.date = ?
+     WHERE m.date = ? AND mi.parent_item_id IS NULL
      GROUP BY mi.meal_id`,
     [date]
   );
@@ -394,6 +531,13 @@ export function mealItemCounts(db: Database, date: string): Record<string, numbe
  *
  * A meal with no items at all (the manual-entry path) simply does not appear —
  * its columns are what the user typed, and NULL there is already handled.
+ *
+ * **`AND mi.is_composite = 0` (0049).** A composite HEADER's macros are NULL by
+ * design — it is a name over its parts, not a row of numbers — so without this
+ * filter every meal holding a pizza would be marked knowingly short on every
+ * metric, and the Eat tab's hero would quietly stop counting down for a meal
+ * that is fully priced. Same filter as `recomputeMealTotals`, same reason, and
+ * deliberately NOT the same filter as `mealItemCounts` (see its note).
  */
 export function partialMealMetrics(
   db: Database,
@@ -413,7 +557,7 @@ export function partialMealMetrics(
             max(mi.fat_g IS NULL)                 AS fat_g
      FROM meal_items mi
      JOIN meals m ON m.id = mi.meal_id
-     WHERE m.date = ?
+     WHERE m.date = ? AND mi.is_composite = 0
      GROUP BY mi.meal_id`,
     [date]
   );
@@ -583,6 +727,22 @@ export function relogMeal(
     return id;
   }
   // "Log again" of a cooked recipe is cooking it again — provenance carries.
+  // The TREE carries too (0049): re-logging a pizza re-logs a pizza, not four
+  // loose rows. `assembleMealItems` is the single reader that knows the shape.
+  const copy = (i: MealItemWithServing) => ({
+    food_id: i.food_id,
+    name: i.name,
+    amount: i.amount,
+    unit: i.unit,
+    serving_qty: i.serving_qty,
+    kcal: i.kcal,
+    protein_g: i.protein_g,
+    carbs_g: i.carbs_g,
+    fat_g: i.fat_g,
+    fiber_g: i.fiber_g,
+    confidence: i.confidence,
+    micros: i.micros,
+  });
   return logMealWithItems(db, {
     date,
     time,
@@ -590,20 +750,11 @@ export function relogMeal(
     notes: meal.notes,
     source,
     recipe_id: meal.recipe_id,
-    items: items.map((i) => ({
-      food_id: i.food_id,
-      name: i.name,
-      amount: i.amount,
-      unit: i.unit,
-      serving_qty: i.serving_qty,
-      kcal: i.kcal,
-      protein_g: i.protein_g,
-      carbs_g: i.carbs_g,
-      fat_g: i.fat_g,
-      fiber_g: i.fiber_g,
-      confidence: i.confidence,
-      micros: i.micros,
-    })),
+    items: assembleMealItems(items).map((node) =>
+      node.kind === 'composite'
+        ? { ...copy(node.item), components: node.components.map(copy) }
+        : copy(node.item)
+    ),
   }).mealId;
 }
 

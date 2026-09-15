@@ -736,3 +736,86 @@ An interactive estimate lands in a review because **nothing has been written yet
 - **Whether the drain fires soon enough to feel like magic** rather than like a chore. There is no reconnect event without a netinfo dependency, so the trigger is app-open and foreground — which is the moment that matters (a drain nobody is present for helps nobody), but only the phone says whether "it filled itself in while I wasn't looking" reads as trustworthy.
 - **Whether the queued screen's two sentences are the right two** at the moment a plane's wifi has just failed.
 - **`expo-file-system`'s `File.base64()`** — the one API in this round that has never run on device in this codebase. It is feature-checked (`typeof f.base64 !== 'function'` → null) and its absence degrades a photo request to its typed words, so the failure mode is a worse estimate rather than a lost meal; the first offline photograph is the test.
+
+---
+
+## 12g. Composite foods (C4, 2026-09-14, migration `0049`)
+
+Owner, backlog C4: *"Take a photo of a pepperoni pizza… one composite item (pepperoni pizza) as well as rows below that are pizza crust, cheese, and pepperoni. If I ate the whole pizza but took the pepperoni off half, I could change just one thing. If I ate only half, I could change the entire thing together."* — with the scope fence in the same sentence: **specifically composite foods like pizza, not a general modifier system.** Design: `docs/spikes/composite-foods.md` (**built**).
+
+### The schema: two columns, no new table
+
+`0049` adds `meal_items.parent_item_id` (→ `meal_items`, **`ON DELETE CASCADE`**) and `meal_items.is_composite`, plus one index. A component is a `meal_items` row in every other respect; a second table would duplicate the whole name/amount/unit/macro/micros/confidence set *and* put the parent's numbers somewhere `recomputeMealTotals` does not look.
+
+CASCADE rather than SET NULL because a component has no meaning outside its composite — the rule that prefers SET NULL protects *execution history* from *catalog churn*, and a pizza's cheese is not execution history in its own right.
+
+**Five invariants, repository-maintained and test-pinned:**
+
+| # | | |
+| --- | --- | --- |
+| 1 | `is_composite = 1` ⟹ `parent_item_id IS NULL` | **One level only.** This is what keeps C4 a composite-foods feature and not the modifier system the owner ruled out — and why no sum needs a recursive CTE and no screen needs a variable indent. |
+| 2 | a header's macros, micros, amount and confidence are **NULL** | It is a name over its parts, not a row of numbers. |
+| 3 | a component's parent exists, in the same meal, with `is_composite = 1` | A component orphaned into another meal is a corrupt ledger. |
+| 4 | a composite always has ≥ 1 component | Removing the last part removes the composite. |
+| 5 | a composite's amount sums only when every part has one **and they share a unit** | Never a fabricated total, and **nothing converts** (B2/0047). |
+
+### The roll-up fails safe, deliberately
+
+The header stores NULL **and** every sum additionally filters `is_composite = 0`. Two belts, because the risk is asymmetric: a NULL-macro header means a query that forgets the rule under-counts by **zero** (`sum()` skips NULL), while a sum-carrying header means a forgetful query silently **doubles the pizza** in the day's calories. The storage makes the dangerous mistake impossible; the filter is added anyway so the intent is legible at each call site.
+
+**Three reads, two different filters, and the difference matters:**
+
+| read | filter | the question it answers |
+| --- | --- | --- |
+| `recomputeMealTotals` | `is_composite = 0` | what carries numbers |
+| `partialMealMetrics` | `is_composite = 0` | which items are unpriced — **without it, every meal holding a pizza is marked knowingly short on every metric and the Eat tab's hero stops counting down for a meal that is fully priced.** That regression would have shipped silently; it is asserted as a number. |
+| `mealItemCounts` | `parent_item_id IS NULL` | what the collapsed ledger DRAWS — one row per pizza, so a meal with a three-part pizza and a beer reads "2 items" |
+
+The number the reader *sees* on a collapsed composite is derived at read time by `rollUpComponents` (`src/lib/nutrition/composite.ts`) and never stored, so the headline **is** the parts' sum and cannot come to disagree with them.
+
+### Editing: the owner's two sentences, made arithmetic
+
+- **"I took the pepperoni off half"** → the part's own amount, through the existing `updateMealItemPortion` / `rescaleLoggedItem`. **A part edit never moves its siblings and never pushes back onto the parent** — the parent has no numbers to push onto. It changes what the parent *displays*, which is the point.
+- **"I only ate half"** → `scaleCompositeItem(db, parentId, factor)`: every part's amount, macros and micros multiplied in one transaction. Proportional is the only honest reading — halving the crust and not the cheese would be a claim about *which* half, which nothing knows. **Nothing is rounded on write**, so ×0.5 then ×2 returns to exactly 300 g. And it scales the parts' **current** values, not a hidden original: the current state is the only state the record has (the owner's own answer), so a hand-correction made first is what gets halved.
+
+### The estimator
+
+The item schema gains `"components": [...]|null`, capped at **4 parts by the parser** rather than by the prompt hoping. When components are present the parent's own macros are **dropped, not reconciled** — one fact gets one number. A single-part array collapses to a plain item (a chevron over nothing is noise). Each part inherits the dish's `confidence`: the model stated one confidence for the pizza, and it is as true of the cheese as of the crust.
+
+**Grounding never prices a header.** The seed catalog holds whole-dish archetypes — `Pizza, cheese slice`, `Cheeseburger, fast food`, `Chicken burrito` — each one leading phrase from what a model actually writes, so a catalog re-price on the header would contradict the parts beneath it. The parts *are* grounded; a single-token name ("cheese", "crust") fails `isConfidentMatch` by design and keeps the model's numbers, which is correct.
+
+The revision path carries it too: `buildMealRevisionRequest` prints a dish with its parts indented beneath it, and `MEAL_REVISION_SYSTEM_PROMPT` gains one rail telling the model to return it as one item with those parts.
+
+### What the screens draw
+
+**The Items block stays one `Block device="plate"`.** A composite is not a nested plate — a block gets exactly one device — so the parts are ruled rows *inside the same plate* at `pl-6`, with no fill, no left rule and no new mark. Collapsed by default.
+
+`app/meal-estimate.tsx` and `app/meal-revise.tsx` now share **one** review table (`src/components/nutrition/estimate-review.tsx`) instead of two copies of the same forty lines. The tree, the disclosure, the proportional scaling and the last-part rule are exactly the kind of logic that must not drift between two screens that promise the same thing — the pipeline already says *"one schema, one parser, one review"*, and this is the review half of it.
+
+**"I ate half" is fraction chips `½ · ⅓ · ¼` plus the whole-dish amount field** (owner's choice). Both are outlined, never accent — in the review phase the accent is `Save meal` and stays there. The amount field is **live and non-compounding**: it scales from a snapshot taken when the field is focused, so typing `3`, `36`, `360` into a 720 g pizza lands on ×0.5 rather than on ×0.5 three times. `app/meal-detail.tsx` gets the same tree over a *logged* composite, with the inline `PortionEditRow` on parts and the chips calling `scaleCompositeItem`.
+
+**Three places flatten a composite, and say so:** a meal template, a recipe captured from a meal, and (for sums) the leaves — the first two because their schemas cannot express a composite, where a header with no numbers would be a lie. Nothing moves when they flatten, because the parts are exactly the rows the meal's totals were summed from. `relogMeal` does **not** flatten: logging a pizza again logs a pizza.
+
+### The estimator prompt has a ceiling now
+
+`ESTIMATOR_PROMPT_CEILING = 1000` (prose tokens, `db/coach-eval.test.mjs` §6's own estimator), asserted in `db/nutrition-v2.test.mjs` §36 against **both** estimator prompts. Until this round the estimator's system prompt was guarded by **nothing**: the two Coach ceilings measure `buildCoachSystemPrompt` and `toWireTools(COACH_TOOLS)`, and the estimator is neither — a different system prompt on a tool-less turn (`tools: []`). It grew 296 → 449 in a day (A8) and 449 → 542 when `ml` landed, unnoticed.
+
+| | prose tok |
+| --- | --- |
+| `main` at branch point | **542** |
+| plus C4 (the composite rule, the `components` clause) | **+149** → 691 |
+| plus C5 (the question rules, the `questions` clause) | **+200** → ~891 |
+| ceiling | **1,000** |
+
+The rule the Coach's budget note states applies verbatim: **the next addition trims rather than raises this**, and the two cheapest trims are named on the constant itself. The test also asserts the prompt is over 60% of the ceiling, so a ceiling nobody approaches cannot pass vacuously.
+
+### Verification
+
+`db/nutrition-v2.test.mjs` §30–36 — the header's NULL columns; the day counting 1,690 and not 11,689; **the countdown-mode guard, asserted through `dayFigure`**; the tally reading 2; the roll-up (510 g / 1,550 kcal) and its refusal to sum across units; an orphaned component emitted top-level; a part edit leaving siblings byte-identical; "ate half" halving the *corrected* pepperoni; the exact ×0.5/×2 round trip; the last-part rule and the FK cascade; the parser's drop/cap/collapse rules; grounding refusing the header against `Cheeseburger, fast food` while pricing the patty; a tree surviving `replaceMealItems`, `relogMeal` and a template flatten; both prompt ceilings. `db/screens-render.test.mjs` §7b2 — `meal-detail` over a real composite: one row, `3 parts`, the derived `1,550` beside the meal's `1,690`, the parts and chips **absent** while collapsed.
+
+### What only a device can judge
+
+- **Whether the model actually returns a `components` array**, and for the right dishes. The rule is a criterion ("parts a person would change separately"), not a dish list, and the estimator is tested here against a mock. The first photographed pizza is the test.
+- **Whether a collapsed composite reads as one thing you ate** at 375 pt, with `3 parts` in mono beside a serif name.
+- **Whether the chips feel like the sentence.** `½ ⅓ ¼` at 44 pt inside an expanded disclosure is a lot of furniture on a phone; only the hand says whether it is the fast path or clutter.
+- **The live scale in the hand** — typing into the whole-dish field and watching three rows halve underneath it is the confirmation, and a server render cannot show whether it reads as responsive or as jumpy.
