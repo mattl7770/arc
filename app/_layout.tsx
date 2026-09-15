@@ -182,7 +182,7 @@ export default function RootLayout() {
         // A protocol item's own nudge (C10). It lands on HOME, not on
         // protocol-detail: the phone buzzed to say "do this", and Home is where
         // the row is ticked. The detail screen is a reference surface.
-        router.push('/(tabs)/');
+        router.push('/');
       } else {
         router.push('/(tabs)/coach');
       }
