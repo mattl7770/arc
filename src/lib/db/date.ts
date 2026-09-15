@@ -41,15 +41,33 @@
  * in every zone; local midnight does not, in zones that shift at midnight), so
  * month ends, leap days and year rollover fall out for free.
  *
- * ## Timezone (the D4 seam)
+ * ## Timezone — the B3 × D4 rule (built 2026-09-14)
  *
- * The boundary is a LOCAL-clock rule: it reads the device's wall clock and says
- * nothing about which zone that clock is in. `users.timezone` is stored but
- * deliberately not consulted here. D4 (automatic timezone handling) builds on
- * top of this rule — it will resolve `instant → wall clock in zone Z` and feed
- * that into the one comparison in {@link logicalDate}. Every call site in the
- * app already routes through these functions, so D4 is a change to this file
- * rather than to the app.
+ * The boundary is a LOCAL wall-clock time, so **on a travel day it moves with
+ * the zone**: the day rolls over at the destination's 04:00, not at a catch-up
+ * boundary and not twice. That falls out for free — the comparison in
+ * {@link logicalDate} reads `getHours()`/`getMinutes()`, which are already the
+ * device's current zone — and it is the right rule rather than merely the cheap
+ * one: "what should I do right now" is a question about where the body is
+ * standing (CLAUDE.md §5), and a boundary left behind at home would file a
+ * destination morning under yesterday for as long as the trip lasted.
+ *
+ * Its consequence is stated rather than avoided: a day containing a zone change
+ * is `24 + Δ` hours long. ARC does not pretend otherwise — D4 annotates that
+ * day instead (docs/spikes/timezone-days.md; migration 0053).
+ *
+ * The other half of the rule is {@link forwardCursor} below: the resulting
+ * "today" is clamped MONOTONIC for writes. It may SKIP a date — eastbound over
+ * the date line genuinely misses one — but it never goes backwards.
+ *
+ * `users.timezone` is stored and still deliberately not consulted here; what
+ * D4 added is {@link logicalDateAtOffset}, which answers the same question
+ * under an EXPLICIT offset. That is what the timezone observer needs (the day a
+ * change fell on, under the old offset and under the new one) and it is here,
+ * not in the observer, for the reason this whole file exists: there are already
+ * three hand-rolled "local Y/M/D" in the tree, and a fourth inside the observer
+ * — computing the marked day differently from the boundary — is the obvious way
+ * this ships broken.
  *
  * ## The ambient boundary
  *
@@ -156,6 +174,49 @@ export function logicalDate(instant: Date, dayStartsAt: string = installedDaySta
   return formatLocalDate(
     new Date(instant.getFullYear(), instant.getMonth(), instant.getDate() - 1, 12, 0, 0, 0)
   );
+}
+
+/** A `Date` → its UTC calendar day. Private: the shifted-instant half of
+ *  {@link logicalDateAtOffset}, never a "what day is it" answer on its own. */
+function formatUtcDate(at: Date): string {
+  const year = at.getUTCFullYear();
+  const month = String(at.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(at.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * The LOGICAL day an instant belongs to **in a zone given by its offset**, as
+ * `YYYY-MM-DD` — {@link logicalDate}'s question asked of a stated zone instead
+ * of the device's current one.
+ *
+ * `offsetEastMinutes` is minutes EAST of UTC (UTC+1 = `60`, UTC−8 = `−480`) —
+ * the NEGATION of `getTimezoneOffset()`, which is the sign trap documented at
+ * `src/lib/timezone/classify.ts` and in migration 0053.
+ *
+ * Only D4's timezone observer should need this: when the device's offset
+ * changes, the day the change fell on has to be computed twice, once under each
+ * offset, and the old one is by definition no longer readable from the
+ * runtime's local getters. Everything else in the app wants
+ * {@link logicalDate}, which is this function at the CURRENT offset.
+ *
+ * Implementation note, and the reason it lives here: the instant is shifted by
+ * the offset and then read in UTC, so the answer depends on nothing ambient —
+ * the same inputs give the same day on a phone in Auckland and in the headless
+ * suite on a Windows box. The previous-day step subtracts exactly 24h, which is
+ * safe ONLY because it happens in UTC, where there are no 23- or 25-hour days.
+ * The local-components path in {@link logicalDate} cannot do that and does not.
+ */
+export function logicalDateAtOffset(
+  instant: Date,
+  offsetEastMinutes: number,
+  dayStartsAt: string = installedDayStartsAt
+): string {
+  const boundary = boundaryMinutes(dayStartsAt) ?? 0;
+  const shifted = new Date(instant.getTime() + offsetEastMinutes * 60_000);
+  const clock = shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
+  if (clock >= boundary) return formatUtcDate(shifted);
+  return formatUtcDate(new Date(shifted.getTime() - 86_400_000));
 }
 
 /**

@@ -15,6 +15,7 @@ import { setDayStartsAt } from './date';
 import { migrate, type MigrationExecutor, pendingMigrations } from './migrate';
 import { MIGRATIONS } from './migrations.generated';
 import { applyConnectionPragmas } from './pragmas';
+import { observeTimezone } from './repositories/day-meta';
 import { getDayStartsAtPreference } from './repositories/user';
 import { seedReferenceData } from './seed';
 
@@ -109,6 +110,22 @@ export function getDb(): Database {
     // reach it before their first `todayISODate()`. Settings re-installs on
     // change; a restore drops the cache and comes back through here.
     setDayStartsAt(getDayStartsAtPreference(db));
+
+    // And the timezone observer's first sample of the launch (D4, 0053), which
+    // has to come AFTER the boundary is installed — the day a change is filed
+    // under is a LOGICAL day, and installing the boundary afterwards would file
+    // the first observation of a 04:00 install under the wrong one.
+    //
+    // Here rather than only in the foreground listener because a COLD start is
+    // the common case for the thing being watched: the phone was off or ARC was
+    // reclaimed during the flight, and the first thing that happens on landing
+    // is a launch, not a foreground. Best-effort — a database that cannot
+    // record a zone change must not be a database that cannot open.
+    try {
+      observeTimezone(db);
+    } catch (error) {
+      console.warn('[timezone] could not record the offset', error);
+    }
 
     // Keep the health database OUT of the iCloud/iTunes device backup: op-sqlite
     // stores arc.db under the app's Library directory, which iOS backs up by

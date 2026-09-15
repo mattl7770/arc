@@ -2471,5 +2471,37 @@ console.log('19. C8 — the servings estimate is marked, and never pre-filled');
   refute('recipe-import review (no estimate)', bare, ['≈ estimate']);
 }
 
+// -------------------------------------------------------------------------
+console.log('\n18. D4 — the timezone line reaches Home, and only on the day it happened');
+{
+  // LAST on purpose, and it cleans up after itself: a `timezone_changes` row is
+  // read by the mission ledger (it excuses the day's skips) and by readiness's
+  // baselines, so leaving one behind would quietly re-judge §10's and §14's
+  // assertions from underneath them.
+  const today = todayISODate();
+
+  refute('home (no timezone change)', render('home', HomeScreen), ['Timezone changed']);
+
+  db.run(
+    `INSERT INTO timezone_changes
+       (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date)
+     VALUES ('render-tz', ?, -480, 60, ?, ?)`,
+    [`${today}T20:00:00.000Z`, today, today]
+  );
+  const travelled = render('home (timezone changed today)', HomeScreen);
+  expect('home (timezone changed today)', travelled, [
+    // The fact, and the consequence that makes it worth one line on the one
+    // screen that is meant to stay empty: the day is not 24 hours long.
+    'Timezone changed (UTC−8 → UTC+1)',
+    '15 hours long',
+  ]);
+  // It is a calendar fact, so it takes neither the accent nor a signal colour
+  // (mode-control.tsx states that firewall in exactly this context).
+  refute('home (timezone changed today)', travelled, ['You travelled', 'America/']);
+
+  db.run(`DELETE FROM timezone_changes WHERE id = 'render-tz'`);
+  refute('home (the row removed again)', render('home', HomeScreen), ['Timezone changed']);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

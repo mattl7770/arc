@@ -10,6 +10,7 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
+import { timezoneNotesIn } from '@/lib/db/repositories/day-meta';
 import {
   missionAdherence,
   missionBySource,
@@ -156,6 +157,12 @@ type MissionRecordView = {
     untouched: number;
   };
   sources: MissionSourceRecord[];
+  /**
+   * The days in the window the device's timezone changed on, keyed by day, each
+   * carrying the line the record states (D4 — `timezoneNotesIn`). Empty on
+   * every window that contains no change, which is nearly all of them.
+   */
+  timezoneNotes: Map<string, string>;
   /** Protocols that WILL contribute to a mission — the generator's own filter. */
   activeProtocols: number;
 };
@@ -217,6 +224,7 @@ function read(): MissionRecordView {
       untouched: planned - completed - skipped - excused - partial,
     },
     sources,
+    timezoneNotes: timezoneNotesIn(db, days[0]?.date ?? today, today),
     activeProtocols: listProtocols(db).filter((p) => p.isActive && p.versionNumber !== null).length,
   };
 }
@@ -228,6 +236,7 @@ export default function MissionHistoryScreen() {
   useFocusEffect(reload);
 
   const { today, recordStart, daysOnRecord, days, settled, adherence, totals, sources } = view;
+  const { timezoneNotes } = view;
 
   const rate = adherence !== null ? `${Math.round(adherence * 100)}%` : '—';
 
@@ -469,6 +478,15 @@ export default function MissionHistoryScreen() {
                 const judged = owed > 0;
                 const allExcused = owed === 0 && point.planned > 0;
                 const pct = judged ? Math.round((point.completed / owed) * 100) : 0;
+                // D4. A day can be excused by its MODE or by the device's
+                // timezone changing on it — two different reasons, and the row
+                // must not attribute one to the other. A timezone change
+                // deliberately sets no mode, so `point.mode` reads `normal` on a
+                // travel day and "excused · Normal" would be nonsense.
+                const timezoneNote = timezoneNotes.get(point.date) ?? null;
+                const excusedBy = getModeDefinition(point.mode).excusesSkips
+                  ? getModeDefinition(point.mode).label
+                  : 'Timezone change';
                 return (
                   <View key={point.date}>
                     <Divider first={index === 0} />
@@ -489,6 +507,15 @@ export default function MissionHistoryScreen() {
                             {allExcused ? 'All excused' : 'No plan'}
                           </Text>
                         )}
+                        {/* The calendar register (D4): what happened to the DAY,
+                            under what happened to the plan. Mono and muted —
+                            the same voice the record's own figures speak, and
+                            not a signal colour: a zone is not biology. */}
+                        {timezoneNote ? (
+                          <Text className="mt-1 font-mono text-[10px] leading-4 text-ink-muted">
+                            {timezoneNote}
+                          </Text>
+                        ) : null}
                       </View>
                       <View className="items-end">
                         <Text
@@ -505,7 +532,7 @@ export default function MissionHistoryScreen() {
                             reclassify it as work done. */}
                         {point.excused > 0 ? (
                           <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                            {`${point.excused} excused · ${getModeDefinition(point.mode).label}`}
+                            {`${point.excused} excused · ${excusedBy}`}
                           </Text>
                         ) : null}
                         {point.date === today ? (

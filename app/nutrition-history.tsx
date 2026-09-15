@@ -11,6 +11,7 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { readNutritionDay, type NutritionDayView } from '@/hooks/use-nutrition';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
+import { timezoneNotesIn } from '@/lib/db/repositories/day-meta';
 import { nutritionHistory } from '@/lib/db/repositories/nutrition';
 import { fmtInt, macroLine } from '@/lib/nutrition/format';
 import {
@@ -230,6 +231,17 @@ function dayCorner(targets: NutritionTargetsRow | null, eatenKcal: number): stri
   return `${fmtInt(eatenKcal)} of ${fmtInt(targets.kcal)} kcal`;
 }
 
+ * The window's rows plus the days the device's timezone changed on (D4). Read
+ * together so a re-read can never leave the annotation a window behind the
+ * figures it annotates.
+ */
+function read(window: Window): { days: NutritionHistoryDay[]; timezoneNotes: Map<string, string> } {
+  const db = getDb();
+  const today = todayISODate();
+  const days = nutritionHistory(db, window, today);
+  return { days, timezoneNotes: timezoneNotesIn(db, days[0]?.date ?? today, today) };
+}
+
 export default function NutritionHistoryScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ date?: string }>();
@@ -264,6 +276,13 @@ export default function NutritionHistoryScreen() {
     setView(readNutritionDay(next));
     setDays(nutritionHistory(getDb(), window, fresh));
   }, [window, day, today]);
+
+  const [view, setView] = useState(() => read(14));
+  const { days, timezoneNotes } = view;
+
+  const reload = useCallback(() => {
+    setView(read(window));
+  }, [window]);
   useFocusEffect(reload);
 
   const selectDay = (next: string) => {
@@ -534,6 +553,17 @@ export default function NutritionHistoryScreen() {
                               ) : null}
                             </>
                           )}
+                          {/* The calendar register (D4). The intake figure is
+                              left exactly as logged — this day was 24 + Δ hours
+                              long, which is why Home's verdict declines to
+                              grade it (readiness.ts `nutritionVerdict`), and
+                              the bar above is the target it was not graded
+                              against. */}
+                          {timezoneNotes.get(d.date) ? (
+                            <Text className="mt-1.5 font-mono text-[10px] leading-4 text-ink-muted">
+                              {timezoneNotes.get(d.date)}
+                            </Text>
+                          ) : null}
                         </View>
                         <Text className="font-mono text-[10px] text-ink-muted">
                           {d.mealCount > 0
