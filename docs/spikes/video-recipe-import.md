@@ -1,6 +1,6 @@
 # Spike — recipe import from a caption-less video (backlog D1)
 
-**Date:** 2026-09-14 · **Branch:** `claude/d1-video-spike` · **Status:** feasibility answer, no code written
+**Date:** 2026-09-14 · **Branch:** `claude/d1-video-spike` · **Status:** feasibility answer, no code written. **The build plan that answers it is `docs/spikes/video-recipe-import-build.md`** (2026-09-15, still unbuilt) — this file stays as the feasibility reasoning.
 **Question (owner, `docs/backlog-2026-09.md` D1):** *"Some recipe import apps are able to figure out a recipe just from the video, with no captions. I want to see if that is feasible to implement and implement if so."*
 
 ---

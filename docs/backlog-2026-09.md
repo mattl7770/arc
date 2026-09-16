@@ -60,12 +60,16 @@
 
 ## Parked — recorded, revisit later (owner's explicit instruction)
 
-- **Protocol interface rethink** — *"just make a note in project status and we will continue later, it will require much rethinking."*
-- **Modes revamp** — the shape is decided, the build is later: **status quick-buttons on the Coach screen** (Sick, Traveling, …) that send a canned prompt — *"I am traveling right now. Check what's up and adjust accordingly"* — after which the Coach adjusts mission items, the workout plan, etc. itself. Pairs with retiring the old Modes system (`claude/modes-feature-evaluation-579177`, which must renumber its migration on landing — its `0043` collides).
-- **"Slices" as a food unit** — convenient for composite foods; back burner.
-- **Whole-app read/write access for the Coach** — *"basically the entire app should be accessible for reading and writing for the coach, make a note of this and we will check on it later."*
-- **Future check-off for protocols** (C11's second toggle) — deferred by the owner until the mission has a day picker.
-- **Video recipe import build** (D1) — *later, after this batch ships*.
+**Every one of these now has a written plan** (2026-09-15/16, in `docs/spikes/`): each was drafted against `main`, attacked by an independent critic with file:line evidence, and rewritten to answer every finding. **Nothing is built**, and each ends in the handful of questions only the owner can answer.
+
+- **Protocol interface rethink** — *"just make a note in project status and we will continue later, it will require much rethinking."* → **`docs/spikes/protocol-interface-rethink.md`** — mission-first: a mission row opens its item, a per-item editor writes a version, the detail leads with now and next. 5 questions, no migration.
+- **Modes revamp** — the shape is decided, the build is later: **status quick-buttons on the Coach screen** (Sick, Traveling, …) that send a canned prompt — *"I am traveling right now. Check what's up and adjust accordingly"* — after which the Coach adjusts mission items, the workout plan, etc. itself. Pairs with retiring the old Modes system (`claude/modes-feature-evaluation-579177`, which must renumber its migration on landing — its `0043` collides). → **`docs/spikes/coach-status-buttons-modes-retirement.md`** — a five-chip rail above the Coach composer that writes the fact first and sends the prompt second, and retires day-Modes in the same migration. 5 questions.
+- **"Slices" as a food unit** — convenient for composite foods; back burner. → **`docs/spikes/slices-as-a-food-unit.md`** — a slice is a *count on a composite*, not a unit: 0047's one-unit-no-conversion rule survives intact. 4 questions.
+- **Whole-app read/write access for the Coach** — *"basically the entire app should be accessible for reading and writing for the coach, make a note of this and we will check on it later."* → **`docs/spikes/coach-whole-app-access.md`** — a domain registry behind three generic tools, funded by folding six status tools into one (the prefix gets *smaller*), with a coverage matrix of every gap. 5 questions.
+- **Future check-off for protocols** (C11's second toggle) — deferred by the owner until the mission has a day picker. → **`docs/spikes/mission-day-picker-and-future-checkoff.md`** — the picker and the check-off designed together, because neither works alone; a future day is computed on view and commits on the first tick. 4 questions, no migration.
+- **Video recipe import build** (D1) — *later, after this batch ships*. → **`docs/spikes/video-recipe-import-build.md`** — stills from a saved video read for on-screen text, behind a prompt ceiling like the estimator's. 5 questions; **the only plan needing a native module**, so it rides the next EAS build.
+- **Heart rate from ingested workouts** — D3's deferred half → **`docs/spikes/ingested-workout-heart-rate.md`** — average and maximum per ingested session, on the workout row's existing JSON; deliberately not a Home pillar. 5 questions, no migration.
+- **Timezone handling, second pass** — *"more thinking on the subject to make sure it works intelligently"* → **`docs/spikes/timezone-handling-intelligent.md`** — trips rather than seams: a run of away days, baselines excluded, reminders re-anchored. 5 questions.
 
 ---
 
