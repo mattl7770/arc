@@ -40,7 +40,13 @@ import {
   getScreening,
   markScreeningDone,
 } from '@/lib/db/repositories/screenings';
-import { addVersion, getCurrentVersion, getProtocolBySlug } from '@/lib/db/repositories/protocols';
+import {
+  addVersion,
+  createProtocolWithVersion,
+  getCurrentVersion,
+  getProtocol,
+  getProtocolBySlug,
+} from '@/lib/db/repositories/protocols';
 import {
   archiveKnowledgeEntry,
   getKnowledgeEntry,
@@ -110,13 +116,14 @@ import {
   roundToSpec,
   type MetricKey,
 } from '@/lib/log/metrics';
-import type { LogEntryType } from '@/lib/db/types';
+import type { LogEntryType, ProtocolType } from '@/lib/db/types';
 import type { SetInput, WorkoutKind } from '@/lib/exercise/types';
 import { newId } from '@/lib/db/id';
 import { parseCadenceText } from '@/lib/protocols/cadence';
 import {
   allItems,
   DAILY,
+  emptyContent,
   normalizeContent,
   parseProtocolContent,
   validateContent,
@@ -961,6 +968,68 @@ function requireProtocol(db: Database, slug: string) {
   return protocol;
 }
 
+/**
+ * The seven values `protocols.type` may take (the CHECK in 0001_init.sql).
+ *
+ * Declared as a **bare string** in the schema and validated here, rather than
+ * as an `enum`. Measured: the seven-value enum costs **52 tokens** of schema on
+ * a tool that already has 8 of headroom; a bare string plus this check costs 9,
+ * and the error names the whole set — the registry's own pattern, so the model
+ * recovers on the next turn either way.
+ */
+const PROTOCOL_TYPE_VALUES: ProtocolType[] = [
+  'daily_routine',
+  'supplement_stack',
+  'meal_template',
+  'training_block',
+  'therapy_protocol',
+  'sleep_protocol',
+  'other',
+];
+
+function requireProtocolType(raw: string | undefined): ProtocolType {
+  const value = (raw ?? '').trim();
+  if ((PROTOCOL_TYPE_VALUES as string[]).includes(value)) return value as ProtocolType;
+  throw new Error(
+    `"type" must be one of: ${PROTOCOL_TYPE_VALUES.join(', ')}. Got ${value === '' ? 'nothing' : `"${value}"`}.`
+  );
+}
+
+/**
+ * What an `update_protocol` call is: a revision of an existing protocol, or the
+ * creation of a new one.
+ *
+ * **Creation is signalled by the ABSENCE of `protocol_slug`**, not by a
+ * sentinel and not by a separate tool. That is load-bearing in one direction:
+ * a call that names a slug is ALWAYS an update, so a typo in a slug still
+ * errors with "call get_protocols first" and can never silently create a second
+ * protocol beside the one the user meant.
+ *
+ * Why not a separate `create_protocol`: ~150 tokens of schema against the
+ * headroom this budget actually has, for a tool whose body would be this one's
+ * minus a lookup. The hub's empty state has sent the owner to the Coach to
+ * "draft one" since it shipped, and no tool could write the result — the Coach
+ * drafted in prose and the path ended there.
+ */
+type ProtocolTarget =
+  | { kind: 'update'; id: string; name: string; slug: string }
+  | { kind: 'create'; name: string; type: ProtocolType };
+
+function resolveTarget(db: Database, args: Record<string, unknown>): ProtocolTarget {
+  const slug = optString(args, 'protocol_slug');
+  if (slug !== undefined) {
+    const protocol = requireProtocol(db, slug);
+    return { kind: 'update', id: protocol.id, name: protocol.name, slug: protocol.slug };
+  }
+  const name = optString(args, 'name');
+  if (name === undefined) {
+    throw new Error(
+      'Give "protocol_slug" to change an existing protocol, or "name" and "type" to create one.'
+    );
+  }
+  return { kind: 'create', name, type: requireProtocolType(optString(args, 'type')) };
+}
+
 /** The live content of the protocol a call names, for id inheritance + counts. */
 const liveContentOf = (db: Database, protocolId: string): ProtocolContent =>
   parseProtocolContent(getCurrentVersion(db, protocolId)?.content ?? null);
@@ -1010,14 +1079,15 @@ const updateProtocolTool: CoachTool = {
     // today, by the owner's call, so the flag had one legal value and cost the
     // model a decision it could get wrong in only one direction.
     'Save a new version of a protocol by its slug from get_protocols. "phases" is the COMPLETE ' +
-    'new content; it takes effect today.',
+    'new content; it takes effect today. No slug + "name" + "type" creates one.',
   inputSchema: {
     type: 'object',
     properties: {
-      protocol_slug: { type: 'string', description: 'From get_protocols.' },
+      protocol_slug: { type: 'string' },
+      name: { type: 'string' },
+      type: { type: 'string' },
       phases: {
         type: 'array',
-        description: 'Ordered; usually one.',
         items: {
           type: 'object',
           properties: {
@@ -1052,16 +1122,25 @@ const updateProtocolTool: CoachTool = {
       },
       change_notes: { type: 'string', description: 'What changed and why.' },
     },
-    required: ['protocol_slug', 'phases', 'change_notes'],
+    required: ['phases', 'change_notes'],
     additionalProperties: false,
   },
   readOnly: false,
   confirmSummary: (input, db) => {
     const args = asRecord(input);
-    const protocol = requireProtocol(db, reqString(args, 'protocol_slug'));
-    const live = liveContentOf(db, protocol.id);
+    const target = resolveTarget(db, args);
+    // A protocol that does not exist yet has no live content, and an empty
+    // document is exactly what `liveContentOf` returns for a version-less one —
+    // so the create path needs no branch here beyond which document to diff.
+    const live = target.kind === 'update' ? liveContentOf(db, target.id) : emptyContent();
     const next = parseProtocolContentInput(db, args, live);
     const count = allItems(next).length;
+    const plural = count === 1 ? '' : 's';
+    if (target.kind === 'create') {
+      // No "(was N)" and no why-line clause: there is nothing to replace and no
+      // note to lose. What the card must say is that this makes a NEW protocol.
+      return `Create "${target.name}": ${count} item${plural} · starts on today's plan`;
+    }
     const wasCount = allItems(live).length;
     const notes = optString(args, 'change_notes');
     // "(was N)" makes a destructive replace visible — the user must never
@@ -1071,30 +1150,55 @@ const updateProtocolTool: CoachTool = {
     // And a why-line change is named ({@link noteChangePhrase}): the counts
     // cannot show it, and clearing one is done by omitting it.
     return (
-      `Update "${protocol.name}": ${count} item${count === 1 ? '' : 's'} ` +
+      `Update "${target.name}": ${count} item${plural} ` +
       `(was ${wasCount})${notes ? ` — ${notes}` : ''}${noteChangePhrase(live, next)} ` +
       `· applies to today's plan now`
     );
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
-    const protocol = requireProtocol(db, reqString(args, 'protocol_slug'));
-    const content = parseProtocolContentInput(db, args, liveContentOf(db, protocol.id));
-    const versionId = addVersion(
-      db,
-      protocol.id,
-      content,
-      optString(args, 'change_notes') ?? null,
-      'ai'
-    );
-    const version = getCurrentVersion(db, protocol.id);
+    const target = resolveTarget(db, args);
+    const notes = optString(args, 'change_notes') ?? null;
+
+    if (target.kind === 'create') {
+      // ONE transaction for the protocol row and its v1 — a mid-sequence
+      // failure cannot strand a version-less protocol that a retry would
+      // duplicate. The slug is the repository's to mint, which is why the tool
+      // does not take one: a model-chosen slug would collide silently.
+      const content = parseProtocolContentInput(db, args, emptyContent());
+      const id = createProtocolWithVersion(
+        db,
+        { name: target.name, type: target.type },
+        content,
+        notes,
+        'ai'
+      );
+      const created = getProtocol(db, id);
+      // It reaches TODAY like every other protocol write, through the same
+      // diff: a protocol the user just approved that put nothing on the day
+      // would read as a broken promise.
+      const rederived = rederiveMissionForDay(db, todayISODate(context.now));
+      return json({
+        created: true,
+        protocol: created?.slug ?? null,
+        versionNumber: 1,
+        itemCount: allItems(content).length,
+        effective: 'today',
+        missionAdded: rederived.added,
+        missionRemoved: rederived.removed,
+      });
+    }
+
+    const content = parseProtocolContentInput(db, args, liveContentOf(db, target.id));
+    const versionId = addVersion(db, target.id, content, notes, 'ai');
+    const version = getCurrentVersion(db, target.id);
     // The edit reaches TODAY, through the same diff a mode change uses:
     // untouched machine-made rows follow the new content, and everything the
     // user has already acted on is preserved.
     const rederived = rederiveMissionForDay(db, todayISODate(context.now));
     return json({
       updated: true,
-      protocol: protocol.slug,
+      protocol: target.slug,
       versionId,
       versionNumber: version?.version_number ?? null,
       itemCount: allItems(content).length,

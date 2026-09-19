@@ -840,6 +840,99 @@ console.log('13b. the Coach can SEE a why-line, so an edit no longer erases ever
     : bad('clear did not clear');
 }
 
+console.log('13c. update_protocol learns to CREATE — the hub said the Coach could and it could not');
+{
+  const { db, raw } = freshDb();
+  const call = {
+    name: 'Evening wind-down',
+    type: 'daily_routine',
+    phases: [
+      {
+        items: [
+          { title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', cadence: 'daily' },
+          { title: 'Lights down', scheduled_time: '21:30', cadence: 'daily' },
+        ],
+      },
+    ],
+    change_notes: 'Drafted with you',
+  };
+
+  const card = toolByName('update_protocol').confirmSummary(call, db, CTX);
+  card === 'Create "Evening wind-down": 2 items · starts on today\'s plan'
+    ? ok(`the card says CREATE, and how many items ("${card}")`)
+    : bad('create card', card);
+
+  const out = run('update_protocol', db, call);
+  out.created === true && out.versionNumber === 1 && out.itemCount === 2 && out.effective === 'today'
+    ? ok('a call with name and type and NO slug creates the protocol and its v1')
+    : bad('create result', JSON.stringify(out));
+  const row = raw.prepare('SELECT * FROM protocols WHERE slug = ?').get(out.protocol);
+  row &&
+  row.name === 'Evening wind-down' &&
+  row.type === 'daily_routine' &&
+  row.is_active === 1 &&
+  row.current_version_id !== null
+    ? ok('…with a repository-minted slug, active, pointing at v1')
+    : bad('created row', JSON.stringify(row));
+  raw
+    .prepare('SELECT created_by FROM protocol_versions WHERE protocol_id = ?')
+    .get(row.id).created_by === 'ai'
+    ? ok('…and the version is stamped as the Coach’s')
+    : bad('authorship not ai');
+  // It reaches TODAY like every other protocol write: a protocol the user just
+  // approved that put nothing on the day would read as a broken promise.
+  out.missionAdded >= 2
+    ? ok('…and it lands on today’s mission straight away')
+    : bad('create did not reach today', JSON.stringify(out));
+
+  // A SLUG is always an update, never a create. This is what stops a typo
+  // silently minting a second protocol beside the one the user meant.
+  throws(() =>
+    run('update_protocol', db, {
+      protocol_slug: 'evening_winddown', // one character out
+      name: 'Evening wind-down',
+      type: 'daily_routine',
+      phases: [{ items: [{ title: 'X' }] }],
+      change_notes: 'typo',
+    })
+  )
+    ? ok('a typo in a slug still errors — creation needs the slug ABSENT')
+    : bad('a slug typo created a protocol');
+  raw.prepare('SELECT count(*) c FROM protocols').get().c === 1
+    ? ok('…and nothing was written')
+    : bad('a second protocol appeared');
+
+  // The seven-value enum costs 52 tokens of schema; a bare string plus an error
+  // that NAMES the set costs 9, and the model recovers either way.
+  let typeError = '';
+  try {
+    run('update_protocol', db, {
+      name: 'Bad type',
+      type: 'supplements',
+      phases: [{ items: [{ title: 'X' }] }],
+      change_notes: 'y',
+    });
+  } catch (e) {
+    typeError = e instanceof Error ? e.message : String(e);
+  }
+  typeError.includes('supplement_stack') &&
+  typeError.includes('daily_routine') &&
+  typeError.includes('other')
+    ? ok('an unknown type errors NAMING the seven values')
+    : bad('type error does not name the set', typeError);
+
+  // Neither a slug nor a name: the message says both ways in.
+  let missing = '';
+  try {
+    run('update_protocol', db, { phases: [{ items: [{ title: 'X' }] }], change_notes: 'y' });
+  } catch (e) {
+    missing = e instanceof Error ? e.message : String(e);
+  }
+  missing.includes('protocol_slug') && missing.includes('name')
+    ? ok('a call naming neither says how to do both')
+    : bad('ambiguous call message', missing);
+}
+
 console.log('14. unit preferences drive the Coach write + read path (a metric user)');
 {
   const { db, raw } = freshDb();
