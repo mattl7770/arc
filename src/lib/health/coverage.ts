@@ -30,7 +30,7 @@
  * "unknown" is worth more here than a confident guess, because these rows are
  * the input to a possible direct-vendor-API decision.
  */
-import { HEALTH_READ_IDENTIFIERS } from './mapping';
+import { HEALTH_READ_IDENTIFIERS, HEART_RATE_IDENTIFIER } from './mapping';
 
 /**
  * Whether the source writes this type into Apple Health.
@@ -117,6 +117,15 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     garmin: 'yes',
     garminNote:
       'Sessions sync as summaries (duration, distance, energy). The GPS route does NOT come across — ARC stores no route, so nothing is lost here.',
+    verdictDays: null,
+  },
+  {
+    hkIdentifier: HEART_RATE_IDENTIFIER,
+    label: 'Heart rate during workouts',
+    use: "The paired session's line and the Coach's training summary; never a daily figure",
+    garmin: 'unverified',
+    garminNote:
+      'Nothing in this repository establishes that Garmin Connect writes in-workout heart-rate samples to Apple Health at all, at what cadence, or whether it associates them with the session — none of the three was checked. A blank can also mean the read grant was declined — iOS never tells ARC. Check Settings → Privacy & Security → Health → ARC → Heart Rate before reading a zero as a Garmin fact.',
     verdictDays: null,
   },
   {

@@ -141,6 +141,13 @@ export type PairedIngest = {
   durationMin: number;
   kcal: number | null;
   distanceKm: number | null;
+  /**
+   * Heart rate during the session, as HealthKit computed it (docs §15). Both or
+   * neither: an average with no maximum is half a reading. Null when the watch
+   * exported nothing ARC could use — an absence, never a zero.
+   */
+  avgHr: number | null;
+  maxHr: number | null;
   /** The `source_device` bucket, for `deviceLabel`. */
   sourceDevice: WearableDevice;
   /** Who made the link — 'auto' from overlapping clocks, 'user' by hand. */

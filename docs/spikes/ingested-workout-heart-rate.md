@@ -1,7 +1,55 @@
 # D3b — Heart rate from ingested workouts
 
-**Status: PROPOSED** (2026-09-15; revised twice the same day after review — §4's
-"Considered and rejected" records what each round changed). The half of D3 the owner
+**Status: BUILT — 2026-09-19** (branch `claude/hr`). Drafted 2026-09-15 and revised twice the
+same day after review; §4's "Considered and rejected" records what each round changed. The
+owner then answered all five of §7's questions **(a)**, so the recommended slice was built
+exactly as written: Phase 1a (the ask), Phase 1b (the probe), Phase 2 (surface) and the twelve
+tests. **Phase 3 — zones and the intraday table — was declined and is not in scope.** No
+migration; the figure lives in the existing workout row's `metadata` JSON plus one new
+`health_sync_state` KV key.
+
+**The shipped spec of record is `docs/wearables-subapp.md` §18**, with the screen-side facts in
+`docs/exercise-subapp.md` §11.4. This file is the plan, kept as written.
+
+### Departures from the plan as written
+
+1. **§3.5's Settings docblock count.** The plan said *"twelve identifiers read as six ideas"*
+   becomes *thirteen and seven*. Both numbers were already stale when the plan was written —
+   hydration (`DietaryWater`, 2026-09-14) had made it thirteen read-only identifiers in seven
+   groups without the docblock being updated. Shipped as **fourteen and eight**, the true
+   count, rather than inheriting the drift.
+2. **§1's Coach budget figure.** The plan quoted *"last measured 9,241 of 9,250"* from a
+   comment in `db/coach-eval.test.mjs`. Measured on `main` the number is **9,236** — the
+   comment predates a later trim. Re-measured after this work: **9,236, unchanged**, confirmed
+   by running §6 against `main`'s `read-tools.ts` and against the new one. Payload cannot touch
+   the schema budget, and no tool description gained a sentence.
+3. **§3.9 test 11's render assertion, half-delivered.** The Settings fixture gains the
+   `workout_hr` row and its sentence is asserted, as planned. The *Read heart rate (90 days)*
+   **control itself is not assertable headlessly**, and the reason is structural rather than an
+   omission: it lives inside the connected plate, which under node takes the `!supported`
+   ("Rides the next build") branch because there is no HealthKit module to report —
+   `allowPublishing` has always been invisible to that suite for the same reason. Its whole
+   *visibility rule* is pure and pinned instead (`unaskedReadScopes`,
+   `db/health-mapping.test.mjs` §21), so what a device settles is whether the button is where
+   it should be, not whether it appears when it should.
+4. **`readWorkoutHr` is shared rather than duplicated.** §3.6 says both decoders "must learn
+   `hr`". They learn it through one exported helper in `wearables.ts` (the lower module, so no
+   import cycle), because two readings of "a usable figure" would agree right up until one of
+   them was tuned — the same argument §3.9 test 9 makes about the two decoders.
+
+### Verified against the installed library before building
+
+`WorkoutProxy.getStatistic(quantityType, unitOverride?)` and `getAllStatistics()` exist on
+`specs/WorkoutProxy.nitro.d.ts`; `queryStatisticsForQuantitySeparateBySource` exists on the
+module and on `specs/QuantityTypeModule.nitro.d.ts`; `FilterForSamplesBase.sources?:
+SourceProxy[]` exists on `types/QueryOptions.d.ts`; `SourceProxy.toJSON()` returns
+`{ name, bundleIdentifier }`. All four as the plan describes them.
+
+---
+
+*(The plan as written follows, unchanged.)*
+
+The half of D3 the owner
 deferred — *"ship pairing now, add HR as a follow-up once pairing is observed working on
 device"* (`docs/spikes/ingested-workouts.md:484-488`, answer 3a). Pairing shipped as `0054`;
 the installed TestFlight build predates it — *"pushed 2026-09-15, not yet built — the next

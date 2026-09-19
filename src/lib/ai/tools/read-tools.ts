@@ -36,6 +36,7 @@ import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
 import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { deviceLabel, pickDailyMetric } from '@/lib/db/repositories/wearables';
 import {
+  pairedIngestForMany,
   unpairedIngestedSessions,
   unpairedWorkoutDailyMinutes,
 } from '@/lib/db/repositories/workout-ingest';
@@ -1105,22 +1106,25 @@ const getTrainingSummary: CoachTool = {
     const weeks = days / 7;
 
     // Movements rather than a name — see the note in get_today_snapshot.
-    const recent = db
-      .all<{
-        date: string;
-        movements: string | null;
-        kind: string;
-        duration_min: number | null;
-        set_seconds: number | null;
-        set_metres: number | null;
-        away: 0 | 1;
-      }>(
-        // The two roll-ups are B1's (0046): a session whose sets carry a clock
-        // and a distance has content the movement names alone cannot report —
-        // "Treadmill Run" says nothing about whether it was 3 km or 15. Summed
-        // over the session's working sets, which is what "how far did I run on
-        // Tuesday" means when a run is logged as intervals.
-        `SELECT w.date, w.kind, w.duration_min, w.away,
+    const recent = db.all<{
+      id: string;
+      date: string;
+      movements: string | null;
+      kind: string;
+      duration_min: number | null;
+      set_seconds: number | null;
+      set_metres: number | null;
+      away: 0 | 1;
+    }>(
+      // The two roll-ups are B1's (0046): a session whose sets carry a clock
+      // and a distance has content the movement names alone cannot report —
+      // "Treadmill Run" says nothing about whether it was 3 km or 15. Summed
+      // over the session's working sets, which is what "how far did I run on
+      // Tuesday" means when a run is logged as intervals.
+      // `w.id` is selected but never emitted: it is the join key for the
+      // ingest link (0054), read for the whole page in one statement below
+      // rather than the N+1 this layer refuses.
+      `SELECT w.id, w.date, w.kind, w.duration_min, w.away,
                 (SELECT group_concat(DISTINCT s.exercise) FROM workout_sets s
                   WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS movements,
                 (SELECT sum(s.duration_sec) FROM workout_sets s
@@ -1129,9 +1133,16 @@ const getTrainingSummary: CoachTool = {
                   WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS set_metres
          FROM workouts w
          WHERE w.date >= ? ORDER BY w.date DESC, w.created_at DESC LIMIT 10`,
-        [since]
-      )
-      .map((w) => ({
+      [since]
+    );
+    // The watch's record of these same sessions, one statement for the page.
+    const pairs = pairedIngestForMany(
+      db,
+      recent.map((w) => w.id)
+    );
+    const recentSessions = recent.map((w) => {
+      const pair = pairs.get(w.id);
+      return {
         date: w.date,
         kind: w.kind,
         duration_min: w.duration_min,
@@ -1145,7 +1156,18 @@ const getTrainingSummary: CoachTool = {
         // carrying `"away": false` is twenty tokens of "no". Result fields cost
         // nothing against the schema budget — this is payload, not schema.
         ...(w.away === 1 ? { away: true } : {}),
-      }));
+        // What the watch measured (docs §15). Omitted on the same rule, and
+        // deliberately UNEXPLAINED in the tool description: the fields are
+        // self-describing, and the judgment — what 142 means for this person at
+        // this load — belongs in the model, not in a sentence pre-empting it.
+        // The turn context carries the owner's age when a birth date is set and
+        // says "profile not filled in" when it is not, so the model knows to
+        // ask rather than assume.
+        ...(pair?.avgHr != null && pair.maxHr != null
+          ? { hr: { avg: pair.avgHr, max: pair.maxHr } }
+          : {}),
+      };
+    });
 
     // Apple Health sessions with NO ARC log (0054). Same cap as recentSessions
     // — ten is what a model can use; a hundred is a bill.
@@ -1177,7 +1199,7 @@ const getTrainingSummary: CoachTool = {
               cardioMinutes: round1(cardioMinutes / weeks),
             },
       perDay: daily,
-      recentSessions: recent,
+      recentSessions,
       // The other half of the 0054 de-duplication. `totals` and `recentSessions`
       // above come from `workouts` — the sessions the owner logged. These are
       // the ones ONLY the watch knows about: real training, with no sets and no
@@ -1198,6 +1220,7 @@ const getTrainingSummary: CoachTool = {
               source: deviceLabel(s.sourceDevice),
               ...(s.kcal != null ? { kcal: Math.round(s.kcal) } : {}),
               ...(s.distanceKm != null ? { km: round1(s.distanceKm) } : {}),
+              ...(s.avgHr != null && s.maxHr != null ? { hr: { avg: s.avgHr, max: s.maxHr } } : {}),
             })),
             ingestedNote:
               'Apple Health sessions with no ARC log — already EXCLUDED from totals and ' +

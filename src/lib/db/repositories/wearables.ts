@@ -24,6 +24,8 @@ import type { WearableDataRow, WearableDevice } from '../types';
 // reader); this file owns where it is stored. `parseSyncLog` is the sole value
 // import — pure, no native seam behind it.
 import { parseSyncLog, type HealthSyncLog } from '@/lib/health/log';
+// Pure shape, no native seam behind it — ./types imports nothing at all.
+import type { HealthScopeStamp } from '@/lib/health/types';
 
 /** One row to ingest — everything wearable_data needs except the generated id. */
 export type WearableUpsert = {
@@ -467,6 +469,13 @@ export type WearableWorkout = {
   activity: string | null;
   kcal: number | null;
   /**
+   * Heart rate during the session (docs §15) — both or neither, null when the
+   * row carries no figure. This screen IS the ingest record, so what the watch
+   * measured belongs on it.
+   */
+  avgHr: number | null;
+  maxHr: number | null;
+  /**
    * True when this session is PAIRED to one the owner logged in ARC (0054) —
    * the same workout, recorded twice. The row still appears, because this screen
    * IS the ingest record and hiding a real HealthKit object from it would make
@@ -488,6 +497,29 @@ export type TimeSpan = { start: number; end: number };
 export function workoutSpan(row: WearableDataRow): TimeSpan | null {
   if (!row.start_time || !row.end_time) return null;
   return parseSpan(row.start_time, row.end_time);
+}
+
+/**
+ * Read `metadata.hr` off a decoded workout blob — both members or neither
+ * (docs/wearables-subapp.md §15).
+ *
+ * Exported for the same reason {@link workoutSpan} is: this file and
+ * `workout-ingest.ts` are two independent decoders of one JSON blob, and two
+ * readings of what counts as a usable figure would agree right up until one of
+ * them was tuned. An average with no maximum is half a reading and is refused
+ * as such, which is the rule the seam applies when it writes the key.
+ */
+export function readWorkoutHr(meta: Record<string, unknown>): {
+  avgHr: number | null;
+  maxHr: number | null;
+} {
+  const hr =
+    typeof meta.hr === 'object' && meta.hr !== null ? (meta.hr as Record<string, unknown>) : null;
+  const avg =
+    hr && typeof hr.avg === 'number' && Number.isFinite(hr.avg) ? Math.round(hr.avg) : null;
+  const max =
+    hr && typeof hr.max === 'number' && Number.isFinite(hr.max) ? Math.round(hr.max) : null;
+  return avg !== null && max !== null ? { avgHr: avg, maxHr: max } : { avgHr: null, maxHr: null };
 }
 
 /**
@@ -598,10 +630,15 @@ export function recentWearableWorkouts(db: Database, limit: number): WearableWor
   return shown.map(({ row }) => {
     let activity: string | null = null;
     let kcal: number | null = null;
+    // Read through the SAME helper the pairing decoder uses, so the two
+    // independent readers of this blob cannot disagree about what counts as a
+    // readable heart-rate figure.
+    let hr: { avgHr: number | null; maxHr: number | null } = { avgHr: null, maxHr: null };
     try {
       const meta = JSON.parse(row.metadata) as Record<string, unknown>;
       if (typeof meta.activity === 'string') activity = meta.activity;
       if (typeof meta.kcal === 'number' && Number.isFinite(meta.kcal)) kcal = meta.kcal;
+      hr = readWorkoutHr(meta);
     } catch {
       // Metadata is CHECK-validated JSON; a parse miss just drops the extras.
     }
@@ -612,9 +649,36 @@ export function recentWearableWorkouts(db: Database, limit: number): WearableWor
       startTime: row.start_time,
       activity,
       kcal,
+      avgHr: hr.avgHr,
+      maxHr: hr.maxHr,
       loggedInArc: linked.has(row.id),
     };
   });
+}
+
+/**
+ * HealthKit UUIDs of workout rows that already carry a heart-rate figure — the
+ * heart-rate probe's skip set (docs/wearables-subapp.md §15).
+ *
+ * One statement for the whole pass rather than a check per session, and it asks
+ * the stored JSON directly (`json_extract`, SQLite's json1 is built in) rather
+ * than decoding fourteen days of metadata in JS to answer a yes/no.
+ *
+ * It gates door TWO only. Door one — the figure the writer itself associated
+ * with the session — is re-read every pass for every session on purpose, and the
+ * upsert's CHANGED guard decides whether that costs a write.
+ */
+export function workoutUuidsWithHr(db: Database): Set<string> {
+  return new Set(
+    db
+      .all<{ source_raw_id: string }>(
+        `SELECT source_raw_id FROM wearable_data
+          WHERE metric_type = ? AND source_raw_id IS NOT NULL
+            AND json_extract(metadata, '$.hr') IS NOT NULL`,
+        [GLOBAL_IDENTITY_METRIC]
+      )
+      .map((r) => r.source_raw_id)
+  );
 }
 
 // --- health_sync_state (0021) — the sync cursor KV --------------------------
@@ -764,5 +828,67 @@ export function setHealthSyncLog(
     `INSERT INTO health_sync_state (id, key, value) VALUES (?, ?, ?)
      ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
     [newId(db), key, JSON.stringify(log)]
+  );
+}
+
+// --- What ARC has ASKED FOR (2026-09-19) ------------------------------------
+//
+// A fourth key in the same KV, needing no migration for the third time — that
+// is what 0021 bought by writing `value` as free JSON with no CHECK on `key`.
+//
+// It exists because of an asymmetry that bites exactly once per scope, silently:
+// adding an identifier to HEALTH_READ_IDENTIFIERS asks NOBODY anything on an
+// install that has already answered the permission sheet. iOS presents a sheet
+// only for types the user has not answered, so a late scope on an existing
+// install is requested, granted nothing, and reads empty forever — looking
+// exactly like a source that does not write it. This records which identifiers
+// a request has actually covered, so Settings can offer a control that is not a
+// no-op. It is NEVER a record of grants: iOS does not reveal those.
+
+/** The JSON under health_sync_state.value for key 'apple_health_scopes'. */
+export const HEALTH_SCOPES_KEY = 'apple_health_scopes';
+
+/**
+ * Which read scopes ARC has asked for, or null when it has never stamped one.
+ *
+ * Null and "asked for nothing" are deliberately the same answer downstream
+ * (`unaskedReadScopes` treats both as every scope unasked): the safe direction
+ * is to offer the control, because tapping it on a fully-answered device costs
+ * one no-op sheet request and nothing else.
+ */
+export function getHealthScopeStamp(
+  db: Database,
+  key: string = HEALTH_SCOPES_KEY
+): HealthScopeStamp | null {
+  const row = db.get<{ value: string }>('SELECT value FROM health_sync_state WHERE key = ?', [key]);
+  if (!row) return null;
+  try {
+    const parsed = JSON.parse(row.value) as Record<string, unknown>;
+    if (!Array.isArray(parsed.askedFor)) return null;
+    return { askedFor: parsed.askedFor.filter((id): id is string => typeof id === 'string') };
+  } catch {
+    // Corrupt reads as "never asked" — the control reappears and re-stamps.
+    return null;
+  }
+}
+
+/**
+ * Record that a permission request covering `identifiers` was PROCESSED.
+ *
+ * Accumulative rather than replacing: a pass that asked for a narrower list
+ * must not un-say what an earlier, wider one already asked for.
+ */
+export function stampHealthScopes(
+  db: Database,
+  identifiers: readonly string[],
+  key: string = HEALTH_SCOPES_KEY
+): void {
+  const asked = new Set(getHealthScopeStamp(db, key)?.askedFor ?? []);
+  for (const id of identifiers) asked.add(id);
+  const stamp: HealthScopeStamp = { askedFor: [...asked].sort() };
+  db.run(
+    `INSERT INTO health_sync_state (id, key, value) VALUES (?, ?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    [newId(db), key, JSON.stringify(stamp)]
   );
 }

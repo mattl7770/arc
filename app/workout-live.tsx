@@ -52,6 +52,7 @@ import {
   displayDistance,
   displayWeight,
   formatClock,
+  ingestDetail,
   parseClock,
   setTypeTag,
   toCanonicalKg,
@@ -576,6 +577,15 @@ function WorkoutLive({
   });
   /** Filling in a session the watch already measured: its span is a fact, not a clock to run. */
   const filling = ingest != null && !editing;
+
+  // The paired watch record of a session being EDITED — a different join from
+  // `ingest` above, which is the seeded-fill path. Two strings for the same
+  // reason the Train hub keeps two: whatever the label says, VoiceOver speaks,
+  // and "avg 142 · max 171 bpm" read aloud is tokens rather than a measurement.
+  const storedWatch = stored?.ingested ? ingestDetail(stored.ingested, units) : null;
+  const storedWatchSpoken = stored?.ingested
+    ? ingestDetail(stored.ingested, units, { spoken: true })
+    : null;
 
   // A resumed session keeps the instant it really started, so the elapsed clock
   // says how long this workout has been going, not how long the app has been
@@ -1160,6 +1170,20 @@ function WorkoutLive({
             </Text>
           </Pressable>
         </View>
+
+        {/* What the WATCH measured about the session being corrected (0054,
+            docs §15). The editor has loaded `stored.ingested` since pairing
+            shipped and never rendered it; heart rate is the first figure on it
+            worth reading while looking at the sets. One mono line, the same
+            string the Train hub prints — this screen is where the owner asks
+            "how hard was that actually", and the answer was one join away. */}
+        {editing && storedWatch ? (
+          <Text
+            accessibilityLabel={`From your watch: ${storedWatchSpoken ?? storedWatch}`}
+            className="mt-1 font-mono text-[11px] leading-4 text-ink-muted">
+            {storedWatch}
+          </Text>
+        ) : null}
 
         {/* What is being filled in, and where it came from. Mono metadata, one
             line — the owner tapped a row that said this, and the screen has to

@@ -29,6 +29,7 @@ import { attributedInstant, recentMuscleLoads } from './training-stats';
 import {
   overlapFraction,
   parseSpan,
+  readWorkoutHr,
   SAME_SESSION_OVERLAP,
   sourcePriorityOf,
   workoutSpan,
@@ -79,6 +80,12 @@ export type IngestedWorkout = {
   activityTypeRaw: number | null;
   kcal: number | null;
   distanceKm: number | null;
+  /**
+   * Heart rate as the watch measured it during the session (docs §15) — both
+   * fields or neither, nulls when the row carries no `metadata.hr` at all.
+   */
+  avgHr: number | null;
+  maxHr: number | null;
 };
 
 /** Decode one `wearable_data` workout row's metadata blob. Total — never throws. */
@@ -87,6 +94,7 @@ function decodeIngested(row: WearableDataRow): IngestedWorkout {
   let activityTypeRaw: number | null = null;
   let kcal: number | null = null;
   let distanceKm: number | null = null;
+  let hr: { avgHr: number | null; maxHr: number | null } = { avgHr: null, maxHr: null };
   try {
     const meta = JSON.parse(row.metadata) as Record<string, unknown>;
     if (typeof meta.activity === 'string') activity = meta.activity;
@@ -97,6 +105,7 @@ function decodeIngested(row: WearableDataRow): IngestedWorkout {
     if (typeof meta.distance_km === 'number' && Number.isFinite(meta.distance_km)) {
       distanceKm = meta.distance_km;
     }
+    hr = readWorkoutHr(meta);
   } catch {
     // Metadata is CHECK-validated JSON; a parse miss just drops the extras.
   }
@@ -111,6 +120,8 @@ function decodeIngested(row: WearableDataRow): IngestedWorkout {
     activityTypeRaw,
     kcal,
     distanceKm,
+    avgHr: hr.avgHr,
+    maxHr: hr.maxHr,
   };
 }
 
@@ -316,6 +327,8 @@ function toPairedIngest(row: LinkJoinRow): PairedIngest {
     durationMin: decoded.durationMin,
     kcal: decoded.kcal,
     distanceKm: decoded.distanceKm,
+    avgHr: decoded.avgHr,
+    maxHr: decoded.maxHr,
     sourceDevice: decoded.sourceDevice,
     linkedBy: row.linked_by,
   };

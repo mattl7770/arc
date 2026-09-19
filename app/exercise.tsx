@@ -537,6 +537,13 @@ export default function ExerciseScreen() {
                 // ONCE here, not twice: the Data tab's ingest list marks its copy
                 // "logged in ARC" rather than presenting a second workout.
                 const watch = s.ingested ? ingestDetail(s.ingested, units) : null;
+                // A SECOND string for VoiceOver. The displayed line is mono
+                // shorthand — "avg 142 · max 171 bpm" — and whatever this
+                // label says, VoiceOver speaks; read aloud that is a string of
+                // tokens rather than a measurement.
+                const watchSpoken = s.ingested
+                  ? ingestDetail(s.ingested, units, { spoken: true })
+                  : null;
                 return (
                   <View key={s.id}>
                     <Divider first={index === 0} />
@@ -544,7 +551,7 @@ export default function ExerciseScreen() {
                       accessibilityRole="button"
                       accessibilityLabel={`${dayLabel(s.date, today)}: ${sessionTitle(s)}, ${sessionDetail(
                         s
-                      )}${watch ? `. From your watch: ${watch}` : ''}. Open to view or edit.`}
+                      )}${watchSpoken ? `. From your watch: ${watchSpoken}` : ''}. Open to view or edit.`}
                       onPress={() =>
                         router.push({ pathname: '/workout-live', params: { workoutId: s.id } })
                       }
@@ -776,9 +783,7 @@ function TrainTodayCard({
           empty saved workout has none of. Empty is AUTHORED, never blank (§5),
           and the authored version says what would fix it. */}
       <Text className="mt-3.5 font-serif text-[14px] leading-6 text-ink-secondary">
-        {emptyRoutine
-          ? 'No exercises in this saved workout yet.'
-          : recommendation.why}
+        {emptyRoutine ? 'No exercises in this saved workout yet.' : recommendation.why}
       </Text>
 
       {/* Two doors into a session: the engine's pick, or a blank sheet. The

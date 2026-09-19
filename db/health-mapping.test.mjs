@@ -14,6 +14,9 @@ import {
   ECHO_SUPPRESSED_IDENTIFIERS,
   HEALTH_READ_IDENTIFIERS,
   HEALTH_WRITE_IDENTIFIERS,
+  HEART_RATE_IDENTIFIER,
+  HEART_RATE_UNIT,
+  unaskedReadScopes,
   ingestRejectionFor,
   isIngestableSample,
   localDayOf,
@@ -40,15 +43,22 @@ import {
   syncWindowDays,
 } from '../src/lib/health/sync.ts';
 import {
+  collectWorkouts,
+  countWriterSamples,
   healthWriteAccess,
+  HR_MIN_SAMPLES,
+  HR_SAMPLE_PROBE_LIMIT,
   isHealthKitAvailable,
   isHealthKitSupported,
   ownWriteExclusions,
   parseCategorySample,
   parseQuantitySample,
   parseStatisticSum,
+  parseWorkoutHrStatistic,
   parseWorkoutSample,
+  pickSourceStatistic,
   readQuantitySamples,
+  readWorkouts,
   requestHealthPermissions,
   saveHealthQuantity,
   withOwnWritesExcluded,
@@ -772,6 +782,11 @@ console.log('7. read scopes cover the spec');
     ...BODY_INGEST_METRICS.map((m) => m.hkIdentifier),
     'HKCategoryTypeIdentifierSleepAnalysis', // sleepDailyRows
     'HKWorkoutTypeIdentifier', // workoutRows
+    // The workout PROBE (docs §15) — `metadata.hr` on the same row workoutRows
+    // writes, never a `wearable_data` bucket of its own. Named here rather than
+    // derived, because the whole point of §20 below is that it is NOT in
+    // SAMPLE_METRICS or STATISTIC_METRICS and must never be.
+    HEART_RATE_IDENTIFIER,
   ];
   const orphaned = HEALTH_READ_IDENTIFIERS.filter((id) => !ingestPaths.includes(id));
   orphaned.length === 0
@@ -1616,6 +1631,348 @@ console.log('15. the sync log — bounded, defensive, and able to name the faili
   publishNote({ ...back.publish, armed: false, attempted: 2, succeeded: 1 }).includes('retried')
     ? ok('a partial pass says some writes were not accepted')
     : bad('partial note');
+}
+
+// ---------------------------------------------------------------------------
+// D3b — in-workout heart rate (docs/wearables-subapp.md §15).
+//
+// Everything in this feature that can go wrong is shape-reading, and shape
+// errors here fail SOFT: a `Quantity` object taken for a number yields null and
+// drops the figure with no error anywhere. So the four pure pieces — the two
+// doors' parser, door 2's source selector, the floor's count, and the loop's
+// error posture — are pinned against fixtures shaped like the real payloads,
+// with no native module present.
+console.log('16. heart-rate statistics parsing — Quantity objects, and both-or-nothing');
+{
+  const q = (quantity, unit) => ({ quantity, unit });
+
+  parseWorkoutHrStatistic({
+    averageQuantity: q(142, 'count/min'),
+    maximumQuantity: q(171, 'count/min'),
+  })?.avg === 142
+    ? ok('a count/min response reads straight through')
+    : bad('count/min', JSON.stringify(parseWorkoutHrStatistic({})));
+
+  // THE trap this whole file exists for: these are Quantity OBJECTS, never bare
+  // numbers, and reading one as a number silently drops the session.
+  parseWorkoutHrStatistic({ averageQuantity: 142, maximumQuantity: 171 }) === null
+    ? ok('bare numbers are refused — a Quantity is an object, and assuming otherwise fails soft')
+    : bad('bare numbers accepted');
+
+  parseWorkoutHrStatistic(undefined) === null && parseWorkoutHrStatistic(null) === null
+    ? ok('an absent response is an absence, not a zero')
+    : bad('absent response');
+
+  // Half a reading is not a reading. An average printed without its maximum is
+  // a claim ARC would be making on its own, in the owner's mono voice.
+  parseWorkoutHrStatistic({ averageQuantity: q(142, 'count/min') }) === null
+    ? ok('an average with no maximum yields nothing — both or neither')
+    : bad('half a reading accepted');
+
+  // HeartRate's CANONICAL HKUnit is count/s. The installed library can only
+  // answer in the requested count/min or reject, so this branch guards a
+  // library change — the same reason `durationSeconds` reads its unit.
+  parseWorkoutHrStatistic({
+    averageQuantity: q(2.37, 'count/s'),
+    maximumQuantity: q(2.85, 'count/s'),
+  })?.avg === 142
+    ? ok('count/s is converted rather than stored sixty times too small')
+    : bad(
+        'count/s',
+        JSON.stringify(parseWorkoutHrStatistic({ averageQuantity: q(2.37, 'count/s') }))
+      );
+
+  parseWorkoutHrStatistic({ averageQuantity: q(142, 'kcal'), maximumQuantity: q(171, 'kcal') }) ===
+  null
+    ? ok('a unit this parser does not know is refused, never assumed')
+    : bad('unknown unit accepted');
+}
+
+console.log('17. door 2 picks the workout’s OWN writer, and nobody else’s');
+{
+  const q = (quantity) => ({ quantity, unit: HEART_RATE_UNIT });
+  const response = (bundleIdentifier, avg, max) => ({
+    source: { bundleIdentifier, name: bundleIdentifier, toJSON: () => ({ bundleIdentifier }) },
+    averageQuantity: q(avg),
+    maximumQuantity: q(max),
+  });
+
+  // The mixed-source fixture is the whole argument for door 2's selector: its
+  // query is a DATE-only predicate, so the phone in the owner's pocket and a
+  // second wearable are both in the response set. A Garmin session showing an
+  // average dragged toward resting by the phone would be wrong in a way no
+  // screen could show.
+  const mixed = [
+    response('com.apple.health.iphone', 78, 96),
+    response('com.garmin.connect.mobile', 142, 171),
+    response('com.whoop.iphone', 133, 160),
+  ];
+  const picked = pickSourceStatistic(mixed, 'com.garmin.connect.mobile');
+  picked?.avg === 142 && picked.max === 171
+    ? ok('the Garmin figure is taken and the phone’s and the second wearable’s are not')
+    : bad('mixed-source pick', JSON.stringify(picked));
+
+  pickSourceStatistic(mixed, 'com.suunto.app') === null
+    ? ok('a writer that contributed nothing matches nothing')
+    : bad('non-matching bundle produced a figure');
+  pickSourceStatistic(mixed, null) === null
+    ? ok('a workout whose own bundle id could not be read matches nothing')
+    : bad('null bundle matched something');
+
+  // One unreadable source must never cost the others their figures.
+  const throwing = [
+    {
+      source: {
+        toJSON: () => {
+          throw new Error('hybrid object not readable');
+        },
+      },
+      averageQuantity: q(999),
+      maximumQuantity: q(999),
+    },
+    response('com.garmin.connect.mobile', 142, 171),
+  ];
+  pickSourceStatistic(throwing, 'com.garmin.connect.mobile')?.avg === 142
+    ? ok('a source whose toJSON throws is skipped, not fatal')
+    : bad('throwing source was fatal');
+}
+
+console.log('18. the door-2 floor, as the query actually delivers it');
+{
+  const GARMIN = 'com.garmin.connect.mobile';
+  const PHONE = 'com.apple.health.iphone';
+  const sample = (bundleIdentifier) => ({
+    quantity: 140,
+    startDate: local(2026, 9, 14, 17, 0),
+    endDate: local(2026, 9, 14, 17, 0),
+    sourceRevision: { source: { bundleIdentifier, name: bundleIdentifier } },
+  });
+  const page = (garmin, phone) => [
+    ...Array.from({ length: garmin }, () => sample(GARMIN)),
+    ...Array.from({ length: phone }, () => sample(PHONE)),
+  ];
+
+  HR_SAMPLE_PROBE_LIMIT === 48 && HR_MIN_SAMPLES === 6
+    ? ok('the floor is six of the span’s first forty-eight samples')
+    : bad('floor constants', `${HR_MIN_SAMPLES} of ${HR_SAMPLE_PROBE_LIMIT}`);
+
+  countWriterSamples(page(6, 42), GARMIN) >= HR_MIN_SAMPLES
+    ? ok('48 returned, six the writer’s — the figure is allowed through')
+    : bad('six should pass', countWriterSamples(page(6, 42), GARMIN));
+  countWriterSamples(page(5, 43), GARMIN) >= HR_MIN_SAMPLES
+    ? bad('five passed the floor')
+    : ok('…five does not: a number from a sparse export is a claim, and a blank line is honest');
+
+  // The multi-source UNDER-COUNT, stated rather than discovered later. If the
+  // `sources` predicate collapses (ios/PredicateHelpers.swift returns nil when
+  // the SourceProxy cast fails), the page is date-only and a chatty second
+  // writer can crowd the first 48 — here 43 of them are the phone's, leaving
+  // five, and the figure is withheld. The JS post-filter is the control, and
+  // the conservative direction of its failure is a blank, never a wrong number.
+  countWriterSamples(page(5, 43), GARMIN) === 5
+    ? ok('a collapsed source predicate under-counts rather than counting somebody else’s samples')
+    : bad('under-count', countWriterSamples(page(5, 43), GARMIN));
+  countWriterSamples(page(48, 0), null) === 0
+    ? ok('with no bundle id to match, nothing counts as the writer’s')
+    : bad('null bundle counted samples');
+}
+
+console.log('19. the probe can never sink the pass (the loop’s error posture)');
+{
+  const proxy = (uuid, bundleId) => ({
+    uuid,
+    startDate: local(2026, 9, 14, 17, 0),
+    endDate: local(2026, 9, 14, 18, 0),
+    duration: { quantity: 3600, unit: 's' },
+    workoutActivityType: 37,
+    totalEnergyBurned: { quantity: 610, unit: 'kcal' },
+    totalDistance: { quantity: 8400, unit: 'm' },
+    sourceRevision: { source: { bundleIdentifier: bundleId, name: 'Garmin Connect' } },
+  });
+
+  // Before `collectWorkouts` existed this loop had no try/catch of its own, and
+  // a throw inside it left readWorkouts entirely — which syncHealthData awaits
+  // BEFORE the upsert, the cursor and the log. Adding a per-session native call
+  // without a guard would have made that silent total failure reachable.
+  const rejecting = await collectWorkouts([proxy('a', 'com.garmin.connect.mobile')], async () => {
+    throw new Error(
+      'Unit count/min is incompatible with quantityType HKQuantityTypeIdentifierHeartRate'
+    );
+  });
+  rejecting.samples.length === 1 && rejecting.samples[0].hr === undefined
+    ? ok('a rejecting probe costs that session its hr key and nothing else — the row still lands')
+    : bad('rejecting probe', JSON.stringify(rejecting.samples));
+  'hr' in rejecting.samples[0] === false
+    ? ok('…and carries NO hr key at all, so a null member can never reach the stored JSON')
+    : bad('hr key present after rejection');
+  rejecting.error?.includes('incompatible with quantityType')
+    ? ok('…while the native error text is kept for the log row')
+    : bad('probe error not reported', rejecting.error);
+
+  // THE loud failure: a wrong unit override rejects getStatistic for EVERY
+  // workout, so door 1 is dead for the whole feature — while getAllStatistics
+  // (no override, so it cannot fail on units) keeps reporting associated:
+  // HeartRate. Only the error text tells those two states apart.
+  const bySource = await collectWorkouts(
+    [proxy('a', 'com.garmin.connect.mobile'), proxy('b', 'com.garmin.connect.mobile')],
+    async (_raw, sample) =>
+      sample.uuid === 'a'
+        ? { avg: 142, max: 171, method: 'source' }
+        : { avg: 130, max: 150, method: 'source' }
+  );
+  bySource.samples.every((s) => s.hr?.method === 'source')
+    ? ok('door 1 dead and door 2 answering yields source figures only')
+    : bad('method', JSON.stringify(bySource.samples.map((s) => s.hr)));
+
+  const plain = await collectWorkouts([proxy('a', 'com.garmin.connect.mobile')]);
+  plain.samples[0].hr === undefined && plain.error === null
+    ? ok('with no probe at all the parse is exactly what it was before this feature')
+    : bad('no-probe parse', JSON.stringify(plain));
+
+  // Under node the module is absent, so readWorkouts returns before its loop.
+  const absent = await readWorkouts(new Date(), new Date(), { hrSkip: new Set(['a']) });
+  absent.samples.length === 0 && absent.hrError === null && absent.associated === null
+    ? ok('with no native module the workout read is still a safe empty, probe and all')
+    : bad('absent read', JSON.stringify(absent));
+}
+
+console.log('20. metadata.hr is written when present and ABSENT when not');
+{
+  const workout = (hr) => ({
+    uuid: hr ? 'with-hr' : 'no-hr',
+    activityTypeRaw: 37,
+    durationSec: 3600,
+    startISO: local(2026, 9, 14, 17, 0),
+    endISO: local(2026, 9, 14, 18, 0),
+    kcal: 610,
+    distanceKm: 8.4,
+    provenance: prov('com.garmin.connect.mobile', null, 'Garmin Connect'),
+    ...(hr ? { hr } : {}),
+  });
+
+  const [withHr] = workoutRows([workout({ avg: 142, max: 171, method: 'workout' })]);
+  const [without] = workoutRows([workout(null)]);
+
+  withHr.metadata.hr?.avg === 142 && withHr.metadata.hr.max === 171
+    ? ok('a session with a figure carries it in the workout row’s metadata — no new table')
+    : bad('hr not written', JSON.stringify(withHr.metadata));
+  withHr.metadata.hr?.method === 'workout'
+    ? ok('…with the door that answered, kept as a diagnostic and never rendered')
+    : bad('method not stored');
+
+  // Asserted on the SERIALISED JSON, because that is what the CHECK-validated
+  // column actually holds and what both decoders read back. An `hr: null` here
+  // would be a zero wearing an absence's clothes.
+  const json = JSON.parse(JSON.stringify(without.metadata));
+  'hr' in json === false
+    ? ok('a session with no figure carries no hr key at all, through the JSON round trip')
+    : bad('hr key survived on an unanswered session', JSON.stringify(json));
+  JSON.stringify(without.metadata).includes('"hr"') === false
+    ? ok('…and the stored string contains no "hr" anywhere')
+    : bad('hr string present');
+}
+
+console.log('21. THE invariant: heart rate is the workout path’s, and never a daily bucket');
+{
+  HEALTH_READ_IDENTIFIERS.includes(HEART_RATE_IDENTIFIER)
+    ? ok('heart rate is a read scope')
+    : bad('heart rate is not requested');
+
+  // A daily mean of all-day heart-rate samples is a number with no meaning — a
+  // rest day and a race day produce the same kind of row — and it would sit ONE
+  // metric_type string away from `rhr`, which IS a baseline the Recovery pillar
+  // reads. This is the assertion that keeps a well-meaning edit from making it
+  // one.
+  SAMPLE_METRICS.every((m) => m.hkIdentifier !== HEART_RATE_IDENTIFIER)
+    ? ok('…and is NOT a sample metric — no daily mean, ever')
+    : bad('heart rate entered SAMPLE_METRICS');
+  STATISTIC_METRICS.every((m) => m.hkIdentifier !== HEART_RATE_IDENTIFIER)
+    ? ok('…and NOT a statistic metric either')
+    : bad('heart rate entered STATISTIC_METRICS');
+  SAMPLE_METRICS.some((m) => m.metricType === 'rhr')
+    ? ok('…while resting heart rate stays exactly where it was, a metric_type of its own')
+    : bad('rhr disappeared');
+
+  // The stamp: what ARC has ASKED for, never what was granted.
+  unaskedReadScopes(null).length === HEALTH_READ_IDENTIFIERS.length
+    ? ok('no stamp at all reads as "every scope unasked" — the control shows')
+    : bad('null stamp', unaskedReadScopes(null).length);
+  {
+    const partial = {
+      askedFor: HEALTH_READ_IDENTIFIERS.filter((id) => id !== HEART_RATE_IDENTIFIER),
+    };
+    const unasked = unaskedReadScopes(partial);
+    unasked.length === 1 && unasked[0] === HEART_RATE_IDENTIFIER
+      ? ok('a stamp from before this feature names exactly the one scope still to ask for')
+      : bad('partial stamp', unasked.join(','));
+  }
+  unaskedReadScopes({ askedFor: [...HEALTH_READ_IDENTIFIERS] }).length === 0
+    ? ok('a full stamp asks for nothing, so the control never appears')
+    : bad('full stamp still reports unasked scopes');
+  unaskedReadScopes({ askedFor: 'not an array' }).length === HEALTH_READ_IDENTIFIERS.length
+    ? ok('a malformed stamp errs toward offering the control, which is the harmless direction')
+    : bad('malformed stamp');
+}
+
+console.log('22. the log row for heart rate, and the sentence that makes "31 → 0" readable');
+{
+  const row = {
+    metric: 'workout_hr',
+    label: 'Heart rate during workouts',
+    returned: 31,
+    rows: 0,
+    exclusion: 'none',
+    error: null,
+    rejected: null,
+    detail: 'associated: ActiveEnergyBurned, HeartRate · by workout 0 · by source 0',
+  };
+
+  // `detail` is a NEW field on HealthMetricLog, and parseSyncLog re-derives
+  // every field and drops the ones it does not know — so it reaches the screen
+  // only because the parser learned it. The unknown-key assertion in §15 above
+  // must keep passing, which is what makes this worth stating.
+  const back = parseSyncLog({
+    at: '2026-09-19T09:00:00.000Z',
+    windowDays: 90,
+    rowsWritten: 4,
+    metrics: [row],
+    publish: { types: [] },
+  });
+  back?.metrics[0].detail === row.detail
+    ? ok('detail round-trips through the KV’s JSON')
+    : bad('detail dropped by the parser', JSON.stringify(back?.metrics[0]));
+  parseSyncLog({
+    at: '2026-09-19T09:00:00.000Z',
+    metrics: [{ metric: 'hrv', detail: 42 }],
+    publish: { types: [] },
+  })?.metrics[0].detail === null
+    ? ok('…and a detail of the wrong type reads as none, like every other field here')
+    : bad('non-string detail');
+
+  // The generic error branch fires only when `returned === 0`. This row's error
+  // arrives with `returned > 0` — every workout WAS read; the heart-rate call
+  // inside the loop is what was refused — so without its own branch the
+  // loudest failure in the feature would print no sentence at all.
+  const errored = metricNote({ ...row, error: 'Unit count/min is incompatible' });
+  errored?.includes('error while reading heart rate') && errored.includes('incompatible')
+    ? ok('an error is named even though 31 samples came back')
+    : bad('error note with returned > 0', errored);
+
+  const blank = metricNote(row);
+  blank?.includes('Privacy & Security') && blank.includes('Heart Rate')
+    ? ok('31 → 0 names the iOS Settings path, because a declined read grant is unknowable to ARC')
+    : bad('declined-grant sentence', blank);
+  blank?.includes('by workout 0 · by source 0')
+    ? ok('…and carries the detail line, which is what tells door 1 wrong from Garmin silent')
+    : bad('detail missing from the note', blank);
+
+  metricNote({ ...row, returned: 0, rows: 0, detail: null }) === 'Nothing recorded in this window.'
+    ? ok('a phone that has never recorded a workout gets the plain sentence, not a mystery zero')
+    : bad('no-workout note', metricNote({ ...row, returned: 0, rows: 0, detail: null }));
+  metricNote({ ...row, rows: 12, detail: 'by workout 12 · by source 0' }) ===
+  'by workout 12 · by source 0'
+    ? ok('a healthy pass says only which door answered')
+    : bad('healthy note', metricNote({ ...row, rows: 12, detail: 'by workout 12 · by source 0' }));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

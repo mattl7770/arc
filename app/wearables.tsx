@@ -196,8 +196,10 @@ export default function WearablesScreen() {
                   <View
                     accessible
                     accessibilityLabel={`${workout.activity ?? 'Workout'}, ${Math.round(workout.durationMin)} minutes, ${shortDay(workout.date)}, ${deviceLabel(workout.sourceDevice)}${
-                      workout.loggedInArc ? ', also logged in ARC — the same session' : ''
-                    }.`}
+                      workout.avgHr !== null && workout.maxHr !== null
+                        ? `, average heart rate ${workout.avgHr}, peak ${workout.maxHr} beats per minute`
+                        : ''
+                    }${workout.loggedInArc ? ', also logged in ARC — the same session' : ''}.`}
                     className="min-h-[44px] flex-row items-center gap-3 py-3">
                     <View className="flex-1">
                       <Text className="font-serif text-[15px] text-ink">
@@ -224,6 +226,15 @@ export default function WearablesScreen() {
                       {workout.kcal !== null ? (
                         <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
                           {Math.round(workout.kcal)} kcal
+                        </Text>
+                      ) : null}
+                      {/* What the heart did (docs §15). Mono, muted, no signal
+                          colour: the firewall marks biological STATE, and a
+                          bare 142 carries no verdict — what it means depends on
+                          the load, which ARC does not hold. */}
+                      {workout.avgHr !== null && workout.maxHr !== null ? (
+                        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                          {`avg ${workout.avgHr} · max ${workout.maxHr} bpm`}
                         </Text>
                       ) : null}
                     </View>

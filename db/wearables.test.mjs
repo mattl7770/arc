@@ -30,6 +30,7 @@ import {
   setHealthSyncState,
   SOURCE_PRIORITY,
   upsertWearableRows,
+  workoutUuidsWithHr,
 } from '../src/lib/db/repositories/wearables.ts';
 import {
   HEALTH_INGEST_SOURCE,
@@ -41,10 +42,13 @@ import { isHealthSyncEnabled, setHealthSyncEnabled } from '../src/lib/db/reposit
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import {
   linkIngestedWorkout,
+  pairedIngestFor,
   pairIngestedWorkouts,
   unpairedIngestedSessions,
   unpairedWorkoutDailyMinutes,
 } from '../src/lib/db/repositories/workout-ingest.ts';
+import { wearableMetricInventory } from '../src/lib/ai/series.ts';
+import { ingestDetail } from '../src/lib/exercise/format.ts';
 import {
   ARC_BUNDLE_ID,
   ARC_WRITE_METADATA_KEY,
@@ -1828,6 +1832,194 @@ console.log('21. ingested-workout pairing (0054) — one session, one link, eith
     link.overlap === null && first
       ? ok('…and records no overlap, because it needed no clock to justify it')
       : bad('hand link overlap', link.overlap);
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('22. in-workout heart rate through the store (D3b, docs §15 — no migration)');
+{
+  const NOW = new Date('2026-09-14T20:00:00.000Z');
+  const DAY = '2026-09-14';
+  const iso = (hhmm) => `${DAY}T${hhmm}:00.000Z`;
+
+  /** One ingested session, optionally carrying a heart-rate figure. */
+  const ingest = (
+    db,
+    { uuid, hr = null, kcal = 610, device = 'garmin', from = '17:00', to = '18:00' }
+  ) =>
+    upsertWearableRows(db, [
+      {
+        date: DAY,
+        metricType: 'workout',
+        value: Math.round((Date.parse(iso(to)) - Date.parse(iso(from))) / 60_000),
+        unit: 'min',
+        sourceDevice: device,
+        sourceRawId: uuid,
+        startTime: iso(from),
+        endTime: iso(to),
+        metadata: {
+          activity: 'Running',
+          activity_type_raw: 37,
+          kcal,
+          distance_km: 8.4,
+          ...(hr ? { hr } : {}),
+          hk: { source: 'Garmin Connect' },
+        },
+      },
+    ]);
+
+  // --- the skip set: door 2 is asked once, door 1 every pass ----------------
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'answered', hr: { avg: 142, max: 171, method: 'source' } });
+    ingest(db, { uuid: 'silent' });
+
+    const skip = workoutUuidsWithHr(db);
+    skip.has('answered') && !skip.has('silent') && skip.size === 1
+      ? ok('a row carrying a figure is in the skip set and one without it is not')
+      : bad('skip set', [...skip].join(','));
+
+    // A session door 2 found nothing for is re-probed every pass while it is in
+    // the window — which is how a late Connect export lands — and frozen when
+    // it leaves. Nothing about the skip set stops that.
+    ingest(db, { uuid: 'silent', hr: { avg: 128, max: 150, method: 'source' } });
+    workoutUuidsWithHr(db).size === 2
+      ? ok('…and a late figure moves that session into the skip set on the next pass')
+      : bad('late figure not picked up');
+  }
+
+  // --- the CHANGED guard: a figure landing is ONE update, counted once ------
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'late' }) === 1
+      ? ok('the first sync of a session writes one row')
+      : bad('initial insert count');
+    ingest(db, { uuid: 'late', hr: { avg: 142, max: 171, method: 'workout' } }) === 1
+      ? ok('a later pass finding heart rate is ONE update, counted in rowsWritten')
+      : bad('hr landing not counted');
+    ingest(db, { uuid: 'late', hr: { avg: 142, max: 171, method: 'workout' } }) === 0
+      ? ok('…and the same row unchanged writes nothing, so a quiet re-sync reports zero')
+      : bad('unchanged row was rewritten');
+  }
+
+  // --- it is NEVER a metric of its own --------------------------------------
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'a', hr: { avg: 142, max: 171, method: 'workout' } });
+    ingest(db, { uuid: 'b', hr: { avg: 128, max: 150, method: 'source' } });
+    const inventory = wearableMetricInventory(db);
+    // The Coach's readable metric set is DERIVED from the data, so a heart-rate
+    // bucket would appear in it the moment one existed — one metric_type string
+    // away from `rhr`, which IS a baseline. There is nothing to derive it from:
+    // the figure lives inside a workout row's metadata.
+    inventory.every((m) => !m.metricType.includes('heart') && m.metricType !== 'hr')
+      ? ok('a store full of heart-rate figures still lists no heart-rate metric')
+      : bad('inventory grew a heart-rate metric', inventory.map((m) => m.metricType).join(','));
+    inventory.length === 1 && inventory[0].metricType === 'workout'
+      ? ok('…only the workout rows themselves, exactly as before the feature')
+      : bad('inventory', inventory.map((m) => m.metricType).join(','));
+  }
+
+  // --- both readers, and the two strings ------------------------------------
+  {
+    const { db } = freshDb();
+    const workoutId = logWorkout(db, {
+      date: DAY,
+      kind: 'cardio',
+      durationMin: 60,
+      startedAt: iso('17:00'),
+    });
+    ingest(db, { uuid: 'paired', hr: { avg: 142, max: 171, method: 'workout' } });
+    pairIngestedWorkouts(db, NOW);
+
+    const paired = pairedIngestFor(db, workoutId);
+    paired?.avgHr === 142 && paired.maxHr === 171
+      ? ok('the figure reaches the paired session THROUGH the link — nothing is copied (0054)')
+      : bad('paired hr', JSON.stringify(paired));
+
+    const units = { weight: 'lb', distance: 'mi', volume: 'floz', length: 'in', temperature: 'f' };
+    const line = ingestDetail(paired, units);
+    const spoken = ingestDetail(paired, units, { spoken: true });
+    line?.includes('avg 142 · max 171 bpm')
+      ? ok('…and the hub line prints it after the distance, in the mono shorthand')
+      : bad('display line', line);
+    spoken?.includes('average heart rate 142, peak 171 beats per minute')
+      ? ok('…while the spoken form says it in words, because VoiceOver reads the label')
+      : bad('spoken line', spoken);
+    line !== spoken
+      ? ok('…and the two strings are genuinely different, not one variable feeding both')
+      : bad('one string for both');
+
+    // The Data tab's own decoder is a SECOND reader of the same blob.
+    const [listed] = recentWearableWorkouts(db, 5);
+    listed.avgHr === 142 && listed.maxHr === 171
+      ? ok('the wearables list decodes the same figure through its own parse')
+      : bad('wearables row hr', JSON.stringify(listed));
+  }
+
+  // --- an absence is an absence ---------------------------------------------
+  {
+    const { db } = freshDb();
+    const workoutId = logWorkout(db, {
+      date: DAY,
+      kind: 'strength',
+      durationMin: 60,
+      startedAt: iso('17:00'),
+    });
+    ingest(db, { uuid: 'silent' });
+    pairIngestedWorkouts(db, NOW);
+    const paired = pairedIngestFor(db, workoutId);
+    paired?.avgHr === null && paired.maxHr === null
+      ? ok('a session with no figure reads null on both fields, never zero')
+      : bad('absent hr', JSON.stringify(paired));
+    const units = { weight: 'lb', distance: 'mi', volume: 'floz', length: 'in', temperature: 'f' };
+    ingestDetail(paired, units)?.includes('bpm') === false
+      ? ok('…and the line simply omits the clause')
+      : bad('bpm printed for an absent figure');
+    recentWearableWorkouts(db, 5)[0].avgHr === null
+      ? ok('…on the wearables row too')
+      : bad('wearables row invented a figure');
+
+    // Half a reading is refused by BOTH decoders, which is why they share one
+    // helper: two readings of "usable figure" would agree until one was tuned.
+    ingest(db, { uuid: 'silent', hr: { avg: 142 } });
+    pairedIngestFor(db, workoutId)?.avgHr === null &&
+    recentWearableWorkouts(db, 5)[0].avgHr === null
+      ? ok('an average with no maximum is refused identically by both decoders')
+      : bad('half a reading accepted somewhere');
+  }
+
+  // --- the documented edge, from the plan: linked to the loser --------------
+  {
+    const { db } = freshDb();
+    const workoutId = logWorkout(db, {
+      date: DAY,
+      kind: 'cardio',
+      durationMin: 60,
+      startedAt: iso('17:00'),
+    });
+    // The phone's copy lands first and pairs; the watch's arrives later. 0054
+    // never revisits a link, so the paired line keeps reading the phone's row
+    // while the Data tab's duplicate collapse shows the watch's. Documented
+    // here rather than fixed — heart rate simply inherits the behaviour.
+    ingest(db, { uuid: 'phone', device: 'other', from: '17:00', to: '18:00' });
+    pairIngestedWorkouts(db, NOW);
+    ingest(db, {
+      uuid: 'watch',
+      device: 'garmin',
+      from: '17:02',
+      to: '17:59',
+      hr: { avg: 142, max: 171, method: 'workout' },
+    });
+    pairIngestedWorkouts(db, NOW);
+
+    const paired = pairedIngestFor(db, workoutId);
+    const [listed] = recentWearableWorkouts(db, 5);
+    paired?.avgHr === null && listed.avgHr === 142
+      ? ok(
+          'a link made to a phone row is not revisited — the list shows the watch, the pair the phone'
+        )
+      : bad('link-to-loser edge changed', JSON.stringify({ paired, listed }));
   }
 }
 

@@ -138,11 +138,31 @@ export function sessionDetail(session: RecentSession): string {
  * ARC's elapsed clock does not) reads as a contradiction rather than as two
  * measurements.
  */
-export function ingestDetail(ingest: PairedIngest, units: UnitPreferences): string | null {
+export function ingestDetail(
+  ingest: PairedIngest,
+  units: UnitPreferences,
+  options: { spoken?: boolean } = {}
+): string | null {
   const parts: string[] = [deviceLabel(ingest.sourceDevice)];
   if (ingest.kcal != null) parts.push(`${Math.round(ingest.kcal)} kcal`);
   if (ingest.distanceKm != null && ingest.distanceKm > 0) {
     parts.push(formatDistance(ingest.distanceKm * M_PER_KM, units));
+  }
+  // Heart rate last, after distance (docs §15). No signal colour and no
+  // interpretation: the firewall marks biological STATE, and a bare 142 carries
+  // no verdict — what it means depends on the load, which ARC does not hold.
+  //
+  // TWO strings, because this one feeds a VoiceOver label as well as a line.
+  // "avg 142 · max 171 bpm" read aloud is a string of tokens; the spoken form
+  // says it in words. Both doors are worded identically on purpose: they are
+  // the same time-weighted average over the same writer's exported samples, and
+  // marking one would claim a distinction the numbers do not have.
+  if (ingest.avgHr != null && ingest.maxHr != null) {
+    parts.push(
+      options.spoken
+        ? `average heart rate ${ingest.avgHr}, peak ${ingest.maxHr} beats per minute`
+        : `avg ${ingest.avgHr} · max ${ingest.maxHr} bpm`
+    );
   }
   // The source alone is not a measurement — if the watch gave nothing but its
   // own name there is nothing to put beside what the owner typed.

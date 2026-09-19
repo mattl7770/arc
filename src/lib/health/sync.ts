@@ -41,6 +41,7 @@ import {
   setHealthSyncLog,
   setHealthSyncState,
   upsertWearableRows,
+  workoutUuidsWithHr,
   type WearableUpsert,
 } from '@/lib/db/repositories/wearables';
 import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
@@ -59,7 +60,13 @@ import {
   statisticDailyRows,
   workoutRows,
 } from './mapping';
-import { emptyPublishLog, rejectedTotal, type HealthMetricLog, type HealthSyncLog } from './log';
+import {
+  emptyPublishLog,
+  rejectedTotal,
+  WORKOUT_HR_METRIC,
+  type HealthMetricLog,
+  type HealthSyncLog,
+} from './log';
 import {
   isHealthKitAvailable,
   readDailyCumulative,
@@ -217,9 +224,27 @@ function emitSynced(): void {
  * per-metric failures degrade to empty reads inside the seam, so a single bad
  * identifier can't sink the pass.
  */
+export type SyncOptions = {
+  /**
+   * Re-aggregate exactly this many days instead of whatever {@link
+   * syncWindowDays} would choose. The one caller is Settings' *Read heart rate
+   * (90 days)* control, which needs the pass to revisit history a newly-granted
+   * scope was never asked for during.
+   *
+   * An override rather than clearing `firstSyncedAt`: that cursor's re-stamp is
+   * conditional on `written > 0` precisely so a denied permission cannot burn
+   * the one-time backfill, and clearing it would hand that guard a second,
+   * unrelated job. `lastSyncedAt` is still stamped as on any pass, which only
+   * resets the elapsed-time widening below — harmless, since the pass just
+   * covered 90 days.
+   */
+  windowDays?: number;
+};
+
 export async function syncHealthData(
   db: Database,
-  now: Date = new Date()
+  now: Date = new Date(),
+  options: SyncOptions = {}
 ): Promise<HealthSyncResult> {
   if (!isHealthSyncEnabled(db)) {
     return { status: 'disabled', rowsWritten: 0, samplesPublished: 0, syncedAt: null };
@@ -229,7 +254,10 @@ export async function syncHealthData(
   }
 
   const state = getHealthSyncState(db);
-  const windowDays = syncWindowDays(state, now);
+  const windowDays =
+    options.windowDays !== undefined && Number.isFinite(options.windowDays)
+      ? Math.min(MAX_SYNC_DAYS, Math.max(1, Math.trunc(options.windowDays)))
+      : syncWindowDays(state, now);
   const days = syncDayWindows(now, windowDays);
   const span = sampleQuerySpan(now, windowDays);
 
@@ -309,7 +337,12 @@ export async function syncHealthData(
     rejected: null,
   });
 
-  const workouts = await readWorkouts(span.start, span.end);
+  // Sessions whose stored row already carries a heart-rate figure. Door 2 — the
+  // derived per-source fallback — is skipped for these; door 1, the writer's own
+  // association, still runs for every session, because that is the path by which
+  // a revised association can still land.
+  const hrSkip = workoutUuidsWithHr(db);
+  const workouts = await readWorkouts(span.start, span.end, { hrSkip });
   const workoutMapped = workoutRows(workouts.samples);
   rows.push(...workoutMapped);
   metrics.push({
@@ -320,6 +353,31 @@ export async function syncHealthData(
     exclusion: workouts.exclusion,
     error: workouts.error,
     rejected: null,
+  });
+
+  // In-workout heart rate gets its OWN row (docs §15). `returned` is the
+  // workouts examined this pass and `rows` the ones that produced a figure —
+  // the direction HealthMetricLog declares and Settings renders as
+  // `returned → rows`, so "31 → 0" is readable as "every session was seen, none
+  // had a heart rate". `exclusion: 'none'`: statistics carry no own-write
+  // exclusion, exactly as `readDailyCumulative` reports.
+  const hrRows = workouts.samples.filter((w) => w.hr !== undefined);
+  const byWorkout = hrRows.filter((w) => w.hr?.method === 'workout').length;
+  metrics.push({
+    metric: WORKOUT_HR_METRIC,
+    label: 'Heart rate during workouts',
+    returned: workouts.samples.length,
+    rows: hrRows.length,
+    exclusion: 'none',
+    error: workouts.hrError,
+    rejected: null,
+    detail: [
+      workouts.associated ? `associated: ${workouts.associated.join(', ') || 'none'}` : null,
+      `by workout ${byWorkout}`,
+      `by source ${hrRows.length - byWorkout}`,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(' · '),
   });
 
   // The body channel's INBOUND half (docs §11). It lands in `body_metrics`, not
