@@ -1,9 +1,19 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
-import { Alert, Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 
-import { keypadDoneKey } from '@/components/ui/keyboard';
+import { CadenceControl } from '@/components/protocols/cadence-control';
+import {
+  Chip,
+  FormField,
+  normalizeTime,
+  parseDays,
+  ProblemLine,
+  SaveButton,
+  SaveFootnote,
+} from '@/components/protocols/form-controls';
+import { TimeControl } from '@/components/protocols/time-control';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
@@ -19,10 +29,9 @@ import {
 } from '@/lib/db/repositories/protocols';
 import type { CheckoffMode, ProtocolType } from '@/lib/db/types';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
-import { WEEKDAY_LABELS } from '@/lib/protocols/cadence';
 import { normalizeContent, validateContent } from '@/lib/protocols/content';
-import { cadenceLabel, PROTOCOL_TYPES } from '@/lib/protocols/format';
-import type { Cadence, CadenceKind, ProtocolContent } from '@/lib/protocols/types';
+import { PROTOCOL_TYPES } from '@/lib/protocols/format';
+import type { Cadence, ProtocolContent } from '@/lib/protocols/types';
 import { type ProtocolDetail, useProtocol } from '@/hooks/use-protocols';
 
 /**
@@ -143,424 +152,9 @@ function initialPhases(detail: ProtocolDetail | null): EditPhase[] {
   }));
 }
 
-/** "8:05" / "08:05" → "08:05"; null if it isn't a real clock time. */
-function normalizeTime(text: string): string | null {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
-  if (!m) return null;
-  const hours = Number(m[1]);
-  const minutes = Number(m[2]);
-  if (hours > 23 || minutes > 59) return null;
-  return `${String(hours).padStart(2, '0')}:${m[2]}`;
-}
-
-/** A whole number of days ≥ 1, or null for "not a length". */
-function parseDays(text: string): number | null {
-  const trimmed = text.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const n = Number(trimmed);
-  return n >= 1 ? n : null;
-}
-
 /** "2026-08-25" and nothing else. Blank is not a date; the caller decides. */
 function isDate(text: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(text.trim());
-}
-
-/** A neutral selection chip — the label voice, square-ish, no hue. */
-function Chip({
-  label,
-  on,
-  onPress,
-  accessibilityLabel,
-  compact,
-}: {
-  label: string;
-  on: boolean;
-  onPress: () => void;
-  accessibilityLabel?: string;
-  /** Tighter padding for the cadence controls, where seven sit on one row. */
-  compact?: boolean;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected: on }}
-      accessibilityLabel={accessibilityLabel ?? label}
-      onPress={onPress}
-      className={`min-h-[44px] justify-center rounded-btn border py-2 active:bg-paper-dim ${
-        compact ? 'px-2' : 'px-3'
-      } ${on ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'}`}>
-      <Text
-        className={`font-label ${compact ? 'text-[12px]' : 'text-[13px]'} ${
-          on ? 'font-semibold text-ink' : 'text-ink-secondary'
-        }`}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-type FieldProps = {
-  value: string;
-  onChange: (next: string) => void;
-  placeholder?: string;
-  keyboardType?: TextInputProps['keyboardType'];
-  mono?: boolean;
-  maxLength?: number;
-  multiline?: boolean;
-  /**
-   * Set ONLY when this field is a child of a `flex-row` and should take the
-   * remaining width. See the note on {@link FormField} — passing it in a column
-   * is the bug that made this screen draw boxes over other boxes.
-   */
-  fill?: boolean;
-  accessibilityLabel: string;
-};
-
-/**
- * One recessed field.
- *
- * ## `flex-1` in a column is what drew "boxes covering other boxes"
- *
- * Every field used to be wrapped in `<View className="flex-1">`, unconditionally
- * — and most of this screen's fields are children of a **column**, not a row.
- *
- * In a column container the main axis is vertical, so `flex-1` resolves to
- * `flexBasis: 0%` **on the height**. The parent (`<View className="mt-2">`) has
- * no height of its own and sizes to its content, so there is no free space for
- * `flexGrow` to claim, and the wrapper lays out at **zero height**. Views do not
- * clip by default, so the `TextInput` inside it still drew at its natural
- * height — on top of whatever section came next. The description field is the
- * worst case, because it is `multiline` with a 64pt floor: 64pt of bordered
- * input painted over the block below it.
- *
- * That is the report, exactly: boxes covering other boxes, on the New Protocol
- * screen specifically — which is the path where the fields are empty and the
- * collapse is total.
- *
- * So the flex is opt-in and named for what it is: `fill` belongs to a field
- * sharing a **row**, and nowhere else. The wrapper view is gone entirely — a
- * `TextInput` takes the flex directly, one view less per field.
- */
-function FormField({
-  value,
-  onChange,
-  placeholder,
-  keyboardType,
-  mono,
-  maxLength,
-  multiline,
-  fill,
-  accessibilityLabel,
-}: FieldProps) {
-  return (
-    <TextInput
-      value={value}
-      onChangeText={onChange}
-      placeholder={placeholder}
-      placeholderTextColor={palette.inkMuted}
-      keyboardType={keyboardType}
-      returnKeyType={keypadDoneKey(keyboardType)}
-      maxLength={maxLength}
-      multiline={multiline}
-      accessibilityLabel={accessibilityLabel}
-      className={`border border-paper-deep bg-paper-dim px-3.5 py-3 text-[15px] text-ink ${
-        fill ? 'flex-1' : ''
-      } ${mono ? 'font-mono' : ''} ${multiline ? 'max-h-28 min-h-[64px] leading-5' : ''}`}
-    />
-  );
-}
-
-/**
- * Anchor times offered as one tap each (C9).
- *
- * Six, three hours apart across the waking day. They are deliberately round and
- * evenly spaced rather than tuned to any routine: a preset that guesses at the
- * user's morning would be wrong for most items and would read as advice. These
- * are a coarse jump to the right part of the day; the field beside them is how
- * you say 07:45.
- */
-const TIME_PRESETS = ['07:00', '09:00', '12:00', '15:00', '18:00', '21:00'] as const;
-
-/**
- * When one item happens, and whether it nudges (C9 + C10).
- *
- * Collapsed to a single line that STATES the time, exactly like
- * {@link CadenceControl} one row below it — the two lines under an item read
- * "when" then "how often", which is the order the questions come in. A stack of
- * eight items would otherwise carry eight open time fields, and the common case
- * (no time at all) would cost as much room as the rare one.
- *
- * **Reused, not invented.** The typed field is the app's existing time entry —
- * mono, `numbers-and-punctuation`, five characters — as on the appointment form
- * and in the meal editor. That keyboard is a FULL keyboard and already carries
- * a return key, which is why it does not take `KEYPAD_DONE`; `FormField` derives
- * that from `keyboardType` so a field cannot get the rule half-right
- * (src/components/ui/keyboard.ts).
- *
- * **Clearing is a first-class action**, not a matter of selecting five
- * characters and deleting them on a phone: an untimed item is a normal thing to
- * want, and it sorts to the end of the day exactly as it always has
- * (src/lib/home/derive-mission.ts). Clearing also turns the reminder off,
- * because a notification with no moment to fire at is an intent the scheduler
- * can never honour — `normalizeItem` enforces the same thing at the storage
- * boundary, so the two cannot disagree.
- */
-function TimeControl({
-  time,
-  remind,
-  onChange,
-  itemLabel,
-}: {
-  time: string;
-  remind: boolean;
-  onChange: (next: { time: string; remind: boolean }) => void;
-  itemLabel: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const normalized = normalizeTime(time);
-  const timed = normalized !== null;
-  const spoken = time.trim() === '' ? 'any time' : time;
-
-  return (
-    <View className="mt-2">
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityLabel={`Time for ${itemLabel}: ${spoken}${
-          remind ? ', reminder on' : ''
-        }. ${open ? 'Hide options' : 'Change'}`}
-        onPress={() => setOpen((shown) => !shown)}
-        className="min-h-[44px] flex-row items-center gap-2 py-2 active:opacity-60">
-        <Ionicons name="time-outline" size={15} color={palette.inkMuted} />
-        <Text className="flex-1 text-[12px] text-ink-secondary">
-          {/* A clock time is a measured value, so it is set in mono; "Any time"
-              is a label, so it is not. */}
-          {time.trim() === '' ? (
-            <Text className="font-label">Any time</Text>
-          ) : (
-            <Text className="font-mono">{time}</Text>
-          )}
-          {remind ? <Text className="font-label">{'  ·  Reminder'}</Text> : null}
-        </Text>
-        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={13} color={palette.inkMuted} />
-      </Pressable>
-
-      {open ? (
-        <View className="mt-1">
-          <View className="flex-row flex-wrap gap-1.5">
-            {TIME_PRESETS.map((preset) => (
-              <Chip
-                key={preset}
-                label={preset}
-                compact
-                on={normalized === preset}
-                onPress={() => onChange({ time: preset, remind })}
-              />
-            ))}
-            <Chip
-              label="Clear"
-              compact
-              on={false}
-              accessibilityLabel="Clear the time"
-              onPress={() => onChange({ time: '', remind: false })}
-            />
-          </View>
-
-          <View className="mt-2 flex-row items-center gap-2">
-            <View className="w-24">
-              <FormField
-                value={time}
-                onChange={(next) => onChange({ time: next, remind })}
-                placeholder="07:30"
-                keyboardType="numbers-and-punctuation"
-                maxLength={5}
-                mono
-                accessibilityLabel="Item time"
-              />
-            </View>
-            {timed ? (
-              <Chip
-                label={remind ? 'Reminder on' : 'Remind me'}
-                on={remind}
-                accessibilityLabel={`Reminder at ${normalized} for ${itemLabel}${
-                  remind ? ', on' : ', off'
-                }`}
-                onPress={() => onChange({ time, remind: !remind })}
-              />
-            ) : (
-              /* Authored, never blank: the slot says why the control it would
-                 otherwise hold is not here. */
-              <Text className="flex-1 font-serif text-[12px] leading-4 text-ink-muted">
-                Give it a time to set a reminder.
-              </Text>
-            )}
-          </View>
-
-          {remind ? (
-            /* The same one-line device the quota control uses, and for the same
-               reason: the control cannot state its own limits. Whether a phone
-               alert actually fires is a runtime fact (the module in the build,
-               permission granted, a moment still ahead) — see
-               src/lib/notifications/reminders.ts — so this says what ARC will
-               ASK for and promises nothing. */
-            <Text className="mt-1.5 font-serif text-[11.5px] leading-4 text-ink-muted">
-              iOS alerts at {normalized} on the days this lands, unless you have already ticked it.
-              Notifications must be allowed for ARC.
-            </Text>
-          ) : null}
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-/** The cadence kinds, in the order the control presents them. */
-const CADENCE_KINDS: { kind: CadenceKind; label: string }[] = [
-  { kind: 'daily', label: 'Every day' },
-  { kind: 'weekdays', label: 'Certain days' },
-  { kind: 'every_n_days', label: 'Every N days' },
-  { kind: 'quota', label: 'N a week' },
-];
-
-/** Switching kind keeps a sensible default rather than an empty control. */
-function cadenceOfKind(kind: CadenceKind, previous: Cadence): Cadence {
-  switch (kind) {
-    case 'daily':
-      return { kind: 'daily' };
-    case 'weekdays':
-      return previous.kind === 'weekdays' ? previous : { kind: 'weekdays', days: [1, 3, 5] };
-    case 'every_n_days':
-      return previous.kind === 'every_n_days' ? previous : { kind: 'every_n_days', n: 2 };
-    case 'quota':
-      return previous.kind === 'quota' ? previous : { kind: 'quota', per_week: 3 };
-  }
-}
-
-/**
- * How often one item comes round.
- *
- * Collapsed to a single label-voice line that STATES the cadence, so nothing is
- * hidden and the default — every day — costs one line rather than a row of
- * chips per item. A supplement stack of eight items would otherwise open on
- * thirty-two chips the user never touches.
- */
-function CadenceControl({
-  cadence,
-  onChange,
-  itemLabel,
-}: {
-  cadence: Cadence;
-  onChange: (next: Cadence) => void;
-  itemLabel: string;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <View className="mt-2">
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityLabel={`Cadence for ${itemLabel}: ${cadenceLabel(cadence)}. ${
-          open ? 'Hide options' : 'Change'
-        }`}
-        onPress={() => setOpen((shown) => !shown)}
-        className="min-h-[44px] flex-row items-center gap-2 py-2 active:opacity-60">
-        <Ionicons name="repeat-outline" size={15} color={palette.inkMuted} />
-        <Text className="flex-1 font-label text-[12px] text-ink-secondary">
-          {cadenceLabel(cadence)}
-        </Text>
-        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={13} color={palette.inkMuted} />
-      </Pressable>
-
-      {open ? (
-        <View className="mt-1">
-          <View className="flex-row flex-wrap gap-2">
-            {CADENCE_KINDS.map((k) => (
-              <Chip
-                key={k.kind}
-                label={k.label}
-                compact
-                on={cadence.kind === k.kind}
-                onPress={() => onChange(cadenceOfKind(k.kind, cadence))}
-              />
-            ))}
-          </View>
-
-          {cadence.kind === 'weekdays' ? (
-            <View className="mt-2 flex-row flex-wrap gap-1.5">
-              {WEEKDAY_LABELS.map((label, index) => {
-                const day = index + 1;
-                const on = cadence.days.includes(day);
-                return (
-                  <Chip
-                    key={label}
-                    label={label}
-                    compact
-                    on={on}
-                    accessibilityLabel={`${label}${on ? ', on' : ', off'}`}
-                    onPress={() =>
-                      onChange({
-                        kind: 'weekdays',
-                        days: (on
-                          ? cadence.days.filter((d) => d !== day)
-                          : [...cadence.days, day]
-                        ).sort((a, b) => a - b),
-                      })
-                    }
-                  />
-                );
-              })}
-            </View>
-          ) : null}
-
-          {cadence.kind === 'every_n_days' ? (
-            <View className="mt-2 flex-row items-center gap-2">
-              <View className="w-20">
-                <FormField
-                  value={String(cadence.n)}
-                  onChange={(text) => {
-                    const n = parseDays(text);
-                    onChange({ kind: 'every_n_days', n: n !== null && n >= 2 ? n : 2 });
-                  }}
-                  keyboardType="number-pad"
-                  maxLength={3}
-                  mono
-                  accessibilityLabel="Every how many days"
-                />
-              </View>
-              <Text className="font-label text-[12px] text-ink-secondary">days apart</Text>
-            </View>
-          ) : null}
-
-          {cadence.kind === 'quota' ? (
-            <View className="mt-2 flex-row items-center gap-2">
-              <View className="w-20">
-                <FormField
-                  value={String(cadence.per_week)}
-                  onChange={(text) => {
-                    const n = parseDays(text);
-                    onChange({ kind: 'quota', per_week: n !== null && n <= 7 ? n : 3 });
-                  }}
-                  keyboardType="number-pad"
-                  maxLength={1}
-                  mono
-                  accessibilityLabel="How many times a week"
-                />
-              </View>
-              {/* The whole point of a quota, said once where it is chosen: ARC
-                  surfaces it until the week's count is met, and the user picks
-                  which days. Without this the control reads like a weekday list
-                  with the days left blank. */}
-              <Text className="flex-1 font-label text-[12px] text-ink-secondary">
-                times a week — any days
-              </Text>
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-    </View>
-  );
 }
 
 export default function ProtocolEditScreen() {
@@ -1079,46 +673,28 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
         </>
       ) : null}
 
-      {problem ? (
-        <Text className="mt-4 font-serif text-[12px] leading-5 text-ink-muted">{problem}</Text>
-      ) : null}
+      <ProblemLine text={problem} />
 
-      {/* The one accent on this screen. */}
-      <Pressable
-        accessibilityRole="button"
+      {/* The one accent on this screen, and the same button the per-item editor
+          and the settings sheet draw (src/components/protocols/form-controls). */}
+      <SaveButton
         accessibilityLabel={editing ? 'Save protocol' : 'Create protocol'}
-        accessibilityState={{ disabled: !canSave }}
         disabled={!canSave}
-        onPress={save}
-        className={`mt-6 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn py-3.5 ${
-          canSave ? 'bg-pine active:opacity-70' : 'border border-hairline bg-paper-dim'
-        }`}>
-        <Ionicons
-          name="git-branch-outline"
-          size={18}
-          color={canSave ? palette.pineOn : palette.inkMuted}
-        />
-        <Text
-          className={`font-label text-[15px] font-semibold ${
-            canSave ? 'text-pine-on' : 'text-ink-muted'
-          }`}>
-          {editing ? (
-            <>
-              {'Save as '}
-              <Text className="font-mono">{`v${nextVersion}`}</Text>
-            </>
-          ) : (
-            'Create protocol'
-          )}
-        </Text>
-      </Pressable>
+        onPress={save}>
+        {editing ? (
+          <>
+            {'Save as '}
+            <Text className="font-mono">{`v${nextVersion}`}</Text>
+          </>
+        ) : (
+          'Create protocol'
+        )}
+      </SaveButton>
 
       {/* Where a save lands. One sentence, because it is now one rule — the
           asymmetry that needed explaining (mode changes re-derived, protocol
           edits did not) is gone. */}
-      <Text className="mt-3 text-center font-serif text-[11.5px] leading-4 text-ink-muted">
-        Saving updates today&rsquo;s mission. Anything already done or skipped stays as it is.
-      </Text>
+      <SaveFootnote />
 
       {editing ? (
         <Pressable

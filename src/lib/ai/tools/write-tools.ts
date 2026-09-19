@@ -875,6 +875,29 @@ function parseProtocolContentInput(
   // renamed item that inherits an id keeps its reminder and a genuinely new
   // item starts off. An item the edit leaves untimed has it forced off by
   // `normalizeItem` regardless — a notification needs a moment to fire at.
+  //
+  // ## `notes` is deliberately NOT inherited the same way (2026-09-19)
+  //
+  // It was the same defect — the model could not see the field, so every edit
+  // erased every rationale line — and it has the opposite fix. `get_protocols`
+  // now EMITS `notes`, which costs the schema budget nothing, so the model
+  // re-sends a note exactly as it re-sends a dose and the complete-set rule is
+  // true for this field too.
+  //
+  // Inheriting it by id was considered and rejected on three grounds. The
+  // `remind` exception above is justified BY invisibility, and emitting `notes`
+  // removes that justification. The prompt's "anything you omit is DROPPED"
+  // would become false for one field, which needs a sentence the prompt does
+  // not have the tokens for. And `optString` returns `undefined` for an absent
+  // key and for an empty string alike, so at the item below "omitted" and
+  // "cleared" are ONE case: inheritance would make a note un-clearable by the
+  // Coach, and letting it reword but not clear would need a sentinel value plus
+  // a second sentence to explain it.
+  //
+  // The owner's call (2026-09-19): he writes the why-line in the item editor;
+  // the Coach reads it, re-sends it, and in an update he APPROVES may reword or
+  // clear it — clearing is omitting, the complete-set rule — and the
+  // confirmation card names the item whose note changed, so neither is silent.
   const remindById = new Map<string, boolean>();
   for (const item of allItems(live)) remindById.set(item.id, item.remind);
 
@@ -942,6 +965,40 @@ function requireProtocol(db: Database, slug: string) {
 const liveContentOf = (db: Database, protocolId: string): ProtocolContent =>
   parseProtocolContent(getCurrentVersion(db, protocolId)?.content ?? null);
 
+/** Two titles by name, more than two by count — a card is one line. */
+const nameList = (titles: string[]): string =>
+  titles.length <= 2 ? titles.map((t) => `"${t}"`).join(' and ') : `${titles.length} items`;
+
+/**
+ * What this call does to the rationale lines, for the confirmation card.
+ *
+ * The why-line is the owner's writing and the Coach may reword or clear it —
+ * clearing is OMITTING, by the complete-set rule, which is exactly the thing a
+ * model does by accident. So the card says so out loud rather than letting a
+ * note disappear inside "12 items (was 12)", which is what the item counts
+ * would otherwise report for a call that wiped every reason in the stack.
+ *
+ * Compared by inherited ITEM ID, not by title, so a renamed item is still the
+ * same item; an item the call ADDS has no previous note and is not a change.
+ * An item the call drops is covered by the "(was N)" count.
+ */
+function noteChangePhrase(live: ProtocolContent, next: ProtocolContent): string {
+  const before = new Map(allItems(live).map((item) => [item.id, item.notes ?? '']));
+  const cleared: string[] = [];
+  const rewritten: string[] = [];
+  for (const item of allItems(next)) {
+    const was = before.get(item.id);
+    if (was === undefined) continue;
+    const now = item.notes ?? '';
+    if (was === now) continue;
+    (now === '' ? cleared : rewritten).push(item.title);
+  }
+  const parts: string[] = [];
+  if (cleared.length > 0) parts.push(`why-line cleared on ${nameList(cleared)}`);
+  if (rewritten.length > 0) parts.push(`why-line rewritten on ${nameList(rewritten)}`);
+  return parts.length === 0 ? '' : ` · ${parts.join('; ')}`;
+}
+
 const updateProtocolTool: CoachTool = {
   name: 'update_protocol',
   description:
@@ -1003,16 +1060,20 @@ const updateProtocolTool: CoachTool = {
     const args = asRecord(input);
     const protocol = requireProtocol(db, reqString(args, 'protocol_slug'));
     const live = liveContentOf(db, protocol.id);
-    const count = allItems(parseProtocolContentInput(db, args, live)).length;
+    const next = parseProtocolContentInput(db, args, live);
+    const count = allItems(next).length;
     const wasCount = allItems(live).length;
     const notes = optString(args, 'change_notes');
     // "(was N)" makes a destructive replace visible — the user must never
     // approve a stack-wipe thinking it is an add. WHEN it lands is
     // consequential too: approving "add magnesium" and seeing nothing on
     // today's mission reads as a broken promise, so the card says the day.
+    // And a why-line change is named ({@link noteChangePhrase}): the counts
+    // cannot show it, and clearing one is done by omitting it.
     return (
       `Update "${protocol.name}": ${count} item${count === 1 ? '' : 's'} ` +
-      `(was ${wasCount})${notes ? ` — ${notes}` : ''} · applies to today's plan now`
+      `(was ${wasCount})${notes ? ` — ${notes}` : ''}${noteChangePhrase(live, next)} ` +
+      `· applies to today's plan now`
     );
   },
   execute: (db, input, context) => {

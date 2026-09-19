@@ -697,6 +697,149 @@ console.log('13. protocols: get_protocols reads live content; update_protocol ve
     : bad('unreachable phase accepted');
 }
 
+console.log('13b. the Coach can SEE a why-line, so an edit no longer erases every one');
+{
+  const { db, raw } = freshDb();
+  const item = (id, title, notes) => ({
+    id,
+    title,
+    scheduled_time: '07:00',
+    dose: '5 g',
+    notes,
+    cadence: { kind: 'daily' },
+    remind: false,
+  });
+  const withNotes = createProtocolWithVersion(
+    db,
+    {
+      name: 'Morning Stack',
+      type: 'supplement_stack',
+      startedOn: '2026-08-03',
+      carryOver: true,
+      checkoffMode: 'adjusting',
+    },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'phase-0',
+          title: null,
+          duration_days: null,
+          items: [
+            item('i1', 'Creatine', 'Loading is done — this is the maintenance dose.'),
+            item('i2', 'Vitamin D3', null),
+          ],
+        },
+      ],
+    }
+  );
+  const plain = createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack' },
+    { schema: 2, phases: [{ id: 'p', title: null, duration_days: null, items: [item('j1', 'Zinc', null)] }] }
+  );
+  const slugOf = (id) => raw.prepare('SELECT slug FROM protocols WHERE id = ?').get(id).slug;
+  const slug = slugOf(withNotes);
+
+  const read = () => run('get_protocols', db).protocols;
+  const seen = read().find((p) => p.slug === slug);
+  const seenItems = seen.phases[0].items;
+  seenItems[0].notes === 'Loading is done — this is the maintenance dose.' &&
+  !('notes' in seenItems[1])
+    ? ok('get_protocols emits a why-line, and omits it rather than nulling it when empty')
+    : bad('notes emission', JSON.stringify(seenItems));
+  seen.carryOver === true &&
+  seen.checkoffMode === 'adjusting' &&
+  seen.startedOn === '2026-08-03'
+    ? ok('…and the three policy facts a plan means nothing without')
+    : bad('policy emission', JSON.stringify(seen));
+  const defaults = read().find((p) => p.slug === slugOf(plain));
+  !('carryOver' in defaults) && !('checkoffMode' in defaults) && !('startedOn' in defaults)
+    ? ok('a protocol running the defaults carries no "no"')
+    : bad('defaults emitted', JSON.stringify(defaults));
+
+  // THE DEFECT, as it used to behave: an edit that re-sends every item without
+  // the field it could not see. Now the model re-sends the note like a dose.
+  const resend = {
+    protocol_slug: slug,
+    phases: [
+      {
+        items: [
+          {
+            title: 'Creatine',
+            scheduled_time: '07:00',
+            dose: '10 g',
+            notes: 'Loading is done — this is the maintenance dose.',
+            cadence: 'daily',
+          },
+          { title: 'Vitamin D3', scheduled_time: '07:00', dose: '5 g', cadence: 'daily' },
+        ],
+      },
+    ],
+    change_notes: 'Creatine to 10 g',
+  };
+  toolByName('update_protocol').confirmSummary(resend, db, CTX).includes('why-line') === false
+    ? ok('a call that re-sends a note unchanged says nothing about why-lines on the card')
+    : bad('spurious why-line phrase', toolByName('update_protocol').confirmSummary(resend, db, CTX));
+  run('update_protocol', db, resend);
+  read().find((p) => p.slug === slug).phases[0].items[0].notes ===
+  'Loading is done — this is the maintenance dose.'
+    ? ok('a re-sent why-line survives the version')
+    : bad('note lost on re-send', JSON.stringify(read().find((p) => p.slug === slug)));
+
+  // Rewording one item's note names THAT item, and touches no other.
+  const reword = {
+    protocol_slug: slug,
+    phases: [
+      {
+        items: [
+          {
+            title: 'Creatine',
+            scheduled_time: '07:00',
+            dose: '10 g',
+            notes: 'Ten grams while the saturation window runs.',
+            cadence: 'daily',
+          },
+          { title: 'Vitamin D3', scheduled_time: '07:00', dose: '5 g', cadence: 'daily' },
+        ],
+      },
+    ],
+    change_notes: 'Reworded',
+  };
+  const rewordCard = toolByName('update_protocol').confirmSummary(reword, db, CTX);
+  rewordCard.includes('why-line rewritten on "Creatine"')
+    ? ok(`the card names the item whose why-line changed ("${rewordCard}")`)
+    : bad('reword not named', rewordCard);
+  run('update_protocol', db, reword);
+  const afterReword = read().find((p) => p.slug === slug).phases[0].items;
+  afterReword[0].notes === 'Ten grams while the saturation window runs.' &&
+  !('notes' in afterReword[1])
+    ? ok('…and only that item — the untouched one is still without a note')
+    : bad('reword spread', JSON.stringify(afterReword));
+
+  // Clearing IS omitting — the complete-set rule — so the card has to say so.
+  const clear = {
+    protocol_slug: slug,
+    phases: [
+      {
+        items: [
+          { title: 'Creatine', scheduled_time: '07:00', dose: '10 g', cadence: 'daily' },
+          { title: 'Vitamin D3', scheduled_time: '07:00', dose: '5 g', cadence: 'daily' },
+        ],
+      },
+    ],
+    change_notes: 'Dropped the rationale',
+  };
+  const clearCard = toolByName('update_protocol').confirmSummary(clear, db, CTX);
+  clearCard.includes('why-line cleared on "Creatine"')
+    ? ok(`an omitted why-line reads as CLEARED on the card ("${clearCard}")`)
+    : bad('clear not named', clearCard);
+  run('update_protocol', db, clear);
+  !('notes' in read().find((p) => p.slug === slug).phases[0].items[0])
+    ? ok('…and it is genuinely gone, because omitting is how the Coach clears one')
+    : bad('clear did not clear');
+}
+
 console.log('14. unit preferences drive the Coach write + read path (a metric user)');
 {
   const { db, raw } = freshDb();

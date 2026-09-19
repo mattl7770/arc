@@ -1470,6 +1470,36 @@ const getProtocols: CoachTool = {
   // cadence in the same terse vocabulary `update_protocol` accepts, and — for a
   // phased protocol — which phase is live TODAY, so an answer about "what am I
   // taking" is about now rather than about the whole document.
+  //
+  // ## `notes` is here because leaving it out was DESTRUCTIVE (2026-09-19)
+  //
+  // `update_protocol` is a complete replacement — "anything you omit is
+  // DROPPED", stated once in the system prompt — and it takes each item's
+  // `notes` from the call or writes null. This tool did not emit `notes`, so
+  // every Coach edit re-sent every item without a field the model had never
+  // seen, and **every rationale line in the protocol was silently erased**.
+  // That is the `why` the generator stamps on each mission row and the italic
+  // line Home's hero prints: a dose tweak the user approved wiped the reasons
+  // off his whole stack, with nothing on screen to say so.
+  //
+  // Emitting it is the entire fix, and it costs the schema budget nothing. The
+  // model now re-sends a note exactly as it re-sends a dose, the complete-set
+  // sentence becomes TRUE for this field, and a deliberate rewording becomes
+  // possible — which inheriting the note by id (the shape `remind` uses) would
+  // have made impossible. `remind`'s exception is justified BY its invisibility
+  // to the model; emitting `notes` removes that justification here.
+  //
+  // `carryOver`, `checkoffMode` and `startedOn` join it for the adjacent
+  // reason: they are what a protocol's plan MEANS — whether a miss is still
+  // owed tomorrow, whether an every-N clock re-bases on when it was done, and
+  // where the phase clock is anchored — and the model was answering questions
+  // about all three blind. Each is OMITTED at its default, so a device running
+  // the defaults carries no "no": three fields × six protocols of nothing.
+  //
+  // What is deliberately NOT emitted: a per-item `nextOn`. It is ~9 tokens ×
+  // every item × every call for a figure the model can derive from the cadence,
+  // `startedOn` and `checkoffMode` — which it now has. Judgment stays in the
+  // model rather than being precomputed into its context.
   execute: (db, _input, context) => {
     const today = todayISODate(context.now);
     return json({
@@ -1482,6 +1512,11 @@ const getProtocols: CoachTool = {
           type: p.type,
           isActive: p.isActive,
           versionNumber: p.versionNumber,
+          // Omitted at their defaults — carry off, strict clock, no anchor —
+          // so a device that has never touched them pays nothing to say so.
+          ...(p.carryOver ? { carryOver: true } : {}),
+          ...(p.checkoffMode === 'strict' ? {} : { checkoffMode: p.checkoffMode }),
+          ...(p.startedOn ? { startedOn: p.startedOn } : {}),
           ...(state.kind === 'running'
             ? content.phases.length > 1
               ? { livePhase: state.window.index + 1, dayOfPhase: state.window.dayInPhase + 1 }
@@ -1494,6 +1529,9 @@ const getProtocols: CoachTool = {
               title: item.title,
               scheduled_time: item.scheduled_time,
               dose: item.dose,
+              // Omitted when empty rather than nulled, so a protocol with no
+              // rationale lines carries no "no" on every item of every call.
+              ...(item.notes ? { notes: item.notes } : {}),
               cadence: cadenceText(item.cadence),
             })),
           })),

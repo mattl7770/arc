@@ -811,6 +811,40 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // (354) — whose `metric` property opens "A body metric or a wearable
   // metric_type", restating its own description's "Takes body metrics … and any
   // wearable metric_type" — and `adjust_today` (348).
+  // ── 2026-09-19: THE PROTOCOL INTERFACE RETHINK, §8.1 and §8.3. **NEITHER
+  // CEILING MOVED, because neither change is a schema.**
+  //
+  // Two defects, both fixed entirely in `get_protocols`' OUTPUT:
+  //
+  //   • the destructive one. `update_protocol` is a complete replacement and
+  //     takes each item's `notes` from the call or writes null — and this tool
+  //     did not emit `notes`, so every Coach edit re-sent every item without a
+  //     field the model had never seen and ERASED every rationale line in the
+  //     protocol. Those lines are the `why` the generator stamps on each
+  //     mission row and the italic line Home's hero prints. Emitting the field
+  //     is the whole fix; the complete-set sentence in the system prompt then
+  //     becomes true for it, and a deliberate rewording becomes possible.
+  //   • the blind one. `carryOver`, `checkoffMode` and `startedOn` say what a
+  //     protocol's plan MEANS, and the model was answering about all three
+  //     without them.
+  //
+  // COST TO THESE BUDGETS: **0.** Output is not schema. The payload cost is
+  // real and is counted where it lands — on a device with six protocols of five
+  // items, `notes` is ~30 × 14 ≈ 420 tok on a turn that calls the tool, and the
+  // three protocol fields ~24 each when non-default. Each is OMITTED at its
+  // default (the C13 `away: true` rule), so a device running the defaults
+  // carries no "no". `notes` is the fix for a data-destroying bug and is worth
+  // it outright.
+  //
+  // NOT ADDED, on purpose: a per-item `nextOn`. ~9 tok × every item × every
+  // call for a figure the model can derive from the cadence, `startedOn` and
+  // `checkoffMode` — which it now has. Judgment stays in the model.
+  //
+  // ONE CORRECTION TO THE LEDGER ABOVE, measured rather than assumed: the C13
+  // entry records 9,241 and "9 of headroom". The live figure on `main` is
+  // **9,236**, so the true headroom is 14. The rethink's plan inherited the
+  // 9,241 number from this comment; anything budgeting against it should
+  // re-measure here first.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

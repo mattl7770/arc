@@ -66,6 +66,32 @@ export type MissionItem = {
    * — and the reason a `daily` item never grows a second row.
    */
   missedDays?: number;
+  /**
+   * ── What makes the row a DOOR rather than a dead end ─────────────────────
+   *
+   * Four facts every generated row has carried since the generator was written
+   * and the view-model threw away. Without them a mission row could say which
+   * protocol named it but not reach it, and the per-row verbs the repository
+   * already implements — move, remove, skip a debt — had no caller: both
+   * {@link moveMissionItem} and {@link removeMissionItem} take the DAY's
+   * `dailyLogId`, which the screen did not have.
+   *
+   * All four are absent on a mode item, an experiment's intervention and the
+   * mock seed, which is the check a surface makes before offering the verbs
+   * that need a protocol behind them.
+   */
+  /** `log_entries.daily_log_id` — the day, which the move/remove guards take. */
+  dailyLogId?: string;
+  /** `log_entries.protocol_id` — the protocol to open. Null once it is deleted. */
+  protocolId?: string;
+  /** `value.item` — the `ProtocolItem.id`, the identity an edit is made against. */
+  itemId?: string;
+  /**
+   * `value.carried_from` — the day and row id this debt is owed from. Present
+   * on a carried copy only, and it is what lets the sheet say *owed from Mon
+   * 14 Sep* and what {@link skipCarried} reaches through.
+   */
+  carriedFrom?: { date: string; entry: string };
 };
 
 export type Readiness = {
