@@ -454,7 +454,7 @@ function BrowseCatalog({
               <Text className="mt-2.5 font-serif text-[13px] leading-5 text-ink-secondary">
                 {filtered.length === 0
                   ? 'ARC doesn’t have this one.'
-                  : 'Not one of these? ARC doesn’t have a close match.'}{' '}
+                  : 'ARC doesn’t have a close match.'}{' '}
                 AI can write the catalog entry — you review it before it’s saved.
               </Text>
               <Pressable

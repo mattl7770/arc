@@ -527,7 +527,7 @@ export default function ExerciseScreen() {
           <SectionLabel label="Recent sessions" />
           {sessions.length === 0 ? (
             <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-              Nothing logged yet — start a workout above.
+              Nothing logged yet.
             </Text>
           ) : (
             <View className="mt-1">

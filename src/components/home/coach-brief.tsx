@@ -41,9 +41,11 @@ import { palette } from '@/constants/theme';
  * removed once as an over-correction and restored by owner decision). It marks
  * the Coach's presence, which is chrome, so it never borrows a signal colour.
  *
- * The pine "Open chat" link, by contrast, stays gone: Home's one primary action
- * is the hero's Done, and the whole card is already pressable, so the link reads
- * in neutral ink as the quiet affordance it is.
+ * The pine "Open chat" link went first: Home's one primary action is the hero's
+ * Done, so the link came back in neutral ink. The words went too, in the A9 slop
+ * pass (2026-09-19, owner approval) — the whole block is already pressable and
+ * its accessibilityLabel says where it goes, so the chevron alone carries the
+ * affordance and nothing restates the control it sits on.
  */
 export function CoachBrief({ brief }: { brief: string }) {
   const router = useRouter();
@@ -70,8 +72,6 @@ export function CoachBrief({ brief }: { brief: string }) {
         <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">{brief}</Text>
 
         <View className="mt-3 min-h-[24px] flex-row items-center gap-1">
-          {/* A bare text button is still a button — Label voice (§3). */}
-          <Text className="font-label text-[13px] font-medium text-ink-secondary">Open chat</Text>
           <Ionicons name="chevron-forward" size={13} color={palette.inkSecondary} />
         </View>
       </Pressable>

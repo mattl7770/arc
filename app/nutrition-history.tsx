@@ -471,8 +471,7 @@ export default function NutritionHistoryScreen() {
 
       {daysWithEnergy === 0 ? (
         <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
-          No energy logged in the last {window} days. Log meals with calories and the trend fills in
-          here.
+          No energy logged in the last {window} days. Only meals with calories count toward this.
         </Text>
       ) : (
         <>

@@ -318,7 +318,7 @@ export default function ReportsScreen() {
             className="min-h-[44px] justify-center active:opacity-60">
             <Text className="font-serif text-[12.5px] leading-[18px] text-ink-secondary">
               Raw data export — everything, as one JSON file — lives in Settings › Security &amp;
-              data. A report is a document for a reader; the export is the data itself.
+              data.
             </Text>
           </Pressable>
         </Block>

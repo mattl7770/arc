@@ -404,7 +404,14 @@ const db = getDb();
   const dry = render('water (never logged)', WaterScreen);
   expect('water (never logged)', dry, [
     'Water',
-    'No water logged yet. Tap an amount below and the record starts.',
+    // A9 (2026-09-19): the verdict names the absence and stops. It used to add
+    // "Tap an amount below and the record starts." — a pointer at the quick-add
+    // row three lines under it, narrating the widget back. Refuted below.
+    'No water logged yet.',
+    // Same round, same screen: the Entries empty used to run "...Anything you
+    // add appears here to correct or remove.", describing rows the first entry
+    // shows for itself.
+    'Nothing logged today.',
     // The stamp takes the accent when there are no bars to spend it on.
     'No water yet',
     'The record starts with one glass',
@@ -414,6 +421,11 @@ const db = getDb();
     'Large',
     // No goal is an authored state, not a guess.
     'None set — totals show without a target.',
+  ]);
+  // A9: neither cut line may come back silently.
+  refute('water (never logged)', dry, [
+    'Tap an amount below and the record starts',
+    'Anything you add appears here to correct or remove',
   ]);
   // Nothing may imply a record that does not exist, and above all no
   // plausible-looking zero: a day with nothing logged and a day of 0 oz are
@@ -1063,7 +1075,12 @@ const db = getDb();
     //    picker's BODY (and every other modal's) cannot be rendered here at all
     //    — nothing can set the flag. What this does prove is that the mode chip
     //    and banner still mount around the rewrapped modal.
-    expect('home (after the ModalScreen rewrap)', render('home', HomeScreen), ['Today']);
+    const homeRender = render('home', HomeScreen);
+    expect('home (after the ModalScreen rewrap)', homeRender, ['Today']);
+    // A9 (2026-09-19): the Coach brief's whole block is one Pressable with an
+    // accessibilityLabel that says where it goes, so the "Open chat" label
+    // under it restated the control it sat on. The chevron stayed.
+    refute('home (after the ModalScreen rewrap)', homeRender, ['Open chat']);
   }
 
   // -------------------------------------------------------------------------
@@ -1206,7 +1223,14 @@ const db = getDb();
     // A9: the caveat used to end "...Log a session and the figure starts
     // fading." — the UI narrating itself back rather than stating a fact.
     // Must not silently come back.
-    refute('exercise hub (never trained)', empty, ['Log a session and the figure starts fading.']);
+    refute('exercise hub (never trained)', empty, [
+      'Log a session and the figure starts fading.',
+      // A9 (2026-09-19): Recent sessions' empty ran "Nothing logged yet — start
+      // a workout above.", pointing at the control it sits under. Same shape as
+      // the saved-workout card's "add some from Saved workouts below", cut in
+      // the first A9 round.
+      'start a workout above',
+    ]);
 
     logWorkout(
       db,
@@ -1263,10 +1287,25 @@ const db = getDb();
     // static-require blocker that had kept it off.
     const detail = render('exercise detail', ExerciseDetailScreen, { id: 'barbell-bench-press' });
     figureDrew('exercise detail', detail);
-    expect('exercise detail', detail, ['Muscles worked', 'Primary', 'Assists', 'Chest']);
+    expect('exercise detail', detail, [
+      'Muscles worked',
+      'Primary',
+      'Assists',
+      'Chest',
+      // A9 (2026-09-19): one session is on record, so the e1rm chart has one
+      // point and cannot draw a trend (it needs `series.length >= 2`). The
+      // sentence states that requirement instead of narrating the chart's
+      // arrival — it used to read "Log a couple of weighted sessions and the
+      // estimated-1RM trend appears here."
+      'An estimated-1RM trend needs two weighted sessions.',
+    ]);
     // The firewall, asserted rather than asserted-about: the freshness green
     // must not appear anywhere in this screen's markup.
-    refute('exercise detail', detail, ['#185A36', '#185a36']);
+    refute('exercise detail', detail, [
+      '#185A36',
+      '#185a36',
+      'the estimated-1RM trend appears here',
+    ]);
 
     // A9: routine-edit is the one screen-render-covered survivor of the
     // retired "routine" vocabulary — the noun everywhere else is "saved
@@ -1530,6 +1569,11 @@ const db = getDb();
   refute('progress photos (empty)', render('progress photos (empty)', ProgressPhotosScreen), [
     // Nothing may claim a tally before there is anything to tally.
     'photos · ',
+    // A9 (2026-09-19): the empty state ran a second paragraph of capture advice
+    // — "Three poses on the same morning, in the same light, is the set that
+    // compares well months later." An empty state gets one sentence, and the
+    // pose set it recommended is still named in the sentence above it.
+    'Three poses on the same morning',
   ]);
 
   expect('progress photo add', render('progress photo add', ProgressPhotoAddScreen), [
@@ -1850,8 +1894,18 @@ const db = getDb();
   expect('knowledge hub (no memories)', coldMemory, [
     'Coach memory',
     'The Coach holds nothing yet',
-    'carried into every turn',
+    // A9 (2026-09-19): what survives of the paragraph under it is the consent
+    // fact — nothing is remembered without being asked. The "one line each,
+    // carried into every turn" half is the editor's own sentence, stated where
+    // the line is being written (app/coach-memory.tsx), and the examples were a
+    // tutorial. This is the relocated §2 candidate: the sentence left
+    // coach-memory.tsx for this hub and had to be cut where it landed.
+    'tell the Coach and it will ask to keep it',
     'Remember something',
+  ]);
+  refute('knowledge hub (no memories)', coldMemory, [
+    'One line each, carried into every turn',
+    'how you like to train, something that',
   ]);
 
   rememberFact(db, {
@@ -1947,10 +2001,16 @@ const db = getDb();
   ]);
   // ⚑ MATT #4: the export ACTION does not live here.
   refute('reports (empty)', emptyReports, ['Export data', 'Reports & export']);
-  // A9: the removed explainer must not silently come back. (Narrower than "A
-  // report is a document" — that clause survives, unrelated, in the export
-  // pointer's own sentence further down this screen.)
-  refute('reports (empty)', emptyReports, ['assembled from your data']);
+  // A9: the removed explainer must not silently come back.
+  refute('reports (empty)', emptyReports, [
+    'assembled from your data',
+    // A9 (2026-09-19): the export pointer closed on an aphorism — "A report is
+    // a document for a reader; the export is the data itself." Same conceit
+    // shape as knowledge-entry-edit's "An entry is a page, not a paper", which
+    // 00-design-spec.md §5 rules out. The route it points at is the fact and
+    // survives above.
+    'the export is the data itself',
+  ]);
 
   // b. A draft self-review over a real period, assembled for real.
   const period = {
@@ -2688,7 +2748,15 @@ console.log('18. C1 — nutrition history: a day picker, a past day, and an auth
     `Nothing logged ${dayPhrase(twoBack, now)}.`,
     'Back to today',
   ]);
-  refute('nutrition-history (an empty day)', empty, ['kcal left', 'Meals']);
+  refute('nutrition-history (an empty day)', empty, [
+    'kcal left',
+    'Meals',
+    // A9 (2026-09-19): the over-time empty used to close "...Log meals with
+    // calories and the trend fills in here." The requirement (a meal without
+    // calories contributes nothing) is the fact and survives; the widget
+    // narration does not.
+    'the trend fills in',
+  ]);
 
   // Today: the picker is home, so the return affordance has retired.
   const todayView = render('nutrition-history (today)', NutritionHistoryScreen, {});

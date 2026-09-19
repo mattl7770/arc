@@ -339,9 +339,7 @@ export default function KnowledgeScreen() {
             </Text>
             {searching ? null : (
               <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                One line each, carried into every turn — how you like to train, something that
-                disagrees with you, what you’re working toward. Write one yourself, or tell the
-                Coach and it will ask to keep it.
+                Write one yourself, or tell the Coach and it will ask to keep it.
               </Text>
             )}
           </View>
