@@ -10,9 +10,12 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { apiKeyStore } from '@/lib/ai/api-key-store';
+import { usageCaption } from '@/lib/ai/cost';
 import { getDb } from '@/lib/db/client';
 import { createRecipe } from '@/lib/db/repositories/recipes';
 import { pickPhotoBase64 } from '@/lib/media/photo-library';
+import { formatInterval, pickVideoFrames } from '@/lib/media/video-frames';
 import {
   importRecipe,
   isRecipeImportAvailable,
@@ -21,9 +24,11 @@ import {
   RecipeImportUnavailableError,
   type RecipeDraft,
 } from '@/lib/recipes/import';
+import { unheardAmountCount } from '@/lib/recipes/ingredients';
 import { servingsEstimateBasis, servingsForReview } from '@/lib/recipes/servings';
 import { consumeIncomingShare, readSharedImageBase64 } from '@/lib/recipes/incoming-share';
 import { VIDEO_SHARE_MESSAGE } from '@/lib/recipes/share-payload';
+import { videoOutcomeMessage } from '@/lib/recipes/video-outcome';
 
 /**
  * Recipe import (docs/recipes-grocery.md §2c): share/paste a URL → the fetch
@@ -37,6 +42,16 @@ import { VIDEO_SHARE_MESSAGE } from '@/lib/recipes/share-payload';
  * healthkit.ts guarded-require seam and downscales what it returns. On a binary
  * without the module the result is `unavailable` — a sentence, never a crash —
  * and the paste rung covers the gap.
+ *
+ * NATIVE DEP, THE SECOND: the video rung (rung 8) reads stills through
+ * `pickVideoFrames` (src/lib/media/video-frames.ts), which wraps
+ * `expo-video-thumbnails` in the same seam. That package is NEW, so it is in no
+ * binary the owner has installed: until the next EAS build every tap of the
+ * control answers *"Video import needs the next app build"* and names the two
+ * rungs that work. It reads what is WRITTEN on the screen of a video, never
+ * what is said — the audio is structurally out of reach (docs/spikes/
+ * video-recipe-import.md §3c) — and the review says so in words whenever a
+ * line comes back without an amount.
  *
  * ## The link survives a failed fetch (2026-09-14 — backlog A6)
  *
@@ -95,6 +110,13 @@ export default function RecipeImportScreen() {
   const [text, setText] = useState(incoming?.kind === 'text' ? incoming.text : '');
   const [phase, setPhase] = useState<Phase>({ kind: 'input' });
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * Held from the video tap until its seam returns. The video rung is the one
+   * control here that does native work BEFORE it sets a phase, so a second tap
+   * while the picker is open would open a second picker and race two decodes
+   * over one screen. Every other control is guarded by the phase it sets.
+   */
+  const videoBusyRef = useRef(false);
   const keySet = isRecipeImportAvailable();
 
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -120,9 +142,20 @@ export default function RecipeImportScreen() {
     }
   };
 
-  const run = async (input: Parameters<typeof importRecipe>[0], label: string) => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
+  /**
+   * `adopted` is for the one caller that needs a controller in flight BEFORE it
+   * has an `ImportInput`: the video rung mints one at the tap so the decode
+   * loop (and an unmount during it) has something to abort, then hands it over
+   * rather than having a second minted underneath it. Everyone else passes
+   * nothing and supersedes whatever was running, as they always did.
+   */
+  const run = async (
+    input: Parameters<typeof importRecipe>[0],
+    label: string,
+    adopted?: AbortController
+  ) => {
+    if (!adopted) abortRef.current?.abort();
+    const controller = adopted ?? new AbortController();
     abortRef.current = controller;
     setPhase({ kind: 'working', label });
     try {
@@ -221,6 +254,73 @@ export default function RecipeImportScreen() {
       { kind: 'photo', base64Jpeg: picked.base64Jpeg, sourceUrl: startedFrom() },
       'Reading the screenshot…'
     );
+  };
+
+  /**
+   * The video rung (rung 8) — pick a movie from the library, read stills out of
+   * it, and send them to the same extraction turn every other rung uses.
+   *
+   * The ordering here is the whole of the interaction design:
+   *
+   * - The controller is minted BEFORE the picker opens, so an unmount or a
+   *   superseding screenshot pick during the 8–15 s decode has something to
+   *   abort — and it is handed to `run()` rather than replaced by it, so the
+   *   seam and the model turn share one signal end to end.
+   * - No phase is set until the seam says the picker resolved with an asset
+   *   (`onPhase`), which is what makes a silent cancel safe — the screenshot
+   *   rung's own rule.
+   * - `videoBusyRef` closes the window between the tap and the first phase, the
+   *   only stretch of this screen a second tap could get into.
+   */
+  const pickVideo = async () => {
+    if (videoBusyRef.current) return;
+    videoBusyRef.current = true;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const outcome = await pickVideoFrames({
+        signal: controller.signal,
+        onPhase: (label) => {
+          if (controller.signal.aborted) return;
+          setPhase({ kind: 'working', label });
+        },
+      });
+      // Superseded mid-decode (a screenshot pick, an unmount): the later act
+      // owns the screen now, and this one says nothing at all.
+      if (controller.signal.aborted) return;
+      if (outcome.kind === 'frames') {
+        void run(
+          {
+            kind: 'frames',
+            framesBase64: outcome.framesBase64,
+            // Whatever is in the paste field right now. A reel's caption and
+            // its frames are two halves of one post, and the caption is prose
+            // already paid for on the text rung.
+            caption: text.trim() !== '' ? text.trim() : null,
+            stillCount: outcome.stillCount,
+            durationS: outcome.durationS,
+            everySeconds: outcome.everySeconds,
+            sourceUrl: startedFrom(),
+          },
+          'Reading the stills…',
+          controller
+        );
+        return;
+      }
+      const prose = videoOutcomeMessage(outcome);
+      if (!prose) {
+        // Only a picker cancel gets here, and a cancel says nothing. But the
+        // tap superseded whatever was in flight, so a spinner left behind by it
+        // would now be spinning over nothing — which is the one state this
+        // screen must never show.
+        setPhase((prev) => (prev.kind === 'working' ? { kind: 'input' } : prev));
+        return;
+      }
+      setPhase({ kind: 'failed', message: prose.message, suggestPaste: prose.suggestPaste });
+    } finally {
+      videoBusyRef.current = false;
+    }
   };
 
   const ready = (mode === 'url' ? url.trim() : text.trim()) !== '';
@@ -396,21 +496,38 @@ export default function RecipeImportScreen() {
               <Block device="margin">
                 <Text className="font-serif text-[13px] leading-5 text-ink-muted">
                   No model key is set (Settings → Coach), so only recipe sites with structured data
-                  will import — captions and screenshots need the model.
+                  will import — captions, screenshots and videos need the model.
                 </Text>
               </Block>
             </View>
           ) : (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Import from a screenshot"
-              onPress={() => void pickScreenshot()}
-              className="mt-7 min-h-[46px] flex-row items-center gap-2 active:opacity-60">
-              <Ionicons name="image-outline" size={17} color={palette.inkSecondary} />
-              <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-secondary">
-                Import from a screenshot
-              </Text>
-            </Pressable>
+            /* The two rungs that start from a file rather than a field. Both
+               are bare ink with an outline icon, never chips: a chip SELECTS a
+               field to type into, and neither of these has one. The accent
+               budget is untouched — selection is not completion, and the one
+               pine element of this phase is still the Import button. */
+            <View className="mt-7">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Import from a screenshot"
+                onPress={() => void pickScreenshot()}
+                className="min-h-[46px] flex-row items-center gap-2 active:opacity-60">
+                <Ionicons name="image-outline" size={17} color={palette.inkSecondary} />
+                <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-secondary">
+                  Import from a screenshot
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Import from a video"
+                onPress={() => void pickVideo()}
+                className="min-h-[46px] flex-row items-center gap-2 active:opacity-60">
+                <Ionicons name="videocam-outline" size={17} color={palette.inkSecondary} />
+                <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-secondary">
+                  Import from a video
+                </Text>
+              </Pressable>
+            </View>
           )}
         </>
       )}
@@ -486,6 +603,31 @@ export function ReviewDraft({
   );
   const [stepsText, setStepsText] = useState(draft.steps.join('\n'));
 
+  /**
+   * "10 stills · about 1 per 4.9 s · 5.0k in · 0.6k out · ~$0.02" — video rungs
+   * only, null everywhere else. `usageCaption` returns null on a turn that
+   * reported no usage, so the two measurements stand alone rather than trailing
+   * an empty separator.
+   */
+  const samplingCaption = draft.sampling
+    ? [
+        `${draft.sampling.stills} still${draft.sampling.stills === 1 ? '' : 's'}`,
+        `about 1 per ${formatInterval(draft.sampling.everySeconds)}`,
+        usageCaption(draft.sampling.usage ?? undefined, apiKeyStore.getModel(), 0),
+      ]
+        .filter((part): part is string => part !== null)
+        .join(' · ')
+    : null;
+
+  /**
+   * Lines the video could not put a number on — counted from the REVIEW's own
+   * lines, and recounted as they are edited, so typing an amount into the last
+   * blank one takes the caveat away. Blank rows are excluded because Save drops
+   * them: an empty row the user just added is not an ingredient with a missing
+   * amount.
+   */
+  const unheard = draft.sampling ? unheardAmountCount(lines.filter((l) => l.raw.trim() !== '')) : 0;
+
   const parsedServings = Number(servings);
   // No ingredient-line requirement: the empty state says "add one, or save the
   // recipe without them", createRecipe no-ops on an empty array, and
@@ -530,13 +672,30 @@ export function ReviewDraft({
         label="Review before saving"
         accessory={
           <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-            {draft.deterministic ? 'no AI · site data' : '≈ extracted'}
+            {draft.deterministic
+              ? 'no AI · site data'
+              : draft.sampling
+                ? '≈ from video'
+                : '≈ extracted'}
           </Text>
         }
       />
       {draft.source_author || draft.source_platform ? (
         <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
           {[draft.source_author, draft.source_platform].filter(Boolean).join(' · ')}
+        </Text>
+      ) : null}
+      {/* What the video import actually sampled, and what it billed — MONO,
+          because every one of these is a measurement (00-design-spec.md §3:
+          serif speaks, mono measures). The tail is `usageCaption` verbatim, the
+          same string every Coach reply already wears, on the stated principle
+          that the only recurring cost in ARC is model tokens and it should be
+          visible. This is the dearest turn in the app, so it is the last one
+          that should be quiet about it. The interval is the gap the sampler
+          ACHIEVED, not the one it asked for. */}
+      {samplingCaption ? (
+        <Text className="mt-1.5 font-mono text-[10px] tracking-[0.5px] text-ink-muted">
+          {samplingCaption}
         </Text>
       ) : null}
 
@@ -718,6 +877,26 @@ export function ReviewDraft({
           </Block>
         </View>
       )}
+
+      {/* A video-derived draft with blank amounts is the pipeline WORKING, not
+          underperforming: the cook said "a tablespoon of miso" and ARC did not
+          hear it, so the line has a name and no number — the same rule that
+          keeps invented figures out of the labs and the day's totals. Saying so
+          is the difference between a sparse draft that looks broken and one the
+          user knows to finish by hand.
+
+          It does not claim the ingredients were SHOWN: for an unlabelled jar
+          that would be the app asserting what the model judged. */}
+      {unheard > 0 ? (
+        <View className="mt-3">
+          <Block device="margin">
+            <Text className="font-serif text-[13px] leading-5 text-ink-muted">
+              These lines carry no amount: the video’s audio was not read, and nothing on screen
+              gave one. Fill them in or leave them blank.
+            </Text>
+          </Block>
+        </View>
+      ) : null}
 
       <View className="mt-7">
         <SectionLabel label="Steps — one per line" />
