@@ -341,6 +341,11 @@ export default function RootLayout() {
               the detail's Now field. Writes through addVersion, so it touches
               the protocols row not at all. */}
           <Stack.Screen name="protocol-item" />
+          {/* What a protocol IS and how it is run — name, description, type,
+              Active/Paused, the phase anchor, the two 0050 policies, Delete.
+              From the detail's header. Writes through reviseProtocol with
+              content: null, so it mints no version. */}
+          <Stack.Screen name="protocol-settings" />
           <Stack.Screen name="screenings" />
           <Stack.Screen name="screening-form" />
           <Stack.Screen name="appointment-form" />

@@ -1,4 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
+import { useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
 import { Block } from '@/components/ui/block';
@@ -129,6 +130,9 @@ export default function ProtocolVersionsScreen() {
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
 
   const history = useProtocolVersions(id);
+  // Which versions have had their diff expanded past DIFF_LINE_LIMIT. Session
+  // state by id, so expanding one big rewrite does not expand every row.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 
   if (!history) {
     return (
@@ -218,7 +222,8 @@ export default function ProtocolVersionsScreen() {
                 const lines = previous
                   ? diffLines(diffContent(previous.content, v.content))
                   : [];
-                const shown = lines.slice(0, DIFF_LINE_LIMIT);
+                const open = expanded.has(v.id);
+                const shown = open ? lines : lines.slice(0, DIFF_LINE_LIMIT);
                 const rest = lines.length - shown.length;
                 return (
                   <View
@@ -293,10 +298,34 @@ export default function ProtocolVersionsScreen() {
                                   {line}
                                 </Text>
                               ))}
-                              {rest > 0 ? (
-                                <Text className="font-mono text-[10.5px] leading-4 text-ink-muted">
-                                  {`+ ${rest} more`}
-                                </Text>
+                              {/* "+ N more" was a dead label on the one row
+                                  that had most to say — a big rewrite's diff
+                                  was truncated with no way to read the rest.
+                                  It is a control now, and it toggles both
+                                  ways: a disclosure that only works once is
+                                  not a disclosure control. */}
+                              {rest > 0 || open ? (
+                                <Pressable
+                                  accessibilityRole="button"
+                                  accessibilityState={{ expanded: open }}
+                                  accessibilityLabel={
+                                    open
+                                      ? `Show fewer changes in version ${v.versionNumber}`
+                                      : `Show ${rest} more change${rest === 1 ? '' : 's'} in version ${v.versionNumber}`
+                                  }
+                                  onPress={() =>
+                                    setExpanded((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(v.id)) next.delete(v.id);
+                                      else next.add(v.id);
+                                      return next;
+                                    })
+                                  }
+                                  className="min-h-[44px] justify-center active:opacity-60">
+                                  <Text className="font-mono text-[10.5px] leading-4 text-ink-secondary">
+                                    {open ? '− show fewer' : `+ ${rest} more`}
+                                  </Text>
+                                </Pressable>
                               ) : null}
                             </>
                           )}

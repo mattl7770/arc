@@ -201,6 +201,41 @@ export function getMissionItem(db: Database, id: string): MissionItem | null {
   return row ? toMissionItem(row) : null;
 }
 
+/**
+ * How many rows each protocol has on `date`'s COMMITTED mission — the hub's
+ * `3 today`.
+ *
+ * One grouped query for the whole screen, handed to each row inside the loop.
+ * Never one query per row: the hub draws every protocol on the device, and a
+ * per-row read is the shape that turns a six-protocol screen into a stutter.
+ *
+ * **Today is counted, not projected.** Today's plan already exists as rows, and
+ * re-deriving it to count it would produce a second, subtly different answer
+ * beside the one the user has been ticking.
+ *
+ * **A carried row counts.** It is on the list and it has to be done, which is
+ * what the figure answers. {@link NOT_CARRIED_SQL} is for denominators — what a
+ * day OWED — and this is not one.
+ */
+export function missionCountByProtocol(db: Database, date: string): Map<string, number> {
+  const rows = db.all<{ protocolId: string | null; n: number }>(
+    `SELECT e.protocol_id AS protocolId, count(*) AS n
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ?
+        AND e.protocol_id IS NOT NULL
+        AND ${PLANNED_ROW_SQL}
+        AND ${NOT_REMOVED_SQL}
+      GROUP BY e.protocol_id`,
+    [date]
+  );
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.protocolId !== null) counts.set(row.protocolId, row.n);
+  }
+  return counts;
+}
+
 /** One mission row that has asked for an OS notification (C10). */
 export type RemindableEntry = {
   id: string;

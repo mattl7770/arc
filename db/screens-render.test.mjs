@@ -118,6 +118,7 @@ import ProtocolDetailScreen from '../app/protocol-detail.tsx';
 import ProtocolEditScreen from '../app/protocol-edit.tsx';
 import ProtocolVersionsScreen from '../app/protocol-versions.tsx';
 import MissionItemScreen from '../app/mission-item.tsx';
+import ProtocolSettingsScreen from '../app/protocol-settings.tsx';
 import ProtocolItemScreen from '../app/protocol-item.tsx';
 import { MissionItemRow } from '../src/components/home/mission-item.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
@@ -2266,8 +2267,46 @@ const db = getDb();
     'Maintenance',
     'Mon · Wed · Fri',
     'Save as',
-    'Delete protocol',
   ]);
+  // The edit path is STRUCTURE only since 2026-09-19: identity, status, the two
+  // 0050 policies and Delete all moved to the settings sheet, which is the
+  // single surface that writes them.
+  refute('protocol-edit (phased)', editPhased, [
+    'Delete protocol',
+    'Supplement stack', // the type chips
+    'If you miss it',
+    'When you check it off',
+  ]);
+  // …and it gained the one thing the per-item editor cannot express.
+  expect('protocol-edit (phased)', editPhased, ['Move phase 2 up', 'Move Creatine down']);
+
+  // The CREATE path keeps identity, because a new protocol has to be named and
+  // typed before it can exist.
+  expect('protocol-edit (create, still whole)', render('protocol-edit (create)', ProtocolEditScreen), [
+    'New Protocol',
+    'Supplement stack',
+    'Create protocol',
+  ]);
+
+  // The settings sheet: everything the editor stopped carrying, in one place,
+  // with the consequence of re-typing said where the control is.
+  const settings = render('protocol-settings', ProtocolSettingsScreen, { id: phasedId });
+  expect('protocol-settings', settings, [
+    'Settings',
+    'Creatine loading', // the back control names where it goes
+    'Supplement stack',
+    'Status',
+    'Phase 1 starts',
+    'If you miss it',
+    'When you check it off',
+    'Delete protocol',
+    'Changing it applies from tomorrow.',
+  ]);
+  expect(
+    'protocol-settings (gone)',
+    render('protocol-settings (gone)', ProtocolSettingsScreen, { id: 'nope' }),
+    ['This protocol no longer exists.']
+  );
 
   // A second version, so the history has an adjacent pair to diff.
   addVersion(
@@ -2626,6 +2665,132 @@ const db = getDb();
   chevron !== undefined
     ? ok('…and the chevron is a sibling, hidden from assistive tech')
     : bad('no chevron sibling on the mission row');
+
+  // ── The hub row's lead figure, in each of its forms ──────────────────────
+  // It leads with what the protocol is DOING; adherence moved to the foot. The
+  // cadence summary it replaced said "mixed" the moment two items disagreed.
+  const quotaOnly = createProtocolWithVersion(
+    db,
+    { name: 'Walk block', type: 'daily_routine', startedOn: todayISODate() },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'w',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'walk',
+              title: 'Long walk',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'quota', per_week: 3 },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  const pausedId = createProtocolWithVersion(
+    db,
+    { name: 'Resting block', type: 'therapy_protocol', startedOn: todayISODate() },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'r',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'sauna2',
+              title: 'Contrast therapy',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  rederiveMissionForDay(db, todayISODate());
+  db.run('UPDATE protocols SET is_active = 0 WHERE id = ?', [pausedId]);
+  // A protocol whose one bounded phase ran out — still is_active = 1, and it
+  // generates nothing, which is why the hub lists it apart.
+  createProtocolWithVersion(
+    db,
+    {
+      name: 'Finished course',
+      type: 'supplement_stack',
+      startedOn: shiftISODate(todayISODate(), -40),
+    },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'f',
+          title: null,
+          duration_days: 7,
+          items: [
+            {
+              id: 'course',
+              title: 'Course dose',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+
+  const hubNow = render('protocols (re-cut)', ProtocolsScreen);
+  expect('protocols (re-cut)', hubNow, [
+    ' today', // the lead figure — what it puts on today
+    'today · next ', // …and the next day, on the protocol whose item is days away
+    ' of 3 this wk', // …an allowance, for the quota-only protocol
+    'paused',
+    'Version',
+    // The ended group's one sentence — the only statement of that rule in the
+    // app, and A9 kept it deliberately.
+    'They put nothing on a day until a phase is extended or another is added.',
+  ]);
+  // "mixed" is gone with contentCadenceSummary, and the description left the row.
+  refute('protocols (re-cut)', hubNow, ['mixed', 'Sleep latency, not sedation.']);
+
+  // The detail, re-cut: Coming up with its honesty line, and a quota item that
+  // reads its ALLOWANCE on its Now row instead of appearing in the projection.
+  const ritual = render('protocol-detail (re-cut)', ProtocolDetailScreen, { id: sheetProtocol });
+  expect('protocol-detail (re-cut)', ritual, [
+    'Settings', // the header action
+    'Coming up',
+    'next 6 days',
+    'Projected from the plan. These days are not committed yet.',
+    'Magnesium glycinate', // a Now row, tappable into the item editor
+    'of 3', // the quota item's allowance, on its own row
+  ]);
+  // A quota never appears in Coming up: an allowance is not a day.
+  const comingBlock = ritual === null ? '' : ritual.slice(ritual.indexOf('Coming up'));
+  !comingBlock.includes('Zone 2')
+    ? ok('protocol-detail: no quota item in Coming up')
+    : bad('a quota item was projected onto a day');
+
+  const pausedDetail = render('protocol-detail (paused)', ProtocolDetailScreen, { id: pausedId });
+  expect('protocol-detail (paused)', pausedDetail, [
+    'Paused',
+    'Paused — puts nothing on a day',
+    // The phase clock RUNS while paused by design — pausing a titration for a
+    // fortnight must not put you back on week 1 — so the line stays true and
+    // is prefixed rather than hidden.
+    'clock reads',
+  ]);
+  refute('protocol-detail (paused)', pausedDetail, ['Coming up']);
 
   // The longest real category string plus a carry mark plus Snoozed, on one
   // line. This proves the LINE, not its legibility at 375pt — that stays a

@@ -23,11 +23,11 @@ import { todayISODate } from '@/lib/db/date';
 import { newId } from '@/lib/db/id';
 import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
 import {
+  addVersion,
   createProtocolWithVersion,
-  deleteProtocol,
-  reviseProtocol,
+  setStartedOn as setProtocolStartedOn,
 } from '@/lib/db/repositories/protocols';
-import type { CheckoffMode, ProtocolType } from '@/lib/db/types';
+import type { ProtocolType } from '@/lib/db/types';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import { normalizeContent, validateContent } from '@/lib/protocols/content';
 import { PROTOCOL_TYPES } from '@/lib/protocols/format';
@@ -35,13 +35,34 @@ import type { Cadence, ProtocolContent } from '@/lib/protocols/types';
 import { type ProtocolDetail, useProtocol } from '@/hooks/use-protocols';
 
 /**
- * Protocol editor — create/edit, pushed from the Protocols hub.
+ * Protocol editor — **the CREATE path whole, and the edit path for STRUCTURE.**
  *
- * Versioning discipline: the identity fields (name, type, description, paused
- * state, start date) update the `protocols` row in place; the PHASES and their
- * ITEMS are the versioned content — saving writes a NEW immutable
- * `protocol_versions` row and moves the live pointer, unless the content is
- * unchanged (no no-op versions).
+ * ## What it is for, after 2026-09-19
+ *
+ * Two jobs need a document: building a protocol, and restructuring one. Nothing
+ * else does, and this form was carrying everything else — seven type chips and
+ * a description above the items on the screen you open to change a dose, and a
+ * one-bit pause that walked the whole form past every item.
+ *
+ * So the **create path stays whole** (a new protocol has to be named and typed
+ * before it can exist), and the **edit path lost its head and its foot**:
+ * identity, status, the two 0050 policies and Delete all moved to the settings
+ * sheet (app/protocol-settings.tsx). What it keeps is phases, items, *Add a
+ * phase*, the start date, change notes — and two things it never had:
+ * **reordering an item within its phase, and reordering phases**, which is the
+ * one thing the per-item editor cannot express because order is a property of
+ * the document rather than of an item.
+ *
+ * The edit path's write changed to match: content through `addVersion` and the
+ * anchor through `setStartedOn`, and nothing else. `reviseProtocol` is
+ * deliberately NOT called here any more — it has no identity-untouched branch,
+ * so it always writes name, type, description and the active flag, which this
+ * screen no longer draws. A structure-only save therefore leaves all six of
+ * those columns byte-identical by construction.
+ *
+ * Versioning discipline, unchanged: the PHASES and their ITEMS are the
+ * versioned content — saving writes a NEW immutable `protocol_versions` row and
+ * moves the live pointer, unless the content is unchanged (no no-op versions).
  *
  * **A save applies to TODAY.** After the version lands, this re-derives today's
  * mission through the same diff a mode change uses: untouched machine-made rows
@@ -157,6 +178,78 @@ function isDate(text: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(text.trim());
 }
 
+/** Swap `index` with its neighbour in `by` steps; returns the same array if it can't. */
+function moved<T>(list: T[], index: number, by: -1 | 1): T[] {
+  const to = index + by;
+  if (to < 0 || to >= list.length) return list;
+  const next = [...list];
+  const held = next[index]!;
+  next[index] = next[to]!;
+  next[to] = held;
+  return next;
+}
+
+/**
+ * Move something up or down by one — **the one thing the per-item editor
+ * cannot express.**
+ *
+ * Order inside a phase is array order in the version document, and phase order
+ * is the whole point of a phased protocol; neither is a property of an item, so
+ * neither can be set on a form about one item. That is why reordering lives
+ * here and why the per-item editor says so out loud when it moves an item
+ * between phases.
+ *
+ * 28pt wide with `hitSlop` out to a 44pt target — the shape
+ * coach/reminders-card.tsx already ships for the same reason: three controls
+ * plus a filling field do not fit three 44pt boxes at 375pt, and a target grown
+ * by hit area is a real target.
+ */
+function MoveButtons({
+  what,
+  canUp,
+  canDown,
+  onMove,
+}: {
+  /** Spoken, e.g. "Creatine" or "phase 2". */
+  what: string;
+  canUp: boolean;
+  canDown: boolean;
+  onMove: (by: -1 | 1) => void;
+}) {
+  return (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Move ${what} up`}
+        accessibilityState={{ disabled: !canUp }}
+        disabled={!canUp}
+        hitSlop={{ left: 8, right: 8 }}
+        onPress={() => onMove(-1)}
+        className="h-11 w-7 items-center justify-center active:opacity-50">
+        <Ionicons
+          name="chevron-up"
+          size={16}
+          color={canUp ? palette.inkSecondary : palette.inkMuted}
+        />
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Move ${what} down`}
+        accessibilityState={{ disabled: !canDown }}
+        disabled={!canDown}
+        hitSlop={{ left: 8, right: 8 }}
+        onPress={() => onMove(1)}
+        className="h-11 w-7 items-center justify-center active:opacity-50">
+        <Ionicons
+          name="chevron-down"
+          size={16}
+          color={canDown ? palette.inkSecondary : palette.inkMuted}
+        />
+      </Pressable>
+    </>
+  );
+}
+
 export default function ProtocolEditScreen() {
   // A deep link can repeat the param (?id=a&id=b) and expo-router then delivers
   // string[] despite the generic — coerce so a malformed link degrades to the
@@ -177,15 +270,8 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
   const [name, setName] = useState(detail?.protocol.name ?? '');
   const [type, setType] = useState<ProtocolType>(detail?.protocol.type ?? 'daily_routine');
   const [description, setDescription] = useState(detail?.protocol.description ?? '');
-  const [active, setActiveState] = useState(detail ? detail.protocol.is_active === 1 : true);
   const [phases, setPhases] = useState<EditPhase[]>(() => initialPhases(detail));
   const [startedOn, setStartedOn] = useState(detail?.protocol.started_on ?? todayISODate());
-  // Execution policy (0050). It lives on the protocols ROW, not in the version,
-  // so changing it writes no revision — see the migration header.
-  const [carryOver, setCarryOver] = useState(detail?.protocol.carry_over === 1);
-  const [checkoffMode, setCheckoffMode] = useState<CheckoffMode>(
-    detail?.protocol.checkoff_mode ?? 'strict'
-  );
   const [changeNotes, setChangeNotes] = useState('');
   const nextKey = useRef(1000);
   // Re-entrancy guard: the screen stays touchable during the pop transition,
@@ -265,6 +351,13 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
   const removePhase = (key: number) =>
     setPhases((prev) => (prev.length <= 1 ? prev : prev.filter((p) => p.key !== key)));
 
+  const moveItem = (phaseKey: number, index: number, by: -1 | 1) =>
+    setPhases((prev) =>
+      prev.map((p) => (p.key === phaseKey ? { ...p, items: moved(p.items, index, by) } : p))
+    );
+
+  const movePhase = (index: number, by: -1 | 1) => setPhases((prev) => moved(prev, index, by));
+
   const save = () => {
     if (inFlight.current || !canSave) return;
     inFlight.current = true;
@@ -302,6 +395,15 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
     }
     try {
       if (detail) {
+        // A STRUCTURE-ONLY save. It writes a version through `addVersion` — the
+        // Coach's own path — and the anchor through `setStartedOn`, and touches
+        // nothing else on the protocols row. `reviseProtocol` is deliberately
+        // not called: it has no identity-untouched branch, so it would rewrite
+        // name, type, description and the active flag from this screen's state
+        // — which, since 2026-09-19, this screen no longer draws on the edit
+        // path. The settings sheet owns those, and it is the only surface that
+        // writes them.
+        //
         // normalizeContent gives both sides one canonical shape, so a plain
         // string compare detects "nothing changed" — no no-op versions. Typed
         // change notes force a version anyway: they're user data, and skipping
@@ -310,20 +412,14 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
           detail.version !== null &&
           changeNotes.trim() === '' &&
           JSON.stringify(content) === JSON.stringify(detail.content);
-        reviseProtocol(db, detail.protocol.id, {
-          name: name.trim(),
-          type,
-          description: description.trim() || null,
-          active,
-          content: unchanged ? null : content,
-          // Only a phased protocol writes a start date: with one open-ended
-          // phase the anchor changes nothing that lands on a day, and passing
-          // null leaves whatever anchor the protocol already had.
-          startedOn: phased ? startedOn.trim() : null,
-          carryOver,
-          checkoffMode,
-          changeNotes: changeNotes.trim() || null,
-        });
+        if (!unchanged) {
+          addVersion(db, detail.protocol.id, content, changeNotes.trim() || null, 'user');
+        }
+        // Only a phased protocol writes a start date: with one open-ended phase
+        // the anchor changes nothing that lands on a day, and writing nothing
+        // leaves whatever anchor the protocol already had rather than clearing
+        // it — clearing restarts a titration on the next generation.
+        if (phased && isDate(startedOn)) setProtocolStartedOn(db, detail.protocol.id, startedOn.trim());
       } else {
         createProtocolWithVersion(
           db,
@@ -357,36 +453,6 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
     }
   };
 
-  const confirmDelete = () => {
-    if (!detail) return;
-    Alert.alert(
-      'Delete this protocol?',
-      'Its versions are deleted with it. Anything already logged keeps its history — entries stay, just unlinked.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            if (inFlight.current) return;
-            inFlight.current = true;
-            try {
-              const db = getDb();
-              deleteProtocol(db, detail.protocol.id);
-              // A deleted protocol must stop buzzing the phone. Same rebuild.
-              void syncReminderNotifications(db);
-              router.back();
-            } catch (error) {
-              inFlight.current = false;
-              console.warn('[protocols] delete failed', error);
-              Alert.alert('Delete failed', 'Nothing was changed. Please try again.');
-            }
-          },
-        },
-      ]
-    );
-  };
-
   // Pushed with an id that no longer resolves (deleted elsewhere) — say so.
   if (editing && !detail) {
     return (
@@ -407,41 +473,49 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
         <StackHeader title={editing ? 'Edit Protocol' : 'New Protocol'} />
       </View>
 
-      {/* Identity — lives on the protocol row, not in the version. */}
-      <View className="mt-3">
-        <SectionLabel label="Protocol" />
-        <View className="mt-2">
-          <FormField
-            value={name}
-            onChange={setName}
-            placeholder="e.g. Morning stack"
-            accessibilityLabel="Protocol name"
-          />
-        </View>
-        <View className="mt-3">
-          <FormField
-            value={description}
-            onChange={setDescription}
-            placeholder="What it's for (optional)"
-            multiline
-            accessibilityLabel="Protocol description"
-          />
-        </View>
-      </View>
+      {/* Identity — lives on the protocol row, not in the version, and on the
+          CREATE path only. A new protocol has to be named and typed before it
+          can exist; an existing one is re-named and re-typed on the settings
+          sheet, because neither is a daily decision and both sat above the
+          items on the screen you open to change a dose. */}
+      {editing ? null : (
+        <>
+          <View className="mt-3">
+            <SectionLabel label="Protocol" />
+            <View className="mt-2">
+              <FormField
+                value={name}
+                onChange={setName}
+                placeholder="e.g. Morning stack"
+                accessibilityLabel="Protocol name"
+              />
+            </View>
+            <View className="mt-3">
+              <FormField
+                value={description}
+                onChange={setDescription}
+                placeholder="What it's for (optional)"
+                multiline
+                accessibilityLabel="Protocol description"
+              />
+            </View>
+          </View>
 
-      <View className="mt-8">
-        <SectionLabel label="Type" />
-        <View className="mt-2 flex-row flex-wrap gap-2">
-          {PROTOCOL_TYPES.map((t) => (
-            <Chip
-              key={t.type}
-              label={t.label}
-              on={type === t.type}
-              onPress={() => setType(t.type)}
-            />
-          ))}
-        </View>
-      </View>
+          <View className="mt-8">
+            <SectionLabel label="Type" />
+            <View className="mt-2 flex-row flex-wrap gap-2">
+              {PROTOCOL_TYPES.map((t) => (
+                <Chip
+                  key={t.type}
+                  label={t.label}
+                  on={type === t.type}
+                  onPress={() => setType(t.type)}
+                />
+              ))}
+            </View>
+          </View>
+        </>
+      )}
 
       {/* The versioned content — every save of these becomes a new version.
           No plate and no rules: a form is controls, and one item is separated
@@ -469,7 +543,7 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
                 fill
                 accessibilityLabel={`Phase ${phaseIndex + 1} name`}
               />
-              <View className="w-20">
+              <View className="w-16">
                 <FormField
                   value={phase.days}
                   onChange={(days) => patchPhase(phase.key, { days })}
@@ -480,11 +554,17 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
                   accessibilityLabel={`Phase ${phaseIndex + 1} length in days`}
                 />
               </View>
+              <MoveButtons
+                what={`phase ${phaseIndex + 1}`}
+                canUp={phaseIndex > 0}
+                canDown={phaseIndex < phases.length - 1}
+                onMove={(by) => movePhase(phaseIndex, by)}
+              />
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Remove phase ${phaseIndex + 1}`}
                 onPress={() => removePhase(phase.key)}
-                className="h-11 w-11 items-center justify-center rounded-btn active:bg-paper-dim">
+                className="h-11 w-9 items-center justify-center rounded-btn active:bg-paper-dim">
                 <Ionicons name="close" size={18} color={palette.inkMuted} />
               </Pressable>
             </View>
@@ -501,11 +581,17 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
                   fill
                   accessibilityLabel="Item title"
                 />
+                <MoveButtons
+                  what={it.title.trim() || `item ${index + 1}`}
+                  canUp={index > 0}
+                  canDown={index < phase.items.length - 1}
+                  onMove={(by) => moveItem(phase.key, index, by)}
+                />
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Remove item"
+                  accessibilityLabel={`Remove ${it.title.trim() || `item ${index + 1}`}`}
                   onPress={() => removeItem(phase.key, it.key)}
-                  className="h-11 w-11 items-center justify-center rounded-btn active:bg-paper-dim">
+                  className="h-11 w-9 items-center justify-center rounded-btn active:bg-paper-dim">
                   <Ionicons name="close" size={18} color={palette.inkMuted} />
                 </Pressable>
               </View>
@@ -576,101 +662,27 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
         </View>
       ) : null}
 
+      {/* Status, the two 0050 execution policies and Delete LEFT this screen on
+          2026-09-19 for the settings sheet (app/protocol-settings.tsx). None of
+          them is content: they write the protocols row, never a version, and
+          the editor's edit path now writes a version and nothing else. The two
+          had to land together — between them, two surfaces would have written
+          identity, status and policy through reviseProtocol, last write
+          winning. */}
       {editing ? (
-        <>
-          {/* Paused protocols keep their versions; the generator skips them. */}
-          <View className="mt-8">
-            <SectionLabel label="Status" />
-            <View className="mt-2 flex-row gap-2">
-              {(
-                [
-                  { label: 'Active', value: true },
-                  { label: 'Paused', value: false },
-                ] as const
-              ).map((s) => (
-                <Chip
-                  key={s.label}
-                  label={s.label}
-                  on={active === s.value}
-                  onPress={() => setActiveState(s.value)}
-                />
-              ))}
-            </View>
+        <View className="mt-8">
+          {/* The version number is a measured value — mono, in the note slot. */}
+          <SectionLabel label="What changed (optional)" note={`→ v${nextVersion}`} />
+          <View className="mt-2">
+            <FormField
+              value={changeNotes}
+              onChange={setChangeNotes}
+              placeholder="Why this revision — dropped X, moved Y earlier…"
+              multiline
+              accessibilityLabel="Change notes"
+            />
           </View>
-
-          {/* Execution POLICY (0050), between the protocol's other identity
-              facts and the version note — because that is what it is. It writes
-              the `protocols` row, never a version: turning carry-over on is not
-              a revision of the plan, and a restore must bring back the plan and
-              not the policy (see db/migrations/0050_protocol_carry_over.sql).
-
-              Only on the EDIT path, like Status and the change notes. A policy
-              for running a protocol you have not run yet is furniture on the
-              create form, which opens as one open-ended phase for a reason.
-
-              A form carries no block: a `SectionLabel`, the controls, air
-              (src/components/ui/block.tsx, form (b)). Both pairs are the
-              neutral `Chip` — the Status pair's exact shape — so the accent
-              budget is unchanged at exactly one, Save. */}
-          <View className="mt-8">
-            <SectionLabel label="If you miss it" />
-            <View className="mt-2 flex-row gap-2">
-              {(
-                [
-                  { label: 'Stays until done', value: true },
-                  { label: 'Stays on its day', value: false },
-                ] as const
-              ).map((option) => (
-                <Chip
-                  key={option.label}
-                  label={option.label}
-                  on={carryOver === option.value}
-                  onPress={() => setCarryOver(option.value)}
-                />
-              ))}
-            </View>
-            <Text className="mt-1.5 font-serif text-[12px] leading-4 text-ink-muted">
-              A missed item is offered again for up to 7 days. The day you missed it still counts
-              as a miss.
-            </Text>
-          </View>
-
-          <View className="mt-8">
-            <SectionLabel label="When you check it off" />
-            <View className="mt-2 flex-row gap-2">
-              {(
-                [
-                  { label: 'Keep the schedule', value: 'strict' },
-                  { label: 'Count from when I did it', value: 'adjusting' },
-                ] as const
-              ).map((option) => (
-                <Chip
-                  key={option.label}
-                  label={option.label}
-                  on={checkoffMode === option.value}
-                  onPress={() => setCheckoffMode(option.value)}
-                />
-              ))}
-            </View>
-            <Text className="mt-1.5 font-serif text-[12px] leading-4 text-ink-muted">
-              Only changes items set to every N days.
-            </Text>
-          </View>
-
-          <View className="mt-8">
-            {/* The version number is a measured value — mono, in the note slot. */}
-            <SectionLabel label="What changed (optional)" note={`→ v${nextVersion}`} />
-            <View className="mt-2">
-              <FormField
-                value={changeNotes}
-                onChange={setChangeNotes}
-                placeholder="Why this revision — dropped X, moved Y earlier…"
-                multiline
-                accessibilityLabel="Change notes"
-              />
-            </View>
-          </View>
-        </>
+        </View>
       ) : null}
 
       <ProblemLine text={problem} />
@@ -695,16 +707,6 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
           asymmetry that needed explaining (mode changes re-derived, protocol
           edits did not) is gone. */}
       <SaveFootnote />
-
-      {editing ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Delete protocol"
-          onPress={confirmDelete}
-          className="mt-6 min-h-[44px] items-center justify-center rounded-btn active:bg-paper-dim">
-          <Text className="font-label text-[13px] text-ink-secondary">Delete protocol</Text>
-        </Pressable>
-      ) : null}
     </Screen>
   );
 }
