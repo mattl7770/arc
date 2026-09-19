@@ -2415,6 +2415,21 @@ const db = getDb();
         error: null,
         rejected: { arcTag: 0, arcBundle: 0, unattributed: 6, outOfBounds: 0, nonFinite: 0 },
       },
+      // D3b (docs §15). The row that makes "31 → 0" readable: every workout was
+      // seen and none produced a heart rate, which has two causes the screen
+      // cannot tell apart — the watch exporting nothing, and the read grant
+      // having been declined. Only one is recoverable, and only the sentence
+      // sends the owner to the place he can recover it.
+      {
+        metric: 'workout_hr',
+        label: 'Heart rate during workouts',
+        returned: 31,
+        rows: 0,
+        exclusion: 'none',
+        error: null,
+        rejected: null,
+        detail: 'associated: ActiveEnergyBurned, HeartRate · by workout 0 · by source 0',
+      },
     ],
     publish: {
       armed: true,
@@ -2440,6 +2455,28 @@ const db = getDb();
   // The armed pass attempted nothing, so no type may appear claiming it was
   // refused — a fabricated finding is worse than a missing one.
   refute('settings-health (logged)', logged, ['Waist circumference. 0 / 0']);
+
+  // D3b. Four things, and all four are on this screen or nowhere: the scope
+  // row, the honest audit verdict, the log row's sentence, and the control
+  // whose whole justification is that a late read scope asks nobody anything.
+  expect('settings-health (logged)', logged, [
+    'Heart rate during workouts',
+    '31 → 0',
+    // The generic error branch never fires here (returned > 0), so this
+    // sentence exists only because the row has a branch of its own.
+    'Privacy &amp; Security → Health → ARC → Heart Rate',
+    'by workout 0 · by source 0', // the detail line: door 1 wrong vs Garmin silent
+  ]);
+  // It never claims a read grant, because iOS does not reveal one.
+  refute('settings-health (logged)', logged, ['Heart rate access granted']);
+  // The *Read heart rate (90 days)* control itself is NOT assertable here, and
+  // the reason is structural rather than an omission: it lives inside the
+  // connected plate, which under node takes the `!supported` branch ("Rides the
+  // next build") because there is no HealthKit module to report. `allowPublishing`
+  // has always been invisible here for the same reason. Its whole VISIBILITY
+  // RULE is pure and pinned instead — `unaskedReadScopes` in
+  // db/health-mapping.test.mjs §21 — so what a device settles is whether the
+  // button is where it should be, not whether it appears when it should.
 }
 
 /**

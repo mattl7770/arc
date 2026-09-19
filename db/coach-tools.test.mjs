@@ -3024,5 +3024,99 @@ console.log('42. get_training_summary carries the away flag, and the tool says w
     : bad('no away doctrine in the description', description);
 }
 
+// ---------------------------------------------------------------------------
+// D3b (docs §15). The Coach's whole share of in-workout heart rate: the numbers,
+// and NO sentence in the tool description. The judgment — what 142 means for
+// this person at this load — belongs in the model, which holds the session list,
+// the resting-HR baseline and the owner's age (or the turn context's "profile
+// not filled in", which is what tells it to ask).
+console.log('43. get_training_summary carries the watch’s heart rate, on both lists');
+{
+  const { db } = freshDb();
+  const DAY = TODAY;
+  const lift = { start: new Date(NOW.getTime() - 3 * 3_600_000), minutes: 60 };
+  const walk = { start: new Date(NOW.getTime() - 10 * 3_600_000), minutes: 40 };
+  const span = (s, m) => ({
+    startTime: s.toISOString(),
+    endTime: new Date(s.getTime() + m * 60_000).toISOString(),
+  });
+
+  logWorkout(db, {
+    date: DAY,
+    kind: 'strength',
+    durationMin: lift.minutes,
+    startedAt: lift.start.toISOString(),
+  });
+  // A third session the owner logged that the watch never saw — the row that
+  // proves the field is omitted rather than nulled.
+  logWorkout(db, { date: DAY, kind: 'strength', durationMin: 25 });
+  upsertWearableRows(db, [
+    {
+      date: DAY,
+      metricType: 'workout',
+      value: lift.minutes,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'watch-lift',
+      ...span(lift.start, lift.minutes),
+      metadata: {
+        activity: 'Strength training',
+        activity_type_raw: 50,
+        kcal: 410,
+        hr: { avg: 128, max: 162, method: 'workout' },
+      },
+    },
+    {
+      date: DAY,
+      metricType: 'workout',
+      value: walk.minutes,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'watch-walk',
+      ...span(walk.start, walk.minutes),
+      metadata: {
+        activity: 'Walking',
+        activity_type_raw: 52,
+        kcal: 120,
+        hr: { avg: 96, max: 118, method: 'source' },
+      },
+    },
+  ]);
+  pairIngestedWorkouts(db, NOW);
+
+  const summary = run('get_training_summary', db, { days: 7 });
+  const paired = summary.recentSessions.find((s) => s.duration_min === lift.minutes);
+  const unwatched = summary.recentSessions.find((s) => s.duration_min === 25);
+
+  paired?.hr?.avg === 128 && paired.hr.max === 162
+    ? ok('a paired session carries the watch’s average and peak, read through the 0054 link')
+    : bad('paired hr in the payload', JSON.stringify(paired));
+  // Omitted, not nulled — the rule this file already applies to `away`,
+  // `setSeconds` and `setMetres`. Ten sessions each carrying two explicit nulls
+  // is twenty tokens of "no".
+  unwatched && 'hr' in unwatched === false
+    ? ok('…while a session the watch never saw carries no field at all')
+    : bad('unwatched session pays for the field', JSON.stringify(unwatched));
+  summary.ingestedSessions?.[0]?.hr?.avg === 96
+    ? ok('the watch-only walk carries its own figure on the ingested list')
+    : bad('ingested hr', JSON.stringify(summary.ingestedSessions));
+
+  // The id is a JOIN KEY, not payload: selecting it is what lets the pair be
+  // read for the whole page in one statement, and emitting it would be ten rows
+  // of UUID the model can do nothing with.
+  'id' in (paired ?? {}) === false
+    ? ok('…and the workout id stays out of the payload — it is a join key, not a fact')
+    : bad('workout id leaked into the payload');
+
+  // NOT a description change. The schema sits single digits under its ceiling
+  // (coach-eval §6), the fields are self-describing, and a sentence telling the
+  // model how to read a heart rate would be the clinical judgment the house
+  // rule keeps out of code. Deferred until a transcript shows it is needed.
+  const description = toolByName('get_training_summary').description;
+  /heart rate|bpm|\bhr\b/i.test(description) === false
+    ? ok('the tool description says nothing about heart rate — payload only, no schema cost')
+    : bad('a heart-rate sentence entered the description', description);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

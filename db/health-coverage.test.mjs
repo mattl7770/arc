@@ -15,7 +15,7 @@ import {
   METRIC_COVERAGE,
   uncoveredReadIdentifiers,
 } from '../src/lib/health/coverage.ts';
-import { HEALTH_READ_IDENTIFIERS } from '../src/lib/health/mapping.ts';
+import { HEALTH_READ_IDENTIFIERS, HEART_RATE_IDENTIFIER } from '../src/lib/health/mapping.ts';
 
 let pass = 0;
 let fail = 0;
@@ -112,6 +112,35 @@ console.log('4. the findings that drive the vendor-API question');
   GARMIN_ONLY_METRICS.every((m) => m.label.trim() && m.note.trim())
     ? ok('Body Battery / Training Readiness recorded as Garmin-only')
     : bad('GARMIN_ONLY_METRICS incomplete');
+}
+
+console.log('5. in-workout heart rate — unverified, and honest about WHY a blank can be blank');
+{
+  const row = METRIC_COVERAGE.find((m) => m.hkIdentifier === HEART_RATE_IDENTIFIER);
+
+  // The tripwire in §1 already refuses a scope with no row. This says what the
+  // row has to CONTAIN, because the honest content is the whole point: nothing
+  // in this repository establishes that Garmin Connect writes in-workout heart
+  // rate to Apple Health at all, at what cadence, or whether it associates the
+  // samples with the session. `unverified` is not a soft no.
+  row && row.garmin === 'unverified'
+    ? ok('the row exists and claims nothing about Garmin it cannot support')
+    : bad('heart-rate coverage row', JSON.stringify(row));
+  row?.verdictDays === null
+    ? ok('…and feeds no verdict, so it waits on no baseline')
+    : bad('heart rate claims a verdict window', row?.verdictDays);
+
+  // The sentence that matters most on this row. iOS never reveals whether a
+  // READ grant was given, so a blank heart-rate line has two causes the screen
+  // cannot tell apart — Garmin sending nothing, and the owner having declined
+  // the sheet — and only one of them is recoverable. Reading a zero as a fact
+  // about Garmin before checking is the mistake this line exists to prevent.
+  row?.garminNote.includes('Privacy & Security')
+    ? ok('…and names the iOS Settings path before anyone reads a zero as a Garmin fact')
+    : bad('no declined-grant sentence', row?.garminNote);
+  row?.use.includes('never a daily figure')
+    ? ok('…and says out loud that this never becomes a daily number')
+    : bad('use line', row?.use);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

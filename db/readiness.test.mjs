@@ -822,5 +822,76 @@ console.log('10. nutrition — direction-aware bands on an expected-by-now pace 
   }
 }
 
+// ---------------------------------------------------------------------------
+// D3b — DOCUMENTATION, not a gate. The owner's answer to question 1 was that
+// neither Home pillar moves: Strain stays ARC's logged sets raised by active
+// energy, Recovery stays the resting-heart-rate delta. The argument is in
+// docs/wearables-subapp.md §15 and it is stronger than "not resting" — heart
+// rate at a moment of training is a function of the LOAD at that moment, and
+// ARC holds no load control (no pace, no power, no grade). A session average 8
+// bpm above the last four could be fatigue, illness, heat, or a harder run; 8
+// bpm below could be fitness or parasympathetic suppression. A deterministic
+// rule on a confounded signal is exactly what the house rule keeps out of code.
+//
+// So this asserts a NON-effect, and it is worth a test because the next person
+// to read `metadata.hr` land in the store will reasonably wonder why Recovery
+// did not move. It did not move on purpose.
+console.log('11. in-workout heart rate moves NEITHER Home pillar (D3b, owner answer 1a)');
+{
+  const withoutHr = freshDb();
+  const withHr = freshDb();
+
+  for (const db of [withoutHr, withHr]) {
+    plantBaseline(db, 'rhr', 'bpm', 52, 10);
+    plantEnergyBaseline(db);
+    upsertWearableRows(db, [
+      {
+        date: TODAY,
+        metricType: 'rhr',
+        value: 55,
+        unit: 'bpm',
+        sourceDevice: 'garmin',
+        sourceRawId: `hk:rhr:${TODAY}`,
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      },
+    ]);
+  }
+
+  // The same fortnight of sessions, one store carrying heart rate and one not.
+  const workoutRow = (hr) => ({
+    date: daysAgo(1),
+    metricType: 'workout',
+    value: 60,
+    unit: 'min',
+    sourceDevice: 'garmin',
+    sourceRawId: 'hk-workout-1',
+    startTime: `${daysAgo(1)}T17:00:00.000Z`,
+    endTime: `${daysAgo(1)}T18:00:00.000Z`,
+    metadata: {
+      activity: 'Running',
+      activity_type_raw: 37,
+      kcal: 610,
+      distance_km: 8.4,
+      ...(hr ? { hr } : {}),
+    },
+  });
+  upsertWearableRows(withoutHr, [workoutRow(null)]);
+  // A figure far outside anything a resting baseline would tolerate, so a
+  // pillar that HAD grown an opinion about it could not fail to show one.
+  upsertWearableRows(withHr, [workoutRow({ avg: 168, max: 191, method: 'workout' })]);
+
+  const a = deriveReadiness(withoutHr, TODAY);
+  const b = deriveReadiness(withHr, TODAY);
+
+  JSON.stringify(a) === JSON.stringify(b)
+    ? ok('readiness is byte-identical with and without the figure — no pillar reads it')
+    : bad('a pillar moved on heart rate', `${JSON.stringify(a)}\n${JSON.stringify(b)}`);
+  JSON.stringify(b).includes('168') === false && JSON.stringify(b).includes('191') === false
+    ? ok('…and neither number appears anywhere in the Home payload')
+    : bad('a session heart rate leaked into Home', JSON.stringify(b));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
