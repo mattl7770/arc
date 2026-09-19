@@ -9,6 +9,8 @@ type Props = {
   /** True on the one row the hero is also showing — the day's "you are here". */
   active?: boolean;
   onToggle: (id: string) => void;
+  /** Open this row's sheet — the chevron, and the row's named VoiceOver action. */
+  onOpen: (id: string) => void;
 };
 
 /**
@@ -84,7 +86,43 @@ function carryMark(item: MissionItem): string | null {
   return null;
 }
 
-export function MissionItemRow({ item, active = false, onToggle }: Props) {
+/**
+ * ## The row became a DOOR without ceasing to be a toggle (2026-09-19)
+ *
+ * The row draws what it drew before. What changed is structural: it is now a
+ * `View` holding the checkbox `Pressable` and, as a **sibling outside it**, a
+ * chevron that pushes the item sheet. A sibling, because an accessible
+ * Touchable collapses its subtree on iOS — a chevron nested inside the checkbox
+ * would never be independently focusable, so it would be a control that exists
+ * for the eye and not for the reader.
+ *
+ * The chevron is hidden from assistive tech and the checkbox gains a NAMED
+ * action instead (`{ name: 'open', label: 'Open item' }`), the shape
+ * log/quick-add-grid.tsx already ships for its long-press. VoiceOver reaches the
+ * sheet from the rotor; the role, the checked state and the spoken row are all
+ * unchanged.
+ *
+ * ## What the ~30pt costs, correctly attributed
+ *
+ * The element that yields on this line is the **title**: it carries `flex-1`
+ * and the category text carries `numberOfLines={1}` with no shrink class, and
+ * React Native's default `flexShrink` is 0. So the width the chevron takes
+ * squeezes the title — which, with no line limit, WRAPS, and a wrapped title
+ * breaks the single-baseline `when → what → what kind` reading the row is built
+ * on. Hence `numberOfLines={1}` on the title.
+ *
+ * Its cost, recorded because it is real: a long item name truncates where it
+ * used to wrap. The hero prints the active item's title in full and the sheet
+ * prints every title in full, so the name is never only available truncated.
+ * Whether a truncated title beside `SUPPLEMENTS · 2 DAYS LATE · Snoozed` still
+ * reads at 375pt is a device question — the render suite proves one line, not
+ * legibility.
+ *
+ * **A long-press was considered and is question 1's option (b).** It adds
+ * nothing visible, so it is undiscoverable on a row that has always been one
+ * tap; the chevron is the owner's call.
+ */
+export function MissionItemRow({ item, active = false, onToggle, onOpen }: Props) {
   const done = item.status === 'completed';
   const skipped = item.status === 'skipped';
   const muted = done || skipped;
@@ -104,54 +142,80 @@ export function MissionItemRow({ item, active = false, onToggle }: Props) {
     .join(', ');
 
   return (
-    <Pressable
-      accessibilityRole="checkbox"
-      accessibilityState={{ checked: done }}
-      accessibilityLabel={spokenRow}
-      onPress={() => onToggle(item.id)}
-      className="min-h-[44px] flex-row gap-3 py-3 active:opacity-60">
-      <View className="pt-0.5">
-        <StatusBox status={item.status} />
-      </View>
-
-      <View className="flex-1">
-        {/* when → what → what kind, on one baseline. */}
-        <View className="flex-row items-baseline gap-2">
-          {item.scheduledTime ? (
-            <Text className="font-mono text-[11px] text-ink-secondary">{item.scheduledTime}</Text>
-          ) : null}
-
-          <Text
-            className={TITLE[muted ? 'muted' : active ? 'active' : 'plain']}
-            style={skipped ? { textDecorationLine: 'line-through' } : undefined}>
-            {item.title}
-          </Text>
-
-          {/* `numberOfLines` stands in for the sheet's `white-space: nowrap` on
-              `.cf-mcat` — without it a long category wraps against the flex-1
-              title and the one-baseline row becomes two. */}
-          <Text
-            numberOfLines={1}
-            className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-            {[
-              item.category,
-              mark,
-              item.snoozed && item.status === 'pending' ? 'Snoozed' : null,
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          </Text>
+    <View className="flex-row items-center">
+      <Pressable
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: done }}
+        accessibilityLabel={spokenRow}
+        accessibilityActions={ROW_ACTIONS}
+        onAccessibilityAction={(event) => {
+          if (event.nativeEvent.actionName === 'open') onOpen(item.id);
+        }}
+        onPress={() => onToggle(item.id)}
+        className="min-h-[44px] flex-1 flex-row gap-3 py-3 active:opacity-60">
+        <View className="pt-0.5">
+          <StatusBox status={item.status} />
         </View>
 
-        {item.why && active ? (
-          <Text className="mt-1 font-serif text-[13px] italic leading-5 text-ink-secondary">
-            {item.why}
-          </Text>
-        ) : null}
-      </View>
-    </Pressable>
+        <View className="flex-1">
+          {/* when → what → what kind, on one baseline. */}
+          <View className="flex-row items-baseline gap-2">
+            {item.scheduledTime ? (
+              <Text className="font-mono text-[11px] text-ink-secondary">{item.scheduledTime}</Text>
+            ) : null}
+
+            <Text
+              numberOfLines={1}
+              className={TITLE[muted ? 'muted' : active ? 'active' : 'plain']}
+              style={skipped ? { textDecorationLine: 'line-through' } : undefined}>
+              {item.title}
+            </Text>
+
+            {/* `numberOfLines` stands in for the sheet's `white-space: nowrap` on
+                `.cf-mcat` — without it a long category wraps against the flex-1
+                title and the one-baseline row becomes two. */}
+            <Text
+              numberOfLines={1}
+              className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+              {[
+                item.category,
+                mark,
+                item.snoozed && item.status === 'pending' ? 'Snoozed' : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+          </View>
+
+          {item.why && active ? (
+            <Text className="mt-1 font-serif text-[13px] italic leading-5 text-ink-secondary">
+              {item.why}
+            </Text>
+          ) : null}
+        </View>
+      </Pressable>
+
+      {/* Hidden from assistive tech: the named action on the checkbox is how a
+          reader opens the sheet, and exposing both would put two controls in
+          the rotor for one destination. */}
+      <Pressable
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        onPress={() => onOpen(item.id)}
+        hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+        className="min-h-[44px] justify-center pl-2 active:opacity-50">
+        <Ionicons name="chevron-forward" size={18} color={palette.inkMuted} />
+      </Pressable>
+    </View>
   );
 }
+
+/**
+ * The row's one custom action. A module constant rather than an inline literal
+ * so the array identity is stable across renders — a fresh array on every
+ * render re-registers the action with the platform on every list update.
+ */
+const ROW_ACTIONS = [{ name: 'open', label: 'Open item' }] as const;
 
 /**
  * The row title's three faces. `flex-1` is what pushes the category to the right

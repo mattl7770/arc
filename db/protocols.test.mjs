@@ -27,12 +27,15 @@ import {
 } from '../src/lib/db/repositories/protocols.ts';
 import { cadenceText, parseCadenceText } from '../src/lib/protocols/cadence.ts';
 import {
+  allItems,
   emptyContent,
   legacyItemId,
   normalizeCadence,
+  normalizeContent,
   parseProtocolContent,
   validateContent,
 } from '../src/lib/protocols/content.ts';
+import { applyItemToContent, itemChangeNote } from '../src/lib/protocols/item-edit.ts';
 import { diffContent, diffLines } from '../src/lib/protocols/diff.ts';
 import { phaseOn, totalDays } from '../src/lib/protocols/phase.ts';
 
@@ -794,6 +797,151 @@ console.log('12. reviseProtocol applies meta + active + version in one transacti
   raw.prepare('SELECT name FROM protocols WHERE id = ?').get(pid).name === 'AM Stack'
     ? ok('…and the rename rolled back with it — no partial save')
     : bad('partial revise persisted');
+}
+
+console.log('12b. a per-item save is the full editor’s document, written through addVersion');
+{
+  const { db, raw } = freshDb();
+  const item = (id, title, dose, cadence = { kind: 'daily' }) => ({
+    id,
+    title,
+    scheduled_time: '07:30',
+    dose,
+    notes: null,
+    cadence,
+    remind: false,
+  });
+  const document = (items) =>
+    normalizeContent({ phases: [{ id: 'only', title: null, duration_days: null, items }] });
+  const before = document([item('a', 'Creatine', '5 g'), item('b', 'Omega-3', '2 caps')]);
+
+  const pid = createProtocolWithVersion(
+    db,
+    {
+      name: 'Morning Stack',
+      type: 'supplement_stack',
+      description: 'The one that matters',
+      startedOn: TODAY,
+      carryOver: true,
+      checkoffMode: 'adjusting',
+    },
+    before
+  );
+  const identity = () =>
+    raw
+      .prepare(
+        `SELECT name, type, description, is_active, started_on, carry_over, checkoff_mode
+           FROM protocols WHERE id = ?`
+      )
+      .get(pid);
+  const identityBefore = JSON.stringify(identity());
+
+  // THE RULE: the same dose change made per-item and made by rebuilding the
+  // whole document must produce byte-identical content. Anything else means
+  // two implementations of "what a version is".
+  const perItem = applyItemToContent(before, item('a', 'Creatine', '10 g'), { phase: 0 });
+  const wholeForm = document([item('a', 'Creatine', '10 g'), item('b', 'Omega-3', '2 caps')]);
+  JSON.stringify(perItem) === JSON.stringify(wholeForm)
+    ? ok('a per-item dose change yields the full editor’s document, byte for byte')
+    : bad('per-item document drifted', JSON.stringify(perItem));
+
+  // …and the note is the part that differs, which is why it is asserted apart.
+  itemChangeNote('Creatine', 'edited') === 'Edited "Creatine"'
+    ? ok('…with an auto-filled change note naming the item')
+    : bad('change note', itemChangeNote('Creatine', 'edited'));
+
+  // Replace IN PLACE: a dose edit must never reorder the phase it belongs to.
+  perItem.phases[0].items.map((it) => it.id).join() === 'a,b'
+    ? ok('the edited item keeps its position in the phase')
+    : bad('per-item save reordered', JSON.stringify(perItem.phases[0].items.map((i) => i.id)));
+
+  // An item edited back to itself is not a change, so the screen's string
+  // compare writes nothing — no no-op versions from opening a form.
+  JSON.stringify(applyItemToContent(before, before.phases[0].items[0], { phase: 0 })) ===
+  JSON.stringify(before)
+    ? ok('an item edited back to itself rebuilds the same document, so no version is written')
+    : bad('idempotent edit produced a change');
+
+  addVersion(db, pid, perItem, itemChangeNote('Creatine', 'edited'), 'user');
+  JSON.stringify(identity()) === identityBefore
+    ? ok('a per-item save leaves every identity and policy column byte-identical')
+    : bad('identity moved', `${identityBefore} → ${JSON.stringify(identity())}`);
+  getCurrentVersion(db, pid).version_number === 2
+    ? ok('…and it is a real version, written through the Coach’s own path')
+    : bad('no version written');
+
+  // Built AFTER a Coach write, from the live version — which is the whole
+  // reason the screen re-reads at save instead of using its mount-time content.
+  addVersion(
+    db,
+    pid,
+    document([
+      item('a', 'Creatine', '10 g'),
+      item('b', 'Omega-3', '2 caps'),
+      item('c', 'Magnesium', '400 mg'),
+    ]),
+    'Added magnesium',
+    'ai'
+  );
+  const live = parseProtocolContent(getCurrentVersion(db, pid).content);
+  const afterCoach = applyItemToContent(live, item('a', 'Creatine', '15 g'), { phase: 0 });
+  afterCoach.phases[0].items.some((it) => it.title === 'Magnesium')
+    ? ok('a per-item save built after a Coach version still contains the Coach’s change')
+    : bad('the Coach’s change was reverted', JSON.stringify(afterCoach));
+
+  // A REMOVAL takes the item out and nothing else.
+  const removed = applyItemToContent(live, item('b', 'Omega-3', '2 caps'), {
+    phase: 0,
+    remove: true,
+  });
+  removed.phases[0].items.map((it) => it.id).join() === 'a,c'
+    ? ok('a removal takes out exactly one item')
+    : bad('removal', JSON.stringify(removed.phases[0].items.map((i) => i.id)));
+
+  // A version-LESS protocol reads as one empty open-ended phase, so the add
+  // path needs no special case: the first save writes v1.
+  const bare = createProtocol(db, { name: 'Bare', type: 'other' });
+  const first = applyItemToContent(parseProtocolContent(null), item('z', 'Walk', null), {
+    phase: 0,
+  });
+  addVersion(db, bare, first, itemChangeNote('Walk', 'added'), 'user');
+  const firstVersion = getCurrentVersion(db, bare);
+  firstVersion.version_number === 1 && allItems(parseProtocolContent(firstVersion.content)).length === 1
+    ? ok('a per-item ADD on a version-less protocol writes v1 with one item')
+    : bad('version-less add', JSON.stringify(firstVersion));
+
+  // MOVING between phases appends at the end of the target, and leaves exactly
+  // one copy — order inside a phase stays the full editor's.
+  const phased = normalizeContent({
+    phases: [
+      { id: 'one', title: 'Loading', duration_days: 7, items: [item('a', 'Creatine', '20 g')] },
+      { id: 'two', title: 'Maintenance', duration_days: null, items: [item('b', 'Omega-3', '2 caps')] },
+    ],
+  });
+  const moved = applyItemToContent(phased, item('a', 'Creatine', '20 g'), { phase: 1 });
+  moved.phases[0].items.length === 0 &&
+  moved.phases[1].items.map((it) => it.id).join() === 'b,a'
+    ? ok('moving an item leaves one copy, at the end of the target phase')
+    : bad('move', JSON.stringify(moved.phases.map((p) => p.items.map((i) => i.id))));
+
+  // The settings sheet's path: identity and policy, no version.
+  const versionsBefore = raw
+    .prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?')
+    .get(pid).c;
+  reviseProtocol(db, pid, {
+    name: 'Morning Stack',
+    type: 'supplement_stack',
+    description: 'The one that matters',
+    active: false,
+    content: null,
+    carryOver: false,
+    checkoffMode: 'strict',
+  });
+  raw.prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?').get(pid).c ===
+    versionsBefore &&
+  raw.prepare('SELECT is_active, carry_over FROM protocols WHERE id = ?').get(pid).is_active === 0
+    ? ok('the settings path writes identity and policy and mints NO version')
+    : bad('settings path wrote a version');
 }
 
 console.log('13. listVersions: newest first, item counts, honest nulls');

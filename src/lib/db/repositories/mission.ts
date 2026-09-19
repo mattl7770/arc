@@ -185,6 +185,22 @@ export function listMission(db: Database, date: string): MissionItem[] {
   return rows.map(toMissionItem);
 }
 
+/**
+ * One mission row by id, as the view-model — what a pushed sheet reads.
+ *
+ * The same two standing predicates as {@link listMission}, so a sheet can only
+ * ever be opened on a row Home actually draws: an ad-hoc Log-tab capture and a
+ * tombstoned removal both read as absent here, and the screen says the row is
+ * gone rather than offering verbs on something invisible.
+ */
+export function getMissionItem(db: Database, id: string): MissionItem | null {
+  const row = db.get<LogEntryRow>(
+    `SELECT * FROM log_entries WHERE id = ? AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`,
+    [id]
+  );
+  return row ? toMissionItem(row) : null;
+}
+
 /** One mission row that has asked for an OS notification (C10). */
 export type RemindableEntry = {
   id: string;

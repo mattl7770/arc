@@ -9,7 +9,7 @@
  */
 import type { ProtocolType } from '@/lib/db/types';
 
-import { WEEKDAY_LABELS } from './cadence';
+import { isoWeekday, WEEKDAY_LABELS } from './cadence';
 import type { PhaseState } from './phase';
 import type { Cadence, ProtocolContent } from './types';
 
@@ -48,6 +48,20 @@ export function shortDate(date: string): string {
   const [, m, d] = date.split('-').map(Number);
   if (!m || !d) return date;
   return `${d} ${MONTHS_SHORT[m - 1] ?? '?'}`;
+}
+
+/**
+ * "2026-09-17" → "Wed 17 Sep" — a day named the way a person names one.
+ *
+ * The weekday is the part that carries, which is why {@link shortDate} is not
+ * enough on its own here: "next 17 Sep" asks the reader to count, and "next
+ * Wed" is the answer to the question they had. The date stays because a
+ * weekday alone is ambiguous past seven days.
+ */
+export function weekdayDate(date: string): string {
+  const day = isoWeekday(date);
+  const label = Number.isNaN(day) ? undefined : WEEKDAY_LABELS[day - 1];
+  return label ? `${label} ${shortDate(date)}` : shortDate(date);
 }
 
 /**

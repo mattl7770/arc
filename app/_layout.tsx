@@ -332,6 +332,15 @@ export default function RootLayout() {
           <Stack.Screen name="protocol-edit" />
           {/* Pushed from the protocol detail screen: the version timeline. */}
           <Stack.Screen name="protocol-versions" />
+          {/* Pushed from a MISSION ROW's trailing chevron on Home — what the
+              row is, which protocol and phase put it there, when it next
+              lands, and the per-row verbs the repository has always had and
+              nothing drew (skip, move, remove, un-snooze, put back). */}
+          <Stack.Screen name="mission-item" />
+          {/* One item of one protocol, from the item sheet or from a row of
+              the detail's Now field. Writes through addVersion, so it touches
+              the protocols row not at all. */}
+          <Stack.Screen name="protocol-item" />
           <Stack.Screen name="screenings" />
           <Stack.Screen name="screening-form" />
           <Stack.Screen name="appointment-form" />
