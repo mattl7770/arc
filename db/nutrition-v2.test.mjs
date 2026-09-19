@@ -11,7 +11,12 @@ import { ModelRequestError } from '../src/lib/ai/model-client.ts';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { createFood, getFood } from '../src/lib/db/repositories/foods.ts';
+import {
+  createFood,
+  getFood,
+  listRecentBarcodeFoods,
+  listRecentFoods,
+} from '../src/lib/db/repositories/foods.ts';
 import {
   createTemplate,
   deleteTemplate,
@@ -25,6 +30,7 @@ import {
 import {
   addMealItem,
   allMealPhotos,
+  clearCompositeCount,
   dayMicroTotals,
   deleteMeal,
   getMeal,
@@ -40,6 +46,7 @@ import {
   removeMealItem,
   replaceMealItems,
   scaleCompositeItem,
+  setCompositeCount,
   setNutritionTargets,
   todayTotals,
   updateMealItemPortion,
@@ -72,10 +79,19 @@ import {
 import { assembleMealItems } from '../src/lib/nutrition/composite.ts';
 import {
   applyAnswer,
+  beginCompositeScale,
+  beginCountEdit,
   currentPortion,
   reviewKcal,
   rowsFromEstimate,
   rowsToMealItems,
+  scaleComposite,
+  scaleCompositeTo,
+  // The PURE count writer, aliased so it cannot be confused with the
+  // repository's `setCompositeCount` — same name, same rule, different half.
+  setCompositeCount as setRowsCount,
+  setPiecesName,
+  setRowAmount,
 } from '../src/lib/nutrition/review-rows.ts';
 import { dayFigure } from '../src/lib/nutrition/remaining.ts';
 import {
@@ -2187,9 +2203,22 @@ console.log('36. C4/C5: the estimator prompts have a ceiling now');
   //   ---
   //   922, against a ceiling of 1,000 — 78 tokens of headroom.
   //
+  // THE ROUND AFTER IT (0059, "slices"), which paid the rule rather than
+  // raising the ceiling:
+  //
+  //   +38  the pieces rule, one bullet after the composite bullet
+  //   +14  "pieces" on the schema line
+  //   −7   the trim this very note named as cheapest: the hidden-fats bullet
+  //        and "prefer underestimating" always overlapped, and they are one
+  //        bullet now with neither rule lost. §52 asserts the fold, so a quiet
+  //        revert fails there rather than only nudging the number here.
+  //   ---
+  //   967, 33 of headroom. The revision prompt moved 798 → 834 in the same
+  //   round (the schema clause, and one rail about keeping a count).
+  //
   // The rule the Coach's own budget note states applies verbatim: **the next
   // addition trims rather than raises this.** What is left to cut is named on
-  // ESTIMATOR_PROMPT_CEILING itself, and neither candidate is free.
+  // ESTIMATOR_PROMPT_CEILING itself, and it is not free.
   estimation < ESTIMATOR_PROMPT_CEILING
     ? ok(
         `the estimation prompt fits its budget (~${estimation} tok of ${ESTIMATOR_PROMPT_CEILING})`
@@ -2522,6 +2551,775 @@ console.log('40. C5: which logging methods may ask — and which must never');
   !/QuestionsPlate|useEstimateQuestions/.test(logSheet)
     ? ok('…and neither do the catalog, template and manual rungs of the log sheet')
     : bad('log sheet grew a question surface');
+}
+
+// === "Slices" as a food unit (0059) ==========================================
+//
+// The owner: *"'Slices' as a food unit — convenient for composite foods."*
+//
+// A slice is NOT a unit — 0047 settled that there are two and that nothing
+// converts. It is a COUNT of pieces, and a count is a RATIO: three slices of an
+// eight-slice pizza is × 3/8, the arithmetic the fraction chips already do. So
+// every assertion below is about one of two things: that the count and the
+// parts keep describing the same food, and that nothing that SUMS ever learns
+// the count exists.
+//
+// THE PRINCIPLE, which §44 and §46 pin from both ends: the first count
+// DECLARES ("this dish is 8 pieces") and moves nothing; every later one
+// PRESERVES the correspondence by scaling the parts.
+
+/** The pizza, plus a declared count of eight slices. */
+function countedPizza(db) {
+  const { mealId } = pizzaMeal(db);
+  const header = listMealItems(db, mealId).find((r) => r.is_composite === 1);
+  setCompositeCount(db, header.id, 8, 'slice');
+  return { mealId, headerId: header.id };
+}
+
+const headerOf = (db, mealId) => listMealItems(db, mealId).find((r) => r.is_composite === 1);
+const partsOf = (db, mealId) => listMealItems(db, mealId).filter((r) => r.parent_item_id !== null);
+
+console.log('41. 0059: a composite carries a count of pieces, and still no number that sums');
+{
+  const { db } = freshDb();
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:30',
+    name: 'Dinner',
+    items: [
+      {
+        name: 'Pepperoni pizza',
+        serving_qty: 8,
+        piece_name: 'slice',
+        components: [
+          { name: 'Pizza crust', amount: 300, kcal: 800, protein_g: 26, carbs_g: 160, fat_g: 6 },
+          { name: 'Mozzarella', amount: 150, kcal: 450, protein_g: 33, carbs_g: 5, fat_g: 33 },
+          { name: 'Pepperoni', amount: 60, kcal: 300, protein_g: 12, carbs_g: 2, fat_g: 27 },
+        ],
+      },
+    ],
+  });
+  const header = headerOf(db, mealId);
+  header.serving_qty === 8 &&
+  header.piece_name === 'slice' &&
+  header.amount === null &&
+  header.kcal === null &&
+  header.protein_g === null &&
+  header.confidence === null
+    ? ok('the header holds the pair and nothing else — invariant 2, one clause wider')
+    : bad('header shape', JSON.stringify(header));
+  near(getMeal(db, mealId).kcal, 1550)
+    ? ok('the meal still counts the parts only: 1,550 kcal')
+    : bad('meal totals', String(getMeal(db, mealId).kcal));
+  partsOf(db, mealId).every((p) => p.piece_name === null && p.serving_qty === null)
+    ? ok('and no part carries the pair — a slice is not a fraction of the cheese')
+    : bad('a part was counted');
+
+  // A noun with no count names nothing, so the pair is written only whole.
+  const half = logMealWithItems(db, {
+    date: TODAY,
+    time: '20:00',
+    name: 'Half-stated',
+    items: [
+      {
+        name: 'Wings',
+        piece_name: 'wing',
+        components: [
+          { name: 'Chicken wing', amount: 200, kcal: 400 },
+          { name: 'Sauce', amount: 30, kcal: 60 },
+        ],
+      },
+    ],
+  });
+  headerOf(db, half.mealId).piece_name === null
+    ? ok('a noun supplied with no count is refused rather than stored alone')
+    : bad('half-pair stored');
+}
+
+console.log('42. 0059: THE NEGATIVE — nothing that sums or re-adds learns the count exists');
+{
+  const { db } = freshDb();
+  const { mealId, headerId } = (() => {
+    const m = pizzaMeal(db);
+    return { mealId: m.mealId, headerId: headerOf(db, m.mealId).id };
+  })();
+
+  // A catalog food with a serving, logged, so the recents rails have something
+  // to return. They INNER JOIN on food_id, which a header never has.
+  const foodId = createFood(db, {
+    name: 'Milk',
+    serving_name: '1 cup',
+    serving_amount: 244,
+    kcal_100g: 42,
+  });
+  addMealItem(db, mealId, {
+    food_id: foodId,
+    name: 'Milk',
+    amount: 244,
+    serving_qty: 1,
+    kcal: 102,
+  });
+
+  const before = {
+    meal: getMeal(db, mealId),
+    partial: partialMealMetrics(db, TODAY),
+    counts: mealItemCounts(db, TODAY),
+    recents: listRecentFoods(db, 10),
+    barcodes: listRecentBarcodeFoods(db, 10),
+  };
+  setCompositeCount(db, headerId, 8, 'slice');
+  const after = {
+    meal: getMeal(db, mealId),
+    partial: partialMealMetrics(db, TODAY),
+    counts: mealItemCounts(db, TODAY),
+    recents: listRecentFoods(db, 10),
+    barcodes: listRecentBarcodeFoods(db, 10),
+  };
+
+  // `updated_at` moves on the header, which is the one thing that SHOULD:
+  // 0014's trigger fires on the row that was written. Compare the reads.
+  JSON.stringify(before.meal) === JSON.stringify(after.meal)
+    ? ok('recomputeMealTotals is byte-identical before and after the header gains a count')
+    : bad('meal totals moved', JSON.stringify(after.meal));
+  JSON.stringify(before.partial) === JSON.stringify(after.partial)
+    ? ok('…and partialMealMetrics, so the Eat tab stays in countdown mode')
+    : bad('partial moved');
+  JSON.stringify(before.counts) === JSON.stringify(after.counts)
+    ? ok('…and the collapsed tally, which still draws one row per pizza')
+    : bad('tally moved');
+  JSON.stringify(before.recents) === JSON.stringify(after.recents) && after.recents.length === 1
+    ? ok('…and the recents rail, which inner-joins on a food_id a header never has')
+    : bad('recents moved', JSON.stringify(after.recents));
+  JSON.stringify(before.barcodes) === JSON.stringify(after.barcodes)
+    ? ok('…and the barcode rail beside it')
+    : bad('barcode rail moved');
+}
+
+console.log('43. 0059: whatever scales the whole scales the count');
+{
+  const { db } = freshDb();
+  const { mealId, headerId } = countedPizza(db);
+
+  scaleCompositeItem(db, headerId, 0.5);
+  const halved = headerOf(db, mealId);
+  // 1,550 of pizza halves to 775; the beer's 140 is not a part and does not move.
+  near(halved.serving_qty, 4) && near(getMeal(db, mealId).kcal, 915)
+    ? ok('“I ate half” of eight slices is four slices, and half the pizza’s energy')
+    : bad('half', JSON.stringify([halved.serving_qty, getMeal(db, mealId).kcal]));
+  halved.piece_name === 'slice'
+    ? ok('…and the noun does not move: it was never a number')
+    : bad('noun moved', String(halved.piece_name));
+  partsOf(db, mealId).every((p) => p.piece_name === null && p.serving_qty === null)
+    ? ok('…and no part picked up the pair on the way through')
+    : bad('a part was counted by a chip');
+
+  scaleCompositeItem(db, headerId, 2);
+  const back = headerOf(db, mealId);
+  back.serving_qty === 8 && near(getMeal(db, mealId).kcal, 1690)
+    ? ok('×0.5 then ×2 returns to exactly 8 — nothing is rounded on write')
+    : bad('round trip', String(back.serving_qty));
+
+  // An UNCOUNTED composite is untouched by the same call: there is no count to
+  // move, and one must not be invented.
+  const plain = pizzaMeal(db);
+  scaleCompositeItem(db, headerOf(db, plain.mealId).id, 0.5);
+  headerOf(db, plain.mealId).serving_qty === null
+    ? ok('an uncounted composite stays uncounted through a chip')
+    : bad('count invented');
+}
+
+console.log('44. 0059: the first count DECLARES; every later one PRESERVES');
+{
+  const { db } = freshDb();
+  const { mealId, headerId } = (() => {
+    const m = pizzaMeal(db);
+    return { mealId: m.mealId, headerId: headerOf(db, m.mealId).id };
+  })();
+
+  const partsBefore = partsOf(db, mealId).map((p) => [p.name, p.amount, p.kcal]);
+  const kcalBefore = getMeal(db, mealId).kcal;
+  setCompositeCount(db, headerId, 8, 'slice');
+  JSON.stringify(partsOf(db, mealId).map((p) => [p.name, p.amount, p.kcal])) ===
+    JSON.stringify(partsBefore) && getMeal(db, mealId).kcal === kcalBefore
+    ? ok('THE DECLARATION MOVES NOTHING: every part and the meal’s energy byte-identical')
+    : bad('declaration scaled the parts');
+  const declared = headerOf(db, mealId);
+  declared.serving_qty === 8 && declared.piece_name === 'slice'
+    ? ok('…and the dish is now said to be eight slices')
+    : bad('pair not written', JSON.stringify(declared));
+
+  // THE CORRESPONDENCE, as a number: the per-piece energy is fixed at the
+  // declaration and every count edit preserves it.
+  const perPiece = 1550 / 8;
+  setCompositeCount(db, headerId, 3);
+  near(getMeal(db, mealId).kcal, (1550 * 3) / 8 + 140)
+    ? ok('8 → 3 scales every part by 3/8 (the beer, which is not a part, does not move)')
+    : bad('3/8', String(getMeal(db, mealId).kcal));
+  near((getMeal(db, mealId).kcal - 140) / headerOf(db, mealId).serving_qty, perPiece)
+    ? ok('…and kcal ÷ count is still the per-piece figure fixed at the declaration')
+    : bad('per-piece drifted');
+  headerOf(db, mealId).piece_name === 'slice'
+    ? ok('…and a re-count with no noun keeps the noun the dish already has')
+    : bad('noun lost on re-count');
+
+  setCompositeCount(db, headerId, 4);
+  near((getMeal(db, mealId).kcal - 140) / 4, perPiece)
+    ? ok('3 → 4 preserves it too — the current state is the record, every time')
+    : bad('3→4');
+  setCompositeCount(db, headerId, 3);
+  headerOf(db, mealId).serving_qty === 3
+    ? ok('3 → 4 → 3 lands on exactly 3, not on a product of two floats')
+    : bad('float drift', String(headerOf(db, mealId).serving_qty));
+
+  // The ONE edit allowed to move the per-piece figure: a hand-corrected part.
+  // A part edit never moves its siblings and never pushes back onto the parent
+  // — you still ate three slices, they were lighter.
+  const crust = partsOf(db, mealId).find((p) => p.name === 'Pizza crust');
+  updateMealItemPortion(db, crust.id, { amount: 20, kcal: 50 });
+  const header = headerOf(db, mealId);
+  header.serving_qty === 3 && header.piece_name === 'slice'
+    ? ok('a part hand-edit leaves the count alone — the one thing that moves per-piece')
+    : bad('part edit moved the count', JSON.stringify(header));
+
+  throws(() => setCompositeCount(db, headerId, 0))
+    ? ok('0 is not a count of anything, and throws as a factor of 0 does')
+    : bad('zero accepted');
+  throws(() => setCompositeCount(db, headerId, NaN))
+    ? ok('…and neither is NaN')
+    : bad('NaN accepted');
+  const beer = listMealItems(db, mealId).find((r) => r.name === 'Lager');
+  setCompositeCount(db, beer.id, 3, 'slice');
+  listMealItems(db, mealId).find((r) => r.id === beer.id).piece_name === null
+    ? ok('and a NON-header is refused outright — a plain item is not counted in pieces')
+    : bad('plain item counted');
+
+  // Clearing is a declaration of ignorance, not of eating.
+  const partsNow = partsOf(db, mealId).map((p) => [p.name, p.amount, p.kcal]);
+  clearCompositeCount(db, headerId);
+  const cleared = headerOf(db, mealId);
+  cleared.serving_qty === null &&
+  cleared.piece_name === null &&
+  JSON.stringify(partsOf(db, mealId).map((p) => [p.name, p.amount, p.kcal])) ===
+    JSON.stringify(partsNow)
+    ? ok('clearing drops the pair and scales nothing — the route back from a wrong count')
+    : bad('clear scaled the parts');
+  setCompositeCount(db, headerId, 6, 'slice');
+  near(
+    getMeal(db, mealId).kcal - 140,
+    partsNow.reduce((s, p) => s + p[2], 0)
+  )
+    ? ok('…so the next number declares afresh: six slices, not 6/3 of the parts')
+    : bad('re-declaration scaled');
+}
+
+console.log('45. 0059: removing a part leaves the count; the last part takes it');
+{
+  const { db } = freshDb();
+  const { mealId, headerId } = countedPizza(db);
+  const parts = partsOf(db, mealId);
+
+  removeMealItem(db, parts[0].id);
+  const header = headerOf(db, mealId);
+  header.serving_qty === 8 && header.piece_name === 'slice'
+    ? ok('a slice without its pepperoni is still a slice — the count stands')
+    : bad('count lost with a part', JSON.stringify(header));
+
+  removeMealItem(db, parts[1].id);
+  removeMealItem(db, parts[2].id);
+  headerOf(db, mealId) === undefined
+    ? ok('and the last part takes the header, and the count with it (invariant 4)')
+    : bad('header survived its last part');
+}
+
+console.log('46. 0059: the review rows — declaring, scaling, and clearing, all pure');
+{
+  const { db } = freshDb();
+  const estimate = {
+    title: 'Pizza',
+    notes: null,
+    questions: [],
+    items: [
+      {
+        name: 'Pepperoni pizza',
+        amount: null,
+        unit: 'g',
+        kcal: null,
+        protein_g: null,
+        carbs_g: null,
+        fat_g: null,
+        fiber_g: null,
+        confidence: 'medium',
+        foodId: null,
+        micros: null,
+        pieces: null,
+        components: [
+          {
+            name: 'Crust',
+            amount: 400,
+            unit: 'g',
+            kcal: 800,
+            protein_g: 26,
+            carbs_g: 160,
+            fat_g: 6,
+            fiber_g: null,
+            confidence: 'medium',
+            foodId: null,
+            micros: null,
+          },
+          {
+            name: 'Cheese',
+            amount: 320,
+            unit: 'g',
+            kcal: 750,
+            protein_g: 50,
+            carbs_g: 8,
+            fat_g: 60,
+            fiber_g: null,
+            confidence: 'medium',
+            foodId: null,
+            micros: null,
+          },
+        ],
+      },
+    ],
+  };
+  const base = rowsFromEstimate(db, estimate);
+  const key = base[0].key;
+  const amounts = (rows) => rows[0].components.map((c) => currentPortion(c).amount);
+
+  base[0].pieces === null && base[0].countText === ''
+    ? ok('a composite arrives uncounted, with an empty field')
+    : bad('seeded count');
+
+  // THE DECLARATION, pure side.
+  const declared = setRowsCount(beginCountEdit(base, key), key, '8');
+  declared[0].pieces.count === 8 &&
+  declared[0].pieces.name === 'piece' &&
+  JSON.stringify(amounts(declared)) === JSON.stringify(amounts(base))
+    ? ok('typing 8 into an uncounted composite declares it and moves not one gram')
+    : bad('declaration scaled', JSON.stringify(amounts(declared)));
+  setPiecesName(declared, key, 'slice')[0].pieces.name === 'slice'
+    ? ok('…and tapping the noun makes it a slice')
+    : bad('rename failed');
+  setPiecesName(declared, key, '   ')[0].pieces.name === 'piece'
+    ? ok('…while an empty noun is refused, not stored')
+    : bad('empty noun stored');
+  setPiecesName(base, key, 'slice')[0].pieces === null
+    ? ok('…and an UNCOUNTED row cannot be named: a noun with no count names nothing')
+    : bad('uncounted row named');
+
+  // THE SCALE, and non-compounding within one focus.
+  const counted = setPiecesName(declared, key, 'slice');
+  const eaten = setRowsCount(beginCountEdit(counted, key), key, '3');
+  JSON.stringify(amounts(eaten)) === JSON.stringify([150, 120])
+    ? ok('8 → 3 is × 3/8 of the frozen parts — 400 g and 320 g become 150 and 120')
+    : bad('3/8', JSON.stringify(amounts(eaten)));
+  const typed = setRowsCount(setRowsCount(beginCountEdit(counted, key), key, '3'), key, '30');
+  JSON.stringify(amounts(typed)) === JSON.stringify([1500, 1200])
+    ? ok('…and 3 then 30 from ONE focus lands on × 30/8, never on × 3/8 × 30/8')
+    : bad('compounded', JSON.stringify(typed[0].pieces && amounts(typed)));
+
+  // A CHIP MID-FOCUS still cannot compound: the chip drops both baselines, and
+  // the next number re-snapshots against what is now on screen.
+  const chipped = scaleComposite(counted, key, 1 / 3);
+  near(chipped[0].pieces.count, 8 / 3)
+    ? ok('a ⅓ chip moves the count to the honest 2.7, not a rounded 3')
+    : bad('chip count', String(chipped[0].pieces.count));
+  const afterChip = setRowsCount(chipped, key, '3');
+  near(amounts(afterChip)[0], 150) && near(amounts(afterChip)[1], 120)
+    ? ok('…and typing 3 after it lands on exactly 3/8 of the PRE-chip values')
+    : bad('chip then count', JSON.stringify(amounts(afterChip)));
+
+  // The whole-dish grams field multiplies the count too — same snapshot, so
+  // neither half can compound against the other.
+  const halvedByGrams = scaleCompositeTo(beginCompositeScale(counted, key), key, '360');
+  near(halvedByGrams[0].pieces.count, 4) && near(amounts(halvedByGrams)[0], 200)
+    ? ok('typing 360 g into a 720 g eight-slice pizza leaves four slices')
+    : bad('grams field count', String(halvedByGrams[0].pieces.count));
+
+  // CLEARING, and the declaration that follows it.
+  const wiped = setRowsCount(beginCountEdit(counted, key), key, '');
+  wiped[0].pieces === null && JSON.stringify(amounts(wiped)) === JSON.stringify([400, 320])
+    ? ok('an emptied field clears the count and leaves every part where it stands')
+    : bad('clear scaled');
+  const redeclared = setRowsCount(wiped, key, '6');
+  redeclared[0].pieces.count === 6 &&
+  JSON.stringify(amounts(redeclared)) === JSON.stringify([400, 320])
+    ? ok('…and the next number declares afresh: six slices, nothing scaled')
+    : bad('re-declaration scaled', JSON.stringify(amounts(redeclared)));
+
+  // Bounds, and half-typed text.
+  setRowsCount(counted, key, 'abc')[0].pieces.count === 8 &&
+  setRowsCount(counted, key, '101')[0].pieces.count === 8
+    ? ok('“abc” and 101 hold the text and move nothing')
+    : bad('bad count applied');
+
+  // A PART edit leaves the count: you still ate three slices, they were lighter.
+  const partEdited = setRowAmount(counted, counted[0].components[0].key, '200');
+  partEdited[0].pieces.count === 8 && partEdited[0].countFrom === null
+    ? ok('a part hand-edit keeps the count and drops only the stale baseline')
+    : bad('part edit moved the count');
+
+  // And nothing anywhere here puts a piece noun on a part.
+  rowsToMealItems(eaten)[0].components.every((c) => c.piece_name === null)
+    ? ok('after all of that, no part carries a piece noun')
+    : bad('a part carries a noun');
+}
+
+console.log('47. 0059: a C5 answer of “three of the eight” moves the count with the parts');
+{
+  const { db } = freshDb();
+  const rows = rowsFromEstimate(db, {
+    title: 'Pizza',
+    notes: null,
+    questions: [],
+    items: [
+      {
+        name: 'Pepperoni pizza',
+        amount: null,
+        unit: 'g',
+        kcal: null,
+        protein_g: null,
+        carbs_g: null,
+        fat_g: null,
+        fiber_g: null,
+        confidence: 'medium',
+        foodId: null,
+        micros: null,
+        pieces: { name: 'slice', count: 8 },
+        components: [
+          {
+            name: 'Crust',
+            amount: 400,
+            unit: 'g',
+            kcal: 800,
+            protein_g: 26,
+            carbs_g: 160,
+            fat_g: 6,
+            fiber_g: null,
+            confidence: 'medium',
+            foodId: null,
+            micros: null,
+          },
+          {
+            name: 'Cheese',
+            amount: 320,
+            unit: 'g',
+            kcal: 750,
+            protein_g: 50,
+            carbs_g: 8,
+            fat_g: 60,
+            fiber_g: null,
+            confidence: 'medium',
+            foodId: null,
+            micros: null,
+          },
+        ],
+      },
+    ],
+  });
+  rows[0].pieces && rows[0].pieces.count === 8
+    ? ok('the model’s own count seeds the review row (phase 2)')
+    : bad('pieces not seeded', JSON.stringify(rows[0].pieces));
+  const answered = applyAnswer(rows, {
+    kind: 'scale_item',
+    name: 'Pepperoni pizza',
+    factor: 0.375,
+  });
+  near(answered[0].pieces.count, 3) && near(currentPortion(answered[0].components[0]).amount, 150)
+    ? ok('scale_item 0.375 on the dish leaves 3 × slice, and the parts to match')
+    : bad('answer count', JSON.stringify(answered[0].pieces));
+}
+
+console.log('48. 0059: the count survives the save, the re-log, and is dropped by a template');
+{
+  const { db } = freshDb();
+  const rows = setPiecesName(
+    setRowsCount(
+      beginCountEdit(
+        rowsFromEstimate(db, {
+          title: 'Pizza',
+          notes: null,
+          questions: [],
+          items: [
+            {
+              name: 'Pepperoni pizza',
+              amount: null,
+              unit: 'g',
+              kcal: null,
+              protein_g: null,
+              carbs_g: null,
+              fat_g: null,
+              fiber_g: null,
+              confidence: 'medium',
+              foodId: null,
+              micros: null,
+              pieces: null,
+              components: [
+                {
+                  name: 'Crust',
+                  amount: 400,
+                  unit: 'g',
+                  kcal: 800,
+                  protein_g: 26,
+                  carbs_g: 160,
+                  fat_g: 6,
+                  fiber_g: null,
+                  confidence: 'medium',
+                  foodId: null,
+                  micros: null,
+                },
+                {
+                  name: 'Cheese',
+                  amount: 320,
+                  unit: 'g',
+                  kcal: 750,
+                  protein_g: 50,
+                  carbs_g: 8,
+                  fat_g: 60,
+                  fiber_g: null,
+                  confidence: 'medium',
+                  foodId: null,
+                  micros: null,
+                },
+              ],
+            },
+          ],
+        }),
+        'k'
+      ),
+      'k',
+      '8'
+    ),
+    'k',
+    'slice'
+  );
+  const key = rows[0].key;
+  const items = rowsToMealItems(
+    setPiecesName(setRowsCount(beginCountEdit(rows, key), key, '8'), key, 'slice')
+  );
+  items[0].serving_qty === 8 &&
+  items[0].piece_name === 'slice' &&
+  items[0].components.every((c) => c.piece_name === null)
+    ? ok('rowsToMealItems puts the pair on the header and NULL on every part')
+    : bad('rowsToMealItems', JSON.stringify(items[0]));
+
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:00',
+    name: 'Pizza night',
+    items,
+  });
+  headerOf(db, mealId).piece_name === 'slice'
+    ? ok('…and it lands on the row')
+    : bad('pair not logged');
+
+  // replaceMealItems round-trips it (the revision path's write).
+  replaceMealItems(db, mealId, items);
+  headerOf(db, mealId).serving_qty === 8 && headerOf(db, mealId).piece_name === 'slice'
+    ? ok('a revision’s wholesale replace round-trips the count')
+    : bad('replace lost the count');
+
+  // "Log again" of a counted pizza is a counted pizza.
+  const again = relogMeal(db, mealId, TODAY, '20:30');
+  headerOf(db, again).serving_qty === 8 && headerOf(db, again).piece_name === 'slice'
+    ? ok('“Log again” carries the count, because it carries the dish')
+    : bad('relog lost the count');
+
+  // A template flattens a composite away, so the pair never reaches
+  // meal_template_items — the same honest loss the header's own name takes.
+  const templateId = saveMealAsTemplate(db, mealId, 'Pizza night');
+  const tItems = listTemplateItems(db, templateId);
+  tItems.length === 2 && tItems.every((i) => !('piece_name' in i) || i.piece_name == null)
+    ? ok('a template keeps the parts and their grams, and no count at all')
+    : bad('template carried a count', JSON.stringify(tItems));
+}
+
+console.log('49. 0059: the three revision builders, and what the model is shown');
+{
+  const { db } = freshDb();
+  const { mealId } = countedPizza(db);
+  const tree = assembleMealItems(listMealItems(db, mealId));
+  const header = tree.find((n) => n.kind === 'composite');
+
+  // Builder 1: app/meal-revise.tsx's own, mirrored here in the shape it sends.
+  const subject = {
+    name: 'Dinner',
+    items: [
+      {
+        ...toSubject(header),
+        pieces: { name: header.item.piece_name, count: header.item.serving_qty },
+      },
+    ],
+  };
+  const text = buildMealRevisionRequest(subject, 'I only ate three').messages[0].content[0].text;
+  text.includes('- Pepperoni pizza — 8 × slice, 3 parts')
+    ? ok('the revision request prints the header as “8 × slice, 3 parts”')
+    : bad('revision tail', text.split('\n')[2]);
+  // The ONE count the model ever sees is a header's. A catalog item's serving
+  // count is not printed, so `2 × 3 slices` never sits beside `8 × slice`.
+  !/× 1 cup|× 1 egg/.test(text)
+    ? ok('…and no catalog serving count is printed beside it — one vocabulary on the wire')
+    : bad('serving count on the wire');
+  buildMealRevisionRequest(
+    { name: 'Dinner', items: [toSubject(header)] },
+    'x'
+  ).messages[0].content[0].text.includes('- Pepperoni pizza — 3 parts')
+    ? ok('an uncounted composite prints exactly as it did before 0059')
+    : bad('uncounted tail changed');
+  MEAL_REVISION_SYSTEM_PROMPT.includes('Keep "pieces" as it arrived')
+    ? ok('and the prompt tells the model to leave a count it was not asked about')
+    : bad('revision rail missing');
+
+  // Builder 3: the 0057 OFFLINE DRAIN, which builds its own subject. A
+  // revision queued against a counted pizza must show the model the count.
+  const estimators = fakeEstimators();
+  queueMealRevision(db, mealId, 'I only ate three');
+  await drainEstimateQueue(db, { estimators, pendingStore: null, mealPhotoStore: null });
+  const sentHeader = estimators.calls[0].meal.items.find((i) => i.name === 'Pepperoni pizza');
+  sentHeader &&
+  sentHeader.pieces &&
+  sentHeader.pieces.count === 8 &&
+  sentHeader.pieces.name === 'slice'
+    ? ok('the drain’s own builder carries the count into the queued revision')
+    : bad('drain dropped the count', JSON.stringify(sentHeader && sentHeader.pieces));
+}
+
+console.log('50. 0059: what the parser accepts as a count, and what it ignores');
+{
+  const composite = (pieces) =>
+    JSON.stringify({
+      title: 'Pizza',
+      items: [
+        {
+          name: 'Pepperoni pizza',
+          confidence: 'medium',
+          pieces,
+          components: [
+            { name: 'Crust', amount: 400, kcal: 800 },
+            { name: 'Cheese', amount: 320, kcal: 750 },
+          ],
+        },
+      ],
+    });
+
+  const good = parseMealEstimate(composite({ name: 'slice', count: 8 })).items[0];
+  good.pieces && good.pieces.name === 'slice' && good.pieces.count === 8
+    ? ok('a noun and a count land on the header')
+    : bad('pieces dropped', JSON.stringify(good.pieces));
+  [
+    { name: '  ', count: 8 },
+    { name: 'slice', count: 0 },
+    { name: 'slice', count: 101 },
+    {
+      name: 'slice',
+      count: 'three',
+    },
+    'slice',
+    null,
+  ].every((raw) => parseMealEstimate(composite(raw)).items[0].pieces === null)
+    ? ok('an empty noun, 0, 101, "three", a bare string and null all parse to no count')
+    : bad('a bad count survived');
+
+  // On a PLAIN item it is ignored: a count there would land in three places
+  // built for a catalog serving count.
+  parseMealEstimate(
+    JSON.stringify({
+      title: 'Toast',
+      items: [{ name: 'Toast', amount: 60, kcal: 160, pieces: { name: 'slice', count: 3 } }],
+    })
+  ).items[0].pieces === null
+    ? ok('and a count on a plain item is ignored, not carried')
+    : bad('plain item counted');
+
+  // A reply with no "pieces" key at all parses exactly as it did before.
+  const legacy = parseMealEstimate(composite(undefined)).items[0];
+  legacy.pieces === null && legacy.components.length === 2 && legacy.kcal === null
+    ? ok('a reply with no "pieces" key is today’s reply, unchanged')
+    : bad('legacy composite reply');
+}
+
+console.log('51. 0059: grounding never touches a count, and the drain carries it');
+{
+  const { db } = freshDb();
+  createFood(db, {
+    name: 'Pepperoni pizza',
+    kcal_100g: 266,
+    protein_g_100g: 11,
+    carbs_g_100g: 33,
+    fat_g_100g: 10,
+  });
+  const parsed = parseMealEstimate(
+    JSON.stringify({
+      title: 'Pizza',
+      items: [
+        {
+          name: 'Pepperoni pizza',
+          confidence: 'medium',
+          pieces: { name: 'slice', count: 8 },
+          components: [
+            { name: 'Crust', amount: 400, kcal: 800 },
+            { name: 'Cheese', amount: 320, kcal: 750 },
+          ],
+        },
+      ],
+    })
+  );
+  const grounded = groundMealEstimate(db, parsed);
+  grounded.items[0].foodId === null &&
+  grounded.items[0].kcal === null &&
+  grounded.items[0].pieces.count === 8
+    ? ok('grounding still refuses to price a header, and leaves its count exactly as it was')
+    : bad('grounding touched the header', JSON.stringify(grounded.items[0].pieces));
+
+  // The drain writes the same shape the review screen does.
+  const estimators = fakeEstimators(
+    JSON.stringify({
+      title: 'Pizza',
+      items: [
+        {
+          name: 'Pepperoni pizza',
+          confidence: 'medium',
+          pieces: { name: 'slice', count: 8 },
+          components: [
+            { name: 'Crust', amount: 400, kcal: 800 },
+            { name: 'Cheese', amount: 320, kcal: 750 },
+          ],
+        },
+      ],
+    })
+  );
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '19:00', name: placeholderMealName('a pizza') },
+    { kind: 'text', description: 'a pizza' }
+  );
+  await drainEstimateQueue(db, { estimators, pendingStore: null, mealPhotoStore: null });
+  const drained = headerOf(db, mealId);
+  drained && drained.serving_qty === 8 && drained.piece_name === 'slice'
+    ? ok('a pizza drained from the offline queue lands counted')
+    : bad('drain dropped the count', JSON.stringify(drained));
+}
+
+console.log('52. 0059: both prompts carry the rule, and it is a criterion not a dish list');
+{
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('a countable number of pieces (slices, wings, rolls)')
+    ? ok('the estimation prompt states a CRITERION with three examples')
+    : bad('pieces rule missing');
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('"pieces": {"name": string, "count": number}|null')
+    ? ok('…and the schema line names the key, so the shape is not guessed')
+    : bad('pieces schema clause missing');
+  MEAL_REVISION_SYSTEM_PROMPT.includes('"pieces": {"name": string, "count": number}|null')
+    ? ok('…and so does the revision schema, which returns the whole list')
+    : bad('revision schema clause missing');
+  // THE TRIM THAT PAID FOR IT, asserted so a revert is visible here rather than
+  // on the ceiling alone: the hidden-fats bullet and "prefer underestimating"
+  // are one bullet now, and neither rule was lost.
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes(
+    'matter, and prefer underestimating an unknown over inventing precision'
+  ) && !MEAL_ESTIMATION_SYSTEM_PROMPT.includes('- Prefer underestimating')
+    ? ok('the two overlapping restraint bullets were folded into one — the trim that paid')
+    : bad('the fold was reverted');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -667,5 +667,79 @@ console.log('8. 0047 renames the portion columns and backfills every row to `g`'
   db.close();
 }
 
+// ===========================================================================
+// 9. 0059 — `piece_name`, on a database that already has meals in it.
+//
+// The column is nullable and takes no CHECK, so the ALTER cannot reject a
+// populated table (0034's trap) — but "cannot" is worth proving rather than
+// reasoning about, because that is exactly what 0034 records someone reasoning
+// wrongly. The other half of this section is the NEGATIVE: the live serving
+// join is untouched, so a catalog item logged at `2 × '1 egg'` still reads that
+// way afterwards. `piece_name` is a SECOND vocabulary beside that one, not a
+// replacement for it.
+// ===========================================================================
+console.log('9. 0059 adds the piece noun without touching a single existing row');
+{
+  const db = new DatabaseSync(':memory:');
+  stageAt(db, 58);
+  db.prepare('PRAGMA user_version').get().user_version === 58
+    ? ok('staged at 58 — the state a device sits in before this migration')
+    : bad('stage version');
+
+  // The rows a real device carries: a catalog food with a named serving, an
+  // item counting it, a composite header with its parts, and a plain item.
+  db.exec(`
+    INSERT INTO foods (id, name, name_norm, serving_name, serving_amount, kcal_100g)
+      VALUES ('f-egg', 'Egg', 'egg', '1 egg', 50, 143);
+    INSERT INTO meals (id, date, name) VALUES ('m-1', '2026-09-19', 'Dinner');
+    INSERT INTO meal_items (id, meal_id, food_id, name, amount, unit, serving_qty, kcal)
+      VALUES ('i-egg', 'm-1', 'f-egg', 'Egg', 100, 'g', 2, 143);
+    INSERT INTO meal_items (id, meal_id, name, unit, is_composite)
+      VALUES ('i-pizza', 'm-1', 'Pepperoni pizza', 'g', 1);
+    INSERT INTO meal_items (id, meal_id, name, amount, unit, kcal, parent_item_id)
+      VALUES ('i-crust', 'm-1', 'Pizza crust', 300, 'g', 800, 'i-pizza');
+    INSERT INTO meal_items (id, meal_id, name, amount, unit, kcal)
+      VALUES ('i-beer', 'm-1', 'Lager', 330, 'ml', 140);
+  `);
+
+  const result = migrate(executor(db), MIGRATIONS);
+  result.applied.includes('0059_meal_item_piece_name')
+    ? ok('0059 applied on a populated database (a nullable ADD COLUMN cannot reject rows)')
+    : bad('0059 not applied', JSON.stringify(result.applied));
+  db.prepare('PRAGMA user_version').get().user_version === 59
+    ? ok('and the runner stamps user_version = 59')
+    : bad('user_version', String(db.prepare('PRAGMA user_version').get().user_version));
+
+  const staged = db.prepare('SELECT id, piece_name FROM meal_items ORDER BY id').all();
+  staged.length === 4 && staged.every((r) => r.piece_name === null)
+    ? ok('piece_name is NULL on every row that already existed — no backfill, no guess')
+    : bad('staged rows', JSON.stringify(staged));
+
+  // A header takes the pair. This is the whole point of the column, and it is
+  // 0058's invariant 2 one clause wider: a count is a fact about the WHOLE, and
+  // nothing sums it.
+  db.exec("UPDATE meal_items SET serving_qty = 8, piece_name = 'slice' WHERE id = 'i-pizza'");
+  const header = db.prepare("SELECT * FROM meal_items WHERE id = 'i-pizza'").get();
+  header.serving_qty === 8 && header.piece_name === 'slice' && header.kcal === null
+    ? ok('a composite header carries a count and its noun, and still no number that sums')
+    : bad('header pair', JSON.stringify(header));
+
+  // THE NEGATIVE. The live join is what names a CATALOG item's count, and this
+  // migration does not touch it: correcting a serving name still reaches rows
+  // already logged, which is the behaviour the rejected snapshot would have
+  // ended.
+  const egg = db
+    .prepare(
+      `SELECT mi.serving_qty, mi.piece_name, f.serving_name AS food_serving_name
+       FROM meal_items mi LEFT JOIN foods f ON f.id = mi.food_id WHERE mi.id = 'i-egg'`
+    )
+    .get();
+  egg.serving_qty === 2 && egg.piece_name === null && egg.food_serving_name === '1 egg'
+    ? ok('…while a catalog item still gets its noun from the live join, untouched')
+    : bad('egg join', JSON.stringify(egg));
+
+  db.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
