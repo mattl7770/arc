@@ -499,7 +499,7 @@ The reply goes through the same vocabulary filter as stored JSON (`coerceMicros`
 
 The owner, opening the September Phase-B list: *"Let's start by implementing ml as a new unit type; the AI should estimate how many ML a drink is, instead of grams, when using ml instead of g."* And the scope fence, in the same breath: *"it could get complex having too many and being too creative with it."*
 
-So: **one** new unit. No density table, no general unit system, no `oz`/`cup`/`slice` in the schema. ("Slices" is parked.)
+So: **one** new unit. No density table, no general unit system, no `oz`/`cup`/`slice` in the schema. *(Slices were parked here and built in §12m — as a **count of pieces on a composite**, which is a ratio and needs no conversion. This rule survived intact: there are still exactly two units and nothing converts between them.)*
 
 ### The model, and why there is no conversion
 
@@ -1017,6 +1017,126 @@ The negatives are pinned **at the source** (`db/nutrition-v2.test.mjs` §40): th
 - **Whether "A few things" above the table reads as help or as an interrogation** at 375 pt, particularly with three questions and four chips each.
 - **Whether watching the rows re-price is enough confirmation**, or whether the change needs saying out loud after all.
 - **The "Other" round trip in the hand** — a second or two of `Working…` on a screen the user thought was finished.
+
+---
+
+## 12m. "Slices" — a count of pieces on a composite (2026-09-19, migration `0059`)
+
+Owner, parked backlog: ***"'Slices' as a food unit"** — convenient for composite foods; back burner.* Design: `docs/spikes/slices-as-a-food-unit.md` (**built**), with all four of its questions answered **(a)**.
+
+### A slice is not a unit. It is a count, and a count is a ratio
+
+`0047` settled the unit vocabulary at two words and no conversion between them, and named `slice` as one of the things it was refusing: *"no `oz`/`cup`/`slice` in the schema."* That holds. Three slices of an eight-slice pizza is **× 3/8** — the arithmetic the composite fraction chips (0058) already do — so this round adds no basis, no piece↔gram factor, and no third value in any CHECK.
+
+What the app lacked was a place to write the count's **noun**. The count itself already had a column: `meal_items.serving_qty` has always meant *"how many of the named thing"*, and the named thing has always been the catalog food's own serving, joined **live** from `foods.serving_name`. A composite header has no `food_id` — *"a header is a dish, not a catalog food"* — so it can never reach that join.
+
+### The schema: one nullable column, one table, no backfill
+
+`0059` adds **`meal_items.piece_name`**, and nothing else. It is non-null only on a composite header, beside a non-null `serving_qty`, and names **one** piece in the singular: `slice`, `wing`, `roll`.
+
+`portionLabel` reads **`piece_name ?? food_serving_name`**, so a catalog row still prints `2 × 1 egg` off the live join and a header prints `3 × slice` off its own column. **The two vocabularies never share a column**, and that is the whole reason for a new one rather than snapshotting the serving name onto every item: `'3 slices'` is a *serving phrase* (one serving is three slices) while `slice` is a *piece noun*, so `2 × 3 slices` is six slices and `3 × slice` is three. One column holding both is the class of lie `0047` renamed three columns to avoid. *(Snapshotting the serving name is a real gap — deleting a food degrades `2 × 1 egg` to `100 g`, and a template never had the join at all — and it is now **its own backlog item** on its own merits, not a prerequisite of this one. Owner decision, question 4.)*
+
+Nothing that exists is a counted composite, so there is **no backfill**: no UPDATE, and therefore 0014's `AFTER UPDATE` trigger never fires on the owner's phone. No CHECK on the pairing either, which is 0034's finding applied rather than repeated: the constraint would pass here, but the invariant belongs where it can say something useful when it breaks — the repository writers and the tests.
+
+### Invariant 2, one clause wider
+
+0058's invariant 2 lists every number that **sums** and says a header carries none of them. It does not name `serving_qty`, and it does not reach it:
+
+> *A header carries no number that sums. It **may** carry a **count** of what it is — `serving_qty` and its `piece_name` — because that is a fact about the whole and not about any part.*
+
+The invariant exists so that *"a query that forgets the rule under-counts by zero"*. No sum anywhere reads `serving_qty`, and the only two non-display readers — the recents rails — **inner join on `food_id`**, which a header never has. `db/nutrition-v2.test.mjs` §42 asserts that as a byte-identity: `recomputeMealTotals`, `partialMealMetrics`, `mealItemCounts`, `listRecentFoods` and `listRecentBarcodeFoods` are identical before and after a header gains a count.
+
+**Parts never carry the pair** — a slice is not a fraction of the cheese. That holds by the writers (`scaleCompositeItem` nulls both on every part; both `priced()` builders send `piece_name: null`), not by a constraint. The last part takes the header, and the count with it (invariant 4).
+
+### The principle, and the one thing the first draft got wrong
+
+> **The unit says what the number is measured in. The count says how many of a named piece the parts, as they stand, add up to. The first count DECLARES that correspondence; every later change PRESERVES it by scaling the parts.**
+
+A composite's parts are the whole dish **as priced** — the model estimates what it sees, not what was eaten. So a number typed into an *uncounted* composite can only mean *"what is priced here is N pieces"*. Read the other way, a photographed whole pizza given a `3` would print `3 × slice` over eight slices of macros and count the whole pizza into the day: the headline disagreeing with the parts, which 0058 built two belts to make impossible.
+
+So the empty field asks one question and its label says which (**owner decision, question 1**):
+
+| state | label | typing `N` |
+| --- | --- | --- |
+| uncounted | `THIS IS` | declares the parts to be N pieces. **Nothing scales** — every part and `meals.kcal` byte-identical |
+| counted | `I ATE` | scales every part by `N / current` and writes the count |
+
+Two entries for the pizza case — `8`, then `3` — and the model's `pieces` performs the first.
+
+Five consequences, each keeping 0047 intact:
+
+1. **Nothing converts.** "Grams per slice" is `amount ÷ serving_qty`, derived every render, never written — a stored copy would disagree the moment a part was hand-edited.
+2. **A count is a fact about the whole.** Whatever scales the whole moves it (chips, the grams field, the count field); an edit to one part does not. You still ate three slices; they were lighter. That is 0058's asymmetry, unchanged.
+3. **The current state is the record.** 3 → 4 scales from what the parts read *now*.
+4. **The correspondence is testable.** Across any run of count edits and chips, `kcal ÷ serving_qty` is constant — the per-piece energy fixed at the declaration. A part hand-edit is the one thing allowed to move it, and §44 asserts exactly that boundary.
+5. **A slice is not comparable across days**, and is not meant to be. Nothing sums or trends `serving_qty`.
+
+**A wrong count is re-declared by clearing the field** (**owner decision, question 3**): empty means "no count", so the next number declares afresh and moves nothing. No new furniture. On the review sheet that is one gesture; on `meal-detail`, where the editor stages a draft and writes on Save, the draft carries a `cleared` flag so backspacing-then-typing is still one Save.
+
+### The controls
+
+**The count sits BESIDE the `½ ⅓ ¼` chips, not instead of them** (**owner decision, question 2**): a chip is the fast handle, a count the precise one — the pairing the whole-dish grams field already has. A chip on a counted dish prints the honest `2.7 × slice`; rounding to `3` would print a count the parts do not add up to.
+
+```
+I ATE     ½   ⅓   ¼                     (uncounted)
+THIS IS   [   ] × piece
+
+I ATE     ½   ⅓   ¼      [ 8 ] × slice  (counted)
+```
+
+The count is the parts' own `AmountField` anatomy — a `w-14` mono field with the same live, snapshot-from-focus, non-compounding semantics — because it **is** the grams field's sibling: one scaling mechanism, two ways to say the same size. A field rather than the catalog stepper, because 8 → 3 is one keypad entry and ten taps at the stepper's 0.5 step. The noun is a label-voice control that swaps to a one-line field on tap; with no count it is a muted readout, because a noun with no count names nothing.
+
+**Device: unchanged.** One `Block device="plate"`, parts indented inside it; no accent (Save keeps it), no signal colour — a count is not biology.
+
+| surface | after |
+| --- | --- |
+| Eat tab row | **unchanged** — no item portion is drawn there |
+| meal-detail, composite sub-line | `3 × slice (270 g) · P 36g …`. The amount guard moved *inside* `portionLabel`, so a counted dish whose parts are in **mixed units** (0058 invariant 5) prints the bare `3 × slice` — the only whole-dish figure such a row has |
+| meal-detail, expanded | the two rows above; chips still write immediately, the count stages a draft and writes on Save |
+| Review sheet | the two rows above, live |
+| meal-detail, plain item | `2 × 1 egg (100 g)` — the identical string, through the same join |
+| Templates | **unchanged**; a template flattens a composite, so the pair never reaches `meal_template_items` — the same honest loss the header's own name takes |
+| Revision request | `— 8 × slice, 3 parts` |
+
+One formatter does all of it: **`countLabel(qty, noun)`** in `format.ts`, the two tokens `portionLabel` always built, lifted out so the sub-line, the label and the wire cannot drift.
+
+**One convention on the wire:** the revision request prints an item's amount, kcal, macros and micros and never its *serving* count, so the only count the model ever sees is a header's piece count. `2 × 3 slices` never sits beside `8 × slice`.
+
+### The estimator
+
+The item schema gains one optional key, read on a composite header and **ignored anywhere else**: `"pieces": {"name": string, "count": number}|null`. On a plain item a count would land in three places built for a catalog serving count — the recents rail's re-add, a template round-trip, and meal-detail's serving-mode predicate — so the parser drops it there.
+
+The rule is a **criterion with three examples**, not a dish list, because judgment lives in the model and the parser validates shape only: *"If what you priced is a countable number of pieces (slices, wings, rolls), give `pieces`: the singular noun and the count; else null."* **The count is of what was PRICED** — a whole pizza comes back `{slice, 8}`, three slices on a plate `{slice, 3}` — which is the owner's declaration made by the model instead of by him. `parsePieces` takes a trimmed non-empty noun and a finite count `> 0` and `≤ 100`; anything else is `null`. Grounding never prices a header and never touches the count.
+
+**The prompt ceiling was paid, not raised.** `ESTIMATOR_PROMPT_CEILING` stays at 1,000:
+
+| | tok |
+| --- | --- |
+| estimation prompt, where C4/C5 left it | 922 |
+| + the pieces rule | +38 |
+| + `"pieces"` on the schema line | +14 |
+| − the trim the constant itself named as cheapest: the hidden-fats bullet and *"prefer underestimating an unknown over inventing precision"* folded into one, neither rule lost | −7 |
+| **after** | **967**, 33 of headroom |
+| revision prompt: 798 + the schema clause + one rail (*keep `pieces` as it arrived*) | **834** |
+
+`§52` asserts the fold at the source, so a quiet revert fails there rather than only nudging the ceiling.
+
+### The Coach: a measured zero
+
+Schema delta **0 / 0**. No Coach tool carries a food portion and nothing under `src/lib/ai` names `meal_items`, so there is no property to add and nothing to trim for — the same zero 0047 measured. Both ceilings stand at 9,250 / 3,700.
+
+### Verification
+
+`db/nutrition-v2.test.mjs` §41–52 — the pair on a header and nothing that sums; **the negative**, as five byte-identity comparisons; a chip moving the count and `×0.5 ×2` returning to exactly 8; the declaration moving nothing, the correspondence holding across 8 → 3 → 4 → 3, the part hand-edit that is allowed to move per-piece, and the refusals (0, `NaN`, a non-header); a part removed leaving the count and the last part taking it; the pure review rows end to end, including a ⅓ chip mid-focus that still cannot compound and an emptied field that declares afresh; a C5 `scale_item 0.375` landing on `3 × slice`; the save, the wholesale replace, the re-log and the template flatten; all three revision builders including the 0057 offline drain; the parser's accept/ignore table; grounding leaving the count alone; and both prompts' rules. `db/migrate.test.mjs` §9 — 0059 on a **populated** database staged at 0058, `piece_name` NULL on every staged row, and the live serving join untouched. `db/foods.test.mjs` §16 — `countLabel`, the `2.7 × slice` decimal, the `piece_name ?? food_serving_name` precedence, and the mixed-unit bare count. `db/screens-render.test.mjs` §20 — meal-detail's counted and mixed-unit sub-lines, and both states of the control through the shared review plate.
+
+### What only a device can judge
+
+- **Whether the model returns `pieces` for the right things.** The rule is a criterion tested against a mock; no real call is made on this branch. The first photographed pizza and plate of two eggs are the test. A wrong answer costs one keypad entry, which is the point of building the owner's half first.
+- **Whether the label switch reads.** `THIS IS` becomes `I ATE` and the field moves up a row the moment the first count lands. If that reads as the control jumping, the fallback is one row in both states with only the label switching.
+- **The `I ATE` row at 375 pt.** Three 44 pt chips, a `w-14` field, a `×`, a noun and the label at `pl-6` is most of a ~343 pt plate interior. Both rows are `flex-wrap`, so it wraps rather than clipping — but whether the wrap reads as one control or two is a hand question.
+- **`2.7 × slice`.** Honest, and possibly alarming. If it grates, the remedy is to replace the chips once a composite is counted (question 2's option b), never to round.
+- **Clear-then-type versus select-and-type.** `selectAllOnFocus` means typing over a focused `8` scales, while backspacing to empty and then typing declares. Two gestures for "change 8 to 6"; §6 of the spike names this as the thing to watch.
+- **Whether `meal-detail`'s own expanded rows read well.** The disclosure's open state is local React state, so the render suite can only draw them collapsed; §20 asserts the control through the shared review plate instead and says so.
 
 ## 13. Round 7 — two logging papercuts (2026-09-14, backlog A3 + A4)
 

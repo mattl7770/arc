@@ -64,16 +64,17 @@
 
 - **Protocol interface rethink** — *"just make a note in project status and we will continue later, it will require much rethinking."* → **`docs/spikes/protocol-interface-rethink.md`** — mission-first: a mission row opens its item, a per-item editor writes a version, the detail leads with now and next. 5 questions, no migration.
 - **Modes revamp** — the shape is decided, the build is later: **status quick-buttons on the Coach screen** (Sick, Traveling, …) that send a canned prompt — *"I am traveling right now. Check what's up and adjust accordingly"* — after which the Coach adjusts mission items, the workout plan, etc. itself. Pairs with retiring the old Modes system (`claude/modes-feature-evaluation-579177`, which must renumber its migration on landing — its `0043` collides). → **`docs/spikes/coach-status-buttons-modes-retirement.md`** — a five-chip rail above the Coach composer that writes the fact first and sends the prompt second, and retires day-Modes in the same migration. 5 questions.
-- **"Slices" as a food unit** — convenient for composite foods; back burner. → **`docs/spikes/slices-as-a-food-unit.md`** — a slice is a *count on a composite*, not a unit: 0047's one-unit-no-conversion rule survives intact. 4 questions.
+- ~~**"Slices" as a food unit**~~ — **BUILT 2026-09-19, migration `0059`** (`docs/spikes/slices-as-a-food-unit.md`, `docs/nutrition-subapp.md` §12m). A slice is a *count on a composite*, not a unit: 0047's one-unit-no-conversion rule survives intact. The owner took option (a) on all four questions.
 - **Whole-app read/write access for the Coach** — *"basically the entire app should be accessible for reading and writing for the coach, make a note of this and we will check on it later."* → **`docs/spikes/coach-whole-app-access.md`** — a domain registry behind three generic tools, funded by folding six status tools into one (the prefix gets *smaller*), with a coverage matrix of every gap. 5 questions.
 - **Future check-off for protocols** (C11's second toggle) — deferred by the owner until the mission has a day picker. → **`docs/spikes/mission-day-picker-and-future-checkoff.md`** — the picker and the check-off designed together, because neither works alone; a future day is computed on view and commits on the first tick. 4 questions, no migration.
 - **Video recipe import build** (D1) — *later, after this batch ships*. → **`docs/spikes/video-recipe-import-build.md`** — stills from a saved video read for on-screen text, behind a prompt ceiling like the estimator's. 5 questions; **the only plan needing a native module**, so it rides the next EAS build.
 - **Heart rate from ingested workouts** — D3's deferred half → **`docs/spikes/ingested-workout-heart-rate.md`** — average and maximum per ingested session, on the workout row's existing JSON; deliberately not a Home pillar. 5 questions, no migration.
 - **Timezone handling, second pass** — *"more thinking on the subject to make sure it works intelligently"* → **`docs/spikes/timezone-handling-intelligent.md`** — trips rather than seams: a run of away days, baselines excluded, reminders re-anchored. 5 questions.
+- **Snapshot a logged item's serving NAME** — every column on `meal_items` is a snapshot at log time except this one: `listMealItems` joins `foods.serving_name` LIVE, so deleting the food degrades `2 × 1 egg` to a bare `100 g`, and `meal_template_items` never had the join at all, so a saved template prints `100 g` for two eggs. Its own migration and its own backfill; explicitly **not** a prerequisite of 0059's piece count, which took a separate column precisely so the two vocabularies never share one (owner decision, 2026-09-19).
 
 ---
 
-## Migration ledger — final (head is `0058`; next free is `0059`)
+## Migration ledger — final (head is `0059` on this branch; re-check `git ls-tree main -- db/migrations/` before claiming the next number)
 
 | Number | Item | File |
 |---|---|---|
@@ -87,6 +88,7 @@
 | `0056` | C12 | `exercise_source` |
 | `0057` | C3 | `pending_estimates` — authored 0048 |
 | `0058` | C4 | `composite_meal_items` — authored 0049 |
+| `0059` | Slices | `meal_item_piece_name` — the one column the parked "slices" item needed |
 
 **Dead gaps from this batch: `0048` · `0049` · `0051` · `0052`** (joining 0005 · 0006 · 0010 · 0019 · 0022 · 0023 · 0040 · 0041). A2–A9, B3, C1, C2, C5–C10, C14 and D2 needed no migration.
 
