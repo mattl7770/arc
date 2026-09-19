@@ -317,6 +317,11 @@ const db = getDb();
     'From a link',
     'Paste text',
     'No model key is set', // honest no-key state under node
+    // D1: the no-key sentence is the explanation, so it names every rung the
+    // model gates — including the video one. Nothing is greyed out; the
+    // controls simply are not rendered in this arm, which is why the video
+    // pressable's own render is a device obligation and not an assertion here.
+    'captions, screenshots and videos need the model',
   ]);
 
   // The Protocols sub-app on a database that has never held one. This has to
@@ -1281,10 +1286,7 @@ const db = getDb();
       'No exercises yet.',
       'Add exercise',
     ]);
-    refute('routine-edit (new)', newRoutine, [
-      'movements this routine runs',
-      'routine',
-    ]);
+    refute('routine-edit (new)', newRoutine, ['movements this routine runs', 'routine']);
 
     // -----------------------------------------------------------------------
     // The Resume card (0045, owner 2026-09-14). The hub is where the app lands
@@ -2808,6 +2810,99 @@ console.log('19. C8 — the servings estimate is marked, and never pre-filled');
   );
   expect('recipe-import review (no estimate)', bare, ['The source didn’t say — set it.']);
   refute('recipe-import review (no estimate)', bare, ['≈ estimate']);
+
+  /**
+   * D1 — the video-stills rung's three review changes.
+   *
+   * Same argument as C8 above: these live on a phase no server render of the
+   * whole screen can reach, and what they claim is a HONESTY rule (this draft
+   * came off a video, it cost this much, and these lines have no amount because
+   * the audio was not heard). A rule about what the screen says is worth proving
+   * against the screen.
+   */
+  const sampledDraft = {
+    ...baseDraft,
+    servings: 4,
+    ingredients: [
+      { raw_text: '2 tbsp miso', qty: 2, unit: 'tbsp', name: 'miso' },
+      { raw_text: 'miso paste', qty: null, unit: null, name: 'miso paste' },
+      { raw_text: 'soy sauce, to taste', qty: null, unit: null, name: 'soy sauce' },
+    ],
+    servings_estimate: null,
+    sampling: {
+      stills: 10,
+      everySeconds: 44 / 9,
+      usage: { inputTokens: 5000, outputTokens: 600, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    },
+  };
+  const sampled = render(
+    'recipe-import review (from a video)',
+    ReviewDraft,
+    {},
+    { draft: sampledDraft, onSaved: () => {} }
+  );
+  expect('recipe-import review (from a video)', sampled, [
+    // The eyebrow says which rung produced it — twelve characters, inside the
+    // seventeen the accessory slot already holds.
+    '≈ from video',
+    // The measurements, in mono, ending in the Coach's own cost caption.
+    '10 stills',
+    'about 1 per 4.9 s',
+    '5.0k in',
+    '600 out',
+    // …and the caveat, over the two lines the video could not put a number on.
+    'These lines carry no amount',
+    'the video’s audio was not read',
+  ]);
+  refute('recipe-import review (from a video)', sampled, [
+    // It is not the generic AI eyebrow any more, and it must never claim the
+    // ingredients were SHOWN — for an unlabelled jar that would be the app
+    // asserting what the model judged.
+    '≈ extracted',
+    'were shown',
+  ]);
+
+  // Every line priced: nothing was unheard, so nothing is explained away —
+  // the caveat is computed from the lines, not from the fact of being a video.
+  const allPriced = render(
+    'recipe-import review (video, every amount read)',
+    ReviewDraft,
+    {},
+    {
+      draft: {
+        ...sampledDraft,
+        ingredients: [{ raw_text: '2 tbsp miso', qty: 2, unit: 'tbsp', name: 'miso' }],
+      },
+      onSaved: () => {},
+    }
+  );
+  expect('recipe-import review (video, every amount read)', allPriced, ['≈ from video']);
+  refute('recipe-import review (video, every amount read)', allPriced, [
+    'These lines carry no amount',
+  ]);
+
+  // And with no `sampling` at all — every other rung — none of it is drawn,
+  // including over a draft whose lines happen to carry no amounts.
+  const unsampled = render(
+    'recipe-import review (not a video)',
+    ReviewDraft,
+    {},
+    {
+      draft: {
+        ...baseDraft,
+        servings: 4,
+        ingredients: [{ raw_text: 'miso paste', qty: null, unit: null, name: 'miso paste' }],
+        servings_estimate: null,
+      },
+      onSaved: () => {},
+    }
+  );
+  expect('recipe-import review (not a video)', unsampled, ['≈ extracted']);
+  refute('recipe-import review (not a video)', unsampled, [
+    '≈ from video',
+    'stills',
+    'These lines carry no amount',
+  ]);
 }
 
 // -------------------------------------------------------------------------
