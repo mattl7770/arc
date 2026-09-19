@@ -1,0 +1,99 @@
+-- ============================================================================
+-- ARC 0059 — "slices": the noun a composite's count counts
+--
+-- Owner, backlog: *"'Slices' as a food unit — convenient for composite foods."*
+-- Design: docs/spikes/slices-as-a-food-unit.md (BUILT).
+--
+-- ── A SLICE IS NOT A UNIT ──
+--
+-- 0047 settled that there are exactly two units, `g` and `ml`, and that NOTHING
+-- converts between them: *"ONE new unit. No density table, no general unit
+-- system, no `oz`/`cup`/`slice` in the schema"* (0047:9-10). That holds here,
+-- and this migration is what keeps it holding. A slice is a **count of pieces**,
+-- and a count is a **ratio**: three slices of an eight-slice pizza is × 3/8, the
+-- arithmetic the composite fraction chips (0058) already do. So there is no new
+-- basis, no piece↔gram factor, and no third value in any CHECK.
+--
+-- What the app lacked was a place to write the count's NOUN down. The count
+-- itself already has a column — `serving_qty`, which has always meant "how many
+-- of the named thing" — and the named thing has always been the catalog food's
+-- own serving, joined LIVE from `foods.serving_name` at read time
+-- (`listMealItems`). A composite HEADER has no `food_id` (0058: *"a header is a
+-- dish, not a catalog food"*), so it can never reach that join. This column is
+-- the header's own noun.
+--
+-- ── ONE COLUMN, ONE TABLE, NO BACKFILL ──
+--
+-- `piece_name` is non-null ONLY on a composite header (`is_composite = 1`),
+-- beside a non-null `serving_qty`, and names ONE piece of the dish in the
+-- singular: `slice`, `wing`, `roll`. It is NULL on every row that exists today,
+-- and on every part and every plain item forever.
+--
+-- A catalog item's count keeps counting the FOOD's serving through the live
+-- join, untouched: `portionLabel` reads `piece_name ?? food_serving_name`, so
+-- `2 × 1 egg` still comes off the join and `3 × slice` comes off this column.
+-- The two vocabularies never share a column, and that is the whole reason this
+-- is a new column rather than a snapshot of the serving name onto every item:
+-- `'3 slices'` is a SERVING PHRASE (one serving is three slices) while `slice`
+-- is a PIECE NOUN, so `2 × 3 slices` is six slices and `3 × slice` is three. One
+-- column holding both would be the exact class of lie 0047:41-45 refuses to
+-- carry. (Snapshotting the serving name is a real gap and its own backlog item;
+-- it is NOT a prerequisite of this one.)
+--
+-- Nothing that exists is a counted composite, so there is no history to record:
+-- no backfill, no UPDATE, and therefore 0014's `meal_items_set_updated_at`
+-- AFTER UPDATE trigger never fires. The export gains one NULL column.
+--
+-- ── A HEADER MAY CARRY A COUNT — 0058's INVARIANT 2, ONE CLAUSE WIDER ──
+--
+-- Invariant 2 lists *"kcal, protein_g, carbs_g, fat_g, fiber_g, micros and
+-- confidence"* (0058:45-47) — every number that SUMS — plus `amount`, which
+-- sums by invariant 5. It does not name `serving_qty`, and it does not reach it:
+--
+--   *A header carries no number that sums. It MAY carry a COUNT of what it is —
+--   `serving_qty` and its `piece_name` — because that is a fact about the whole
+--   and not about any part.*
+--
+-- The invariant exists so that *"a query that forgets the rule under-counts by
+-- zero"* (0058:64-65). No sum anywhere reads `serving_qty`, and the only two
+-- non-display readers — the recents rails `listRecentFoods` /
+-- `listRecentBarcodeFoods` — INNER JOIN on `food_id`, which a header never has.
+-- So the count cannot reach a total, and db/nutrition-v2.test.mjs asserts that
+-- as a byte-identity before and after a header gains one.
+--
+-- PARTS NEVER CARRY THE PAIR: a slice is not a fraction of the cheese.
+-- `scaleCompositeItem` nulls both on every part it touches, and the two builders
+-- that construct part rows send `piece_name: null` explicitly. The last part
+-- takes the header — and therefore the count — with it (0058 invariant 4).
+--
+-- ── NO CROSS-COLUMN CHECK, AND THAT IS 0034's FINDING ──
+--
+-- The obvious constraint is `CHECK (piece_name IS NULL OR is_composite = 1)`.
+-- 0034 records that SQLite VALIDATES an ADD COLUMN CHECK against existing rows
+-- (0034:41-56; 0047:86-92; 0058:81-91): such a constraint would in fact pass
+-- here, every existing row having the column NULL. But the precedent's lesson is
+-- the one that generalises — put the invariant where it can say something useful
+-- when it breaks, which is the repository writers and the tests.
+--
+-- ── THE WAY BACK ──
+--
+-- This column is the only one-way piece of the feature: nullable, unread while
+-- NULL, and droppable by a later forward migration. Everything else reverts with
+-- the commit.
+--
+-- Numbered 0059 because `main`'s head is 0058. The runner is FORWARD-ONLY and
+-- silently skips any file at or below a device's `PRAGMA user_version`, so a
+-- number below the head is stranded forever rather than merely late (0057's
+-- header carries the full argument). The runner stamps user_version = 59.
+--
+-- Conventions per CLAUDE.md §9: no new table, no index needed (nothing queries
+-- BY this column — it is read off a row already in hand); 0014's AFTER UPDATE
+-- trigger already covers every column on `meal_items`, including ones added
+-- later. Run `npm run db:bundle` after this file changes.
+-- ============================================================================
+
+-- The singular noun for ONE piece of this dish — `slice`, `wing`, `roll` — read
+-- beside `serving_qty` as "3 × slice". NULL on every row that exists today, on
+-- every part and plain item forever, and on any header that has not been
+-- counted.
+ALTER TABLE meal_items ADD COLUMN piece_name text;

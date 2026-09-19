@@ -56,6 +56,15 @@ import type { TextInputProps } from 'react-native';
  * An empty field selects nothing and returns early: `setSelection(0, 0)` is a
  * no-op that still costs a bridge command.
  *
+ * ## The caller's own focus handler goes THROUGH here
+ *
+ * This object owns `onFocus`, so a field that spreads it and also writes
+ * `onFocus={…}` loses one of the two depending on which came last — silently,
+ * and only on the device, since the render suite never fires a focus. The
+ * fields that scale a composite from a SNAPSHOT taken on focus depend on theirs
+ * running, so the second argument composes them here instead: selection first
+ * (it reads the value the field still holds), then the caller's.
+ *
  * What only a device can judge: whether the selection survives the caret UIKit
  * places at the tap point. It does in every report of this workaround, and the
  * render suite cannot see a selection at all.
@@ -63,14 +72,18 @@ import type { TextInputProps } from 'react-native';
 type SelectableInput = { setSelection?: (start: number, end: number) => void };
 
 export function selectAllOnFocus(
-  value: string
+  value: string,
+  then?: () => void
 ): Pick<TextInputProps, 'selectTextOnFocus' | 'onFocus'> {
   return {
     selectTextOnFocus: true,
     onFocus: (event) => {
-      if (value.length === 0) return;
-      const input = (event.currentTarget ?? event.target) as unknown as SelectableInput | null;
-      if (typeof input?.setSelection === 'function') input.setSelection(0, value.length);
+      // An empty field selects nothing rather than spending a bridge command.
+      if (value.length > 0) {
+        const input = (event.currentTarget ?? event.target) as unknown as SelectableInput | null;
+        if (typeof input?.setSelection === 'function') input.setSelection(0, value.length);
+      }
+      then?.();
     },
   };
 }

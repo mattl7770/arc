@@ -185,6 +185,18 @@ export type MealItemRow = {
    * macro columns are NULL as well — two belts, because a header that carried
    * its children's sum would let a forgetful query DOUBLE the pizza. */
   is_composite: SqliteBool;
+  /**
+   * The singular noun ONE piece of this dish is called — `slice`, `wing`,
+   * `roll` (0059). Non-null only on a composite HEADER, beside a non-null
+   * {@link MealItemRow.serving_qty}, which is the count of them.
+   *
+   * A header has no `food_id` and so can never reach the live
+   * `foods.serving_name` join a catalog item's count is named by; this column is
+   * its own noun. The two vocabularies stay apart on purpose: `'3 slices'` is a
+   * SERVING PHRASE and `slice` is a PIECE NOUN, so `2 × 3 slices` is six and
+   * `3 × slice` is three.
+   */
+  piece_name: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -212,6 +224,11 @@ export type NewMealItemFields = {
   confidence?: EstimateConfidence | null;
   /** Per-portion micronutrient snapshot as a JSON string (serializeMicros). */
   micros?: JsonText | null;
+  /** The noun `serving_qty` counts on a composite HEADER (0059) — `slice`,
+   * `wing`, `roll`, in the singular. Written only on a header, and only beside
+   * a `serving_qty`; ignored (stored NULL) on a part or a plain item, whose
+   * count names the catalog food's serving through the live join instead. */
+  piece_name?: string | null;
 };
 
 /** One part of a composite (0058). Deliberately NOT nestable: invariant 1 is

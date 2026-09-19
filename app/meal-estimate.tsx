@@ -5,7 +5,9 @@ import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-nativ
 
 import {
   beginCompositeScale,
+  beginCountEdit,
   endCompositeScale,
+  endCountEdit,
   removeRow,
   type ReviewHandlers,
   type ReviewItem,
@@ -15,6 +17,8 @@ import {
   rowsToMealItems,
   scaleComposite,
   scaleCompositeTo,
+  setCompositeCount,
+  setPiecesName,
   setRowAmount,
   toggleExpanded,
 } from '@/components/nutrition/estimate-review';
@@ -363,6 +367,10 @@ export default function MealEstimateScreen() {
     onScaleTo: (key, text) => setRows((prev) => scaleCompositeTo(prev, key, text)),
     onScaleBegin: (key) => setRows((prev) => beginCompositeScale(prev, key)),
     onScaleEnd: (key) => setRows((prev) => endCompositeScale(prev, key)),
+    onCountChange: (key, text) => setRows((prev) => setCompositeCount(prev, key, text)),
+    onCountBegin: (key) => setRows((prev) => beginCountEdit(prev, key)),
+    onCountEnd: (key) => setRows((prev) => endCountEdit(prev, key)),
+    onPiecesName: (key, name) => setRows((prev) => setPiecesName(prev, key, name)),
   };
 
   const save = () => {

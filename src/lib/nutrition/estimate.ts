@@ -27,6 +27,7 @@ import type { JsonText } from '@/lib/db/types';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
 
+import { countLabel } from './format';
 import { coerceMicros, parseMicros, serializeMicros } from './micros';
 import { itemForPortion } from './servings';
 import type { AmountUnit, EstimateConfidence, FoodRow } from './types';
@@ -94,6 +95,20 @@ export type MealEstimateItem = {
    * item. Non-empty means this row is a HEADER and carries no macros.
    */
   components: MealEstimateComponent[] | null;
+  /**
+   * How many countable pieces the model PRICED, and what one is called — a
+   * whole pizza comes back `{slice, 8}`, three slices on a plate `{slice, 3}`
+   * (0059).
+   *
+   * Read only on a composite header and ignored anywhere else: on a plain item
+   * the count would land in three places built for a catalog SERVING count (the
+   * recents rail's re-add, a template round-trip, meal-detail's serving-mode
+   * predicate), where `3 × slice` and `3 × '1 slice'` are not the same claim.
+   *
+   * It is the model performing §4.1's DECLARATION — "what is priced here is N
+   * pieces" — so a wrong answer costs one keypad entry and nothing else.
+   */
+  pieces: { name: string; count: number } | null;
 };
 
 /** Does this estimate item stand over parts? The one predicate every reader
@@ -264,6 +279,8 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '  a salad with dressing) comes back as ONE item carrying a "components" array of at most',
   '  4 parts, and NO macros of its own. Everything else is a plain item with no',
   '  "components". Never decompose a single ingredient or a packaged product.',
+  '- If what you priced is a countable number of pieces (slices, wings, rolls), give',
+  '  "pieces": the singular noun and the count; else null.',
   '- Estimate each portion from visual cues (glass and plate size, utensils) and any text,',
   '  as "amount" plus the "unit" it is measured in: "ml" for anything DRUNK (coffee, beer,',
   '  a smoothie), "g" for everything eaten. Estimate a drink in millilitres directly;',
@@ -272,13 +289,12 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '  Those are always grams of macronutrient, whatever the portion unit is.',
   '- Set per-item confidence: "high" for clearly identified packaged/simple foods, "medium"',
   '  for typical mixed dishes, "low" when the food or portion is genuinely uncertain.',
-  '- Account for likely hidden fats (cooking oil, butter, dressing) and say so in notes when',
-  '  they materially affect the estimate.',
+  '- Account for likely hidden fats (cooking oil, butter, dressing), say so in notes when they',
+  '  matter, and prefer underestimating an unknown over inventing precision.',
   '- Give sodium and caffeine in milligrams, under "micros", for any item that plausibly',
   '  carries them (salted, cured or restaurant-made; coffee, tea, cola, dark chocolate).',
   '  OMIT the key when you would be guessing — an absent key means "not recorded" and a 0',
   '  means "measured none", and they are not the same claim.',
-  '- Prefer underestimating an unknown over inventing precision.',
   '',
   'Questions (optional, and USUALLY ABSENT):',
   '- Ask nothing unless an answer would move the estimate by more than ~15% of its energy or',
@@ -298,6 +314,7 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   ' "fiber_g": number|null,',
   ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
   ' "confidence": "high"|"medium"|"low",',
+  ' "pieces": {"name": string, "count": number}|null,',
   ' "components": [{"name": string, "amount": number|null, "unit": "g"|"ml", "kcal": number,',
   '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null}]|null}],',
   ' "notes": string|null,',
@@ -335,10 +352,26 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
  *   ---
  *   922, against 1,000. **78 tokens of headroom.**
  *
+ * THE ROUND AFTER IT (0059, "slices", 2026-09-19) — and it paid the rule:
+ *
+ *   922  where C4 + C5 left it
+ *   +38  the pieces rule, one bullet after the composite bullet
+ *   +14  "pieces" on the schema line, after "confidence"
+ *   −7   TRIMMED IN THE SAME ROUND, from the pair this note itself named as
+ *        the cheapest cut: the hidden-fats bullet and "prefer underestimating
+ *        an unknown over inventing precision" are one bullet now. They always
+ *        overlapped — both say "do not invent what you cannot see" — and
+ *        neither rule is lost.
+ *   ---
+ *   967, against 1,000. **33 tokens of headroom.**
+ *
+ * The REVISION prompt is measured too, and was not before: 798 → **834**
+ * (the schema clause, and one rail telling the model to keep a count it was
+ * not asked to change). It is the looser of the two and always has been.
+ *
  * What is left to cut, when that runs out and it is genuinely needed: the
- * confidence bullet's three definitions could become two, and the hidden-fats
- * bullet overlaps the "prefer underestimating" one. Both are real rules, so
- * neither is free — which is the point of a ceiling.
+ * confidence bullet's three definitions could become two. That is a real rule,
+ * so it is not free — which is the point of a ceiling.
  */
 export const ESTIMATOR_PROMPT_CEILING = 1000;
 
@@ -432,6 +465,27 @@ function parseComponents(
   // component") from becoming "a composite that is only ever one component",
   // which is a disclosure chevron over nothing worth disclosing.
   return parts.length >= 2 ? parts : null;
+}
+
+/**
+ * The model's `pieces`, validated — or null, which is the common case (0059).
+ *
+ * Shape only. The RULE in the prompt is a criterion with three examples ("a
+ * countable number of pieces — slices, wings, rolls"), not a dish list, because
+ * judgment lives in the model and this is only how it says so — the same
+ * relationship {@link QuestionEffect} has to a decision.
+ *
+ * The count's bounds are the review field's own (`parseCount`): finite, > 0 and
+ * ≤ 100. Nothing a person eats is 101 slices, and a model typo that says so
+ * would otherwise scale a dish by a hundred on the first later edit.
+ */
+function parsePieces(raw: unknown): { name: string; count: number } | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const p = raw as Record<string, unknown>;
+  const name = typeof p.name === 'string' ? p.name.trim() : '';
+  const count = typeof p.count === 'number' ? p.count : NaN;
+  if (name === '' || !Number.isFinite(count) || count <= 0 || count > 100) return null;
+  return { name, count };
 }
 
 /** The owner said three. The model is not the enforcer of that (backlog C5). */
@@ -614,6 +668,11 @@ export function parseMealEstimate(replyText: string): MealEstimate {
       // that returned nothing usable serialises back to NULL rather than {}.
       micros: components ? null : serializeMicros(coerceMicros(e.micros)),
       components,
+      // A count of pieces is a fact about a DISH WITH PARTS (0059). On a plain
+      // item it is dropped rather than carried: `serving_qty` there counts the
+      // catalog food's own serving through a live join, and `3 × slice` beside
+      // `3 × '1 slice'` is two vocabularies in one column.
+      pieces: components ? parsePieces(e.pieces) : null,
     });
   }
   if (items.length === 0) {
@@ -698,6 +757,10 @@ export type MealRevisionItem = {
   /** The parts of a composite dish (0058) — printed indented beneath it, so a
    *  correction to the pepperoni is a correction to a part the model can see. */
   components?: MealRevisionItem[];
+  /** A composite's count of pieces and their noun (0059) — printed in the
+   *  header's tail as `8 × slice`, so a correction can move it and a correction
+   *  about something else leaves it where it is. */
+  pieces?: { name: string; count: number } | null;
 };
 
 /** The meal as it stands, the way the model is shown it. */
@@ -732,6 +795,7 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '- An item shown with parts indented under it is ONE composite dish. Return it as one item',
   '  with those parts in "components" and NO macros of its own, unless the correction is that',
   '  it was never a composite. A correction to one part changes that part only.',
+  '- Keep "pieces" as it arrived unless the correction itself changes the count.',
   '- When a swap changes the cooking fat, carry the portion across sensibly (the same amount',
   '  of oil as there was butter) unless the user gave an amount.',
   '- Keep per-item confidence honest: an item the user has just corrected is usually more',
@@ -756,6 +820,7 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   ' "fiber_g": number|null,',
   ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
   ' "confidence": "high"|"medium"|"low",',
+  ' "pieces": {"name": string, "count": number}|null,',
   ' "components": [{"name": string, "amount": number|null, "unit": "g"|"ml", "kcal": number,',
   '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null}]|null}],',
   ' "notes": string|null,',
@@ -788,10 +853,17 @@ export function buildMealRevisionRequest(
     // A composite header carries no numbers of its own (0058): it says how many
     // parts it has, and the parts are printed beneath it. "no numbers recorded"
     // would be a lie about a dish that is fully priced by its components.
+    //
+    // The one COUNT the model is ever shown is a header's piece count (0059),
+    // printed through the same `countLabel` the screens use so the two cannot
+    // drift. A catalog item's serving count is deliberately NOT printed — the
+    // row shows `57 g, 104 kcal, …` as it always has — so `2 × 3 slices` never
+    // sits beside `8 × slice` and there is no vocabulary to confuse.
     const components = item.components ?? [];
+    const count = item.pieces ? `${countLabel(item.pieces.count, item.pieces.name)}, ` : '';
     const tail =
       components.length > 0
-        ? ` — ${components.length} parts`
+        ? ` — ${count}${components.length} parts`
         : parts.length > 0
           ? ` — ${parts.join(', ')}`
           : // An unpriced item says so in words. A blank tail would read as

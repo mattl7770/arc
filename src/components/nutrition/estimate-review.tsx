@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
@@ -7,7 +8,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { palette } from '@/constants/theme';
 import type { EstimateQuestion } from '@/lib/nutrition/estimate';
-import { fmtInt } from '@/lib/nutrition/format';
+import { countLabel, fmtInt } from '@/lib/nutrition/format';
 import {
   amountLabel,
   currentPortion,
@@ -83,15 +84,82 @@ function AmountField({
       <TextInput
         value={value}
         onChangeText={onChange}
-        onFocus={onFocus}
         onBlur={onBlur}
         keyboardType="decimal-pad"
         returnKeyType={KEYPAD_DONE}
-        {...selectAllOnFocus(value)}
+        // The caller's focus handler goes THROUGH selectAllOnFocus, which owns
+        // `onFocus`: writing both would drop one of them, and the one that
+        // freezes the scaling baseline is the one that matters here.
+        {...selectAllOnFocus(value, onFocus)}
         accessibilityLabel={`${label} ${row.unit === 'ml' ? 'millilitres' : 'grams'}`}
         className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
       />
       <Text className="font-mono text-[11px] text-ink-secondary">{row.unit}</Text>
+    </View>
+  );
+}
+
+/**
+ * The count of pieces, and the noun for one of them (0059).
+ *
+ * The same anatomy as {@link AmountField} — a `w-14` mono field with the same
+ * live, snapshot-from-focus semantics — because it IS the whole-dish grams
+ * field's sibling: one scaling mechanism, two ways to say the same size. A
+ * field rather than the catalog stepper because 8 → 3 is one keypad entry and
+ * ten taps at the stepper's 0.5 step.
+ *
+ * **What the empty field asks depends on whether there is a count**, and the
+ * label beside it says which: `THIS IS` declares what the parts already are and
+ * moves nothing; `I ATE` scales them. The noun is a label-voice control that
+ * swaps to a one-line field on tap and commits on blur; with no count it is a
+ * muted readout, because a noun with no count names nothing.
+ */
+function CountField({ row, handlers }: { row: ReviewItem; handlers: ReviewHandlers }) {
+  const [nounDraft, setNounDraft] = useState<string | null>(null);
+  const counted = row.pieces != null;
+  const noun = row.pieces?.name ?? 'piece';
+  const value =
+    row.countText === '' ? (row.pieces ? amountLabel(row.pieces.count) : '') : row.countText;
+  return (
+    <View className="flex-row items-center gap-1">
+      <TextInput
+        value={value}
+        onChangeText={(text) => handlers.onCountChange(row.key, text)}
+        onBlur={() => handlers.onCountEnd(row.key)}
+        keyboardType="decimal-pad"
+        returnKeyType={KEYPAD_DONE}
+        {...selectAllOnFocus(value, () => handlers.onCountBegin(row.key))}
+        accessibilityLabel={counted ? `${row.name}, pieces eaten` : `Pieces in ${row.name}`}
+        className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+      />
+      <Text className="font-mono text-[11px] text-ink-secondary">×</Text>
+      {nounDraft !== null ? (
+        <TextInput
+          value={nounDraft}
+          onChangeText={setNounDraft}
+          autoFocus
+          returnKeyType={KEYPAD_DONE}
+          autoCapitalize="none"
+          accessibilityLabel={`Name one piece of ${row.name}`}
+          onBlur={() => {
+            handlers.onPiecesName(row.key, nounDraft);
+            setNounDraft(null);
+          }}
+          className="w-20 border border-paper-deep bg-paper-dim px-2 py-1.5 font-mono text-[13px] text-ink"
+        />
+      ) : counted ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Name one piece of ${row.name}`}
+          onPress={() => setNounDraft(noun)}
+          className="min-h-[44px] justify-center px-1 active:opacity-60">
+          <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink">{noun}</Text>
+        </Pressable>
+      ) : (
+        <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted">
+          {noun}
+        </Text>
+      )}
     </View>
   );
 }
@@ -117,6 +185,12 @@ export type ReviewHandlers = {
   onScaleTo: (key: string, text: string) => void;
   onScaleBegin: (key: string) => void;
   onScaleEnd: (key: string) => void;
+  /** The count of pieces (0059) — the same three-handler shape as the
+   *  whole-dish field, because it is the same mechanism. */
+  onCountChange: (key: string, text: string) => void;
+  onCountBegin: (key: string) => void;
+  onCountEnd: (key: string) => void;
+  onPiecesName: (key: string, name: string) => void;
 };
 
 /** One priced row — a plain item, or a part indented inside its composite. */
@@ -223,7 +297,14 @@ function CompositeRow({
           </Text>
           <RemoveButton name={row.name} onPress={() => handlers.onRemove(row.key)} />
         </View>
-        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{MACRO_LINE(total)}</Text>
+        {/* The count leads the sub-line when there is one (0059) — it is the
+            coarsest true thing about the dish, and after a ⅓ chip it reads the
+            honest `2.7 × slice` rather than a 3 the parts do not add up to. */}
+        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+          {[row.pieces ? countLabel(row.pieces.count, row.pieces.name) : '', MACRO_LINE(total)]
+            .filter(Boolean)
+            .join(' · ')}
+        </Text>
       </View>
 
       {row.expanded ? (
@@ -233,8 +314,15 @@ function CompositeRow({
           ))}
           {/* "I ate half", as the sentence people actually say. Outlined chips,
               ≥44pt, in the label voice — the accent in this phase belongs to
-              Save and stays there. */}
-          <View className="flex-row items-center gap-2 pb-3 pl-6">
+              Save and stays there. The count sits BESIDE them (owner decision):
+              a chip is the fast handle, a count the precise one, the same
+              pairing the whole-dish field already has. */}
+          <View
+            className={
+              row.pieces
+                ? 'flex-row items-center gap-2 pb-3 pl-6'
+                : 'flex-row items-center gap-2 pl-6'
+            }>
             <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
               I ate
             </Text>
@@ -250,7 +338,18 @@ function CompositeRow({
                 </Text>
               </Pressable>
             ))}
+            {row.pieces ? <CountField row={row} handlers={handlers} /> : null}
           </View>
+          {/* Uncounted: the field asks what the dish IS, on its own row, and
+              typing into it scales nothing. */}
+          {row.pieces ? null : (
+            <View className="flex-row items-center gap-2 pb-3 pl-6">
+              <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
+                This is
+              </Text>
+              <CountField row={row} handlers={handlers} />
+            </View>
+          )}
         </View>
       ) : null}
     </View>

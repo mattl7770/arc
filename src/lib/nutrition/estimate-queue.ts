@@ -137,6 +137,9 @@ function toMealItems(estimate: MealEstimate): NewMealItem[] {
     amount: item.amount != null && item.amount > 0 ? item.amount : null,
     unit: item.unit,
     serving_qty: null,
+    // A part never carries the pair — a slice is not a fraction of the cheese
+    // (0059). Stated rather than defaulted, so the rule is legible here.
+    piece_name: null,
     kcal: item.kcal,
     protein_g: item.protein_g,
     carbs_g: item.carbs_g,
@@ -148,8 +151,15 @@ function toMealItems(estimate: MealEstimate): NewMealItem[] {
   return estimate.items.map((item) =>
     isCompositeEstimateItem(item)
       ? // The header's own numbers are null by construction; sending them would
-        // suggest they mean something.
-        { name: item.name, unit: item.unit, components: (item.components ?? []).map(priced) }
+        // suggest they mean something. Its COUNT of pieces is not one of them
+        // (0059) — nothing sums it, and it is a fact about the whole dish.
+        {
+          name: item.name,
+          unit: item.unit,
+          serving_qty: item.pieces?.count ?? null,
+          piece_name: item.pieces?.name ?? null,
+          components: (item.components ?? []).map(priced),
+        }
       : priced(item)
   );
 }
@@ -165,6 +175,12 @@ function revisionRow(i: MealItemWithServing) {
     carbs_g: i.carbs_g,
     fat_g: i.fat_g,
     micros: i.micros,
+    // A counted composite stays counted through an offline revision (0059): the
+    // pair is only ever non-null on a header, so this is a no-op on a part.
+    pieces:
+      i.serving_qty != null && i.piece_name != null
+        ? { name: i.piece_name, count: i.serving_qty }
+        : null,
   };
 }
 
