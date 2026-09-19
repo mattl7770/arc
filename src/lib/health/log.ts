@@ -44,6 +44,17 @@ export type HealthMetricLog = {
    * per-sample guard is scoped to the types ARC also writes (docs §10, guard 3).
    */
   rejected: BodyIngestRejections | null;
+  /**
+   * One line of metric-specific diagnostics, or null. Used by `workout_hr`
+   * (docs §15) to say what the newest session had ASSOCIATED and which door
+   * answered — *"associated: HeartRate, ActiveEnergyBurned · by workout 0 · by
+   * source 12"* — because "31 → 0" alone cannot distinguish "the watch exports
+   * no heart rate" from "ARC's door-1 call is wrong".
+   *
+   * Optional, because every other row has nothing to put here and a `null` per
+   * row is a field paid for fifteen times over to say nothing.
+   */
+  detail?: string | null;
 };
 
 /** What the outbound half did on the last pass. */
@@ -141,6 +152,10 @@ export function parseSyncLog(value: unknown): HealthSyncLog | null {
           exclusion,
           error: str(m.error),
           rejected: rejectionsOf(m.rejected),
+          // Re-derived like every other field, so it survives the round trip
+          // that drops unknown keys — a field this parser does not know about
+          // never reaches the screen, whatever the writer put in the KV.
+          detail: str(m.detail),
         },
       ];
     }),
@@ -180,7 +195,41 @@ export function rejectedTotal(rejected: BodyIngestRejections | null): number {
  * something the counts alone do not. "Nothing recorded in this window" is a real
  * finding; "3 samples, 3 rows" is not, and gets no sentence.
  */
+/** The metric whose note is written by hand, ahead of the generic branches. */
+export const WORKOUT_HR_METRIC = 'workout_hr';
+
+/**
+ * In-workout heart rate's own note (docs §15).
+ *
+ * It sits AHEAD of the generic branches because the generic error branch fires
+ * only when `returned === 0`, and this row's error arrives with `returned > 0`:
+ * every workout was read, and the heart-rate call inside the loop is what was
+ * refused. Without this branch the loudest failure in the feature — a rejected
+ * `getStatistic` on every session — would print "31 → 0" with no sentence, and
+ * be read as a fact about Garmin.
+ */
+function workoutHrNote(entry: HealthMetricLog): string | null {
+  const parts: string[] = [];
+  if (entry.error !== null) {
+    parts.push(`Apple Health returned an error while reading heart rate. ${entry.error}`);
+  }
+  if (entry.returned > 0 && entry.rows === 0) {
+    parts.push(
+      'A blank can also mean the read grant was declined — iOS never tells ARC. Check Settings → Privacy & Security → Health → ARC → Heart Rate before reading a zero as a fact about your watch.'
+    );
+  }
+  if (entry.detail) parts.push(entry.detail);
+  return parts.length > 0 ? parts.join(' ') : null;
+}
+
 export function metricNote(entry: HealthMetricLog): string | null {
+  if (entry.metric === WORKOUT_HR_METRIC) {
+    const note = workoutHrNote(entry);
+    // Falls through when there is nothing metric-specific to say, so a phone
+    // that has never recorded a workout still gets the plain "Nothing recorded
+    // in this window." rather than a silent 0 → 0.
+    if (note !== null) return note;
+  }
   if (entry.error !== null && entry.returned === 0) {
     return entry.exclusion === 'refused'
       ? `Apple Health refused both echo-suppression filters, so nothing was read. ${entry.error}`

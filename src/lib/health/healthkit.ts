@@ -47,11 +47,14 @@ import type {
   HealthProvenance,
   HealthQuantitySample,
   HealthWorkoutSample,
+  WorkoutHr,
 } from './types';
 import {
   ARC_WRITE_METADATA_KEY,
   HEALTH_READ_IDENTIFIERS,
   HEALTH_WRITE_IDENTIFIERS,
+  HEART_RATE_IDENTIFIER,
+  HEART_RATE_UNIT,
 } from './mapping';
 
 /**
@@ -62,10 +65,20 @@ import {
  */
 type SampleExclusion = { sources?: unknown[]; metadata?: { withMetadataKey: string } };
 
-/** The date-plus-exclusions filter every reader here passes. */
+/**
+ * The date-plus-exclusions filter every reader here passes.
+ *
+ * `sources` (a positive `HKQuery.predicateForObjects(from:)`, not a NOT clause)
+ * is used by exactly one caller — the heart-rate floor — and takes the library's
+ * `SourceProxy` HYBRID objects, never plain records. `ios/PredicateHelpers.swift`
+ * casts them and returns nil for the whole clause if the cast fails, which
+ * collapses the predicate to date-only; the floor's JS post-filter is what
+ * actually enforces the rule, so that collapse costs nothing.
+ */
 type SampleFilter = {
   date: { startDate: Date; endDate: Date };
   NOT?: SampleExclusion[];
+  sources?: unknown[];
 };
 
 /** The slice of @kingstinct/react-native-healthkit this module touches. */
@@ -112,6 +125,20 @@ type HealthKitModule = {
       };
     }
   ): Promise<{ sumQuantity?: { unit: string; quantity: number } } | null | undefined>;
+  /**
+   * Door 2 of the heart-rate probe (docs §15): one `HKStatisticsQuery` with
+   * `.separateBySource`, so HealthKit does the arithmetic and ARC only picks the
+   * workout's own writer in JS. Probed before use like every optional member
+   * here — a build predating it must degrade, not throw.
+   */
+  queryStatisticsForQuantitySeparateBySource?(
+    identifier: string,
+    statistics: string[],
+    options: {
+      unit?: string;
+      filter?: { date: { startDate: Date; endDate: Date } };
+    }
+  ): Promise<unknown[]>;
   queryWorkoutSamples(options: {
     limit?: number;
     ascending?: boolean;
@@ -562,6 +589,120 @@ export function parseStatisticSum(raw: unknown): number | null {
   return quantityValue(asRecord(raw).sumQuantity);
 }
 
+// --- In-workout heart rate: the two doors, pure (docs §15) --------------------
+//
+// Both doors hand back a `QueryStatisticsResponse`, so both are parsed by the
+// same function. Everything below is pure and exported, because the whole of
+// what can go wrong here is shape-reading — and a field read at the wrong shape
+// fails SOFT, dropping the figure with no error at all.
+
+/**
+ * A `Quantity` from a heart-rate statistic → whole bpm, or null.
+ *
+ * The unit is READ, never assumed, for the reason {@link durationSeconds} gives:
+ * the installed library can only answer in the requested `count/min` or reject
+ * outright ({@link getUnitToUse} has exactly those two outcomes), so this branch
+ * guards a library change rather than today's behaviour — and getting it wrong
+ * would put a number sixty times too small into a health record, silently.
+ * HeartRate's canonical HKUnit is `count/s`, which is the one a future library
+ * would fall back to.
+ */
+function heartRateBpm(value: unknown): number | null {
+  const quantity = quantityValue(value);
+  if (quantity === null) return null;
+  const unit = asRecord(value).unit;
+  const bpm = unit === 'count/min' ? quantity : unit === 'count/s' ? quantity * 60 : null;
+  if (bpm === null || !Number.isFinite(bpm) || bpm <= 0) return null;
+  return Math.round(bpm);
+}
+
+/**
+ * A statistics response → the session's average and maximum, or null.
+ *
+ * **Both or nothing.** An average with no maximum is half a reading, and half a
+ * reading printed in the owner's mono voice is a claim ARC would be making on
+ * its own behalf. Neither door reports a sample count, which is why there is no
+ * `samples` field anywhere in this feature.
+ */
+export function parseWorkoutHrStatistic(raw: unknown): { avg: number; max: number } | null {
+  const record = asRecord(raw);
+  const avg = heartRateBpm(record.averageQuantity);
+  const max = heartRateBpm(record.maximumQuantity);
+  if (avg === null || max === null) return null;
+  return { avg, max };
+}
+
+/**
+ * Door 2's selector: the per-source statistics response belonging to the
+ * workout's OWN writer, or null when that writer contributed none.
+ *
+ * This is the whole reason door 2 is safe. Its query is a date-only predicate,
+ * so a phone's incidental readings and a second wearable's are in the response
+ * set too — and a Garmin session showing an average dragged toward resting by
+ * the phone in the owner's pocket would be wrong in a way no screen could show.
+ * HealthKit splits by source; this picks one, by bundle id, exactly.
+ *
+ * A workout whose own bundle id could not be read matches nothing, deliberately:
+ * without it there is no way to tell whose samples these are.
+ */
+export function pickSourceStatistic(
+  responses: readonly unknown[],
+  bundleId: string | null
+): { avg: number; max: number } | null {
+  if (!bundleId) return null;
+  for (const response of responses) {
+    const record = asRecord(response);
+    let id: string | null = null;
+    try {
+      const plain = sourceRecord(record);
+      id = typeof plain.bundleIdentifier === 'string' ? plain.bundleIdentifier : null;
+    } catch {
+      // A source that will not read is a source that cannot be matched — skip
+      // it. One unreadable entry must never cost the other sources' figures.
+      continue;
+    }
+    if (id !== bundleId) continue;
+    return parseWorkoutHrStatistic(record);
+  }
+  return null;
+}
+
+/**
+ * The floor's numerator: how many of the sampled window were the writer's own.
+ *
+ * Post-filtered in JS rather than trusted to the `sources` predicate, because
+ * that predicate can collapse to date-only (see {@link SampleFilter}) and a
+ * silently-unfiltered count would pass the floor on somebody else's samples.
+ */
+export function countWriterSamples(raw: readonly unknown[], bundleId: string | null): number {
+  if (!bundleId) return 0;
+  let count = 0;
+  for (const item of raw) {
+    try {
+      if (provenanceOf(asRecord(item)).bundleId === bundleId) count++;
+    } catch {
+      // An unreadable sample is not the writer's as far as this count knows.
+    }
+  }
+  return count;
+}
+
+/**
+ * **The door-2 floor.** Nothing is stored unless at least this many of the
+ * span's first {@link HR_SAMPLE_PROBE_LIMIT} samples were the workout's own
+ * writer.
+ *
+ * Door 2's figure is one ARC derives, not one the writer asserted — so `avg 142`
+ * from four samples of a sparse export is a claim ARC would be making in the
+ * owner's own mono voice. A blank line is honest; a confident wrong number is
+ * not. Door 1 is deliberately UNFLOORED: it is the writer's own association,
+ * and the Health app prints it unfloored too.
+ */
+export const HR_MIN_SAMPLES = 6;
+
+/** How many samples the floor's bounded probe asks for. One query per session. */
+export const HR_SAMPLE_PROBE_LIMIT = 48;
+
 // --- Readers ------------------------------------------------------------------------
 
 /** Per-read policy. */
@@ -692,16 +833,200 @@ export async function readDailyCumulative(
 }
 
 /**
+ * Asked of every workout the pass sees: what was the heart doing?
+ *
+ * Takes the live proxy (the hybrid handle the statistics hang off) AND the
+ * already-parsed plain sample (its span, its writer). Resolving null means "no
+ * figure", which is the ordinary answer on a source that does not export
+ * in-workout heart rate at all.
+ *
+ * Injected rather than called directly so {@link collectWorkouts} — and with it
+ * the whole error posture — is testable with no native module present. Every
+ * branch that went wrong in this file historically went wrong in one node could
+ * not reach.
+ */
+export type WorkoutProbe = (
+  proxy: unknown,
+  sample: HealthWorkoutSample
+) => Promise<WorkoutHr | null>;
+
+/**
+ * Parse a page of workout proxies, asking `probe` about each one's heart rate.
+ *
+ * **A probe can never sink the pass.** Before this existed the parse loop had no
+ * try/catch of its own, and a throw inside it left `readWorkouts` entirely —
+ * which `syncHealthData` awaits BEFORE the upsert, the cursor and the log, so
+ * the pass's rows were discarded and Settings kept the previous log. Adding a
+ * per-session native call to that loop without a guard would have made the
+ * silent-total-failure mode reachable for the first time. So: a rejecting probe
+ * costs that session its `hr` key and nothing else, and the first error text is
+ * kept for the log exactly as {@link readDailyCumulative} keeps a day's.
+ *
+ * `hr` is SPREAD in, never assigned — an unanswered session carries no key at
+ * all, so a `null` member cannot reach the stored JSON.
+ */
+export async function collectWorkouts(
+  items: readonly unknown[],
+  probe?: WorkoutProbe
+): Promise<{ samples: HealthWorkoutSample[]; error: string | null }> {
+  const samples: HealthWorkoutSample[] = [];
+  let error: string | null = null;
+  for (const item of items) {
+    const parsed = parseWorkoutSample(item);
+    if (!parsed) continue;
+    let hr: WorkoutHr | null = null;
+    if (probe) {
+      try {
+        hr = await probe(item, parsed);
+      } catch (e) {
+        error = error ?? errorText(e);
+      }
+    }
+    samples.push(hr ? { ...parsed, hr } : parsed);
+  }
+  return { samples, error };
+}
+
+/** The live `SourceProxy` hybrid off a workout proxy, or null. */
+function workoutSourceHandle(proxy: unknown): unknown {
+  try {
+    return asRecord(asRecord(proxy).sourceRevision).source ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** `HKQuantityTypeIdentifierHeartRate` → `HeartRate`, for the log's detail line. */
+function shortIdentifier(raw: string): string {
+  return raw.replace(/^HK(Quantity|Category)TypeIdentifier/, '');
+}
+
+/**
+ * The real two-door probe (docs §15 §3.1). Every native call sits in its own
+ * try/catch and degrades to "no figure"; `report` carries the first error text
+ * out to the log, because THE failure mode worth reading is the loud one.
+ *
+ * A wrong unit override rejects `getStatistic` for *every* workout — the native
+ * side has exactly two outcomes with an override supplied, the override or a
+ * rejected promise — so door 1 would be dead for the whole feature while the
+ * `getAllStatistics` diagnostic (no override, so it cannot fail on units) keeps
+ * happily reporting *associated: HeartRate*. Only the log row's error text makes
+ * that readable as "door 1 is wrong" rather than "Garmin is silent".
+ */
+function workoutHrProbe(
+  mod: HealthKitModule,
+  skip: ReadonlySet<string>,
+  report: (error: string) => void
+): WorkoutProbe {
+  return async (proxy, sample) => {
+    // Door 1 — the workout's own statistic: what the Health app prints under
+    // the session. Runs for EVERY workout, every pass, with no skip set, which
+    // is how a revised association lands; the upsert's CHANGED guard stays the
+    // arbiter of whether anything is actually written.
+    const getStatistic = asRecord(proxy).getStatistic;
+    if (typeof getStatistic === 'function') {
+      try {
+        const raw = await (
+          getStatistic as (type: string, unitOverride?: string) => Promise<unknown>
+        ).call(proxy, HEART_RATE_IDENTIFIER, HEART_RATE_UNIT);
+        const parsed = parseWorkoutHrStatistic(raw);
+        if (parsed) return { ...parsed, method: 'workout' };
+      } catch (e) {
+        report(errorText(e));
+      }
+    }
+
+    // Door 2 — the same writer's samples over the span, without the
+    // association. Skipped for a session whose stored row already carries a
+    // figure: door 1 above is the path by which a better answer can still
+    // arrive, and re-deriving one ARC already has buys nothing.
+    if (skip.has(sample.uuid)) return null;
+    const separate = mod.queryStatisticsForQuantitySeparateBySource;
+    if (typeof separate !== 'function') return null;
+    const bundleId = sample.provenance.bundleId;
+    const startDate = new Date(sample.startISO);
+    const endDate = new Date(sample.endISO);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null;
+
+    let picked: { avg: number; max: number } | null = null;
+    try {
+      // No `strictStartDate`: a heart-rate sample is a point, so overlap and
+      // strict coincide — and for an interval sample, overlap admits one that
+      // began just before the workout (negligible in a time-weighted hour)
+      // where strict would drop every session's FIRST reading.
+      const responses = await separate.call(
+        mod,
+        HEART_RATE_IDENTIFIER,
+        ['discreteAverage', 'discreteMax'],
+        { unit: HEART_RATE_UNIT, filter: { date: { startDate, endDate } } }
+      );
+      picked = pickSourceStatistic(responses ?? [], bundleId);
+    } catch (e) {
+      report(errorText(e));
+      return null;
+    }
+    if (!picked) return null;
+
+    // The floor. One bounded query per unanswered session, post-filtered in JS
+    // — said plainly: the gate passes when at least six of the span's first 48
+    // samples were this writer's.
+    try {
+      const handle = workoutSourceHandle(proxy);
+      const raw = await mod.queryQuantitySamples(HEART_RATE_IDENTIFIER, {
+        limit: HR_SAMPLE_PROBE_LIMIT,
+        ascending: true,
+        unit: HEART_RATE_UNIT,
+        filter: {
+          date: { startDate, endDate },
+          ...(handle ? { sources: [handle] } : {}),
+        },
+      });
+      if (countWriterSamples(raw ?? [], bundleId) < HR_MIN_SAMPLES) return null;
+    } catch (e) {
+      report(errorText(e));
+      return null;
+    }
+    return { ...picked, method: 'source' };
+  };
+}
+
+/** What a workout read produced, plus what the heart-rate probe had to say. */
+export type WorkoutReadResult = HealthReadResult<HealthWorkoutSample> & {
+  /** First heart-rate probe error this pass, or null. Read this FIRST. */
+  hrError: string | null;
+  /**
+   * Quantity-type names the NEWEST workout carries associated statistics for —
+   * `getAllStatistics`, no unit override, so it cannot fail the way door 1 can.
+   * Null when there was no workout, or the call was refused.
+   */
+  associated: string[] | null;
+};
+
+/** Per-pass policy for the workout read. */
+export type WorkoutReadOptions = {
+  /**
+   * HealthKit UUIDs whose stored row already carries a heart-rate figure. Door
+   * 2 is skipped for these; door 1 still runs for every session.
+   */
+  hrSkip?: ReadonlySet<string>;
+};
+
+/**
  * Workouts over [start, end). Units are fixed by the native serialiser, not
  * requestable: duration seconds, `totalEnergyBurned` kcal, `totalDistance`
  * meters — all three arrive as `Quantity` objects, unwrapped below.
+ *
+ * Since 2026-09-19 each session is also asked about its heart rate, through the
+ * injected {@link WorkoutProbe} — the one place in this seam that makes a native
+ * call PER RECORD rather than per metric, which is why the loop grew a guard.
  */
 export async function readWorkouts(
   start: Date,
-  end: Date
-): Promise<HealthReadResult<HealthWorkoutSample>> {
+  end: Date,
+  options: WorkoutReadOptions = {}
+): Promise<WorkoutReadResult> {
   const mod = hk;
-  if (!mod) return absentRead();
+  if (!mod) return { ...absentRead<HealthWorkoutSample>(), hrError: null, associated: null };
   const { value, outcome } = await withOwnWritesExcluded(exclusionsFor(mod), false, (NOT) =>
     mod.queryWorkoutSamples({
       limit: 0,
@@ -709,10 +1034,33 @@ export async function readWorkouts(
       filter: { date: { startDate: start, endDate: end }, NOT },
     })
   );
-  const workouts: HealthWorkoutSample[] = [];
-  for (const item of value ?? []) {
-    const parsed = parseWorkoutSample(item);
-    if (parsed) workouts.push(parsed);
+  const items = value ?? [];
+  let probeError: string | null = null;
+  const probe = workoutHrProbe(mod, options.hrSkip ?? new Set(), (error) => {
+    probeError = probeError ?? error;
+  });
+  const collected = await collectWorkouts(items, probe);
+
+  // The diagnostic, for the NEWEST workout only (the read is ascending, so it
+  // is the last item): which quantity types this writer actually ASSOCIATED
+  // with the session. Its identifier NAMES only — never its preferred-unit
+  // values, which is why it is a diagnostic and not a storage path.
+  let associated: string[] | null = null;
+  const newest = items[items.length - 1];
+  const getAll = newest === undefined ? undefined : asRecord(newest).getAllStatistics;
+  if (typeof getAll === 'function') {
+    try {
+      const all = asRecord(await (getAll as () => Promise<unknown>).call(newest));
+      associated = Object.keys(all).map(shortIdentifier).sort();
+    } catch (e) {
+      probeError = probeError ?? errorText(e);
+    }
   }
-  return { samples: workouts, ...outcome };
+
+  return {
+    samples: collected.samples,
+    ...outcome,
+    hrError: probeError ?? collected.error,
+    associated,
+  };
 }

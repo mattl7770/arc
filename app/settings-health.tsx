@@ -11,8 +11,13 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO } from '@/lib/db/date';
 import { isHealthSyncEnabled, setHealthSyncEnabled } from '@/lib/db/repositories/user';
-import { getHealthSyncLog, getHealthSyncState } from '@/lib/db/repositories/wearables';
-import { metricNote, publishNote, type HealthSyncLog } from '@/lib/health/log';
+import {
+  getHealthScopeStamp,
+  getHealthSyncLog,
+  getHealthSyncState,
+  stampHealthScopes,
+} from '@/lib/db/repositories/wearables';
+import { metricNote, publishNote, WORKOUT_HR_METRIC, type HealthSyncLog } from '@/lib/health/log';
 import {
   healthWriteAccess,
   isHealthKitAvailable,
@@ -21,8 +26,12 @@ import {
   type HealthWriteAccess,
 } from '@/lib/health/healthkit';
 import { GARMIN_ONLY_METRICS, METRIC_COVERAGE, type SourceVerdict } from '@/lib/health/coverage';
-import { BODY_INGEST_METRICS } from '@/lib/health/mapping';
-import { syncHealthData } from '@/lib/health/sync';
+import {
+  BODY_INGEST_METRICS,
+  HEALTH_READ_IDENTIFIERS,
+  unaskedReadScopes,
+} from '@/lib/health/mapping';
+import { FIRST_SYNC_DAYS, syncHealthData } from '@/lib/health/sync';
 
 /**
  * Settings › Apple Health — the wearables hub toggle (docs/wearables-subapp.md §7).
@@ -92,13 +101,17 @@ const DIRECTION_ICON: Record<
 /**
  * Every scope, in human words, with its direction. The two-way rows come from
  * {@link BODY_INGEST_METRICS} so their labels cannot drift from the types
- * actually wired; the read-only rows are grouped by hand because twelve
- * identifiers read as six ideas.
+ * actually wired; the read-only rows are grouped by hand because fourteen
+ * identifiers read as eight ideas.
  */
 const SYNC_SCOPES: readonly { label: string; direction: SyncDirection }[] = [
   ...BODY_INGEST_METRICS.map((m) => ({ label: m.label, direction: 'both' as const })),
   { label: 'Sleep (duration and stages)', direction: 'in' },
   { label: 'Heart-rate variability and resting heart rate', direction: 'in' },
+  // Its own row rather than folded into the line above: this one is read for
+  // ONE purpose (the session's own average and maximum) and never becomes a
+  // daily figure, which is a different promise from the two resting measures.
+  { label: 'Heart rate during workouts', direction: 'in' },
   { label: 'Steps and active / resting energy', direction: 'in' },
   { label: 'Respiratory rate and blood oxygen', direction: 'in' },
   { label: 'Body and sleeping-wrist temperature', direction: 'in' },
@@ -149,11 +162,14 @@ export default function SettingsHealthScreen() {
 
   const [enabled, setEnabled] = useState(() => isHealthSyncEnabled(getDb()));
   const [lastSyncedAt, setLastSyncedAt] = useState(() => getHealthSyncState(getDb()).lastSyncedAt);
-  const [busy, setBusy] = useState<'enabling' | 'syncing' | 'allowing' | null>(null);
+  const [busy, setBusy] = useState<'enabling' | 'syncing' | 'allowing' | 'heartRate' | null>(null);
   const [lastRows, setLastRows] = useState<number | null>(null);
   const [lastPublished, setLastPublished] = useState<number | null>(null);
   const [writeAccess, setWriteAccess] = useState<HealthWriteAccess>(() => healthWriteAccess());
   const [log, setLog] = useState<HealthSyncLog | null>(() => getHealthSyncLog(getDb()));
+  const [unasked, setUnasked] = useState<string[]>(() =>
+    unaskedReadScopes(getHealthScopeStamp(getDb()))
+  );
 
   const refresh = useCallback(() => {
     const db = getDb();
@@ -161,6 +177,20 @@ export default function SettingsHealthScreen() {
     setLastSyncedAt(getHealthSyncState(db).lastSyncedAt);
     setWriteAccess(healthWriteAccess());
     setLog(getHealthSyncLog(db));
+    setUnasked(unaskedReadScopes(getHealthScopeStamp(db)));
+  }, []);
+
+  /**
+   * Ask, and record that ARC asked. The stamp is what makes a LATE read scope
+   * recoverable: adding one to `HEALTH_READ_IDENTIFIERS` asks nobody anything
+   * on an install that has already answered the sheet, because iOS presents it
+   * only for unanswered types. It records the asking, never a grant — read
+   * grants are not knowable.
+   */
+  const askForScopes = useCallback(async () => {
+    const processed = await requestHealthPermissions();
+    if (processed) stampHealthScopes(getDb(), HEALTH_READ_IDENTIFIERS);
+    return processed;
   }, []);
 
   const enable = useCallback(async () => {
@@ -172,7 +202,7 @@ export default function SettingsHealthScreen() {
       setEnabled(true);
       // Lazy permission ask — the whole sheet, first time only; iOS shows it
       // only for types the user hasn't answered yet, so repeats are no-ops.
-      await requestHealthPermissions();
+      await askForScopes();
       const result = await syncHealthData(db);
       if (result.status === 'synced') {
         setLastRows(result.rowsWritten);
@@ -182,7 +212,7 @@ export default function SettingsHealthScreen() {
       setBusy(null);
       refresh();
     }
-  }, [busy, refresh]);
+  }, [askForScopes, busy, refresh]);
 
   /**
    * Ask for the WRITE scopes on their own. Needed because read access can
@@ -196,7 +226,7 @@ export default function SettingsHealthScreen() {
     if (busy) return;
     setBusy('allowing');
     try {
-      await requestHealthPermissions();
+      await askForScopes();
       const result = await syncHealthData(getDb());
       if (result.status === 'synced') {
         setLastRows(result.rowsWritten);
@@ -206,7 +236,34 @@ export default function SettingsHealthScreen() {
       setBusy(null);
       refresh();
     }
-  }, [busy, refresh]);
+  }, [askForScopes, busy, refresh]);
+
+  /**
+   * Ask for the heart-rate scope, then re-read 90 days with it.
+   *
+   * The re-read is the half that is easy to forget: the steady-state window is
+   * a fortnight, the 90-day backfill runs only on a first sync, and the Coach's
+   * training summary looks back 28 days — so without this, most of the history
+   * every heart-rate surface feeds would stay blank however the sheet was
+   * answered. It passes a `windowDays` override rather than clearing
+   * `firstSyncedAt`, whose re-stamp is deliberately conditional on a pass having
+   * written something so a denied permission cannot burn the one-time backfill.
+   */
+  const readHeartRate = useCallback(async () => {
+    if (busy) return;
+    setBusy('heartRate');
+    try {
+      await askForScopes();
+      const result = await syncHealthData(getDb(), new Date(), { windowDays: FIRST_SYNC_DAYS });
+      if (result.status === 'synced') {
+        setLastRows(result.rowsWritten);
+        setLastPublished(result.samplesPublished);
+      }
+    } finally {
+      setBusy(null);
+      refresh();
+    }
+  }, [askForScopes, busy, refresh]);
 
   const disable = useCallback(() => {
     if (busy) return;
@@ -232,6 +289,29 @@ export default function SettingsHealthScreen() {
 
   const available = supported && isHealthKitAvailable();
   const writeNote = writeAccessNote(writeAccess);
+
+  /**
+   * Whether to offer *Read heart rate (90 days)*, and the whole of why it is a
+   * control rather than something the sync does by itself.
+   *
+   * It shows while connected AND either something is unasked, OR the last
+   * `workout_hr` row says every session was seen and none produced a figure.
+   * Honestly stated: on a FRESH install `enable` stamps every scope and this
+   * never appears; on an EXISTING install it appears once, and iOS presents a
+   * sheet for Heart Rate alone because the others are already answered.
+   *
+   * It stays visible after an ask that produced nothing, because that is the one
+   * state in which tapping again can change something — if the sheet was
+   * declined iOS will not re-present it, and the only recovery is the iOS
+   * Settings path the note names, after which the re-read is one tap. It
+   * disappears once a figure lands.
+   *
+   * Not folded into `syncHealthData`: that runs on every foreground, so the
+   * sheet would appear over whatever screen the owner had returned to.
+   */
+  const hrLog = log?.metrics.find((m) => m.metric === WORKOUT_HR_METRIC) ?? null;
+  const offerHeartRate =
+    enabled && (unasked.length > 0 || (hrLog !== null && hrLog.returned > 0 && hrLog.rows === 0));
 
   return (
     <Screen scroll>
@@ -357,6 +437,36 @@ export default function SettingsHealthScreen() {
                     )}
                     <Text className="font-label text-[14px] font-medium text-ink">
                       {busy === 'allowing' ? 'Asking…' : 'Allow publishing'}
+                    </Text>
+                  </Pressable>
+                </>
+              ) : null}
+
+              {/* The late-scope control (docs §15). Modelled on "Allow
+                  publishing" above, and rendered on the same principle: only
+                  while tapping it can actually change something. */}
+              {offerHeartRate ? (
+                <>
+                  <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
+                    ARC can read the heart rate recorded during a workout and show it on the
+                    session. It was added after you connected, so it has to be asked for on its own.
+                    If nothing appears, turn Heart Rate on under Settings → Privacy &amp; Security →
+                    Health → ARC, then tap this again.
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Read heart rate from Apple Health and re-read 90 days"
+                    accessibilityState={{ disabled: busy !== null }}
+                    disabled={busy !== null}
+                    onPress={() => void readHeartRate()}
+                    className="mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline py-3 active:bg-paper-dim">
+                    {busy === 'heartRate' ? (
+                      <ActivityIndicator size="small" color={palette.ink} />
+                    ) : (
+                      <Ionicons name="pulse-outline" size={16} color={palette.ink} />
+                    )}
+                    <Text className="font-label text-[14px] font-medium text-ink">
+                      {busy === 'heartRate' ? 'Syncing 90 days…' : 'Read heart rate (90 days)'}
                     </Text>
                   </Pressable>
                 </>

@@ -63,6 +63,28 @@ export type HealthDailyStatistic = {
   value: number;
 };
 
+/**
+ * A session's heart rate, as HealthKit computed it (docs §15).
+ *
+ * Both members or neither — an average with no maximum is half a reading, and a
+ * half reading printed in the owner's mono voice is a claim ARC would be making
+ * on its own. Integers, in bpm.
+ *
+ * `method` is a diagnostic, never rendered: both derivations are HealthKit's own
+ * time-weighted average and maximum over the writer's exported samples for the
+ * span, and they differ only in whether the writer ASSOCIATED those samples with
+ * the workout. Marking one on screen would claim a distinction the numbers do
+ * not have.
+ *
+ *   - `workout` — the HKWorkout's own statistic, what the Health app prints;
+ *   - `source`  — the same writer's samples over the span, floored (docs §15).
+ */
+export type WorkoutHr = {
+  avg: number;
+  max: number;
+  method: 'workout' | 'source';
+};
+
 /** One HKWorkout, flattened. */
 export type HealthWorkoutSample = {
   /** HealthKit's own object UUID — the dedup key. */
@@ -76,4 +98,23 @@ export type HealthWorkoutSample = {
   kcal: number | null;
   distanceKm: number | null;
   provenance: HealthProvenance;
+  /**
+   * Heart rate for this session, when either door answered. ABSENT, never
+   * nulled — `parseWorkoutSample` is pure and synchronous and never sets it;
+   * `collectWorkouts` spreads it in from the async probe.
+   */
+  hr?: WorkoutHr;
+};
+
+/**
+ * What ARC has ASKED Apple Health for — the `apple_health_scopes` KV.
+ *
+ * A record of ARC's own behaviour, NOT of grants: iOS never reveals whether a
+ * read was authorised. It exists so a scope added after the user answered the
+ * permission sheet can be asked for explicitly, from a control that knows it is
+ * not a no-op. See `unaskedReadScopes` in ./mapping.ts.
+ */
+export type HealthScopeStamp = {
+  /** Read identifiers a processed `requestAuthorization` call has covered. */
+  askedFor: string[];
 };

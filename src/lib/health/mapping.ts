@@ -32,6 +32,7 @@ import type {
   HealthDailyStatistic,
   HealthProvenance,
   HealthQuantitySample,
+  HealthScopeStamp,
   HealthWorkoutSample,
 } from './types';
 
@@ -637,6 +638,12 @@ export function workoutRows(workouts: HealthWorkoutSample[]): WearableUpsert[] {
         activity_type_raw: w.activityTypeRaw,
         kcal: w.kcal,
         distance_km: w.distanceKm,
+        // Spread, so an unanswered session carries NO `hr` key at all rather
+        // than one holding nulls or zeros. An absence is an absence — the same
+        // rule `statisticDailyRows` applies to a zero-value day — and both
+        // decoders (`decodeIngested`, `recentWearableWorkouts`) read named keys,
+        // so a missing key is simply "the watch said nothing about the heart".
+        ...(w.hr ? { hr: { avg: w.hr.avg, max: w.hr.max, method: w.hr.method } } : {}),
         hk: { source: w.provenance.sourceName },
       },
     }));
@@ -948,6 +955,16 @@ export function bodyIngestRows(
 
 // --- Scopes ---------------------------------------------------------------------------
 
+/**
+ * In-workout heart rate. Named rather than inlined because three places have to
+ * agree on it exactly — the read scope, the seam's two doors, and the audit row
+ * — and a typo in any one of them fails soft.
+ */
+export const HEART_RATE_IDENTIFIER = 'HKQuantityTypeIdentifierHeartRate';
+
+/** The unit both doors request. HeartRate's canonical HKUnit is `count/s`. */
+export const HEART_RATE_UNIT = 'count/min';
+
 /** Every HealthKit type ARC asks to read (docs/wearables-subapp.md §2). */
 export const HEALTH_READ_IDENTIFIERS: readonly string[] = [
   ...SAMPLE_METRICS.map((m) => m.hkIdentifier),
@@ -955,7 +972,43 @@ export const HEALTH_READ_IDENTIFIERS: readonly string[] = [
   ...BODY_INGEST_METRICS.map((m) => m.hkIdentifier),
   'HKCategoryTypeIdentifierSleepAnalysis',
   'HKWorkoutTypeIdentifier',
+  /**
+   * Claimed by the WORKOUT path alone (docs/wearables-subapp.md §15): the
+   * per-session average and maximum land in the workout row's `metadata.hr`,
+   * read through `WorkoutProxy.getStatistic` with a per-source fallback.
+   *
+   * **It must never join {@link SAMPLE_METRICS} or `STATISTIC_METRICS`.** A
+   * daily mean of all-day heart-rate samples is a number with no meaning — a
+   * rest day and a race day would produce the same kind of row — and it would
+   * sit one `metric_type` string away from `rhr`, which IS a baseline the
+   * Recovery pillar reads. db/health-mapping.test.mjs asserts that absence by
+   * name.
+   */
+  HEART_RATE_IDENTIFIER,
 ];
+
+/**
+ * Read scopes no permission request has covered yet — pure, so the Settings
+ * control's whole visibility rule is pinnable headlessly.
+ *
+ * It answers "has ARC ever ASKED for this?", never "was it granted": iOS does
+ * not reveal read grants (see `requestHealthPermissions`), so the stamp records
+ * ARC's own behaviour and nothing else. It exists because adding an identifier
+ * to the list above asks nobody anything on an install that has already
+ * answered the sheet — iOS presents it only for unanswered types — so a late
+ * scope needs an explicit control, and this is what decides whether to show one.
+ *
+ * A missing or unreadable stamp means "asked for nothing", which is the safe
+ * direction: the control appears, and tapping it is a harmless no-op on a
+ * device that really has answered everything.
+ */
+export function unaskedReadScopes(
+  stamp: HealthScopeStamp | null,
+  identifiers: readonly string[] = HEALTH_READ_IDENTIFIERS
+): string[] {
+  const asked = new Set(stamp?.askedFor ?? []);
+  return identifiers.filter((id) => !asked.has(id));
+}
 
 /**
  * Every HealthKit type ARC asks to WRITE (`toShare`; docs §10).
