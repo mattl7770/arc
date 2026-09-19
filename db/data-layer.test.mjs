@@ -168,6 +168,24 @@ console.log('4. setMissionStatus / toggle persist and stamp completed_at');
   rowT.completed_at === null
     ? ok('completed_at cleared when un-completing')
     : bad('completed_at cleared', rowT.completed_at);
+  // The undo the hero docblock asked for: a mis-tapped Skip is taken back by
+  // tapping the row, not by ticking the item you just declined and unticking it.
+  toggleMission(db, zone2.id);
+  listMission(db, TODAY).find((i) => i.id === zone2.id).status === 'completed'
+    ? ok('toggle flips pending -> completed')
+    : bad('toggle pending', listMission(db, TODAY).find((i) => i.id === zone2.id).status);
+  setMissionStatus(db, zone2.id, 'skipped');
+  toggleMission(db, zone2.id);
+  const afterUnskip = listMission(db, TODAY).find((i) => i.id === zone2.id);
+  afterUnskip.status === 'pending'
+    ? ok('toggle flips skipped -> pending (the undo, not a second decision)')
+    : bad('toggle skipped', afterUnskip.status);
+  // A partial row is progress, not a decision, so a tap still finishes it.
+  setMissionStatus(db, zone2.id, 'partial');
+  toggleMission(db, zone2.id);
+  listMission(db, TODAY).find((i) => i.id === zone2.id).status === 'completed'
+    ? ok('toggle still commits a partial row')
+    : bad('toggle partial', listMission(db, TODAY).find((i) => i.id === zone2.id).status);
   raw.close();
 }
 

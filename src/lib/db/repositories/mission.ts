@@ -307,13 +307,40 @@ function settleCarriedOriginal(db: Database, id: string, day: string | null): vo
   );
 }
 
-/** Flip a log entry between completed and pending (the row-tap gesture). */
+/**
+ * The row-tap gesture: `completed → pending`, **`skipped → pending`**, anything
+ * else → `completed`.
+ *
+ * ## Why a skip now toggles BACK rather than forward
+ *
+ * A skip used to move to `completed`, so a mis-tapped Skip on the hero was
+ * awkward to undo: you had to tick the very item you had just declined and then
+ * untick it to get back to undecided. The hero's own docblock named this fix
+ * rather than a third row of chrome (src/components/home/hero-card.tsx) —
+ * *"the fix is `toggleMission` — the undo — not a third row of chrome"*.
+ *
+ * So the gesture reads as **take back whatever was decided**: a row the user
+ * settled either way returns to undecided, and only an undecided row commits.
+ * Its one cost, recorded because it is real: completing a skipped item is two
+ * taps instead of one. That is the right price — deciding to do something you
+ * had already declined is rarer than taking back a mis-tap, and the two-tap path
+ * passes through the honest intermediate state instead of jumping between two
+ * opposite decisions.
+ *
+ * `partial` still commits on a tap: partial is progress, not a decision, so the
+ * obvious next move is to finish it. The item sheet's *Put back* is what returns
+ * a partial row to pending.
+ *
+ * A carried row's undo still reaches its original through
+ * {@link setMissionStatus} — this function only decides which status to ask for.
+ */
 export function toggleMission(db: Database, id: string): void {
   const row = db.get<{ status: LogEntryStatus }>('SELECT status FROM log_entries WHERE id = ?', [
     id,
   ]);
   if (!row) return;
-  setMissionStatus(db, id, row.status === 'completed' ? 'pending' : 'completed');
+  const settled = row.status === 'completed' || row.status === 'skipped';
+  setMissionStatus(db, id, settled ? 'pending' : 'completed');
 }
 
 /**
