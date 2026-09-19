@@ -50,6 +50,15 @@ type PickerModule = {
       creationTime?: number | null;
       width?: number;
       height?: number;
+      /**
+       * A picked MOVIE's length, in MILLISECONDS — `expo-image-picker`'s own
+       * unit (node_modules/expo-image-picker/build/ImagePicker.types.d.ts:297).
+       * Typed as loosely as `creationTime` above and for the same reason: no
+       * video has ever been picked in this codebase, so it is read defensively
+       * in {@link pickVideoAsset} and its absence is a normal answer the caller
+       * renders in words, never a crash.
+       */
+      duration?: number | null;
     }[];
   }>;
 };
@@ -437,6 +446,63 @@ export async function pickPhotoBase64(opts: DownscaleOptions = {}): Promise<Pick
       return { kind: 'photo', base64Jpeg: asset.base64, width: null, height: null };
     }
     return { kind: 'failed' };
+  } catch {
+    return { kind: 'failed' };
+  }
+}
+
+export type PickedVideo =
+  /**
+   * `durationMs` is null when the picker did not report one. That is not a
+   * detail the caller may shrug off: nothing can be SAMPLED without a length,
+   * so src/lib/media/video-frames.ts treats a null as `failed` rather than
+   * guessing a duration and sampling past the end of the file.
+   */
+  | { kind: 'video'; uri: string; durationMs: number | null }
+  | { kind: 'canceled' }
+  | { kind: 'unavailable' }
+  | { kind: 'failed' };
+
+/**
+ * Open the library for ONE movie and hand back its local URI and length — the
+ * door to the video-stills rung (docs/spikes/video-recipe-import-build.md §3.1).
+ *
+ * No decode happens here: this is the picker half, and the frames half is
+ * src/lib/media/video-frames.ts, which owns the native decoder. The split is
+ * deliberate — the picker is a module this binary already has, the decoder is
+ * one it may not, and a caller must be able to tell "you cancelled" from "this
+ * build cannot read a movie".
+ *
+ * `preferredAssetRepresentationMode: 'current'` hands over the file as STORED
+ * rather than an H.264 transcode of it (ImagePicker.types.d.ts:208-210, *"to
+ * avoid transcoding, if possible"*) — every supported iPhone decodes its own
+ * HEVC, and a file the decoder cannot open is a thrown thumbnail call, which is
+ * a variant, not a stall. Live Photos are a separate `MediaType` and are not
+ * requested.
+ *
+ * Never throws: every failure is a variant the caller renders in words.
+ */
+export async function pickVideoAsset(): Promise<PickedVideo> {
+  const picker = loadImagePicker();
+  if (!picker) return { kind: 'unavailable' };
+  try {
+    const result = await picker.launchImageLibraryAsync({
+      mediaTypes: ['videos'],
+      allowsEditing: false,
+      preferredAssetRepresentationMode: 'current',
+      quality: 1,
+      base64: false,
+    });
+    if (result.canceled) return { kind: 'canceled' };
+    const asset = result.assets?.[0];
+    if (!asset?.uri) return { kind: 'canceled' };
+    const duration = asset.duration;
+    return {
+      kind: 'video',
+      uri: asset.uri,
+      durationMs:
+        typeof duration === 'number' && Number.isFinite(duration) && duration > 0 ? duration : null,
+    };
   } catch {
     return { kind: 'failed' };
   }

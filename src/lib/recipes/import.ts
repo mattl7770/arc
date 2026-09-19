@@ -20,6 +20,11 @@
  */
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
+import type { CoachUsage } from '@/lib/ai/types';
+// Pure formatting only — the seam it comes from resolves nothing native at
+// import time, and the video rung's interval must read the same in the prompt
+// and on the review, so there is one definition of it rather than two.
+import { formatIntervalNumber } from '@/lib/media/video-frames';
 import { isPrivateHost } from '@/lib/net/safe-url';
 import {
   extractInstagramAuthor,
@@ -66,6 +71,22 @@ export type RecipeDraft = {
    * rule the review applies rather than one the pipeline pre-applied.
    */
   servings_estimate: ServingsEstimate | null;
+  /**
+   * How a video-stills draft was sampled, and what the turn cost — **review-time
+   * only**, and deliberately OPTIONAL so the four other construction sites and
+   * the render-suite fixture need no edit.
+   *
+   * Nothing here is written to the database. Provenance stays in the 0031
+   * `source_*` columns (0034's rule: no JSON side-channel beside them), and the
+   * cost is a disclosure on the screen where the user decides whether the draft
+   * was worth keeping — the caption every Coach reply already wears, on what is
+   * now the dearest turn in the app.
+   */
+  sampling?: {
+    stills: number;
+    everySeconds: number;
+    usage: CoachUsage | null;
+  };
 };
 
 // --- Errors: the honest tri-state + unavailability ----------------------------
@@ -439,7 +460,21 @@ export async function fetchRecipeSource(
 
 export type ExtractionInput =
   | { kind: 'text'; text: string; sourceNote?: string }
-  | { kind: 'photo'; base64Jpeg: string; mediaType: 'image/jpeg' };
+  | { kind: 'photo'; base64Jpeg: string; mediaType: 'image/jpeg' }
+  /**
+   * Stills sampled across a video the user picked from their library (rung 8).
+   * `caption` is whatever was in the paste field when the video was picked —
+   * prose already paid for on the text rung, carried along because a reel's
+   * caption and its frames are two halves of the same post.
+   */
+  | {
+      kind: 'frames';
+      framesBase64: string[];
+      caption: string | null;
+      stillCount: number;
+      durationS: number;
+      everySeconds: number;
+    };
 
 /**
  * The extraction system prompt. The load-bearing rule is ANTI-FABRICATION:
@@ -448,7 +483,7 @@ export type ExtractionInput =
  */
 export const RECIPE_EXTRACTION_SYSTEM_PROMPT = [
   'You extract a cooking recipe from text (a social-media caption, a video description, or',
-  'page text) or from an image (a screenshot of a recipe, a cookbook page), for a personal',
+  'page text) or from an image (a screenshot of a recipe, a cookbook page, or stills from a cooking video), for a personal',
   'recipe book. You are an extractor, NOT an author.',
   '',
   'Rules:',
@@ -470,6 +505,55 @@ export const RECIPE_EXTRACTION_SYSTEM_PROMPT = [
   'or {"found": false, "reason": string}.',
 ].join('\n');
 
+/**
+ * The extraction prompt's budget, in tokens under the house `/3.6` estimator.
+ *
+ * This prompt shipped with no ceiling at all and drifted un-watched until the
+ * video rung's clause was added to it (1,378 → 1,410 chars, 383 → 392 tok).
+ * 420 is ~7 % of headroom — the same deliberate band as the food-entry prompt's
+ * 500-over-469 and add-exercise's 600-over-~560. A ceiling nothing can reach
+ * guards nothing, so `db/recipe-import.test.mjs` §11 asserts a floor too.
+ */
+export const RECIPE_EXTRACTION_PROMPT_CEILING = 420;
+/** {@link buildVideoRail}'s own budget — paid ONLY by video imports. */
+export const VIDEO_RAIL_CEILING = 155;
+
+/**
+ * The rail that rides the video turn's USER message, not the system prompt.
+ *
+ * It is in the user turn on purpose: every caption import would otherwise pay
+ * ~146 tokens for a rule about videos it will never see. Here it is paid by the
+ * rung it governs.
+ *
+ * Four rules, each answering a way this rung fails:
+ * - **The audio was not heard.** The structural limit (spike §3c), stated so the
+ *   model leaves spoken amounts null rather than supplying plausible ones.
+ * - **Never name an ingredient from a container.** The labs rule (*never
+ *   fuzzy-match*, CLAUDE.md §7) applied to an unlabelled jar. Without it the
+ *   spike's own §6 predicted the result: *"a plausible ingredient list read off
+ *   the counter"* — inference dressed as extraction, which is the one thing
+ *   this pipeline exists to refuse.
+ * - **More than one recipe** → extract the first, name the rest in notes, where
+ *   the review draws them.
+ * - **A plate-only reel** → `found:false`. The feature working, not failing.
+ */
+export function buildVideoRail(input: {
+  stillCount: number;
+  durationS: number;
+  everySeconds: number;
+}): string {
+  const seconds = Math.max(1, Math.round(input.durationS));
+  return [
+    `These are ${input.stillCount} stills from a ${seconds}-second cooking video, about one every`,
+    `${formatIntervalNumber(input.everySeconds)} seconds. The audio was not heard: amounts, times and temperatures that were`,
+    'only spoken are not available — leave them null. Read on-screen text exactly. Name an',
+    'ingredient only when on-screen text names it or it is unmistakable on sight; never infer one',
+    'from a container, a colour or a technique. If the stills show more than one recipe, extract',
+    'the first and list the others in notes. If they show only a finished dish and no recipe,',
+    'answer found:false.',
+  ].join(' ');
+}
+
 type VisionBlock =
   | { type: 'text'; text: string }
   | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg'; data: string } };
@@ -486,6 +570,19 @@ export function buildRecipeExtractionRequest(input: ExtractionInput): {
       source: { type: 'base64', media_type: input.mediaType, data: input.base64Jpeg },
     });
     content.push({ type: 'text', text: 'Extract the recipe from this image.' });
+  } else if (input.kind === 'frames') {
+    // Each still is LABELLED and the labels come before their images, so the
+    // model can refer to an ordering it can see — the documented multi-image
+    // shape, and the reason "the card in image 3" is a sentence it can write in
+    // notes. Images before the rail: the vision docs put the pictures first.
+    input.framesBase64.forEach((data, index) => {
+      content.push({ type: 'text', text: `Image ${index + 1}:` });
+      content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } });
+    });
+    content.push({ type: 'text', text: buildVideoRail(input) });
+    if (input.caption !== null && input.caption.trim() !== '') {
+      content.push({ type: 'text', text: `Caption from the post:\n${input.caption.trim()}` });
+    }
   } else {
     content.push({
       type: 'text',
@@ -636,10 +733,20 @@ function loadStreamingFetch(): FetchLike | null {
   }
 }
 
+/**
+ * One extraction turn, and **what it cost**.
+ *
+ * `runCoachTurn` has always reported `usage`; this discarded it, which was free
+ * while every rung cost about a caption. The video rung sends ten images, so
+ * the turn is the dearest in the app and the review says what it billed — the
+ * same disclosure every Coach reply makes (src/lib/ai/cost.ts). `null` when the
+ * client reported nothing, never a zero: a fabricated zero is exactly the class
+ * of confident wrong number this codebase refuses everywhere else.
+ */
 async function runExtractionTurn(
   input: ExtractionInput,
   signal?: AbortSignal
-): Promise<ReturnType<typeof parseRecipeExtraction>> {
+): Promise<{ extracted: ReturnType<typeof parseRecipeExtraction>; usage: CoachUsage | null }> {
   const apiKey = apiKeyStore.get();
   const fetchImpl = loadStreamingFetch();
   if (!apiKey || !fetchImpl) throw new RecipeImportUnavailableError();
@@ -659,7 +766,10 @@ async function runExtractionTurn(
   if (result.stopReason === 'refusal') {
     throw new Error('The model declined to read this source.');
   }
-  return parseRecipeExtraction(text.length > 0 ? text : result.text);
+  return {
+    extracted: parseRecipeExtraction(text.length > 0 ? text : result.text),
+    usage: result.usage ?? null,
+  };
 }
 
 export type ImportInput =
@@ -672,7 +782,22 @@ export type ImportInput =
    * had the fetch worked.
    */
   | { kind: 'text'; text: string; sourceUrl?: string | null }
-  | { kind: 'photo'; base64Jpeg: string; sourceUrl?: string | null };
+  | { kind: 'photo'; base64Jpeg: string; sourceUrl?: string | null }
+  /**
+   * Stills off a video the user picked (rung 8). Everything but `sourceUrl` and
+   * `caption` comes from src/lib/media/video-frames.ts, which measured it — the
+   * counts and the interval are facts about what was READ, and the review
+   * prints them rather than the ones that were asked for.
+   */
+  | {
+      kind: 'frames';
+      framesBase64: string[];
+      caption: string | null;
+      stillCount: number;
+      durationS: number;
+      everySeconds: number;
+      sourceUrl?: string | null;
+    };
 
 /**
  * The whole pipeline for one input → a review-ready {@link RecipeDraft}.
@@ -689,7 +814,7 @@ export async function importRecipe(
   if (input.kind === 'url') {
     const source = await fetchRecipeSource(input.url, opts.fetchImpl, opts.signal);
     if (source.kind === 'jsonld') return source.draft;
-    const extracted = await runExtractionTurn(
+    const { extracted } = await runExtractionTurn(
       { kind: 'text', text: source.text, sourceNote: `a ${source.platform} post` },
       opts.signal
     );
@@ -704,7 +829,7 @@ export async function importRecipe(
     };
   }
   if (input.kind === 'text') {
-    const extracted = await runExtractionTurn({ kind: 'text', text: input.text }, opts.signal);
+    const { extracted } = await runExtractionTurn({ kind: 'text', text: input.text }, opts.signal);
     const from = recipeSourceFromUrl(input.sourceUrl);
     return {
       ...extracted,
@@ -719,7 +844,41 @@ export async function importRecipe(
       servings_estimate: estimateServings(extracted.title, extracted.ingredients),
     };
   }
-  const extracted = await runExtractionTurn(
+  if (input.kind === 'frames') {
+    const { extracted, usage } = await runExtractionTurn(
+      {
+        kind: 'frames',
+        framesBase64: input.framesBase64,
+        caption: input.caption,
+        stillCount: input.stillCount,
+        durationS: input.durationS,
+        everySeconds: input.everySeconds,
+      },
+      opts.signal
+    );
+    const from = recipeSourceFromUrl(input.sourceUrl);
+    return {
+      ...extracted,
+      source_url: from?.source_url ?? null,
+      source_platform: from?.source_platform ?? null,
+      // Nothing was fetched and a cache-file frame is not an https URL
+      // (src/lib/recipes/source.ts), so both stay null — the photo rung's own
+      // rule. No frame is stored either: `photo_file_name` is the cook's own
+      // photograph, and a creator's still behind that label would be the app
+      // claiming a provenance it has no column to qualify.
+      source_author: null,
+      source_image_url: null,
+      deterministic: false,
+      servings_estimate: estimateServings(extracted.title, extracted.ingredients),
+      sampling: {
+        stills: input.stillCount,
+        everySeconds: input.everySeconds,
+        usage,
+      },
+    };
+  }
+
+  const { extracted } = await runExtractionTurn(
     { kind: 'photo', base64Jpeg: input.base64Jpeg, mediaType: 'image/jpeg' },
     opts.signal
   );

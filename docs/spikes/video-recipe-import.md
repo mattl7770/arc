@@ -1,6 +1,6 @@
 # Spike — recipe import from a caption-less video (backlog D1)
 
-**Date:** 2026-09-14 · **Branch:** `claude/d1-video-spike` · **Status:** feasibility answer, no code written. **The build plan that answers it is `docs/spikes/video-recipe-import-build.md`** (2026-09-15, still unbuilt) — this file stays as the feasibility reasoning.
+**Date:** 2026-09-14 · **Branch:** `claude/d1-video-spike` · **Status:** feasibility answer — **ANSWERED AND BUILT.** The build plan that implements it is **`docs/spikes/video-recipe-import-build.md`, BUILT 2026-09-19** (`claude/video`); read its §8 for what actually shipped, the measured token figures and the four departures. This file stays as the feasibility reasoning, and its §5 "Files touched" table is now history rather than a plan — the build chose `expo-video-thumbnails` alone (§2's first row) over `expo-video`, kept `app.json` unwidened, and needed no migration. **The verdict's core condition still holds and always will: this recovers what is WRITTEN on the screen, never what is said** (§3c).
 **Question (owner, `docs/backlog-2026-09.md` D1):** *"Some recipe import apps are able to figure out a recipe just from the video, with no captions. I want to see if that is feasible to implement and implement if so."*
 
 ---

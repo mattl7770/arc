@@ -26,14 +26,38 @@ import {
   parseYield,
 } from '../src/lib/recipes/extract.ts';
 import {
+  buildRecipeExtractionRequest,
+  buildVideoRail,
   fetchRecipeSource,
+  importRecipe,
   instagramShortcode,
   NoRecipeFoundError,
   normalizeSourceUrl,
   parseRecipeExtraction,
+  RECIPE_EXTRACTION_PROMPT_CEILING,
+  RECIPE_EXTRACTION_SYSTEM_PROMPT,
   RecipeFetchError,
+  RecipeImportUnavailableError,
   recipeSourceFromUrl,
+  VIDEO_RAIL_CEILING,
 } from '../src/lib/recipes/import.ts';
+import { unheardAmountCount } from '../src/lib/recipes/ingredients.ts';
+import { videoOutcomeMessage } from '../src/lib/recipes/video-outcome.ts';
+import { longEdgeResize } from '../src/lib/media/photo-library.ts';
+import {
+  FRAME_BASE64_CAP,
+  FRAME_EDGE,
+  formatInterval,
+  formatIntervalNumber,
+  frameCountFor,
+  frameOverCap,
+  framesOutcome,
+  frameTimesSeconds,
+  intervalSeconds,
+  isVideoImportAvailable,
+  pickVideoFrames,
+} from '../src/lib/media/video-frames.ts';
+import { buildCoachSystemPrompt } from '../src/lib/ai/system-prompt.ts';
 import {
   classifyRecipe,
   estimateServings,
@@ -990,6 +1014,324 @@ function fakeFetch(routes) {
     servingsForReview(jsonldDraft.servings, jsonldDraft.servings_estimate).value,
     4
   );
+}
+
+// --- 12. D1: the video-stills rung (rung 8) -----------------------------------
+
+/**
+ * docs/spikes/video-recipe-import-build.md §3.9, ten groups.
+ *
+ * Nothing here calls a model, opens a picker or decodes anything: the native
+ * decoder is absent under Node, which is itself one of the assertions. What IS
+ * pinned is every rule that decides what gets sent and what the user is told —
+ * the sampling arithmetic, the request's block order, the rail's wording, the
+ * two token ceilings, the parser's treatment of a missing amount, and the prose
+ * for each way the rung can decline.
+ */
+{
+  console.log('12. D1 — recipe import from a video’s stills');
+
+  const proseTok = (s) => Math.round(s.length / 3.6);
+
+  // 12.1 Sampling — how many stills, at what times, and the gap ACTUALLY got.
+  console.log('   12.1 sampling');
+  frameCountFor(15) === 4 && frameCountFor(45) === 10 && frameCountFor(180) === 10
+    ? ok('frameCountFor: 15 s → 4 · 45 s → 10 · 3 min → 10 (adaptive under a cap)')
+    : bad('frameCountFor', `${frameCountFor(15)}/${frameCountFor(45)}/${frameCountFor(180)}`);
+
+  const times45 = frameTimesSeconds(45, 10);
+  times45.length === 10 &&
+  times45[0] === 0.5 &&
+  Math.abs(times45[9] - 44.5) < 1e-9 &&
+  times45.every((t) => t >= 0 && t <= 45)
+    ? ok('frameTimesSeconds(45, 10): 0.5 … 44.5, every time inside the clip')
+    : bad('frameTimesSeconds(45,10)', JSON.stringify(times45));
+  frameTimesSeconds(0.4, 4).length === 0
+    ? ok('…and a clip under MIN_DURATION_S yields no times at all (that is a screenshot)')
+    : bad('short clip sampled', JSON.stringify(frameTimesSeconds(0.4, 4)));
+
+  // Ten of ten: the reported interval IS the sampler's own gap.
+  Math.abs(intervalSeconds(times45) - (times45[1] - times45[0])) < 1e-9 &&
+  formatInterval(intervalSeconds(times45)) === '4.9 s'
+    ? ok('intervalSeconds over all ten equals the gap between consecutive times → "4.9 s"')
+    : bad('interval (full)', formatInterval(intervalSeconds(times45)));
+
+  // Two frames dropped from the MIDDLE of that same reel. The asked-for gap was
+  // still 4.9 s; the achieved one is 6.3 s, and printing 4.9 here would be the
+  // app claiming a density it did not reach — the whole reason this is measured.
+  const survivors = times45.filter((_, i) => i !== 3 && i !== 6);
+  survivors.length === 8 &&
+  Math.abs(intervalSeconds(survivors) - (times45[9] - times45[0]) / 7) < 1e-9 &&
+  formatInterval(intervalSeconds(survivors)) === '6.3 s'
+    ? ok('…and with two dropped it is the TRUE mean gap → "6.3 s", never "4.9 s"')
+    : bad('interval (8 survivors)', formatInterval(intervalSeconds(survivors)));
+  formatInterval(20) === '20 s' && formatIntervalNumber(4.888) === '4.9'
+    ? ok('formatInterval: one decimal under ten seconds, whole seconds above')
+    : bad('formatInterval', `${formatInterval(20)} / ${formatIntervalNumber(4.888)}`);
+
+  // The cap binds — both times. A frame the single re-encode cannot bring under
+  // it is DROPPED, and the still count falls with it.
+  frameOverCap('x'.repeat(FRAME_BASE64_CAP + 1)) && !frameOverCap('x'.repeat(FRAME_BASE64_CAP))
+    ? ok(`the payload cap binds at exactly ${FRAME_BASE64_CAP} base64 chars`)
+    : bad('frameOverCap');
+  {
+    const dropped = framesOutcome(['a', 'b', 'c'], [survivors[0], survivors[1], survivors[2]], 45);
+    dropped.kind === 'frames' && dropped.stillCount === 3
+      ? ok('…and stillCount reports what survived, not what was asked for')
+      : bad('stillCount after drops', JSON.stringify(dropped));
+    framesOutcome(['only-one'], [0.5], 45).kind === 'no-frames'
+      ? ok('one survivor is no-frames — a single still is the screenshot rung’s job')
+      : bad('single survivor');
+    framesOutcome([], [], 45).kind === 'no-frames'
+      ? ok('…and none at all is no-frames too')
+      : bad('zero survivors');
+  }
+
+  // 12.2 The request's shape: 2N + 1 blocks, images before the rail.
+  console.log('   12.2 request shape');
+  const framesInput = (n, caption = null) => ({
+    kind: 'frames',
+    framesBase64: Array.from({ length: n }, (_, i) => `BASE64_${i + 1}`),
+    caption,
+    stillCount: n,
+    durationS: 45,
+    everySeconds: 44 / 9,
+  });
+  {
+    const req = buildRecipeExtractionRequest(framesInput(10));
+    const blocks = req.messages[0].content;
+    const labelled = blocks
+      .slice(0, 20)
+      .every((b, i) =>
+        i % 2 === 0
+          ? b.type === 'text' && b.text === `Image ${i / 2 + 1}:`
+          : b.type === 'image' && b.source.data === `BASE64_${(i + 1) / 2}`
+      );
+    blocks.length === 21 && labelled && blocks[20].type === 'text'
+      ? ok('10 frames, no caption → exactly 2N+1 blocks: "Image i:" then image, then the rail')
+      : bad('frames block shape', `${blocks.length} blocks`);
+    const rail = blocks[20].text;
+    rail.includes('10 stills') && rail.includes('45-second') && rail.includes('every 4.9 seconds')
+      ? ok('…and the rail names the count, the duration and the measured interval')
+      : bad('rail substitution', rail.slice(0, 90));
+
+    const withCaption = buildRecipeExtractionRequest(
+      framesInput(4, 'Best miso butter pasta 🍝 full recipe below')
+    ).messages[0].content;
+    withCaption.length === 10 &&
+    withCaption[9].type === 'text' &&
+    withCaption[9].text.startsWith('Caption from the post:') &&
+    withCaption[9].text.includes('miso butter pasta')
+      ? ok('4 frames WITH a caption → 2N+2 blocks, the caption last')
+      : bad('captioned block shape', `${withCaption.length} blocks`);
+    // A caption that is only whitespace is not a caption.
+    buildRecipeExtractionRequest(framesInput(4, '   ')).messages[0].content.length === 9
+      ? ok('…and a blank caption adds no block')
+      : bad('blank caption added a block');
+
+    const textReq = buildRecipeExtractionRequest({ kind: 'text', text: 'x' });
+    const photoReq = buildRecipeExtractionRequest({
+      kind: 'photo',
+      base64Jpeg: 'x',
+      mediaType: 'image/jpeg',
+    });
+    req.system === textReq.system && req.system === photoReq.system
+      ? ok('the system prompt is byte-identical across text, photo and frames')
+      : bad('system prompt drifted between rungs');
+  }
+
+  // 12.3 What the rail actually says. Each clause answers a documented failure.
+  console.log('   12.3 the rail’s wording');
+  {
+    const rail = buildVideoRail({ stillCount: 10, durationS: 45, everySeconds: 44 / 9 });
+    const says = (needle, why) =>
+      rail.toLowerCase().includes(needle.toLowerCase()) ? ok(why) : bad(why, needle);
+    says('audio was not heard', 'the rail states the audio was not heard');
+    says('leave them null', '…so a spoken amount is left null rather than supplied');
+    says(
+      'never infer one from a container',
+      '…and an ingredient is never named from a jar (the labs no-fuzzy-match rule)'
+    );
+    says('more than one recipe', '…a multi-recipe reel extracts the first and notes the rest');
+    says('found:false', '…and a plate-only video answers found:false');
+  }
+
+  // 12.4 The two ceilings — with floors, because a ceiling nothing reaches
+  //      guards nothing (the nutrition-v2 vacuity guard, verbatim).
+  console.log('   12.4 the prompt ceilings');
+  {
+    const promptTokens = proseTok(RECIPE_EXTRACTION_SYSTEM_PROMPT);
+    promptTokens < RECIPE_EXTRACTION_PROMPT_CEILING &&
+    promptTokens > RECIPE_EXTRACTION_PROMPT_CEILING * 0.6
+      ? ok(
+          `the extraction prompt fits its (new) ceiling — ~${promptTokens} tok < ${RECIPE_EXTRACTION_PROMPT_CEILING}`
+        )
+      : bad('extraction prompt budget', String(promptTokens));
+    const railTokens = proseTok(
+      buildVideoRail({ stillCount: 10, durationS: 45, everySeconds: 44 / 9 })
+    );
+    railTokens < VIDEO_RAIL_CEILING && railTokens > VIDEO_RAIL_CEILING * 0.6
+      ? ok(`the video rail fits its own ceiling — ~${railTokens} tok < ${VIDEO_RAIL_CEILING}`)
+      : bad('video rail budget', String(railTokens));
+    !buildCoachSystemPrompt().includes(RECIPE_EXTRACTION_SYSTEM_PROMPT) &&
+    !buildCoachSystemPrompt().includes(
+      buildVideoRail({ stillCount: 10, durationS: 45, everySeconds: 44 / 9 })
+    )
+      ? ok('…and neither has leaked into the Coach’s cached prefix')
+      : bad('a recipe prompt leaked into the Coach prefix');
+  }
+
+  // 12.5 Parsing a frames reply, and counting what the video could not hear.
+  console.log('   12.5 the frames reply');
+  try {
+    parseRecipeExtraction('{"found": false, "reason": "These stills show a finished plate only."}');
+    bad('plate-only found:false throws');
+  } catch (e) {
+    e instanceof NoRecipeFoundError && e.message.includes('finished plate')
+      ? ok('a plate-only reel → NoRecipeFoundError carrying the model’s own reason')
+      : bad('plate-only', String(e));
+  }
+  {
+    // The narrated reel: names read off the screen, amounts only ever spoken.
+    const narrated = parseRecipeExtraction(
+      '{"found": true, "title": "Miso Butter Pasta",' +
+        ' "ingredients": [{"raw": "miso paste", "qty": null, "unit": null, "name": "miso paste"},' +
+        ' {"raw": "soy sauce, to taste", "qty": null, "unit": null, "name": "soy sauce"}],' +
+        ' "steps": ["Melt the butter.", "Whisk in the miso."]}'
+    );
+    narrated.ingredients.length === 2 && narrated.ingredients.every((i) => i.qty === null)
+      ? ok('a narrated reel’s lines keep qty null — never a plausible amount')
+      : bad('narrated nulls', JSON.stringify(narrated.ingredients));
+    unheardAmountCount(narrated.ingredients) === 2
+      ? ok('…and unheardAmountCount counts both, which is what puts the caveat on the review')
+      : bad('unheardAmountCount (narrated)', String(unheardAmountCount(narrated.ingredients)));
+
+    // The overlay card: the model gave null, but its own raw line carries the
+    // number it read off the screen — so the backfill wins and nothing is
+    // flagged. A caveat over a line that visibly says "2 tbsp" would be a lie.
+    const carded = parseRecipeExtraction(
+      '{"found": true, "title": "Miso Butter Pasta",' +
+        ' "ingredients": [{"raw": "2 tbsp miso", "qty": null, "unit": null, "name": "miso"}],' +
+        ' "steps": ["Whisk."]}'
+    );
+    carded.ingredients[0].qty === 2
+      ? ok('a raw line reading "2 tbsp miso" parses to qty 2 even when the model sent null')
+      : bad('backfill', JSON.stringify(carded.ingredients[0]));
+    unheardAmountCount(carded.ingredients) === 0
+      ? ok('…so it is NOT counted as unheard, and no caveat is drawn over it')
+      : bad('unheardAmountCount (carded)', String(unheardAmountCount(carded.ingredients)));
+  }
+
+  // The frames rung fetches NOTHING. It cannot run headless (no key, no
+  // streaming fetch), so what is pinned is that it fails for that reason and
+  // touches the network zero times on the way.
+  {
+    let fetches = 0;
+    const counting = async () => {
+      fetches++;
+      return { ok: true, status: 200, text: async () => '' };
+    };
+    let thrown = null;
+    try {
+      await importRecipe(
+        {
+          kind: 'frames',
+          framesBase64: ['A', 'B'],
+          caption: null,
+          stillCount: 2,
+          durationS: 20,
+          everySeconds: 9.5,
+          sourceUrl: 'https://www.instagram.com/reel/DHOQJh3udh9/',
+        },
+        { fetchImpl: counting }
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    thrown instanceof RecipeImportUnavailableError && fetches === 0
+      ? ok('the frames rung never fetches — with no key it is unavailable, and the network is idle')
+      : bad('frames rung fetched or threw wrong', `${fetches} fetches, ${String(thrown)}`);
+  }
+
+  // 12.6 Share routing is untouched by this build (owner question 2 = (c)):
+  //      §8 above still asserts the video branch AND that app.json admits no
+  //      movie. Nothing is re-asserted here; the point is that nothing moved.
+
+  // 12.7 The seam under Node — the current-binary state, and the honest degrade.
+  console.log('   12.7 the decoder is absent here, and says so');
+  {
+    const outcome = await pickVideoFrames();
+    !isVideoImportAvailable() && outcome.kind === 'unavailable'
+      ? ok('without expo-video-thumbnails the seam reports unavailable and opens no picker')
+      : bad('seam under node', JSON.stringify(outcome));
+  }
+
+  // 12.8 The arithmetic that makes 768 the right number.
+  console.log('   12.8 what a still actually bills');
+  {
+    const patches = (w, h) => Math.ceil(w / 28) * Math.ceil(h / 28);
+    const shape = (w, h, edge) => {
+      const r = longEdgeResize(w, h, edge);
+      return r.height != null
+        ? { w: Math.round((w / h) * edge), h: edge }
+        : { w: edge, h: Math.round((h / w) * edge) };
+    };
+    JSON.stringify(longEdgeResize(1080, 1920, FRAME_EDGE)) === JSON.stringify({ height: 768 })
+      ? ok('a 9:16 frame is bounded by HEIGHT at 768 — the long edge, not the width')
+      : bad('longEdgeResize on a reel frame');
+    const reel = shape(1080, 1920, FRAME_EDGE);
+    patches(reel.w, reel.h) === 448
+      ? ok('…so 432×768 bills 448 visual tokens; ten of them ≈ 4.5k in')
+      : bad('9:16 patches', String(patches(reel.w, reel.h)));
+    const wide = shape(1920, 1080, FRAME_EDGE);
+    patches(wide.w, wide.h) === 448
+      ? ok('a 16:9 still bills the same 448 — the rule is orientation-blind')
+      : bad('16:9 patches', String(patches(wide.w, wide.h)));
+    const fourThree = shape(1200, 1600, FRAME_EDGE);
+    patches(fourThree.w, fourThree.h) === 588
+      ? ok('a 4:3 still bills 588')
+      : bad('4:3 patches', String(patches(fourThree.w, fourThree.h)));
+  }
+
+  // 12.10 Every way the rung declines, and the words for it.
+  console.log('   12.10 the degrade paths');
+  {
+    const rows = [
+      [{ kind: 'unavailable' }, 'next app build'],
+      [{ kind: 'failed' }, 'Couldn’t read that video'],
+      [{ kind: 'no-frames' }, 'Couldn’t read that video'],
+      [{ kind: 'too-long', durationS: 750 }, '12:30'],
+      [{ kind: 'too-long', durationS: 330 }, '5:30'],
+    ];
+    for (const [outcome, needle] of rows) {
+      const got = videoOutcomeMessage(outcome);
+      got && got.suggestPaste === true && got.message.includes(needle)
+        ? ok(
+            `${outcome.kind}${outcome.durationS ? ` (${outcome.durationS}s)` : ''} → "${needle}", and the paste/screenshot rungs are offered`
+          )
+        : bad(`videoOutcomeMessage ${outcome.kind}`, JSON.stringify(got));
+    }
+    // Every message names BOTH rungs that still work — a dead end that only
+    // says no is the failure this whole ladder exists to avoid.
+    rows.every(([outcome]) => {
+      const m = videoOutcomeMessage(outcome).message;
+      return /screenshot/i.test(m) && /caption/i.test(m);
+    })
+      ? ok('…and every one of them names the screenshot and caption rungs')
+      : bad('a video failure message named no way forward');
+    videoOutcomeMessage({ kind: 'canceled' }) === null
+      ? ok('a cancel maps to null — it is not an error and it is not a message')
+      : bad('cancel produced prose');
+    videoOutcomeMessage({
+      kind: 'frames',
+      framesBase64: [],
+      stillCount: 0,
+      durationS: 0,
+      everySeconds: 0,
+    }) === null
+      ? ok('…and so does a success, which the caller handles itself')
+      : bad('frames produced prose');
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

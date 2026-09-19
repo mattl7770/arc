@@ -186,6 +186,25 @@ export function parseIngredientLine(raw: string): ParsedIngredient {
   return { qty: lead.qty, unit, name: cleanName(afterUnit) };
 }
 
+/**
+ * How many of these lines carry NO amount at all.
+ *
+ * Written for the video-stills rung, where a blank quantity is the expected
+ * shape rather than a defect: the cook said "a tablespoon of miso" and ARC did
+ * not hear it, so the line has a name and no number. The review counts them to
+ * decide whether to explain itself, and recounts as the user types — so filling
+ * the last blank in takes the sentence away.
+ *
+ * It reads the OVERLAY, which is the only honest place to read it. The model's
+ * own null is not preserved as such: `parseRecipeExtraction` backfills a null
+ * from the raw line, so `{"raw":"2 tbsp miso","qty":null}` arrives as `qty: 2`
+ * and is correctly not counted — the raw line is the model's reading of the
+ * screen, and a number in it is a number it claims it saw.
+ */
+export function unheardAmountCount(lines: { qty?: number | null }[]): number {
+  return lines.filter((l) => l.qty == null).length;
+}
+
 /** Scale a parsed quantity. Trivial on purpose — it exists so scaling always
  * routes through one place the tests pin. */
 export function scaleQty(qty: number, factor: number): number {

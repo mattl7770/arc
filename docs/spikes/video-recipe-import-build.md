@@ -1,5 +1,16 @@
 # D1 — Video recipe import: the build plan
 
+**Status: BUILT 2026-09-19**, on `claude/video`, to this plan's third draft with the owner's five
+answers applied — **1(a)** up to 10 stills at 768 px · **2(c)** library pick only, the share rule and
+its test untouched · **3(a)** no picture kept, *which is why there is no migration* · **4(a)**
+`expo-video-thumbnails` alone · **5(a)** the cost on the review. Phase 0 and the code of Phase 1 are
+done; **Phase 1's EAS build is the owner's and has not run**, so the rung is device-inert and says so
+in words. Phase 2 (the device pass, §6) and Phase 3 (dropped by 3(a)) are open. What was measured,
+and where the build departed from the text, is in **§8 at the foot of this file**.
+
+<details>
+<summary>The plan as it stood when it was approved (third draft, 2026-09-15)</summary>
+
 **Status: PLAN, third draft** (2026-09-15). Not built. The second draft went to an independent critic
 and came back *needs-revision*; every finding is answered in place, and where this draft keeps its
 ground it says so in a *Considered and rejected* note. The feasibility answer is
@@ -598,3 +609,83 @@ field either way; this is about the second mono line under the eyebrow (§3.6).
   makes, on the dearest turn.
 - (b) Stills and interval only — `10 stills · about 1 per 4.9 s`; no cost figure on a recipe screen.
 - (c) Neither; the `≈ from video` eyebrow and the blank-amounts sentence are enough.
+
+</details>
+
+---
+
+## 8. What was built, measured, and where it departed (2026-09-19)
+
+### The five answers, as landed
+
+| Q | Answer | Where it lives |
+| --- | --- | --- |
+| 1 | (a) ≤ 10 stills at 768 px | `FRAME_EDGE = 768`, `FRAME_COUNT_CAP = 10` (`src/lib/media/video-frames.ts`) |
+| 2 | (c) Library pick only | `app.json` untouched; `db/recipe-import.test.mjs` §8 stands verbatim, including the assertion that the activation rule admits **no** movie |
+| 3 | (a) No picture kept | **No migration.** `photo_file_name` stays the cook's own photograph; nothing was added to `recipes` |
+| 4 | (a) One decoder | `expo-video-thumbnails` only. `expo-video` is not installed and the §3.2 opt-in branch was not written |
+| 5 | (a) The cost on the review | The mono line under the eyebrow, `usageCaption(...)` verbatim as its tail |
+
+### The package, and the build it forces
+
+**`expo-video-thumbnails@57.0.2`** (`~57.0.2` in `package.json`), resolved by `npx expo install`
+against the SDK 57 bundle. Its surface is exactly what §3.2 assumed:
+`getThumbnailAsync(uri, { time /* ms */, quality })` → `{ uri, width, height }` — a plain file URI
+with its own dimensions, which feeds `downscaleJpeg(uri, { maxEdge, source })` unchanged, so the long
+edge is chosen in ONE pass and never guessed-then-corrected.
+
+**It forces an EAS rebuild before the feature can run on the device, and the JS degrades honestly
+until then.** `expo export --platform ios` passes with it — which is the point of installing it in
+the same commit as the code: a guarded `require()` of a package absent from `node_modules` is a Metro
+**resolve** failure at bundle time, not a runtime throw, so the merge gate would have broken. On the
+owner's current binary `loadVideoThumbnails()` returns null, the seam answers `unavailable`, and the
+screen prints *"Video import needs the next app build. Share a screenshot of the ingredient list, or
+paste the caption."* — with both working rungs one tap below it.
+
+### The numbers, measured rather than predicted
+
+| | Before | After | Ceiling | Air |
+| --- | --- | --- | --- | --- |
+| `RECIPE_EXTRACTION_SYSTEM_PROMPT` | 1,378 chars / **383 tok** (no ceiling at all) | 1,410 chars / **392 tok** | `RECIPE_EXTRACTION_PROMPT_CEILING = 420` | ~7 % |
+| The video rail (10 · 45 s · 4.9 s) | — | 527 chars / **146 tok** | `VIDEO_RAIL_CEILING = 155` | ~6 % |
+
+Both are asserted with a **floor** as well as a ceiling (`> ceiling × 0.6`, the `nutrition-v2`
+vacuity guard), and both are asserted not to appear inside `buildCoachSystemPrompt()`. Every figure
+is the plan's own prediction, unchanged.
+
+### Departures from the text — four, all small
+
+1. **`videoOutcomeMessage` derives the ceiling from the constant.** The plan's prose spelled it
+   (*"ARC reads up to five minutes"*); the code prints `${MAX_DURATION_S / 60} minutes` → *"up to 5
+   minutes"*. A sentence that states a limit must not be able to outlive the limit — the same lesson
+   as the *"needs the next app build"* caveat that went stale in `recipe-import.tsx`.
+2. **A picker cancel clears a stale spinner.** §3.8 says a cancel leaves `input`, which assumed the
+   screen was in `input` when the control was tapped — but the control renders during `working` too,
+   and the video tap supersedes whatever was in flight. So a cancel now does exactly nothing *unless*
+   the phase is `working`, in which case it returns to `input` rather than leaving a spinner turning
+   over an aborted import.
+3. **`frameOverCap` and `framesOutcome` are exported as pure functions.** §3.9's rules *"one survivor
+   is `no-frames`"* and *"a frame still over the cap is dropped and `stillCount` falls"* live inside
+   a loop that no headless runtime can enter, because the decoder is absent there. Splitting the two
+   decisions out of the I/O is what makes them assertions instead of comments; the seam calls both.
+4. **The cost caption reads `600 out`, not `0.6k out`.** `compactTokens` only switches to `k` at
+   1,000, so the plan's illustrative string was a touch optimistic. The rendered line is
+   `10 stills · about 1 per 4.9 s · 5.0k in · 600 out · ~$0.02`.
+
+Everything else landed as written, including the `Image i:`-before-image block order (2N + 1, or
+2N + 2 with a caption), the survivor-measured interval (*"8 stills · about 1 per 6.3 s"*, never
+"4.9"), the cache `finally` cleanup, the `busyRef` re-entrancy guard, the adopted `AbortController`,
+and the review's three changes.
+
+### Tests
+
+`db/recipe-import.test.mjs` §12 (46 assertions across nine of the plan's ten groups; group 6 is the
+share routing, which is §8 above and was deliberately left untouched) and `db/screens-render.test.mjs`
+§19 (22 assertions over `ReviewDraft` with and without `sampling`, plus the no-key sentence). Suite
+totals after: **recipe-import 173 passed, screens-render 796 passed, 56 suites, 0 failed.**
+
+### Still open
+
+Everything in §6 — nobody has seen a picked video asset, a `duration`, a `getThumbnailAsync` call or
+a real reel's extraction. §6.6 is closed by answer 2(c). Question 4's `expo-video` opt-in stays
+unbuilt unless the device pass finds the per-frame decodes too slow.
