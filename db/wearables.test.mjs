@@ -1843,7 +1843,10 @@ console.log('22. in-workout heart rate through the store (D3b, docs §15 — no 
   const iso = (hhmm) => `${DAY}T${hhmm}:00.000Z`;
 
   /** One ingested session, optionally carrying a heart-rate figure. */
-  const ingest = (db, { uuid, hr = null, kcal = 610, device = 'garmin', from = '17:00', to = '18:00' }) =>
+  const ingest = (
+    db,
+    { uuid, hr = null, kcal = 610, device = 'garmin', from = '17:00', to = '18:00' }
+  ) =>
     upsertWearableRows(db, [
       {
         date: DAY,
@@ -2013,7 +2016,9 @@ console.log('22. in-workout heart rate through the store (D3b, docs §15 — no 
     const paired = pairedIngestFor(db, workoutId);
     const [listed] = recentWearableWorkouts(db, 5);
     paired?.avgHr === null && listed.avgHr === 142
-      ? ok('a link made to a phone row is not revisited — the list shows the watch, the pair the phone')
+      ? ok(
+          'a link made to a phone row is not revisited — the list shows the watch, the pair the phone'
+        )
       : bad('link-to-loser edge changed', JSON.stringify({ paired, listed }));
   }
 }

@@ -512,8 +512,31 @@ inbox with nothing in it is not a record standing empty, it is a permanent "noth
 panel on the hub of a phone with no watch.
 
 A paired session shows **once**: the Train hub's Recent-sessions row prints what the watch
-measured (`Garmin · 612 kcal · 8.4 km`) on its own line under what the owner typed, and the
-Data tab marks its copy *logged in ARC* rather than presenting a second workout.
+measured (`Garmin · 612 kcal · 8.4 km · avg 142 · max 171 bpm`) on its own line under what the
+owner typed, and the Data tab marks its copy *logged in ARC* rather than presenting a second
+workout.
+
+**Heart rate joined that line on 2026-09-19** (D3b — the spec is
+`docs/wearables-subapp.md` §18). Three things about it belong here, because they are facts
+about these screens rather than about the HealthKit seam:
+
+- **The session editor finally renders its pair.** `workout-live` has loaded
+  `WorkoutDetail.ingested` since `0054` and never drawn it. It now prints the same string as
+  one mono line under the header while `editing` — this is the screen where the owner asks
+  *"how hard was that actually"*, and the answer was one join away. The seeded *filling-in*
+  line is untouched: it identifies the session, which is a different job.
+- **`ingestDetail` returns two strings now.** It takes `{ spoken: true }` and yields *"average
+  heart rate 142, peak 171 beats per minute"*. The hub's row interpolates the watch line into
+  its `accessibilityLabel`, and whatever that label says VoiceOver speaks — `avg 142 · max 171
+  bpm` read aloud is a string of tokens rather than a measurement. Both the hub and the editor
+  compute the display form and the spoken form separately; one variable feeding both was the
+  bug waiting to happen.
+- **No signal colour, and no verdict.** The clause is mono and muted like the rest of the
+  line. The design firewall marks biological *state*, and a bare 142 has none: what it means
+  depends on the load in that session, which ARC does not hold. Nothing on the training side
+  interprets it — no zones, no freshness input, no volume input (§11.3's second firewall still
+  holds: an ingested session has no sets, and an intensity multiplier would be a second model
+  of the same hour).
 
 ### 11.5 Tests
 
@@ -532,8 +555,11 @@ freshness moves.
 - **Whether `Core training` belongs in *blank* rather than *inferred*.** "Abs, primary" is
   tempting; a session coded Core training on a Garmin is frequently a whole circuit.
 - **The 14-day blank horizon**, against a real backfill on a real device.
-- **Avg/max HR**, deferred: it needs a new read scope, a `METRIC_COVERAGE` row and a
-  per-session sample query, and the owner's call was to ship pairing first.
+- **Avg/max HR** — no longer deferred; built 2026-09-19 as D3b
+  (`docs/wearables-subapp.md` §18). What a device still settles on *these* screens: whether
+  `avg 142 · max 171 bpm` reads as one line under a session title at 10 pt mono on the hub,
+  how the spoken form sounds in VoiceOver, and — the question under all of it — whether Garmin
+  Connect writes in-workout heart rate to Apple Health at all.
 
 ## 12. Phase 8 — the away-gym bit (C13, 2026-09-14)
 

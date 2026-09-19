@@ -783,9 +783,7 @@ function TrainTodayCard({
           empty saved workout has none of. Empty is AUTHORED, never blank (§5),
           and the authored version says what would fix it. */}
       <Text className="mt-3.5 font-serif text-[14px] leading-6 text-ink-secondary">
-        {emptyRoutine
-          ? 'No exercises in this saved workout yet.'
-          : recommendation.why}
+        {emptyRoutine ? 'No exercises in this saved workout yet.' : recommendation.why}
       </Text>
 
       {/* Two doors into a session: the engine's pick, or a blank sheet. The

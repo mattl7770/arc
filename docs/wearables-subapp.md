@@ -92,6 +92,7 @@ Requested lazily — only when the user flips Settings › Apple Health on, neve
 | `HKQuantityTypeIdentifierVO2Max` | Fitness marker (project-status "Exercise as measured data") |
 | `HKQuantityTypeIdentifierDietaryWater` | **Hydration — IN only (§15).** A wrist tap, the Health app, or any hydration app already on the phone |
 | `HKWorkoutTypeIdentifier` | Sessions from other apps/devices |
+| `HKQuantityTypeIdentifierHeartRate` | **The WORKOUT path only (§18).** A session's own avg/max, into that workout row's `metadata.hr` — **never** a daily bucket |
 | `HKQuantityTypeIdentifierBodyMass` | **Body — two-way (§11).** A smart scale's weight |
 | `HKQuantityTypeIdentifierBodyFatPercentage` | **Body — two-way (§11).** Scale body-fat estimate |
 | `HKQuantityTypeIdentifierWaistCircumference` | **Body — two-way (§11).** Tape measure, from anywhere |
@@ -108,6 +109,15 @@ only says *should we show the sheet* (`shouldRequest`) or *the user has already 
 after enabling it says "Connected — if data looks missing, check Settings → Privacy →
 Health → ARC", and empty states everywhere read "no data or no access", never "denied".
 Re-requesting is a safe no-op for already-answered types, so enable can always re-request.
+
+⚠️ **The corollary that bites once per late scope.** Because iOS presents the sheet only for
+types the user has *not* answered, **adding a row to this table asks nobody anything on an
+install that already connected.** The new scope is requested, granted nothing, and reads empty
+forever — indistinguishable from a source that does not write it. So a scope added after the
+fact needs an explicit control, and ARC needs to know which scopes an ask has covered: the
+`apple_health_scopes` KV key holds `{ askedFor }`, stamped after every processed request, and
+`unaskedReadScopes` is the pure rule the Settings control keys off (§18.2). The stamp records
+that ARC **asked**, never that anything was granted — that stays unknowable.
 
 ## 3. Mapping — HealthKit → `wearable_data`
 
@@ -1081,13 +1091,13 @@ in a blank) replaces an automatic one: an assertion outranks an inference.
 - **The Train hub** shows what the watch measured beside what the owner typed, and asks about
   strength-coded sessions it refuses to guess at (`docs/exercise-subapp.md` §11).
 
-### 17.5 HR is deferred, and it is the one thing that is not free
+### 17.5 HR was deferred — it landed as D3b (§18)
 
 kcal, distance, duration and activity are already stored by `workoutRows`. Avg/max HR *during*
-a workout is not: it needs `HKQuantityTypeIdentifierHeartRate` added to the read scopes, a row
-in `METRIC_COVERAGE` (its tripwire refuses a scope with no audit row, §12) and a per-session
-sample query over the span. The owner's call was **ship pairing now, add HR once pairing is
-observed working on device**.
+a workout was not: it needed `HKQuantityTypeIdentifierHeartRate` added to the read scopes, a
+row in `METRIC_COVERAGE` (its tripwire refuses a scope with no audit row, §12) and a
+per-session query over the span. The owner's call was **ship pairing now, add HR once pairing
+is observed working on device**. Built 2026-09-19 — **§18**.
 
 ### 17.6 Tests
 
@@ -1101,3 +1111,278 @@ double-count goes from 100 minutes to 40; the wearables list marks rather than h
 CASCADEs behave; a hand link replaces an automatic one and records no overlap.
 `db/coach-tools.test.mjs` §38 pins the same defect at the tool boundary, across both tools and
 the snapshot.
+
+---
+
+## 18. Heart rate during a workout (D3b, 2026-09-19, **no migration**)
+
+The second half of D3, and the plan is `docs/spikes/ingested-workout-heart-rate.md`. The
+figure lives in the workout row's `metadata` JSON — free-form since `0021` — so there is no
+table, no migration and no native module. One read scope, two `WorkoutProxy` methods and one
+module method already present in `@kingstinct/react-native-healthkit@14.0.2`.
+
+**The owner answered all five of the plan's questions (a).** Neither Home pillar moves; no
+zones; shown on the Train hub, in the session editor, on the Data › Wearables row and in the
+Coach's training summary; the intraday curve is not stored; door 1 unfloored, door 2 floored.
+
+### 18.1 Which figure, and in what order
+
+Per ingested workout, stopping at the first that yields a number:
+
+1. **The workout's own statistic** — `WorkoutProxy.getStatistic(HeartRate, 'count/min')`. What
+   the Health app prints under the session, hence first, and **unfloored**: it is the writer's
+   own association, and the Health app does not floor it either. `method: 'workout'`.
+2. **The source's own samples over the span** — `queryStatisticsForQuantitySeparateBySource`
+   with `discreteAverage` / `discreteMax` over `[startDate, endDate]`, then the response
+   belonging to the workout's own writer picked by `bundleIdentifier` in JS. The same exported
+   samples without the association. `method: 'source'`, **floored** (§18.3).
+3. **Nothing.** No key is written and the line prints no heart rate. An absence is an absence,
+   not a zero — the rule `statisticDailyRows` already applies to a zero-value day.
+
+`pickSourceStatistic` is the load-bearing half of door 2 and is pinned against a
+**mixed-source fixture**. Door 2's query is a *date-only* predicate, so a phone in the owner's
+pocket and a second wearable are both in the response set; a Garmin session showing an average
+dragged toward resting by the phone would be wrong in a way no screen could show.
+
+`strictStartDate` is deliberately omitted. `readDailyCumulative` passes it so a sample
+straddling midnight is summed into one day; a heart-rate sample is a *point*, so overlap and
+strict coincide — and for an interval sample, overlap admits one that began just before the
+workout (negligible in a time-weighted hour) where strict would drop every session's first
+reading.
+
+**Door 3** (`filter.workout` as a sample query) is door 1's constraint with a longer round
+trip and can never return more than door 1 averaged. Not taken.
+
+### 18.2 Where it lives, and what it is not
+
+```
+metadata: { activity, activity_type_raw, kcal, distance_km,
+            hr: { avg: 142, max: 171, method: 'workout' | 'source' }, hk: { source } }
+```
+
+Integers, bpm. **`hr` absent means "not available"** — never null members, never zeros, and no
+`samples` field, because neither door reports a count and the floor gates whether the key is
+written at all. It is spread in, so a `null` cannot reach the CHECK-validated JSON; a test
+asserts that on the *serialised* string. Both decoders — `decodeIngested` and the inline parse
+in `recentWearableWorkouts` — read it through one shared `readWorkoutHr`, because two readings
+of "a usable figure" would agree right up until one of them was tuned.
+
+**`HKQuantityTypeIdentifierHeartRate` must never enter `SAMPLE_METRICS` or
+`STATISTIC_METRICS`.** A daily mean of all-day heart-rate samples is a number with no meaning
+— a rest day and a race day produce the same kind of row — and it would sit one `metric_type`
+string away from `rhr`, which *is* a baseline the Recovery pillar reads. The scope is claimed
+by the workout path alone, the ingest-path assertion names it, and a test asserts that a store
+full of figures still makes `wearableMetricInventory` list no heart-rate metric.
+
+**Columns on `workouts` were rejected** — that breaks `0054`'s nothing-copied rule — and so
+were **per-workout `wearable_data` rows**, which would put a per-session figure into a
+per-(day, device) model built for day aggregates. `hk.source` already lives in this same JSON:
+it is the established carrier.
+
+### 18.3 The floor, said plainly
+
+**At least six of the span's first 48 samples must be the writer's own**, or door 2's figure is
+withheld. One bounded `queryQuantitySamples` per unanswered session, with
+`sources: [proxy.sourceRevision.source]` and a JS post-filter on the bundle id.
+
+The post-filter is the control, not the predicate: `ios/PredicateHelpers.swift` returns nil for
+the whole `sources` clause if the `SourceProxy` cast fails, which collapses the query to
+date-only. The post-filter still holds, and a second writer would then have to contribute 43
+of the first 48 samples to withhold a figure — the conservative direction, a blank rather than
+somebody else's number.
+
+Door 2's figure is one **ARC derives**, not one the writer asserted, which is the whole reason
+it is floored: `avg 142` from four samples of a sparse export is a claim ARC would be making in
+the owner's own mono voice, and a blank line is honest. Door 1 stays unfloored for the mirror
+of that reason.
+
+### 18.4 Which sessions, each pass
+
+**Door 1 runs for every workout in the window, every pass, with no skip set** — deliberately:
+it is how a revised association lands, and the upsert's `CHANGED` guard stays the arbiter of
+whether anything is actually written. **Door 2 runs only where door 1 answered nothing and the
+stored row has no `hr`**, from one `json_extract(metadata, '$.hr') IS NOT NULL` query
+(`workoutUuidsWithHr`). **No cap:** steady state is the 14-day window, so at most two bounded
+queries per unanswered session in a fortnight. A session door 2 found nothing for is re-probed
+each pass while it is in the window — how a late Connect export lands — and frozen when it
+leaves.
+
+**The re-read matters as much as the ask.** The steady-state window is a fortnight, the 90-day
+backfill runs only on a first sync, and `get_training_summary` looks back 28 days. Without a
+one-time 90-day pass most of the history every heart-rate surface feeds would stay blank
+however the sheet was answered, so the Settings control passes `syncHealthData` a `windowDays`
+override. An override rather than clearing `firstSyncedAt`, whose re-stamp is conditional on a
+pass having written something precisely so a denied permission cannot burn the backfill.
+
+### 18.5 The error posture, and the one failure worth reading
+
+`readWorkouts`'s parse loop had **no try/catch of its own**, and a throw there left the
+function entirely — which `syncHealthData` awaits *before* the upsert, the cursor and the log,
+so the pass's rows were discarded and Settings kept the previous log. Adding a per-session
+native call to that loop without a guard would have made that silent total failure reachable
+for the first time. The loop is now `collectWorkouts(items, probe)`: a rejecting probe costs
+that session its `hr` key and nothing else, and the first error text is kept for the log. The
+probe is *injected*, so the whole posture is testable with no native module present — the
+`ownWriteExclusions` precedent.
+
+**The real failure mode is the loud one.** With a unit override supplied, `getUnitToUse` has
+exactly two outcomes: the override, or a rejected promise. So a wrong override string rejects
+`getStatistic` for *every* workout — door 1 dead for the whole feature — while the
+`getAllStatistics` diagnostic, which supplies no override and cannot fail on units, keeps
+happily reporting *associated: HeartRate*. Only the log row's error text tells that apart from
+"Garmin is silent", which is why §18.11 says to read it first.
+
+### 18.6 The sync log's `workout_hr` row
+
+One `HealthMetricLog` row: `metric: 'workout_hr'`, `returned` = workouts examined this pass,
+`rows` = workouts that produced a figure, `exclusion: 'none'` (statistics carry no own-write
+exclusion), `error` = the first probe error, and a new optional `detail` —
+*"associated: HeartRate, ActiveEnergyBurned · by workout 0 · by source 12"*, from
+`getAllStatistics` on the newest workout only, identifier **names** and never its
+preferred-unit values.
+
+`parseSyncLog` re-derives every field and drops unknown ones, so `detail` reaches the screen
+only because the parser learned it. `metricNote` gains a `workout_hr` branch **ahead of the
+generic ones**, because the generic error branch fires only when `returned === 0` and this
+row's error arrives with `returned > 0`: every workout *was* read; the heart-rate call inside
+the loop is what was refused. The branch reads, in order, a non-null error, then the
+declined-grant sentence at `returned > 0 && rows === 0`, then the detail — and falls through to
+"Nothing recorded in this window." on a phone that has never recorded a workout.
+
+### 18.7 The ask, and exactly when the control shows
+
+Settings › Apple Health renders **Read heart rate (90 days)** while `enabled` **and either**
+something is unasked **or** the last `workout_hr` row reads `returned > 0 && rows === 0`.
+
+Honestly stated: on a **fresh install** `enable` stamps every scope and the control never
+appears; on an **existing install** it appears once and iOS presents a sheet for Heart Rate
+alone. It **stays visible after an ask that produced nothing**, because that is the one state
+in which tapping again can change something — if the sheet was declined iOS will not
+re-present it, and the only recovery is **Settings › Privacy & Security › Health › ARC › Heart
+Rate**, which the row's note says. It disappears once a figure lands.
+
+Not folded into `syncHealthData`: that runs on every foreground, so the sheet would appear over
+whatever screen the owner had returned to. The house precedent for a late scope is a control
+rendered only while it applies (`allowPublishing`).
+
+**A phone with no watch.** Then the scope is asked once, the control shows once and never
+again, the `workout_hr` row reads `0 → 0` with the existing *"Nothing recorded in this
+window."*, the coverage row reads *Unverified*, and no line on any screen changes — the
+footprint the `workout` row has had on such a device since `0021`.
+
+### 18.8 What it feeds, and what it must not
+
+**Feeds.** The Train hub's watch line (`Garmin · 612 kcal · 8.4 km · avg 142 · max 171 bpm`),
+the session editor — which had loaded `stored.ingested` since `0054` and never rendered it —
+the Data › Wearables row, and `get_training_summary` on both `recentSessions` (through the
+0054 link, `w.id` selected as a join key and never emitted) and `ingestedSessions`. Omitted
+rather than nulled, on the rule already applied to `away` and `setMetres`.
+
+**Two strings, not one.** `ingestDetail` gains a `{ spoken: true }` variant — *"average heart
+rate 142, peak 171 beats per minute"* — because whatever an `accessibilityLabel` says,
+VoiceOver speaks, and `avg 142 · max 171 bpm` read aloud is a string of tokens rather than a
+measurement. The Train hub and the editor each compute both.
+
+**The two derivations are shown identically, on purpose.** Both are HealthKit's own
+time-weighted average and maximum over the writer's *exported* samples for the span; door 1
+differs only in that the writer associated them. A `max` below the watch face is therefore
+Connect's export cadence, not which door answered, and applies to both equally — marking one
+*"from samples"* would claim a distinction the numbers do not have. `method` stays in metadata
+as a diagnostic and is never rendered.
+
+**No signal colour.** The firewall marks biological *state*, and a bare 142 has no verdict:
+what it means depends on the load, which ARC does not hold.
+
+**Must not feed.** *Strain* — the owner moved that pillar off wearables onto ARC's logged
+volume; a heart-rate input would be a third instrument under `max()` and a wearable derivation
+re-entering the pillar. *Recovery* — argued, not waved off: it is one-legged on a Garmin (no
+HRV at all), and in-workout heart rate is the one new cardiac signal a Garmin might deliver.
+Not taken for a reason stronger than "not resting": **heart rate at a moment of training is a
+function of the load at that moment**, and ARC holds no load control — no pace, no power, no
+grade. A session average 8 bpm above the last four could be fatigue, illness, heat, or a
+harder run; 8 bpm *below* could be fitness or parasympathetic suppression. The sign is
+ambiguous without the load, so a deterministic corroboration in `deriveReadiness` would be a
+clinical rule hardcoded from a confounded signal. The Coach, holding the session list *and*
+the RHR baseline, can say *"your easy runs ran 8 bpm high this week at the same pace"* and
+qualify it. The honest corroborator would be heart-rate *recovery* after exercise — another
+unverified Garmin row for another day. `db/readiness.test.mjs` §11 asserts the non-effect.
+
+*Freshness, volume, pairing* — nothing. `ingestedMuscleLoads` doses by duration and role
+weight, and an intensity multiplier is a second model of the same hour, which the D3 spike
+rejected; volume reads `workout_sets`; pairing is span overlap, one definition.
+
+**No zones, and no sentence in a tool description.** Zone minutes need a threshold ARC does not
+hold, and a per-session *average* says almost nothing about time in zone — fifty minutes
+averaging 142 could be forty at 135 and ten at 170. The Coach interprets the numbers against
+the owner's age and resting-HR baseline; the turn context carries that age only when
+`users.date_of_birth` is set and otherwise says *"profile not filled in"*, so the model knows
+to ask. That is the house rule (judgment in the model) rather than a description sentence
+pre-empting it. Coach cost is therefore **payload only**: the schema budget is unchanged at
+~9,236 of 9,250. If a transcript ever shows `max` being misread as resting, one sentence is
+the fix and it is affordable.
+
+### 18.9 The coverage row, and the boundary
+
+`METRIC_COVERAGE` gains *Heart rate during workouts*, `garmin: 'unverified'`,
+`verdictDays: null`. Unverified is **not a soft no**: nothing in this repository establishes
+that Garmin Connect writes in-workout heart-rate samples to Apple Health at all, at what
+cadence, or whether it associates them. The note ends with the sentence that matters most —
+*"A blank can also mean the read grant was declined — iOS never tells ARC. Check Settings ›
+Privacy & Security › Health › ARC › Heart Rate before reading a zero as a Garmin fact."*
+
+**The boundary, said plainly.** After the re-read, a session with no clause is either both
+doors empty or older than 90 days when the scope landed; a session entering the store *after*
+the re-read is re-probed for fourteen days and then frozen.
+
+**`0053`, `0055` and the day boundary are all moot.** The figure is keyed to a workout, not a
+day. `0053`'s timezone days withdraw votes from *baselines*, and this figure enters none;
+`0055`'s away bit governs load *comparison* on `workouts`, and the ingested row is compared to
+nothing. Neither reads the new key.
+
+**The link-to-loser edge is documented, not fixed.** `0054` never revisits a link, so a
+session paired to a phone row before the watch's copy arrived keeps reading the phone's — the
+Data tab's duplicate collapse shows the watch's. Heart rate simply inherits that.
+`db/wearables.test.mjs` §22 pins it as a statement of current behaviour.
+
+### 18.10 Tests
+
+`db/health-mapping.test.mjs` §16–22 — the statistics parser and its unit branch, door 2's
+selector against a mixed-source fixture, the floor as the query delivers it, the loop's error
+posture, `metadata.hr` present/absent on the serialised JSON, THE invariant,
+`unaskedReadScopes`, and the log row's `detail` and note. `db/health-coverage.test.mjs` §5 —
+the audit row. `db/wearables.test.mjs` §22 — the skip set, the `CHANGED` guard, the metric
+inventory, both decoders, the absence, the link-to-loser edge. `db/coach-tools.test.mjs` §43 —
+both payload lists, the omitted field, the id kept out, and no heart-rate sentence in the
+description. `db/readiness.test.mjs` §11 — the non-effect on Home. `db/screens-render.test.mjs`
+— the Settings fixture's `workout_hr` row and its sentence.
+
+### 18.11 What only a device can settle
+
+Every item presupposes the next EAS build — the owner's phone has never run `0054`'s pairing
+and cannot run this.
+
+- **Step 0.** iOS Settings › Privacy & Security › Health › ARC — confirm *Heart Rate* is on,
+  and only then read the `workout_hr` row. A `31 → 0` before that check is not a fact about
+  Garmin.
+- **Whether Garmin Connect writes in-workout heart rate to Apple Health at all**, and at what
+  cadence. One workout: Health › Heart › Heart Rate, filter to Garmin, look at the hour; then
+  tap *Read heart rate (90 days)* and read the row.
+- **If the row shows an error, read the error text before concluding anything about Connect.**
+  A rejected `getStatistic` on every workout produces `rows 0` while the detail line still says
+  *associated: HeartRate*: door 1 is wrong, not Garmin silent. Confirm iOS 16 or later — both
+  statistics methods are gated `if #available(iOS 16.0, *)` and return nothing below it, so an
+  empty door 1 there says nothing about Connect either.
+- **Whether door 1 ever answers for a Garmin workout** — the detail line's *associated:* list.
+  If everything arrives *by source*, door 1 stays for a future Apple Watch.
+- **The real session count, and door 1's cost.** `SELECT count(*) FROM wearable_data WHERE
+  metric_type = 'workout' AND date >= date('now','-90 days')` — the re-read costs about twice
+  that in round trips, and it is the figure any future cap argument starts from.
+- **Whether `sources: [proxy.sourceRevision.source]` survives the cast** (confirmation only —
+  the JS post-filter is the control), and **how far the source-derived `max` sits below the
+  watch face's**: cadence in another form, applying to both doors.
+- **The two rows and the control.** Whether `avg 142 · max 171 bpm` reads as one line under a
+  session title at 10 pt mono on the Train hub; whether the Wearables right column, now three
+  lines deep, still sits cleanly in its `min-h-[44px]` row; how the spoken form sounds in
+  VoiceOver; and whether *Read heart rate (90 days)* appears where it should — the headless
+  render cannot see it, because under node the connected plate takes the "Rides the next build"
+  branch (its visibility *rule* is pinned pure instead).

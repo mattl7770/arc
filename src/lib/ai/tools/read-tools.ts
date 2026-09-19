@@ -1106,26 +1106,25 @@ const getTrainingSummary: CoachTool = {
     const weeks = days / 7;
 
     // Movements rather than a name — see the note in get_today_snapshot.
-    const recent = db
-      .all<{
-        id: string;
-        date: string;
-        movements: string | null;
-        kind: string;
-        duration_min: number | null;
-        set_seconds: number | null;
-        set_metres: number | null;
-        away: 0 | 1;
-      }>(
-        // The two roll-ups are B1's (0046): a session whose sets carry a clock
-        // and a distance has content the movement names alone cannot report —
-        // "Treadmill Run" says nothing about whether it was 3 km or 15. Summed
-        // over the session's working sets, which is what "how far did I run on
-        // Tuesday" means when a run is logged as intervals.
-        // `w.id` is selected but never emitted: it is the join key for the
-        // ingest link (0054), read for the whole page in one statement below
-        // rather than the N+1 this layer refuses.
-        `SELECT w.id, w.date, w.kind, w.duration_min, w.away,
+    const recent = db.all<{
+      id: string;
+      date: string;
+      movements: string | null;
+      kind: string;
+      duration_min: number | null;
+      set_seconds: number | null;
+      set_metres: number | null;
+      away: 0 | 1;
+    }>(
+      // The two roll-ups are B1's (0046): a session whose sets carry a clock
+      // and a distance has content the movement names alone cannot report —
+      // "Treadmill Run" says nothing about whether it was 3 km or 15. Summed
+      // over the session's working sets, which is what "how far did I run on
+      // Tuesday" means when a run is logged as intervals.
+      // `w.id` is selected but never emitted: it is the join key for the
+      // ingest link (0054), read for the whole page in one statement below
+      // rather than the N+1 this layer refuses.
+      `SELECT w.id, w.date, w.kind, w.duration_min, w.away,
                 (SELECT group_concat(DISTINCT s.exercise) FROM workout_sets s
                   WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS movements,
                 (SELECT sum(s.duration_sec) FROM workout_sets s
@@ -1134,8 +1133,8 @@ const getTrainingSummary: CoachTool = {
                   WHERE s.workout_id = w.id AND s.set_type != 'warmup') AS set_metres
          FROM workouts w
          WHERE w.date >= ? ORDER BY w.date DESC, w.created_at DESC LIMIT 10`,
-        [since]
-      );
+      [since]
+    );
     // The watch's record of these same sessions, one statement for the page.
     const pairs = pairedIngestForMany(
       db,
@@ -1221,9 +1220,7 @@ const getTrainingSummary: CoachTool = {
               source: deviceLabel(s.sourceDevice),
               ...(s.kcal != null ? { kcal: Math.round(s.kcal) } : {}),
               ...(s.distanceKm != null ? { km: round1(s.distanceKm) } : {}),
-              ...(s.avgHr != null && s.maxHr != null
-                ? { hr: { avg: s.avgHr, max: s.maxHr } }
-                : {}),
+              ...(s.avgHr != null && s.maxHr != null ? { hr: { avg: s.avgHr, max: s.maxHr } } : {}),
             })),
             ingestedNote:
               'Apple Health sessions with no ARC log — already EXCLUDED from totals and ' +

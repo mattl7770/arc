@@ -39,7 +39,10 @@ console.log('1. the tripwire — the audit covers exactly the read scopes');
     : bad('audit rows for types ARC does not read', stale.join(', '));
   METRIC_COVERAGE.length === HEALTH_READ_IDENTIFIERS.length
     ? ok(`one row per scope (${METRIC_COVERAGE.length})`)
-    : bad('row count', `${METRIC_COVERAGE.length} rows vs ${HEALTH_READ_IDENTIFIERS.length} scopes`);
+    : bad(
+        'row count',
+        `${METRIC_COVERAGE.length} rows vs ${HEALTH_READ_IDENTIFIERS.length} scopes`
+      );
 
   const ids = METRIC_COVERAGE.map((m) => m.hkIdentifier);
   new Set(ids).size === ids.length ? ok('no duplicate rows') : bad('duplicate identifiers');

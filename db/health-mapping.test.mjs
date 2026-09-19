@@ -1677,7 +1677,10 @@ console.log('16. heart-rate statistics parsing — Quantity objects, and both-or
     maximumQuantity: q(2.85, 'count/s'),
   })?.avg === 142
     ? ok('count/s is converted rather than stored sixty times too small')
-    : bad('count/s', JSON.stringify(parseWorkoutHrStatistic({ averageQuantity: q(2.37, 'count/s') })));
+    : bad(
+        'count/s',
+        JSON.stringify(parseWorkoutHrStatistic({ averageQuantity: q(2.37, 'count/s') }))
+      );
 
   parseWorkoutHrStatistic({ averageQuantity: q(142, 'kcal'), maximumQuantity: q(171, 'kcal') }) ===
   null
@@ -1792,7 +1795,9 @@ console.log('19. the probe can never sink the pass (the loop’s error posture)'
   // BEFORE the upsert, the cursor and the log. Adding a per-session native call
   // without a guard would have made that silent total failure reachable.
   const rejecting = await collectWorkouts([proxy('a', 'com.garmin.connect.mobile')], async () => {
-    throw new Error('Unit count/min is incompatible with quantityType HKQuantityTypeIdentifierHeartRate');
+    throw new Error(
+      'Unit count/min is incompatible with quantityType HKQuantityTypeIdentifierHeartRate'
+    );
   });
   rejecting.samples.length === 1 && rejecting.samples[0].hr === undefined
     ? ok('a rejecting probe costs that session its hr key and nothing else — the row still lands')
@@ -1811,7 +1816,9 @@ console.log('19. the probe can never sink the pass (the loop’s error posture)'
   const bySource = await collectWorkouts(
     [proxy('a', 'com.garmin.connect.mobile'), proxy('b', 'com.garmin.connect.mobile')],
     async (_raw, sample) =>
-      sample.uuid === 'a' ? { avg: 142, max: 171, method: 'source' } : { avg: 130, max: 150, method: 'source' }
+      sample.uuid === 'a'
+        ? { avg: 142, max: 171, method: 'source' }
+        : { avg: 130, max: 150, method: 'source' }
   );
   bySource.samples.every((s) => s.hr?.method === 'source')
     ? ok('door 1 dead and door 2 answering yields source figures only')

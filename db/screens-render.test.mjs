@@ -1281,10 +1281,7 @@ const db = getDb();
       'No exercises yet.',
       'Add exercise',
     ]);
-    refute('routine-edit (new)', newRoutine, [
-      'movements this routine runs',
-      'routine',
-    ]);
+    refute('routine-edit (new)', newRoutine, ['movements this routine runs', 'routine']);
 
     // -----------------------------------------------------------------------
     // The Resume card (0045, owner 2026-09-14). The hub is where the app lands
