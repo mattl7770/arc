@@ -91,17 +91,45 @@ export function fmtAmount(amount: number, unit: AmountUnit, volume: VolumeUnit =
 }
 
 /**
- * "2 × 1 egg (100 g)" · "1 × 1 can (330 ml)" · "1 × 1 cup" · "150 g" — the
- * honest portion label. A serving count only reads with its serving's name, so
- * an item whose catalog food is gone (food_serving_name NULL) falls back to the
- * bare amount.
+ * "2 × 1 egg" · "3 × slice" · "2.7 × slice" — a count and the thing it counts,
+ * in ONE place (0059).
+ *
+ * Lifted out of {@link portionLabel}, which has always built these two tokens,
+ * so the review sheet's sub-line, the logged row's sub-line and the revision
+ * request's header tail cannot drift from each other. `fmtQty` rounds to one
+ * decimal, which is why a third of eight slices prints the honest `2.7 × slice`
+ * rather than a `3` the parts do not add up to.
+ */
+export function countLabel(qty: number, noun: string): string {
+  return `${fmtQty(qty)} × ${noun}`;
+}
+
+/**
+ * "2 × 1 egg (100 g)" · "3 × slice (270 g)" · "1 × 1 can (330 ml)" · "150 g" —
+ * the honest portion label. A count only reads with the name of what it counts,
+ * so an item whose catalog food is gone (food_serving_name NULL) falls back to
+ * the bare amount.
+ *
+ * **Two sources for that name, and they never mix** (0059). A composite HEADER
+ * names its own piece in `piece_name` — it has no `food_id`, so the live serving
+ * join can never reach it — and a catalog item keeps naming the FOOD's serving
+ * through that join, so correcting a serving name still reaches rows already
+ * logged. `piece_name` wins where both somehow exist, because a row that has one
+ * is a header and a header's `food_serving_name` is NULL by construction.
+ *
+ * A counted header whose parts are in MIXED UNITS has no honest amount to print
+ * (0058 invariant 5), and this already prints the bare `3 × slice` for it —
+ * which is then the only whole-dish figure the row has.
  */
 export function portionLabel(
-  item: Pick<MealItemWithServing, 'amount' | 'unit' | 'serving_qty' | 'food_serving_name'>,
+  item: Pick<MealItemWithServing, 'amount' | 'unit' | 'serving_qty' | 'food_serving_name'> & {
+    piece_name?: string | null;
+  },
   volume: VolumeUnit = 'ml'
 ): string | null {
-  if (item.serving_qty != null && item.food_serving_name != null) {
-    const base = `${fmtQty(item.serving_qty)} × ${item.food_serving_name}`;
+  const noun = item.piece_name ?? item.food_serving_name;
+  if (item.serving_qty != null && noun != null) {
+    const base = countLabel(item.serving_qty, noun);
     return item.amount != null ? `${base} (${fmtAmount(item.amount, item.unit, volume)})` : base;
   }
   if (item.amount != null) return fmtAmount(item.amount, item.unit, volume);

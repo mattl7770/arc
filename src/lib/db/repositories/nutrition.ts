@@ -202,11 +202,22 @@ function insertMealItem(
   // them at read time" — they are never written, so a query that forgets the
   // is_composite filter under-counts by zero instead of doubling the pizza.
   const header = parentItemId === null && isCompositeInput(item);
+  // A header MAY carry a COUNT of what it is (0059): `serving_qty` and the noun
+  // it counts. That is a fact about the whole dish, not a number that sums, so
+  // invariant 2 does not reach it — no sum anywhere reads `serving_qty`, and the
+  // only two non-display readers inner-join on `food_id`, which a header lacks.
+  //
+  // The pair is written only WHOLE. A noun with no count names nothing, so
+  // `piece_name` rides on a non-null `serving_qty`; on a part or a plain item it
+  // is always NULL, whose count names the catalog food's serving through the
+  // live join instead. The two vocabularies never share a column.
+  const count = item.serving_qty ?? null;
+  const pieceName = header && count != null ? (item.piece_name ?? null) : null;
   db.run(
     `INSERT INTO meal_items (id, meal_id, food_id, name, amount, unit, serving_qty,
        kcal, protein_g, carbs_g, fat_g, fiber_g, confidence, micros,
-       parent_item_id, is_composite)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       parent_item_id, is_composite, piece_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       mealId,
@@ -221,7 +232,7 @@ function insertMealItem(
       // Absent unit is grams (0047) — every item logged before that column
       // existed was grams, and so is every caller that never states one.
       item.unit ?? 'g',
-      header ? null : (item.serving_qty ?? null),
+      count,
       header ? null : (item.kcal ?? null),
       header ? null : (item.protein_g ?? null),
       header ? null : (item.carbs_g ?? null),
@@ -231,6 +242,7 @@ function insertMealItem(
       header ? null : (item.micros ?? null),
       parentItemId,
       header ? 1 : 0,
+      pieceName,
     ]
   );
   if (header) {
@@ -455,6 +467,12 @@ export function removeMealItem(db: Database, itemId: string): void {
  * stop being the record. So a part corrected by hand first (the pepperoni taken
  * off half) is halved from the corrected number, which is the owner's own
  * answer to this question.
+ *
+ * **The COUNT moves with the parts (0059).** A count is a fact about the whole
+ * dish, so whatever scales the whole scales it: half of six slices is three, and
+ * a third of eight is the honest 2.7. The correspondence the count declares —
+ * "the parts, as they stand, are N pieces" — is preserved by scaling both, which
+ * is exactly what keeps `kcal ÷ serving_qty` constant across any run of chips.
  */
 export function scaleCompositeItem(db: Database, parentItemId: string, factor: number): void {
   if (!Number.isFinite(factor) || factor <= 0) {
@@ -473,8 +491,10 @@ export function scaleCompositeItem(db: Database, parentItemId: string, factor: n
     for (const c of components) {
       const s = (v: number | null): number | null => (v == null ? null : v * factor);
       db.run(
-        `UPDATE meal_items SET amount = ?, serving_qty = NULL, kcal = ?, protein_g = ?,
-           carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?
+        // `piece_name = NULL` beside `serving_qty = NULL`: a part never carries
+        // the pair — a slice is not a fraction of the cheese (0059).
+        `UPDATE meal_items SET amount = ?, serving_qty = NULL, piece_name = NULL, kcal = ?,
+           protein_g = ?, carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?
          WHERE id = ?`,
         [
           // A component with no amount still scales its macros — an "≈300 kcal"
@@ -490,8 +510,88 @@ export function scaleCompositeItem(db: Database, parentItemId: string, factor: n
         ]
       );
     }
+    // The header's count, where it has one. Nothing is rounded here either, for
+    // the same reason: ×0.5 then ×2 must return to exactly 8.
+    db.run(
+      'UPDATE meal_items SET serving_qty = serving_qty * ? WHERE id = ? AND serving_qty IS NOT NULL',
+      [factor, parentItemId]
+    );
     recomputeMealTotals(db, parent.meal_id);
   });
+}
+
+/**
+ * The count on a composite header — "this pizza is 8 slices", then "I ate 3"
+ * (0059, backlog "Slices as a food unit").
+ *
+ * **The first count DECLARES; every later one PRESERVES.** A composite's parts
+ * are the whole dish as the model priced it, so a count typed onto an UNCOUNTED
+ * composite can only mean *"what is priced here is N pieces"* — never *"I ate
+ * N"*. Taking it the second way on a photographed whole pizza would write
+ * `3 × slice` over eight slices of macros and count the whole pizza into the
+ * day: the headline disagreeing with the parts, which 0058 built two belts to
+ * make impossible. So:
+ *
+ * - **no count yet** → write the pair, scale NOTHING. Every part and the meal's
+ *   own kcal come out byte-identical.
+ * - **already counted** → scale every part by `count / current` and then write
+ *   the count outright, so 3 → 4 → 3 lands on exactly 3 rather than on a product
+ *   of two floats.
+ *
+ * The grams-per-piece is never stored — it is `amount ÷ serving_qty`, derived
+ * every render. A stored copy would disagree with the first the moment a part
+ * was hand-edited, which is the one edit allowed to move it (a part correction
+ * never moves its siblings and never pushes back onto the parent: you still ate
+ * three slices, they were lighter).
+ */
+export function setCompositeCount(
+  db: Database,
+  parentItemId: string,
+  count: number,
+  pieceName?: string
+): void {
+  if (!Number.isFinite(count) || count <= 0) {
+    throw new Error(`setCompositeCount: ${count} is not a count of anything.`);
+  }
+  const parent = db.get<{
+    serving_qty: number | null;
+    piece_name: string | null;
+    is_composite: number;
+  }>('SELECT serving_qty, piece_name, is_composite FROM meal_items WHERE id = ?', [parentItemId]);
+  if (!parent || parent.is_composite !== 1) return;
+  // A count needs a noun to read as a count at all, so a declaration that names
+  // none gets the neutral `piece` and the noun control renames it. A re-count
+  // that names none keeps the noun the dish already has.
+  const given = pieceName?.trim();
+  const noun = given !== undefined && given !== '' ? given : (parent.piece_name ?? 'piece');
+  const current = parent.serving_qty;
+  if (current != null && current > 0) {
+    // Counted already: the parts follow the count, so the two keep describing
+    // the same food. `scaleCompositeItem` moves the count too, which is why the
+    // explicit write below is what settles the final value.
+    scaleCompositeItem(db, parentItemId, count / current);
+  }
+  db.run('UPDATE meal_items SET serving_qty = ?, piece_name = ? WHERE id = ?', [
+    count,
+    noun,
+    parentItemId,
+  ]);
+}
+
+/**
+ * Clear a composite's count, scaling nothing (0059).
+ *
+ * The route back from a count that was wrong — the model said 8, the pizza was
+ * 6. Empty means "no count", so the NEXT number declares afresh and moves
+ * nothing; re-declaring by typing over the 8 would scale the parts by 6/8 on a
+ * dish that was never eight slices. The parts are untouched here because
+ * forgetting how many pieces a dish was is not eating any of it.
+ */
+export function clearCompositeCount(db: Database, parentItemId: string): void {
+  db.run(
+    'UPDATE meal_items SET serving_qty = NULL, piece_name = NULL WHERE id = ? AND is_composite = 1',
+    [parentItemId]
+  );
 }
 
 /** A meal's items in logged order, each joined with its catalog food's
@@ -758,6 +858,9 @@ export function relogMeal(
     fiber_g: i.fiber_g,
     confidence: i.confidence,
     micros: i.micros,
+    // A re-logged pizza is a counted pizza (0059). The noun rides with the count
+    // it names; on a part or a plain item both are already what they were.
+    piece_name: i.piece_name,
   });
   return logMealWithItems(db, {
     date,

@@ -85,6 +85,7 @@ import NutritionScreen from '../app/nutrition.tsx';
 import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
 import NutritionHistoryScreen from '../app/nutrition-history.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
+import { ReviewItemsPlate } from '../src/components/nutrition/estimate-review.tsx';
 // The two camera screens. They could not be imported here until `expo-camera`
 // moved behind the guarded seam (src/lib/media/camera.ts) — a static native
 // import is a resolve failure under node, not a render failure.
@@ -2940,6 +2941,161 @@ console.log('19. C8 — the servings estimate is marked, and never pre-filled');
     'stills',
     'These lines carry no amount',
   ]);
+}
+
+/**
+ * 20. 0059 — a composite says how many pieces it is.
+ *
+ * Numbered above the maximum rather than by position: this file's order is
+ * non-monotonic (§7b at :995 follows §8 at :989), so "the next one down" is not
+ * a number.
+ *
+ * TWO SURFACES, and they are split for a reason a device pass should know
+ * about. The logged row's sub-line renders from `meal-detail` directly. The
+ * count CONTROL lives inside a disclosure whose open/closed state is local
+ * React state, so a server render always draws it collapsed — the same wall
+ * §19 hit, and the same answer: assert the control through the exported
+ * component that owns it (`ReviewItemsPlate`, which both estimator screens
+ * draw). What a server render still cannot say is whether `meal-detail`'s own
+ * copy of those rows reads well once expanded; that is a device claim.
+ */
+console.log('20. 0059 — the count of pieces, on the record and on the control');
+{
+  const today = todayISODate();
+  // A counted pizza: 270 g of parts, said to be three slices.
+  const { mealId: countedId } = logMealWithItems(db, {
+    date: today,
+    time: '18:40',
+    name: 'Three slices',
+    items: [
+      {
+        name: 'Pepperoni pizza',
+        serving_qty: 3,
+        piece_name: 'slice',
+        components: [
+          { name: 'Pizza crust', amount: 170, kcal: 450, protein_g: 15 },
+          { name: 'Mozzarella', amount: 100, kcal: 300, protein_g: 22 },
+        ],
+      },
+    ],
+  });
+  const counted = render('meal-detail (counted)', MealDetailScreen, { id: countedId });
+  expect('meal-detail (counted)', counted, ['3 × slice (270 g)']);
+
+  // MIXED UNITS: 0058 invariant 5 refuses a fabricated amount, so the count is
+  // the only whole-dish figure the row has — and it still prints.
+  const { mealId: mixedId } = logMealWithItems(db, {
+    date: today,
+    time: '18:45',
+    name: 'Affogato, thirds',
+    items: [
+      {
+        name: 'Affogato',
+        serving_qty: 3,
+        piece_name: 'glass',
+        components: [
+          { name: 'Espresso', amount: 60, unit: 'ml', kcal: 5 },
+          { name: 'Gelato', amount: 90, unit: 'g', kcal: 200 },
+        ],
+      },
+    ],
+  });
+  const mixed = render('meal-detail (mixed units)', MealDetailScreen, { id: mixedId });
+  expect('meal-detail (mixed units)', mixed, ['3 × glass']);
+  refute('meal-detail (mixed units)', mixed, ['3 × glass (']);
+
+  // The control. Both states of the same expanded composite, through the plate
+  // the two estimator screens share.
+  const part = (name, amount, kcal) => ({
+    key: `p-${name}`,
+    name,
+    foodId: null,
+    food: undefined,
+    confidence: 'medium',
+    unit: 'g',
+    base: {
+      amount,
+      kcal,
+      protein_g: null,
+      carbs_g: null,
+      fat_g: null,
+      fiber_g: null,
+      micros: null,
+    },
+    amountText: String(amount),
+  });
+  const composite = (pieces) => [
+    {
+      ...part('Pepperoni pizza', 0, 0),
+      key: 'pizza',
+      name: 'Pepperoni pizza',
+      components: [part('Crust', 400, 800), part('Cheese', 320, 750)],
+      expanded: true,
+      scaleFrom: null,
+      pieces,
+      countText: '',
+      countFrom: null,
+    },
+  ];
+  const noop = () => {};
+  const handlers = {
+    onAmountChange: noop,
+    onRemove: noop,
+    onToggle: noop,
+    onScale: noop,
+    onScaleTo: noop,
+    onScaleBegin: noop,
+    onScaleEnd: noop,
+    onCountChange: noop,
+    onCountBegin: noop,
+    onCountEnd: noop,
+    onPiecesName: noop,
+  };
+
+  const uncounted = render(
+    'review plate (uncounted)',
+    ReviewItemsPlate,
+    {},
+    {
+      rows: composite(null),
+      label: 'Items',
+      emptyNote: 'x',
+      handlers,
+    }
+  );
+  expect('review plate (uncounted)', uncounted, [
+    // The label that says what the empty field is asking. Written `This is` and
+    // drawn uppercase by the label voice, exactly as the sibling `I ate` is.
+    'This is',
+    'Pieces in Pepperoni pizza',
+  ]);
+  refute('review plate (uncounted)', uncounted, [
+    'Pepperoni pizza, pieces eaten',
+    // The noun is a readout, not a control, while there is no count to name.
+    'Name one piece of Pepperoni pizza',
+  ]);
+
+  const countedPlate = render(
+    'review plate (counted)',
+    ReviewItemsPlate,
+    {},
+    {
+      rows: composite({ name: 'slice', count: 8 }),
+      label: 'Items',
+      emptyNote: 'x',
+      handlers,
+    }
+  );
+  expect('review plate (counted)', countedPlate, [
+    'I ate',
+    'Pepperoni pizza, pieces eaten',
+    'Name one piece of Pepperoni pizza',
+    // The sub-line leads with the count.
+    '8 × slice',
+    // …and the chips are still there: the count sits BESIDE them (owner).
+    'I ate half of the Pepperoni pizza',
+  ]);
+  refute('review plate (counted)', countedPlate, ['This is']);
 }
 
 // -------------------------------------------------------------------------

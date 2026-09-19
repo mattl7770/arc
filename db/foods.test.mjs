@@ -42,7 +42,7 @@ import {
   updateMealItemPortion,
 } from '../src/lib/db/repositories/nutrition.ts';
 import { itemForPortion, macrosForAmount } from '../src/lib/nutrition/servings.ts';
-import { fmtAmount, portionLabel } from '../src/lib/nutrition/format.ts';
+import { countLabel, fmtAmount, portionLabel } from '../src/lib/nutrition/format.ts';
 
 let pass = 0;
 let fail = 0;
@@ -857,6 +857,67 @@ console.log('15. the suffix a portion prints, and the oz preference over ml');
   portionLabel({ amount: 150, unit: 'g', serving_qty: null, food_serving_name: null }) === '150 g'
     ? ok('a gram portion reads exactly as it did before 0047')
     : bad('portionLabel g');
+}
+
+console.log('16. the count of pieces, and the two vocabularies that name one (0059)');
+{
+  // `countLabel` is the two tokens portionLabel has always built, lifted out so
+  // the review sheet's sub-line, a logged row's sub-line and the revision
+  // request's tail cannot drift from each other.
+  countLabel(3, 'slice') === '3 × slice'
+    ? ok('countLabel is a count and the thing it counts, in one place')
+    : bad('countLabel', countLabel(3, 'slice'));
+  // A third of eight slices, honestly. Rounding to 3 would print a count the
+  // parts do not add up to, which is the one thing this design exists to avoid.
+  countLabel(8 / 3, 'slice') === '2.7 × slice'
+    ? ok('…and a fraction of a counted dish keeps its decimal rather than lying')
+    : bad('countLabel fraction', countLabel(8 / 3, 'slice'));
+
+  portionLabel({
+    amount: 270,
+    unit: 'g',
+    serving_qty: 3,
+    food_serving_name: null,
+    piece_name: 'slice',
+  }) === '3 × slice (270 g)'
+    ? ok('a counted composite prints its own piece noun and what it comes to')
+    : bad('portionLabel piece');
+  // A header has no food_id, so food_serving_name is NULL on it by
+  // construction — but state the precedence anyway, because the alternative is
+  // a row that reads `3 × 1 egg` for a pizza.
+  portionLabel({
+    amount: 270,
+    unit: 'g',
+    serving_qty: 3,
+    food_serving_name: '1 egg',
+    piece_name: 'slice',
+  }) === '3 × slice (270 g)'
+    ? ok('…and the piece noun wins over a joined serving name, never mixes with it')
+    : bad('portionLabel precedence');
+  portionLabel({ amount: 100, unit: 'g', serving_qty: 2, food_serving_name: '1 egg' }) ===
+  '2 × 1 egg (100 g)'
+    ? ok('a catalog item reads exactly as it did before 0059, off the live join')
+    : bad('portionLabel serving unchanged');
+  // MIXED UNITS: 0058 invariant 5 refuses to sum a fabricated amount, and the
+  // count is then the only whole-dish figure the row has.
+  portionLabel({
+    amount: null,
+    unit: 'g',
+    serving_qty: 3,
+    food_serving_name: null,
+    piece_name: 'slice',
+  }) === '3 × slice'
+    ? ok('a counted dish whose parts do not share a unit prints the bare count')
+    : bad('portionLabel mixed units');
+  portionLabel({
+    amount: 270,
+    unit: 'g',
+    serving_qty: null,
+    food_serving_name: null,
+    piece_name: null,
+  }) === '270 g'
+    ? ok('and an uncounted composite prints the bare amount, as it always did')
+    : bad('portionLabel uncounted');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

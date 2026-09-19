@@ -17,16 +17,19 @@ import { getFood } from '@/lib/db/repositories/foods';
 import { saveMealAsTemplate } from '@/lib/db/repositories/meal-templates';
 import { saveMealAsRecipe } from '@/lib/db/repositories/recipes';
 import {
+  clearCompositeCount,
   getMeal,
   listMealItems,
   relogMeal,
   removeMealItem,
   scaleCompositeItem,
+  setCompositeCount,
   updateMealItemPortion,
   updateMealName,
   updateMealTime,
 } from '@/lib/db/repositories/nutrition';
-import { assembleMealItems } from '@/lib/nutrition/composite';
+import { assembleMealItems, type MealItemNode } from '@/lib/nutrition/composite';
+import { parseCount } from '@/lib/nutrition/review-rows';
 import {
   deleteMealWithPhotos,
   mealPhotoView,
@@ -183,6 +186,20 @@ type TimeEdit = { date: string; hour: string; minute: string };
  *  than a record: a meal has exactly one name and nothing else moves with it. */
 type NameEdit = string | null;
 
+/**
+ * The count-of-pieces editor's draft for ONE composite (0059), or null when
+ * closed.
+ *
+ * `cleared` is the load-bearing field, and it is what makes the owner's answer
+ * to "the model said 8, the pizza was 6" one gesture instead of two Saves.
+ * Emptying the field at any point during the edit means *"forget the count"*,
+ * so whatever number is typed afterwards DECLARES a fresh one and scales
+ * nothing — rather than scaling the parts by 6/8 on a dish that was never eight
+ * slices. Typing straight over a count that was right still scales, which is
+ * what "I ate 3 of the 8" means.
+ */
+type CountEdit = { parentId: string; countText: string; nounText: string; cleared: boolean };
+
 function readMeal(id: string): MealState {
   const db = getDb();
   return {
@@ -292,6 +309,8 @@ export default function MealDetailScreen() {
   const [timeEdit, setTimeEdit] = useState<TimeEdit | null>(null);
   // The rename editor's draft, or null when it is closed.
   const [nameEdit, setNameEdit] = useState<NameEdit>(null);
+  // The count-of-pieces editor's draft for one composite, or null (0059).
+  const [countEdit, setCountEdit] = useState<CountEdit | null>(null);
 
   const reload = useCallback(() => {
     setState(readMeal(mealId));
@@ -308,6 +327,7 @@ export default function MealDetailScreen() {
     // have moved — and its Save would silently overwrite the newer value.
     setTimeEdit(null);
     setNameEdit(null);
+    setCountEdit(null);
   }, [mealId]);
   useFocusEffect(reload);
 
@@ -328,6 +348,7 @@ export default function MealDetailScreen() {
     // One editor at a time — that is what keeps the accent budget a ceiling.
     setTimeEdit(null);
     setNameEdit(null);
+    setCountEdit(null);
     // Seed the amount readout from what Save will actually persist, so the field
     // never shows one number while Save writes another. In serving mode Save
     // re-derives the amount from the food's CURRENT serving_amount, so seed from
@@ -425,10 +446,56 @@ export default function MealDetailScreen() {
   };
 
   /** "I ate half": every part of one composite, scaled proportionally from what
-   *  it reads now. The arithmetic and the transaction are the repository's. */
+   *  it reads now — and its count of pieces with them (0059). The arithmetic
+   *  and the transaction are the repository's. */
   const scaleParts = (parentId: string, factor: number) => {
     scaleCompositeItem(getDb(), parentId, factor);
     setEditing(null);
+    // A chip moves the count, so a draft of the old one would Save a stale
+    // number over it.
+    setCountEdit(null);
+    reload();
+  };
+
+  /** Open the count editor on one composite, seeded from what it holds. */
+  const beginCountEdit = (item: MealItemWithServing) => {
+    // One editor at a time (see the accent-budget note in the header).
+    setEditing(null);
+    setTimeEdit(null);
+    setNameEdit(null);
+    setCountEdit({
+      parentId: item.id,
+      countText: item.serving_qty != null ? fmtQty(item.serving_qty) : '',
+      nounText: item.piece_name ?? '',
+      cleared: false,
+    });
+  };
+
+  /**
+   * Write the count. Three outcomes, and the draft's `cleared` flag is what
+   * tells them apart (0059):
+   *
+   * - **emptied and left empty** → the count goes, the parts stand. Forgetting
+   *   how many pieces a dish was is not eating any of it.
+   * - **emptied, then a number** → that number DECLARES afresh: the parts are
+   *   now said to be N pieces and not one gram moves.
+   * - **typed over a count that stands** → "I ate N of them", so every part
+   *   scales by `N / current` and the two keep describing the same food.
+   */
+  const saveCount = () => {
+    if (!countEdit) return;
+    const db = getDb();
+    const typed = countEdit.countText.trim();
+    if (countEdit.cleared) clearCompositeCount(db, countEdit.parentId);
+    if (typed !== '') {
+      const count = parseCount(typed);
+      if (count == null) return;
+      setCompositeCount(db, countEdit.parentId, count, countEdit.nounText.trim() || undefined);
+    } else if (!countEdit.cleared) {
+      // Nothing typed and nothing cleared: an editor opened and closed again.
+      return setCountEdit(null);
+    }
+    setCountEdit(null);
     reload();
   };
 
@@ -522,6 +589,7 @@ export default function MealDetailScreen() {
     // One editor at a time (see the accent-budget note in the header).
     setEditing(null);
     setNameEdit(null);
+    setCountEdit(null);
     const parts = partsFromClock(meal.time);
     setTimeEdit({ date: meal.date, hour: parts.hour, minute: parts.minute });
   };
@@ -534,6 +602,7 @@ export default function MealDetailScreen() {
     // One editor at a time (see the accent-budget note in the header).
     setEditing(null);
     setTimeEdit(null);
+    setCountEdit(null);
     setNameEdit(meal.name);
   };
 
@@ -791,19 +860,26 @@ export default function MealDetailScreen() {
                               render — it cannot come to disagree with them. */}
                           <Text className="mt-0.5 font-mono text-[10px] leading-4 text-ink-muted">
                             {[
-                              node.rolled.amount != null
-                                ? portionLabel(
-                                    {
-                                      amount: node.rolled.amount,
-                                      unit: node.rolled.unit,
-                                      // A composite has no serving of its own —
-                                      // its parts do, and they keep theirs.
-                                      serving_qty: null,
-                                      food_serving_name: null,
-                                    },
-                                    units.volume
-                                  )
-                                : '',
+                              portionLabel(
+                                {
+                                  // The guard sits INSIDE the argument now: a
+                                  // counted composite whose parts are in mixed
+                                  // units has no honest amount, and the count is
+                                  // then the only whole-dish figure the row has
+                                  // — portionLabel already prints the bare
+                                  // `3 × slice` for exactly that case.
+                                  amount: node.rolled.amount,
+                                  unit: node.rolled.unit,
+                                  // A composite has no catalog SERVING of its
+                                  // own — its parts do, and they keep theirs —
+                                  // but it may have a count of its own PIECES
+                                  // (0059), which is its own column.
+                                  serving_qty: node.item.serving_qty,
+                                  food_serving_name: null,
+                                  piece_name: node.item.piece_name,
+                                },
+                                units.volume
+                              ),
                               macroLine(node.rolled),
                             ]
                               .filter(Boolean)
@@ -833,8 +909,15 @@ export default function MealDetailScreen() {
                         {/* "I ate half", the sentence people actually say. Every
                             part scales proportionally, from what it reads NOW —
                             so a part corrected by hand first is halved from the
-                            corrected number. */}
-                        <View className="flex-row items-center gap-2 pb-3 pl-6">
+                            corrected number. The count of pieces (0059) sits
+                            BESIDE the chips, not instead of them: a chip is the
+                            fast handle, a count the precise one. */}
+                        <View
+                          className={
+                            node.item.serving_qty != null
+                              ? 'flex-row flex-wrap items-center gap-2 pb-3 pl-6'
+                              : 'flex-row flex-wrap items-center gap-2 pl-6'
+                          }>
                           <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
                             I ate
                           </Text>
@@ -850,7 +933,34 @@ export default function MealDetailScreen() {
                               </Text>
                             </Pressable>
                           ))}
+                          {node.item.serving_qty != null ? (
+                            <CountField
+                              node={node}
+                              edit={countEdit?.parentId === node.item.id ? countEdit : null}
+                              onOpen={() => beginCountEdit(node.item)}
+                              onEdit={setCountEdit}
+                            />
+                          ) : null}
                         </View>
+                        {/* Uncounted: the field asks what the dish IS, on its
+                            own row, and the number typed into it scales
+                            nothing. */}
+                        {node.item.serving_qty == null ? (
+                          <View className="flex-row flex-wrap items-center gap-2 pb-3 pl-6">
+                            <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
+                              This is
+                            </Text>
+                            <CountField
+                              node={node}
+                              edit={countEdit?.parentId === node.item.id ? countEdit : null}
+                              onOpen={() => beginCountEdit(node.item)}
+                              onEdit={setCountEdit}
+                            />
+                          </View>
+                        ) : null}
+                        {countEdit?.parentId === node.item.id ? (
+                          <CountSaveRow node={node} edit={countEdit} onSave={saveCount} />
+                        ) : null}
                       </View>
                     ) : null}
                   </View>
@@ -1298,6 +1408,141 @@ function MealTimeEditor({
  * Save is this screen's one accent (only one editor is ever open at a time —
  * opening the when-editor above closes this one, and vice versa).
  */
+/**
+ * A logged composite's count of pieces, and the noun for one of them (0059).
+ *
+ * The same anatomy as the review sheet's control — a `w-14` mono field, a `×`,
+ * and a label-voice noun — but on a LOGGED record, so it stages a draft and
+ * writes on Save rather than live. That is this screen's rule for everything
+ * that already counts into the day's totals (the portion editor, the time, the
+ * name); only the fraction chips write immediately, and they always have.
+ *
+ * Touching the field or the noun opens the editor, which closes the others.
+ */
+function CountField({
+  node,
+  edit,
+  onOpen,
+  onEdit,
+}: {
+  node: Extract<MealItemNode, { kind: 'composite' }>;
+  edit: CountEdit | null;
+  onOpen: () => void;
+  onEdit: (next: CountEdit) => void;
+}) {
+  const counted = node.item.serving_qty != null;
+  const stored = counted ? fmtQty(node.item.serving_qty ?? 0) : '';
+  const value = edit ? edit.countText : stored;
+  const noun = (edit ? edit.nounText : (node.item.piece_name ?? '')) || 'piece';
+  return (
+    <View className="flex-row items-center gap-1">
+      <TextInput
+        value={value}
+        onChangeText={(text) =>
+          onEdit({
+            parentId: node.item.id,
+            countText: text,
+            nounText: edit ? edit.nounText : (node.item.piece_name ?? ''),
+            // Emptied at any point in this edit means "forget the count", so
+            // the next number declares afresh instead of scaling the parts.
+            cleared: (edit?.cleared ?? false) || text.trim() === '',
+          })
+        }
+        keyboardType="decimal-pad"
+        returnKeyType={KEYPAD_DONE}
+        // Opening the editor goes THROUGH selectAllOnFocus, which owns
+        // `onFocus`: writing both would silently drop one of them.
+        {...selectAllOnFocus(value, () => {
+          if (!edit) onOpen();
+        })}
+        accessibilityLabel={
+          counted ? `${node.item.name}, pieces eaten` : `Pieces in ${node.item.name}`
+        }
+        className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+      />
+      <Text className="font-mono text-[11px] text-ink-secondary">×</Text>
+      {edit ? (
+        <TextInput
+          value={edit.nounText}
+          onChangeText={(text) => onEdit({ ...edit, nounText: text })}
+          autoCapitalize="none"
+          returnKeyType={KEYPAD_DONE}
+          placeholder="piece"
+          placeholderTextColor={palette.inkMuted}
+          accessibilityLabel={`Name one piece of ${node.item.name}`}
+          className="w-20 border border-paper-deep bg-paper-dim px-2 py-1.5 font-mono text-[13px] text-ink"
+        />
+      ) : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Name one piece of ${node.item.name}`}
+          onPress={onOpen}
+          className="min-h-[44px] justify-center px-1 active:opacity-60">
+          <Text
+            className={
+              counted
+                ? 'font-label text-[12px] uppercase tracking-[1.2px] text-ink'
+                : 'font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted'
+            }>
+            {noun}
+          </Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+/** What the open count editor will do, said in words, and the Save that does
+ *  it. The consequence is stated BEFORE the write, the way every other pending
+ *  write on this screen states it (00-design-spec.md §5). */
+function CountSaveRow({
+  node,
+  edit,
+  onSave,
+}: {
+  node: Extract<MealItemNode, { kind: 'composite' }>;
+  edit: CountEdit;
+  onSave: () => void;
+}) {
+  const typed = edit.countText.trim();
+  const count = typed === '' ? null : parseCount(typed);
+  const current = node.item.serving_qty;
+  const valid = typed === '' ? edit.cleared : count != null;
+  const note =
+    typed === ''
+      ? 'the count goes; the parts stand'
+      : count == null
+        ? 'a count is a number from 1 to 100'
+        : edit.cleared || current == null
+          ? 'declares what this dish is; nothing scales'
+          : `scales every part to ${fmtQty(count / current)}× of what it reads now`;
+  return (
+    <View className="flex-row items-center justify-between pb-3 pl-6">
+      <Text className="flex-1 pr-3 font-mono text-[10px] leading-4 text-ink-muted">{note}</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Save the count for ${node.item.name}`}
+        accessibilityState={{ disabled: !valid }}
+        disabled={!valid}
+        onPress={onSave}
+        className={
+          valid
+            ? 'min-h-[44px] justify-center rounded-btn bg-pine px-5 active:opacity-70'
+            : 'min-h-[44px] justify-center rounded-btn border border-paper-deep px-5'
+        }>
+        <Text
+          className={
+            valid
+              ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine-on'
+              : 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+          }>
+          Save
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function PortionEditRow({
   edit,
   item,

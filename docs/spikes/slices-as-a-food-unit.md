@@ -1,14 +1,46 @@
 # P1 — "Slices" as a food unit
 
-**Status: PROPOSED** (2026-09-15; revised twice the same day after review — the second
-pass narrowed the migration to one column on one table and dropped a phase). Parked
-by the owner — *"back burner"* — and nothing here is scheduled. This is the argument
-for what a slice IS in ARC's data model, written so that when the item comes off the
-back burner the shape is settled and the one migration it needs is numbered.
-**Backlog:** `docs/backlog-2026-09.md:65` (Parked). **Migration, if built:** `0059` —
-the head on `main` is `0058` (`db/migrations/`; `docs/backlog-2026-09.md:72`); re-check
-at merge, because the runner is forward-only and a number at or below a device's
-`user_version` is never applied (`db/migrations/0058_composite_meal_items.sql:93-100`).
+**Status: BUILT — 2026-09-19, migration `0059_meal_item_piece_name`.** Both phases
+landed in one pass. The shipped account is `docs/nutrition-subapp.md` §12m; this file
+is the argument that produced it, kept as written. **The owner answered all four
+questions in §7 with option (a).**
+
+> **Departures from this plan, in full.**
+>
+> 1. **`selectAllOnFocus` gained a second argument** (`src/components/ui/select-on-focus.ts`).
+>    It owns `onFocus`, and the whole-dish field both spread it *and* passed its own
+>    `onFocus` — so the spread won and `beginCompositeScale` had never fired on a
+>    device. §4.5's `beginCountEdit` depends on the same handler, so the composition
+>    was moved into the helper and both fields now go through it. A pre-existing
+>    latent bug, fixed because this feature's stated mechanism relied on it; the
+>    fields self-heal on the first keystroke either way, which is why it was invisible.
+> 2. **`beginCountEdit` and `beginCompositeScale` are one snapshot**, not two. §4.5
+>    describes `countFrom` as the count field's baseline, but the grams field must
+>    freeze the count too or a live grams edit compounds it. So both controls take
+>    `scaleFrom` and `countFrom` together, and every writer drops them together — the
+>    invariant §4.5 states, made structural.
+> 3. **`meal-detail`'s count editor carries a `cleared` flag.** The plan's clear-then-
+>    declare (owner answer 3) is one gesture on the live review sheet, but that screen
+>    stages a draft and writes on Save, so without the flag "backspace to empty, type
+>    6, Save" would have scaled by 6/8. The flag makes it one Save, not two.
+> 4. **Labels are written `I ate` / `This is`** and drawn uppercase by the label voice,
+>    matching the existing chips row rather than the plan's `I ATE` / `THIS IS` literals.
+> 5. **`screens-render` §20 asserts the control through `ReviewItemsPlate`**, not
+>    through `meal-detail`'s expanded disclosure: that disclosure's open state is local
+>    React state and a server render always draws it collapsed (§19 hit the same wall).
+>    meal-detail's own sub-line IS asserted directly, in both the counted and the
+>    mixed-unit case. The expanded rows on that screen are a device claim.
+> 6. **The estimation prompt landed at 967 tokens, not the predicted 965** (3,482
+>    chars against the predicted 3,473) — under the 970 tripwire §4.6 set, so the
+>    constant's second named trim was not needed. The revision prompt landed at 834,
+>    exactly as predicted.
+> 7. **No `db/coach-tools.test.mjs` section was added.** §4.8's zero held: nothing
+>    under `src/lib/ai` names `meal_items`, so there was nothing to re-number.
+
+**Backlog:** `docs/backlog-2026-09.md` (Parked → built). **Migration:** `0059` — the
+head on `main` was `0058`; re-checked at commit, because the runner is forward-only
+and a number at or below a device's `user_version` is never applied
+(`db/migrations/0058_composite_meal_items.sql:93-100`).
 
 **The short version.** A slice is not a unit — `0047` settled that there are two of
 those and no conversion between them. A slice is a **count of pieces**, and a count
@@ -554,7 +586,7 @@ is untouched.
 
 ---
 
-## 7. Questions for the owner
+## 7. Questions for the owner — **all four answered (a), 2026-09-19**
 
 **1. On a photographed pizza, what does the first number typed into an uncounted
 composite mean?**

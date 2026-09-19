@@ -61,6 +61,19 @@ import type {
  * SNAPSHOT taken when the field is focused, not from whatever it last produced.
  * Typing `3`, `36`, `360` into a 720 g pizza therefore lands on ×0.5, not on
  * ×0.5 ×0.5 ×0.5.
+ *
+ * ## "Three slices of the eight" (0059)
+ *
+ * A third handle on the same dish: a COUNT of pieces and the noun for one of
+ * them. It is the grams field's sibling in every mechanical respect — same
+ * focus snapshot, same non-compounding scale, same "the current state is the
+ * record" — with one rule of its own, stated in full above
+ * {@link setCompositeCount}: the FIRST count declares what the parts already
+ * are and moves nothing; every later one scales them.
+ *
+ * **The invariant that keeps that honest:** `countFrom` is never consumed
+ * against parts it did not describe. Every writer that drops `scaleFrom` drops
+ * `countFrom` with it, and the two are always taken in the same breath.
  */
 
 /** The portion snapshot an amount edit re-scales from. */
@@ -88,14 +101,33 @@ export type ReviewRow = {
   unit: AmountUnit;
 };
 
+/** How many pieces a composite is, and what one piece is called (0059). */
+export type ReviewPieces = { name: string; count: number };
+
 /** A top-level review row. `components` is empty for a plain item and holds the
  *  parts for a composite (0058); one level only. */
 export type ReviewItem = ReviewRow & {
   components: ReviewRow[];
   expanded: boolean;
-  /** The parts as they stood when the whole-dish field was focused — the
+  /** The parts as they stood when a whole-dish field was focused — the
    *  baseline that keeps live scaling from compounding. Null when not editing. */
   scaleFrom: ReviewRow[] | null;
+  /** The count of pieces this composite is, and the noun for one of them
+   *  (0059). Null on a plain item and on an uncounted composite. */
+  pieces: ReviewPieces | null;
+  /** The count field's text, the sibling of {@link ReviewRow.amountText}. Empty
+   *  means "show what {@link ReviewItem.pieces} says". */
+  countText: string;
+  /**
+   * The count as it stood when {@link ReviewItem.scaleFrom} was taken — the
+   * other half of the same snapshot, so neither live field can compound.
+   *
+   * An INNER null is the load-bearing case: the row had no count when the field
+   * was focused, so whatever number arrives DECLARES one ("this dish is 8
+   * pieces") and moves nothing. An outer null means no baseline has been taken;
+   * the writers then read the count off the row as it stands.
+   */
+  countFrom: { count: number | null } | null;
 };
 
 export function isComposite(row: ReviewItem): boolean {
@@ -105,6 +137,14 @@ export function isComposite(row: ReviewItem): boolean {
 export function parseAmount(text: string): number | null {
   const n = Number(text.trim());
   return Number.isFinite(n) && n > 0 && n <= 5000 ? n : null;
+}
+
+/** A piece count: the amount ceiling's cousin, two orders smaller. Nothing a
+ *  person eats is 101 slices, and a typo that says so should not scale a meal
+ *  by a hundred. */
+export function parseCount(text: string): number | null {
+  const n = Number(text.trim());
+  return Number.isFinite(n) && n > 0 && n <= 100 ? n : null;
 }
 
 /**
@@ -242,6 +282,12 @@ export function rowsFromEstimate(db: Database, estimate: MealEstimate): ReviewIt
     ),
     expanded: false,
     scaleFrom: null,
+    // The model's own count of what it priced (0059), read only on a composite:
+    // a count of pieces is a fact about a dish with parts, and on a plain item
+    // it would land in three places built for a catalog SERVING count.
+    pieces: item.components && item.components.length > 0 ? (item.pieces ?? null) : null,
+    countText: '',
+    countFrom: null,
   }));
 }
 
@@ -255,6 +301,9 @@ export function rowsToMealItems(rows: ReviewItem[]): NewMealItem[] {
       amount: p.amount,
       unit: row.unit,
       serving_qty: null,
+      // A part never carries the pair — a slice is not a fraction of the cheese
+      // (0059). Stated rather than defaulted, so the rule is legible here.
+      piece_name: null,
       kcal: p.kcal,
       protein_g: p.protein_g,
       carbs_g: p.carbs_g,
@@ -268,8 +317,15 @@ export function rowsToMealItems(rows: ReviewItem[]): NewMealItem[] {
     isComposite(row)
       ? // The header's own numbers are never sent — the repository would drop
         // them anyway (invariant 2), and sending them would suggest they mean
-        // something.
-        { name: row.name, unit: row.unit, components: row.components.map(priced) }
+        // something. Its COUNT is not one of them (0059): a count is a fact
+        // about the whole dish, and nothing sums it.
+        {
+          name: row.name,
+          unit: row.unit,
+          serving_qty: row.pieces?.count ?? null,
+          piece_name: row.pieces?.name ?? null,
+          components: row.components.map(priced),
+        }
       : priced(row)
   );
 }
@@ -287,6 +343,9 @@ export function setRowAmount(rows: ReviewItem[], key: string, text: string): Rev
       // A hand-correction rebases what the chips will halve (owner decision):
       // the whole-dish snapshot is stale the moment a part moves.
       scaleFrom: null,
+      // …and so is the count that snapshot was taken beside. The count itself
+      // STAYS: you still ate three slices, they were lighter (0059).
+      countFrom: null,
     };
   });
 }
@@ -306,9 +365,11 @@ export function removeRow(rows: ReviewItem[], key: string): ReviewItem[] {
       continue;
     }
     const components = row.components.filter((c) => c.key !== key);
-    // Invariant 4: the header goes with its last part.
+    // Invariant 4: the header goes with its last part — and its count with it.
     if (components.length === 0) continue;
-    out.push({ ...row, components, scaleFrom: null });
+    // The count survives a part being removed (a slice without its pepperoni is
+    // still a slice); only the stale baseline goes.
+    out.push({ ...row, components, scaleFrom: null, countFrom: null });
   }
   return out;
 }
@@ -337,8 +398,15 @@ function scaleRow(row: ReviewRow, factor: number): ReviewRow {
   };
 }
 
+/** A count scaled with the parts it describes — the correspondence §4.1 of the
+ *  spike states, kept by arithmetic rather than by maintenance. */
+function scalePieces(pieces: ReviewPieces | null, from: number | null, factor: number) {
+  if (!pieces || from == null) return pieces;
+  return { ...pieces, count: from * factor };
+}
+
 /** A fraction chip: every part of one composite, scaled proportionally from
- *  what it reads NOW. */
+ *  what it reads NOW — and the count with them (0059). */
 export function scaleComposite(rows: ReviewItem[], key: string, factor: number): ReviewItem[] {
   if (!(factor > 0)) return rows;
   return rows.map((row) =>
@@ -346,23 +414,34 @@ export function scaleComposite(rows: ReviewItem[], key: string, factor: number):
       ? {
           ...row,
           components: row.components.map((c) => scaleRow(c, factor)),
-          // The whole-dish field re-derives from the parts again, and the next
-          // chip starts from what is now on screen.
+          // A chip moves the WHOLE dish, so it moves the count: a third of
+          // eight slices is the honest 2.7, never a rounded 3 the parts do not
+          // add up to.
+          pieces: scalePieces(row.pieces, row.pieces?.count ?? null, factor),
+          // The whole-dish field and the count field re-derive from the parts
+          // again, and the next edit starts from what is now on screen.
           amountText: '',
+          countText: '',
           scaleFrom: null,
+          countFrom: null,
         }
       : row
   );
 }
 
-/** Focus of the whole-dish field: freeze the parts as the scaling baseline. */
+/** Focus of the whole-dish field: freeze the parts AND the count as the
+ *  scaling baseline — one snapshot, so neither can compound against the other. */
 export function beginCompositeScale(rows: ReviewItem[], key: string): ReviewItem[] {
-  return rows.map((row) => (row.key === key ? { ...row, scaleFrom: row.components } : row));
+  return rows.map((row) =>
+    row.key === key
+      ? { ...row, scaleFrom: row.components, countFrom: { count: row.pieces?.count ?? null } }
+      : row
+  );
 }
 
 /** Blur: drop the baseline, so the next edit takes a fresh one. */
 export function endCompositeScale(rows: ReviewItem[], key: string): ReviewItem[] {
-  return rows.map((row) => (row.key === key ? { ...row, scaleFrom: null } : row));
+  return rows.map((row) => (row.key === key ? { ...row, scaleFrom: null, countFrom: null } : row));
 }
 
 /**
@@ -374,6 +453,10 @@ export function scaleCompositeTo(rows: ReviewItem[], key: string, text: string):
   return rows.map((row) => {
     if (row.key !== key || !isComposite(row)) return row;
     const from = row.scaleFrom ?? row.components;
+    // The count half of the same snapshot. Taken here when the focus handler
+    // never ran (a headless caller, or react-native's own focus ordering), so
+    // the count cannot compound either.
+    const fromCount = row.countFrom ?? { count: row.pieces?.count ?? null };
     const target = parseAmount(text);
     const total = from.reduce<number | null>((sum, c) => {
       const amount = currentPortion(c).amount;
@@ -382,16 +465,103 @@ export function scaleCompositeTo(rows: ReviewItem[], key: string, text: string):
     if (target == null || total == null || total <= 0) {
       // Mid-typing ("3", "", "abc") the parts must not jump. The field holds
       // what was typed; the parts follow only once it is a number.
-      return { ...row, scaleFrom: from, amountText: text };
+      return { ...row, scaleFrom: from, countFrom: fromCount, amountText: text };
     }
     const factor = target / total;
     return {
       ...row,
       scaleFrom: from,
+      countFrom: fromCount,
       amountText: text,
       components: from.map((c) => scaleRow(c, factor)),
+      pieces: scalePieces(row.pieces, fromCount.count, factor),
     };
   });
+}
+
+// --- The count of pieces (0059) ---------------------------------------------
+//
+// THE PRINCIPLE, in one sentence: the unit says what the number is measured in;
+// the count says how many of a named piece the parts, AS THEY STAND, add up to.
+// The first count DECLARES that correspondence; every later change PRESERVES it
+// by scaling the parts.
+//
+// That is why the empty field asks one question and its label says which. A
+// composite's parts are the whole dish as it was priced, so a number typed onto
+// an UNCOUNTED composite can only mean "what is priced here is N pieces" — take
+// it as "I ate N" and a photographed whole pizza reads `3 × slice` over eight
+// slices of macros, the headline disagreeing with the parts.
+
+/** Focus of the count field: freeze the parts and the count together. An inner
+ *  null count is what makes this focus a DECLARATION. */
+export function beginCountEdit(rows: ReviewItem[], key: string): ReviewItem[] {
+  return beginCompositeScale(rows, key);
+}
+
+/** Blur: drop both baselines, and let the field re-derive from the count it
+ *  actually produced (so half-typed text never outlives the edit). */
+export function endCountEdit(rows: ReviewItem[], key: string): ReviewItem[] {
+  return rows.map((row) =>
+    row.key === key ? { ...row, scaleFrom: null, countFrom: null, countText: '' } : row
+  );
+}
+
+/**
+ * The count field changed.
+ *
+ * - **Empty on a counted row CLEARS the count** — `pieces` null, parts
+ *   untouched. That is the route back from a count the model got wrong: empty
+ *   means "no count", so the next number declares afresh and moves nothing.
+ * - **Not yet a number** ("abc", "") holds the text and moves nothing.
+ * - **With no count at focus** the number DECLARES: the parts stand exactly as
+ *   they are and are now said to be N pieces.
+ * - **With one** the parts scale by `count / baseline` from the frozen
+ *   snapshot, non-compounding exactly as {@link scaleCompositeTo} is.
+ */
+export function setCompositeCount(rows: ReviewItem[], key: string, text: string): ReviewItem[] {
+  return rows.map((row) => {
+    if (row.key !== key || !isComposite(row)) return row;
+    if (text.trim() === '') {
+      // Clearing is a declaration of ignorance, not of eating: nothing scales.
+      return { ...row, countText: text, pieces: null, countFrom: { count: null } };
+    }
+    const from = row.countFrom ?? { count: row.pieces?.count ?? null };
+    const count = parseCount(text);
+    if (count == null) return { ...row, countText: text, countFrom: from };
+    const noun = row.pieces?.name ?? 'piece';
+    // Read out of the snapshot before the closure below, so the narrowing holds.
+    const baseline = from.count;
+    if (baseline == null || baseline <= 0) {
+      // THE DECLARATION. Every part and the meal's energy come out
+      // byte-identical; all that changes is what the dish is now said to be.
+      return { ...row, countText: text, countFrom: from, pieces: { name: noun, count } };
+    }
+    const base = row.scaleFrom ?? row.components;
+    return {
+      ...row,
+      countText: text,
+      countFrom: from,
+      scaleFrom: base,
+      components: base.map((c) => scaleRow(c, count / baseline)),
+      pieces: { name: noun, count },
+    };
+  });
+}
+
+/**
+ * Rename the piece — `piece` → `slice`. Trimmed; an empty noun is refused
+ * rather than stored, because a count with no name for what it counts does not
+ * read as a count at all.
+ *
+ * A row with no count cannot be named: a noun with no count names nothing, and
+ * that is the same pairing the repository writes.
+ */
+export function setPiecesName(rows: ReviewItem[], key: string, name: string): ReviewItem[] {
+  const trimmed = name.trim();
+  if (trimmed === '') return rows;
+  return rows.map((row) =>
+    row.key === key && row.pieces ? { ...row, pieces: { ...row.pieces, name: trimmed } } : row
+  );
 }
 
 // --- Answering a clarifying question (backlog C5) ---------------------------
@@ -451,6 +621,11 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
         components: [],
         expanded: false,
         scaleFrom: null,
+        // An answer adds a PLAIN item, and a plain item is never counted in
+        // pieces (0059) — the count lives on a dish with parts.
+        pieces: null,
+        countText: '',
+        countFrom: null,
       },
     ];
   }
@@ -464,7 +639,8 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
     return setRowAmount(rows, targetKey, amountLabel(effect.amount));
 
   // scale_item. Scaling a COMPOSITE header scales every part — the header has
-  // no numbers of its own, so there is nothing else it could mean.
+  // no numbers of its own, so there is nothing else it could mean — and its
+  // count with them, so a C5 answer of "3 of the 8" leaves `3 × slice` (0059).
   if (!found.part && isComposite(found.top)) {
     return scaleComposite(rows, found.top.key, effect.factor);
   }
@@ -475,6 +651,11 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
         components: row.components,
         expanded: row.expanded,
         scaleFrom: null,
+        countFrom: null,
+        // A plain row has no count of pieces; carried rather than re-derived so
+        // this stays exhaustive over ReviewItem.
+        pieces: row.pieces,
+        countText: row.countText,
       };
     if (!row.components.some((c) => c.key === targetKey)) return row;
     return {
@@ -482,6 +663,9 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
       components: row.components.map((c) => (c.key === targetKey ? scaleRow(c, effect.factor) : c)),
       amountText: '',
       scaleFrom: null,
+      // A PART moved, so the baseline is stale — but the count is not: you still
+      // ate three slices, they were lighter.
+      countFrom: null,
     };
   });
 }
@@ -512,7 +696,11 @@ export function rowsToRevisionSubject(name: string, rows: ReviewItem[]): MealRev
   return {
     name,
     items: rows.map((row) =>
-      isComposite(row) ? { ...line(row), components: row.components.map(line) } : line(row)
+      isComposite(row)
+        ? // The count rides with the dish (0059): the model is shown `8 × slice,
+          // 3 parts` and told to keep it unless the correction moves it.
+          { ...line(row), pieces: row.pieces, components: row.components.map(line) }
+        : line(row)
     ),
   };
 }

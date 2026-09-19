@@ -5,7 +5,9 @@ import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-nativ
 
 import {
   beginCompositeScale,
+  beginCountEdit,
   endCompositeScale,
+  endCountEdit,
   removeRow,
   reviewKcal,
   type ReviewHandlers,
@@ -16,6 +18,8 @@ import {
   rowsToMealItems,
   scaleComposite,
   scaleCompositeTo,
+  setCompositeCount,
+  setPiecesName,
   setRowAmount,
   toggleExpanded,
 } from '@/components/nutrition/estimate-review';
@@ -92,7 +96,8 @@ import type { MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
  */
 
 /** One logged row, as the model is shown it. A composite goes as a header with
- *  its parts; nothing about the units is restated (0047's rule). */
+ *  its parts and, where it has one, its count of pieces (0059); nothing about
+ *  the units is restated (0047's rule). */
 function toRevisionItem(node: MealItemNode): MealRevisionItem {
   const plain = (i: MealItemWithServing): MealRevisionItem => ({
     name: i.name,
@@ -105,7 +110,14 @@ function toRevisionItem(node: MealItemNode): MealRevisionItem {
     micros: i.micros,
   });
   return node.kind === 'composite'
-    ? { ...plain(node.item), components: node.components.map(plain) }
+    ? {
+        ...plain(node.item),
+        pieces:
+          node.item.serving_qty != null && node.item.piece_name != null
+            ? { name: node.item.piece_name, count: node.item.serving_qty }
+            : null,
+        components: node.components.map(plain),
+      }
     : plain(node.item);
 }
 
@@ -212,6 +224,10 @@ export default function MealReviseScreen() {
     onScaleTo: (key, text) => setRows((prev) => scaleCompositeTo(prev, key, text)),
     onScaleBegin: (key) => setRows((prev) => beginCompositeScale(prev, key)),
     onScaleEnd: (key) => setRows((prev) => endCompositeScale(prev, key)),
+    onCountChange: (key, text) => setRows((prev) => setCompositeCount(prev, key, text)),
+    onCountBegin: (key) => setRows((prev) => beginCountEdit(prev, key)),
+    onCountEnd: (key) => setRows((prev) => endCountEdit(prev, key)),
+    onPiecesName: (key, name) => setRows((prev) => setPiecesName(prev, key, name)),
   };
 
   const save = () => {
