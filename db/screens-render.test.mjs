@@ -2345,11 +2345,11 @@ const db = getDb();
 
   // The CREATE path keeps identity, because a new protocol has to be named and
   // typed before it can exist.
-  expect('protocol-edit (create, still whole)', render('protocol-edit (create)', ProtocolEditScreen), [
-    'New Protocol',
-    'Supplement stack',
-    'Create protocol',
-  ]);
+  expect(
+    'protocol-edit (create, still whole)',
+    render('protocol-edit (create)', ProtocolEditScreen),
+    ['New Protocol', 'Supplement stack', 'Create protocol']
+  );
 
   // The settings sheet: everything the editor stopped carrying, in one place,
   // with the consequence of re-typing said where the control is.
@@ -2659,11 +2659,9 @@ const db = getDb();
   expect('mission-item (no protocol)', orphan, ['Today', 'Skip today', 'Remove from today']);
   refute('mission-item (no protocol)', orphan, ['Cadence', 'Edit this item']);
 
-  expect(
-    'mission-item (gone)',
-    render('mission-item (gone)', MissionItemScreen, { id: 'nope' }),
-    ['This item is no longer on today.']
-  );
+  expect('mission-item (gone)', render('mission-item (gone)', MissionItemScreen, { id: 'nope' }), [
+    'This item is no longer on today.',
+  ]);
 
   // The per-item editor. It is a FORM, so it carries no plate; its one accent
   // is Save, and it is labelled with the version it will write.
@@ -2820,12 +2818,17 @@ const db = getDb();
     ' of 3 this wk', // …an allowance, for the quota-only protocol
     'paused',
     'Version',
-    // The ended group's one sentence — the only statement of that rule in the
-    // app, and A9 kept it deliberately.
-    'They put nothing on a day until a phase is extended or another is added.',
   ]);
   // "mixed" is gone with contentCadenceSummary, and the description left the row.
-  refute('protocols (re-cut)', hubNow, ['mixed', 'Sleep latency, not sedation.']);
+  // The ended group's explainer went with A9's blanket approval (2026-09-19): the
+  // rule is stated more fully on the DETAIL screen — with the date, beside the
+  // control that extends a phase — so the hub line was the duplicate, not the
+  // only home. Refuted here so a revert fails rather than quietly restoring it.
+  refute('protocols (re-cut)', hubNow, [
+    'mixed',
+    'Sleep latency, not sedation.',
+    'They put nothing on a day until a phase is extended or another is added.',
+  ]);
 
   // The detail, re-cut: Coming up with its honesty line, and a quota item that
   // reads its ALLOWANCE on its Now row instead of appearing in the projection.
