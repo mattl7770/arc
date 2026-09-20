@@ -220,6 +220,59 @@ export function logicalDateAtOffset(
 }
 
 /**
+ * The plain CALENDAR day an instant falls on **in a zone given by its offset** —
+ * {@link formatLocalDate}'s question asked of a stated zone, exactly as
+ * {@link logicalDateAtOffset} is {@link logicalDate}'s.
+ *
+ * **No boundary**, and that is the whole difference between the two. Apple
+ * Health keeps the calendar day (the full argument is on `localDayOf` in
+ * src/lib/health/mapping.ts) and the B3 boundary deliberately does not reach it,
+ * so the wearable pipeline needs this rather than its boundary-aware sibling.
+ *
+ * Added for the wearable seam (0060): a HealthKit sample is an absolute instant,
+ * and the day it belongs to is the day it was LIVED in, not the day it would
+ * fall on if re-read from wherever the phone is standing now.
+ */
+export function calendarDateAtOffset(instant: Date, offsetEastMinutes: number): string {
+  return formatUtcDate(new Date(instant.getTime() + offsetEastMinutes * 60_000));
+}
+
+/**
+ * Local NOON of a calendar day — the anchor everything in ARC probes a day with.
+ *
+ * Noon exists in every timezone on every day; local midnight does not, in zones
+ * that shift at midnight. The sleep window's lead-in, {@link shiftISODate} and
+ * {@link weekdayIndex} all already anchor here, and the wearable windowing does
+ * too: the offset in force "on a day" is read at that day's noon, because a
+ * midnight probe on a seam day would be asking about the boundary itself.
+ */
+export function localNoonOf(date: string): Date {
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+
+/** The instant a calendar day begins in the device's CURRENT zone. */
+export function localDayStart(date: string): Date {
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  return new Date(y, m - 1, d, 0, 0, 0, 0);
+}
+
+/**
+ * The instant a calendar day begins **at an explicit offset east**.
+ *
+ * Plain UTC arithmetic at that offset, which is safe precisely because it is
+ * UTC — there are no 23- or 25-hour days there. Its limit is stated rather than
+ * papered over: a zone's OWN DST shift writes no `timezone_changes` row, so a
+ * day under a stored foreign offset whose zone shifts mid-stay is bounded an
+ * hour out for the rest of that stay. Only a sample within an hour of midnight
+ * could change day on that, and no wake reading is.
+ */
+export function dayStartAtOffset(date: string, offsetEastMinutes: number): Date {
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  return new Date(Date.UTC(y, m - 1, d) - offsetEastMinutes * 60_000);
+}
+
+/**
  * "Today" — the logical day `now` falls in, and the spelling every call site in
  * the app already uses, which is how the boundary reached all of them without a
  * 170-file diff.

@@ -1,6 +1,43 @@
 # Spike — timezone handling, second pass: what "intelligently" should mean (D4 follow-on)
 
-**Status: PROPOSAL, 2026-09-15 (rev. 3, after two reviews) — nothing built.** Read against `main` at
+**Status: BUILT, 2026-09-19** (`claude/timezone`), migration **`0060_timezone_zone_pair.sql`**.
+The owner settled all five §9 questions on the recommended option: **Q1 (a)** the trip is derived
+from the rows with the arrival zone's seasonal pair stored per seam; **Q2 (a)** away days are
+excluded from the HRV / RHR / energy baselines and the day's own verdicts stand, carrying the
+21-day constant; **Q3 (a)** reminders re-anchor to local time automatically; **Q4 (a)** wearable
+days stay as they were lived; **Q5 (a)** a landing wakes the Coach once. All three phases shipped
+in one branch.
+
+## What shipped, and where it differs from this proposal
+
+| Where | Built as |
+| --- | --- |
+| **The migration number** | **`0060`, not the `0059` this file names.** `0059` merged while this was being written (`meal_item_piece_name`) and `0061` is reserved for the day-statuses build, so the number moved up and every in-file reference moved with it. Re-checked against `git ls-tree main -- db/migrations/` at commit: main's head is `0059`. The runner stamps `user_version = 60`. |
+| The trip | `deriveTrips` in **`src/lib/timezone/trips.ts`** — pure over injected rows and windows, no clock and no zone, exactly as §3a requires — with the database wrappers (`allTrips`, `tripsIn`, `currentTrip`, `awayDaysIn`) in `day-meta.ts`. `TRIP_SETTLE_DAYS = 21` means **21 away days, numbered 1…21, with day 22 the first day home**; the settle close date is therefore `latestSeam + 22`. The plan left that off-by-one unstated and §13(f) now pins it. |
+| **The close rule's load-bearing line** | §3a says the opening row's own close is never tested; the build makes that the explicit invariant, and `db/timezone.test.mjs` §13(l) is the test that proves it. The fixture is **Phoenix → Los Angeles in winter**: Arizona does not observe DST, so home is `−420`, and LA's stored pair is `{−480, −420}` — which *contains* the home offset. Tested as a close, the outbound flight would shut the trip it just opened and no day of the journey would ever be away. The test asserts the trap is live (`PAIR_LA.includes(PHOENIX)`) before asserting the trip is open, so it cannot pass vacuously. |
+| **`H` re-seating** | Needed no code: after a settled trip the next row's `from_offset_min` **is** the settled offset, because nothing changed in between. Stated in the walk's docblock rather than implemented twice. |
+| The declaration | Reads `day_modes` rows with `mode = 'travel'` **and an `end_date`**, as windows rather than through the resolved per-day mode. An open-ended travel row cannot close a trip: *"I am travelling"* is not a return date. |
+| **The excluded set** | **Departure from the plan, and deliberate.** §3b says the away set "unions into `oddDays`". It does not — a second predicate beside the first is how a "days that don't count" rule ends up spelled three ways. The union lives behind one named helper, **`src/lib/home/baseline-exclusions.ts`**, which returns `{ days, bySource }`: one list to filter on, and a named source for every day in it. `readiness.ts` reads `exclusions.days` and nothing else. A new source is a key in `BaselineExclusionSource` and a block in `baselineExclusionsIn` — which is the seam the day-statuses build (`0061`) extends. |
+| The cohort copy | `baselineSentence` takes a `homeDaysOnly` flag and appends *"(home days)"*, **only while an away day is actually in the 30-day window**. It reaches the readiness verdict detail and the strain note's energy clause; the metrics strip's two-word detail is left alone. `evidenceNote` gains the paused reason: *"1 more home day of HRV or resting heart rate before a baseline — paused while away from UTC−8"*. The clause names the OFFSET, never the person — ARC cannot tell a flight from a Settings change. |
+| `setsBaseline` | Untouched, as §3b's "scope of every baseline" says. §14 asserts it as a **source scan** rather than a fixture: the `setsBaseline` expression must not mention the excluded set. |
+| The Coach line | Two shapes, never both, and the precedence is the data's: `currentTrip` returns `null` on a seam day by construction, so no rule is laid over it. Measured at **~38 uncached tokens** for the away line against the §21 ceiling of 45, and the shipped seam line re-measured at ~36 — both as §5 estimated. |
+| Reminders | `onForeground` in **`src/lib/timezone/foreground.ts`**, with its own `AppState` subscription registered **above** `registerForegroundHealthSync`; the observer left the backup listener and the backup and drain stayed. The in-flight guard is a **coalescing tail**, not a join — the running pass has already read the reminders, so joining would tell a caller its change landed when it did not. `syncReminderNotifications` gained a `deps` seam (`ReminderSyncDeps`) so the rebuilt schedule can be read back headlessly, which is what §16 and §17 assert against. **Both asymmetries are written into the function's own docblock and pinned by §17**, because they are consequences of one rule and not accidents: westbound, a still-owed item may buzz **twice** — the day is 32 hours and the item was not done; eastbound, an item whose new local time has already passed is **not buzzed today** — it is dropped rather than moved, the item stays on the mission, and only the buzz goes. |
+| The landing turn | `currentSignals` gains `timezone-changed:<row.id>` from a new `timezoneChangesOn(db, date)`. Nothing entered `computeInsights`; §22 asserts the brief is byte-identical with the row and without it. |
+| The Settings field | Retired as §3d says; `users.timezone` stays inert. The sentence went under *Day starts at*: *"This is a wall-clock time and follows the phone's timezone, so on a travel day the day turns over where you are."* |
+| The wearable seam | `offsetAt` lives in its own module, **`src/lib/timezone/offset-history.ts`**, rather than inside `classify.ts` — it is a fact about the row history, not about classifying a change. `date.ts` gained four primitives (`calendarDateAtOffset`, `localNoonOf`, `localDayStart`, `dayStartAtOffset`) rather than one, because `db/day-boundary.test.mjs` §5 bans day arithmetic anywhere else and the window needs bounds as well as a date. |
+| **The seam day's bounds** | **Better than the plan describes.** §3e says the bounds "are UTC arithmetic at that offset"; the build probes a day's END as the NEXT day's start, so a seam day comes out spanning its true `24 + Δ` hours with no special case — the start under the old offset, the end under the new. §19 asserts the 12th of a nine-hours-east flight is a 15-hour window. |
+| `rebucketedAt` | In the `health_sync_state` JSON, no migration, as planned. Stamped only once a pass has **both** landed data **and** had rows to widen for — so a build that has not travelled yet keeps the reach owed for the first sync after its first observed trip, which is precisely the owner's situation under §7(A). |
+| Test numbering | §13–§23 as planned, in `db/timezone.test.mjs`, plus a new §10 in `db/migrate.test.mjs` for `0060` on a populated `timezone_changes`. §10 of the timezone suite was **amended**: its "ten days on it is gone" assertion now closes the trip with a return row first, because an open trip prints the away line on every day of it and the horizon was only ever a claim about the seam line. `db/migrate.test.mjs` §9's `user_version === 59` became `=== LATEST`, which is what that section was always asserting. |
+| Not done | §8 remains entirely open — only a real flight settles it. `body_metrics`' third day rule (§1g) is untouched and still its own change; `offsetAt` is now available to it. e5 (`HKMetadataKeyTimeZone`) stays rejected for bucketing and deferred for zone identity. |
+
+**Gate at commit:** `npx tsc --noEmit` exit 0 · `npm run db:validate` 20 passed · `npm run
+db:test` 56 suites, 0 failed · `npm run lint` 0 errors (3 pre-existing warnings) · `npx expo
+export --platform ios --clear` exit 0. Coach ceilings re-measured and **unmoved**: ~9,236 tool
+schemas / ~3,669 system prompt, delta **0 / 0** as §5 predicted.
+
+---
+
+**Original proposal, 2026-09-15 (rev. 3, after two reviews).** Read against `main` at
 `0ae73ea`. The first pass is `docs/spikes/timezone-days.md` (**BUILT 2026-09-14**, migration
 `0053`); this file is the "more thinking" the owner asked for on the day he approved it. It changes
 nothing D4 shipped; it proposes what sits on top.

@@ -37,8 +37,12 @@
  */
 process.env.TZ = 'America/Los_Angeles';
 
+import { readFileSync } from 'node:fs';
+
 import { DatabaseSync } from 'node:sqlite';
 
+import { computeInsights } from '../src/lib/ai/insights.ts';
+import { currentSignals, duePass, markPassRan } from '../src/lib/ai/pass-schedule.ts';
 import { buildTurnContext } from '../src/lib/ai/turn-context.ts';
 import {
   forwardCursor,
@@ -47,15 +51,34 @@ import {
   setDayStartsAt,
   shiftISODate,
 } from '../src/lib/db/date.ts';
+import {
+  FIRST_SYNC_DAYS,
+  rebucketWindowDays,
+  sampleQuerySpan,
+  SYNC_WINDOW_DAYS,
+  syncDayWindows,
+} from '../src/lib/health/sync.ts';
+import {
+  localDayOf,
+  quantityDailyRows,
+  SAMPLE_METRICS,
+  sleepDailyRows,
+  SLEEP_VALUE,
+} from '../src/lib/health/mapping.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
+  allTrips,
+  awayDaysIn,
+  currentTrip,
   isTimezoneChangedDay,
   observeTimezone,
   recentTimezoneChange,
   timezoneChangedDaysIn,
   timezoneHomeLine,
+  offsetHistory,
   timezoneNotesIn,
+  tripsIn,
 } from '../src/lib/db/repositories/day-meta.ts';
 import { getActiveMode, setMode } from '../src/lib/db/repositories/day-modes.ts';
 import {
@@ -66,9 +89,19 @@ import {
   missionOwed,
 } from '../src/lib/db/repositories/mission.ts';
 import { logMeal, setNutritionTargets } from '../src/lib/db/repositories/nutrition.ts';
+import { createReminder, listActiveReminders } from '../src/lib/db/repositories/reminders.ts';
 import { getTimezoneCursor, setTimezoneCursor } from '../src/lib/db/repositories/user.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
-import { deriveReadiness, nutritionVerdict } from '../src/lib/home/readiness.ts';
+import { syncReminderNotifications } from '../src/lib/notifications/reminders.ts';
+import {
+  baselineExclusionsIn,
+  hasExclusionSource,
+} from '../src/lib/home/baseline-exclusions.ts';
+import {
+  baselineDaysRemaining,
+  deriveReadiness,
+  nutritionVerdict,
+} from '../src/lib/home/readiness.ts';
 import {
   classifyOffsetChange,
   dayLengthHours,
@@ -78,6 +111,14 @@ import {
   offsetEastMinutes,
   zoneProbe,
 } from '../src/lib/timezone/classify.ts';
+import {
+  awayDayNumber,
+  deriveTrips,
+  TRIP_SETTLE_DAYS,
+  tripOn,
+} from '../src/lib/timezone/trips.ts';
+import { onForeground } from '../src/lib/timezone/foreground.ts';
+import { offsetAt } from '../src/lib/timezone/offset-history.ts';
 
 let pass = 0;
 let fail = 0;
@@ -663,6 +704,19 @@ console.log('\n10. the Coach’s state block — the fact, its horizon, and its 
 
   // THE HORIZON. Jet lag's practical span is about a day per hour of shift; past
   // that the line is noise on every turn forever, so it stops.
+  //
+  // The horizon is a claim about the SEAM line, and since 0060 the seam line only
+  // has the field once the trip has CLOSED — an open trip prints the away line
+  // instead, on every day of it, which §21 is about. So the journey is closed
+  // here first: the observed row above left UTC+1 for UTC−8, and this is the leg
+  // that comes back. Inserted rather than observed, because the observer's "to"
+  // offset is always the host's (see this file's header).
+  db.run(
+    `INSERT INTO timezone_changes
+       (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date,
+        zone_jan_offset_min, zone_jul_offset_min)
+     VALUES ('tz-return', '2026-01-16T20:00:00.000Z', -480, 60, '2026-01-16', '2026-01-16', 0, 60)`
+  );
   const later = buildTurnContext(db, new Date(2026, 0, 18, 9, 0)); // 3 days on
   /Timezone:/.test(later)
     ? ok('three days on it is still there — the body has not finished adjusting')
@@ -670,6 +724,9 @@ console.log('\n10. the Coach’s state block — the fact, its horizon, and its 
   !/this day’s readings|this day's readings/.test(later)
     ? ok('… but the baseline clause is gone, because that day is behind us')
     : bad('baseline clause still claimed on a later day');
+  !/day \d+ away/.test(later)
+    ? ok('… and it is the seam line, not a trip: the trip closed on the return')
+    : bad('away line on a closed trip', later);
   const wayLater = buildTurnContext(db, new Date(2026, 0, 25, 9, 0)); // 10 days on
   !/Timezone:/.test(wayLater)
     ? ok('ten days on it is gone — the fact stays in the record, not in the prompt')
@@ -808,6 +865,1013 @@ console.log('\n12. the 0053 schema itself');
   indexes.includes('timezone_changes_to_date_idx')
     ? ok('both day indexes exist, so the OR can use one')
     : bad('indexes', JSON.stringify(indexes));
+}
+
+// ===========================================================================
+// THE SECOND PASS (0060) — §13 on.
+//
+// D4 annotated the SEAM. These sections are about the RUN OF DAYS BETWEEN two
+// seams: the derived trip, the away days it puts in the baselines' excluded
+// set, the reason the copy gives for a paused baseline, the Coach's away line,
+// and the migration that makes the close rule read-time independent.
+//
+// Everything here is seeded by INSERTING rows rather than by observing, for the
+// reason this file's header gives: the observer's "to" offset is always the
+// host's, and a nine-day journey needs both ends. `seedSeam` is the only way a
+// row is made below, so the derivation is exercised over exactly the columns a
+// device would carry.
+// ===========================================================================
+
+/** Minutes east, by the city the plan keeps naming. */
+const LONDON_WINTER = 0;
+const LONDON_SUMMER = 60;
+const PARIS_SUMMER = 120;
+const CHICAGO_WINTER = -360;
+const CHICAGO_SUMMER = -300;
+const PHOENIX = -420; // …all year. Arizona does not observe DST, and that matters below.
+
+/** The probe pairs those zones would have returned at the arrival instant. */
+const PAIR_LONDON = [LONDON_WINTER, LONDON_SUMMER];
+const PAIR_PARIS = [LONDON_SUMMER, PARIS_SUMMER];
+const PAIR_LA = [UTC_MINUS_8, UTC_MINUS_7];
+const PAIR_CHICAGO = [CHICAGO_WINTER, CHICAGO_SUMMER];
+const PAIR_PHOENIX = [PHOENIX, PHOENIX]; // jan === jul: no DST, so equality is the whole test.
+
+let seamSeq = 0;
+/**
+ * Insert one observed change exactly as `observeTimezone` would have written it.
+ *
+ * `pair` omitted means a 0053 row — one written before migration 0060, which
+ * can never answer the seasonal question and must therefore close on exact
+ * equality alone.
+ */
+function seedSeam(db, { day, from, to, fromDay, toDay, pair, id }) {
+  const rowId = id ?? `tz-${++seamSeq}`;
+  db.run(
+    `INSERT INTO timezone_changes
+       (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date,
+        zone_jan_offset_min, zone_jul_offset_min)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      rowId,
+      `${day}T20:00:00.000Z`,
+      from,
+      to,
+      fromDay ?? day,
+      toDay ?? day,
+      pair ? pair[0] : null,
+      pair ? pair[1] : null,
+    ]
+  );
+  return rowId;
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n13. trips — the run of days between two seams, and how it closes');
+{
+  // (a) OUT AND BACK. The plan's opening example: out on the 12th, back on the
+  // 21st, and the eight days in between are what D4 could not see.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-09-30');
+    eq('out and back is ONE trip', trips.length, 1);
+    eq('… closed by the return row', trips[0].closedBy, 'return');
+    eq('… which left on the 12th', trips[0].startedOn, '2026-09-12');
+    eq('… and stopped being a trip on the 21st', trips[0].closedOn, '2026-09-21');
+    eq('… so its away days are the eight days between the seams', trips[0].awayDays.length, 8);
+    eq('… beginning the morning after the flight', trips[0].awayDays[0], '2026-09-13');
+    eq('… and ending the day before the return', trips[0].awayDays[7], '2026-09-20');
+    eq('the seam days are NOT away days — they are the bounds', tripOn(trips, '2026-09-12'), null);
+    eq('… at either end', tripOn(trips, '2026-09-21'), null);
+    eq('and the home offset is the one it left from', trips[0].homeOffsetMin, UTC_MINUS_8);
+  }
+
+  // (b) OUT, LEG, BACK. A connecting hop does not end the trip and does not
+  // restart the "how long have I been away" count.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-09-15', from: LONDON_SUMMER, to: PARIS_SUMMER, pair: PAIR_PARIS });
+    seedSeam(db, { day: '2026-09-21', from: PARIS_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-09-30');
+    eq('a leg keeps it one trip', trips.length, 1);
+    eq('… still eight away days', trips[0].awayDays.length, 8);
+    eq('… the settle clock moved to the leg', trips[0].latestSeamOn, '2026-09-15');
+    eq('… but the day count still runs from the departure', awayDayNumber(trips[0], '2026-09-16'), 4);
+    eq('… and the body is under the leg’s offset', trips[0].offsetMin, PARIS_SUMMER);
+  }
+
+  // (c) THE STORED PAIR. LA in winter → London → LA in SUMMER. The return
+  // arrives on −420 and the trip left −480, so exact equality says "not home"
+  // and the trip would hang open for another three weeks. The arrival zone's own
+  // pair is what says otherwise, and it is on the row.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-03-01', from: UTC_MINUS_8, to: LONDON_WINTER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-03-20', from: LONDON_WINTER, to: UTC_MINUS_7, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-04-10');
+    eq('a trip that left in PST and returned in PDT has come home', trips[0].closedBy, 'return');
+    eq('… on the return row’s own day', trips[0].closedOn, '2026-03-20');
+
+    // …and the same journey with a 0053 row does NOT close there. A NULL pair
+    // means "this row cannot answer that question", and the fallback is the
+    // behaviour 0053 already had.
+    const { db: old } = freshDb();
+    seedSeam(old, { day: '2026-03-01', from: UTC_MINUS_8, to: LONDON_WINTER, pair: PAIR_LONDON });
+    seedSeam(old, { day: '2026-03-20', from: LONDON_WINTER, to: UTC_MINUS_7 });
+    // Read from far enough out to see the stillness close land: the return row
+    // became a LEG, so the settle clock runs from the 20th and the trip is still
+    // open on 10 April. That lateness IS the cost of a missing pair.
+    eq('a NULL pair leaves the trip open on the day the pair would have closed it',
+      allTrips(old, '2026-04-10')[0].closedOn, null);
+    const oldTrips = allTrips(old, '2026-04-15');
+    eq('a NULL pair closes on equality only', oldTrips[0].closedBy, 'settled');
+    eq('… three weeks after the last seam, not on the return', oldTrips[0].closedOn, '2026-04-11');
+  }
+
+  // (d) LA → CHICAGO STAYS OPEN, AND THE ANSWER DOES NOT MOVE WITH THE READER.
+  // Chicago's pair is {−360, −300} and home is −480, so neither test matches.
+  // The point of the case is the SECOND assertion: the same rows through the
+  // pure derivation, with no database, no clock and no zone, give the same trip.
+  {
+    const { db } = freshDb();
+    const rowId = seedSeam(db, {
+      day: '2026-09-12',
+      from: UTC_MINUS_8,
+      to: CHICAGO_WINTER,
+      pair: PAIR_CHICAGO,
+    });
+    const trips = allTrips(db, '2026-09-20');
+    eq('a domestic hop with no way home in its pair stays open', trips[0].closedOn, null);
+    eq('… and every day since is an away day', trips[0].awayDays.length, 8);
+
+    const pure = deriveTrips({
+      rows: [
+        {
+          id: rowId,
+          from_offset_min: UTC_MINUS_8,
+          to_offset_min: CHICAGO_WINTER,
+          from_local_date: '2026-09-12',
+          to_local_date: '2026-09-12',
+          zone_jan_offset_min: CHICAGO_WINTER,
+          zone_jul_offset_min: CHICAGO_SUMMER,
+        },
+      ],
+      travelWindows: [],
+      today: '2026-09-20',
+    });
+    eq('the derivation reads no probe, so the answer is the same anywhere', pure[0].closedOn, null);
+    eq('… down to the away-day count', pure[0].awayDays.length, 8);
+  }
+
+  // (e) MARCH ACROSS DST, THEN JUNE. Two trips, and the June one is measured
+  // against the offset the March one came home to.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-03-05', from: UTC_MINUS_8, to: LONDON_WINTER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-03-20', from: LONDON_WINTER, to: UTC_MINUS_7, pair: PAIR_LA });
+    seedSeam(db, { day: '2026-06-10', from: UTC_MINUS_7, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-06-20', from: LONDON_SUMMER, to: UTC_MINUS_7, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-07-01');
+    eq('March and June are two trips, not one that never ended', trips.length, 2);
+    eq('… both closed on their return', trips[1].closedBy, 'return');
+    eq('… and June is measured from PDT, the offset March came home to', trips[1].homeOffsetMin, UTC_MINUS_7);
+  }
+
+  // (f) A FIRST-EVER ROW THAT IS INBOUND. `observeTimezone` writes the cursor and
+  // no row on its first observation, so a build first launched abroad — or a
+  // database restored abroad — makes its first row a RETURN leg. Without the
+  // settle rule that opens a trip whose home is London and never closes.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-01', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-10-01');
+    eq('an inbound first row opens a trip against the wrong home', trips[0].homeOffsetMin, LONDON_SUMMER);
+    eq('… and three weeks of stillness is what closes it', trips[0].closedBy, 'settled');
+    eq('… on day 22', trips[0].closedOn, '2026-09-23');
+    eq('… having called 21 days away', trips[0].awayDays.length, TRIP_SETTLE_DAYS);
+    eq('day 22 is home again', tripOn(trips, '2026-09-23'), null);
+
+    // …and the NEXT trip opens against the offset the settle left ARC sitting in.
+    seedSeam(db, { day: '2026-10-10', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    const healed = allTrips(db, '2026-10-15');
+    eq('the next trip opens against the re-seated home', healed[1].homeOffsetMin, UTC_MINUS_8);
+  }
+
+  // (g) A RELOCATION, THEN A LATER TRIP. Same self-heal, the other way round:
+  // the move opens a trip that settles, and the trip taken from the new city is
+  // measured against the new city.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-01-05', from: UTC_MINUS_8, to: LONDON_WINTER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-06-01', from: LONDON_SUMMER, to: PARIS_SUMMER, pair: PAIR_PARIS });
+    seedSeam(db, { day: '2026-06-05', from: PARIS_SUMMER, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    const trips = allTrips(db, '2026-06-30');
+    eq('the move settles rather than swallowing every later trip', trips[0].closedBy, 'settled');
+    eq('the trip from the new city is its own', trips.length, 2);
+    eq('… measured against the new home', trips[1].homeOffsetMin, LONDON_SUMMER);
+    eq('… and closed by its return', trips[1].closedBy, 'return');
+  }
+
+  // (h) THE DECLARATION. A Traveling window you set closes an open trip the day
+  // after it ends — the immediate correction for both cases above.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    setMode(db, { mode: 'travel', startDate: '2026-09-12', endDate: '2026-09-20' });
+    const trips = allTrips(db, '2026-09-30');
+    eq('“I am back” closes the trip', trips[0].closedBy, 'declaration');
+    eq('… the day after the window ends', trips[0].closedOn, '2026-09-21');
+    eq('… so the window’s own last day is still an away day', trips[0].awayDays.at(-1), '2026-09-20');
+  }
+
+  // (i) WHERE THEY DISAGREE, THE EARLIER CLOSE WINS. A return row is a fact; a
+  // later `until` simply ran over.
+  {
+    const { db: early } = freshDb();
+    seedSeam(early, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(early, { day: '2026-09-25', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    setMode(early, { mode: 'travel', startDate: '2026-09-12', endDate: '2026-09-18' });
+    eq('a window that ends first wins', allTrips(early, '2026-09-30')[0].closedBy, 'declaration');
+
+    const { db: late } = freshDb();
+    seedSeam(late, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(late, { day: '2026-09-25', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    setMode(late, { mode: 'travel', startDate: '2026-09-12', endDate: '2026-09-30' });
+    eq('a return row that lands first wins', allTrips(late, '2026-10-05')[0].closedBy, 'return');
+  }
+
+  // (j) A WINDOW WITH NO ROW OPENS NOTHING. Los Angeles → Seattle is a real
+  // trip and not an "away" one: the body is under the same offset, which is what
+  // readiness's exclusion is about. The declaration closes trips; it never opens.
+  {
+    const { db } = freshDb();
+    setMode(db, { mode: 'travel', startDate: '2026-09-12', endDate: '2026-09-20' });
+    eq('a declared trip with no zone change is no trip here', allTrips(db, '2026-09-30').length, 0);
+    eq('… and contributes no away days', awayDaysIn(db, '2026-09-01', '2026-09-30').size, 0);
+  }
+
+  // (k) A TRIP THAT OPENED BEFORE THE WINDOW IS STILL SEEN. The walk is
+  // unbounded for exactly this: a windowed read would report the middle of a
+  // journey as home.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    eq('a two-day window in the middle still finds the trip', tripsIn(db, '2026-09-18', '2026-09-19').length, 1);
+    const days = awayDaysIn(db, '2026-09-18', '2026-09-19');
+    days.size === 2 && days.has('2026-09-18') && days.has('2026-09-19')
+      ? ok('… and reports exactly the away days inside it')
+      : bad('windowed away days', JSON.stringify([...days]));
+  }
+
+  // (l) THE CLOSE RULE, PROVED AGAINST ITS OWN OUTBOUND LEG.
+  //
+  // This is the assertion the seasonal leniency exists to survive. Phoenix does
+  // not observe DST, so a trip that leaves it has home = −420; Los Angeles in
+  // winter is −480 and its pair is {−480, −420}, which CONTAINS that home
+  // offset. Tested as a close, the outbound flight would shut the trip it just
+  // opened and no day of the journey would ever be away.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-01-10', from: PHOENIX, to: UTC_MINUS_8, pair: PAIR_LA });
+    PAIR_LA.includes(PHOENIX)
+      ? ok('the outbound row’s own arrival pair CONTAINS the home offset — the trap is live')
+      : bad('the fixture does not reproduce the trap', JSON.stringify(PAIR_LA));
+    const trips = allTrips(db, '2026-01-20');
+    eq('…and the trip is open anyway: the opening row is never its own close', trips[0].closedOn, null);
+    eq('… so the days since are away', trips[0].awayDays.length, 10);
+    eq('… against Phoenix, the offset it left', trips[0].homeOffsetMin, PHOENIX);
+
+    // The return does close it, on plain equality, because Phoenix's pair
+    // degenerates to a single value and the leniency has nothing to add.
+    seedSeam(db, { day: '2026-01-20', from: UTC_MINUS_8, to: PHOENIX, pair: PAIR_PHOENIX });
+    const closed = allTrips(db, '2026-01-25');
+    eq('the return closes it on exact equality', closed[0].closedBy, 'return');
+    eq('… on the 20th', closed[0].closedOn, '2026-01-20');
+  }
+
+  // (m) A SEAM THAT CROSSED THE DAY BOUNDARY. The trip's bounds are the ARRIVAL
+  // day at the start and the DEPARTURE day at the end, so a two-day seam never
+  // steals a day from the run or gives one to it.
+  {
+    const { db } = freshDb();
+    seedSeam(db, {
+      day: '2026-09-12',
+      fromDay: '2026-09-12',
+      toDay: '2026-09-13',
+      from: UTC_MINUS_8,
+      to: LONDON_SUMMER,
+      pair: PAIR_LONDON,
+    });
+    seedSeam(db, {
+      day: '2026-09-21',
+      fromDay: '2026-09-20',
+      toDay: '2026-09-21',
+      from: LONDON_SUMMER,
+      to: UTC_MINUS_8,
+      pair: PAIR_LA,
+    });
+    const trip = allTrips(db, '2026-09-30')[0];
+    eq('the run starts after the arrival day', trip.awayDays[0], '2026-09-14');
+    eq('… and ends before the departure day', trip.awayDays.at(-1), '2026-09-19');
+    eq('… so both marked days of both seams stay seams', trip.awayDays.length, 6);
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n14. the baselines exclude away days — one list, two sources');
+{
+  const TODAY = '2026-09-25';
+  // A flat 50 ms at home; 20 ms on the days abroad, which is what a nine-day
+  // trip actually does to HRV and exactly the shape that drags a 30-day mean
+  // down for a month after the return.
+  const AWAY = new Set([
+    '2026-09-13',
+    '2026-09-14',
+    '2026-09-15',
+    '2026-09-16',
+    '2026-09-17',
+    '2026-09-18',
+    '2026-09-19',
+    '2026-09-20',
+  ]);
+  const plant = (db, end) => {
+    const rows = [];
+    for (let i = 0; i <= 40; i++) {
+      const date = shiftISODate(end, -i);
+      rows.push({
+        date,
+        metricType: 'hrv',
+        value: AWAY.has(date) ? 20 : 50,
+        unit: 'ms',
+        sourceDevice: 'apple_watch',
+        sourceRawId: `hk:hrv:${date}`,
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      });
+    }
+    upsertWearableRows(db, rows);
+  };
+  const flight = (db) => {
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+  };
+
+  // Without the trip, the eight low days sit unmarked in the window and a normal
+  // 50 ms morning reads as ABOVE a baseline they pulled down. That is the silent
+  // failure this whole section exists for.
+  const { db: unmarked } = freshDb();
+  plant(unmarked, TODAY);
+  const before = deriveReadiness(unmarked, TODAY, { now: new Date(2026, 8, 25, 9, 0) });
+  /above your 30-day baseline/.test(before.readiness.detail)
+    ? ok('with the away days counted, a normal morning reads as above baseline')
+    : bad('unmarked post-trip baseline', before.readiness.detail);
+
+  const { db } = freshDb();
+  plant(db, TODAY);
+  flight(db);
+  const after = deriveReadiness(db, TODAY, { now: new Date(2026, 8, 25, 9, 0) });
+  eq(
+    'excluded, the baseline is the home days exactly — and says so',
+    after.readiness.detail,
+    'HRV 50 ms · at your 30-day baseline (home days)'
+  );
+
+  // THE EXCLUDED SET, AND ITS SOURCES. One list; a seam day and an away day are
+  // in it for different reasons and the helper can still tell them apart. This
+  // is the contract the day-statuses build extends.
+  const exclusions = baselineExclusionsIn(db, '2026-08-25', TODAY, TODAY);
+  exclusions.days.has('2026-09-12') && exclusions.days.has('2026-09-16')
+    ? ok('the seam day and an away day are both in the one excluded list')
+    : bad('excluded set', JSON.stringify([...exclusions.days]));
+  hasExclusionSource(exclusions, 'timezone-change') && hasExclusionSource(exclusions, 'away')
+    ? ok('… and each is still attributable to the source that put it there')
+    : bad('sources not nameable', JSON.stringify([...exclusions.bySource.keys()]));
+  eq(
+    'the seam day is named by the seam source, not the trip',
+    exclusions.bySource.get('away').has('2026-09-12'),
+    false
+  );
+
+  // EXCLUDED, NOT DELETED. An away day still renders its own reading.
+  const awayDay = deriveReadiness(db, '2026-09-16', { now: new Date(2026, 8, 16, 9, 0) });
+  eq(
+    'an away day still shows what the body actually did',
+    awayDay.metrics.find((m) => m.id === 'hrv').value,
+    '20 ms'
+  );
+
+  // POST-RETURN. The morning after landing grades against pre-trip home days,
+  // not against the fortnight it just lived through.
+  const { db: back } = freshDb();
+  plant(back, '2026-09-22');
+  flight(back);
+  const landed = deriveReadiness(back, '2026-09-22', { now: new Date(2026, 8, 22, 9, 0) });
+  eq(
+    'the morning after landing grades against pre-trip home days',
+    landed.readiness.detail,
+    'HRV 50 ms · at your 30-day baseline (home days)'
+  );
+
+  // …AND ONLY WHILE AN AWAY DAY IS IN THE WINDOW. Once the trip has aged out of
+  // the 30 days, the cohort clause goes: a distinction that made no difference
+  // is noise about a distinction.
+  const { db: settled } = freshDb();
+  plant(settled, '2026-11-01');
+  flight(settled);
+  const long = deriveReadiness(settled, '2026-11-01', { now: new Date(2026, 10, 1, 9, 0) });
+  !/home days/.test(long.readiness.detail)
+    ? ok('once the trip is out of the window the cohort clause goes quiet')
+    : bad('cohort clause outstayed the trip', long.readiness.detail);
+
+  // THE NAMED EXCEPTION. `setsBaseline` is computed from days that were TRAINED,
+  // which is already the right population — a travel week's sessions were real
+  // sessions — so it takes no excluded set, and this is a claim about the source
+  // rather than about one fixture.
+  const source = readFileSync(new URL('../src/lib/home/readiness.ts', import.meta.url), 'utf8');
+  const setsBlock = source.slice(source.indexOf('const setsBaseline ='), source.indexOf('const stepsToday'));
+  !setsBlock.includes('oddDays')
+    ? ok('the sets baseline takes no excluded set — the exception is in the code, not just the docs')
+    : bad('setsBaseline started filtering', setsBlock);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n15. a paused baseline says why it is paused');
+{
+  // Four home days of HRV, then a flight. The gate needs five, so the verdict is
+  // still `unknown` — and the number it reports will not move for as long as the
+  // trip lasts, because the days arriving do not count. A reader watching "1 more
+  // day" hold at 1 for a fortnight is owed the reason.
+  const plant = (db, dates) =>
+    upsertWearableRows(
+      db,
+      dates.map((date) => ({
+        date,
+        metricType: 'hrv',
+        value: 50,
+        unit: 'ms',
+        sourceDevice: 'apple_watch',
+        sourceRawId: `hk:hrv:${date}`,
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      }))
+    );
+  const HOME = ['2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11'];
+
+  const { db } = freshDb();
+  plant(db, [...HOME, '2026-09-13', '2026-09-14', '2026-09-15', '2026-09-16']);
+  seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  const away = deriveReadiness(db, '2026-09-16', { now: new Date(2026, 8, 16, 9, 0) });
+  const note = away.pillars.find((p) => p.label === 'Recovery').note;
+  eq(
+    'the wait names the cohort and the reason, not just a number',
+    note,
+    '1 more home day of HRV or resting heart rate before a baseline — paused while away from UTC−8'
+  );
+  eq('… and it is still an honest count', baselineDaysRemaining(
+    [...HOME, '2026-09-13', '2026-09-14', '2026-09-15'].map((date) => ({ date, value: 50 })),
+    '2026-09-16',
+    baselineExclusionsIn(db, '2026-08-16', '2026-09-16', '2026-09-16').days
+  ), 1);
+
+  // DAY 22. The trip settles, the pause is over, and the wait goes back to the
+  // plain sentence — ARC has stopped calling this place away.
+  const { db: settled } = freshDb();
+  plant(settled, [...HOME, '2026-10-04']);
+  seedSeam(settled, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  const home = deriveReadiness(settled, '2026-10-04', { now: new Date(2026, 9, 4, 9, 0) });
+  const settledNote = home.pillars.find((p) => p.label === 'Recovery').note;
+  !/paused/.test(settledNote)
+    ? ok('on day 22 the pause clause is gone — ARC calls this place home')
+    : bad('still paused past the settle', settledNote);
+  eq('and no trip is open to pause it', currentTrip(settled, '2026-10-04'), null);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n21. the Coach’s line during a trip — one shape or the other, never both');
+{
+  const { db } = freshDb();
+  seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  const lineOn = (y, m, d) =>
+    buildTurnContext(db, new Date(y, m, d, 9, 0))
+      .split('\n')
+      .find((l) => l.startsWith('Timezone:')) ?? null;
+
+  const seam = lineOn(2026, 8, 12);
+  seam && seam.includes('changed today') && !/day \d+ away/.test(seam)
+    ? ok(`the seam day prints the seam line: "${seam}"`)
+    : bad('seam day', seam);
+
+  const day1 = lineOn(2026, 8, 13);
+  eq(
+    'the first morning abroad prints the trip',
+    day1,
+    'Timezone: UTC+1 — day 1 away from UTC−8 (left 2026-09-12, 9h east); readiness baseline is home days only'
+  );
+
+  // DAY 4 IS INSIDE THE SHIPPED FIVE-DAY TAIL, and the trip still wins: the away
+  // line carries the seam fact itself, so the tail would add nothing.
+  const day4 = lineOn(2026, 8, 16);
+  day4.includes('day 4 away') && !day4.includes('changed')
+    ? ok('inside the five-day tail the trip line wins — never both')
+    : bad('precedence inside the tail', day4);
+
+  // THE COST. Uncached, on every away-day turn, so it is measured.
+  const bare = buildTurnContext(freshDb().db, new Date(2026, 8, 16, 9, 0));
+  const withTrip = buildTurnContext(db, new Date(2026, 8, 16, 9, 0));
+  const delta = Math.round((withTrip.length - bare.length) / 2.8);
+  delta < 45
+    ? ok(`the away line costs ~${delta} uncached tokens, and only while a trip is open`)
+    : bad('away line over budget', `${delta} tok`);
+
+  // DAY 22. The trip has settled; nothing is said, because there is nothing
+  // standing to say.
+  eq('day 22 says nothing at all', lineOn(2026, 9, 4), null);
+
+  // THE RETURN SEAM, AND THE TAIL AFTER IT.
+  const { db: home } = freshDb();
+  seedSeam(home, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  seedSeam(home, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+  const homeLineOn = (y, m, d) =>
+    buildTurnContext(home, new Date(y, m, d, 9, 0))
+      .split('\n')
+      .find((l) => l.startsWith('Timezone:')) ?? null;
+  const returned = homeLineOn(2026, 8, 21);
+  returned.includes('changed today') && !/day \d+ away/.test(returned)
+    ? ok('the return seam prints the seam line, not a trip')
+    : bad('return seam', returned);
+  const tail = homeLineOn(2026, 8, 24);
+  tail.includes('changed 2026-09-21') && !/day \d+ away/.test(tail)
+    ? ok('and the five-day tail prints only after the trip has closed')
+    : bad('tail after close', tail);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n23. the 0060 columns, and what the observer now writes into them');
+{
+  const { db, raw } = freshDb();
+  // THE OBSERVER WRITES THE PROBE. Host TZ is America/Los_Angeles, so the pair
+  // the observer has in hand at this instant is LA's own {−480, −420} — the
+  // ARRIVAL zone, which is the one whose seasons the close rule asks about.
+  setTimezoneCursor(db, UTC_PLUS_1);
+  const row = observeTimezone(db, WINTER_NOON);
+  eq('the arrival zone’s January offset is kept', row.zone_jan_offset_min, UTC_MINUS_8);
+  eq('… and its July one', row.zone_jul_offset_min, UTC_MINUS_7);
+  eq('… beside the offsets 0053 already stored', row.to_offset_min, UTC_MINUS_8);
+
+  // A RESTORED CURSOR PRODUCES EXACTLY ONE ROW. The cursor rides inside the
+  // ARCB1 snapshot, so a database restored in another zone synthesises one row
+  // on the next launch's observation — one, not one per foreground.
+  eq('a second observation at the same offset writes nothing', observeTimezone(db, WINTER_NOON), null);
+  eq(
+    'so the restore is one row, not one per foreground',
+    raw.prepare('SELECT count(*) c FROM timezone_changes').get().c,
+    1
+  );
+
+  // THE CHECKS. Nullable, so a 0053 row stays valid; ±840 is the real range.
+  const insert = (id, jan, jul) =>
+    raw.exec(
+      `INSERT INTO timezone_changes
+         (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date,
+          zone_jan_offset_min, zone_jul_offset_min)
+       VALUES ('${id}', '2026-02-01T20:00:00.000Z', -480, 60, '2026-02-01', '2026-02-01', ${jan}, ${jul})`
+    );
+  let nullOk = true;
+  try {
+    insert('pair-null', 'NULL', 'NULL');
+  } catch {
+    nullOk = false;
+  }
+  nullOk ? ok('a NULL pair is accepted — every 0053 row is still a valid row') : bad('NULL pair rejected');
+  let refused = false;
+  try {
+    insert('pair-bad', '0', '841');
+  } catch {
+    refused = true;
+  }
+  refused ? ok('±841 is refused, as the two offset columns already are') : bad('841 accepted');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n16. the re-anchor fires on the observation, once, and never interleaves');
+{
+  // `onForeground` is the whole of the wiring, so it is asserted against an
+  // injected re-sync rather than against the OS.
+  const { db } = freshDb();
+  const calls = [];
+  const deps = {
+    syncReminders: (_db, when) => {
+      calls.push(when);
+      return Promise.resolve();
+    },
+  };
+
+  eq('a first observation writes the cursor and re-anchors nothing', onForeground(db, WINTER_NOON, deps), null);
+  eq('… because there was no change to react to', calls.length, 0);
+
+  setTimezoneCursor(db, UTC_PLUS_1);
+  const row = onForeground(db, WINTER_NOON, deps);
+  row !== null ? ok('an observed change returns its row') : bad('no row on a real change');
+  eq('… and re-anchors the schedule, once', calls.length, 1);
+
+  onForeground(db, WINTER_NOON, deps);
+  eq('an ordinary foreground re-anchors nothing at all', calls.length, 1);
+
+  // A DST change moves the cursor and writes no row (0053), so it must not
+  // rebuild the schedule either: the wall clock did not move relative to the
+  // zone, and daily reminders float natively.
+  const { db: dst } = freshDb();
+  const dstCalls = [];
+  setTimezoneCursor(dst, UTC_MINUS_7); // LA summer → LA winter is the autumn shift
+  onForeground(dst, WINTER_NOON, {
+    syncReminders: () => {
+      dstCalls.push(1);
+      return Promise.resolve();
+    },
+  });
+  eq('a DST shift re-anchors nothing — no row, no rebuild', dstCalls.length, 0);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n17. the two seam behaviours, both deliberate and both stated');
+{
+  // The asymmetries are a consequence of ONE rule — `reminderTrigger` and
+  // `protocolRemindersDue` both refuse a moment in the past — so they are
+  // exercised over the injected `now`, never by moving the host's zone. That is
+  // the same discipline classify.ts is built on, and it is what makes these two
+  // assertions mean the same thing on any machine.
+  const scheduleOf = async (db, now) => {
+    const scheduled = [];
+    await syncReminderNotifications(db, now, {
+      available: () => true,
+      cancelAll: async () => scheduled.splice(0, scheduled.length),
+      ensurePermission: async () => true,
+      schedule: async (request) => {
+        scheduled.push(request);
+      },
+    });
+    return scheduled;
+  };
+
+  // WESTBOUND. The landing rolled the clock back to 13:00; the 21:00 item is
+  // still ahead, and it is genuinely still owed — the day is 32 hours long. The
+  // rebuilt schedule carries it ONCE, for 21:00 where the body now is. That it
+  // may therefore buzz twice in one calendar day is the cost, and it is the
+  // right cost: the item was not done.
+  {
+    const { db } = freshDb();
+    createReminder(db, { title: 'Magnesium', time: '21:00', repeat: 'once', date: '2026-09-12' });
+    const scheduled = await scheduleOf(db, new Date(2026, 8, 12, 13, 0));
+    eq('westbound: the still-owed item is on the rebuilt schedule', scheduled.length, 1);
+    eq('… exactly once', scheduled.filter((s) => s.content.title === 'Magnesium').length, 1);
+    const when = scheduled[0].trigger.date;
+    when.getHours() === 21 && when.getDate() === 12
+      ? ok('… for 21:00 local, where the body is standing')
+      : bad('westbound anchor', String(when));
+  }
+
+  // EASTBOUND. The landing moved the clock forward past 07:00. The item's new
+  // local time has already gone, so it is DROPPED rather than moved — ARC does
+  // not decide to nudge for something that may well have been taken on the
+  // plane. The item stays on the list; only the buzz goes.
+  {
+    const { db } = freshDb();
+    createReminder(db, { title: 'Magnesium', time: '07:00', repeat: 'once', date: '2026-09-12' });
+    const scheduled = await scheduleOf(db, new Date(2026, 8, 12, 9, 0));
+    eq('eastbound: a passed item is not buzzed today', scheduled.length, 0);
+    eq('… and it is still there to be done', listActiveReminders(db).length, 1);
+    eq('… still active, not quietly closed', listActiveReminders(db)[0].status, 'active');
+  }
+
+  // THE RACE, which existed before any of this and which the re-anchor would
+  // have made deterministic: an eastbound overnight landing is also a day
+  // rollover, so the rollover's re-sync and the observer's fire on the same
+  // AppState event. This function opens by cancelling the WHOLE OS schedule, so
+  // two overlapping passes either double every nudge or drop them.
+  {
+    const { db } = freshDb();
+    createReminder(db, { title: 'Evening', time: '21:00', repeat: 'once', date: '2026-09-12' });
+    let live = 0;
+    let overlapped = false;
+    const schedule = [];
+    const deps = {
+      available: () => true,
+      cancelAll: async () => {
+        live += 1;
+        if (live > 1) overlapped = true;
+        await Promise.resolve();
+        schedule.splice(0, schedule.length);
+      },
+      ensurePermission: async () => {
+        await Promise.resolve();
+        return true;
+      },
+      schedule: async (request) => {
+        await Promise.resolve();
+        schedule.push(request);
+      },
+    };
+    const release = () => {
+      live -= 1;
+    };
+    const now = new Date(2026, 8, 12, 13, 0);
+    const a = syncReminderNotifications(db, now, deps).then(release);
+    const b = syncReminderNotifications(db, now, deps).then(release);
+    const c = syncReminderNotifications(db, now, deps).then(release);
+    await Promise.all([a, b, c]);
+    !overlapped
+      ? ok('three concurrent calls never interleave — one pass, then one tail')
+      : bad('passes overlapped');
+    eq('and the final schedule matches the database exactly', schedule.length, 1);
+    eq('… with the item it should carry', schedule[0].content.title, 'Evening');
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n22. the landing wakes the Coach once, and the brief never hears about it');
+{
+  // THE SIGNAL. Read from the ROW, not from the observer's return value — which
+  // is what makes app/_layout.tsx's listener order a soft dependency rather than
+  // a correctness requirement.
+  const { db } = freshDb();
+  const NOW = new Date(2026, 8, 12, 13, 0);
+  eq('no change, no landing signal', currentSignals(db, NOW).length, 0);
+
+  const id = seedSeam(db, {
+    day: '2026-09-12',
+    from: UTC_MINUS_8,
+    to: LONDON_SUMMER,
+    pair: PAIR_LONDON,
+  });
+  const signals = currentSignals(db, NOW);
+  signals.includes(`timezone-changed:${id}`)
+    ? ok('a change observed today is a signal, seeded directly with no observer call')
+    : bad('no landing signal', JSON.stringify(signals));
+  duePass(db, NOW)?.kind === 'daily'
+    ? ok('the first pass of the day is still the daily one')
+    : bad('daily pass missing');
+
+  // ONCE PER SEAM. Keyed on the ROW id, so a change that crossed the day
+  // boundary — two marked days, one row — fires on the first and is silent on
+  // the second.
+  markPassRan(db, NOW);
+  eq('a pass that ran silences it', duePass(db, NOW), null);
+
+  const { db: crossing } = freshDb();
+  const crossingId = seedSeam(crossing, {
+    day: '2026-09-12',
+    fromDay: '2026-09-12',
+    toDay: '2026-09-13',
+    from: UTC_MINUS_8,
+    to: LONDON_SUMMER,
+    pair: PAIR_LONDON,
+  });
+  const day1 = new Date(2026, 8, 12, 13, 0);
+  const day2 = new Date(2026, 8, 13, 13, 0);
+  currentSignals(crossing, day1).includes(`timezone-changed:${crossingId}`) &&
+  currentSignals(crossing, day2).includes(`timezone-changed:${crossingId}`)
+    ? ok('both marked days see the SAME id — one row, one signal')
+    : bad('boundary-crossing signal');
+  markPassRan(crossing, day1);
+  duePass(crossing, day2)?.kind === 'daily'
+    ? ok('day two is a new day, so the daily pass carries it')
+    : bad('day two pass');
+  // …and once the day's pass has run, the seam does not buy a second one.
+  markPassRan(crossing, day2);
+  eq('the second marked day never re-fires the seam', duePass(crossing, day2), null);
+
+  // THE BRIEF IS UNTOUCHED. Nothing entered computeInsights, so Home's brief is
+  // byte-identical with the row and without it.
+  const { db: brief } = freshDb();
+  const withoutRow = JSON.stringify(computeInsights(brief, NOW));
+  seedSeam(brief, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  eq('the brief is byte-identical on a seam day', JSON.stringify(computeInsights(brief, NOW)), withoutRow);
+}
+
+// ===========================================================================
+// THE WEARABLE SEAM (§18–20).
+//
+// D4's rule is *annotate the day, never re-attribute the rows*, and its own
+// docblock names the health sync as the one place ARC broke it: the pass
+// re-derived every sample's day under the device's CURRENT zone, so the first
+// sync after landing re-dated a fortnight of history and the prune then deleted
+// what the re-dating orphaned.
+//
+// §18 pins the OLD behaviour explicitly, so §19 is a diff against a known
+// baseline rather than an assertion floating in space.
+// ===========================================================================
+
+/** One HRV sample, as the reader hands it to the mapper. */
+const hrvSample = (iso) => ({
+  startISO: iso,
+  endISO: iso,
+  value: 50,
+  provenance: { bundleId: 'com.apple.health.ABC', productType: 'Watch6,1', sourceName: 'Watch' },
+});
+const HRV_SPEC = SAMPLE_METRICS.find((s) => s.metricType === 'hrv');
+
+// ---------------------------------------------------------------------------
+console.log('\n18. localDayOf takes an offset — the old behaviour, pinned');
+{
+  // An evening reading in Los Angeles: 20:00 on 1 September is 03:00 UTC on the
+  // 2nd. Read under −480 it is the 1st; read under +60 it is the 2nd. That one
+  // sample is the whole defect in miniature, and this is the assertion the first
+  // spike left open (its test 10).
+  const EVENING_LA = '2026-09-02T03:00:00.000Z';
+  eq('under the zone it was lived in, it is the 1st', localDayOf(EVENING_LA, UTC_MINUS_8), '2026-09-01');
+  eq('read from London afterwards, it becomes the 2nd', localDayOf(EVENING_LA, LONDON_SUMMER), '2026-09-02');
+  eq('and with no offset it is the host’s own day', localDayOf(EVENING_LA, null), '2026-09-01');
+
+  // The same statement through the mapper, which is where the bucket key is
+  // built: two offsets, two `hk:` ids, one sample.
+  const under = (offset) => quantityDailyRows(HRV_SPEC, [hrvSample(EVENING_LA)], () => offset);
+  eq('the bucket key moves with the offset', under(UTC_MINUS_8)[0].sourceRawId, 'hk:hrv:2026-09-01');
+  eq('… which is exactly how a fortnight of history re-dated itself', under(LONDON_SUMMER)[0].sourceRawId, 'hk:hrv:2026-09-02');
+
+  // THE THREE BRANCHES of the step function, over one journey.
+  const rows = [
+    {
+      changed_at: '2026-09-12T20:00:00.000Z',
+      from_offset_min: UTC_MINUS_8,
+      to_offset_min: LONDON_SUMMER,
+    },
+    {
+      changed_at: '2026-09-21T18:00:00.000Z',
+      from_offset_min: LONDON_SUMMER,
+      to_offset_min: UTC_MINUS_8,
+    },
+  ];
+  eq(
+    'before the first row: the zone ARC was watching from, NOT the live getters',
+    offsetAt(rows, new Date('2026-09-01T12:00:00.000Z')),
+    UTC_MINUS_8
+  );
+  eq(
+    'between rows: what the earlier one arrived in',
+    offsetAt(rows, new Date('2026-09-15T12:00:00.000Z')),
+    LONDON_SUMMER
+  );
+  eq(
+    'after the latest row: null, meaning ask the runtime (it knows about DST)',
+    offsetAt(rows, new Date('2026-09-25T12:00:00.000Z')),
+    null
+  );
+  eq('an empty table is null everywhere', offsetAt([], new Date()), null);
+  // The first branch is the OUTBOUND LEG, and it is why it is not the live
+  // getters: sending pre-departure instants to the runtime would re-bucket every
+  // one of them under the destination — the defect, reintroduced for the
+  // commonest case.
+  eq(
+    'the one-row case: samples before it keep the zone they were lived in',
+    offsetAt([rows[0]], new Date('2026-09-01T12:00:00.000Z')),
+    UTC_MINUS_8
+  );
+  eq(
+    '… and samples after it go to the runtime',
+    offsetAt([rows[0]], new Date('2026-09-15T12:00:00.000Z')),
+    null
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n19. a night keeps the wake day it was lived on');
+{
+  const { db } = freshDb();
+  seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  const outboundOnly = offsetHistory(db);
+  seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+  const returned = offsetHistory(db);
+
+  // A London night: asleep 23:00 on the 15th local (22:00 UTC), awake 07:00 on
+  // the 16th local (06:00 UTC). Under +60 the wake day is the 16th. Read back
+  // from Los Angeles — where 06:00 UTC is 23:00 on the 15th — it would move a
+  // day EARLIER, which is what used to happen the first sync after coming home.
+  const night = [
+    {
+      startISO: '2026-09-15T22:00:00.000Z',
+      endISO: '2026-09-16T06:00:00.000Z',
+      value: SLEEP_VALUE.asleepCore,
+      provenance: { bundleId: 'com.apple.health.ABC', productType: 'Watch6,1', sourceName: 'Watch' },
+    },
+  ];
+  const lived = sleepDailyRows(night, returned).find((r) => r.metricType === 'sleep_duration_min');
+  eq('the London night keeps its London wake day', lived.date, '2026-09-16');
+  eq('… and its bucket key with it', lived.sourceRawId, 'hk:sleep_duration_min:2026-09-16');
+  const reread = sleepDailyRows(night, () => UTC_MINUS_8).find(
+    (r) => r.metricType === 'sleep_duration_min'
+  );
+  eq('re-read in the home zone it would have moved a day earlier', reread.date, '2026-09-15');
+
+  // PRE-SEAM SAMPLES SURVIVE BOTH CASES — the one-row case (only the outbound
+  // leg recorded, the user still abroad) and the two-row one.
+  const morningLA = '2026-09-10T15:00:00.000Z'; // 08:00 on the 10th in Los Angeles
+  eq(
+    'with only the outbound row, a pre-departure sample keeps its day',
+    quantityDailyRows(HRV_SPEC, [hrvSample(morningLA)], outboundOnly)[0].date,
+    '2026-09-10'
+  );
+  eq(
+    '… and still does once the return is recorded',
+    quantityDailyRows(HRV_SPEC, [hrvSample(morningLA)], returned)[0].date,
+    '2026-09-10'
+  );
+  eq(
+    'an empty table buckets exactly as it always did',
+    quantityDailyRows(HRV_SPEC, [hrvSample(morningLA)], offsetHistory(freshDb().db))[0].date,
+    localDayOf(morningLA)
+  );
+
+  // THE SEAM DAY'S BOUNDS SPAN ITS REAL LENGTH. The outbound is nine hours east,
+  // so the 12th is a 15-hour day: it starts under −480 and ends under +60.
+  const NOW = new Date('2026-09-22T18:00:00.000Z');
+  const windows = syncDayWindows(NOW, 14, returned);
+  const seamDay = windows.find((w) => w.date === '2026-09-12');
+  eq('the seam day is 15 hours long, start to end', (seamDay.end - seamDay.start) / 3_600_000, 15);
+  const abroad = windows.find((w) => w.date === '2026-09-15');
+  eq('an ordinary day abroad is 24', (abroad.end - abroad.start) / 3_600_000, 24);
+  eq('… and begins at London midnight', abroad.start.toISOString(), '2026-09-14T23:00:00.000Z');
+  const home = windows.find((w) => w.date === '2026-09-22');
+  eq('a day after the latest row is 24 too', (home.end - home.start) / 3_600_000, 24);
+
+  // THE NOON LEAD-IN IS UNDER THE FIRST DAY'S OWN OFFSET, so a date-line hop
+  // cannot shift the cushion out from under the night it exists to cover.
+  // The window's first day is the 9th, so the lead-in day is the 8th — a day
+  // BEFORE the outbound row, which the step function answers with that row's
+  // `from_offset_min`. So the cushion is 12:00 where that day was actually
+  // lived, not 12:00 where the phone is standing now.
+  const span = sampleQuerySpan(NOW, 14, returned);
+  eq('the lead-in is noon of the day before the window', span.start.toISOString(), '2026-09-08T20:00:00.000Z');
+  eq('… taken in the zone that day was lived in', localDayOf(span.start.toISOString(), UTC_MINUS_8), '2026-09-08');
+  eq('… and it really is noon there', new Date(span.start.getTime() + UTC_MINUS_8 * 60_000).getUTCHours(), 12);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n20. the one-time reach back, and when it is empty');
+{
+  const NOW = new Date(2026, 8, 22, 12, 0);
+  const synced = { lastSyncedAt: '2026-09-21T12:00:00.000Z', firstSyncedAt: '2026-06-01T12:00:00.000Z' };
+
+  // NO ROWS, NO WIDENING. This is what makes shipping the offset-aware bucketing
+  // in the same binary as 0053 a no-op on first launch: with an empty table the
+  // step function is null everywhere and the pass is identical to the one before
+  // it. The risk moment is the first sync after the first observed TRIP.
+  const { db: quiet } = freshDb();
+  eq(
+    'with no rows the window is the ordinary steady-state one',
+    rebucketWindowDays(quiet, { ...synced, rebucketedAt: null }, NOW),
+    SYNC_WINDOW_DAYS
+  );
+
+  // ROWS PRESENT: the window reaches the oldest row's own day and no further.
+  const { db } = freshDb();
+  seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+  eq(
+    'the reach covers 2026-09-12 … 2026-09-22 inclusive',
+    rebucketWindowDays(db, { ...synced, rebucketedAt: null }, NOW),
+    SYNC_WINDOW_DAYS // 11 days is shorter than the steady-state window, which wins
+  );
+
+  const { db: old } = freshDb();
+  seedSeam(old, { day: '2026-07-01', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  eq(
+    'an older row widens the window to reach it',
+    rebucketWindowDays(old, { ...synced, rebucketedAt: null }, NOW),
+    84
+  );
+
+  const { db: ancient } = freshDb();
+  seedSeam(ancient, { day: '2025-01-01', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  eq(
+    'and it is capped at the 90-day backfill, never a year',
+    rebucketWindowDays(ancient, { ...synced, rebucketedAt: null }, NOW),
+    FIRST_SYNC_DAYS
+  );
+
+  // ONCE. A stamped cursor means the reach is spent.
+  eq(
+    'a stamped cursor never widens again',
+    rebucketWindowDays(ancient, { ...synced, rebucketedAt: '2026-09-22T00:00:00.000Z' }, NOW),
+    SYNC_WINDOW_DAYS
+  );
+
+  // THE PASS OBSERVES BEFORE IT WINDOWS. Asserted as a property of the ordering
+  // in the source, not of a subscription: a run that windowed first would send
+  // the whole fortnight to the live getters and re-bucket it under the new zone.
+  const src = readFileSync(new URL('../src/lib/health/sync.ts', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('export async function syncHealthData'));
+  const observedAt = body.indexOf('observeTimezone(db, now)');
+  const historyAt = body.indexOf('offsetHistory(db)');
+  const windowedAt = body.indexOf('syncDayWindows(now');
+  observedAt > 0 && observedAt < historyAt && historyAt < windowedAt
+    ? ok('the pass observes, then reads the history, then windows — in that order')
+    : bad('ordering', JSON.stringify({ observedAt, historyAt, windowedAt }));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

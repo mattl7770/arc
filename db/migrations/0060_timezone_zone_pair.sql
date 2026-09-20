@@ -1,0 +1,91 @@
+-- ============================================================================
+-- ARC 0060 — timezone_changes gains the ARRIVAL ZONE'S SEASONAL PAIR
+--
+-- The second pass of timezone handling (docs/spikes/timezone-handling-
+-- intelligent.md §3a/§4, owner's Q1(a)). 0053 records one row per observed zone
+-- change and marks the SEAM days. What it cannot see is the RUN OF DAYS BETWEEN
+-- TWO SEAMS — the trip — and a trip is what readiness needs: for a month after a
+-- nine-day flight the 30-day home baseline is dragged down by eight jet-lagged
+-- days that carry no marker, and post-trip mornings then read `optimal` against
+-- a depressed mean.
+--
+-- A trip is DERIVED from the 0053 rows, not stored (a `trips` table would be a
+-- second source of truth). It opens at a change and closes on the earliest of:
+-- a return to the origin offset, the day after a declared Traveling window, or
+-- TRIP_SETTLE_DAYS = 21 days of stillness. See src/lib/timezone/trips.ts.
+--
+-- ── WHY THESE TWO COLUMNS EXIST ──
+--
+-- The close-on-return test is *"did we come back to the offset we left from"*,
+-- and the honest version of it has to allow for DST at home: a trip that leaves
+-- Los Angeles in PST (−480) and returns in PDT (−420) HAS come home, and an
+-- exact-equality test would leave that trip open for another 21 days.
+--
+-- Answering it needs the ARRIVAL ZONE'S OWN two seasonal offsets — which is
+-- exactly what `zoneProbe` (src/lib/timezone/classify.ts) hands the observer at
+-- write time, and exactly what 0053 spread into the classifier and then threw
+-- away. So the row keeps it.
+--
+-- The alternative was to read the probe AT READ TIME, with no migration. It was
+-- rejected, and the reason is the whole point of the feature: `zoneProbe` reads
+-- the DEVICE'S CURRENT ZONE, so a trip's close would depend on where the phone
+-- is standing when the question is asked. A March trip that returned in PDT,
+-- read from London in June, would not close on its return row. The record
+-- screens read PAST windows, and an answer that changes with where you read it
+-- is the defect the trip exists to remove. The pair is an OBSERVATION nothing
+-- else records; a trip is a DERIVATION. That is why the pair may be stored and
+-- the trip may not.
+--
+-- ── WHAT A NULL MEANS, AND WHY THEY ARE NULLABLE ──
+--
+-- Every row 0053 wrote before this migration has no pair and never will — the
+-- probe was taken, used and discarded at the instant of the write, and it is not
+-- recoverable from anything else on the row. NULL therefore means *"this row
+-- cannot answer the seasonal question"*, and readers fall back to EXACT equality
+-- on the offset, which is 0053's own behaviour. A DEFAULT would have been worse
+-- than useless: it would claim an observation that was never made.
+--
+-- The two are written together or not at all. An unordered pair, like the probe
+-- itself — the southern hemisphere puts DST in January, so `jan` is not "the
+-- standard one" and no reader may assume it is.
+--
+-- ── THE RANGE ──
+--
+-- ±840 is the real range of IANA offsets (UTC−12 … UTC+14), the same CHECK the
+-- two offset columns carry. Spelled `IS NULL OR abs(...) <= 840` rather than
+-- `BETWEEN`, because SQLite's BETWEEN on a NULL yields NULL and a CHECK that
+-- evaluates to NULL passes — which would be right here only by accident. Saying
+-- it outright is what makes the intent readable at the next schema change.
+--
+-- ── NUMBERING ──
+--
+-- 0060. The spike names 0059; 0059 has since MERGED (meal_item_piece_name) and
+-- 0061 is reserved for the day-statuses build, so this file took the next free
+-- number and every in-file reference moved with it. Re-checked against
+-- `git ls-tree main -- db/migrations/` at commit: main's head is 0059. The
+-- runner is FORWARD-ONLY and silently skips any file at or below a device's
+-- `PRAGMA user_version`, so a number below the head is stranded forever rather
+-- than merely late (0057's header carries the full argument). The runner stamps
+-- user_version = 60.
+--
+-- ── THE WAY BACK ──
+--
+-- Both columns are nullable and unread while NULL, so reverting the commit
+-- leaves a database that behaves exactly as 0053 left it. Run `npm run
+-- db:bundle` after this file changes. 0053's AFTER UPDATE trigger already covers
+-- every column on `timezone_changes`, including ones added later, and nothing
+-- queries BY these columns (they are read off a row already in hand), so there
+-- is no index.
+-- ============================================================================
+
+-- The ARRIVAL zone's offset on 1 January, in minutes EAST of UTC — the same sign
+-- convention as `to_offset_min`, and the same trap (0053's header). NULL on
+-- every row written before this migration.
+ALTER TABLE timezone_changes ADD COLUMN zone_jan_offset_min integer
+  CHECK (zone_jan_offset_min IS NULL OR abs(zone_jan_offset_min) <= 840);
+
+-- …and on 1 July. Together these two ARE the arrival zone's standard and DST
+-- offsets, in either order. Equal to each other in a zone that does not observe
+-- DST, which is a true statement about that zone and not a degenerate row.
+ALTER TABLE timezone_changes ADD COLUMN zone_jul_offset_min integer
+  CHECK (zone_jul_offset_min IS NULL OR abs(zone_jul_offset_min) <= 840);

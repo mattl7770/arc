@@ -25,7 +25,28 @@ line in the records plus one line on Home on the day itself. Option **1** was bu
 | Baselines | `baselineBefore` and `baselineDaysRemaining` both take the excluded set, so the evidence gate and the mean are over the same cohort. Trend windows untouched, per §3c. |
 | Excused days | `excusedDatesIn` in `src/lib/db/repositories/mission.ts` — the union of mode-excusing days and marked days, resolved once and read by both `missionDailySeries` and `missionBySource`. |
 | Coach | One line in `turn-context.ts`, ~36 uncached tokens on the days it appears and nothing on the others. `get_today_snapshot` was NOT mirrored — the state block already carries it on every turn of the horizon. |
-| Not done | §1c, the health-sync re-bucketing defect. Still real, still self-limited to 14 days, still its own backlog item — the direction of travel is to re-attribute *less*, and D4 re-attributes nothing. Test 10 of §6 was not written with it. |
+| Not done | §1c, the health-sync re-bucketing defect. Still real, still self-limited to 14 days, still its own backlog item — the direction of travel is to re-attribute *less*, and D4 re-attributes nothing. Test 10 of §6 was not written with it. **DONE 2026-09-19** — see below. |
+
+> **The two things this file left open are both closed (2026-09-19, migration `0060`,
+> `docs/spikes/timezone-handling-intelligent.md`).**
+>
+> - **§1c, the re-bucketing defect, and §6's test 10 with it.** `localDayOf` now takes an
+>   offset, and the pipeline buckets a sample under the offset that was in force *when it
+>   happened*, read from these same `0053` rows (`offsetAt`, a pure three-branch step function
+>   in `src/lib/timezone/offset-history.ts`). So a London night keeps its London wake day
+>   instead of moving the first time the phone syncs from home. Test 10 is now
+>   `db/timezone.test.mjs` §18, which pins the OLD behaviour explicitly so §19 is a diff
+>   against a known baseline. The full account is `docs/wearables-subapp.md` §19, including
+>   the price: ARC and the Health app can disagree about trip-adjacent days, which is a
+>   documented rule being changed and the owner's call (Q4(a)).
+> - **§5's five-day Coach horizon, which only ever described the SEAM line.** A day inside a
+>   derived trip now prints a standing-state line instead — *"day 4 away from UTC−8"* — and
+>   the seam tail prints only once the trip has closed. Never both.
+>
+> What this file settled is otherwise untouched. The seam rule (§2e), the annotate-never-
+> re-attribute rule (§3a), the excusal (Q1(b)), the quiet nutrition verdict (Q2(b)) and Home's
+> one line (Q3(b)) all stand exactly as built. The second pass adds the run of days BETWEEN
+> two seams, which is the one thing this file could not see.
 
 **Depends on / sequenced after:** **B3**, the configurable day boundary
 (`docs/backlog-2026-09.md:29`). Both edit the same function. §4 states the combined rule.
@@ -523,7 +544,7 @@ exactly this reason (`sync.ts:22-24`: *"pure and exported for the headless tests
 | 7 | **Idempotence.** Same offset observed twice; and a first-ever observation | The second write is a no-op; the first writes the cursor and **no** change row |
 | 8 | **Baselines exclude, do not delete.** 30 days of HRV, mark D−3 | `deriveReadiness`'s baseline equals the mean of the other 29 **and** the marked day's own point still renders in the metrics strip (`readiness.ts:662-671`) |
 | 9 | **Nutrition pillar on a marked day.** kcal ratio 1.4 | `unknown` + the timezone note, not `poor` (`readiness.ts:312-353`) |
-| 10 | **Wearable re-bucketing pins the §1c defect.** The same sample set mapped under two offsets | Every `source_raw_id` emitted by pass 1 is either re-emitted or documented as superseded. **This is the one test that needs a code change**: `localDayOf` (`mapping.ts:112`) reads the ambient zone, so it must take an optional offset — otherwise the test needs a child process with `TZ=` set, which is the thing the suite is not allowed to depend on |
+| 10 | **Wearable re-bucketing pins the §1c defect.** The same sample set mapped under two offsets | Every `source_raw_id` emitted by pass 1 is either re-emitted or documented as superseded. **This is the one test that needs a code change**: `localDayOf` (`mapping.ts:112`) reads the ambient zone, so it must take an optional offset — otherwise the test needs a child process with `TZ=` set, which is the thing the suite is not allowed to depend on. **WRITTEN 2026-09-19** as `db/timezone.test.mjs` §18, and the code change it called for is what §19 is built on: the optional offset landed, so the move is asserted over injected values and the suite still depends on nothing ambient |
 | 11 | **The sign is the negation.** Stored `to_offset_min` vs `getTimezoneOffset()` | Same species as the SpO2 percent round-trip in `db/health-mapping.test.mjs` — a one-line assertion so nobody "tidies up" the sign later |
 
 A small separate wiring check (that the observer reads `getTimezoneOffset` at all) may run in a child

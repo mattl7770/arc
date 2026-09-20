@@ -29,12 +29,38 @@
  * metrics read cleanly AND non-empty are reconciled — see `reconcilable` in
  * {@link syncHealthData}, and the scoping rules on `upsertWearableRows`.
  *
- * The window/day maths ({@link syncDayWindows}, {@link shouldAutoSync}) is pure
- * and exported for the headless tests; the entry points just glue the guarded
- * reader → pure mapping → wearables repo together.
+ * **"Timezone shifts converge on the next pass" used to mean converge on a NEW
+ * answer (2026-09-19, 0060).** The pass re-derived every sample's day under the
+ * device's CURRENT zone, so the first sync after landing re-dated a fortnight of
+ * history and the prune above then deleted what the re-dating orphaned. A
+ * sample is now bucketed under the offset that was in force WHEN IT HAPPENED,
+ * read from the `timezone_changes` rows (`offsetHistory`), so a London night
+ * keeps the London wake day it was lived on. Owner's Q4(a), and the price is
+ * stated where it is paid (`localDayOf`): ARC and the Health app can disagree
+ * about trip-adjacent days. The one-time reach back over history written under
+ * the old rule is {@link rebucketWindowDays}.
+ *
+ * The window/day maths ({@link syncDayWindows}, {@link shouldAutoSync},
+ * {@link rebucketWindowDays}) is pure and exported for the headless tests; the
+ * entry points just glue the guarded reader → pure mapping → wearables repo
+ * together.
  */
 import type { Database } from '@/lib/db/database';
-import { formatLocalDate } from '@/lib/db/date';
+import {
+  calendarDateAtOffset,
+  dayStartAtOffset,
+  formatLocalDate,
+  localDayStart,
+  localNoonOf,
+  shiftISODate,
+} from '@/lib/db/date';
+import {
+  earliestTimezoneDay,
+  observeTimezone,
+  offsetHistory,
+} from '@/lib/db/repositories/day-meta';
+import { daysBetween } from '@/lib/protocols/cadence';
+import { NO_OFFSET_HISTORY, type OffsetLookup } from '@/lib/timezone/offset-history';
 import type { HealthQuantitySample } from './types';
 import {
   getHealthSyncState,
@@ -42,6 +68,7 @@ import {
   setHealthSyncState,
   upsertWearableRows,
   workoutUuidsWithHr,
+  type HealthSyncState,
   type WearableUpsert,
 } from '@/lib/db/repositories/wearables';
 import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
@@ -91,29 +118,74 @@ export type SyncDay = { date: string; start: Date; end: Date };
  * The local-midnight day buckets to (re-)aggregate, oldest first, ending with
  * today. Built with the calendar (never +86400s) so DST days stay correct.
  *
- * **Midnight-to-midnight, not the user's day boundary** — `formatLocalDate`,
- * never `todayISODate`. These windows produce the `hk:<metric>:<date>` rows, and
- * the full argument for keeping HealthKit on the calendar day is on `localDayOf`
- * in ./mapping.ts. The two must agree: the window that queries the samples and
- * the function that buckets them are the same day definition or the upsert key
- * misses.
+ * **Midnight-to-midnight, not the user's day boundary** — never `todayISODate`.
+ * These windows produce the `hk:<metric>:<date>` rows, and the full argument for
+ * keeping HealthKit on the calendar day is on `localDayOf` in ./mapping.ts. The
+ * two must agree: the window that queries the samples and the function that
+ * buckets them are the same day definition or the upsert key misses — which is
+ * why `offsetOf` is threaded through both and why it is the SAME lookup instance
+ * in a pass.
+ *
+ * **Midnight WHERE** is the 0060 change. With an offset history, each day's
+ * bounds are taken in the zone that day was lived in; with none — or for days
+ * after the latest recorded change — they are the device's current local
+ * components, DST-correct, exactly as before.
  */
-export function syncDayWindows(now: Date, days: number): SyncDay[] {
+export function syncDayWindows(
+  now: Date,
+  days: number,
+  offsetOf: OffsetLookup = NO_OFFSET_HISTORY
+): SyncDay[] {
+  const today = dateAt(now, offsetOf);
   const result: SyncDay[] = [];
   for (let i = days - 1; i >= 0; i--) {
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i, 0, 0, 0, 0);
-    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i + 1, 0, 0, 0, 0);
-    result.push({ date: formatLocalDate(start), start, end });
+    const date = shiftISODate(today, -i);
+    result.push({ date, start: dayStart(date, offsetOf), end: dayStart(shiftISODate(date, 1), offsetOf) });
   }
   return result;
+}
+
+/** The calendar day an instant falls on, under whatever offset was in force. */
+function dateAt(instant: Date, offsetOf: OffsetLookup): string {
+  const offset = offsetOf(instant);
+  return offset === null ? formatLocalDate(instant) : calendarDateAtOffset(instant, offset);
+}
+
+/**
+ * The instant a calendar day begins, under the offset in force ON that day.
+ *
+ * Probed at the day's NOON, never its midnight: noon exists in every zone on
+ * every day, and a midnight probe on a seam day would be asking the step
+ * function about the very boundary it is trying to place.
+ *
+ * Because a day's END is probed as the NEXT day's start, a seam day's bounds
+ * come out spanning its real `24 + Δ` hours with no special case — the start is
+ * under the old offset and the end is under the new one. That is the property
+ * that makes the window cover a 33-hour day rather than clipping nine hours off
+ * one end of it.
+ */
+function dayStart(date: string, offsetOf: OffsetLookup): Date {
+  const offset = offsetOf(localNoonOf(date));
+  return offset === null ? localDayStart(date) : dayStartAtOffset(date, offset);
 }
 
 /**
  * The sample/sleep query span for a window: from noon before the window's
  * first day (so the first night's sleep session is fully covered) to `now`.
+ *
+ * The noon lead-in is a 12-hour cushion, and under a stored offset it is taken
+ * in THAT day's own zone rather than in the zone the phone is in now — so a
+ * date-line hop cannot shift the cushion out from under the night it exists to
+ * cover. The 12-hour limit itself is unchanged: a Pacific hop can still truncate
+ * the seam night, which is the one the seam day owns anyway.
  */
-export function sampleQuerySpan(now: Date, days: number): { start: Date; end: Date } {
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - days, 12, 0, 0, 0);
+export function sampleQuerySpan(
+  now: Date,
+  days: number,
+  offsetOf: OffsetLookup = NO_OFFSET_HISTORY
+): { start: Date; end: Date } {
+  const leadIn = shiftISODate(dateAt(now, offsetOf), -days);
+  const start = new Date(dayStart(leadIn, offsetOf).getTime() + 12 * 3_600_000);
   return { start, end: now };
 }
 
@@ -224,6 +296,43 @@ function emitSynced(): void {
  * per-metric failures degrade to empty reads inside the seam, so a single bad
  * identifier can't sink the pass.
  */
+/**
+ * The window, widened ONCE so the offset-aware bucketing can reach the history
+ * that was written under the old rule (0060).
+ *
+ * ARC stores no samples — it stores `hk:<metric>:<date>` aggregates — so there
+ * is nothing a migration could walk. The only way to re-bucket is to read
+ * HealthKit again, and a sync pass IS that read. This is that migration,
+ * spelled the only way this data model can spell one.
+ *
+ * Three properties, each load-bearing:
+ *
+ *   - **No rows, no widening.** A build that has never observed a zone change
+ *     has nothing bucketed wrongly: with an empty table the step function is
+ *     `null` everywhere and the pass is byte-identical to the one before it.
+ *     That is what makes shipping this in the same binary as 0053 a no-op on
+ *     first launch — the risk moment is the first sync after the first observed
+ *     TRIP, not the first launch.
+ *   - **Only back to the oldest row.** Reaching further would re-read days no
+ *     row speaks for, where the answer is unchanged by construction.
+ *   - **Capped at {@link FIRST_SYNC_DAYS}**, so this can never become a
+ *     year-long read.
+ *
+ * `rebucketedAt` lives in the `health_sync_state` JSON, which 0021 made free
+ * precisely so a second cursor would not be a schema change. It is stamped only
+ * once a pass has both landed data AND had rows to widen for, so a denied
+ * permission — or a build that simply has not travelled yet — cannot burn the
+ * one-time reach.
+ */
+export function rebucketWindowDays(db: Database, state: HealthSyncState, now: Date): number {
+  const base = syncWindowDays(state, now);
+  if (state.rebucketedAt !== null) return base;
+  const oldest = earliestTimezoneDay(db);
+  if (oldest === null) return base;
+  const reach = daysBetween(oldest, formatLocalDate(now)) + 1;
+  return Math.min(FIRST_SYNC_DAYS, Math.max(base, reach));
+}
+
 export type SyncOptions = {
   /**
    * Re-aggregate exactly this many days instead of whatever {@link
@@ -253,13 +362,29 @@ export async function syncHealthData(
     return { status: 'unavailable', rowsWritten: 0, samplesPublished: 0, syncedAt: null };
   }
 
+  // OBSERVE BEFORE WINDOWING (0060). A third sanctioned observation site beside
+  // the database open and the foreground listener, and the only one that is here
+  // for an ordering rather than for coverage: this pass buckets every sample by
+  // the offset in force when it happened, so a change ARC has not yet recorded
+  // would send the whole window to the live getters and re-bucket the fortnight
+  // under the new zone — the exact defect this is closing. The foreground
+  // listener normally gets there first; this makes the pass self-sufficient
+  // rather than dependent on it. Cost is one preference read, and the auto path
+  // is already throttled to one pass per AUTO_SYNC_THROTTLE_MIN minutes.
+  try {
+    observeTimezone(db, now);
+  } catch {
+    // A sync must never fail over an annotation. The next foreground retries.
+  }
+  const offsetOf = offsetHistory(db);
+
   const state = getHealthSyncState(db);
   const windowDays =
     options.windowDays !== undefined && Number.isFinite(options.windowDays)
       ? Math.min(MAX_SYNC_DAYS, Math.max(1, Math.trunc(options.windowDays)))
-      : syncWindowDays(state, now);
-  const days = syncDayWindows(now, windowDays);
-  const span = sampleQuerySpan(now, windowDays);
+      : rebucketWindowDays(db, state, now);
+  const days = syncDayWindows(now, windowDays, offsetOf);
+  const span = sampleQuerySpan(now, windowDays, offsetOf);
 
   const rows: WearableUpsert[] = [];
   // The per-run log (docs §14). Built as the pass goes so that every zero on the
@@ -290,7 +415,7 @@ export async function syncHealthData(
 
   for (const spec of SAMPLE_METRICS) {
     const read = await readQuantitySamples(spec.hkIdentifier, spec.hkUnit, span.start, span.end);
-    const mapped = quantityDailyRows(spec, read.samples);
+    const mapped = quantityDailyRows(spec, read.samples, offsetOf);
     rows.push(...mapped);
     allowReconcile(mapped, read.error);
     metrics.push({
@@ -320,7 +445,7 @@ export async function syncHealthData(
   }
 
   const sleep = await readSleepSamples(span.start, span.end);
-  const sleepMapped = sleepDailyRows(sleep.samples);
+  const sleepMapped = sleepDailyRows(sleep.samples, offsetOf);
   rows.push(...sleepMapped);
   // Sleep produces several metric types from one read, and only the ones it
   // actually emitted are reconcilable — a source that stopped writing STAGES
@@ -343,7 +468,7 @@ export async function syncHealthData(
   // a revised association can still land.
   const hrSkip = workoutUuidsWithHr(db);
   const workouts = await readWorkouts(span.start, span.end, { hrSkip });
-  const workoutMapped = workoutRows(workouts.samples);
+  const workoutMapped = workoutRows(workouts.samples, offsetOf);
   rows.push(...workoutMapped);
   metrics.push({
     metric: 'workout',
@@ -470,6 +595,14 @@ export async function syncHealthData(
     // backfill: after granting access later, every pass would use the short
     // steady-state window and days 15-90 of history would be unreachable.
     firstSyncedAt: state.firstSyncedAt ?? (written > 0 ? syncedAt : null),
+    // The one-time offset-aware re-read (0060). Stamped only when the pass both
+    // LANDED data and had rows to widen for: a denied permission must not burn
+    // it, and neither must a build that has simply not travelled yet — on that
+    // build there is nothing bucketed wrongly, and the reach is still owed for
+    // the first sync after the first observed trip.
+    rebucketedAt:
+      state.rebucketedAt ??
+      (written > 0 && earliestTimezoneDay(db) !== null ? syncedAt : null),
   });
 
   // The outbound half of the same pass (docs §10). It runs AFTER the ingest

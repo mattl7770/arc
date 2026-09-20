@@ -689,18 +689,27 @@ export type HealthSyncState = {
   lastSyncedAt: string | null;
   /** ISO instant of the first completed sync (the 90-day backfill). */
   firstSyncedAt: string | null;
+  /**
+   * ISO instant of the ONE pass that re-read history under the offset-aware
+   * bucketing (0060), or null when it has not happened. No migration: 0021 left
+   * this value free JSON exactly so a second cursor would not be a schema
+   * change. See `rebucketWindowDays` in src/lib/health/sync.ts for why it is
+   * stamped only once a pass has both landed data and had rows to widen for.
+   */
+  rebucketedAt: string | null;
 };
 
 export const HEALTH_SYNC_KEY = 'apple_health';
 
 export function getHealthSyncState(db: Database, key: string = HEALTH_SYNC_KEY): HealthSyncState {
   const row = db.get<{ value: string }>('SELECT value FROM health_sync_state WHERE key = ?', [key]);
-  const state: HealthSyncState = { lastSyncedAt: null, firstSyncedAt: null };
+  const state: HealthSyncState = { lastSyncedAt: null, firstSyncedAt: null, rebucketedAt: null };
   if (!row) return state;
   try {
     const parsed = JSON.parse(row.value) as Record<string, unknown>;
     if (typeof parsed.lastSyncedAt === 'string') state.lastSyncedAt = parsed.lastSyncedAt;
     if (typeof parsed.firstSyncedAt === 'string') state.firstSyncedAt = parsed.firstSyncedAt;
+    if (typeof parsed.rebucketedAt === 'string') state.rebucketedAt = parsed.rebucketedAt;
   } catch {
     // Corrupt state reads as "never synced" — the next sync self-heals it.
   }

@@ -143,6 +143,10 @@ local day × source** (except workouts: one row per workout).
 | `sleep_core_min` / `sleep_deep_min` / `sleep_rem_min` / `sleep_awake_min` / `sleep_in_bed_min` | SleepAnalysis | per-stage minutes · `min` — a stage row exists **only when the source wrote stages** (WHOOP doesn't; 0 ≠ unknown) | wake day |
 | `workout` | HKWorkout samples | `duration` minutes (not end−start; pauses differ) · `min`; metadata: activity type raw int + name, kcal, distance_km, source name | local day of workout **end** |
 
+**"Local day" in that last column means the day the sample was LIVED in**, not the day it
+would land on if re-read from wherever the phone is standing now — §19, from 2026-09-19.
+Before that it meant the latter, and a trip re-dated a fortnight of history.
+
 Already-shipping metric types are untouched and merge naturally: manual keypad `hrv`/`rhr`
 rows and `water_ml` live in the same table. **That last one stopped being hypothetical on
 2026-09-14** — `DietaryWater` is a read scope now, it landed by adding three literals to
@@ -1012,11 +1016,9 @@ survives, an out-of-window bucket survives, an unread metric survives, an empty 
 nothing, a partial pass prunes only what it read, a UUID-keyed workout is untouched even when
 allow-listed, and a rejected batch writes nothing and deletes nothing.
 
-**Still open**, and explicitly not fixed here: the re-bucketing itself. `localDayOf` reads the
-ambient zone, so history recomputed after a timezone change genuinely *changes* — it now
-converges cleanly instead of leaving debris, which is a different and smaller claim than
-being correct. The spike's §10 (an offset parameter on the mapper, so the move can be tested
-without a child process carrying `TZ=`) remains the open work.
+~~**Still open**, and explicitly not fixed here: the re-bucketing itself.~~ **CLOSED
+2026-09-19 — see §19.** The prune made the pass converge *cleanly*; §19 is what makes it
+converge on the *same* answer.
 
 ---
 
@@ -1386,3 +1388,127 @@ and cannot run this.
   VoiceOver; and whether *Read heart rate (90 days)* appears where it should — the headless
   render cannot see it, because under node the connected plate takes the "Rides the next build"
   branch (its visibility *rule* is pinned pure instead).
+
+---
+
+## 19. A day is the day it was LIVED in (2026-09-19, no migration for this file)
+
+`docs/spikes/timezone-handling-intelligent.md` §3e, owner's **Q4(a)**. §16 closed the debris
+the re-bucketing left behind. This closes the re-bucketing itself.
+
+### 19.1 The defect, in one sample
+
+A HealthKit sample is an absolute instant. ARC re-derived a calendar day from it at map time
+under the device's **current** zone, and the sync is a trailing re-aggregation over the last
+14 days — so **the first sync after landing re-dated the previous fortnight**. An HRV reading
+taken at 20:00 on 1 September in Los Angeles is `2026-09-02T03:00Z`; read under UTC+1 it is
+04:00 on the **2nd**. `hk:hrv:2026-09-01`'s mean was recomputed from a different set of
+samples days after the fact, and the readiness baselines and every Coach correlation read the
+new answer. Since §16, the prune then deleted the bucket the re-dating orphaned.
+
+The direction of travel in D4 is to re-attribute **less**. `src/lib/db/repositories/day-meta.ts`
+names this path as *"the one place ARC already re-attributes … is the bug, not the model"*.
+
+### 19.2 The rule
+
+> **A sample is bucketed under the offset that was in force when it happened, not the offset
+> in force when it is read.**
+
+`offsetAt(rows, instant)` (`src/lib/timezone/offset-history.ts`) is a pure **three-branch step
+function** over the `timezone_changes` rows:
+
+| Where the instant falls | Answer | Why that one |
+| --- | --- | --- |
+| **Before the first row** | `rows[0].from_offset_min` | This is the **outbound leg**, and it is the branch that matters. Sending pre-departure instants to the live getters would re-bucket every one of them under the destination — the defect, reintroduced for the commonest trip there is. |
+| **Between two rows** | the earlier row's `to_offset_min` | What the phone arrived in and stayed in. |
+| **After the latest row** | `null` — use the live local getters | They are DST-correct for the zone the phone is actually in, and this table is not. |
+| **Empty table** | `null` everywhere | A build that never observed a change behaves byte-identically to one without this code. |
+
+Threaded through `localDayOf`, `quantityDailyRows`, `sleepDailyRows`, `workoutRows`,
+`syncDayWindows` and `sampleQuerySpan` — the same lookup instance per pass, because the window
+that queries the samples and the function that buckets them must be the same day definition or
+the `hk:<metric>:<date>` key misses. Read once and closed over: a 90-day pass maps tens of
+thousands of instants, and the table holds tens of rows a year.
+
+### 19.3 The day's bounds, and the seam day's real length
+
+A day's **start** is its midnight under the offset in force on it, probed at that day's NOON
+(noon exists in every zone on every day; a midnight probe would be asking about the boundary
+it is trying to place). A day's **end** is the NEXT day's start. So a seam day's bounds come
+out spanning its true `24 + Δ` hours with no special case — start under the old offset, end
+under the new — and a nine-hours-east flight makes the 12th a 15-hour window rather than a
+24-hour one with nine hours clipped off.
+
+The **noon lead-in** (§4's 12-hour cushion, *"noon exists in every timezone on every day;
+midnight doesn't under DST"*) is now taken in its own day's zone, so a date-line hop cannot
+shift the cushion out from under the night it exists to cover. **The 12-hour limit itself is
+unchanged**, and so is what it costs: a Pacific hop can still truncate the seam night, which
+is the night the seam day owns anyway.
+
+### 19.4 The one-time reach back — and why it is usually empty
+
+§16's *"the fix is a re-bucket MIGRATION over the stored samples"* was owed a rebuttal, and it
+is this: **ARC stores no samples.** It stores `hk:<metric>:<date>` aggregates, so there is
+nothing for a migration to walk. The only way to re-bucket is to read HealthKit again, and a
+sync pass *is* that read.
+
+`rebucketWindowDays` is therefore the migration, spelled the only way this data model can
+spell one: while `rebucketedAt` is unset, the window widens back to the oldest row's own day,
+capped at `FIRST_SYNC_DAYS = 90`. Three properties:
+
+1. **No rows, no widening.** With an empty table the step function is `null` everywhere and
+   the pass is identical to the one before it. This is what makes shipping this in the same
+   binary as `0053` a no-op on first launch — **the risk moment is the first sync after the
+   first observed TRIP**, not the first launch.
+2. **Only back to the oldest row.** Further back, no row speaks for the days and the answer is
+   unchanged by construction.
+3. **Stamped once a pass has both landed data AND had rows to widen for**, so a denied
+   permission cannot burn it and neither can a build that simply has not travelled yet.
+
+`rebucketedAt` rides the `health_sync_state` JSON — **no migration**, exactly as `0021` wrote
+down when it left that value free.
+
+### 19.5 The pass observes before it windows
+
+`syncHealthData` calls `observeTimezone(db, now)` before it computes anything — a third
+sanctioned observation site beside the database open and the foreground listener, and the only
+one that is there for an **ordering** rather than for coverage. A change ARC had not yet
+recorded would send the whole window to the live getters and re-bucket the fortnight under the
+new zone, which is the defect. The foreground listener normally gets there first
+(`app/_layout.tsx` registers it above the health sync); this makes the pass self-sufficient
+rather than dependent on that. `db/timezone.test.mjs` §20 asserts the ordering **inside the
+pass**, not a subscription order, because the subscription order is a soft dependency.
+
+### 19.6 The price, stated plainly
+
+**ARC and the Health app can disagree about trip-adjacent days.** §3's rule 2
+(*falsifiability* — "ARC's steps for a day must equal what the phone shows for that day") is
+the one thing this change spends. ARC's steps for the 11th stay the Los Angeles sum while the
+Health app, if it redraws history in the current zone, shows the London sum until the user is
+home. That is a documented rule being changed, and it is the owner's call (Q4(a)): a history
+that does not rewrite itself, in exchange for a disagreement on the days around a flight.
+
+Three residuals, none of them fixed and all of them bounded:
+
+- **Observation lag.** `changed_at` is when ARC looked, not when the plane landed, so samples
+  in that gap bucket under the old offset — inside the seam day, which is marked and already
+  excluded from the baselines.
+- **DST inside a foreign zone.** A zone's own shift writes no row, so a day under a stored
+  foreign offset is an hour out for the rest of that stay. Only a sample within an hour of
+  midnight could change day on that, and no wake reading is.
+- **The upsert key.** A frozen day and a re-bucketed seam day collide only at the seam, where
+  the seam day owns the key.
+
+`HKMetadataKeyTimeZone` was considered and **rejected for bucketing**: the value is an
+`NSTimeZone` *name*, and a name becomes an offset at an instant only with tzdata or `Intl`,
+neither of which Hermes has. A hand-rolled name-to-offset table is tzdata by another spelling
+that goes stale the year a country changes its rules. It buys zone *identity*, not an offset —
+still potentially useful for flagging a trip ARC never observed, and still deferred.
+
+### 19.7 Rollback
+
+Nothing here is unrecoverable. The prune reaches `hk:` buckets only (§16 rule 1), HealthKit
+still holds every sample, and "undo" is: revert the code, clear `firstSyncedAt` in
+`health_sync_state`, and let one pass re-read 90 days under whichever rule the code carries.
+The ARCB1 snapshot is the other way back, and §8 item 1 of the spike puts a **verified restore
+before the first flight** on the build that carries this.

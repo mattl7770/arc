@@ -29,11 +29,20 @@ import type { BiologicalSex } from '@/lib/db/types';
  *
  * **Day starts at** lives here rather than in Units because Units is explicitly
  * display-only ("never what's stored") and this is not: it decides which day
- * every future entry is filed under. It sits beside Timezone because that is the
- * adjacent fact — the boundary is a wall-clock rule and says nothing about the
- * zone the clock is in (the D4 seam, documented on src/lib/db/date.ts). It is a
- * preference, not a `users` column, so it saves through its own repo call
- * alongside `updateProfile` and then installs itself for the running app.
+ * every future entry is filed under. It is a preference, not a `users` column,
+ * so it saves through its own repo call alongside `updateProfile` and then
+ * installs itself for the running app.
+ *
+ * **The Timezone field is gone (0060), and the column stays.** It was a free-text
+ * input that nothing in the app ever read — `users.timezone` is written here and
+ * consulted by no one; `src/lib/db/date.ts` says so in as many words. The day
+ * boundary follows the PHONE's zone, which is the right rule (Home answers "what
+ * should I do right now", and right now is where the body is standing), and the
+ * honest way to say so is a line under *Day starts at*. Saying it under a field
+ * that appears to SET the zone would have made the screen contradict itself —
+ * so the sentence arrived and the field left in the same change. The column is
+ * left in place and inert: dropping it is a migration for no gain, and the
+ * export still carries whatever was typed there.
  *
  * Conformed Set treatment: each field is **recessed stock** — a capture surface
  * is a well, so the input itself carries the paper-dim fill on a paper-deep
@@ -69,7 +78,6 @@ export default function SettingsProfileScreen() {
   const [fullName, setFullName] = useState(user.full_name ?? '');
   const [dob, setDob] = useState(user.date_of_birth ?? '');
   const [sex, setSex] = useState<BiologicalSex | null>(user.biological_sex);
-  const [timezone, setTimezone] = useState(user.timezone);
   const [dayStart, setDayStart] = useState(() => getDayStartsAtPreference(getDb()));
   const [error, setError] = useState<string | null>(null);
 
@@ -87,8 +95,6 @@ export default function SettingsProfileScreen() {
         fullName: fullName.trim() || null,
         dateOfBirth: dob.trim() || null,
         biologicalSex: sex,
-        // Never blank a NOT NULL column — fall back to what was stored.
-        timezone: timezone.trim() || user.timezone,
       });
       // Persist, then install for the running app so the very next screen reads
       // the new boundary without a relaunch (src/lib/db/date.ts).
@@ -176,21 +182,6 @@ export default function SettingsProfileScreen() {
         </View>
       </View>
 
-      {/* Timezone */}
-      <View className="mt-8">
-        <SectionLabel label="Timezone" />
-        <TextInput
-          value={timezone}
-          onChangeText={setTimezone}
-          placeholder="e.g. America/New_York"
-          placeholderTextColor={palette.inkMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          className={FIELD}
-          accessibilityLabel="Timezone"
-        />
-      </View>
-
       {/* Day starts at — a measured value, so mono, and the same HH:MM field the
           appointment form uses. `numbers-and-punctuation` is a full keyboard
           with its own return key, so it takes no KEYPAD_DONE
@@ -215,7 +206,9 @@ export default function SettingsProfileScreen() {
           {dayStartOk && dayStartEntry !== DEFAULT_DAY_STARTS_AT
             ? `Anything logged before ${dayStartEntry} counts as the previous day.`
             : 'Days run midnight to midnight.'}{' '}
-          Days already logged keep the date they were filed under.
+          Days already logged keep the date they were filed under. This is a
+          wall-clock time and follows the phone’s timezone, so on a travel day
+          the day turns over where you are.
         </Text>
       </View>
 

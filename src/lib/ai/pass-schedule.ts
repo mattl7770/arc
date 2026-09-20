@@ -7,10 +7,13 @@
  *   DAILY — once per calendar day, on first app open. Bounded by a stored
  *   date, so re-opening the app ten times costs one pass.
  *
- *   SIGNAL — an attention router: when a watch-tone insight appears that was
- *   NOT there at the last pass, the day deserves a second look without waiting
- *   for tomorrow. Keyed by the insight ids so the same standing signal (an
- *   HRV trend that persists for a week) fires once, not every launch.
+ *   SIGNAL — an attention router: when something appears that was NOT there at
+ *   the last pass, the day deserves a second look without waiting for tomorrow.
+ *   Keyed by id so the same standing signal (an HRV trend that persists for a
+ *   week) fires once, not every launch. Two sources feed it: watch-tone
+ *   insights, and a zone change observed today (0060) — see
+ *   {@link currentSignals} for why a landing is one and why nothing about it
+ *   reaches the brief.
  *
  * State lives in `users.preferences.coachPass` — the unit-preferences pattern,
  * so no migration. Pure over the {@link Database} interface apart from that
@@ -18,6 +21,7 @@
  */
 import type { Database } from '@/lib/db/database';
 import { forwardCursor, todayISODate } from '@/lib/db/date';
+import { timezoneChangesOn } from '@/lib/db/repositories/day-meta';
 import { getOrCreateUser } from '@/lib/db/repositories/user';
 
 import { computeInsights } from './insights';
@@ -62,12 +66,47 @@ export function setPassState(db: Database, state: PassState): void {
   db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(preferences), user.id]);
 }
 
-/** The signals worth waking the Coach for: anything it should act on. */
+/**
+ * The signals worth waking the Coach for: anything it should act on.
+ *
+ * ## Two sources, and why a landing is the second one
+ *
+ * The first is the watch-tone insights — the attention router this module was
+ * written for. The second (0060, owner's Q5(a)) is a **zone change observed
+ * today**: a landing is a moment where the day's plan, the reminders and the
+ * body's clock have all just moved, and it is neither the daily pass nor a new
+ * insight, so nothing would have woken the model for it.
+ *
+ * What the Coach does with it is entirely the model's call — it is handed the
+ * fact through the state block like any other turn and may well decide there is
+ * nothing worth saying. **Nothing enters `computeInsights`**, so Home's brief is
+ * byte-identical on a seam day, the uncached `Signals:` line does not move, and
+ * `get_insights` returns what it returned before. A `timezone-changed` insight
+ * with a `kind` the brief excludes was considered and rejected: the precedent
+ * exists, but it widens `InsightKind` for something that is not an insight and
+ * still lands in a read tool. This is a second source in a function that already
+ * returns a sorted list of ids.
+ *
+ * **Keyed on the ROW ID, not the date**, and that is what makes it fire once per
+ * seam rather than once per marked day. A change that crossed the day boundary
+ * marks TWO days and both of them see the same id; `markPassRan` stores it on
+ * the first, so the second does not re-fire. Once per seam by construction, with
+ * no bookkeeping of its own.
+ *
+ * Reading the row — not the observer's return value — is also what makes the
+ * ordering in `app/_layout.tsx` soft: if a resume ever read this before
+ * `onForeground` wrote, the landing turn fires on the next foreground instead of
+ * never.
+ */
 export function currentSignals(db: Database, now: Date): string[] {
-  return computeInsights(db, now)
-    .filter((insight) => insight.tone === 'watch')
-    .map((insight) => insight.id)
-    .sort();
+  const today = todayISODate(now);
+  const landings = timezoneChangesOn(db, today).map((row) => `timezone-changed:${row.id}`);
+  return [
+    ...computeInsights(db, now)
+      .filter((insight) => insight.tone === 'watch')
+      .map((insight) => insight.id),
+    ...landings,
+  ].sort();
 }
 
 /**

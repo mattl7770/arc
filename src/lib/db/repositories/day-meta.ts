@@ -19,9 +19,17 @@
  *   3. **The nutrition verdict goes quiet** on it ({@link isTimezoneChangedDay}
  *      is the predicate readiness.ts reads; C7 owns the verdict itself).
  *
+ * The **second pass** (2026-09-19, migration 0060, docs/spikes/timezone-handling-
+ * intelligent.md) changes none of that and adds the one thing D4 could not see:
+ * the run of days BETWEEN two seams. A trip is derived from these same rows
+ * ({@link allTrips}), its away days are barred from the readiness baselines, and
+ * one fact per row — the arrival zone's seasonal pair — is now kept so the
+ * derivation never has to ask where the phone is standing.
+ *
  * Pure over the {@link Database} interface — headless-tested in
  * db/timezone.test.mjs. The classification brain is separate and value-only
- * (src/lib/timezone/classify.ts) so the suite never depends on the host's zone.
+ * (src/lib/timezone/classify.ts), and so is the trip derivation
+ * (src/lib/timezone/trips.ts), so the suite never depends on the host's zone.
  */
 import type { Database } from '../database';
 import { shiftISODate, todayISODate } from '../date';
@@ -35,6 +43,13 @@ import {
   offsetEastMinutes,
   zoneProbe,
 } from '@/lib/timezone/classify';
+import {
+  NO_OFFSET_HISTORY,
+  offsetAt,
+  type OffsetHistoryRow,
+  type OffsetLookup,
+} from '@/lib/timezone/offset-history';
+import { deriveTrips, tripOn, type Trip } from '@/lib/timezone/trips';
 
 import { getTimezoneCursor, setTimezoneCursor } from './user';
 
@@ -45,8 +60,15 @@ export type TimezoneChangeRow = {
   to_offset_min: number;
   from_local_date: string;
   to_local_date: string;
-  created_at: string;
-  updated_at: string;
+  /**
+   * The ARRIVAL zone's January and July offsets (0060) — `zoneProbe`'s answer at
+   * the instant of the write, kept instead of discarded. `null` on every row
+   * 0053 wrote, and unrecoverable for those: the probe reads the device's
+   * CURRENT zone, so it cannot be taken again later for a zone the phone has
+   * left. A null pair means the trip derivation falls back to exact equality.
+   */
+  zone_jan_offset_min: number | null;
+  zone_jul_offset_min: number | null;
 };
 
 /**
@@ -101,22 +123,44 @@ export function observeTimezone(db: Database, now: Date = new Date()): TimezoneC
   setTimezoneCursor(db, current);
   if (previous === null || !isPlausibleOffset(previous)) return null;
 
+  // The probe reads the device's CURRENT zone, which is the zone it is in after
+  // the change — exactly the pair the DST test needs (classify.ts §2c), and
+  // exactly the pair the trip's close-on-return test needs three weeks later.
+  const probe = zoneProbe(now.getFullYear());
   const change = classifyOffsetChange({
     fromOffsetMin: previous,
     toOffsetMin: current,
     at: now,
-    // The probe reads the device's CURRENT zone, which is the zone it is in
-    // after the change — exactly the pair the DST test needs (classify.ts §2c).
-    ...zoneProbe(now.getFullYear()),
+    ...probe,
   });
   if (change.kind === 'dst') return null;
 
   const id = newId(db);
+  // The probe is SPREAD into the classifier above and STORED here (0060). It is
+  // the one fact about a change that cannot be recovered afterwards: the zone it
+  // describes is the one the phone is standing in at this instant, and by the
+  // time a reader asks whether a later row came home, the phone is somewhere
+  // else. Writing it is what makes the trip's close read-time independent.
+  // Guarded, so a hostile clock cannot fail the 0060 CHECK and take the insert
+  // down with it — an unstorable probe is simply not stored, and the row then
+  // behaves as a 0053 row does.
+  const storable =
+    isPlausibleOffset(probe.januaryOffsetMin) && isPlausibleOffset(probe.julyOffsetMin);
   db.run(
     `INSERT INTO timezone_changes
-       (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, now.toISOString(), previous, current, change.fromLocalDate, change.toLocalDate]
+       (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date,
+        zone_jan_offset_min, zone_jul_offset_min)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      now.toISOString(),
+      previous,
+      current,
+      change.fromLocalDate,
+      change.toLocalDate,
+      storable ? probe.januaryOffsetMin : null,
+      storable ? probe.julyOffsetMin : null,
+    ]
   );
   return db.get<TimezoneChangeRow>('SELECT * FROM timezone_changes WHERE id = ?', [id]) ?? null;
 }
@@ -136,6 +180,23 @@ export function isTimezoneChangedDay(db: Database, date: string): boolean {
     [date, date]
   );
   return row !== undefined;
+}
+
+/**
+ * Every change that marks `date` — the row form of {@link isTimezoneChangedDay}.
+ *
+ * The Coach's landing signal is built from this and keys on the row `id`, which
+ * is what makes it fire once per SEAM rather than once per marked day: a change
+ * that crossed the day boundary marks two days and both of them see the same
+ * row, so the pass that runs on the first silences the second.
+ */
+export function timezoneChangesOn(db: Database, date: string): TimezoneChangeRow[] {
+  return db.all<TimezoneChangeRow>(
+    `SELECT * FROM timezone_changes
+      WHERE from_local_date = ? OR to_local_date = ?
+      ORDER BY changed_at, rowid`,
+    [date, date]
+  );
 }
 
 /**
@@ -226,6 +287,110 @@ export function timezoneHomeLine(db: Database, date: string = todayISODate()): s
   if (row.from_local_date !== row.to_local_date) return `${fact}.`;
   const hours = dayLengthHours(row.from_offset_min, row.to_offset_min);
   return `${fact}. Today is ${formatDayLength(hours)} long.`;
+}
+
+/**
+ * The offset history as a lookup — what the wearable pipeline buckets by (0060).
+ *
+ * Read once and closed over, not queried per sample: a 90-day pass maps tens of
+ * thousands of instants, and the table holds tens of rows a year. The rows are
+ * the whole of it, so the answer does not depend on where the phone is standing
+ * — which is the entire point of bucketing a sample under the zone it was lived
+ * in rather than the zone it is read from.
+ */
+export function offsetHistory(db: Database): OffsetLookup {
+  const rows = db.all<OffsetHistoryRow>(
+    `SELECT changed_at, from_offset_min, to_offset_min FROM timezone_changes
+      ORDER BY changed_at, rowid`
+  );
+  if (rows.length === 0) return NO_OFFSET_HISTORY;
+  return (instant) => offsetAt(rows, instant);
+}
+
+/** The oldest day any row speaks for, or `null` when there are no rows. */
+export function earliestTimezoneDay(db: Database): string | null {
+  const row = db.get<{ day: string }>(
+    `SELECT min(from_local_date) AS day FROM timezone_changes`
+  );
+  return row?.day ?? null;
+}
+
+// --- Trips: the run of days between two seams (0060) -------------------------
+
+/**
+ * Every trip visible in the record, oldest first.
+ *
+ * Reads **every** row, not a window's worth, and that is deliberate: a trip that
+ * opened before a consumer's 30-day window still has to be seen, or the days
+ * inside the window would read as home. At real cardinality — tens of rows a
+ * year for a frequent traveller — an unbounded read is the cheap option anyway,
+ * and {@link timezoneChangedDaysIn} stays windowed because its question genuinely
+ * is per-window.
+ *
+ * The declared Traveling windows come from `day_modes` (0026) and are read as
+ * WINDOWS rather than through the resolved per-day mode: what closes a trip is
+ * the statement *"I am back on the 20th"*, which is a property of the row the
+ * user wrote, not of whatever later row happens to win a given day. Open-ended
+ * travel rows are excluded for the same reason — "I am travelling" is not a
+ * return date.
+ *
+ * Pure derivation past this point: {@link deriveTrips} reads no clock and no
+ * zone, so the same rows give the same trips in London and in the headless suite.
+ */
+export function allTrips(db: Database, today: string = todayISODate()): Trip[] {
+  const rows = db.all<TimezoneChangeRow>(
+    `SELECT * FROM timezone_changes ORDER BY changed_at, rowid`
+  );
+  const windows = db.all<{ start_date: string; end_date: string }>(
+    `SELECT start_date, end_date FROM day_modes
+      WHERE mode = 'travel' AND end_date IS NOT NULL
+      ORDER BY start_date, rowid`
+  );
+  return deriveTrips({
+    rows,
+    travelWindows: windows.map((w) => ({ start: w.start_date, end: w.end_date })),
+    today,
+  });
+}
+
+/** The trips that put at least one away day inside the inclusive window. */
+export function tripsIn(db: Database, from: string, to: string, today?: string): Trip[] {
+  if (to < from) return [];
+  return allTrips(db, today ?? to).filter((trip) =>
+    trip.awayDays.some((day) => day >= from && day <= to)
+  );
+}
+
+/**
+ * The trip `today` is an away day of, or `null` — the question Home and the
+ * Coach's state block ask.
+ *
+ * `null` on a SEAM day: the seam days bound a trip and are not inside it, which
+ * is what keeps the Coach from printing two timezone lines on one turn.
+ */
+export function currentTrip(db: Database, today: string = todayISODate()): Trip | null {
+  return tripOn(allTrips(db, today), today);
+}
+
+/**
+ * The away days in the inclusive window — the set readiness's baselines bar.
+ *
+ * Distinct from {@link timezoneChangedDaysIn}, and the two are unioned rather
+ * than merged: a seam day was not 24 hours long, an away day was a perfectly
+ * ordinary 24 hours lived under someone else's sun, and they are barred from a
+ * baseline for different reasons. The union lives behind one named helper
+ * (src/lib/home/baseline-exclusions.ts) so that nothing downstream grows a
+ * second predicate.
+ */
+export function awayDaysIn(db: Database, from: string, to: string, today?: string): Set<string> {
+  const days = new Set<string>();
+  if (to < from) return days;
+  for (const trip of allTrips(db, today ?? to)) {
+    for (const day of trip.awayDays) {
+      if (day >= from && day <= to) days.add(day);
+    }
+  }
+  return days;
 }
 
 /**
