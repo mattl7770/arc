@@ -18,7 +18,7 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { newId } from '@/lib/db/id';
-import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
+import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import { addVersion, getCurrentVersion } from '@/lib/db/repositories/protocols';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import { DAILY, parseProtocolContent, validateContent } from '@/lib/protocols/content';
@@ -217,7 +217,7 @@ function ProtocolItemEditor({ id, itemId }: { id: string | undefined; itemId: st
     // The edit reaches TODAY through the same diff a mode change uses, and the
     // OS schedule follows the new plan (C10) — which is what cancels the
     // notification of an item this save retimed or removed.
-    rederiveMissionForDay(db, todayISODate());
+    rederiveMissionFromToday(db, todayISODate());
     void syncReminderNotifications(db);
     return null;
   };

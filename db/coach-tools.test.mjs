@@ -8,7 +8,14 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { apiKeyStore } from '../src/lib/ai/api-key-store.ts';
-import { todayISODate } from '../src/lib/db/date.ts';
+import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
+import {
+  backfillPastRow,
+  commitDayAhead,
+  generateMissionForDay,
+  planForDay,
+} from '../src/lib/db/repositories/mission-generate.ts';
+import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
@@ -3352,6 +3359,111 @@ console.log('43. get_training_summary carries the watch’s heart rate, on both 
   /heart rate|bpm|\bhr\b/i.test(description) === false
     ? ok('the tool description says nothing about heart rate — payload only, no schema cost')
     : bad('a heart-rate sentence entered the description', description);
+}
+
+console.log('44. the Plan screen is payload-only: `doneOn` and `ahead`, both omitted by default');
+{
+  const { db } = freshDb();
+  const protocolId = createProtocolWithVersion(
+    db,
+    // Anchored three days back, so YESTERDAY is inside the protocol's own run
+    // and can be generated — a backfill needs a row that existed to be missed.
+    { name: 'Evening stack', type: 'supplement_stack', startedOn: shiftISODate(TODAY, -3) },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'mag',
+              title: 'Magnesium',
+              scheduled_time: '21:00',
+              dose: '400 mg',
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  generateMissionForDay(db, TODAY);
+
+  // THE DEFAULT SHAPE. An ordinary day carries neither field — that is what
+  // makes the token delta zero in practice as well as by construction.
+  const plain = run('get_today_snapshot', db);
+  'ahead' in plain === false
+    ? ok('an ordinary day emits no `ahead` array at all')
+    : bad('`ahead` was emitted empty', JSON.stringify(plain.ahead));
+  plain.mission.every((m) => !('doneOn' in m))
+    ? ok('…and no mission row carries `doneOn`')
+    : bad('doneOn on an untouched row', JSON.stringify(plain.mission));
+
+  // An ORDINARY tick, made on the day it belongs to, still carries nothing:
+  // `doneOn` states a DIFFERENCE, and there is none.
+  const todayRow = db.get(
+    `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND e.title = 'Magnesium'`,
+    [TODAY]
+  );
+  setMissionStatus(db, todayRow.id, 'completed', TODAY);
+  run('get_today_snapshot', db).mission.every((m) => !('doneOn' in m))
+    ? ok('…and a tick made on its own day still carries none')
+    : bad('doneOn on a same-day tick');
+
+  // A DAY AHEAD, committed by one tick on the Plan screen.
+  const tomorrow = shiftISODate(TODAY, 1);
+  const plan = planForDay(db, tomorrow, { today: TODAY });
+  commitDayAhead(db, tomorrow, TODAY, {
+    ordinal: 0,
+    expect: { title: plan[0].title, protocolId: plan[0].protocolId, itemId: plan[0].extras.item },
+  });
+  const withAhead = run('get_today_snapshot', db);
+  Array.isArray(withAhead.ahead) &&
+  withAhead.ahead.length === 1 &&
+  withAhead.ahead[0].day === tomorrow &&
+  withAhead.ahead[0].title === 'Magnesium' &&
+  withAhead.ahead[0].protocol === 'Evening stack'
+    ? ok('a row ticked on a day ahead appears in `ahead` with its day, title and protocol')
+    : bad('ahead payload', JSON.stringify(withAhead.ahead));
+  // Today's own rows are untouched by it: `ahead` is about days that have not
+  // happened, and the mission array is still today.
+  withAhead.mission.every((m) => !('doneOn' in m))
+    ? ok('…while today’s mission array is unchanged')
+    : bad('the commit leaked into today', JSON.stringify(withAhead.mission));
+
+  // A BACKFILL. Yesterday's untouched row, ticked this morning: the day it
+  // belongs to is yesterday, and the day it was recorded is today.
+  const yesterday = shiftISODate(TODAY, -1);
+  generateMissionForDay(db, yesterday);
+  const pastRow = db.get(
+    `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND e.title = 'Magnesium'`,
+    [yesterday]
+  );
+  backfillPastRow(db, pastRow.id, TODAY) === 'ok'
+    ? ok('a pending original inside the window can be backfilled')
+    : bad('the backfill was refused');
+  // It sits under YESTERDAY, so it is not in today's mission array at all —
+  // which is the honest reading, and why `doneOn` rides the row rather than
+  // becoming a second list. `ahead` is about the days that have NOT happened
+  // and is unmoved by a correction to one that has.
+  const afterBackfill = run('get_today_snapshot', db);
+  afterBackfill.date === TODAY &&
+  afterBackfill.mission.every((m) => m.title !== 'Magnesium' || !('doneOn' in m)) &&
+  afterBackfill.ahead.length === 1 &&
+  afterBackfill.ahead[0].day === tomorrow
+    ? ok('…and a correction to a past day moves neither today’s rows nor `ahead`')
+    : bad('the backfill leaked into the snapshot', JSON.stringify(afterBackfill.ahead));
+  // The tool's DESCRIPTION did not move. Payload only — the two ceilings in
+  // coach-eval §6 guard the cached prefix, and nothing was added to it.
+  const description = toolByName('get_today_snapshot').description;
+  /ahead|doneOn|day picker|plan screen/i.test(description) === false
+    ? ok('the tool description says nothing about either field — payload, not schema')
+    : bad('a sentence about the day picker entered the description', description);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

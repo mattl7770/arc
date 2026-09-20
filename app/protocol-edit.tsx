@@ -21,7 +21,7 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { newId } from '@/lib/db/id';
-import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
+import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import {
   addVersion,
   createProtocolWithVersion,
@@ -437,7 +437,7 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
       // The edit lands on TODAY (owner call, 2026-08-25), through the same diff
       // a mode change uses: untouched machine-made rows follow the new content,
       // and anything completed / skipped / partial / ad-hoc is preserved.
-      rederiveMissionForDay(db, todayISODate());
+      rederiveMissionFromToday(db, todayISODate());
       // …and the OS schedule follows the plan (C10). This is what cancels the
       // notification of an item the edit just removed, retimed, or turned the
       // reminder off for: the sync cancels everything and rebuilds from the new

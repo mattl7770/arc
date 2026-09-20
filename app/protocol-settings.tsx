@@ -14,7 +14,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
-import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
+import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import {
   deleteProtocol,
   getCurrentVersion,
@@ -148,7 +148,7 @@ function ProtocolSettings({ id }: { id: string | undefined }) {
       // 2026-08-25 and through the same diff a mode change uses: pausing pulls
       // this protocol's untouched rows off today, resuming puts them back, and
       // anything already done or skipped is preserved exactly.
-      rederiveMissionForDay(db, todayISODate());
+      rederiveMissionFromToday(db, todayISODate());
       // Pausing must also stop it buzzing the phone; resuming must start it
       // again. The sync cancels the whole schedule and rebuilds from the
       // current plan, so there is nothing per-item to remember to undo.
@@ -179,7 +179,7 @@ function ProtocolSettings({ id }: { id: string | undefined }) {
               deleteProtocol(db, detail.protocol.id);
               // A deleted protocol must stop putting rows on today, and must
               // stop buzzing the phone. Same diff, same rebuild.
-              rederiveMissionForDay(db, todayISODate());
+              rederiveMissionFromToday(db, todayISODate());
               void syncReminderNotifications(db);
               // Past the detail, which is now a protocol that no longer exists.
               // `navigate` returns to the hub already in the stack rather than

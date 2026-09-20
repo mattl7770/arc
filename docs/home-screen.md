@@ -36,6 +36,16 @@ Each item shows:
 - Category label (Nutrition, Training, Supplements…)
 - Short context or “Why” line (shown on the active item)
 - Source protocol (if any)
+- One **mark** in the label voice when the row has something to say about itself: `2 DAYS LATE` (a carried debt), `2 MISSED` (today's own occurrence, with earlier days outstanding behind it), or `DONE 2 DAYS EARLY` / `TICKED 1 DAY LATER` (the tick did not land on this day — see *The two links* below). One mark at a time, in that precedence; never a signal colour, because adherence is behaviour and the signal palette marks biology.
+
+**The two links under the mission — `PROTOCOLS ›` and `PLAN ›`** (2026-08-25, joined 2026-09-19). One `flex-row` of label-voice links, 44pt, neutral ink, no accent: Home's accent budget is the hero and the completion stamps, and a filled control under the list would compete with the one thing the screen exists to make you do.
+
+- `PROTOCOLS ›` → `/protocols`, the thing that BUILT the day.
+- `PLAN ›` → `app/mission-day.tsx`, the same mission asked of **another day** — six days forward (the reminder scheduler's own horizon) and back to the day the execution record begins.
+
+**The row renders under an empty day too.** It sits outside the `planned` branch deliberately: an every-3-days stack has empty days by design, and those are exactly the days worth checking tomorrow on. Drawn only when the day had a plan, the one day that most needed them had neither.
+
+**Home itself does not move.** The picker is on a pushed screen and not here, for two reasons that are the same reason from two sides: every section of Home answers *now* (§5 of CLAUDE.md), and the mission's day is a forward-clamped write target that must not move (`use-today-mission.ts`). The folio line still prints today.
 
 ### 4. AI Coach Daily Brief
 - 3–6 sentence personalized summary
@@ -116,6 +126,14 @@ Key design decisions:
 **Mode control — BUILT 2026-08-01.** It found its real home beside the date, not in the dead dock: the folio line is now a `flex-row justify-between` holding `DateEyebrow` on the left and `ModeControl` on the right (`src/components/home/mode-control.tsx`). Deliberately neutral — the indicator is the standard paper-deep/mono status chip when a mode is on, and a bare muted "Set mode" when it isn't; Home's one pine stays with the hero, and a mode is a state, not an action. Choosing a mode calls `applyMode` (`src/lib/modes/store.ts`), which writes the `day_modes` row, **re-derives today's mission** (`rederiveMissionForDay` — a diff that keeps completed/partial work and ad-hoc captures), and broadcasts so the indicator and the mission list both re-read (focus alone can't: the picker is a modal over Home, so Home never loses focus).
 
 **First-run state — BUILT 2026-08-07** (`mission-empty.tsx`, above). `useTodayMission` also gained `useFocusEffect(refresh)`, so creating a first protocol and coming back to Home fills the day immediately instead of waiting for a background/foreground cycle. ⚠️ **Verified by typecheck, lint and headless tests only — it has never been rendered on a device.** Per the project's standing rule (verify on device, not web), check it on hardware before calling it done.
+
+**The Plan screen — BUILT 2026-09-19** (`app/mission-day.tsx`, no migration; `docs/spikes/mission-day-picker-and-future-checkoff.md`). The mission on a day other than today, pushed from `PLAN ›`. Three kinds of day and they behave differently:
+
+- **Today** is the committed rows, opened through `arriveDay` — the picker is itself a way to open a day, so a day that was committed ahead and has since arrived is converted here as well as on Home.
+- **A day ahead** (up to `MISSION_HORIZON_DAYS = 6`) is **computed on view, and looking writes nothing** — no `daily_logs` row, no entry. The first tick commits the whole day and ticks that row in one transaction; un-ticking the last tick un-commits it. It is **tick-only**: a skip ahead would be a permanent suppression, and a remove ahead a tombstone on a plan that may still change. A tick ahead stamps `value.done_on` with the day of the tap, so under `checkoff_mode = 'adjusting'` the every-N-days clock re-bases on the day the item was actually done.
+- **A past day** renders what it holds, and inside the carry window (seven days) a row can be **backfilled** — ticked on its own day, stamped with the day of the tap, shown as *ticked N days later*. Three guards ship with the gesture: a **carried copy** is refused (the debt is live on today's mission, where the gesture belongs), a row a copy has **already settled** is refused (it would count the item done twice and silently drop the *done late* annotation), and **beyond seven days** the day is the record. Each refusal says so in one serif line — never a checkbox that quietly does nothing.
+
+**A day committed ahead never goes stale.** Every seam that changes what a day should hold now calls `rederiveMissionFromToday`, and every status write calls `rederiveDaysAhead` behind a one-query gate. A committed-ahead day that passes **unopened** enters no adherence rate and creates no debt (`NOT_UNSEEN_SQL`), which is 0050's invariant held: using a feature can never make a rate look worse.
 
 **Travel / sick / deload** are handled by **Modes**, not by bespoke Home states — see the mode control above.
 

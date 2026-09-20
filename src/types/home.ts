@@ -92,6 +92,31 @@ export type MissionItem = {
    * 14 Sep* and what {@link skipCarried} reaches through.
    */
   carriedFrom?: { date: string; entry: string };
+  /**
+   * How far the TICK was from the row — signed days, negative for early
+   * (2026-09-19). A row ticked on the Plan screen two days before its own day
+   * reads `-2` and prints "DONE 2 DAYS EARLY"; a past row backfilled this
+   * morning reads `+1` and prints "TICKED 1 DAY LATER".
+   *
+   * Undefined on every ordinary row — a tick made on the day it belongs to
+   * leaves nothing to say, and so does every row written before `value.done_on`
+   * existed. Label voice beside the category, never a signal colour: this is
+   * provenance about BEHAVIOUR, and the signal palette marks biology.
+   */
+  tickedDays?: number;
+  /**
+   * `value.done_on` — the logical day the completion was recorded, present only
+   * when the row is completed. {@link tickedDays} is this fact as the number a
+   * row prints; this is the fact itself, which the Coach's payload states.
+   */
+  doneOn?: string;
+  /**
+   * `value.late_on` — this row is the ORIGINAL of a debt that was finally paid
+   * on a later day through a carried copy (0050). It stays `skipped`, because
+   * the day it was missed is still a miss; the stamp is what lets a surface say
+   * so out loud, and what makes a second tick on this row refusable.
+   */
+  lateOn?: string;
 };
 
 export type Readiness = {

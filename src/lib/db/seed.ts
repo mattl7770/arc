@@ -7,8 +7,11 @@
  *    user's OWN active protocols (plus the day's mode). It fabricates nothing:
  *    a user with no protocols gets a genuinely empty day, and Home renders its
  *    honest first-run state over that.
+ *  - `arriveDay` is what a surface reading TODAY calls instead: the seeding
+ *    above, plus the one diff a day committed ahead needs on the morning it
+ *    becomes today.
  *
- * Both are safe to call repeatedly.
+ * All three are safe to call repeatedly.
  */
 import type { Database } from './database';
 import { ingestCorpus } from '@/lib/rag/corpus';
@@ -16,10 +19,11 @@ import { newId } from './id';
 import {
   countMissionEntries,
   getOrCreateDailyLog,
+  hasUnseenRows,
   insertMissionItem,
 } from './repositories/mission';
 import { getActiveMode } from './repositories/day-modes';
-import { generateMissionForDay } from './repositories/mission-generate';
+import { generateMissionForDay, rederiveMissionForDay } from './repositories/mission-generate';
 import type { LogEntryType } from './types';
 import { BIOMARKER_SEED } from '@/lib/labs/catalog';
 import { modeChangesPlan } from '@/lib/modes/registry';
@@ -125,4 +129,35 @@ export function ensureTodaySeeded(
       insertMissionItem(db, log.id, type, item, { seed: true });
     }
   });
+}
+
+/**
+ * **Open a day** — the seam every surface that reads TODAY now goes through,
+ * in place of a bare {@link ensureTodaySeeded}.
+ *
+ * Two days behave differently here, and the whole point is that the caller does
+ * not have to know which one it has:
+ *
+ *   - an **ordinary** day, committed on its own morning or not committed at
+ *     all. `ensureTodaySeeded` does what it has always done, `hasUnseenRows` is
+ *     one indexed `LIMIT 1` that answers no, and nothing else happens.
+ *   - a day that was **committed ahead** and has now arrived. Its rows were
+ *     written before it, so they carry `ahead` and are held out of every
+ *     adherence read (`NOT_UNSEEN_SQL`) — which is right while the day is in
+ *     the future and wrong the moment it is today. `ensureTodaySeeded` no-ops
+ *     (the day has rows), and the re-derive is what converts it: it computes
+ *     today's plan WITHOUT the mark, so the value re-sync strips `ahead` from
+ *     every row still pending, and it adds the one source a future day never
+ *     had — the CARRY. A debt owed from Monday appears on Friday the morning
+ *     Friday becomes today, not on Wednesday when Friday was committed.
+ *
+ * A completed row keeps its mark, which is deliberate: it is provenance, and
+ * the predicate that reads it is a pair with `status <> 'pending'`.
+ *
+ * Alternative J, rejected: re-deriving every committed day on every Home focus.
+ * This is one cheap query per focus and one diff per arrival.
+ */
+export function arriveDay(db: Database, day: string): void {
+  ensureTodaySeeded(db, day);
+  if (hasUnseenRows(db, day)) rederiveMissionForDay(db, day);
 }

@@ -1,12 +1,36 @@
 # C11b — The mission day picker, and checking a protocol item off ahead
 
-**Status: PROPOSAL** (2026-09-15). Nothing here is built. The owner deferred
-this half of C11 on 2026-09-14 *"until the mission has a day picker"*
-(`docs/backlog-2026-09.md:67`, `docs/project-status.md:57`); the picker and the
-check-off are designed together because neither is usable or shaped without the
-other. **Backlog:** `docs/backlog-2026-09.md:47`, `:67`. **Parent spike:**
+**Status: BUILT** (2026-09-19), branch `claude/daypicker`, **no migration** —
+two value keys on `log_entries.value` (`done_on`, `ahead`), guarded by the
+existing `json_valid` CHECK. Head stayed `0059`. The owner answered all four
+questions in §8 and **took option (a) every time**, so §3 shipped whole: a
+pushed **Plan** screen from Home, six days ahead, a past tick for the seven
+settled days behind today, and a carried copy that is read-only there.
+**Backlog:** `docs/backlog-2026-09.md:47`, `:67`. **Parent spike:**
 `docs/spikes/protocol-carryover.md` §3.3 (`:389-473`) is the sketch this
-replaces; its five shipped departures (`:9-33`) are the ground.
+replaces; its five shipped departures (`:9-33`) are the ground. This build also
+supersedes **Phase 5 of `docs/spikes/protocol-interface-rethink.md`**, which
+deliberately stopped short and left the flag, the projection helpers and the
+view-model fields in the shape this plan expected.
+
+## What the build departs from what is written below
+
+| # | The plan | What shipped | Why |
+| --- | --- | --- | --- |
+| 1 | `planForDay(db, date, { today })` | **`{ committing?, today? }`**, and `today` *implies* non-committing when `date > today` | the rethink's Phase 1 had already landed `{ committing }`; a second flag that silently contradicted the first would be the drift the one-definition rule exists to stop. Passing `today` about TODAY is still a committing read, which is exactly what the arrival re-derive needs |
+| 2 | `value.checked_ahead_on` (the parent spike's name) | **`done_on`**, as §3.6 proposed | it is written by EVERY completion, not only by one made ahead, and it reads in both directions — earlier than the row is a tick ahead, later is a backfill |
+| 3 | three guards on the past tick | **the `late_on` guard also covers `skipped_via`** | both marks mean "a carried copy has already spoken for this row", both are undone from the copy, and `skipped_via` would otherwise leave a hand-skipped debt re-openable from the wrong end. A widening of guard 3, not a fourth guard |
+| 4 | the quota predicate fixes a reachable bug | the predicate shipped; **the state it guards is not reachable in v1** | a future day never places a quota item (`committing: false`), so a Friday quota row cannot be ticked on Monday today. The arithmetic is still the honest one — a week's allowance is counted over the whole week — and the test builds the state directly and says so. If a later build ever places a quota ahead, the count is already right |
+| 5 | `LabelLink({ icon, label, hint, href })` drawn twice in one wrapper outside the `planned` branch | **`MissionLinks`**, drawn in BOTH branches | `MissionEmpty` occupies the hero slot, five sections above where the mission plate draws, so one wrapper "outside the branch" would have put the links under the readiness strip on an empty day. Two call sites, one component, and the links sit under whichever block actually drew |
+| 6 | the Plan screen's rows keep the sheet | **no `onOpen` at all** | a computed row has no stored row to open. `MissionItemRow.onOpen` became optional, and where it is absent the chevron is not drawn and the named VoiceOver action is not offered — rather than offered and doing nothing |
+| 7 | `uncommitDayAhead` is called by the un-tick | it is, **and `commitDayAhead` asks the DATE whether it is committed** rather than creating a `daily_logs` row first | "nothing is written by looking" has to survive a REFUSED tap too, and `getOrCreateDailyLog` before the guards would have left an empty day behind for every stale `expect` |
+
+Everything else is as written, including every "Considered and rejected" note
+and every alternative in §4.
+
+## What only a device can settle
+
+§7 below is unchanged and still open: none of it has been seen on hardware.
 
 ---
 

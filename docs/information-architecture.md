@@ -190,9 +190,23 @@ That was defensible on the reasoning that *the mission is Home's* — and it is 
 
 1. **Execution** — a `field` (a verdict, and the only one on the sheet): the adherence rate over a 14-day window, the four-way ledger beneath it (`done · skipped · partial · untouched`, summing to the denominator printed beside the rate), and the record's true extent.
 2. **Where it's failing** — a `plate`, one row per **source**: a protocol, a mode, or an experiment. Worst-missed first, each row naming its own worst item and each tapping through to `/protocol-detail` where the protocol still exists (the doc said `/protocol-edit` until 2026-09-19; the code has always pushed the detail, and the detail’s Now rows now make an item two taps from the record). This sits **above** the day-by-day record on purpose: the protocol is the thing the user can change, and *"a protocol whose items are never done is a protocol to change"*.
-3. **By day** — the record itself, newest first, one completion bar per day. It is the evidence for the two above it, so it is last.
+3. **By day** — the record itself, newest first, one completion bar per day. It is the evidence for the two above it, so it is last. **Since 2026-09-19 each day row is a door**: it pushes `/mission-day` on that day. The record says how much of a day got done; the only way to see *what it asked for* was to have been there on the day.
 
 Then the row into **Protocols**, so a screen about a plan you are not executing reaches the plan.
+
+### The mission's own day picker — `/mission-day`, pushed from HOME (2026-09-19)
+
+**`app/mission-day.tsx` (title "Plan", parent "Home")**, reached by a `PLAN ›` link beside `PROTOCOLS ›` under Home's mission block — and drawn under an empty day too, because an every-3-days stack has empty days by design and those are the days worth checking tomorrow on. Owner's call, all four questions option (a). Built with no migration: two value keys on `log_entries.value`, `done_on` and `ahead`. Spec: `docs/spikes/mission-day-picker-and-future-checkoff.md`.
+
+It is **pushed from Home and not on it**. Home answers *what should I do right now* and every section on it is about now; its mission is also a forward-clamped write target that must not move. So the other days live one push away, and the folio line still prints today.
+
+Range: **six days forward** — every weekday once, and inside the days the reminder scheduler already reads, so nothing else in the app had to move — and back to the day the execution record begins.
+
+- A **day ahead** is *computed on view*: looking writes nothing at all. The first tick commits the whole day and ticks that row in one transaction, and un-ticking the last tick un-commits it. Tick-only: no skip, no remove.
+- A **past day** inside the carry window can be **backfilled** — a row you did and forgot to tick is ticked on its own day and reads *ticked N days later*. A carried copy is refused there (the debt is live on today's mission), as is a row a carried copy already settled; past seven days the record stands, and each refusal is one serif line.
+- The **Coach** sees it but cannot act on it: `get_today_snapshot` gained `mission[].doneOn` (only when it differs from today) and an `ahead` array, both payload, neither a schema change. `adjust_today` stays today-only and acting on another day rides the parked whole-app-access item.
+
+The shared `DayPicker` (built for the nutrition history, C1) took its first forward-looking caller here: `DayBounds.latest` stopped being a synonym for the logical today and `DayBounds.today` became a bound of its own, so the chin's words and the way home stay on today while the arrows reach a horizon.
 
 Four rules govern what it may claim, all of them §5 (`00-design-spec.md`):
 

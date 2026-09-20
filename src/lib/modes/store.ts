@@ -3,8 +3,10 @@
  *
  * Setting a mode has two consequences beyond the `day_modes` row: today's
  * ALREADY-GENERATED mission must re-shape to the new mode
- * ({@link rederiveMissionForDay} — a diff that preserves completed/partial work
- * and ad-hoc captures), and every mounted view showing mode-derived state (the
+ * ({@link rederiveMissionFromToday} — the same diff that preserves completed
+ * and partial work and ad-hoc captures, and since 2026-09-19 reaches every day
+ * already committed ahead as well), and every mounted view showing mode-derived
+ * state (the
  * Home control, the mission list, the Coach brief) must re-read. Screens can't
  * rely on focus alone here: the mode is set from a modal ON Home, so Home never
  * loses focus. Hence the listener set — the same idiom as
@@ -15,7 +17,7 @@
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { clearMode, getActiveMode, setMode } from '@/lib/db/repositories/day-modes';
-import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
+import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 
 import type { ModeKey } from './registry';
 
@@ -49,7 +51,7 @@ export function applyMode(mode: ModeKey, opts: { endDate?: string | null } = {})
   if (mode === 'normal') clearMode(db, today);
   else setMode(db, { mode, startDate: today, endDate: opts.endDate ?? null });
   // Re-shape today's plan to the new mode without destroying work already done.
-  rederiveMissionForDay(db, today);
+  rederiveMissionFromToday(db, today);
   emitModeChanged();
 }
 

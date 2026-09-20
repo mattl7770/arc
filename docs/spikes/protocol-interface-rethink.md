@@ -1,6 +1,6 @@
 # The protocol interface rethink
 
-**Status: BUILT (Phases 0–4)** — 2026-09-19, branch `claude/protocols`, **no migration** (head stays `0058`; `0059` was still free at the time of writing and three sibling builds were holding `0059`/`0060`/`0061`). **Phase 5, the mission day picker, is NOT built** and is deliberately left for its own build after the Modes removal, from `docs/spikes/mission-day-picker-and-future-checkoff.md` — see *What Phase 5 inherits* below.
+**Status: BUILT (Phases 0–4)** — 2026-09-19, branch `claude/protocols`, **no migration** (head stays `0058`; `0059` was still free at the time of writing and three sibling builds were holding `0059`/`0060`/`0061`). **Phase 5, the mission day picker, was deliberately left for its own build** and **shipped 2026-09-19 on branch `claude/daypicker`** from `docs/spikes/mission-day-picker-and-future-checkoff.md`, which is the authoritative record of it. Everything under *What Phase 5 inherits* below was consumed as written; the three items listed there as "not done" — the arrival re-derive, the widening of `DayBounds.latest`, the checked-ahead stamp (shipped as `done_on`) and the `day-cursor.ts:5` citation fix — all landed with it.
 
 The owner answered all five questions in §12 and **took option (a) every time**. §5's recommendation therefore shipped whole: the mission row's chevron and its named VoiceOver action; the description off the hub row; the owner writing the why-line with the Coach allowed to reword or clear it; the day picker sequenced as Phase 5; and `update_protocol` learning to create.
 

@@ -19,16 +19,29 @@ import {
   addVersion,
   createProtocol,
   createProtocolWithVersion,
+  deleteProtocol,
   setActive,
 } from '../src/lib/db/repositories/protocols.ts';
 import {
+  hasUnseenRows,
   listMission,
+  missionBySource,
+  missionDailySeries,
+  missionRecordStart,
+  NOT_UNSEEN_SQL,
   setMissionStatus,
   skipCarried,
+  toggleMission,
 } from '../src/lib/db/repositories/mission.ts';
+import { protocolAdherence } from '../src/lib/db/repositories/protocol-adherence.ts';
+import { completeExperiment, createExperiment } from '../src/lib/db/repositories/experiments.ts';
+import { arriveDay } from '../src/lib/db/seed.ts';
 import { addDays, isoWeekday, weekStart } from '../src/lib/protocols/cadence.ts';
 import {
+  commitDayAhead,
   generateMissionForDay,
+  hasCommittedDaysAhead,
+  MISSION_HORIZON_DAYS,
   nextOccurrence,
   planForDay,
   planKey,
@@ -36,7 +49,10 @@ import {
   quotaCompletionsThisWeek,
   quotaDoneThisWeek,
   quotaKey,
+  rederiveDaysAhead,
   rederiveMissionForDay,
+  rederiveMissionFromToday,
+  uncommitDayAhead,
 } from '../src/lib/db/repositories/mission-generate.ts';
 import { setMode } from '../src/lib/db/repositories/day-modes.ts';
 import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
@@ -1243,6 +1259,589 @@ console.log('22b. quotaDoneThisWeek counts TODAY, and the addDays shortcut would
         `${quotaDoneThisWeek(sundayDb.db, sunday).get(walkKey)} / ${quotaCompletionsThisWeek(sundayDb.db, addDays(sunday, 1)).get(walkKey)}`
       );
   sundayDb.raw.close();
+}
+
+// ---------------------------------------------------------------------------
+// THE MISSION DAY PICKER AND THE FUTURE CHECK-OFF (2026-09-19,
+// docs/spikes/mission-day-picker-and-future-checkoff.md). No migration: two new
+// value keys, `done_on` and `ahead`.
+//
+// Same stated dates as the carry-over block above — 2026-08-01 is a SATURDAY,
+// so 08-03 Mon, 08-04 Tue, 08-05 Wed, 08-06 Thu, 08-07 Fri.
+// ---------------------------------------------------------------------------
+
+/**
+ * Tap one row of a future day the way the Plan screen does: it holds the plan
+ * it rendered, so it knows both the position and what is standing there. Used
+ * wherever the ORDER of the plan is incidental to the case — §24 addresses the
+ * ordinal by hand, because the ordinal is what it is testing.
+ */
+const tapAhead = (db, date, today, match) => {
+  const plan = planForDay(db, date, { today });
+  const ordinal = plan.findIndex(match);
+  const entry = plan[ordinal];
+  if (entry === undefined) return null;
+  return commitDayAhead(db, date, today, {
+    ordinal,
+    expect: { title: entry.title, protocolId: entry.protocolId, itemId: entry.extras.item },
+  });
+};
+
+console.log('23. the future view: no carry, no quota, and every entry marked AHEAD');
+{
+  const { db, raw } = freshDb();
+  const TODAY = '2026-08-04';
+  createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: '2026-08-03', carryOver: true },
+    content([
+      {
+        items: [
+          { id: 'creatine', title: 'Creatine', dose: '5 g' },
+          { id: 'lower', title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 3, 5] } },
+          { id: 'lift', title: 'Lift', cadence: { kind: 'quota', per_week: 3 } },
+        ],
+      },
+    ])
+  );
+  // Monday committed and left untouched: every one of its rows is now a debt.
+  generateMissionForDay(db, '2026-08-03');
+
+  const future = planForDay(db, '2026-08-06', { today: TODAY });
+  future.length > 0 && future.every((e) => e.extras.ahead === true)
+    ? ok('every entry of a day that has not happened carries the ahead mark')
+    : bad('ahead mark', JSON.stringify(future.map((e) => e.extras)));
+  !future.some((e) => e.extras.carried === true || e.extras.missed_days !== undefined)
+    ? ok('…none of them is a debt, and none wears a missed-days mark')
+    : bad('a future day grew a carry', JSON.stringify(future.map((e) => e.extras)));
+  !future.some((e) => e.extras.item === 'lift')
+    ? ok('…and the quota item is not placed: an allowance is not a day')
+    : bad('a quota landed on a future day');
+
+  // `{ today }` and `{ committing: false }` are the same read, to the byte,
+  // except for the mark. Stripping `ahead` by overriding it with undefined
+  // keeps every other key in its original position, so this is an ORDER-
+  // sensitive comparison and not a set comparison.
+  const withoutAhead = (entries) =>
+    JSON.stringify(entries.map((e) => ({ ...e, extras: { ...e.extras, ahead: undefined } })));
+  withoutAhead(future) === JSON.stringify(planForDay(db, '2026-08-06', { committing: false }))
+    ? ok('…and the option is the flag plus the mark, and nothing else')
+    : bad('the option diverged from the flag', withoutAhead(future));
+
+  raw.prepare('SELECT count(*) c FROM daily_logs WHERE date = ?').get('2026-08-06').c === 0
+    ? ok('looking at a future day writes nothing — it has no daily_log at all')
+    : bad('viewing committed a day');
+
+  // Asked about TODAY, `{ today }` is still a COMMITTING read: the arrival
+  // re-derive passes it and must get the carry and the quota, not a projection.
+  JSON.stringify(planForDay(db, TODAY, { today: TODAY })) === JSON.stringify(planForDay(db, TODAY))
+    ? ok('asked about today, the option changes nothing: it is a committing read')
+    : bad('{ today } projected today');
+
+  // The anchor trap. A NULL-anchored protocol read on a day ahead must start
+  // TODAY, or committing the day would start the clock in the future.
+  const fresh = freshDb();
+  const unanchored = createProtocolWithVersion(
+    fresh.db,
+    { name: 'Course', type: 'daily_routine' },
+    content([
+      { days: 3, items: [{ id: 'loading', title: 'Loading dose' }] },
+      { items: [{ id: 'maintenance', title: 'Maintenance dose' }] },
+    ])
+  );
+  const ahead3 = planForDay(fresh.db, addDays(TODAY, 3), { today: TODAY });
+  ahead3.some((e) => e.title === 'Maintenance dose')
+    ? ok('a NULL-anchored protocol is read as starting TODAY, so today+3 is already phase 2')
+    : bad('null anchor', JSON.stringify(ahead3.map((e) => e.title)));
+  fresh.raw.prepare('SELECT started_on FROM protocols WHERE id = ?').get(unanchored).started_on ===
+  null
+    ? ok('…and reading the day still wrote no anchor')
+    : bad('planForDay wrote started_on');
+  planForDay(fresh.db, addDays(TODAY, 3)).some((e) => e.title === 'Loading dose')
+    ? ok('…while without `today` it reads the VIEWED day as the anchor (the wrong answer, pinned)')
+    : bad('the anchor fallback did not reproduce');
+  fresh.raw.close();
+  raw.close();
+}
+
+console.log('24. commitDayAhead: the guards, the ordinal, and what one tap writes');
+{
+  const { db, raw } = freshDb();
+  const TODAY = '2026-08-04';
+  const FRIDAY = '2026-08-07';
+  // TWO items under ONE title — two doses, the multiset case planKey cannot
+  // resolve and the reason the tapped row is addressed by position.
+  const stack = createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack' },
+    content([
+      {
+        items: [
+          { id: 'mag-am', title: 'Magnesium', dose: '200 mg', time: '08:00' },
+          { id: 'mag-pm', title: 'Magnesium', dose: '400 mg', time: '21:00' },
+        ],
+      },
+    ])
+  );
+  const expectAm = { title: 'Magnesium', protocolId: stack, itemId: 'mag-am' };
+  const expectPm = { title: 'Magnesium', protocolId: stack, itemId: 'mag-pm' };
+
+  commitDayAhead(db, TODAY, TODAY, { ordinal: 0, expect: expectAm }) === null
+    ? ok('refuses today itself — an arrived day goes through the ordinary toggle')
+    : bad('committed today as a day ahead');
+  commitDayAhead(db, addDays(TODAY, MISSION_HORIZON_DAYS + 1), TODAY, {
+    ordinal: 0,
+    expect: expectAm,
+  }) === null
+    ? ok('…and refuses a day past the horizon')
+    : bad('committed past the horizon');
+  commitDayAhead(db, FRIDAY, TODAY, {
+    ordinal: 1,
+    expect: { title: 'Zinc', protocolId: stack, itemId: 'zinc' },
+  }) === null
+    ? ok('…and refuses when the row at that position is no longer what the screen drew')
+    : bad('a stale expect committed');
+  raw.prepare('SELECT count(*) c FROM daily_logs').get().c === 0 &&
+  raw.prepare('SELECT count(*) c FROM log_entries').get().c === 0
+    ? ok('…and not one refusal left a daily_log or a row behind')
+    : bad('a refused commit wrote something');
+
+  const ticked = commitDayAhead(db, FRIDAY, TODAY, { ordinal: 1, expect: expectPm });
+  const friday = rows(raw, FRIDAY);
+  friday.length === 2
+    ? ok('one tap commits the WHOLE day, not the row')
+    : bad('committed rows', String(friday.length));
+  const am = friday.find((r) => valueOf(r).item === 'mag-am');
+  const pm = friday.find((r) => valueOf(r).item === 'mag-pm');
+  ticked === pm.id && pm.status === 'completed' && am.status === 'pending'
+    ? ok('…and the SECOND row of the same title is the one completed — position, not key')
+    : bad('ordinal', JSON.stringify(friday.map((r) => [valueOf(r).item, r.status])));
+  valueOf(pm).done_on === TODAY
+    ? ok('…stamped with the day of the TAP, not the day of the row')
+    : bad('done_on', String(valueOf(pm).done_on));
+  valueOf(am).ahead === true && valueOf(pm).ahead === true
+    ? ok('…and both committed rows carry the ahead mark')
+    : bad('ahead on committed rows', friday.map((r) => r.value).join(' | '));
+  raw.prepare('SELECT started_on FROM protocols WHERE id = ?').get(stack).started_on === TODAY
+    ? ok('…and the NULL-anchored protocol is anchored to TODAY, never to Friday')
+    : bad(
+        'anchor',
+        String(raw.prepare('SELECT started_on FROM protocols WHERE id = ?').get(stack).started_on)
+      );
+
+  commitDayAhead(db, FRIDAY, TODAY, { ordinal: 0, expect: expectAm }) === null
+    ? ok('a second tap on an already-committed day writes nothing')
+    : bad('the day was committed twice');
+  uncommitDayAhead(db, FRIDAY, TODAY) === false
+    ? ok('un-committing refuses while the day holds an acted-on row')
+    : bad('un-committed a day with a completion on it');
+
+  toggleMission(db, pm.id, TODAY);
+  valueOf(rows(raw, FRIDAY).find((r) => r.id === pm.id)).done_on === undefined
+    ? ok('un-ticking removes the stamp')
+    : bad('done_on survived an un-tick');
+  uncommitDayAhead(db, FRIDAY, TODAY) === true && rows(raw, FRIDAY).length === 0
+    ? ok('…and un-ticking the last tick lets the day go back to being computed')
+    : bad('the day was not emptied');
+  raw.close();
+}
+
+console.log('25. a tick made AHEAD: strict keeps the calendar, adjusting re-bases on the tap');
+{
+  // Sauna every 3 days from Sat 2026-08-01 → 08-01, 04, 07, 10.
+  const TODAY = '2026-08-05';
+  const sauna = (checkoffMode) =>
+    content([
+      {
+        items: [
+          { id: 'creatine', title: 'Creatine' },
+          { id: 'sauna', title: 'Sauna', cadence: { kind: 'every_n_days', n: 3 } },
+        ],
+      },
+    ]);
+
+  const strictDb = freshDb();
+  const strict = createProtocolWithVersion(
+    strictDb.db,
+    { name: 'Sauna block', type: 'therapy_protocol', startedOn: '2026-08-01' },
+    sauna()
+  );
+  commitDayAhead(strictDb.db, '2026-08-07', TODAY, {
+    ordinal: 1,
+    expect: { title: 'Sauna', protocolId: strict, itemId: 'sauna' },
+  });
+  planForDay(strictDb.db, '2026-08-10').some((e) => e.extras.item === 'sauna')
+    ? ok('strict: the 7th ticked on the 5th leaves the 10th exactly where the calendar had it')
+    : bad('strict moved the clock');
+  !planForDay(strictDb.db, '2026-08-08').some((e) => e.extras.item === 'sauna')
+    ? ok('…and puts nothing in between')
+    : bad('strict invented an occurrence');
+  strictDb.raw.close();
+
+  const adjDb = freshDb();
+  const adj = createProtocolWithVersion(
+    adjDb.db,
+    {
+      name: 'Sauna block',
+      type: 'therapy_protocol',
+      startedOn: '2026-08-01',
+      checkoffMode: 'adjusting',
+    },
+    sauna()
+  );
+  commitDayAhead(adjDb.db, '2026-08-07', TODAY, {
+    ordinal: 1,
+    expect: { title: 'Sauna', protocolId: adj, itemId: 'sauna' },
+  });
+  planForDay(adjDb.db, '2026-08-08').some((e) => e.extras.item === 'sauna')
+    ? ok('adjusting: done on the 5th, so the 8th is next — three days after the day it was DONE')
+    : bad('adjusting did not re-base');
+  !planForDay(adjDb.db, '2026-08-07').some((e) => e.extras.item === 'sauna')
+    ? ok('…and the 7th stops being a native occurrence of its own plan')
+    : bad('the 7th still lands');
+  // Which is exactly why the completed row has to be preserved by the diff
+  // rather than kept by landing. The day arrives, the plan no longer names it,
+  // and it stands.
+  arriveDay(adjDb.db, '2026-08-07');
+  const arrived = adjDb.raw
+    .prepare(
+      `SELECT e.* FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id WHERE d.date = ?`
+    )
+    .all('2026-08-07');
+  const arrivedSauna = arrived.find((r) => valueOf(r).item === 'sauna');
+  arrivedSauna && arrivedSauna.status === 'completed'
+    ? ok('…yet its completed row stands through the day arriving')
+    : bad('the completed row was removed', JSON.stringify(arrived.map((r) => [r.title, r.status])));
+  valueOf(arrivedSauna).ahead === true
+    ? ok('…keeping the mark as provenance, which is safe only because the predicate is a PAIR')
+    : bad('provenance lost');
+  const arrivedCreatine = arrived.find((r) => valueOf(r).item === 'creatine');
+  arrivedCreatine.status === 'pending' && valueOf(arrivedCreatine).ahead === undefined
+    ? ok('…while the row still pending had its mark stripped by the arrival diff')
+    : bad('the mark survived on a pending row', arrivedCreatine.value);
+  adjDb.raw.prepare('SELECT started_on FROM protocols WHERE id = ?').get(adj).started_on ===
+  '2026-08-01'
+    ? ok('…and adjusting still never writes started_on (the 0050 invariant)')
+    : bad('started_on moved');
+  adjDb.raw.close();
+
+  // The quota arithmetic. A completion LATER in the same week has to count, or
+  // a 3×/wk item records four sessions. The shipped commit path never places a
+  // quota item on a day ahead (§23), so the state is built directly: the
+  // predicate is the fence around the ARITHMETIC, not around a v1 gesture.
+  const quotaDb = freshDb();
+  const lift = createProtocolWithVersion(
+    quotaDb.db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03' },
+    content([{ items: [{ id: 'lift', title: 'Lift', cadence: { kind: 'quota', per_week: 3 } }] }])
+  );
+  const tickLift = (date, tapDay) => {
+    generateMissionForDay(quotaDb.db, date);
+    const row = rows(quotaDb.raw, date).find((r) => r.title === 'Lift');
+    setMissionStatus(quotaDb.db, row.id, 'completed', tapDay);
+  };
+  tickLift('2026-08-07', '2026-08-03'); // Friday's row, ticked on Monday
+  tickLift('2026-08-03', '2026-08-03'); // Monday
+  tickLift('2026-08-04', '2026-08-04'); // Tuesday
+  !planForDay(quotaDb.db, '2026-08-05').some((e) => e.extras.item === 'lift')
+    ? ok('a 3×/wk quota with Friday, Monday and Tuesday done does not land again on Wednesday')
+    : bad('the quota landed a fourth time');
+  quotaCompletionsThisWeek(quotaDb.db, '2026-08-05').get(quotaKey(lift, 'lift')) === 3
+    ? ok('…because the week is counted WHOLE, minus only the day being planned')
+    : bad(
+        'week count',
+        String(quotaCompletionsThisWeek(quotaDb.db, '2026-08-05').get(quotaKey(lift, 'lift')))
+      );
+  // The exclusion of the row's own day is unchanged, and still load-bearing.
+  quotaCompletionsThisWeek(quotaDb.db, '2026-08-04').get(quotaKey(lift, 'lift')) === 2
+    ? ok('…and a row is still never judged by its own day')
+    : bad('the own-day exclusion moved');
+  quotaDb.raw.close();
+}
+
+console.log('26. a day committed ahead never holds a plan the app no longer makes');
+{
+  const { db, raw } = freshDb();
+  const TODAY = '2026-08-04';
+  const FRIDAY = '2026-08-07';
+  const stack = createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: '2026-08-03' },
+    content([
+      {
+        items: [
+          { id: 'creatine', title: 'Creatine' },
+          { id: 'zinc', title: 'Zinc' },
+        ],
+      },
+    ])
+  );
+  createProtocolWithVersion(
+    db,
+    { name: 'Gym', type: 'training_block', startedOn: '2026-08-03' },
+    content([{ items: [{ id: 'lower', title: 'Lower body' }] }])
+  );
+  const experiment = createExperiment(db, {
+    title: 'Cold exposure',
+    hypothesis: 'HRV rises',
+    intervention: 'Cold shower',
+    metrics: ['hrv'],
+    startDate: '2026-08-03',
+    durationDays: 10,
+  });
+
+  hasCommittedDaysAhead(db, TODAY) === false
+    ? ok('with nothing committed ahead the gate answers no, in one query')
+    : bad('the gate was already true');
+  tapAhead(db, FRIDAY, TODAY, (e) => e.extras.item === 'creatine');
+  hasCommittedDaysAhead(db, TODAY) === true
+    ? ok('…and flips the moment a day ahead is committed')
+    : bad('the gate did not flip');
+  rows(raw, FRIDAY).length === 4
+    ? ok('Friday is committed whole: two supplements, a session and the experiment')
+    : bad(
+        'friday',
+        rows(raw, FRIDAY)
+          .map((r) => r.title)
+          .join(', ')
+      );
+
+  setMode(db, { mode: 'sick', startDate: FRIDAY, endDate: FRIDAY });
+  rederiveMissionFromToday(db, TODAY);
+  !rows(raw, FRIDAY).some((r) => r.title === 'Lower body')
+    ? ok('a mode set over Friday reshapes a Friday already committed')
+    : bad('the mode did not reach Friday');
+  completeExperiment(db, experiment, { conclusion: 'no effect' });
+  rederiveMissionFromToday(db, TODAY);
+  !rows(raw, FRIDAY).some((r) => r.title === 'Cold shower')
+    ? ok('…and so does concluding an experiment, a seam that re-derived nothing before')
+    : bad('the concluded experiment kept its row');
+  deleteProtocol(db, stack);
+  rederiveMissionFromToday(db, TODAY);
+  const afterDelete = rows(raw, FRIDAY);
+  !afterDelete.some((r) => r.title === 'Zinc')
+    ? ok('…and deleting a protocol takes its untouched rows off Friday too')
+    : bad('a deleted protocol kept its pending row');
+  afterDelete.some((r) => r.title === 'Creatine' && r.status === 'completed')
+    ? ok('…while everything the user actually asserted stands through all three')
+    : bad(
+        'a completed row was destroyed',
+        JSON.stringify(afterDelete.map((r) => [r.title, r.status]))
+      );
+  raw.close();
+
+  // A NULL-anchored protocol, through the seam that re-derives everything.
+  const anchorDb = freshDb();
+  const unanchored = createProtocolWithVersion(
+    anchorDb.db,
+    { name: 'Course', type: 'daily_routine' },
+    content([{ items: [{ id: 'loading', title: 'Loading dose' }] }])
+  );
+  rederiveMissionFromToday(anchorDb.db, TODAY);
+  anchorDb.raw.prepare('SELECT started_on FROM protocols WHERE id = ?').get(unanchored)
+    .started_on === TODAY
+    ? ok('rederiveMissionFromToday anchors to TODAY before it touches any day')
+    : bad('anchor after the sweep');
+  anchorDb.raw.close();
+
+  // A COMPLETION on today reshapes a day already committed ahead: the most
+  // common gesture in the app, and the one a committed-ahead day would go
+  // stale on. A CARRIED row paid late is a completion on a non-native day,
+  // which is what moves the adjusting clock off the phase grid.
+  const tickDb = freshDb();
+  const TODAY2 = '2026-08-05';
+  const carry = createProtocolWithVersion(
+    tickDb.db,
+    {
+      name: 'Sauna block',
+      type: 'therapy_protocol',
+      startedOn: '2026-08-01',
+      carryOver: true,
+      checkoffMode: 'adjusting',
+    },
+    content([
+      {
+        items: [
+          { id: 'creatine', title: 'Creatine' },
+          { id: 'sauna', title: 'Sauna', cadence: { kind: 'every_n_days', n: 3 } },
+        ],
+      },
+    ])
+  );
+  generateMissionForDay(tickDb.db, '2026-08-04'); // a native sauna day, left untouched
+  tapAhead(tickDb.db, '2026-08-10', TODAY2, (e) => e.extras.item === 'creatine');
+  rows(tickDb.raw, '2026-08-10').some((r) => valueOf(r).item === 'sauna')
+    ? ok('the 10th is committed ahead holding its native sauna')
+    : bad('the committed day lacks the sauna');
+  const carried = entriesOn(tickDb.db, tickDb.raw, TODAY2).find(
+    (r) => valueOf(r).item === 'sauna' && valueOf(r).carried === true
+  );
+  setMissionStatus(tickDb.db, carried.id, 'completed', TODAY2);
+  rederiveDaysAhead(tickDb.db, TODAY2);
+  !rows(tickDb.raw, '2026-08-10').some((r) => valueOf(r).item === 'sauna')
+    ? ok('…and paying the debt on the 5th takes it straight back off the 10th')
+    : bad('the committed day went stale on a tick');
+  rows(tickDb.raw, '2026-08-10').some((r) => valueOf(r).item === 'creatine')
+    ? ok('…without disturbing what was ticked there')
+    : bad('rederiveDaysAhead destroyed the tick');
+  tickDb.raw.close();
+}
+
+console.log('27. a committed day ARRIVING: the marks come off, and the carry arrives with it');
+{
+  const { db, raw } = freshDb();
+  const TODAY = '2026-08-04';
+  const FRIDAY = '2026-08-07';
+  const stack = createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: '2026-08-03', carryOver: true },
+    content([
+      {
+        items: [
+          { id: 'creatine', title: 'Creatine' },
+          { id: 'zinc', title: 'Zinc' },
+          { id: 'mag', title: 'Magnesium', cadence: { kind: 'weekdays', days: [1] } },
+        ],
+      },
+    ])
+  );
+  // Monday's Monday-only magnesium is missed — an untouched row, i.e. the debt.
+  generateMissionForDay(db, '2026-08-03');
+  tapAhead(db, FRIDAY, TODAY, (e) => e.extras.item === 'creatine');
+  !rows(raw, FRIDAY).some((r) => valueOf(r).carried === true)
+    ? ok('a day committed ahead holds no debt — Monday’s magnesium is not on Friday yet')
+    : bad('a future day carried a debt');
+  hasUnseenRows(db, FRIDAY) === true
+    ? ok('…and reads as unseen while a row written before it is still pending')
+    : bad('hasUnseenRows was false');
+
+  // THE 0050 INVARIANT, in its new form: using the feature cannot make a rate
+  // look worse. Friday has two rows; only the one he asserted is judged.
+  const passedUnopened = missionDailySeries(db, 7, FRIDAY).find((p) => p.date === FRIDAY);
+  passedUnopened.planned === 1 && passedUnopened.completed === 1
+    ? ok('a committed-ahead day that passed unopened reads planned 1 · completed 1')
+    : bad('the unopened day entered the rate', JSON.stringify(passedUnopened));
+
+  arriveDay(db, FRIDAY);
+  const arrived = rows(raw, FRIDAY);
+  arrived.filter((r) => r.status === 'pending' && valueOf(r).ahead === true).length === 0
+    ? ok('arriving strips the mark from every row still pending')
+    : bad('marks survived arrival', arrived.map((r) => r.value).join(' | '));
+  valueOf(arrived.find((r) => valueOf(r).item === 'creatine')).ahead === true
+    ? ok('…and leaves it on the completed row as provenance')
+    : bad('provenance lost');
+  arrived.some((r) => r.title === 'Magnesium' && valueOf(r).carried === true)
+    ? ok('…and the carry a future day never had is added the morning the day becomes today')
+    : bad('the carry did not arrive', arrived.map((r) => r.title).join(', '));
+  hasUnseenRows(db, FRIDAY) === false
+    ? ok('…after which the day no longer reads as unseen')
+    : bad('still unseen after arrival');
+  const arrivedSeries = missionDailySeries(db, 7, FRIDAY).find((p) => p.date === FRIDAY);
+  arrivedSeries.planned === 2
+    ? ok('…and only now does it owe its whole plan')
+    : bad('arrived day', JSON.stringify(arrivedSeries));
+  raw.close();
+
+  // THE BOUNDARY, BOTH WAYS (§3.9). Forward is the arrival above. Backward is a
+  // day generated AS today that the logical today has since retreated behind:
+  // its rows are ordinary — no mark — so it is not unseen, is not a debt, and
+  // is ticked like any committed day.
+  const backDb = freshDb();
+  createProtocolWithVersion(
+    backDb.db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: '2026-08-03', carryOver: true },
+    content([{ items: [{ id: 'creatine', title: 'Creatine' }] }])
+  );
+  generateMissionForDay(backDb.db, '2026-08-05'); // generated as today, then today retreats
+  hasUnseenRows(backDb.db, '2026-08-05') === false
+    ? ok('a day that was today when it generated is never unseen, whatever the boundary does')
+    : bad('an ordinary day read as unseen');
+  !planForDay(backDb.db, '2026-08-06').some((e) => e.extras.carried === true)
+    ? ok('…and its untouched rows are not a debt on the day after it')
+    : bad('the former today became a debt');
+  const backRow = rows(backDb.raw, '2026-08-05')[0];
+  toggleMission(backDb.db, backRow.id, '2026-08-04');
+  const backAfter = rows(backDb.raw, '2026-08-05')[0];
+  backAfter.status === 'completed' && valueOf(backAfter).done_on === '2026-08-04'
+    ? ok('…and it is ticked like any committed day, stamped with the logical day of the tap')
+    : bad(
+        'the retreated day could not be ticked',
+        JSON.stringify([backAfter.status, backAfter.value])
+      );
+  backDb.raw.close();
+}
+
+console.log('28. the three-valued-logic pin: an ordinary pending row survives all five reads');
+{
+  const { db, raw } = freshDb();
+  const TODAY = '2026-08-05';
+  const stack = createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: '2026-08-03', carryOver: true },
+    content([
+      {
+        items: [
+          { id: 'creatine', title: 'Creatine' },
+          { id: 'mag', title: 'Magnesium', cadence: { kind: 'weekdays', days: [1] } },
+        ],
+      },
+    ])
+  );
+  generateMissionForDay(db, '2026-08-03'); // Monday, untouched
+  generateMissionForDay(db, '2026-08-04'); // Tuesday, untouched
+  // A row with a NULL `value` — the state removeMissionItem's COALESCE exists
+  // to survive, and the one json_extract cannot be asked about at all.
+  const tuesdayLog = raw.prepare('SELECT id FROM daily_logs WHERE date = ?').get('2026-08-04').id;
+  raw
+    .prepare(
+      `INSERT INTO log_entries (id, daily_log_id, type, title, status, value, source)
+       VALUES ('null-value-row', ?, 'habit', 'Hand-added', 'pending', NULL, 'manual')`
+    )
+    .run(tuesdayLog);
+
+  const series = missionDailySeries(db, 7, TODAY);
+  const monday = series.find((p) => p.date === '2026-08-03');
+  const tuesday = series.find((p) => p.date === '2026-08-04');
+  monday.planned === 2
+    ? ok('the day series still counts an ordinary pending row, which carries no `ahead` key')
+    : bad('series monday', JSON.stringify(monday));
+  tuesday.planned === 2
+    ? ok('…and the NULL-value row beside it')
+    : bad('series tuesday', JSON.stringify(tuesday));
+  missionBySource(db, '2026-08-03', '2026-08-04').reduce((n, s) => n + s.planned, 0) === 4
+    ? ok('missionBySource counts all four')
+    : bad('bySource', JSON.stringify(missionBySource(db, '2026-08-03', '2026-08-04')));
+  missionRecordStart(db, TODAY) === '2026-08-03'
+    ? ok('…the record still begins on Monday')
+    : bad('recordStart', String(missionRecordStart(db, TODAY)));
+  protocolAdherence(db, stack, '2026-08-03', '2026-08-04').planned === 3
+    ? ok('…the protocol record still counts its three obligations')
+    : bad('adherence', JSON.stringify(protocolAdherence(db, stack, '2026-08-03', '2026-08-04')));
+  planForDay(db, TODAY).some((e) => e.extras.carried === true)
+    ? ok('…and outstandingCarries still sees Monday’s untouched magnesium as a debt')
+    : bad('carry-over was disabled outright by the predicate');
+
+  // The SHAPE, pinned at source: an IS NULL test, never a negated conjunction.
+  NOT_UNSEEN_SQL === "(json_extract(value, '$.ahead') IS NULL OR status <> 'pending')"
+    ? ok('the predicate is an IS NULL test paired with a status test')
+    : bad('NOT_UNSEEN_SQL changed shape', NOT_UNSEEN_SQL);
+  // And the negated form is not a style preference — it is run here, against
+  // the same rows, and it drops every one of them.
+  const total = raw.prepare('SELECT count(*) c FROM log_entries').get().c;
+  const right = raw.prepare(`SELECT count(*) c FROM log_entries WHERE ${NOT_UNSEEN_SQL}`).get().c;
+  const wrong = raw
+    .prepare(
+      `SELECT count(*) c FROM log_entries
+        WHERE NOT (json_extract(value, '$.ahead') = 1 AND status = 'pending')`
+    )
+    .get().c;
+  right === total && total > 0
+    ? ok(`…and it keeps every one of the ${total} rows in this fixture`)
+    : bad('the shipped predicate dropped rows', `${right} of ${total}`);
+  wrong === 0
+    ? ok('…where the negated form keeps NONE of them: the bug, reproduced')
+    : bad('the trap did not reproduce', `${wrong} of ${total}`);
+  raw.close();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

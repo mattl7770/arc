@@ -19,6 +19,9 @@
  * §8  the day PICKER (C1) — its bounds are the logical today and the caller's
  *     floor, it clamps a day that is already outside them, and its labels are
  *     the hand-rolled ones Hermes leaves it no choice about
+ * §8b the picker looking FORWARD (2026-09-19) — `latest` is now whatever the
+ *     caller allows and `today` is a bound of its own, so the words and the way
+ *     home stay on the logical today while the arrows reach a horizon
  *
  * **§3 pins the timezone.** The boundary rule is DST-sensitive by nature, so the
  * only way to test it is to run in a zone that has a transition. TZ is set to
@@ -46,6 +49,7 @@ import {
   todayISODate,
 } from '../src/lib/db/date.ts';
 import {
+  boundsToday,
   canStepBack,
   canStepForward,
   dayLabel,
@@ -696,6 +700,64 @@ console.log('\n8. the day picker — bounded by the LOGICAL today, never the cal
   historySource.includes('Nothing logged ${dayPhrase(day, today)}')
     ? ok('the history screen authors its empty day through dayPhrase')
     : bad('the empty-day sentence no longer routes through dayPhrase');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n8b. the picker looking FORWARD — `latest` stops being a synonym for today');
+{
+  // The mission's Plan screen (2026-09-19) is the first caller whose forward
+  // bound is not today: a day ahead is a PLAN, and looking at one writes
+  // nothing. `bounds.today` is what keeps the WORDS and the way home honest
+  // once the two have come apart.
+  const today = '2026-09-14'; // a Monday
+  const horizon = { latest: '2026-09-20', today, earliest: '2026-09-01' };
+
+  eq(
+    'the forward arrow is live ON today when the caller allows a horizon',
+    canStepForward(today, horizon),
+    true
+  );
+  eq('stepping forward from today lands on tomorrow', stepDay(today, 1, horizon), '2026-09-15');
+  eq('…and six steps reach the horizon', stepDay(today, 6, horizon), '2026-09-20');
+  eq('…and the seventh does not', stepDay(today, 7, horizon), '2026-09-20');
+  eq('the forward arrow is dead at the horizon', canStepForward('2026-09-20', horizon), false);
+  // A `?date=` past the horizon is pulled back to it, exactly as a stale past
+  // param is pulled up to the floor.
+  eq('a day past the horizon clamps to it', stepDay('2026-12-25', 0, horizon), '2026-09-20');
+
+  // THE WORDS. `dayLabel` names the three adjacent days and gives everything
+  // else a weekday AND a date — a bare weekday is ambiguous read forwards too.
+  eq('the chin names tomorrow', dayLabel('2026-09-15', today), 'Tomorrow');
+  eq('…and still names today and yesterday', dayLabel(today, today), 'Today');
+  eq('…and yesterday', dayLabel('2026-09-13', today), 'Yesterday');
+  eq(
+    '…and the day after tomorrow by weekday and date',
+    dayLabel('2026-09-16', today),
+    'Wed 16 Sep'
+  );
+
+  // THE WAY HOME. The failure this separation exists to prevent is a "Back to
+  // today" that lands on the far end of the horizon, so it is asserted as the
+  // value the control is given rather than as a property of the bounds.
+  eq('the way home targets TODAY, never the forward bound', boundsToday(horizon), today);
+  eq(
+    '…and with no `today` it is the bound, which is what keeps a past-only caller unchanged',
+    boundsToday({ latest: today }),
+    today
+  );
+
+  // The past-only caller: §8's bounds, byte for byte, through the new type.
+  const open = { latest: today };
+  eq(
+    'with no `today`, the forward arrow is dead on today as before',
+    canStepForward(today, open),
+    false
+  );
+  eq('…and the step still clamps', stepDay(today, 10, open), today);
+  // dayPhrase deliberately grew NO forward form — its weekday register is
+  // ambiguous read forwards, and its one caller never passes a future day.
+  eq('dayPhrase is untouched on today', dayPhrase(today, today), 'today');
+  eq('…and on a past weekday', dayPhrase('2026-09-09', today), 'on Wednesday');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -8,9 +8,21 @@ type Props = {
   item: MissionItem;
   /** True on the one row the hero is also showing — the day's "you are here". */
   active?: boolean;
+  /**
+   * This row sits on a day that has not happened (the Plan screen). It changes
+   * exactly one thing: what the checkbox's state is called out loud. On a
+   * future day *"not done"* is a different claim from *"planned"* — nothing has
+   * been missed yet — and the tick box has no visual way to say so.
+   */
+  ahead?: boolean;
   onToggle: (id: string) => void;
-  /** Open this row's sheet — the chevron, and the row's named VoiceOver action. */
-  onOpen: (id: string) => void;
+  /**
+   * Open this row's sheet — the chevron, and the row's named VoiceOver action.
+   * Omitted where there is nowhere to go: the Plan screen's future rows have no
+   * stored row to open, so the chevron is not drawn and the named action is not
+   * offered rather than being offered and doing nothing.
+   */
+  onOpen?: (id: string) => void;
 };
 
 /**
@@ -66,19 +78,35 @@ type Props = {
  * the same hierarchy without spending anything.
  */
 /**
- * The carry mark (0050), or null. Two different facts, and the row must not
+ * The row's one mark, or null. Three different facts, and the row must not
  * render them identically:
  *
+ *   - `tickedDays` — **the tick did not happen on this day.** Negative is
+ *     early ("DONE 2 DAYS EARLY", from the Plan screen), positive is a
+ *     backfill ("TICKED 1 DAY LATER"). Provenance about THIS row.
  *   - `carriedDays` — **this row IS the debt**, re-offered N days after the day
  *     it was missed. "2 DAYS LATE".
  *   - `missedDays` — this row is today's own occurrence, and N earlier days of
  *     it are still untouched behind it. "2 MISSED".
+ *
+ * The order is the precedence, and the first two pairings are deliberate:
+ *
+ *   - `tickedDays` beats `missedDays`, because `missedDays` is informational
+ *     about OTHER days while a tick's provenance is a fact about this row;
+ *   - `tickedDays` never meets `carriedDays`, because a past tick on a carried
+ *     copy is refused outright (the debt is live on today's mission) — so the
+ *     row that would wear both cannot be made.
  *
  * Label voice in the category slot, never a signal colour and never an accent:
  * adherence is BEHAVIOUR, not biology (app/protocol-detail.tsx), and Home's
  * accent budget is already spent.
  */
 function carryMark(item: MissionItem): string | null {
+  if (item.tickedDays !== undefined && item.tickedDays !== 0) {
+    const days = Math.abs(item.tickedDays);
+    const unit = days === 1 ? 'day' : 'days';
+    return item.tickedDays < 0 ? `done ${days} ${unit} early` : `ticked ${days} ${unit} later`;
+  }
   if (item.carriedDays !== undefined && item.carriedDays > 0) {
     return item.carriedDays === 1 ? '1 day late' : `${item.carriedDays} days late`;
   }
@@ -122,7 +150,7 @@ function carryMark(item: MissionItem): string | null {
  * nothing visible, so it is undiscoverable on a row that has always been one
  * tap; the chevron is the owner's call.
  */
-export function MissionItemRow({ item, active = false, onToggle, onOpen }: Props) {
+export function MissionItemRow({ item, active = false, ahead = false, onToggle, onOpen }: Props) {
   const done = item.status === 'completed';
   const skipped = item.status === 'skipped';
   const muted = done || skipped;
@@ -136,7 +164,7 @@ export function MissionItemRow({ item, active = false, onToggle, onOpen }: Props
     item.title,
     item.category,
     mark,
-    STATUS_SPOKEN[item.status],
+    (ahead ? STATUS_SPOKEN_AHEAD : STATUS_SPOKEN)[item.status],
   ]
     .filter(Boolean)
     .join(', ');
@@ -147,9 +175,9 @@ export function MissionItemRow({ item, active = false, onToggle, onOpen }: Props
         accessibilityRole="checkbox"
         accessibilityState={{ checked: done }}
         accessibilityLabel={spokenRow}
-        accessibilityActions={ROW_ACTIONS}
+        accessibilityActions={onOpen ? ROW_ACTIONS : undefined}
         onAccessibilityAction={(event) => {
-          if (event.nativeEvent.actionName === 'open') onOpen(item.id);
+          if (event.nativeEvent.actionName === 'open') onOpen?.(item.id);
         }}
         onPress={() => onToggle(item.id)}
         className="min-h-[44px] flex-1 flex-row gap-3 py-3 active:opacity-60">
@@ -177,11 +205,7 @@ export function MissionItemRow({ item, active = false, onToggle, onOpen }: Props
             <Text
               numberOfLines={1}
               className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-              {[
-                item.category,
-                mark,
-                item.snoozed && item.status === 'pending' ? 'Snoozed' : null,
-              ]
+              {[item.category, mark, item.snoozed && item.status === 'pending' ? 'Snoozed' : null]
                 .filter(Boolean)
                 .join(' · ')}
             </Text>
@@ -197,15 +221,18 @@ export function MissionItemRow({ item, active = false, onToggle, onOpen }: Props
 
       {/* Hidden from assistive tech: the named action on the checkbox is how a
           reader opens the sheet, and exposing both would put two controls in
-          the rotor for one destination. */}
-      <Pressable
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        onPress={() => onOpen(item.id)}
-        hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
-        className="min-h-[44px] justify-center pl-2 active:opacity-50">
-        <Ionicons name="chevron-forward" size={18} color={palette.inkMuted} />
-      </Pressable>
+          the rotor for one destination. Absent altogether where there is no
+          sheet to open — a door drawn onto a wall is worse than no door. */}
+      {onOpen ? (
+        <Pressable
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          onPress={() => onOpen(item.id)}
+          hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+          className="min-h-[44px] justify-center pl-2 active:opacity-50">
+          <Ionicons name="chevron-forward" size={18} color={palette.inkMuted} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -298,4 +325,26 @@ const STATUS_SPOKEN: Record<MissionStatus, string> = {
   partial: 'partly done',
   skipped: 'skipped',
   pending: 'not done',
+};
+
+/**
+ * The same four states on a day that has NOT HAPPENED (the Plan screen).
+ *
+ * One word changes, and it is the only one that is a claim about the past:
+ * *"not done"* on Friday, read on Wednesday, says something was missed. Nothing
+ * was — Friday has not come round. *"planned"* is what the row actually means
+ * there, and it is the only word a listener has, because the empty tick box
+ * looks identical on both days.
+ *
+ * A SECOND TOTAL MAP rather than a conditional word, for the reason the first
+ * one is total: a partial map is exactly how three of these went unspoken in
+ * the first place. `completed` keeps its word — a thing ticked ahead genuinely
+ * is done — and `skipped` and `partial` cannot arise on a future day today (it
+ * is tick-only), but they are stated rather than left to a lookup miss.
+ */
+const STATUS_SPOKEN_AHEAD: Record<MissionStatus, string> = {
+  completed: 'completed',
+  partial: 'partly done',
+  skipped: 'skipped',
+  pending: 'planned',
 };

@@ -106,33 +106,70 @@ import { useTodayMission } from '@/hooks/use-today-mission';
  * mission that used to be written into the user's database instead.
  */
 /**
- * The way from the day to the thing that BUILT the day.
+ * The two ways out of the day: to the thing that BUILT it, and to the same
+ * question asked of another day.
  *
  * Home's mission comes from the active protocols and from nothing else, and
  * until 2026-08-25 the only route to them was three taps inside the Data tab's
- * foldable "full file" section. This is the affordance the owner asked for when
- * Protocols graduated to its own hub: a quiet line under the checklist, in the
- * label voice.
+ * foldable "full file" section. `PROTOCOLS ›` is the affordance the owner asked
+ * for when Protocols graduated to its own hub: a quiet line under the
+ * checklist, in the label voice. `PLAN ›` joined it on 2026-09-19 and goes to
+ * `app/mission-day.tsx` — the mission on a day ahead or behind.
  *
- * Deliberately NOT an accent and not a button. Home's accent budget is the
- * hero's primary action and the mission's completion stamps; a second filled
- * control under the list would compete with the one thing the screen exists to
- * make you do. It is the same weight as the mission block's own fold control.
+ * Deliberately NOT accents and not buttons. Home's accent budget is the hero's
+ * primary action and the mission's completion stamps; a filled control under
+ * the list would compete with the one thing the screen exists to make you do.
+ * They are the same weight as the mission block's own fold control.
+ *
+ * **The row renders under an EMPTY day too**, which is why it sits outside the
+ * `planned` branch below: an every-3-days stack has empty days by design, and
+ * a day with nothing on it is precisely the day worth checking tomorrow on.
  */
-function ProtocolsLink() {
+function LabelLink({
+  icon,
+  label,
+  hint,
+  href,
+}: {
+  icon: 'git-branch-outline' | 'calendar-outline';
+  label: string;
+  hint: string;
+  href: '/protocols' | '/mission-day';
+}) {
   const router = useRouter();
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Protocols"
-      onPress={() => router.push('/protocols')}
-      className="min-h-[44px] flex-row items-center gap-2 self-start px-1 active:opacity-60">
-      <Ionicons name="git-branch-outline" size={14} color={palette.inkMuted} />
+      accessibilityLabel={label}
+      accessibilityHint={hint}
+      onPress={() => router.push(href)}
+      className="min-h-[44px] flex-row items-center gap-2 px-1 active:opacity-60">
+      <Ionicons name={icon} size={14} color={palette.inkMuted} />
       <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
-        Protocols
+        {label}
       </Text>
       <Ionicons name="chevron-forward" size={12} color={palette.inkMuted} />
     </Pressable>
+  );
+}
+
+/** The two links, as one control row. */
+function MissionLinks() {
+  return (
+    <View className="flex-row gap-4">
+      <LabelLink
+        icon="git-branch-outline"
+        label="Protocols"
+        hint="What builds the day"
+        href="/protocols"
+      />
+      <LabelLink
+        icon="calendar-outline"
+        label="Plan"
+        hint="The mission on other days"
+        href="/mission-day"
+      />
+    </View>
   );
 }
 
@@ -199,7 +236,17 @@ export default function HomeScreen() {
             onSkip={(id) => mission.setStatus(id, 'skipped')}
           />
         ) : (
-          <MissionEmpty hasActiveProtocols={mission.hasActiveProtocols} />
+          <>
+            <MissionEmpty hasActiveProtocols={mission.hasActiveProtocols} />
+            {/* Under the empty state, because an empty day is a day worth
+                planning FROM — an every-3-days stack has empty days by design,
+                and those are exactly the days worth checking tomorrow on. The
+                links used to live inside the `planned` branch, so the one day
+                that most needed them was the one day that had neither. */}
+            <View className="mt-2">
+              <MissionLinks />
+            </View>
+          </>
         )}
       </View>
 
@@ -231,10 +278,11 @@ export default function HomeScreen() {
             // holds the router, so the row component stays free of navigation.
             onOpen={(id) => router.push({ pathname: '/mission-item', params: { id } })}
           />
-          {/* Under the list, not above it: the day comes first, and the plan
-              behind it is where you go when the day is wrong. */}
+          {/* Under the list, not above it: the day comes first, and the two
+              doors out of it are where you go when the day is wrong or when the
+              question is about another day. */}
           <View className="mt-2">
-            <ProtocolsLink />
+            <MissionLinks />
           </View>
         </View>
       ) : null}

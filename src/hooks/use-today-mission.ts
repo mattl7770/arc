@@ -6,7 +6,8 @@ import { getDb } from '@/lib/db/client';
 import { forwardCursor, todayISODate } from '@/lib/db/date';
 import { listMission, setMissionStatus, toggleMission } from '@/lib/db/repositories/mission';
 import { listProtocols } from '@/lib/db/repositories/protocols';
-import { ensureTodaySeeded } from '@/lib/db/seed';
+import { rederiveDaysAhead } from '@/lib/db/repositories/mission-generate';
+import { arriveDay } from '@/lib/db/seed';
 import { deriveMissionView, type MissionView } from '@/lib/home/derive-mission';
 import {
   clearSnoozed,
@@ -41,13 +42,16 @@ type DayState = {
  * Generate (if needed) and read one day, in a single pass so the mission and
  * the "do you have protocols" answer can never disagree within a render.
  *
- * `ensureTodaySeeded` is deliberately called with no fallback: the day is
- * whatever the user's active protocols and the day's mode produce, and nothing
- * else. It is idempotent, so running it on every read is safe.
+ * `arriveDay` is deliberately called with no fallback: the day is whatever the
+ * user's active protocols and the day's mode produce, and nothing else. It is
+ * idempotent, so running it on every read is safe. It wraps the seeding this
+ * used to call directly and adds the one thing a day COMMITTED AHEAD needs on
+ * the morning it becomes today — the re-derive that strips its `ahead` marks
+ * and gives it the carry source a future day never had (src/lib/db/seed.ts).
  */
 function readDay(day: string): DayState {
   const db = getDb();
-  ensureTodaySeeded(db, day);
+  arriveDay(db, day);
   return {
     items: listMission(db, day),
     hasActiveProtocols: listProtocols(db).some((p) => p.isActive && p.versionNumber !== null),
@@ -144,22 +148,38 @@ export function useTodayMission(): TodayMission {
   // notification for anything just settled — and puts it back if the user
   // un-ticks. Fire-and-forget, and a no-op in any build without the native
   // module.
+  //
+  // Both writes pass `dayRef.current`, not `todayISODate()`: that ref is the
+  // forward-clamped day this hook is writing INTO (see `refresh` above), and
+  // after a westbound flight the clock lags it. The day stamped on the
+  // completion (`value.done_on`) has to be the same day the row is being
+  // written under, or a mission ticked in the brief "yesterday" would look like
+  // a backfill made a day early.
+  //
+  // `rederiveDaysAhead` runs after both, because a completion changes LATER
+  // days: under `adjusting` it moves an every-N-days item's next occurrence,
+  // and under a quota it spends one of the week's sessions. A database with
+  // nothing committed ahead pays one `LIMIT 1` per tick and stops.
   const setStatus = useCallback(
     (id: string, status: MissionStatus) => {
-      setMissionStatus(getDb(), id, status);
+      const db = getDb();
+      setMissionStatus(db, id, status, dayRef.current);
+      rederiveDaysAhead(db, dayRef.current);
       unsnoozeItem(id);
       reload();
-      void syncReminderNotifications(getDb());
+      void syncReminderNotifications(db);
     },
     [reload]
   );
 
   const toggle = useCallback(
     (id: string) => {
-      toggleMission(getDb(), id);
+      const db = getDb();
+      toggleMission(db, id, dayRef.current);
+      rederiveDaysAhead(db, dayRef.current);
       unsnoozeItem(id);
       reload();
-      void syncReminderNotifications(getDb());
+      void syncReminderNotifications(db);
     },
     [reload]
   );

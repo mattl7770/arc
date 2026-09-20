@@ -8,7 +8,7 @@
 import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
-import { listMission } from '@/lib/db/repositories/mission';
+import { completedAheadOf, listMission } from '@/lib/db/repositories/mission';
 import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
 import { biomarkerSeries } from '@/lib/db/repositories/labs';
 import { latestBody } from '@/lib/db/repositories/body';
@@ -683,7 +683,25 @@ const getTodaySnapshot: CoachTool = {
         scheduledTime: m.scheduledTime ?? null,
         category: m.category,
         ...(m.why ? { why: m.why } : {}),
+        // The day a completion was actually recorded, and ONLY when it differs
+        // from today: a row ticked ahead on the Plan screen, or a past row
+        // backfilled. Omitted on every ordinary tick, so the usual day carries
+        // no field at all. Payload, not schema — see `ahead` below.
+        ...(m.doneOn !== undefined && m.doneOn !== date ? { doneOn: m.doneOn } : {}),
       })),
+      // What is already ticked off days that have NOT happened (the Plan
+      // screen, 2026-09-19). Omitted when empty, which is every database that
+      // has never used the feature — and deliberately a bare list of facts
+      // with no rule attached about whether early is good. That is judgment,
+      // and judgment lives in the model, not in a description sentence.
+      //
+      // TOKEN DELTA: zero, by construction. Nothing about this tool's
+      // description or `inputSchema` moves, and the Coach's cached prefix is
+      // what the two ceilings in db/coach-eval.test.mjs §6 guard.
+      ...(() => {
+        const ahead = completedAheadOf(db, date);
+        return ahead.length > 0 ? { ahead } : {};
+      })(),
       meals: meals.map((m) => ({
         time: m.time,
         name: m.name,

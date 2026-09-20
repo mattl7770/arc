@@ -23,7 +23,12 @@ import {
   setMissionStatus,
 } from '../src/lib/db/repositories/mission.ts';
 import { activeModesIn, getActiveMode, setMode } from '../src/lib/db/repositories/day-modes.ts';
-import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+import {
+  backfillPastRow,
+  commitDayAhead,
+  generateMissionForDay,
+  planForDay,
+} from '../src/lib/db/repositories/mission-generate.ts';
 import { createProtocolWithVersion, deleteProtocol } from '../src/lib/db/repositories/protocols.ts';
 import { logSymptom, symptomDailySeries } from '../src/lib/db/repositories/symptoms.ts';
 
@@ -876,6 +881,306 @@ console.log('\n14g. carry-over: the carried row is out of every denominator (005
   sources[0].planned
     ? ok('the ledger still sums to planned — done-late is a subset of skipped, not a fifth term')
     : bad('ledger does not sum', JSON.stringify(sources[0]));
+}
+
+console.log('\n14h. a tick made AHEAD lands under the row’s own day, and costs no rate');
+{
+  const { db } = freshDb();
+  const WEDNESDAY = '2026-08-05';
+  const FRIDAY = '2026-08-07';
+  createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: '2026-08-03' },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'creatine',
+              title: 'Creatine',
+              scheduled_time: '08:00',
+              dose: '5 g',
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+            {
+              id: 'zinc',
+              title: 'Zinc',
+              scheduled_time: '21:00',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  generateMissionForDay(db, WEDNESDAY);
+  const wednesdayBefore = missionDailySeries(db, 7, WEDNESDAY).find((p) => p.date === WEDNESDAY);
+
+  // Friday committed on Wednesday, Creatine ticked there.
+  const plan = planForDay(db, FRIDAY, { today: WEDNESDAY });
+  const ordinal = plan.findIndex((e) => e.extras.item === 'creatine');
+  commitDayAhead(db, FRIDAY, WEDNESDAY, {
+    ordinal,
+    expect: {
+      title: plan[ordinal].title,
+      protocolId: plan[ordinal].protocolId,
+      itemId: 'creatine',
+    },
+  });
+
+  const wednesdayAfter = missionDailySeries(db, 7, WEDNESDAY).find((p) => p.date === WEDNESDAY);
+  JSON.stringify(wednesdayBefore) === JSON.stringify(wednesdayAfter)
+    ? ok('ticking Friday on Wednesday moves Wednesday’s point not at all')
+    : bad(
+        'wednesday moved',
+        `${JSON.stringify(wednesdayBefore)} → ${JSON.stringify(wednesdayAfter)}`
+      );
+
+  // Saturday: Friday has passed and was never opened. It must read as ONE
+  // obligation met, not as two planned and one done — 0050's invariant, which
+  // is that using a feature can never make a rate look worse. An untouched
+  // Thursday, which has no rows at all, is the comparison.
+  const saturday = missionDailySeries(db, 7, '2026-08-08');
+  const friday = saturday.find((p) => p.date === FRIDAY);
+  const thursday = saturday.find((p) => p.date === '2026-08-06');
+  friday.planned === 1 && friday.completed === 1 && friday.doneLate === 0
+    ? ok('a committed-ahead day that passed unopened reads planned 1 · completed 1')
+    : bad('friday', JSON.stringify(friday));
+  thursday.planned === 0
+    ? ok('…beside a day nobody opened at all, which is still planned 0')
+    : bad('thursday', JSON.stringify(thursday));
+  missionAdherence(saturday.filter((p) => p.date >= WEDNESDAY && p.date <= FRIDAY)) === 1 / 3
+    ? ok('…so the window is 1 of 3, exactly what Wednesday’s two rows and Friday’s one owe')
+    : bad(
+        'adherence',
+        String(missionAdherence(saturday.filter((p) => p.date >= WEDNESDAY && p.date <= FRIDAY)))
+      );
+
+  const bySource = missionBySource(db, WEDNESDAY, FRIDAY);
+  bySource.length === 1 && bySource[0].planned === 3 && bySource[0].completed === 1
+    ? ok('“Where it’s failing” counts the same three obligations')
+    : bad('bySource', JSON.stringify(bySource));
+
+  // THE RECORD START. A committed future day writes real rows on a real future
+  // date; left unclamped, min() would put the record's beginning after today
+  // and mission-history would clip its window to nothing.
+  missionRecordStart(db, WEDNESDAY) === WEDNESDAY
+    ? ok('the record begins on Wednesday, never on the Friday committed ahead of it')
+    : bad('recordStart', String(missionRecordStart(db, WEDNESDAY)));
+  missionRecordStart(db, '2026-08-08') === WEDNESDAY
+    ? ok('…and still does once Friday has passed')
+    : bad('recordStart after', String(missionRecordStart(db, '2026-08-08')));
+
+  // A database whose ONLY rows are a day committed ahead: the record has not
+  // begun, and saying so is the honest answer rather than a date in the future.
+  const youngDb = freshDb();
+  createProtocolWithVersion(
+    youngDb.db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: WEDNESDAY },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'creatine',
+              title: 'Creatine',
+              scheduled_time: '08:00',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  const youngPlan = planForDay(youngDb.db, FRIDAY, { today: WEDNESDAY });
+  commitDayAhead(youngDb.db, FRIDAY, WEDNESDAY, {
+    ordinal: 0,
+    expect: {
+      title: youngPlan[0].title,
+      protocolId: youngPlan[0].protocolId,
+      itemId: youngPlan[0].extras.item,
+    },
+  });
+  missionRecordStart(youngDb.db, WEDNESDAY) === null
+    ? ok('a database whose only rows sit in the future has no record start at all')
+    : bad('young recordStart', String(missionRecordStart(youngDb.db, WEDNESDAY)));
+}
+
+console.log('\n14i. the backfill, and the three things it refuses');
+{
+  const { db } = freshDb();
+  // Mon/Fri lower body, carry-over ON — the same fixture shape as §14g, which
+  // is what produces all three refusable rows.
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'lower',
+              title: 'Lower body',
+              scheduled_time: '17:30',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'weekdays', days: [1, 5] },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  const TUESDAY = '2026-08-04';
+  const rowOn = (date, carried) =>
+    db.get(
+      `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+        WHERE d.date = ? AND json_extract(e.value, '$.carried') IS ${carried ? 'NOT NULL' : 'NULL'}`,
+      [date]
+    );
+
+  generateMissionForDay(db, '2026-08-03'); // Monday, left untouched: the debt
+  generateMissionForDay(db, TUESDAY); // Tuesday re-offers it as a carried copy
+
+  // GUARD 2 — the carried copy. The debt is live where it belongs; ticking the
+  // copy on a PAST day would stamp the original `late_on` with a day nothing
+  // was asserted on and put both marks on one row.
+  backfillPastRow(db, rowOn(TUESDAY, true).id, '2026-08-05') === 'carried'
+    ? ok('a carried copy on a past day is refused — the debt is live on today’s mission')
+    : bad('a carried copy was ticked in the past');
+
+  // GUARD 1 — the window. Seven days, the carry window: a miss older than a
+  // week is a fact about the protocol, not a tick someone forgot.
+  backfillPastRow(db, rowOn('2026-08-03', false).id, '2026-08-11') === 'too_old'
+    ? ok('a row eight days back is refused — beyond the window the record stands')
+    : bad('an aged-out row was ticked');
+  backfillPastRow(db, rowOn('2026-08-03', false).id, '2026-08-10') === 'ok'
+    ? ok('…and the seventh day back is still inside it')
+    : bad('the window is off by one');
+
+  // THE ALLOWED CASE, and what it does to the ledger. Fresh fixture, because
+  // the row above has now been ticked.
+  const back = freshDb();
+  createProtocolWithVersion(
+    back.db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'lower',
+              title: 'Lower body',
+              scheduled_time: '17:30',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'weekdays', days: [1, 5] },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  const backRow = (date, carried) =>
+    back.db.get(
+      `SELECT e.id, e.status, e.value
+         FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+        WHERE d.date = ? AND json_extract(e.value, '$.carried') IS ${carried ? 'NOT NULL' : 'NULL'}`,
+      [date]
+    );
+  generateMissionForDay(back.db, '2026-08-03');
+  generateMissionForDay(back.db, TUESDAY);
+  backRow(TUESDAY, true) !== undefined
+    ? ok('Tuesday holds the carried copy before the correction')
+    : bad('the fixture produced no carried row');
+  backfillPastRow(back.db, backRow('2026-08-03', false).id, TUESDAY) === 'ok'
+    ? ok('ticking Monday’s own row on Tuesday is the allowed case')
+    : bad('the backfill was refused');
+  backRow(TUESDAY, true) === undefined
+    ? ok('…and today’s carried copy goes with it: a debt that no longer exists')
+    : bad('the carried copy survived the correction');
+  const corrected = missionDailySeries(back.db, 7, TUESDAY).find((p) => p.date === '2026-08-03');
+  corrected.planned === 1 && corrected.completed === 1 && corrected.doneLate === 0
+    ? ok('…and Monday counts on Monday, with full credit and no "done late"')
+    : bad('monday after the backfill', JSON.stringify(corrected));
+  JSON.parse(backRow('2026-08-03', false).value).done_on === TUESDAY
+    ? ok('…stamped with the day of the tap, so the row can say "ticked 1 day later"')
+    : bad('done_on', backRow('2026-08-03', false).value);
+
+  // GUARD 3 — a row a carried copy has ALREADY settled. Fresh fixture: the
+  // debt is paid through the copy, which leaves the original `skipped +
+  // late_on`. Ticking it again would leave the stamp in `value`, silently drop
+  // the doneLate annotation, and count the item done twice.
+  const late = freshDb();
+  createProtocolWithVersion(
+    late.db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'lower',
+              title: 'Lower body',
+              scheduled_time: '17:30',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'weekdays', days: [1, 5] },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  generateMissionForDay(late.db, '2026-08-03');
+  generateMissionForDay(late.db, TUESDAY);
+  const copy = late.db.get(
+    `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND json_extract(e.value, '$.carried') IS NOT NULL`,
+    [TUESDAY]
+  );
+  setMissionStatus(late.db, copy.id, 'completed', TUESDAY);
+  const original = late.db.get(
+    `SELECT e.id, e.status, e.value FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = '2026-08-03' AND json_extract(e.value, '$.carried') IS NULL`
+  );
+  original.status === 'skipped' && JSON.parse(original.value).late_on === TUESDAY
+    ? ok('the debt paid through the copy leaves the original skipped and stamped late')
+    : bad('the fixture did not settle the original', JSON.stringify(original));
+  backfillPastRow(late.db, original.id, '2026-08-05') === 'settled_by_copy'
+    ? ok('…and a second tick on it is refused — the item cannot be counted done twice')
+    : bad('a late-settled row was ticked again');
+  const stillLate = missionDailySeries(late.db, 7, '2026-08-05').find(
+    (p) => p.date === '2026-08-03'
+  );
+  stillLate.completed === 0 && stillLate.doneLate === 1
+    ? ok('…so the day is still a miss that says it was done late')
+    : bad('the ledger moved', JSON.stringify(stillLate));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

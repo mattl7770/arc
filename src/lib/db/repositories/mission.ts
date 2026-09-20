@@ -15,6 +15,7 @@ import type { DailyLogRow, LogEntryRow, LogEntryStatus, LogEntryType } from '../
 import { activeModesIn } from './day-modes';
 import { timezoneChangedDaysIn } from './day-meta';
 import { getModeDefinition, type ModeKey } from '@/lib/modes/registry';
+import { daysBetween } from '@/lib/protocols/cadence';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
 /**
@@ -50,6 +51,34 @@ type MissionExtras = {
   item?: string;
   /** The day and row id a carried copy is owed from. */
   carried_from?: { date: string; entry: string };
+  /**
+   * ── The day-picker marks (2026-09-19, no migration) ──────────────────────
+   *
+   * `done_on` is the LOGICAL day a completion was recorded — the day of the
+   * tap, not the day of the row. Absent on every row written before this
+   * shipped and on every completion made on its own day, so it is read through
+   * a COALESCE onto `daily_logs.date` and its absence means "the same day".
+   * Earlier than the row's day is a tick made ahead; later is a backfill.
+   * Removed by {@link setMissionStatus} on any other status, exactly as
+   * `late_on` is undone.
+   */
+  done_on?: string;
+  /**
+   * On the ORIGINAL of a debt a carried copy finally paid: the day it was done
+   * (0050, {@link DONE_LATE_SQL}). Read back so a surface can say so, and so a
+   * second tick on the original can be refused rather than quietly counting the
+   * item done twice.
+   */
+  late_on?: string;
+  /**
+   * `true` on a row that was written BEFORE its day — a day committed ahead by
+   * a tick on the Plan screen. It is what {@link NOT_UNSEEN_SQL} keys on, and
+   * it is stripped from every still-pending row when the day arrives and
+   * re-derives. It survives on a completed row as provenance, which is safe
+   * only because that predicate is a PAIR: the mark alone would hold a
+   * completed row out of the rate for ever.
+   */
+  ahead?: boolean;
 };
 
 /** Fallback display label when an entry has no stored `category`. */
@@ -73,8 +102,16 @@ function parseExtras(value: string | null): MissionExtras {
   }
 }
 
-/** Map a stored row to the Home view-model. */
-export function toMissionItem(row: LogEntryRow): MissionItem {
+/**
+ * Map a stored row to the Home view-model.
+ *
+ * `date` is the day the row sits under, which `LogEntryRow` does NOT carry —
+ * it knows its `daily_log_id` and nothing about the calendar. It is optional
+ * because it is needed for exactly one field, `tickedDays`, and a caller that
+ * has no day to hand (an id-addressed read that never renders the mark) is
+ * better off omitting it than joining for it.
+ */
+export function toMissionItem(row: LogEntryRow, date?: string): MissionItem {
   const extras = parseExtras(row.value);
   return {
     id: row.id,
@@ -91,6 +128,16 @@ export function toMissionItem(row: LogEntryRow): MissionItem {
     // occurrence, with N days of it still outstanding behind it".
     carriedDays: extras.carried === true ? (extras.carried_days ?? 1) : undefined,
     missedDays: extras.carried === true ? undefined : extras.missed_days,
+    // Signed, and only when the tap landed on a different day from the row:
+    // negative is early, positive is a backfill. A row with no `done_on` — i.e.
+    // every row written before 2026-09-19, and every ordinary same-day tick —
+    // reads `undefined` and prints nothing.
+    tickedDays:
+      date !== undefined && typeof extras.done_on === 'string' && extras.done_on !== date
+        ? daysBetween(date, extras.done_on)
+        : undefined,
+    doneOn: extras.done_on,
+    lateOn: extras.late_on,
     // The four fields that make the row a door (see MissionItem). Every one of
     // them was already on the stored row; nothing new is written to get them,
     // and each is left UNDEFINED rather than null when absent, so `item.protocolId
@@ -165,6 +212,50 @@ export const NOT_REMOVED_SQL = "json_extract(value, '$.removed') IS NULL";
 export const NOT_CARRIED_SQL = "json_extract(value, '$.carried') IS NULL";
 
 /**
+ * **A row that was written before its day and never acted on is not owed.**
+ * The fourth shared predicate (2026-09-19), and the one that keeps committing a
+ * day ahead from being punished the way carry-over would have been without
+ * {@link NOT_CARRIED_SQL}.
+ *
+ * ## The rule, stated once
+ *
+ * > A day committed ahead is a record of a morning the user has not had. If it
+ * > passes unopened, the rows he asserted stand and the rest never existed.
+ *
+ * Without it, a Friday committed on Wednesday and never opened reads
+ * `planned 9 · completed 1` while an untouched Tuesday — which has no rows at
+ * all — reads nothing, so USING the feature makes the rate worse than not using
+ * it. That is exactly the invariant 0050 wrote into its own migration header,
+ * broken by the gesture the feature exists for.
+ *
+ * ## Why it is an IS NULL test and must never become `NOT (… = 1 AND …)`
+ *
+ * Written like its three siblings above, and for a reason SQLite makes
+ * expensive to rediscover: on an ordinary row there is no `ahead` key, so
+ * `json_extract` is NULL, `NULL = 1` is NULL, `NULL AND …` is NULL, and
+ * `WHERE NOT NULL` is NULL — **which drops the row**. The negated form would
+ * therefore delete every ordinary pending row from every one of these reads:
+ * carry-over disabled outright (`outstandingCarries` would find no debts at
+ * all) and every adherence rate inflated, silently, on the one database ARC
+ * has. The `= 1` form belongs only to a POSITIVE test where NULL-excludes is
+ * what is wanted ({@link remindableEntries}, and `hasUnseenRows`).
+ *
+ * The pair is load-bearing in the other direction too: `status <> 'pending'`
+ * is what lets a completed row keep its `ahead` mark as provenance. A bare
+ * `json_extract(value, '$.ahead') IS NULL` would hold the sauna he ticked on
+ * Wednesday out of Friday's rate for ever.
+ *
+ * A row with a NULL `value` column passes — `json_extract(NULL, …)` is NULL —
+ * which is the state {@link removeMissionItem}'s COALESCE exists to survive.
+ *
+ * It names `value` AND `status` unqualified, like its siblings. That is safe in
+ * every query that interpolates it for the same reason: neither `daily_logs`
+ * nor `protocols` — the only other tables in scope anywhere it is used — has a
+ * column of either name.
+ */
+export const NOT_UNSEEN_SQL = "(json_extract(value, '$.ahead') IS NULL OR status <> 'pending')";
+
+/**
  * The ORIGINAL row of a debt that was finally paid on a later day — `late_on`
  * holds the day the carried copy was completed. It stays `skipped`, so it is
  * still a miss on the day it was missed; this only lets a surface say so out
@@ -182,7 +273,36 @@ export function listMission(db: Database, date: string): MissionItem[] {
      ORDER BY (scheduled_time IS NULL), scheduled_time, created_at, id`,
     [log.id]
   );
-  return rows.map(toMissionItem);
+  // The day goes through so each row can compute `tickedDays` — a row knows its
+  // log id, never its date, and re-joining per row to find one out would be an
+  // N+1 for a mark most rows do not wear.
+  return rows.map((row) => toMissionItem(row, date));
+}
+
+/**
+ * Does `date` hold a row written BEFORE it that is still untouched — i.e. is
+ * this a day that was committed ahead and has now arrived?
+ *
+ * A POSITIVE test, so `= 1` is right here and {@link NOT_UNSEEN_SQL}'s IS NULL
+ * form is not: a row with no `ahead` key must NOT match, and NULL-excludes is
+ * exactly what `json_extract(...) = 1` gives.
+ *
+ * One indexed `LIMIT 1`, run on every Home focus, so the arrival re-derive
+ * costs a diff only on the handful of days that actually were committed ahead
+ * and nothing at all on an ordinary morning.
+ */
+export function hasUnseenRows(db: Database, date: string): boolean {
+  const row = db.get<{ one: number }>(
+    `SELECT 1 AS one
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ?
+        AND e.status = 'pending'
+        AND json_extract(e.value, '$.ahead') = 1
+      LIMIT 1`,
+    [date]
+  );
+  return row !== undefined && row !== null;
 }
 
 /**
@@ -286,24 +406,127 @@ export function remindableEntries(db: Database, date: string): RemindableEntry[]
 }
 
 /**
+ * The protocol items on `date` whose COMMITTED row has already been acted on —
+ * completed, skipped or partial.
+ *
+ * The notification scheduler's one subtraction (src/lib/notifications/
+ * protocol-reminders.ts). For today it needs nothing of the sort:
+ * {@link remindableEntries} reads the committed rows directly and a settled one
+ * simply stops appearing. A FUTURE day is read from the plan instead, which
+ * knows nothing about rows — so once a day can be committed ahead and ticked,
+ * this is what stops a row the user already ticked from buzzing on its morning.
+ *
+ * Deliberately NOT filtered on `remind`: the caller is asking "has this item
+ * been dealt with on that day", and a row whose reminder flag was edited away
+ * between the tick and the sync is still dealt with.
+ *
+ * Empty (one indexed read) on every day that holds no rows, which is every
+ * ordinary future day.
+ */
+export function settledPlannedItems(
+  db: Database,
+  date: string
+): { protocolId: string; itemId: string }[] {
+  return db.all<{ protocolId: string; itemId: string }>(
+    `SELECT e.protocol_id AS protocolId,
+            json_extract(e.value, '$.item') AS itemId
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ?
+        AND e.status <> 'pending'
+        AND e.protocol_id IS NOT NULL
+        AND json_extract(e.value, '$.item') IS NOT NULL
+        AND ${PLANNED_ROW_SQL}`,
+    [date]
+  );
+}
+
+/**
+ * Every COMPLETED row sitting on a day AFTER `today` — what the user has
+ * already ticked off days that have not happened.
+ *
+ * The Coach's one new window onto the Plan screen (`get_today_snapshot`'s
+ * `ahead` array). It is payload, not schema: nothing about the tool's
+ * description or input changes, and the array is omitted altogether when it is
+ * empty, which is every database that has never used the feature.
+ *
+ * Deliberately no horizon: a day committed ahead under some earlier, larger
+ * horizon is still a fact the Coach should not be blind to.
+ */
+export function completedAheadOf(
+  db: Database,
+  today: string
+): { day: string; title: string; protocol: string | null }[] {
+  return db.all<{ day: string; title: string; protocol: string | null }>(
+    `SELECT d.date AS day,
+            e.title AS title,
+            json_extract(e.value, '$.protocol') AS protocol
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date > ?
+        AND e.status = 'completed'
+        AND ${PLANNED_ROW_SQL}
+        AND ${NOT_REMOVED_SQL}
+      ORDER BY d.date, e.scheduled_time, e.created_at, e.id`,
+    [today]
+  );
+}
+
+/**
  * Set a log entry's status, stamping completed_at only when completing.
  *
  * Completion is IDEMPOTENT: re-completing an already-completed row keeps the
  * original timestamp rather than moving a 06:40 workout to whenever the second
  * call happened. Any other status clears it, which is what un-completing means.
+ *
+ * ## Every completion records the LOGICAL DAY the tick landed (2026-09-19)
+ *
+ * `completed_at` is a UTC instant, and comparing one against a `YYYY-MM-DD` is
+ * the class of bug 0043's header warns about. So a completion also writes
+ * `value.done_on` — the day of the tap, boundary-aware. On an ordinary tick
+ * that is the row's own day and nothing reads it; on a tick made ahead from the
+ * Plan screen it is earlier, and on a backfill of a past row it is later. Any
+ * other status removes it, the same undo shape `late_on` has.
+ *
+ * `today` is a parameter and not a call to {@link todayISODate} inside, because
+ * two callers know better than the clock does: the Home hook holds a
+ * forward-clamped `dayRef` that a westbound flight leaves ahead of the clock
+ * (src/hooks/use-today-mission.ts), and the Coach has an injected `context.now`
+ * its whole turn is computed against.
  */
-export function setMissionStatus(db: Database, id: string, status: MissionStatus): void {
+export function setMissionStatus(
+  db: Database,
+  id: string,
+  status: MissionStatus,
+  today: string = todayISODate()
+): void {
   if (status !== 'completed') {
-    db.run('UPDATE log_entries SET status = ?, completed_at = NULL WHERE id = ?', [
-      status as LogEntryStatus,
-      id,
-    ]);
+    db.run(
+      // The CASE is not defensive dressing: the re-derive decides whether to
+      // re-sync a pending row by comparing `JSON.stringify(plan.extras)` to the
+      // stored string, and passing every un-tick through json_remove would
+      // re-render the payload of rows that never carried the key. Untouched
+      // means untouched, byte for byte.
+      `UPDATE log_entries
+          SET status = ?,
+              completed_at = NULL,
+              value = CASE
+                WHEN json_extract(value, '$.done_on') IS NULL THEN value
+                ELSE json_remove(value, '$.done_on')
+              END
+        WHERE id = ?`,
+      [status as LogEntryStatus, id]
+    );
     settleCarriedOriginal(db, id, null);
     return;
   }
   db.run(
-    "UPDATE log_entries SET status = 'completed', completed_at = COALESCE(completed_at, ?) WHERE id = ?",
-    [new Date().toISOString(), id]
+    `UPDATE log_entries
+        SET status = 'completed',
+            completed_at = COALESCE(completed_at, ?),
+            value = json_set(COALESCE(value, '{}'), '$.done_on', ?)
+      WHERE id = ?`,
+    [new Date().toISOString(), today, id]
   );
   settleCarriedOriginal(db, id, dayOfEntry(db, id));
 }
@@ -458,13 +681,13 @@ export function skipCarried(db: Database, copyId: string): boolean {
  * A carried row's undo still reaches its original through
  * {@link setMissionStatus} — this function only decides which status to ask for.
  */
-export function toggleMission(db: Database, id: string): void {
+export function toggleMission(db: Database, id: string, today: string = todayISODate()): void {
   const row = db.get<{ status: LogEntryStatus }>('SELECT status FROM log_entries WHERE id = ?', [
     id,
   ]);
   if (!row) return;
   const settled = row.status === 'completed' || row.status === 'skipped';
-  setMissionStatus(db, id, settled ? 'pending' : 'completed');
+  setMissionStatus(db, id, settled ? 'pending' : 'completed', today);
 }
 
 /**
@@ -782,6 +1005,11 @@ export function missionDailySeries(
        -- one. Counting it here would make one item asked for once read as
        -- "3 planned, 1 completed" and punish the user for using carry-over.
        AND ${NOT_CARRIED_SQL}
+       -- And a row written before its day that was never acted on is not owed
+       -- either: a Friday committed on Wednesday and then never opened must
+       -- read like the untouched Tuesday beside it, which has no rows at all.
+       -- Same reason as the line above, one feature later.
+       AND ${NOT_UNSEEN_SQL}
      GROUP BY d.date`,
     [dates[0] ?? today, today]
   );
@@ -854,15 +1082,26 @@ export function missionAdherence(points: MissionDayPoint[]): number | null {
  * shows four rows and says "4 days on record" rather than fourteen rows of
  * nothing that read as fourteen days of not bothering.
  *
- * Same two shared predicates as everything else here, so "the record" means
- * exactly the rows Home draws.
+ * Same shared predicates as everything else here, so "the record" means exactly
+ * the rows Home draws.
+ *
+ * **Clamped at `today`, and never reading an unseen row** (2026-09-19). A day
+ * committed ahead writes real rows on a real future date, and `min()` over them
+ * would put the record's start in the future: on a young install whose
+ * first-ever rows are a Friday ticked on Wednesday, `app/mission-history.tsx`
+ * clips its window at this date and would clip it to nothing. The clamp is the
+ * honest reading either way — the record BEGINS on the first day it covered —
+ * and `NOT_UNSEEN_SQL` is what stops a committed-ahead day that passed unopened
+ * from claiming to be a day on record at all.
  */
-export function missionRecordStart(db: Database): string | null {
+export function missionRecordStart(db: Database, today: string = todayISODate()): string | null {
   const row = db.get<{ date: string | null }>(
     `SELECT min(d.date) AS date
        FROM log_entries e
        JOIN daily_logs d ON d.id = e.daily_log_id
-      WHERE ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`
+      WHERE d.date <= ?
+        AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL} AND ${NOT_UNSEEN_SQL}`,
+    [today]
   );
   return row?.date ?? null;
 }
@@ -1077,6 +1316,9 @@ export function missionBySource(db: Database, from: string, to: string): Mission
         -- The carried copy renders on Home but is never an obligation of the
         -- day it appears on. See NOT_CARRIED_SQL.
         AND ${NOT_CARRIED_SQL}
+        -- An unseen row — written ahead of its day, never acted on — was never
+        -- owed either. See NOT_UNSEEN_SQL.
+        AND ${NOT_UNSEEN_SQL}
       -- For PROTOCOL rows (protocol_id present): by (protocol_id, title), NOT by
       -- the display names — a protocol renamed mid-window is one protocol, and
       -- grouping on its name would split its record in two at the rename.

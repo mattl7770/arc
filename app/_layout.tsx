@@ -353,6 +353,13 @@ export default function RootLayout() {
               lands, and the per-row verbs the repository has always had and
               nothing drew (skip, move, remove, un-snooze, put back). */}
           <Stack.Screen name="mission-item" />
+          {/* The mission on a day other than today, pushed from `PLAN ›` under
+              Home's mission block. Forward to the reminder scheduler's own
+              horizon, where a day is COMPUTED and commits on the first tick;
+              back to the day the execution record begins. Home stays what
+              CLAUDE.md §5 says it is — every section about now — and this is
+              where the other days live. */}
+          <Stack.Screen name="mission-day" />
           {/* One item of one protocol, from the item sheet or from a row of
               the detail's Now field. Writes through addVersion, so it touches
               the protocols row not at all. */}

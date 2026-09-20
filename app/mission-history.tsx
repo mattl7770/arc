@@ -176,7 +176,10 @@ function plural(n: number, word: string): string {
 function read(): MissionRecordView {
   const db = getDb();
   const today = todayISODate();
-  const recordStart = missionRecordStart(db);
+  // `today` goes through: a day committed ahead writes real rows on a real
+  // future date, and an unclamped min() would begin the record after today and
+  // clip the window below to nothing.
+  const recordStart = missionRecordStart(db, today);
 
   const series = missionDailySeries(db, WINDOW_DAYS, today);
   const days = recordStart === null ? [] : series.filter((p) => p.date >= recordStart);
@@ -509,7 +512,21 @@ export default function MissionHistoryScreen() {
                 return (
                   <View key={point.date}>
                     <Divider first={index === 0} />
-                    <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+                    {/* A day row became a DOOR on 2026-09-19. The record says
+                        how much of a day got done; the only way to see WHAT it
+                        asked for was to have been there on the day. The Plan
+                        screen answers exactly that, so the row opens it rather
+                        than growing a disclosure of its own. The row is not a
+                        toggle and never has been, so the whole of it is the
+                        target — no chevron, which on a plate of twelve rows
+                        would be twelve claims on the eye. */}
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`${shortDate(point.date)}: open this day's plan`}
+                      onPress={() =>
+                        router.push({ pathname: '/mission-day', params: { date: point.date } })
+                      }
+                      className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
                       <Text className="w-14 font-mono text-[11px] text-ink-muted">
                         {shortDate(point.date)}
                       </Text>
@@ -570,7 +587,7 @@ export default function MissionHistoryScreen() {
                           </Text>
                         ) : null}
                       </View>
-                    </View>
+                    </Pressable>
                   </View>
                 );
               })}

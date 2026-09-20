@@ -43,7 +43,9 @@ import {
   modeExcusesSkips,
   NOT_CARRIED_SQL,
   NOT_REMOVED_SQL,
+  NOT_UNSEEN_SQL,
   PLANNED_ROW_SQL,
+  setMissionStatus,
 } from './mission';
 import { ensureStartedOn, getCurrentVersion, listProtocols } from './protocols';
 
@@ -125,9 +127,24 @@ type GeneratedExtras = {
    * settles nothing, because completing today is not doing Monday.
    */
   missed_days?: number;
+  /**
+   * ── The day-picker mark (2026-09-19) ─────────────────────────────────────
+   * `true` on an entry computed for a day that has NOT happened — see
+   * {@link planForDay}'s `today` option and `NOT_UNSEEN_SQL` in ./mission.ts.
+   * It reaches `log_entries.value` only through {@link commitDayAhead}, and the
+   * arrival re-derive strips it from every row still pending.
+   */
+  ahead?: true;
 };
 
-/** Insert one generated mission entry; returns nothing, bumps the caller's count. */
+/**
+ * Insert one generated mission entry; returns the id it minted.
+ *
+ * The id used to be minted inline inside the parameter list and discarded,
+ * which was fine while the only caller counted rows. {@link commitPlan} needs
+ * the ids in plan order, so it is hoisted to a local and returned — the whole
+ * of the change, and nothing about what is written moved.
+ */
 function insertGenerated(
   db: Database,
   logId: string,
@@ -138,13 +155,14 @@ function insertGenerated(
     scheduledTime: string | null;
     extras: GeneratedExtras;
   }
-): void {
+): string {
+  const id = newId(db);
   db.run(
     `INSERT INTO log_entries
        (id, daily_log_id, type, protocol_id, title, status, scheduled_time, value, source)
      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 'manual')`,
     [
-      newId(db),
+      id,
       logId,
       args.type,
       args.protocolId,
@@ -153,6 +171,23 @@ function insertGenerated(
       JSON.stringify(args.extras),
     ]
   );
+  return id;
+}
+
+/**
+ * Write a whole plan under one daily_log, and hand back the row ids **in plan
+ * order**.
+ *
+ * That ordering is the contract, and it is what {@link commitDayAhead} resolves
+ * a tapped row through. The alternative — committing the day and then re-reading
+ * it with `listMission`'s `ORDER BY … created_at, id` — cannot work: a stack is
+ * inserted inside ONE transaction and `created_at` defaults to a millisecond
+ * stamp (`0001_init.sql`), so several rows tie and the tiebreak is a random
+ * UUID. Position is exact; a key is not, because {@link planKey} is a multiset
+ * key by design.
+ */
+function commitPlan(db: Database, logId: string, plan: readonly PlannedEntry[]): string[] {
+  return plan.map((entry) => insertGenerated(db, logId, entry));
 }
 
 /**
@@ -192,10 +227,19 @@ export const quotaKey = (protocolId: string | null, itemId: string): string =>
  *   - **completed only.** A skip does not consume quota — that is the point of
  *     a flexible quota, and the owner said so in as many words. Neither does a
  *     `partial`: real progress, but not the session.
- *   - **before `date`, not up to and including it.** A row already standing on
- *     `date` is preserved by the re-derive whatever this says, so counting it
- *     would let a completed item be judged "quota met" and removed from its own
- *     day.
+ *   - **the whole of `date`'s week EXCEPT `date` itself**, not "everything
+ *     before `date`". The exclusion of the row's own day is the original
+ *     reason and is unchanged: a row already standing on `date` is preserved by
+ *     the re-derive whatever this says, so counting it would let a completed
+ *     item be judged "quota met" and removed from its own day. What changed on
+ *     2026-09-19 is the other end. A strictly-backward bound was exactly right
+ *     while nothing could be completed in the future, and a tick made AHEAD
+ *     broke it: a Friday quota row ticked on Monday is invisible to Tuesday,
+ *     Wednesday and Thursday, each of which then lands the item again, and a
+ *     `per_week: 3` records four. A week is an allowance over a week; the
+ *     arithmetic now reads the whole of it. Nothing completed after `date` can
+ *     exist except through the Plan screen, so §§10, 11 and 21 of
+ *     db/mission-generate.test.mjs are unmoved by the widening.
  *   - **the two shared mission predicates**, so "a planned row" means exactly
  *     what it means everywhere else (mission.ts owns both constants).
  *
@@ -212,13 +256,13 @@ export function quotaCompletionsThisWeek(db: Database, date: string): Map<string
             count(*) AS done
        FROM log_entries e
        JOIN daily_logs d ON d.id = e.daily_log_id
-      WHERE d.date >= ? AND d.date < ?
+      WHERE d.date >= ? AND d.date <= ? AND d.date <> ?
         AND e.status = 'completed'
         AND json_extract(e.value, '$.item') IS NOT NULL
         AND ${PLANNED_ROW_SQL}
         AND ${NOT_REMOVED_SQL}
       GROUP BY e.protocol_id, json_extract(e.value, '$.item')`,
-    [weekStart(date), date]
+    [weekStart(date), addDays(weekStart(date), 6), date]
   );
   const counts = new Map<string, number>();
   for (const row of rows) {
@@ -236,13 +280,20 @@ export function quotaCompletionsThisWeek(db: Database, date: string): Map<string
  * A SIBLING of {@link quotaCompletionsThisWeek}, deliberately not a call to it,
  * and the two bounds are the whole difference:
  *
- *   - the generator's bound is `< date` **on purpose** — a row standing on its
- *     own day must not be judged by it, or a completed quota item would be
- *     computed "met" and removed from the day it was met on;
+ *   - the generator EXCLUDES the day it is planning **on purpose** — a row
+ *     standing on its own day must not be judged by it, or a completed quota
+ *     item would be computed "met" and removed from the day it was met on;
  *   - a DISPLAY that excluded today would under-report by exactly the session
  *     just ticked, which is the one the user is looking at. Tapping a 3×/wk
  *     session and watching the line still read `1 of 3` is the feature reading
  *     as broken.
+ *
+ * The far end differs too, and for the same reason from opposite sides: the
+ * generator now reads the whole calendar week, because a session ticked AHEAD
+ * on Friday is still a session of this week and every later day has to see it
+ * (2026-09-19). This one stops at `today`, because a figure printed today must
+ * not count a day that has not happened — *"2 of 3 this week"* with one of them
+ * booked for Friday would be a claim about the future in the present tense.
  *
  * Nor can a display call the generator's query with `addDays(today, 1)` to fake
  * an inclusive bound: on a **Sunday** that is next Monday, `weekStart` moves
@@ -294,6 +345,32 @@ export function quotaDoneThisWeek(db: Database, today: string): Map<string, numb
  */
 export const CARRY_MAX_DAYS = 7;
 
+/**
+ * How far AHEAD the mission's Plan screen may look, and commit
+ * (docs/spikes/mission-day-picker-and-future-checkoff.md §3.2).
+ *
+ * **Six: every weekday once**, which is the smallest horizon that can answer
+ * "when does this next come round" for a weekday-list cadence. The owner's
+ * call, taken over seven and fourteen because six is already inside the days
+ * the notification scheduler reads, so nothing else in the app has to move.
+ *
+ * Three mechanisms need it small and FIXED rather than open-ended:
+ *
+ *   1. {@link lastCompletions}' prefilter opens `d.date` by exactly this much,
+ *      which is what keeps the `adjusting` clock's query indexable;
+ *   2. {@link rederiveDaysAhead} re-derives every committed day inside it after
+ *      every status write;
+ *   3. the scheduler walks its own horizon on every sync, against iOS's
+ *      64-notification ceiling.
+ *
+ * It is deliberately NOT defined in terms of `PROTOCOL_REMINDER_HORIZON_DAYS`
+ * and does not redefine it — a UI answer must not retune the notification
+ * layer. What is asserted instead (db/reminders.test.mjs §7c) is the INVARIANT
+ * between them: this must stay strictly below the scheduler's horizon, so every
+ * day the picker can commit is a day the scheduler already reads.
+ */
+export const MISSION_HORIZON_DAYS = 6;
+
 /** One item's outstanding debt, as of a given day. */
 type CarryDebt = {
   /** The MOST RECENT untouched day — what the carry's age counts from. */
@@ -325,6 +402,11 @@ type CarryDebt = {
  *   - **Not itself carried** ({@link NOT_CARRIED_SQL}). The debt is always the
  *     ORIGINAL day; an untouched carried copy is a second view of the same
  *     obligation, and counting it would let one miss breed.
+ *   - **Not UNSEEN** ({@link NOT_UNSEEN_SQL}). A day committed ahead and then
+ *     never opened owes nothing: its untouched rows are a morning the user did
+ *     not have, not a morning he wasted. Without this, committing Friday on
+ *     Wednesday to tick one thing would manufacture eight debts the moment
+ *     Saturday came round.
  *   - **Protocol rows only** (`protocol_id` and `value.item` both present). A
  *     mode item and an experiment's intervention belong to their day.
  *   - The two standing predicates, so "a planned row" means what it means
@@ -360,6 +442,7 @@ function outstandingCarries(db: Database, date: string): Map<string, CarryDebt> 
         AND ${PLANNED_ROW_SQL}
         AND ${NOT_REMOVED_SQL}
         AND ${NOT_CARRIED_SQL}
+        AND ${NOT_UNSEEN_SQL}
       ORDER BY d.date`,
     [from, date, ...excusedDates]
   );
@@ -381,8 +464,8 @@ function outstandingCarries(db: Database, date: string): Map<string, CarryDebt> 
 }
 
 /**
- * The most recent day each protocol item was COMPLETED, strictly before `date`
- * — the clock `checkoff_mode = 'adjusting'` re-bases `every_n_days` on.
+ * The most recent day each protocol item was actually DONE, strictly before
+ * `date` — the clock `checkoff_mode = 'adjusting'` re-bases `every_n_days` on.
  *
  * **Carried completions count**, which is the entire point: a debt paid late
  * IS the item's last completion, so under `adjusting` a late completion moves
@@ -390,26 +473,58 @@ function outstandingCarries(db: Database, date: string): Map<string, CarryDebt> 
  * two toggles meet, and it is why {@link NOT_CARRIED_SQL} is deliberately
  * absent here — this asks what was DONE, not what was owed.
  *
+ * ## "The day it was done" is not always the row's day (2026-09-19)
+ *
+ * A tick made AHEAD proves the item was done no later than the earlier of the
+ * row's day and the day of the tap — you cannot do Friday's sauna on Wednesday
+ * and have it be Friday's fact about your skin. So the done day is
+ * `min(done_on, d.date)`, read through a COALESCE so that every row written
+ * before `done_on` existed, and every ordinary same-day tick, still reads its
+ * own day and this function answers exactly what it used to.
+ *
+ * The `min()` is not decoration either: a BACKFILL (a past row ticked today,
+ * §3.8 of the spike) has `done_on` AFTER its row, and taking that literally
+ * would let a correction made this morning claim the item was done today. The
+ * row's day is the older and truer of the two claims there.
+ *
  * **Strictly before `date`**, like the quota count and for the same reason: a
  * row already standing on `date` is preserved by the re-derive whatever this
  * says, so counting today's completion would compute the next occurrence as
- * `today + n` and have the plan remove the item from its own day.
+ * `today + n` and have the plan remove the item from its own day. Note the
+ * consequence, which is the feature: a Friday row ticked on Wednesday has done
+ * day Wednesday, so on Friday it is `< Friday` and Friday STOPS being a native
+ * occurrence of its own plan. The completed row stands anyway, because the
+ * re-derive preserves acted-on rows — not because it lands.
+ *
+ * ## The prefilter, and why the horizon has to stay small and fixed
+ *
+ * `d.date < ?` on its own is gone, because a row on a LATER day can now carry
+ * an earlier done day. Replacing it with a bare expression over `min(...)`
+ * would make the whole thing unindexable on a query the reminder scheduler runs
+ * six times per sync. So the range stays a plain comparison on `d.date`, opened
+ * by exactly `MISSION_HORIZON_DAYS`: a tap can never be more than that many
+ * days before the row it lands on, because {@link commitDayAhead} refuses
+ * anything further out. The prefilter is therefore exact, not a heuristic —
+ * and it is the first of the three mechanisms that need the horizon bounded.
  */
 function lastCompletions(db: Database, date: string): Map<string, string> {
+  // COALESCE onto the row's own day, then min() against it — see the header.
+  const doneDay = `min(COALESCE(json_extract(e.value, '$.done_on'), d.date), d.date)`;
   const rows = db.all<{ protocolId: string; item: string; last: string }>(
     `SELECT e.protocol_id AS protocolId,
             json_extract(e.value, '$.item') AS item,
-            max(d.date) AS last
+            max(${doneDay}) AS last
        FROM log_entries e
        JOIN daily_logs d ON d.id = e.daily_log_id
       WHERE d.date < ?
+        AND ${doneDay} < ?
         AND e.status = 'completed'
         AND e.protocol_id IS NOT NULL
         AND json_extract(e.value, '$.item') IS NOT NULL
         AND ${PLANNED_ROW_SQL}
         AND ${NOT_REMOVED_SQL}
       GROUP BY e.protocol_id, json_extract(e.value, '$.item')`,
-    [date]
+    [addDays(date, MISSION_HORIZON_DAYS + 1), date]
   );
   const last = new Map<string, string>();
   for (const row of rows) last.set(quotaKey(row.protocolId, row.item), row.last);
@@ -519,7 +634,9 @@ function landsOn(
  *     is the honest reading, and any surface that prints a day for one is
  *     printing this artefact.
  *
- * So `committing: false` never reads the carry and never places a quota item.
+ * So `committing: false` never reads the carry and never places a quota item,
+ * and — because `missed_days` is computed from the same carry read — no entry
+ * wears that mark either.
  * **Everything else is byte-for-byte the committing path** — the
  * active-with-a-version filter, the mode's `dropTypes` for that date (a Travel
  * mode set through Sunday is a fact about the plan), `phaseOn`,
@@ -529,14 +646,40 @@ function landsOn(
  * one inside a release, and it does not stop being true because the day is in
  * the future.
  *
+ * ## `today` — the day the CALLER is standing on (2026-09-19)
+ *
+ * The Plan screen, {@link commitDayAhead} and the committed-ahead re-derive are
+ * the only three callers that pass it, and it does three things, all of which
+ * need a day this function cannot compute for itself:
+ *
+ *   - **it decides whether `date` is in the future**, and `date > today` turns
+ *     `committing` off by itself. A caller that passes `today` therefore cannot
+ *     forget the flag, and asking about TODAY with `{ today }` is still a
+ *     committing read — which is what the arrival re-derive wants;
+ *   - **it stamps `ahead: true`** on every entry of a future day, so a row that
+ *     reaches `log_entries` through a commit carries the mark `NOT_UNSEEN_SQL`
+ *     keys on (./mission.ts). Nothing stamps it on a day that has arrived, so
+ *     the arrival re-derive's value re-sync strips it;
+ *   - **it anchors a NULL-`started_on` protocol to TODAY, not to `date`.** The
+ *     fallback below reads `protocol.startedOn ?? today ?? date`, which is the
+ *     trap this option exists to close: were Friday the first day ever planned
+ *     for a brand-new protocol, reading its anchor as Friday would make today
+ *     `not_started` and empty Home.
+ *
+ * Every other caller — `projectDays`, the reminder scheduler, the ordinary
+ * generation and re-derive — passes nothing and is byte-identical.
+ *
  * The default is `true`, so every existing caller is unchanged.
  */
 export function planForDay(
   db: Database,
   date: string,
-  opts: { committing?: boolean } = {}
+  opts: { committing?: boolean; today?: string } = {}
 ): PlannedEntry[] {
-  const committing = opts.committing !== false;
+  // A day AFTER the caller's today is a day that has not happened. It is never
+  // a committing read, whatever the flag says, and every entry wears the mark.
+  const ahead = opts.today !== undefined && date > opts.today;
+  const committing = opts.committing !== false && !ahead;
   const def = getModeDefinition(getActiveMode(db, date));
   const active = listProtocols(db).filter((p) => p.isActive && p.versionNumber !== null);
   const plan: PlannedEntry[] = [];
@@ -561,7 +704,13 @@ export function planForDay(
     // then makes permanent. Doing it here as well keeps planForDay a pure
     // function of the database it is handed, so a caller that skipped the
     // anchoring step still gets phase 1 rather than a crash or an ended protocol.
-    const state = phaseOn(content, protocol.startedOn ?? date, date);
+    //
+    // `?? opts.today ?? date` and not `?? date`: on a FUTURE day the honest
+    // reading of "starts today" is the caller's today, not the day being looked
+    // at. Reading it as `date` would show Friday as phase day 0 and then, when
+    // the commit anchored the protocol to today as it must, silently reshape
+    // the day the user had just been looking at.
+    const state = phaseOn(content, protocol.startedOn ?? opts.today ?? date, date);
     if (state.kind !== 'running') continue; // ended, or not started yet
     const { phase, dayInPhase } = state.window;
     for (const item of phase.items) {
@@ -597,6 +746,7 @@ export function planForDay(
         generated: true,
         item: item.id,
         ...(item.remind && item.scheduled_time ? ({ remind: true } as const) : {}),
+        ...(ahead ? ({ ahead: true } as const) : {}),
       };
       plan.push({
         type,
@@ -640,6 +790,7 @@ export function planForDay(
         ...(item.why ? { why: item.why } : {}),
         generated: true,
         mode: def.key,
+        ...(ahead ? ({ ahead: true } as const) : {}),
       },
     });
   }
@@ -675,6 +826,7 @@ export function planForDay(
         why: `Day ${dayNumberOf(experiment.start_date, date)} of this experiment`,
         generated: true,
         experiment: experiment.id,
+        ...(ahead ? ({ ahead: true } as const) : {}),
       },
     });
   }
@@ -788,9 +940,144 @@ export function generateMissionForDay(db: Database, date: string): number {
   if (plan.length === 0) return 0;
 
   db.transaction(() => {
-    for (const entry of plan) insertGenerated(db, log.id, entry);
+    commitPlan(db, log.id, plan);
   });
   return plan.length;
+}
+
+/**
+ * Commit a day AHEAD of today and tick one of its rows, in one transaction.
+ *
+ * ## Why the whole day, and not just the row
+ *
+ * A row must exist to be ticked, and there is exactly one mechanism in ARC for
+ * bringing mission rows into existence. Materialising a single row instead
+ * would be a second one — the door both the multiset-collision bug and the
+ * seed-deletion bug came through (docs/spikes/protocol-carryover.md §3.3).
+ * Committing the day is safe because the re-derive exists: a later edit, pause,
+ * mode or completion still reaches it ({@link rederiveDaysAhead}), and the day
+ * arriving re-derives it once more.
+ *
+ * ## `ordinal`, not a key
+ *
+ * The caller passes the POSITION of the row in the same `planForDay` order it
+ * rendered, plus `expect` — the title, protocol and item it believes sits
+ * there. {@link planKey} is a multiset key by design (a protocol may list one
+ * title twice), and re-reading the committed day with `listMission`'s
+ * `ORDER BY … created_at, id` cannot resolve a position either: the whole stack
+ * is inserted in one transaction with tied millisecond stamps and a random id
+ * as the tiebreak. Position over one recomputation of the same plan is exact.
+ *
+ * `expect` is the optimistic-concurrency half: the plan is recomputed here, and
+ * if a protocol was saved between the render and the tap the row at `ordinal`
+ * may be a different item. Nothing is written then, and the screen re-reads.
+ *
+ * ## The guards, each closing something specific
+ *
+ *   - `today < date <= today + MISSION_HORIZON_DAYS`. Past and present days are
+ *     ordinary rows and go through the ordinary toggle; beyond the horizon,
+ *     {@link lastCompletions}' prefilter would stop being exact.
+ *   - `ensureStartedOn(db, today)` — **the logical today, never the viewed
+ *     day**. `generateMissionForDay` anchors to whatever day it is handed, and
+ *     handing it Friday would start a new protocol's clock on Friday and leave
+ *     today reading `not_started`.
+ *   - the day must still be uncommitted. A second tap that raced the first
+ *     writes nothing rather than a second copy of the day.
+ *
+ * Returns the ticked row's id, or null when nothing was written.
+ *
+ * One `db.transaction`, and nothing inside opens another: `Database.transaction`
+ * is a plain BEGIN that does not nest, and `setMissionStatus` opens none. So the
+ * day cannot come into existence with nothing ticked on it.
+ */
+export function commitDayAhead(
+  db: Database,
+  date: string,
+  today: string,
+  at: { ordinal: number; expect: { title: string; protocolId: string | null; itemId?: string } }
+): string | null {
+  if (date <= today || date > addDays(today, MISSION_HORIZON_DAYS)) return null;
+  // Committed-ness is asked of the DATE, not of a log row, so a refusal below
+  // cannot leave an empty `daily_logs` row behind for a day nobody touched —
+  // "nothing is written by looking" has to survive a refused tap too.
+  const committed = db.get<{ one: number }>(
+    `SELECT 1 AS one
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND ${PLANNED_ROW_SQL}
+      LIMIT 1`,
+    [date]
+  );
+  if (committed) return null;
+
+  ensureStartedOn(db, today);
+  const plan = planForDay(db, date, { today });
+  const entry = plan[at.ordinal];
+  if (
+    entry === undefined ||
+    entry.title !== at.expect.title ||
+    entry.protocolId !== at.expect.protocolId ||
+    entry.extras.item !== at.expect.itemId
+  ) {
+    return null;
+  }
+
+  const log = getOrCreateDailyLog(db, date);
+  let ticked: string | null = null;
+  db.transaction(() => {
+    const ids = commitPlan(db, log.id, plan);
+    ticked = ids[at.ordinal] ?? null;
+    if (ticked !== null) setMissionStatus(db, ticked, 'completed', today);
+  });
+  return ticked;
+}
+
+/**
+ * Un-commit a day ahead — the other half of {@link commitDayAhead}, reached by
+ * un-ticking the last thing ticked on it.
+ *
+ * A DELETE, deliberately, where {@link removeMissionItem} is a tombstone. That
+ * precedent exists because a USER's removal was being resurrected by the next
+ * re-derive; an un-commit removes nothing the user chose, and the day is meant
+ * to go back to being computed rather than to being a committed empty day that
+ * every later edit has to diff against.
+ *
+ * It refuses outright if any planned row on the day is not both `pending` and
+ * machine-made — a day holding a completion, a skip or a hand-added row is a
+ * day with something in it worth keeping, and the caller simply leaves it
+ * committed. Returns whether it emptied the day.
+ *
+ * The DELETE carries the same defence in depth as the re-derive's: even with a
+ * wrong id it cannot reach an ad-hoc capture, an acted-on row or another day.
+ */
+export function uncommitDayAhead(db: Database, date: string, today: string): boolean {
+  if (date <= today) return false;
+  const log = db.get<{ id: string }>('SELECT id FROM daily_logs WHERE date = ?', [date]);
+  if (!log) return false;
+  const rows = db.all<{ id: string; status: string; value: string | null }>(
+    `SELECT id, status, value FROM log_entries
+      WHERE daily_log_id = ? AND ${PLANNED_ROW_SQL}`,
+    [log.id]
+  );
+  if (rows.length === 0) return false;
+  for (const row of rows) {
+    if (row.status !== 'pending') return false;
+    let generated = false;
+    try {
+      generated = row.value
+        ? (JSON.parse(row.value) as { generated?: boolean }).generated === true
+        : false;
+    } catch {
+      generated = false;
+    }
+    if (!generated) return false;
+  }
+  db.run(
+    `DELETE FROM log_entries
+      WHERE daily_log_id = ? AND status = 'pending' AND ${PLANNED_ROW_SQL}`,
+    [log.id]
+  );
+  return true;
 }
 
 export type RederiveResult = {
@@ -866,12 +1153,21 @@ export const planKey = (
  * quota is already met today is therefore not re-added, and an item the edit
  * removed does not take its completed row with it.
  */
-export function rederiveMissionForDay(db: Database, date: string): RederiveResult {
+export function rederiveMissionForDay(
+  db: Database,
+  date: string,
+  opts: { today?: string } = {}
+): RederiveResult {
   const log = getOrCreateDailyLog(db, date);
   const mode = getActiveMode(db, date);
   // Same anchoring as the first generation — a protocol activated today and
   // edited an hour later must not be read as never having started.
-  ensureStartedOn(db, date);
+  //
+  // `opts.today ?? date`, because a re-derive of a day AHEAD must never anchor
+  // a NULL-`started_on` protocol to that day: it would start the clock in the
+  // future and leave today reading `not_started`. Every caller re-deriving a
+  // future day passes `today`; every other caller is unchanged.
+  ensureStartedOn(db, opts.today ?? date);
 
   type Row = {
     id: string;
@@ -888,13 +1184,20 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
     [log.id]
   );
 
-  // Nothing planned yet → this is a first generation, not a re-derive.
+  // Nothing planned yet → this is a first generation, not a re-derive. Never on
+  // a day ahead: an uncommitted future day is computed on view and commits on
+  // the first tick, and generating it from here would commit a day nobody
+  // touched — see {@link rederiveDaysAhead}, which only ever hands over
+  // committed days.
   if (rows.length === 0) {
+    if (opts.today !== undefined && date > opts.today) {
+      return { mode, added: 0, removed: 0, kept: 0, preserved: 0 };
+    }
     return { mode, added: generateMissionForDay(db, date), removed: 0, kept: 0, preserved: 0 };
   }
 
   const def = getModeDefinition(mode);
-  const plan = planForDay(db, date);
+  const plan = planForDay(db, date, opts);
 
   // Classify every planned row. The re-derive OWNS only what it generated:
   // `planForDay` knows about protocols + mode items and nothing else, so a row
@@ -1021,4 +1324,163 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
     kept,
     preserved: preservedRows.length,
   };
+}
+
+/**
+ * Is anything committed on a day AFTER `today`, inside the horizon?
+ *
+ * One indexed `LIMIT 1`, and the whole reason {@link rederiveDaysAhead} can sit
+ * behind every status write in the app: a database with nothing committed ahead
+ * — which is every database until the user first ticks something on the Plan
+ * screen, and most databases most of the time — pays exactly this and stops.
+ */
+export function hasCommittedDaysAhead(db: Database, today: string): boolean {
+  const row = db.get<{ one: number }>(
+    `SELECT 1 AS one
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date > ? AND d.date <= ?
+        AND ${PLANNED_ROW_SQL}
+      LIMIT 1`,
+    [today, addDays(today, MISSION_HORIZON_DAYS)]
+  );
+  return row !== undefined && row !== null;
+}
+
+/**
+ * Re-derive every COMMITTED day in `(today, today + MISSION_HORIZON_DAYS]`.
+ *
+ * ## The invariant, stated exactly
+ *
+ * > **A day committed ahead never holds a plan that the protocols, modes,
+ * > experiments and completions no longer make, from the moment the app itself
+ * > changed one of them.**
+ *
+ * Only the carry source is outside it — a future day has none — and the day's
+ * own arrival adds that.
+ *
+ * It runs after every status write as well as after every protocol edit,
+ * because a COMPLETION changes later days too: under `adjusting` it moves an
+ * every-N-days item's next occurrence, and under a quota it spends one of the
+ * week's sessions. Without it, the most common gesture in the app would leave a
+ * committed Friday holding a row the plan no longer makes — and that dead row
+ * would keep its reminder.
+ *
+ * **Today is deliberately not re-derived here.** A row on `date` completed on
+ * `date` cannot change `date`'s own plan: `lastCompletions` reads strictly
+ * before the day, and the quota count excludes the day itself.
+ *
+ * The horizon is in the QUERY, not applied afterwards, so a day committed under
+ * some larger horizon is left alone and picked up by its own arrival instead of
+ * being half-maintained.
+ */
+export function rederiveDaysAhead(db: Database, today: string): void {
+  if (!hasCommittedDaysAhead(db, today)) return;
+  const days = db.all<{ date: string }>(
+    `SELECT DISTINCT d.date AS date
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date > ? AND d.date <= ?
+        AND ${PLANNED_ROW_SQL}
+      ORDER BY d.date`,
+    [today, addDays(today, MISSION_HORIZON_DAYS)]
+  );
+  for (const day of days) rederiveMissionForDay(db, day.date, { today });
+}
+
+/**
+ * Re-derive TODAY and every committed day ahead of it — what every seam that
+ * changes what a day should hold now calls instead of re-deriving today alone.
+ *
+ * `ensureStartedOn(db, today)` runs FIRST and is not decoration.
+ * {@link rederiveMissionForDay} anchors to the day it is handed, and the days
+ * ahead are handed `{ today }` precisely so they cannot anchor to themselves —
+ * but the anchor has to be set by then, or today's own re-derive would be the
+ * one doing it after a future day had already been planned against a NULL.
+ * Anchoring once, here, makes the order of the rest irrelevant.
+ */
+export function rederiveMissionFromToday(db: Database, today: string): RederiveResult {
+  ensureStartedOn(db, today);
+  const result = rederiveMissionForDay(db, today);
+  rederiveDaysAhead(db, today);
+  return result;
+}
+
+/**
+ * Why a past tick was refused, or `'ok'` when it was not.
+ *
+ * A total result rather than a boolean, because each refusal has a different
+ * authored line and a screen that cannot tell them apart can only say "no".
+ */
+export type PastTickResult = 'ok' | 'not_found' | 'too_old' | 'carried' | 'settled_by_copy';
+
+/**
+ * Tick (or un-tick) a row on a day that has already passed — the **backfill**.
+ *
+ * ## What it is for, and the one thing it reverses
+ *
+ * Yesterday's untouched magnesium, remembered this morning. With carry-over on,
+ * ticking TODAY's carried copy settles the original `skipped + late_on` — done
+ * late, no credit (0050, the owner's 2026-09-14 call). Ticking the ORIGINAL on
+ * its own day instead makes it `completed` there, with full credit. Those are
+ * two different claims — *I did it today, late* versus *I did it yesterday and
+ * forgot to tick* — and the second is the most common reason to look back. For
+ * a `daily` item it is the ONLY correction available, because `daily` never
+ * grows a carried row.
+ *
+ * The owner took option (a) on question 3: **yes, for the seven settled days
+ * behind today**, stamped with the day of the tap and shown as *ticked N days
+ * later*. Older days are read-only and say so.
+ *
+ * ## The three guards, and they ship WITH the gesture
+ *
+ * A tick without them corrupts the done-late ledger, which is why they are here
+ * and not in a follow-up:
+ *
+ *  1. **The window.** Seven days, the carry window: a miss older than a week is
+ *     a fact about the protocol, not a bookkeeping slip.
+ *  2. **A CARRIED row is refused** (question 4, option a). The debt is live on
+ *     today's copy, where the gesture belongs. Allowing it would stamp the
+ *     original with `late_on = <the carried row's own day>` — a day on which
+ *     nothing was asserted — and leave one row wearing both `carried_days` and
+ *     `tickedDays`.
+ *  3. **A row a carried copy already SETTLED is refused.** `late_on` is the
+ *     late-completion form: flipping a `skipped + late_on` original to
+ *     `completed` would leave the stamp in `value`, silently drop the
+ *     `doneLate` annotation, and count the item done twice. `skipped_via` is
+ *     the same fact by the other route (a copy that was hand-skipped), and it
+ *     is guarded in the same breath rather than as a fourth rule: both mean
+ *     "a copy has already spoken for this row", and both are undone from the
+ *     copy.
+ *
+ * The allowed case triggers {@link rederiveMissionFromToday}, so today's
+ * carried copy — a debt that no longer exists — is removed by the diff.
+ */
+export function backfillPastRow(db: Database, id: string, today: string): PastTickResult {
+  const row = db.get<{ date: string; status: string; value: string | null }>(
+    `SELECT d.date AS date, e.status AS status, e.value AS value
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE e.id = ? AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`,
+    [id]
+  );
+  if (!row || row.date >= today) return 'not_found';
+  if (daysBetween(row.date, today) > CARRY_MAX_DAYS) return 'too_old';
+
+  let extras: { carried?: boolean; late_on?: string; skipped_via?: string } = {};
+  try {
+    extras = row.value ? (JSON.parse(row.value) as typeof extras) : {};
+  } catch {
+    extras = {};
+  }
+  if (extras.carried === true) return 'carried';
+  if (extras.late_on !== undefined || extras.skipped_via !== undefined) return 'settled_by_copy';
+
+  const settled = row.status === 'completed' || row.status === 'skipped';
+  setMissionStatus(db, id, settled ? 'pending' : 'completed', today);
+  // The correction reaches TODAY: a debt that has just been paid on its own day
+  // is no longer outstanding, so the carried copy standing on today's mission is
+  // removed by the same diff every other plan change goes through.
+  rederiveMissionFromToday(db, today);
+  return 'ok';
 }

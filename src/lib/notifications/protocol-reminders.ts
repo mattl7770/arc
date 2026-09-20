@@ -43,11 +43,30 @@
  * included only while the row is still `pending` and its clock time is still
  * ahead — a ticked, skipped or removed item stops appearing at all, which is
  * the whole of "a completed item's reminder must not fire".
+ *
+ * ## A day COMMITTED ahead: the reads do not change, one subtraction does
+ *
+ * Since 2026-09-19 a day ahead can already exist as rows, with some of them
+ * ticked (docs/spikes/mission-day-picker-and-future-checkoff.md). The loop
+ * below still reads every future day through a plain `planForDay(db, day)`
+ * with **no options**, deliberately, because those reads consult the CARRY
+ * source — and the carry is what nudges a debt whose own time has already
+ * passed today. An item at 07:00 missed on Monday with carry-over on: at 20:00
+ * `add()` drops today's row as past, and only Tuesday's plan entry can supply
+ * the nudge. Passing `{ today }` there would drop that notification outright,
+ * and Tuesday's arrival can easily be after 07:00.
+ *
+ * What is subtracted instead is `settledPlannedItems`: on a day that HAS been
+ * committed, the rows already acted on. A row ticked ahead therefore does not
+ * buzz on its day, while a debt carried onto a committed-ahead tomorrow still
+ * does — the carry is in the plan and its row does not exist yet, so nothing
+ * subtracts it. An unseen pending row keeps its reminder, which is right: it is
+ * still on the plan for that morning.
  */
 import { shiftISODate, todayISODate, getDayStartsAt } from '@/lib/db/date';
 import type { Database } from '@/lib/db/database';
 import { planForDay } from '@/lib/db/repositories/mission-generate';
-import { remindableEntries } from '@/lib/db/repositories/mission';
+import { remindableEntries, settledPlannedItems } from '@/lib/db/repositories/mission';
 
 /**
  * How far ahead an item's next occurrence is looked for. A week: far enough
@@ -154,10 +173,22 @@ export function protocolRemindersDue(
 
   for (let offset = 1; offset < PROTOCOL_REMINDER_HORIZON_DAYS; offset++) {
     const day = shiftISODate(today, offset);
-    for (const entry of planForDay(db, day)) {
+    // NO `{ today }` here — see the header. The carry source is what makes a
+    // debt whose time has already passed today reachable tomorrow.
+    const plan = planForDay(db, day);
+    if (plan.length === 0) continue;
+    // One query per day, and only for a day that actually has a plan: on a day
+    // the user committed ahead, whatever he already ticked or skipped there is
+    // settled and must not buzz. Empty on every ordinary future day, which is
+    // all of them until the Plan screen is used.
+    const settled = new Set(
+      settledPlannedItems(db, day).map((row) => protocolReminderKey(row.protocolId, row.itemId))
+    );
+    for (const entry of plan) {
       const item = entry.extras.item;
       if (entry.extras.remind !== true || entry.protocolId === null || item === undefined) continue;
       if (entry.scheduledTime === null) continue;
+      if (settled.has(protocolReminderKey(entry.protocolId, item))) continue;
       add(day, entry.protocolId, item, entry.title, entry.extras.why ?? null, entry.scheduledTime);
     }
   }
