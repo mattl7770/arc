@@ -209,9 +209,19 @@ app/settings-backups.tsx ← the screen; app/settings.tsx gains the row; app/_la
 db/backup.test.mjs      ← headless suite (npm run db:test)
 ```
 
+**The exclusion half of this split is real as of 2026-09-19.** `src/lib/files/backup-exclusion.ts`
+finally has a native module behind it — `modules/arc-backup/`, an `ArcBackup` Expo module that sets
+`NSURLIsExcludedFromBackupKey` — so `arc.db`, its `-wal`/`-shm` sidecars, the pre-migrate `.bak`
+and the photo directories are now genuinely held out of the device backup rather than no-oped out
+of it. Before that the seam loaded nothing and excluded nothing, which meant the plaintext record
+rode the same iCloud backup as the ciphertext and the whole "plaintext out, ciphertext in" split
+this document describes existed only on paper. (Written, not yet built: see §9.)
+
 **`backup-file-store.ts` must never call `excludeFromBackup`.** Riding the device backup is the
 entire point of this feature, and the seam that excludes things (`src/lib/files/backup-exclusion.ts`)
-is one import away. The file says so in a comment at the directory-creation site.
+is one import away — and now that the seam is wired to something, an "inconsistency" tidied up here
+would delete the feature outright rather than merely doing nothing. The file says so in a comment at
+the directory-creation site, and `db/backup.test.mjs` §8 asserts the call is still absent.
 
 **`shareExistingFile` does not delete what it shared**, unlike `writeAndShareFile`, whose whole
 job is to hand off a regenerable plaintext artifact and then destroy the on-device copy
@@ -269,3 +279,12 @@ cipher. Verify in this order:
 3. Restore → relaunch → the record is intact and `user_version` is at head.
 4. Encrypted device backup → restore to a wiped phone → the snapshot AND the Keychain item are
    both present, and Restore works without the recovery code.
+
+**And the exclusion module, written 2026-09-19, is unverified in the same way.** `modules/arc-backup/`
+compiles nowhere on the machine that wrote it — no CocoaPods, no Xcode. Autolinking sees it
+(`expo-modules-autolinking resolve --platform apple` reports pod `ArcBackup`, class
+`ArcBackupModule`), so it will be in the Podfile and in the generated `ExpoModulesProvider.swift`;
+whether it *builds* is the EAS build's answer. A wrong podspec fails that build loudly — `Install
+pods`, or `no such module 'ArcBackup'` at compile — it does not quietly return the app to the
+no-op state. On device: step 4 above is also the exclusion check — the restored phone must find the
+snapshot and NOT find `arc.db` or the photo directories.
