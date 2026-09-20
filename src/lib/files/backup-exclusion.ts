@@ -18,10 +18,14 @@
  * no-op: nothing is excluded, nothing crashes. The exclusion therefore activates
  * automatically the moment the native module ships in an EAS build.
  *
- * The `ArcBackup` native module is documented in `docs/decisions.md`
- * (2026-08-23 "At-rest data must not ride the iCloud backup" ADR): a ~15-line
- * Expo module plus its podspec/config, to be added under `modules/arc-backup/`
- * and verified on device. Until it is present this seam is inert by design.
+ * The `ArcBackup` native module now EXISTS, in this repo, at `modules/arc-backup/`
+ * (written 2026-09-19; specced by the 2026-08-23 "At-rest data must not ride the
+ * iCloud backup" ADR in `docs/decisions.md`, and missing from the build that
+ * shipped two days after it — during which this seam excluded precisely nothing).
+ * The guarded load above stays exactly as it is regardless: it is what keeps the
+ * web logic-check preview and the headless suites running, and what keeps a
+ * build that predates the module a no-op rather than a crash. Do not "simplify"
+ * it into a bare `requireNativeModule`.
  *
  * Accepts a plain filesystem path (op-sqlite's `getDbPath()`) or a `file://` URI
  * (expo-file-system's `.uri`); the native side normalizes both. Best-effort and
