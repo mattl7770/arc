@@ -4,8 +4,8 @@ import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
 import { CadenceControl } from '@/components/protocols/cadence-control';
+import { Chip } from '@/components/ui/chip';
 import {
-  Chip,
   FormField,
   normalizeTime,
   parseDays,
@@ -315,7 +315,9 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
 
   const addItem = (phaseKey: number) =>
     setPhases((prev) =>
-      prev.map((p) => (p.key === phaseKey ? { ...p, items: [...p.items, blankItem(takeKey())] } : p))
+      prev.map((p) =>
+        p.key === phaseKey ? { ...p, items: [...p.items, blankItem(takeKey())] } : p
+      )
     );
 
   const updateItem = (phaseKey: number, itemKey: number, patch: Partial<Omit<EditItem, 'key'>>) =>
@@ -419,7 +421,8 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
         // the anchor changes nothing that lands on a day, and writing nothing
         // leaves whatever anchor the protocol already had rather than clearing
         // it — clearing restarts a titration on the next generation.
-        if (phased && isDate(startedOn)) setProtocolStartedOn(db, detail.protocol.id, startedOn.trim());
+        if (phased && isDate(startedOn))
+          setProtocolStartedOn(db, detail.protocol.id, startedOn.trim());
       } else {
         createProtocolWithVersion(
           db,

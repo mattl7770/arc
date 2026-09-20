@@ -11,7 +11,8 @@ import { Pressable, Text, View } from 'react-native';
 
 import { palette } from '@/constants/theme';
 
-import { Chip, FormField, normalizeTime } from './form-controls';
+import { Chip } from '@/components/ui/chip';
+import { FormField, normalizeTime } from './form-controls';
 
 /**
  * Anchor times offered as one tap each (C9).

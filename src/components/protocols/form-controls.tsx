@@ -1,6 +1,8 @@
 /**
- * The recessed field and the neutral chip the protocol forms are built from,
- * plus the two parsers they share.
+ * The recessed field the protocol forms are built from, plus the two parsers
+ * they share. The neutral Chip moved to src/components/ui/chip.tsx on
+ * 2026-09-19, when the Coach’s status rail became a caller from outside these
+ * forms; the three controls here import it back.
  *
  * Extracted verbatim from app/protocol-edit.tsx on 2026-09-19, when the per-item
  * editor and the settings sheet became second and third callers. Nothing about
@@ -34,40 +36,6 @@ export function parseDays(text: string): number | null {
   if (!/^\d+$/.test(trimmed)) return null;
   const n = Number(trimmed);
   return n >= 1 ? n : null;
-}
-
-/** A neutral selection chip — the label voice, square-ish, no hue. */
-export function Chip({
-  label,
-  on,
-  onPress,
-  accessibilityLabel,
-  compact,
-}: {
-  label: string;
-  on: boolean;
-  onPress: () => void;
-  accessibilityLabel?: string;
-  /** Tighter padding for the cadence controls, where seven sit on one row. */
-  compact?: boolean;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected: on }}
-      accessibilityLabel={accessibilityLabel ?? label}
-      onPress={onPress}
-      className={`min-h-[44px] justify-center rounded-btn border py-2 active:bg-paper-dim ${
-        compact ? 'px-2' : 'px-3'
-      } ${on ? 'border-ink bg-paper-dim' : 'border-hairline bg-paper-hi'}`}>
-      <Text
-        className={`font-label ${compact ? 'text-[12px]' : 'text-[13px]'} ${
-          on ? 'font-semibold text-ink' : 'text-ink-secondary'
-        }`}>
-        {label}
-      </Text>
-    </Pressable>
-  );
 }
 
 type FieldProps = {
