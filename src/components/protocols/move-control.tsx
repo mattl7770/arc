@@ -24,7 +24,8 @@
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
-import { Chip, FormField, normalizeTime } from './form-controls';
+import { Chip } from '@/components/ui/chip';
+import { FormField, normalizeTime } from './form-controls';
 import { TIME_PRESETS } from './time-control';
 
 export function MoveControl({

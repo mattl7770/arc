@@ -6,6 +6,7 @@ import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { isHealthKitSupported } from '@/lib/health/healthkit';
 import { subscribeHealthSync } from '@/lib/health/sync';
 import { deriveReadiness, type HealthLink, type ReadinessView } from '@/lib/home/readiness';
+import { subscribeStatusChange } from '@/lib/status/store';
 
 /**
  * Home's readiness view model — real `wearable_data` through the pure
@@ -40,6 +41,11 @@ export function useReadiness(): ReadinessView {
 
   useFocusEffect(reload);
   useEffect(() => subscribeHealthSync(reload), [reload]);
+  // A status set from the sheet presented OVER Home changes two of this view's
+  // fields — `excludedStatusDays` and `recoveryPausedByStatus`, both of which
+  // Home's status line prints — and Home never loses focus to a modal, so
+  // useFocusEffect alone would leave the line a day behind.
+  useEffect(() => subscribeStatusChange(reload), [reload]);
 
   return state;
 }

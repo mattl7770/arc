@@ -35,7 +35,8 @@ import {
 } from '../src/lib/db/repositories/mission.ts';
 import { protocolAdherence } from '../src/lib/db/repositories/protocol-adherence.ts';
 import { completeExperiment, createExperiment } from '../src/lib/db/repositories/experiments.ts';
-import { arriveDay } from '../src/lib/db/seed.ts';
+import { arriveDay, ensureTodaySeeded } from '../src/lib/db/seed.ts';
+
 import { addDays, isoWeekday, weekStart } from '../src/lib/protocols/cadence.ts';
 import {
   commitDayAhead,
@@ -54,8 +55,7 @@ import {
   rederiveMissionFromToday,
   uncommitDayAhead,
 } from '../src/lib/db/repositories/mission-generate.ts';
-import { setMode } from '../src/lib/db/repositories/day-modes.ts';
-import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
+import { startStatus } from '../src/lib/db/repositories/statuses.ts';
 
 let pass = 0;
 let fail = 0;
@@ -323,13 +323,17 @@ console.log('7. seed:true rows are still honoured (existing devices hold them)')
     ? ok('explicit fixture items plant as seed:true with no protocol_id')
     : bad('fixture path', JSON.stringify(entries.map((e) => e.title)));
 
-  // Sick drops the TYPE 'workout'; every other seed row must survive the
-  // re-derive, or a mode tap would permanently empty an old device's day.
-  setMode(db, { mode: 'sick', startDate: DATE, endDate: DATE });
+  // EVERY SEED ROW SURVIVES A RE-DERIVE. The one that used not to was a row
+  // whose whole TYPE a mode pulled (Sick dropped 'workout'), and that branch
+  // went with the modes in 0061: nothing in the deterministic layer decides any
+  // more that a kind of thing does not belong on a day. A status records the
+  // fact and reshapes nothing; if today's ride should come off, the Coach takes
+  // it off with adjust_today, which the user sees and approves.
+  startStatus(db, { label: 'sick', startDate: DATE, endDate: DATE, source: 'user' });
   rederiveMissionForDay(db, DATE);
   const after = rows(raw, DATE).map((r) => r.title);
-  after.includes('Cold shower') && after.includes('Creatine') && !after.includes('Zone 2 ride')
-    ? ok('re-derive keeps untouched seed rows, pulls only the dropped type')
+  after.includes('Cold shower') && after.includes('Creatine') && after.includes('Zone 2 ride')
+    ? ok('a re-derive keeps EVERY untouched seed row — a status pulls nothing')
     : bad('re-derive damaged seed rows', JSON.stringify(after));
 }
 
@@ -892,9 +896,7 @@ console.log('18. daily marks, never a second row; a quota never carries at all')
   createProtocolWithVersion(
     db,
     { name: 'Evening stack', type: 'supplement_stack', startedOn: '2026-08-03', carryOver: true },
-    content([
-      { items: [{ title: 'Magnesium', cadence: { kind: 'daily' } }] },
-    ])
+    content([{ items: [{ title: 'Magnesium', cadence: { kind: 'daily' } }] }])
   );
   createProtocolWithVersion(
     db,
@@ -961,11 +963,16 @@ console.log('19. the 7-day cap, the phase boundary, an excused day, and a pause'
     { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
     content([{ items: [{ title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 5] } }] }])
   );
-  // Travel excuses a skip, so nothing is owed out of Monday.
-  setMode(db, { mode: 'travel', startDate: '2026-08-03', endDate: '2026-08-03' });
+  // An excusing status forgives the skip, so nothing is owed out of Monday.
+  startStatus(db, {
+    label: 'traveling',
+    startDate: '2026-08-03',
+    endDate: '2026-08-03',
+    source: 'user',
+  });
   entriesOn(db, raw, '2026-08-03');
   carriedOn(db, raw, '2026-08-04', 'Lower body').length === 0
-    ? ok('nothing carries out of a day whose mode excuses the miss')
+    ? ok('nothing carries out of a day the ledger excused')
     : bad('carried out of an excused day');
 }
 {
@@ -1126,10 +1133,16 @@ console.log('22. the projection flag: the SAME function, minus the two future-da
       { items: [{ id: 'maintenance', title: 'Maintenance dose', dose: '1 cap' }] },
     ])
   );
-  // A mode that DROPS a whole type on one day of the horizon — a Travel or Sick
-  // window set through the week is a fact about the plan, so the projection
-  // must honour it exactly as the committing path does.
-  setMode(db, { mode: 'sick', startDate: '2026-08-06', endDate: '2026-08-06' });
+  // A status open across the horizon, which must change NOTHING about either
+  // path: 0061 took the last thing that could reshape a day out of the
+  // deterministic layer, so the projection and the committing plan agree
+  // through it rather than agreeing about how to honour it.
+  startStatus(db, {
+    label: 'sick',
+    startDate: '2026-08-06',
+    endDate: '2026-08-06',
+    source: 'user',
+  });
 
   // Monday is committed. Sauna is done (the `adjusting` clock has something to
   // read); everything else is left untouched, which is what makes Monday's
@@ -1152,7 +1165,6 @@ console.log('22. the projection flag: the SAME function, minus the two future-da
   let sawCarried = false;
   let sawQuota = false;
   let sawMissedMark = false;
-  let sawDrop = false;
   for (let i = 0; i < 6; i++) {
     const date = addDays('2026-08-04', i);
     const committing = planForDay(db, date);
@@ -1160,7 +1172,6 @@ console.log('22. the projection flag: the SAME function, minus the two future-da
     sawCarried ||= committing.some((e) => e.extras.carried === true);
     sawQuota ||= committing.some((e) => QUOTA_ITEMS.has(e.extras.item));
     sawMissedMark ||= committing.some((e) => e.extras.missed_days !== undefined);
-    sawDrop ||= date === '2026-08-06' && !committing.some((e) => e.title === 'Sauna');
     const expected = committing
       .filter((e) => e.extras.carried !== true && !QUOTA_ITEMS.has(e.extras.item))
       .map(withoutCarryMarks);
@@ -1184,9 +1195,9 @@ console.log('22. the projection flag: the SAME function, minus the two future-da
         'the fixture produced no artefact to strip',
         `carried ${sawCarried} / quota ${sawQuota} / missed ${sawMissedMark}`
       );
-  sawDrop
-    ? ok('a mode that drops the type drops it on the projected day too')
-    : bad('the mode was not honoured by the projection fixture');
+  planForDay(db, '2026-08-06').some((e) => e.title === 'Sauna')
+    ? ok('…and an open status pulls nothing out of either path')
+    : bad('something still drops a type on a status day');
   // The boundary, read off the projection rather than asserted about the flag:
   // phase 1 runs 3 days from Monday, so Thursday is phase 2.
   const projection = projectDays(db, '2026-08-04');
@@ -1606,11 +1617,10 @@ console.log('26. a day committed ahead never holds a plan the app no longer make
           .join(', ')
       );
 
-  setMode(db, { mode: 'sick', startDate: FRIDAY, endDate: FRIDAY });
-  rederiveMissionFromToday(db, TODAY);
-  !rows(raw, FRIDAY).some((r) => r.title === 'Lower body')
-    ? ok('a mode set over Friday reshapes a Friday already committed')
-    : bad('the mode did not reach Friday');
+  // A mode set over Friday was the first of three seams here. Modes retired in
+  // 0061 — planForDay drops no types and injects no items — so that seam cannot
+  // fire any more. The two below prove the same claim (a re-derive from today
+  // reaches a day already committed ahead) through changes that still happen.
   completeExperiment(db, experiment, { conclusion: 'no effect' });
   rederiveMissionFromToday(db, TODAY);
   !rows(raw, FRIDAY).some((r) => r.title === 'Cold shower')

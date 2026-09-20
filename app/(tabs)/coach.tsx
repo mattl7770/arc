@@ -1,5 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   type NativeScrollEvent,
@@ -16,14 +16,18 @@ import { MessageBubble } from '@/components/coach/message-bubble';
 import { PendingWriteCard } from '@/components/coach/pending-write-card';
 import { RemindersCard } from '@/components/coach/reminders-card';
 import { SessionKeyPanel } from '@/components/coach/session-key-panel';
+import { StatusRail } from '@/components/status/status-rail';
 import { SuggestedPrompts } from '@/components/coach/suggested-prompts';
 import { Divider } from '@/components/ui/block';
 import { PaperGrid } from '@/components/ui/screen';
 import { useCoachChat } from '@/hooks/use-coach-chat';
 import { useReminders } from '@/hooks/use-reminders';
 import { useSessionKeySet } from '@/hooks/use-session-key';
+import { useStatuses } from '@/hooks/use-statuses';
 import { getDb } from '@/lib/db/client';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
+import type { RailChip } from '@/lib/status/chips';
+import { endOpenStatus, toggleStatus } from '@/lib/status/store';
 
 /**
  * Coach — the conversational surface (docs/ai-coach.md).
@@ -183,6 +187,33 @@ export default function CoachScreen() {
   const hasReminders = reminders.length > 0;
   const decisionOpen = chat.pendingWrite !== null;
 
+  // --- The status rail ------------------------------------------------------
+  //
+  // A SECOND source of seeded text, beside the deep-linked `prompt` param: the
+  // end gesture seeds rather than sends, because ending a status is bookkeeping
+  // that may not warrant a turn. The counter is what makes reseeding the SAME
+  // sentence twice remount the composer — ChatInput owns its draft, so the key
+  // is how a reseed reaches it, and `text` alone would be the same key.
+  const statuses = useStatuses();
+  const [railSeed, setRailSeed] = useState<{ text: string; n: number } | null>(null);
+  const seedText = railSeed?.text ?? seededPrompt;
+  const seedKey = railSeed ? `rail-${railSeed.n}` : (seededPrompt ?? 'composer');
+
+  const onStatusChip = useCallback(
+    (chip: RailChip) => {
+      // The row is written inside `toggleStatus`, BEFORE this line — so on a
+      // plane the fact lands and only the turn fails. A null means the write
+      // threw and nothing happened, which is better than a half-done gesture.
+      const next = toggleStatus(chip);
+      if (next) chat.send(next.prompt);
+    },
+    [chat]
+  );
+  const onStatusEnd = useCallback((chip: RailChip & { openId: string }) => {
+    const next = endOpenStatus(chip);
+    if (next) setRailSeed((prev) => ({ text: next.prompt, n: (prev?.n ?? 0) + 1 }));
+  }, []);
+
   return (
     <View className="flex-1 bg-paper">
       {/* This screen cannot use `Screen` (see the note above), so it prints the
@@ -281,12 +312,26 @@ export default function CoachScreen() {
             <PendingWriteCard pending={chat.pendingWrite} onResolve={chat.resolveWrite} />
           ) : null}
 
+          {/* Docked on the composer's own opaque band, directly above the
+              input. Hidden under a pending write for the same reason the
+              activity line is: the loop is suspended waiting on one decision,
+              and a second set of live controls beside it would invite a
+              gesture that cannot happen. Disabled — not hidden — while a turn
+              runs, so the rail does not appear and vanish on every question. */}
+          <StatusRail
+            open={statuses.open}
+            disabled={chat.isResponding}
+            hidden={decisionOpen}
+            onToggle={onStatusChip}
+            onEnd={onStatusEnd}
+          />
+
           {/* The React key is the seeded prompt: ChatInput owns its draft, so
               reseeding it means remounting it. Arriving with no prompt is the
               ordinary case and mounts exactly as before. */}
           <ChatInput
-            key={seededPrompt ?? 'composer'}
-            initialText={seededPrompt}
+            key={seedKey}
+            initialText={seedText}
             onSend={chat.send}
             disabled={chat.isResponding}
             blockedReason={decisionOpen ? 'Answer the proposed change to continue' : undefined}

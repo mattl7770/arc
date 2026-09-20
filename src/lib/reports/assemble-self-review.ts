@@ -12,7 +12,7 @@
  * `trainingDailyTotals` / `muscleSetsInRange` / `e1rmSeries`,
  * `dailyIntakeSeries` / `activeNutritionTargets` / `metricIsComplete`,
  * `wearableArbitratedSeries` + `compareWindows` + `TREND_GATES`,
- * `bodyDailySeries`, `accountForDay`, `listExperiments`. Where a seam could
+ * `bodyDailySeries`, `excusedDatesIn`, `listExperiments`. Where a seam could
  * only answer for "this week" or "the last N days", it was GENERALISED in
  * place (`muscleSetsInRange`, and `weeklyMuscleSets` now calls it) rather than
  * copied here. A second definition of "sets worked" or "days logged" is how
@@ -22,8 +22,10 @@
  *
  *   - **The ledger sums.** `completed + partial + skipped + excused + unmarked
  *     = planned`, per protocol and in the totals row. Asserted in the tests.
- *   - **Excused is decided per DAY, by the day's own mode**, through
- *     `accountForDay` — not by a period-wide flag.
+ *   - **Excused is decided per DAY**, through the app's ONE definition
+ *     (`excusedDatesIn` — an excusing status, a frozen mode, a timezone
+ *     change), not by a period-wide flag and not by a second copy of the rule
+ *     living here. It used to be the second copy; see {@link PeriodExcusal}.
  *   - **Nutrition averages exclude un-priced days and COUNT the exclusion.**
  *   - **A recovery delta prints a direction word only past `insights.ts`'s own
  *     bar.** Otherwise: "within your normal variation."
@@ -43,8 +45,11 @@ import {
 import { compareWindows } from '@/lib/ai/stats';
 import { TREND_GATES } from '@/lib/ai/insights';
 import { isAccumulatingMetric } from '@/lib/health/accumulating';
-import { getActiveMode } from '@/lib/db/repositories/day-modes';
-import { accountForDay, getModeDefinition, type ModeKey } from '@/lib/modes/registry';
+import { activeModesIn, getActiveMode } from '@/lib/db/repositories/day-modes';
+import { timezoneChangedDaysIn } from '@/lib/db/repositories/day-meta';
+import { excusedDatesIn } from '@/lib/db/repositories/mission';
+import { clampStatusSpan, statusesIn } from '@/lib/db/repositories/statuses';
+import { getModeDefinition, type ModeKey } from '@/lib/modes/registry';
 import { e1rmSeries, muscleSetsInRange } from '@/lib/db/repositories/training-stats';
 import {
   activeNutritionTargets,
@@ -147,6 +152,51 @@ type StatusRow = {
   n: number;
 };
 
+/**
+ * The period's excusal, resolved ONCE — which days, and why.
+ *
+ * **`days` is the shared definition and nothing else** (`excusedDatesIn`). This
+ * file used to hold a second one: it read the day's mode through
+ * `accountForDay` and never read `excusedDatesIn` at all, so a D4
+ * timezone-changed day was excused on Home and counted as a plain skip in a
+ * self-review of the same fortnight. Two ledgers, two answers, one week.
+ *
+ * `byReason` is the other half of that fix and is deliberately NOT derived from
+ * `days`: the shared set is a set of dates with no reasons attached, and the
+ * sentence under the table has to name them. Counts here are per REASON — a day
+ * that is both sick and a timezone change is counted under both — which is why
+ * the note says so out loud instead of letting a reader sum them.
+ */
+type PeriodExcusal = {
+  days: Set<string>;
+  /** Reason → day count. Lower-case, so the joined sentence reads as prose. */
+  byReason: Map<string, number>;
+};
+
+function periodExcusal(db: Database, from: string, to: string): PeriodExcusal {
+  const days = to >= from ? excusedDatesIn(db, from, to) : new Set<string>();
+  const byReason = new Map<string, number>();
+  const add = (reason: string, n: number): void => {
+    if (n > 0) byReason.set(reason, (byReason.get(reason) ?? 0) + n);
+  };
+
+  if (to >= from) {
+    // Statuses (0061) — the live reason, counted per label.
+    for (const row of statusesIn(db, from, to)) {
+      if (row.excuses !== 1) continue;
+      const span = clampStatusSpan(row, from, to);
+      if (span) add(row.label, span.days);
+    }
+    // Frozen modes (0026, retired in 0061) — history only, and it still decides
+    // how the days it covers are judged.
+    for (const [, mode] of activeModesIn(db, from, to)) {
+      if (getModeDefinition(mode).excusesSkips) add(getModeDefinition(mode).label.toLowerCase(), 1);
+    }
+    add('timezone', timezoneChangedDaysIn(db, from, to).size);
+  }
+  return { days, byReason };
+}
+
 /** An accumulator with the same five buckets the ledger prints. */
 type Tally = {
   completed: number;
@@ -181,10 +231,11 @@ function assembleAdherence(
   db: Database,
   period: Period,
   accEnd: string,
-  modeByDate: Map<string, ModeKey>
+  today: string,
+  excusal: PeriodExcusal
 ): AdherenceSection {
   const provenance = {
-    sources: 'log_entries · protocols · day_modes',
+    sources: 'log_entries · protocols · day_statuses · day_modes · timezone_changes',
     range: accEnd === period.end ? period.rangeLabel : `${period.rangeLabel} (complete days only)`,
   };
   // Clipped to `accEnd`, exactly like training minutes and days-logged.
@@ -225,7 +276,7 @@ function assembleAdherence(
       provenance,
       rows: [],
       totals: null,
-      modeNote: null,
+      excusedNote: null,
       reconciliation: null,
     };
   }
@@ -246,40 +297,51 @@ function assembleAdherence(
       t.partial += row.n;
       totals.partial += row.n;
     } else if (row.status === 'pending') {
-      t.unmarked += row.n;
-      totals.unmarked += row.n;
+      // An UNTOUCHED item on an excused day that has ENDED is excused too —
+      // the same rule Home applies (`missionDailySeries`), moved here in 0061
+      // so the two ledgers cannot disagree. The tap is bookkeeping, not virtue:
+      // on a sick Tuesday the item he marked skipped and the identical item he
+      // never opened the app to touch are the same fact. `date < today` is the
+      // settled test, because at 09:00 a pending item is a morning, not a
+      // decision.
+      if (excusal.days.has(row.date) && row.date < today) {
+        t.excused += row.n;
+        totals.excused += row.n;
+      } else {
+        t.unmarked += row.n;
+        totals.unmarked += row.n;
+      }
     } else {
-      // The one bucket the DAY decides, not the period: a skip under Sick,
-      // Travel or Social is the right call and is excused; under Normal or
-      // Deload it is a miss. `accountForDay` is the single definition of that
-      // judgment (src/lib/modes/registry.ts) and Home already renders it.
-      const mode = modeByDate.get(row.date) ?? 'normal';
-      const accounting = accountForDay(mode, { skipped: row.n });
-      t.excused += accounting.excused;
-      t.skipped += accounting.missed;
-      totals.excused += accounting.excused;
-      totals.skipped += accounting.missed;
+      // The one bucket the DAY decides, not the period — and as of 0061 it is
+      // decided by the SHARED definition (`excusedDatesIn`), not by a second
+      // one that lived here. The old code read the day's mode alone and never
+      // read `excusedDatesIn`, so a timezone-changed day was excused on Home
+      // and counted as a plain skip in a self-review of the same fortnight. One
+      // definition, three reasons: an excusing status, a frozen mode, a
+      // timezone change.
+      if (excusal.days.has(row.date)) {
+        t.excused += row.n;
+        totals.excused += row.n;
+      } else {
+        t.skipped += row.n;
+        totals.skipped += row.n;
+      }
     }
   }
 
   const ledger = [...byProtocol.values()].map(({ name, tally }) => tallyRow(name, tally));
   const totalsRow = tallyRow('All protocols', totals);
 
-  // The mode ledger beneath the table — named, counted, and only for the modes
-  // that actually change how a skip is judged.
-  const excusingCounts = new Map<ModeKey, number>();
-  for (const [, mode] of modeByDate) {
-    if (!getModeDefinition(mode).excusesSkips) continue;
-    excusingCounts.set(mode, (excusingCounts.get(mode) ?? 0) + 1);
-  }
-  const modeNote =
-    excusingCounts.size === 0
+  // The excusal ledger beneath the table — every reason the period held,
+  // named and counted. A day can carry two (sick AND a timezone change), so
+  // these are REASONS rather than a partition, and the sentence says so rather
+  // than letting a reader add them up and get more days than the period has.
+  const excusedNote =
+    excusal.byReason.size === 0
       ? null
       : `${joinList(
-          [...excusingCounts.entries()].map(
-            ([mode, days]) => `${plural(days, `${getModeDefinition(mode).label} day`)}`
-          )
-        )} — skips on those days are excused, not missed.`;
+          [...excusal.byReason.entries()].map(([reason, days]) => plural(days, `${reason} day`))
+        )} — skips on those days are excused, not missed. A day can have more than one reason.`;
 
   return {
     title: 'Adherence',
@@ -287,7 +349,7 @@ function assembleAdherence(
     provenance,
     rows: ledger,
     totals: totalsRow,
-    modeNote,
+    excusedNote,
     reconciliation:
       'Completed + partial + skipped + excused + unmarked equals planned, on every row. ' +
       'The percentage is completions over accountable items — planned minus excused. ' +
@@ -867,7 +929,28 @@ function assembleWhatChanged(
     });
   }
 
-  // The period's mode ledger — contiguous runs, not one row per day.
+  // The period's STATUSES (0061) — one row per status, its span clipped to the
+  // period. A status is a fact the user stated about a stretch of days, which
+  // is exactly what this table is for; it sits beside the frozen mode runs
+  // below rather than replacing them, because a report of a past month may well
+  // span both systems.
+  for (const status of statusesIn(db, period.start, period.end)) {
+    const span = clampStatusSpan(status, period.start, period.end);
+    if (!span) continue;
+    rows.push({
+      kind: 'Status',
+      what: `${capitalize(status.label)} — ${plural(span.days, 'day')}`,
+      when:
+        span.start === span.end
+          ? formatDate(span.start)
+          : `${formatDate(span.start)} – ${formatDate(span.end)}`,
+      note: status.excuses === 1 ? 'Skips on these days are excused.' : null,
+    });
+  }
+
+  // The period's mode ledger — contiguous runs, not one row per day. FROZEN
+  // history since 0061: nothing writes a mode any more, and these rows still
+  // decide how the days they cover were judged.
   for (const run of modeRuns(modeByDate)) {
     if (run.mode === 'normal') continue;
     const def = getModeDefinition(run.mode);
@@ -886,14 +969,19 @@ function assembleWhatChanged(
     title: 'What changed',
     empty:
       rows.length === 0
-        ? 'No protocol revision, target change or mode this period — the plan you started with is the plan you finished with.'
+        ? 'No protocol revision, target change or status this period — the plan you started with is the plan you finished with.'
         : null,
     provenance: {
-      sources: 'protocol_versions · nutrition_targets · day_modes',
+      sources: 'protocol_versions · nutrition_targets · day_statuses · day_modes',
       range: period.rangeLabel,
     },
     rows,
   };
+}
+
+/** "night out" → "Night out". Statuses are stored lower-case; surfaces print. */
+function capitalize(label: string): string {
+  return label.length === 0 ? label : label[0]!.toUpperCase() + label.slice(1);
 }
 
 /** Contiguous same-mode runs over the period's days, oldest first. */
@@ -928,13 +1016,20 @@ export function assembleSelfReview(
   const today = todayISODate(now);
   const accEnd = accumulatingEnd(period, now);
 
-  // Every day's mode, read once and shared by the adherence ledger and the
-  // what-changed ledger, so the two can never disagree about the period.
+  // Every day's FROZEN mode, read once. Modes were retired in 0061 and nothing
+  // writes one any more; these rows survive because they decide how the days
+  // they cover were judged, and a report of a past month may reach back past
+  // the retirement. Read only for LABELS now — the what-changed runs — while
+  // the judgment itself goes through the one shared definition below.
   const modeByDate = new Map<string, ModeKey>();
   for (let i = 0; i < period.days; i++) {
     const date = isoDatePlusDays(period.start, i);
     modeByDate.set(date, getActiveMode(db, date));
   }
+
+  // The period's excusal — the SHARED definition, clipped to the same complete
+  // days the adherence table is scored over.
+  const excusal = periodExcusal(db, period.start, accEnd);
 
   const covered = loggedDays(db, period);
 
@@ -954,7 +1049,7 @@ export function assembleSelfReview(
     period,
     coverageLine: `${count(covered.length)} of ${plural(period.days, 'day')} in this period carry at least one logged entry.`,
     todayNote: todayNote(period),
-    adherence: assembleAdherence(db, period, accEnd, modeByDate),
+    adherence: assembleAdherence(db, period, accEnd, today, excusal),
     training: assembleTraining(db, period, accEnd),
     nutrition: assembleNutrition(db, period, accEnd),
     recovery: assembleRecovery(db, period, accEnd),

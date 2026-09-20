@@ -1,5 +1,148 @@
 # Modes revamp — Coach status buttons, and retiring the day-Modes system
 
+**Status: BUILT — 2026-09-19.** Migration **`0061_status_replaces_modes.sql`**, branch
+`claude/status`, five commits. The ADR is at the head of `docs/decisions.md`; the record of
+record is `docs/information-architecture.md` §Status. Everything below is the design as it was
+proposed; **what actually shipped departed from it in the ways listed immediately under this
+note, and where the two disagree, this note wins.**
+
+---
+
+## What departed from this plan, and why
+
+### 1. THE OWNER DIVERGED ON TWO OF THE FIVE QUESTIONS (§9)
+
+**Q2 — excusal. He took (b), not the recommended (a).** Excusal is decided **per status, by the
+Coach, through an `excuses` flag on `set_status`** — not uniformly. Consequences this plan did not
+carry:
+
+- `day_statuses` has an **`excuses integer NOT NULL CHECK (excuses IN (0,1))`** column, with **no
+  DEFAULT**: every writer states it, so a row can never carry a judgement nobody made.
+- The shared excusal definition reads **the flag**, not "every status". `excusedDatesIn` unions
+  `excusingStatusDaysIn` (the `excuses = 1` subset), the frozen modes, and the timezone days.
+- **The rail's own chip write defaults to `excuses = 1`.** The rail writes before any model turn —
+  that is the point of it — so the chip needs a deterministic answer. The argument, and it is in
+  the migration header: all five chips say *don't judge me by today*; a wrong `true` is recoverable
+  by the Coach on the same turn; a wrong `false` silently counts a flu day as a run of misses.
+- **An omitted `excuses` on `set_status` means "leave it as the row has it"**, never "default
+  true". A re-ask must never re-excuse a day the Coach just un-excused. One clause in the tool
+  description carries it, measured at ~14 tokens of the schema.
+- §3.4's *Considered and rejected: an excusal flag on set_status* is **overruled by the owner**.
+  Its worry about "a class of chip the rail cannot draw" did not materialise: the rail draws every
+  status the same way and Home's line says `skips still count` when none of the open ones excuse.
+- §3.4's rule that **a deload is never a status** stands, and got easier rather than harder: with a
+  per-status flag the Coach can record a non-excusing state without anything having to refuse.
+- **Baseline exclusion stayed uniform** (his Q3(a) says so with no mention of excusal), and that is
+  argued where the two predicates live: excusal asks *should this be held against him*, a baseline
+  asks *is this day evidence of what his normal looks like*.
+
+**Q5 — Home. He took (c), not the recommended (a).** Home carries **both** the one mono line and a
+control beside the date. The control is ONE small target in the label voice opening the rail's own
+chips in a sheet — not a row of chips inlined on the folio row, because CLAUDE.md §5 is binding.
+The chip row was extracted (`src/components/status/status-rail.tsx`) so Home and the Coach screen
+cannot drift. Setting a status from Home does exactly what the rail does: writes the row first,
+then carries the canned prompt to the Coach tab, seeded.
+
+### 2. THE MIGRATION IS `0061`, NOT `0059`
+
+`0059` (meal_item_piece_name) and `0060` (timezone_zone_pair) both merged while this was parked;
+`0060`'s own header reserved `0061` for this build. Every in-file reference moved with it.
+
+### 3. `day_statuses` HAS A SIXTH COLUMN THIS PLAN DID NOT NAME: `ended`
+
+§3.3's DDL cannot support both gestures the owner's Q4(a) asks for. `end_date` says WHICH DAYS A
+STATUS COVERS; `ended` says WHETHER IT IS STILL RUNNING, and they are different questions:
+
+- **Night out** is born bounded at today, because it ends tonight — and its chip must read ON for
+  the rest of today.
+- **Sick** is open-ended, and the × must turn its chip OFF the instant it is tapped while leaving
+  today excused, i.e. `end_date = today`.
+
+With one column those two rows are byte-identical. So closing a status flips `ended` and writes
+`end_date = today`; a bounded status is born `ended = 0` and simply has no tomorrow. **`ended`
+never changes which days a status covered** — the accounting readers do not look at it.
+
+### 4. `set_status`'s CARDS AND COST
+
+Measured, not estimated: **282 tokens**, against `set_mode`'s 285 — **−3**, not the −49 this plan
+predicted, because the `excuses` property is ~30 tokens the recommendation did not have. Paid for
+by deleting a restatement inside the new tool (`label`'s description repeated the tool
+description's `"normal" ends every open status`, −11).
+
+The cards shipped as: `Status: traveling today` / `… from 2026-09-22 through 2026-09-26` /
+`traveling is already set` / `End the sick status today` / `Nothing is set — no status to end` /
+`work crunch: skips still count`. The last two are new: an empty reset must not promise a change,
+and a non-excusing status must say so on the card, or the one thing the user would want to argue
+with is the one thing the card does not mention.
+
+**`set_status('normal')` does NOT cancel a scheduled future status**, where `set_mode`'s reset
+cancelled future modes and had to name the casualties. Modes were forced into that by
+newest-wins; statuses do not supersede each other at all, and *"I'm back to normal today"* is not
+a statement about a flight on Monday.
+
+### 5. THE PROMPT WENT OVER BY ONE, AND THE PLAN'S OWN FALLBACK WAS TAKEN
+
+§3.5 predicted +13 against 31 of headroom. The real numbers, re-measured with the suite's formula
+(main's `9,241` comment was stale; it is **9,237 / 3,669**):
+
+- **Schema 9,237 → 9,233.** 17 of headroom.
+- **Prompt 3,669 → 3,692.** The first measurement landed at **exactly 3,700**, which the `< 3700`
+  assertion refuses. §3.5 names the trim to take if that happened — *the bullet's example list,
+  −8* — and it was taken: the bullet carries `("sick", "traveling")` rather than four examples.
+  8 of headroom, and the honest reading is that the prompt is now FULL.
+- Haiku's cache floor: pass prefix 7,053 → 7,076, against 4,096.
+
+### 6. THE STATE BLOCK'S ESCALATION IS GATED ON A COUNTERFACTUAL, NOT ON `recoveryDaysRemaining`
+
+§3.4 says the line escalates to *"no recovery verdict until it ends"* once
+`recoveryDaysRemaining > 0`. That is false on a phone with no watch: Recovery is `unknown` there
+for a reason that predates this morning's status by months, and the sentence would blame the
+status for a silence it had nothing to do with. `deriveReadiness` therefore also returns
+**`recoveryPausedByStatus`** — *would Recovery grade if the status days had counted?* — computed
+from series already in hand. The test that caught it is in `db/turn-context.test.mjs` §S.
+
+### 7. `allTrips` GAINED A SECOND DECLARATION SOURCE
+
+The timezone second pass (0060) landed after this plan was written, and it closes a derived trip on
+a declared Travel MODE window. Retiring modes would have silently re-opened every journey the owner
+declared. `allTrips` now reads a bounded `traveling` **status** and a frozen Travel **mode**; the
+status half is the one place in the app that reads a status label rather than treating it as
+opaque, and it is one-directional (a declaration can only close a trip), so a differently-worded
+label costs nothing but the 21-day settle clock.
+
+### 8. SMALLER ONES
+
+- **The `Chip` was already extracted** from `app/protocol-edit.tsx` into
+  `src/components/protocols/form-controls.tsx` before this build. It moved again, to
+  `src/components/ui/chip.tsx`, and gained a `trailing` slot for the end glyph — the × is a sibling
+  target inside the chip's outline, not part of its press area.
+- **`db/modes.test.mjs` was retired one phase earlier than §7 plans**, alongside `set_mode`'s
+  deletion rather than after it, so every commit on the branch is green. Its survivors landed where
+  §6.14 put them.
+- **§6.13's `refute('Set mode')`** is joined by refutations of `Normal`, `Today's mode` and
+  `No training today` on Home, plus the status line asserted with an open status.
+- **`AdherenceSection.modeNote` was renamed `excusedNote`**, because it now names three kinds of
+  reason and a day may carry more than one — so the note says so out loud rather than letting a
+  reader sum the counts and get more days than the period has.
+- **`accountForDay`, `modeDirective`, `modeChangesPlan`, `MODE_KEYS` and `ModeItem` are deleted**,
+  not merely unexported: §5 listed `accountForDay` as a survivor, but the reports assembler was its
+  last caller and it moved onto `excusedDatesIn`.
+- **The rail is `src/components/status/status-rail.tsx`**, not under `components/coach/`, because
+  Home's sheet renders the same component.
+
+### 9. THE GATE, AS RUN
+
+`npx tsc --noEmit` exit 0 · `npm run db:validate` 20 passed · `npm run db:test` **56 suites, 0
+failed** · `npm run lint` 0 errors (3 pre-existing warnings) · `npx expo export --platform ios
+--clear` exit 0.
+
+**Not verified on a device.** §8 below still stands in full, and its acceptance bar for "does the
+Coach actually adjust" is unmet because it cannot be met headlessly.
+
+---
+
+## The plan as proposed
+
 **Status: PROPOSED** (2026-09-15; second revision the same day, after an independent critique —
 every finding is answered where it lands; where one is not followed, a *Considered and rejected*
 note says why). Design only; no file on `main` has changed. The owner decided the *shape* on

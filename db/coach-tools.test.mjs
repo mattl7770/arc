@@ -201,6 +201,27 @@ console.log('1. get_today_snapshot: empty day is zeros, then reflects writes');
   snap.remindersDueToday.length === 1
     ? ok('snapshot reflects meal, workout, symptom, capture, reminder')
     : bad('populated snapshot', JSON.stringify(snap));
+
+  // 0061: the snapshot carries WHAT THE USER SAID about the day, with no
+  // directive and no tone attached. `mode` carried a heroFocus and a
+  // toneGuidance a registry wrote, handed to the model as if observed.
+  snap.mode === undefined && snap.statuses === undefined
+    ? ok('no `mode` field, and no empty `statuses` array on an ordinary day')
+    : bad('snapshot day fields', JSON.stringify({ mode: snap.mode, statuses: snap.statuses }));
+
+  run('set_status', db, { label: 'traveling', until: isoDaysAgo(NOW, -2) });
+  const withStatus = run('get_today_snapshot', db);
+  withStatus.statuses?.length === 1 &&
+  withStatus.statuses[0].label === 'traveling' &&
+  withStatus.statuses[0].excusesSkips === true &&
+  withStatus.statuses[0].source === 'coach' &&
+  withStatus.statuses[0].until === isoDaysAgo(NOW, -2)
+    ? ok('…and once one is set it carries the label, span, excusal and provenance')
+    : bad('snapshot statuses', JSON.stringify(withStatus.statuses));
+  withStatus.statuses[0].heroFocus === undefined &&
+  withStatus.statuses[0].toneGuidance === undefined
+    ? ok('…and NOTHING telling the model how to lead or how to speak')
+    : bad('a directive leaked into the status', JSON.stringify(withStatus.statuses[0]));
 }
 
 console.log('2. log_metric: display-unit input lands canonical in the right table');
@@ -743,7 +764,10 @@ console.log('13b. the Coach can SEE a why-line, so an edit no longer erases ever
   const plain = createProtocolWithVersion(
     db,
     { name: 'Evening Stack', type: 'supplement_stack' },
-    { schema: 2, phases: [{ id: 'p', title: null, duration_days: null, items: [item('j1', 'Zinc', null)] }] }
+    {
+      schema: 2,
+      phases: [{ id: 'p', title: null, duration_days: null, items: [item('j1', 'Zinc', null)] }],
+    }
   );
   const slugOf = (id) => raw.prepare('SELECT slug FROM protocols WHERE id = ?').get(id).slug;
   const slug = slugOf(withNotes);
@@ -755,9 +779,7 @@ console.log('13b. the Coach can SEE a why-line, so an edit no longer erases ever
   !('notes' in seenItems[1])
     ? ok('get_protocols emits a why-line, and omits it rather than nulling it when empty')
     : bad('notes emission', JSON.stringify(seenItems));
-  seen.carryOver === true &&
-  seen.checkoffMode === 'adjusting' &&
-  seen.startedOn === '2026-08-03'
+  seen.carryOver === true && seen.checkoffMode === 'adjusting' && seen.startedOn === '2026-08-03'
     ? ok('…and the three policy facts a plan means nothing without')
     : bad('policy emission', JSON.stringify(seen));
   const defaults = read().find((p) => p.slug === slugOf(plain));
@@ -787,7 +809,10 @@ console.log('13b. the Coach can SEE a why-line, so an edit no longer erases ever
   };
   toolByName('update_protocol').confirmSummary(resend, db, CTX).includes('why-line') === false
     ? ok('a call that re-sends a note unchanged says nothing about why-lines on the card')
-    : bad('spurious why-line phrase', toolByName('update_protocol').confirmSummary(resend, db, CTX));
+    : bad(
+        'spurious why-line phrase',
+        toolByName('update_protocol').confirmSummary(resend, db, CTX)
+      );
   run('update_protocol', db, resend);
   read().find((p) => p.slug === slug).phases[0].items[0].notes ===
   'Loading is done — this is the maintenance dose.'
@@ -847,7 +872,9 @@ console.log('13b. the Coach can SEE a why-line, so an edit no longer erases ever
     : bad('clear did not clear');
 }
 
-console.log('13c. update_protocol learns to CREATE — the hub said the Coach could and it could not');
+console.log(
+  '13c. update_protocol learns to CREATE — the hub said the Coach could and it could not'
+);
 {
   const { db, raw } = freshDb();
   const call = {
@@ -870,7 +897,10 @@ console.log('13c. update_protocol learns to CREATE — the hub said the Coach co
     : bad('create card', card);
 
   const out = run('update_protocol', db, call);
-  out.created === true && out.versionNumber === 1 && out.itemCount === 2 && out.effective === 'today'
+  out.created === true &&
+  out.versionNumber === 1 &&
+  out.itemCount === 2 &&
+  out.effective === 'today'
     ? ok('a call with name and type and NO slug creates the protocol and its v1')
     : bad('create result', JSON.stringify(out));
   const row = raw.prepare('SELECT * FROM protocols WHERE slug = ?').get(out.protocol);
@@ -881,9 +911,8 @@ console.log('13c. update_protocol learns to CREATE — the hub said the Coach co
   row.current_version_id !== null
     ? ok('…with a repository-minted slug, active, pointing at v1')
     : bad('created row', JSON.stringify(row));
-  raw
-    .prepare('SELECT created_by FROM protocol_versions WHERE protocol_id = ?')
-    .get(row.id).created_by === 'ai'
+  raw.prepare('SELECT created_by FROM protocol_versions WHERE protocol_id = ?').get(row.id)
+    .created_by === 'ai'
     ? ok('…and the version is stamped as the Coach’s')
     : bad('authorship not ai');
   // It reaches TODAY like every other protocol write: a protocol the user just
@@ -2038,7 +2067,7 @@ console.log('27. log_workout resolves catalog exercise ids — a unique match on
     : bad('unmatched note', JSON.stringify(result));
 }
 
-console.log('28. future log dates are rejected; set_mode "until" may still be future');
+console.log('28. future log dates are rejected; set_status "until" may still be future');
 {
   const { db } = freshDb();
   const future = isoDaysAgo(NOW, -2);
@@ -2050,10 +2079,10 @@ console.log('28. future log dates are rejected; set_mode "until" may still be fu
     : bad('future meal accepted');
   const past = run('log_metric', db, { metric: 'weight', value: 178, date: isoDaysAgo(NOW, 1) });
   past.logged ? ok('a real backdate still logs') : bad('backdate broken');
-  const mode = run('set_mode', db, { mode: 'travel', until: future });
-  mode.set && mode.until === future
-    ? ok('set_mode "until" legitimately reaches into the future')
-    : bad('set_mode until', JSON.stringify(mode));
+  const status = run('set_status', db, { label: 'traveling', until: future });
+  status.set && status.until === future
+    ? ok('set_status "until" legitimately reaches into the future')
+    : bad('set_status until', JSON.stringify(status));
 
   // The rejection must fire at CARD time too — a knowable failure must never
   // cost the user an Approve tap (card shows, user approves, execute throws).

@@ -3,8 +3,8 @@ import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
 import { CadenceControl } from '@/components/protocols/cadence-control';
+import { Chip } from '@/components/ui/chip';
 import {
-  Chip,
   FormField,
   normalizeTime,
   ProblemLine,
@@ -22,11 +22,7 @@ import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate
 import { addVersion, getCurrentVersion } from '@/lib/db/repositories/protocols';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import { DAILY, parseProtocolContent, validateContent } from '@/lib/protocols/content';
-import {
-  applyItemToContent,
-  itemChangeNote,
-  phaseOfItem,
-} from '@/lib/protocols/item-edit';
+import { applyItemToContent, itemChangeNote, phaseOfItem } from '@/lib/protocols/item-edit';
 import type { Cadence, ProtocolItem } from '@/lib/protocols/types';
 import { useProtocol } from '@/hooks/use-protocols';
 
@@ -107,7 +103,13 @@ function draftOf(item: ProtocolItem | null, phase: number): Draft {
   };
 }
 
-function ProtocolItemEditor({ id, itemId }: { id: string | undefined; itemId: string | undefined }) {
+function ProtocolItemEditor({
+  id,
+  itemId,
+}: {
+  id: string | undefined;
+  itemId: string | undefined;
+}) {
   const router = useRouter();
   const detail = useProtocol(id);
   const mountedPhase = detail ? phaseOfItem(detail.content, itemId) : -1;
@@ -205,10 +207,7 @@ function ProtocolItemEditor({ id, itemId }: { id: string | undefined; itemId: st
 
     // One canonical shape on both sides, so a string compare is "nothing
     // changed" — no no-op versions from opening a form and closing it.
-    if (
-      detail.version !== null &&
-      JSON.stringify(rebuilt) === JSON.stringify(live)
-    ) {
+    if (detail.version !== null && JSON.stringify(rebuilt) === JSON.stringify(live)) {
       return null;
     }
 

@@ -15,6 +15,19 @@
  *     COHORT: a fortnight of jet-lagged mornings sitting unmarked in a 30-day
  *     window drags the home baseline down for a month after the return, and
  *     post-trip mornings then read `optimal` against a depressed mean.
+ *   - **`status`** — a day the user said something about (0061,
+ *     src/lib/db/repositories/statuses.ts). Odd because he SAID so: a fortnight
+ *     of flu sitting unmarked in the window lowers the HRV baseline enough that
+ *     the first well week reads back as recovery. This is the third source and
+ *     the first one a human declares rather than the device observes.
+ *
+ * `status` deliberately takes EVERY status day, not only the excusing ones the
+ * adherence ledger reads (the owner answered those two questions separately —
+ * Q2(b) and Q3(a)). Excusal asks *should this be held against him*; a baseline
+ * asks *is this day evidence of what his normal looks like*. A stretch the
+ * Coach judged to be context without absolution is still a stretch that should
+ * not define a resting heart rate. The split is argued once, at
+ * `excusingStatusDaysIn`.
  *
  * ## Why this is a module and not two filters at the call site
  *
@@ -41,9 +54,10 @@
  */
 import type { Database } from '@/lib/db/database';
 import { awayDaysIn, timezoneChangedDaysIn } from '@/lib/db/repositories/day-meta';
+import { statusDaysIn } from '@/lib/db/repositories/statuses';
 
 /** Why a day is barred from the baselines. Add a member, add a block. */
-export type BaselineExclusionSource = 'timezone-change' | 'away';
+export type BaselineExclusionSource = 'timezone-change' | 'away' | 'status';
 
 export type BaselineExclusions = {
   /**
@@ -89,6 +103,7 @@ export function baselineExclusionsIn(
 
   add('timezone-change', timezoneChangedDaysIn(db, from, to));
   add('away', awayDaysIn(db, from, to, today));
+  add('status', statusDaysIn(db, from, to));
 
   return { days, bySource };
 }

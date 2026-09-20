@@ -9,7 +9,6 @@
  */
 import type { Database } from '../database';
 import { localDaysList } from '../date';
-import { newId } from '../id';
 import type { ModeKey } from '@/lib/modes/registry';
 
 export type DayModeRow = {
@@ -96,62 +95,4 @@ export function activeModesIn(db: Database, from: string, to: string): Map<strin
     }
   }
   return modes;
-}
-
-export type SetModeInput = {
-  mode: ModeKey;
-  /** First day it applies (local YYYY-MM-DD). */
-  startDate: string;
-  /** Last day (inclusive); null/omitted = open-ended until reset. */
-  endDate?: string | null;
-  label?: string | null;
-  note?: string | null;
-};
-
-/** Declare a mode over a day/range/open-ended window; returns the row id. */
-export function setMode(db: Database, input: SetModeInput): string {
-  const id = newId(db);
-  db.run(
-    `INSERT INTO day_modes (id, mode, start_date, end_date, label, note)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      input.mode,
-      input.startDate,
-      input.endDate ?? null,
-      input.label ?? null,
-      input.note ?? null,
-    ]
-  );
-  return id;
-}
-
-/**
- * The non-normal modes an open-ended reset starting `date` would supersede.
- *
- * A `normal` row is stored open-ended, and "most recently SET wins" means it
- * out-ranks every mode row created before it — including ones scheduled for
- * days that have not arrived yet. So "back to normal today" also silently
- * cancels the Travel mode booked for next week. That may well be what the user
- * means, but they have to be told: this is what lets the confirmation card
- * name the casualties instead of hiding them.
- *
- * Rows whose window closed before `date` are untouched and not returned.
- */
-export function modesSupersededFrom(db: Database, date: string): DayModeRow[] {
-  return db.all<DayModeRow>(
-    `SELECT * FROM day_modes
-     WHERE mode != 'normal' AND (end_date IS NULL OR end_date >= ?)
-     ORDER BY start_date, rowid`,
-    [date]
-  );
-}
-
-/**
- * Reset a day back to Normal from `date` onward — stored as a `normal` row
- * (the most-recent covering row wins), so an earlier open-ended mode stops
- * applying without mutating its history. Returns the new row id.
- */
-export function clearMode(db: Database, date: string): string {
-  return setMode(db, { mode: 'normal', startDate: date });
 }

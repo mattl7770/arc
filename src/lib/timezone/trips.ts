@@ -83,10 +83,11 @@ export type TripSeamRow = {
 };
 
 /**
- * A declared Traveling window — a `day_modes` row with `mode = 'travel'` and an
- * `end_date`. An OPEN-ENDED window is deliberately not one of these: it says
- * "I am travelling", which is not the statement this file needs. Only *"I am
- * back on this date"* can close a trip.
+ * A declared Traveling window — a bounded `traveling` status (0061), or a
+ * `day_modes` row with `mode = 'travel'` from before modes were retired. An
+ * OPEN-ENDED declaration is deliberately not one of these: it says "I am
+ * travelling", which is not the statement this file needs. Only *"I am back on
+ * this date"* can close a trip.
  */
 export type TravelWindow = { start: string; end: string };
 

@@ -219,9 +219,7 @@ export default function ProtocolVersionsScreen() {
                 // the one it replaced. The oldest has nothing under it, which
                 // is why it prints no diff — v1 is not a change, it is a start.
                 const previous = versions[index + 1];
-                const lines = previous
-                  ? diffLines(diffContent(previous.content, v.content))
-                  : [];
+                const lines = previous ? diffLines(diffContent(previous.content, v.content)) : [];
                 const open = expanded.has(v.id);
                 const shown = open ? lines : lines.slice(0, DIFF_LINE_LIMIT);
                 const rest = lines.length - shown.length;

@@ -5,7 +5,7 @@
  *   - adjust_today — batch mission surgery behind one confirmation, with the
  *     defence-in-depth guards that make acted-on and ad-hoc rows untouchable
  *   - update_protocol's honest today/tomorrow semantics (+ apply_today)
- *   - set_mode's schedulable start date
+ *   - set_status's schedulable start date and its excusal flag
  *   - the training engine's caller-supplied volume dial (never auto-derived)
  *   - the readiness insight (states the verdict; prescribes nothing)
  *
@@ -16,7 +16,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { getActiveMode } from '../src/lib/db/repositories/day-modes.ts';
+import { openStatuses } from '../src/lib/db/repositories/statuses.ts';
 import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
 import { logNote } from '../src/lib/db/repositories/logs.ts';
 import {
@@ -280,39 +280,79 @@ console.log('4. update_protocol lands on TODAY and versions like code');
     : bad('a rejected call still wrote', JSON.stringify(listProtocols(db)));
 }
 
-console.log('5. set_mode schedules ahead; a past start is refused');
+console.log('5. set_status schedules ahead; a past start is refused; the excusal flag holds');
 {
   const { db } = freshDb();
   const monday = isoDaysAgo(NOW, -3);
   const friday = isoDaysAgo(NOW, -7);
-  const scheduledCard = card('set_mode', db, { mode: 'travel', from: monday, until: friday });
+  const scheduledCard = card('set_status', db, { label: 'traveling', from: monday, until: friday });
   scheduledCard.includes(monday) && scheduledCard.includes(friday)
-    ? ok('the card names the real span, not "for today"')
+    ? ok('the card names the real span, not "today"')
     : bad('scheduled card', scheduledCard);
 
-  const result = run('set_mode', db, { mode: 'travel', from: monday, until: friday });
+  const result = run('set_status', db, { label: 'traveling', from: monday, until: friday });
   result.set && result.from === monday && result.until === friday
-    ? ok('a future-dated mode is stored for its own span')
+    ? ok('a future-dated status is stored for its own span')
     : bad('scheduled set', JSON.stringify(result));
-  getActiveMode(db, TODAY) === 'normal' && getActiveMode(db, monday) === 'travel'
-    ? ok('today is untouched; the mode is active on its start date')
-    : bad('active mode', `${getActiveMode(db, TODAY)} / ${getActiveMode(db, monday)}`);
-  typeof result.note === 'string' && result.note.includes('will generate')
-    ? ok('the result explains that the day generates under the mode later')
+  openStatuses(db, TODAY).length === 0 && openStatuses(db, monday).length === 1
+    ? ok('today is untouched; the status is running on its start date')
+    : bad('open statuses', openStatuses(db, TODAY).length);
+  typeof result.note === 'string' && result.note.includes('applies from')
+    ? ok('the result says when it starts applying')
     : bad('scheduled note', JSON.stringify(result));
 
-  throws(() => run('set_mode', db, { mode: 'sick', from: isoDaysAgo(NOW, 2) }))
+  throws(() => run('set_status', db, { label: 'sick', from: isoDaysAgo(NOW, 2) }))
     ? ok('a past start date is refused')
     : bad('past start accepted');
-  throws(() => run('set_mode', db, { mode: 'travel', from: friday, until: monday }))
+  throws(() => run('set_status', db, { label: 'traveling', from: friday, until: monday }))
     ? ok('an end before the start is refused')
     : bad('inverted range accepted');
+  throws(() => card('set_status', db, { label: 'traveling', from: friday, until: monday }))
+    ? ok('…and it is refused at CARD time, so a promise is never made it cannot keep')
+    : bad('inverted range reached the card');
 
-  // Today still re-derives immediately (the pre-existing behavior).
-  const todayResult = run('set_mode', db, { mode: 'sick' });
-  typeof todayResult.missionAdded === 'number' && getActiveMode(db, TODAY) === 'sick'
-    ? ok('a mode set for today still reshapes today immediately')
-    : bad('today mode', JSON.stringify(todayResult));
+  // A status set for today records the fact and DOES NOT reshape the day. That
+  // is the whole retirement: set_mode re-derived the mission here, because a
+  // mode reshaped the plan by construction; what today should become is now
+  // this turn's own work.
+  const todayResult = run('set_status', db, { label: 'sick' });
+  todayResult.set &&
+  todayResult.missionAdded === undefined &&
+  openStatuses(db, TODAY).some((r) => r.label === 'sick')
+    ? ok('a status set for today records the fact and re-derives NOTHING')
+    : bad('today status', JSON.stringify(todayResult));
+  todayResult.excuses === true
+    ? ok('…and defaults to excusing, the same default the rail writes')
+    : bad('default excuses', JSON.stringify(todayResult));
+
+  // THE OWNER'S Q2(b). The flag is the Coach's, per status, and an OMITTED one
+  // never silently re-excuses a day it has just un-excused.
+  const unexcused = run('set_status', db, { label: 'sick', excuses: false });
+  unexcused.excuses === false
+    ? ok('excuses:false flips an open status to counting')
+    : bad('flip false', JSON.stringify(unexcused));
+  card('set_status', db, { label: 'sick' }) === 'sick is already set'
+    ? ok('…a bare re-ask is then a no-op card, not a re-decision')
+    : bad('re-ask card', card('set_status', db, { label: 'sick' }));
+  run('set_status', db, { label: 'sick' }).excuses === false
+    ? ok('…AND AN OMITTED FLAG LEAVES IT COUNTING')
+    : bad('omitted flag re-excused');
+  card('set_status', db, { label: 'work crunch', excuses: false }).includes('skips still count')
+    ? ok('a non-excusing status says so on its card — the user approves what happens')
+    : bad('non-excusing card', card('set_status', db, { label: 'work crunch', excuses: false }));
+
+  // 'normal' is a command: it names what it ends, and writes no row.
+  const resetCard = card('set_status', db, { label: 'normal' });
+  resetCard.includes('End the') && resetCard.includes('sick')
+    ? ok("'normal' names the status it ends")
+    : bad('reset card', resetCard);
+  const reset = run('set_status', db, { label: 'normal' });
+  reset.ended >= 1 && openStatuses(db, TODAY).length === 0
+    ? ok('…and closes every running one')
+    : bad('reset', JSON.stringify(reset));
+  card('set_status', db, { label: 'normal' }) === 'Nothing is set — no status to end'
+    ? ok('…with nothing open it says so rather than promising an empty change')
+    : bad('empty reset card', card('set_status', db, { label: 'normal' }));
 }
 
 console.log('6. the volume dial is caller-supplied, clamped, and compiles to real sets');
@@ -463,7 +503,7 @@ console.log('R2. complete/skip never rewrite work already recorded');
     : bad('silent refusal', JSON.stringify(out));
 }
 
-console.log('R3. an approved removal survives a later mode change');
+console.log('R3. an approved removal survives a later re-derive');
 {
   const { db } = freshDb();
   createProtocolWithVersion(
@@ -485,13 +525,30 @@ console.log('R3. an approved removal survives a later mode change');
     ? ok('the removal takes effect immediately')
     : bad('remove did nothing');
 
-  // The user now says they are travelling. Re-derive recomputes the day from
-  // the protocol — and used to resurrect exactly what they just removed.
-  run('set_mode', db, { mode: 'travel' });
+  // Something now re-derives the day from the protocol — and it used to
+  // resurrect exactly what the user had just removed. A MODE CHANGE was the
+  // trigger this fence was written against; modes were retired in 0061 and a
+  // status re-derives nothing at all, so the fence is re-driven through the
+  // thing that DOES re-derive today: a protocol edit.
+  run('update_protocol', db, {
+    protocol_slug: 'daily',
+    phases: [
+      {
+        items: [
+          { title: 'Zone 2 — 45m', time: '06:30' },
+          { title: 'Evening walk', time: '20:00' },
+          { title: 'Sunlight', time: '08:00' },
+        ],
+      },
+    ],
+    change_notes: 'added sunlight',
+  });
+  listMission(db, TODAY).some((m) => m.title === 'Sunlight')
+    ? ok('the edit reaches today')
+    : bad('edit did not re-derive');
   !listMission(db, TODAY).some((m) => m.title === 'Evening walk')
-    ? ok('…and it stays removed after a mode change re-derives the day')
-    : bad('the mode change resurrected an approved removal');
-  getActiveMode(db, TODAY) === 'travel' ? ok('the mode itself did apply') : bad('mode not set');
+    ? ok('…and the approved removal stays removed through the re-derive')
+    : bad('the re-derive resurrected an approved removal');
 }
 
 console.log('R4. an experiment only occupies the days it actually runs');

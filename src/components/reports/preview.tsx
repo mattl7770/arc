@@ -71,7 +71,7 @@ function SelfReviewPreview({ data, read }: { data: SelfReviewData; read: CoachRe
         note={a.totals ? a.totals.completionLabel ?? 'no accountable items' : undefined}
         below={
           <>
-            {a.modeNote ? <MarginText>{a.modeNote}</MarginText> : null}
+            {a.excusedNote ? <MarginText>{a.excusedNote}</MarginText> : null}
             {a.reconciliation ? <MarginText>{a.reconciliation}</MarginText> : null}
             <Provenance provenance={a.provenance} />
           </>

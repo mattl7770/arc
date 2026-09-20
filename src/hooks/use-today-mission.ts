@@ -16,7 +16,6 @@ import {
   subscribeSnoozeChange,
   unsnoozeItem,
 } from '@/lib/home/snooze-store';
-import { subscribeModeChange } from '@/lib/modes/store';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
@@ -133,11 +132,6 @@ export function useTodayMission(): TodayMission {
   // `ensureTodaySeeded` no-ops once the day has planned entries, so this stays
   // cheap and never re-shapes a day already committed.
   useFocusEffect(refresh);
-
-  // Setting a mode re-derives today's rows (mission-generate.rederiveMissionForDay),
-  // so the list must re-read. Focus alone can't cover it: the mode is set from a
-  // modal presented OVER Home, so Home never loses (or regains) focus.
-  useEffect(() => subscribeModeChange(reload), [reload]);
 
   // The snoozed set is a module store, so *Unsnooze* on the pushed item sheet —
   // a screen Home never loses focus to and cannot see — reaches this list.

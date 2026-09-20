@@ -2,8 +2,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
+import { Chip } from '@/components/ui/chip';
 import {
-  Chip,
   FormField,
   ProblemLine,
   SaveButton,

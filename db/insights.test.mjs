@@ -12,6 +12,7 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { computeInsights, generateDailyBrief } from '../src/lib/ai/insights.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
+import { startStatus } from '../src/lib/db/repositories/statuses.ts';
 import { createReminder } from '../src/lib/db/repositories/reminders.ts';
 import { todayISODate } from '../src/lib/db/date.ts';
 
@@ -137,16 +138,29 @@ console.log('0b. the three empty states are distinguished honestly');
     ? ok('a data-rich stable user is told things are steady, not accused of under-logging')
     : bad('stable brief', stableBrief);
 
-  // MODE-AWARE — a Sick day must not get cadence-nagging (home-screen.md:110).
+  // STATUS-AWARE — an EXCUSING status must not get cadence-nagging. It says
+  // "don't judge me by today", and the brief is the one surface that would
+  // otherwise spend the day contradicting it (home-screen.md).
   const sick = freshDb();
-  sick.db.run(
-    `INSERT INTO day_modes (id, mode, start_date, end_date) VALUES ('dm1', 'sick', ?, ?)`,
-    [isoDaysAgo(NOW, 0), isoDaysAgo(NOW, 0)]
-  );
+  startStatus(sick.db, { label: 'Sick', startDate: isoDaysAgo(NOW, 0), source: 'user' });
   const sickBrief = generateDailyBrief(sick.db, NOW);
   sickBrief.includes('Sick day') && !/Start with today|Baseline building/.test(sickBrief)
-    ? ok('a Sick day is not nagged about logging cadence')
+    ? ok('a sick day is not nagged about logging cadence')
     : bad('sick brief', sickBrief);
+
+  // …and the owner's Q2(b) reaching the brief: a status the Coach left
+  // COUNTING has excused nothing, so the nag still applies.
+  const crunch = freshDb();
+  startStatus(crunch.db, {
+    label: 'work crunch',
+    startDate: isoDaysAgo(NOW, 0),
+    source: 'coach',
+    excuses: false,
+  });
+  const crunchBrief = generateDailyBrief(crunch.db, NOW);
+  !crunchBrief.includes('Work crunch day')
+    ? ok('a NON-excusing status does not silence the brief — it excused nothing')
+    : bad('non-excusing status silenced the brief', crunchBrief);
 }
 
 console.log('1. HRV down vs baseline → watch trend with real numbers');

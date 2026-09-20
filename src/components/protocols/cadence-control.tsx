@@ -13,7 +13,8 @@ import { WEEKDAY_LABELS } from '@/lib/protocols/cadence';
 import { cadenceLabel } from '@/lib/protocols/format';
 import type { Cadence, CadenceKind } from '@/lib/protocols/types';
 
-import { Chip, FormField, parseDays } from './form-controls';
+import { Chip } from '@/components/ui/chip';
+import { FormField, parseDays } from './form-controls';
 
 /** The cadence kinds, in the order the control presents them. */
 const CADENCE_KINDS: { kind: CadenceKind; label: string }[] = [

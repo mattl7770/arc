@@ -230,7 +230,7 @@ export function timezoneChangedDaysIn(db: Database, from: string, to: string): S
  * Deliberately the bare fact, with no icon, no exclamation and no "you
  * travelled": a zone change is a fact about the CALENDAR, and the register it
  * belongs in is the one the record already speaks. `signal-*` is not available
- * to it — that palette marks biology, and mode-control.tsx states the firewall
+ * to it — that palette marks biology, and status-rail.tsx states the firewall
  * in this exact context (*"'today is a travel day' is a fact about the calendar,
  * not about the body"*).
  *
@@ -309,9 +309,7 @@ export function offsetHistory(db: Database): OffsetLookup {
 
 /** The oldest day any row speaks for, or `null` when there are no rows. */
 export function earliestTimezoneDay(db: Database): string | null {
-  const row = db.get<{ day: string }>(
-    `SELECT min(from_local_date) AS day FROM timezone_changes`
-  );
+  const row = db.get<{ day: string }>(`SELECT min(from_local_date) AS day FROM timezone_changes`);
   return row?.day ?? null;
 }
 
@@ -327,12 +325,25 @@ export function earliestTimezoneDay(db: Database): string | null {
  * and {@link timezoneChangedDaysIn} stays windowed because its question genuinely
  * is per-window.
  *
- * The declared Traveling windows come from `day_modes` (0026) and are read as
- * WINDOWS rather than through the resolved per-day mode: what closes a trip is
- * the statement *"I am back on the 20th"*, which is a property of the row the
- * user wrote, not of whatever later row happens to win a given day. Open-ended
- * travel rows are excluded for the same reason — "I am travelling" is not a
- * return date.
+ * The declared Traveling windows are read as WINDOWS rather than through
+ * whatever the day resolves to: what closes a trip is the statement *"I am back
+ * on the 20th"*, which is a property of the row the user wrote, not of whatever
+ * later row happens to win a given day. An OPEN-ENDED declaration is excluded
+ * for the same reason — "I am travelling" is not a return date.
+ *
+ * **Two sources, as of 0061.** A `traveling` STATUS with an end date is the live
+ * one; a `day_modes` row with `mode = 'travel'` is frozen history. Modes were
+ * retired and nothing writes one any more, but the rows on the device still
+ * describe trips the user actually took, and a trip read a month later has to
+ * close the way it closed at the time. Dropping the mode half here would silently
+ * re-open every journey the owner declared before the retirement.
+ *
+ * The status half is matched on the LABEL, which is free text — the one place in
+ * the app that reads a status label rather than treating it as opaque. That is a
+ * deliberate, narrow exception and it is one-directional: a `traveling` status
+ * can only CLOSE a trip the zone rows already opened, so the worst a
+ * differently-worded label ("in Tokyo") can do is leave a trip to settle on its
+ * own 21-day clock, which is the behaviour with no declaration at all.
  *
  * Pure derivation past this point: {@link deriveTrips} reads no clock and no
  * zone, so the same rows give the same trips in London and in the headless suite.
@@ -342,9 +353,12 @@ export function allTrips(db: Database, today: string = todayISODate()): Trip[] {
     `SELECT * FROM timezone_changes ORDER BY changed_at, rowid`
   );
   const windows = db.all<{ start_date: string; end_date: string }>(
-    `SELECT start_date, end_date FROM day_modes
+    `SELECT start_date, end_date FROM day_statuses
+      WHERE label = 'traveling' AND end_date IS NOT NULL
+     UNION ALL
+     SELECT start_date, end_date FROM day_modes
       WHERE mode = 'travel' AND end_date IS NOT NULL
-      ORDER BY start_date, rowid`
+      ORDER BY start_date`
   );
   return deriveTrips({
     rows,

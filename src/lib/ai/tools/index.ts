@@ -123,7 +123,7 @@ export const COACH_DOMAINS: CoachDomain[] = [
   { label: 'supplements, medications, therapies', tools: ['log_capture'] },
   { label: 'day notes', tools: ['log_note'] },
   { label: 'protocols', tools: ['get_protocols', 'update_protocol'] },
-  { label: 'day modes', tools: ['set_mode'] },
+  { label: 'your status', tools: ['set_status'] },
   {
     label: 'experiments',
     tools: ['get_experiments', 'create_experiment', 'complete_experiment', 'abandon_experiment'],

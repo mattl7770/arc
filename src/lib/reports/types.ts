@@ -76,7 +76,7 @@ export type Figure = {
  * can always trace a figure back to a table.
  */
 export type SectionProvenance = {
-  /** The tables read: "log_entries + day_modes". */
+  /** The tables read: "log_entries + day_statuses". */
   sources: string;
   /** The span actually read: "3 – 9 Aug 2026", "last 90 days". */
   range: string;
@@ -119,7 +119,8 @@ export type AdherenceRow = {
   completed: number;
   partial: number;
   skipped: number;
-  /** Skips on a day whose mode excuses them (`accountForDay`). */
+  /** Skips on an EXCUSED day — see `excusedDatesIn`, which names all three
+   *  reasons a day can be one. */
   excused: number;
   /** Items on a past day that were never marked either way. */
   unmarked: number;
@@ -131,8 +132,14 @@ export type AdherenceSection = SectionBase & {
   rows: AdherenceRow[];
   /** The all-protocols row. Present whenever `rows` is non-empty. */
   totals: AdherenceRow | null;
-  /** "3 Travel days, 1 Sick day — skips on those days are excused, not missed." */
-  modeNote: string | null;
+  /**
+   * "3 sick days, 4 traveling days and 1 timezone day — skips on those days are
+   * excused, not missed."
+   *
+   * Every reason the period held, named. A day may carry more than one, so
+   * these counts are reasons rather than a partition — the note says so.
+   */
+  excusedNote: string | null;
   /** Names the reconciliation in words, so the table is readable as a ledger. */
   reconciliation: string | null;
 };

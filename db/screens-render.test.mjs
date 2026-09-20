@@ -130,6 +130,8 @@ import ProtocolItemScreen from '../app/protocol-item.tsx';
 import { MissionItemRow } from '../src/components/home/mission-item.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
 import HomeScreen from '../app/(tabs)/index.tsx';
+import { StatusRail } from '../src/components/status/status-rail.tsx';
+import { startStatus } from '../src/lib/db/repositories/statuses.ts';
 import LogScreen from '../app/(tabs)/log.tsx';
 
 import { logWater } from '../src/lib/db/repositories/water.ts';
@@ -1095,17 +1097,126 @@ const db = getDb();
     await apiKeyStore.clearKey();
 
     // d. HOME — regression cover for the safe-area round, which rewrapped
-    //    src/components/home/mode-control.tsx. This is as close as a server
+    //    src/components/home/status-control.tsx. This is as close as a server
     //    render gets: RN's `Modal` returns null while `visible` is false, so the
-    //    picker's BODY (and every other modal's) cannot be rendered here at all
-    //    — nothing can set the flag. What this does prove is that the mode chip
-    //    and banner still mount around the rewrapped modal.
+    //    sheet's BODY (and every other modal's) cannot be rendered here at all
+    //    — nothing can set the flag. What this does prove is that the status
+    //    control still mounts around the rewrapped modal.
     const homeRender = render('home', HomeScreen);
     expect('home (after the ModalScreen rewrap)', homeRender, ['Today']);
     // A9 (2026-09-19): the Coach brief's whole block is one Pressable with an
     // accessibilityLabel that says where it goes, so the "Open chat" label
     // under it restated the control it sat on. The chevron stayed.
     refute('home (after the ModalScreen rewrap)', homeRender, ['Open chat']);
+    // 0061: the mode picker is GONE from Home. Its chip named the mode on the
+    // folio row ("Normal", "Travel") and its banner printed a directive above
+    // the hero; both were the hardcoded layer the retirement removes.
+    refute('home (modes retired)', homeRender, [
+      'Set mode',
+      'Normal',
+      "Today's mode",
+      'No training today',
+    ]);
+    // …and with no status open, Home says nothing about one. The line costs no
+    // vertical space on the ordinary day, which is most of them.
+    refute('home (no status)', homeRender, ['skips excused', 'readiness baselines exclude']);
+  }
+
+  // -------------------------------------------------------------------------
+  console.log('7c-ii. Home states an open status, and the rail draws its five chips');
+  {
+    const today = todayISODate();
+    startStatus(getDb(), {
+      label: 'Traveling',
+      startDate: shiftISODate(today, -3),
+      source: 'user',
+    });
+
+    const withStatus = render('home (traveling)', HomeScreen);
+    expect('home (traveling)', withStatus, [
+      // The FACT, its age, and what it is doing to the numbers — no directive,
+      // which is the whole difference from the banner it replaces.
+      'Traveling since',
+      'skips excused',
+      'Status',
+    ]);
+    refute('home (traveling)', withStatus, [
+      // A status carries no heroFocus and no tone. Nothing writes a sentence
+      // on the owner's behalf about what a travel day should contain.
+      'Adjust to the new time zone',
+      'morning light',
+    ]);
+
+    // THE RAIL, rendered in isolation. The Coach tab is not in this suite's
+    // screen list (it needs a KeyboardAvoidingView and a live chat hook), so a
+    // pure-props component is the only way its chrome gets covered at all.
+    const off = render(
+      'status-rail (nothing set)',
+      StatusRail,
+      {},
+      {
+        open: [],
+        onToggle() {},
+        onEnd() {},
+      }
+    );
+    expect('status-rail (nothing set)', off, [
+      'Sick',
+      'Traveling',
+      'Injured',
+      'Off day',
+      'Night out',
+    ]);
+
+    const openRows = [
+      { id: 's1', label: 'sick', end_date: null },
+      { id: 's2', label: 'night out', end_date: today },
+      { id: 's3', label: 'jet-lagged', end_date: null },
+      { id: 's4', label: 'work crunch', end_date: null },
+      { id: 's5', label: 'deadline week', end_date: null },
+    ];
+    const on = render(
+      'status-rail (five open)',
+      StatusRail,
+      {},
+      {
+        open: openRows,
+        onToggle() {},
+        onEnd() {},
+      }
+    );
+    expect('status-rail (five open)', on, [
+      'Sick',
+      'Jet-lagged',
+      'Work crunch',
+      // The x is a target, so it is found by its spoken label rather than by a
+      // glyph the renderer does not emit.
+      'End Sick',
+    ]);
+    refute('status-rail (five open)', on, [
+      // MAX_EXTRA_CHIPS is two: the third typed status is on Home's line and in
+      // the Coach's state block, and the rail stops rather than becoming a wall
+      // above the composer.
+      'Deadline week',
+      // Night out ends tonight by construction, so an x on it would be a
+      // control that does nothing.
+      'End Night out',
+    ]);
+
+    const hidden = render(
+      'status-rail (pending write)',
+      StatusRail,
+      {},
+      {
+        open: openRows,
+        hidden: true,
+        onToggle() {},
+        onEnd() {},
+      }
+    );
+    refute('status-rail (pending write)', hidden, ['Sick', 'Traveling']);
+
+    getDb().run('DELETE FROM day_statuses');
   }
 
   // -------------------------------------------------------------------------
@@ -3894,7 +4005,7 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
     '15 hours long',
   ]);
   // It is a calendar fact, so it takes neither the accent nor a signal colour
-  // (mode-control.tsx states that firewall in exactly this context).
+  // (status-rail.tsx states that firewall in exactly this context).
   refute('home (timezone changed today)', travelled, ['You travelled', 'America/']);
 
   db.run(`DELETE FROM timezone_changes WHERE id = 'render-tz'`);
