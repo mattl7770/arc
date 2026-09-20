@@ -23,7 +23,13 @@ import { estimateCost, usageCaption } from '../src/lib/ai/cost.ts';
 import { checkNumberProvenance, extractNumbers } from '../src/lib/ai/provenance.ts';
 import { runCoachTurn } from '../src/lib/ai/model-client.ts';
 import { buildTurnContext } from '../src/lib/ai/turn-context.ts';
-import { toolByName, COACH_TOOLS, READ_TOOLS, toWireTools } from '../src/lib/ai/tools/index.ts';
+import {
+  toolByName,
+  COACH_TOOLS,
+  PASS_READ_TOOLS,
+  READ_TOOLS,
+  toWireTools,
+} from '../src/lib/ai/tools/index.ts';
 import { buildCoachSystemPrompt } from '../src/lib/ai/system-prompt.ts';
 import {
   FOOD_ENTRY_SYSTEM_PROMPT,
@@ -1001,6 +1007,45 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // sounds: B (query_records) cannot land before A, because query_records is
   // built on the registry A introduces, so A's own moment is the tightest one
   // this branch ever has. It is 3,691 — better than main's 3,692.
+  // ── 2026-09-19: WHOLE-APP ACCESS, COMMIT B — `query_records`.
+  // **9,233 → 8,750 schema and 3,692 → 3,651 prompt, measured against MAIN.**
+  // Both sides are still ahead of where the branch started, on a branch whose
+  // whole purpose is to ADD capability.
+  //
+  // SCHEMA, +271 on top of commit A's −754:
+  //   · `query_records` over a FIFTEEN-key enum. The description does NOT name
+  //     the fifteen: the enum is already on the wire, and naming them twice is
+  //     the description-recites-its-own-schema class this comment exists about
+  //     (~75 tok saved against the first draft). What it carries instead is
+  //     what an enum cannot — the filters, the 10/25 cap, and the DISCOVERY
+  //     call.
+  //   · Field vocabularies cost **0**. A no-filter call returns each domain's
+  //     `fields`, so discovery is one warm round trip on the turn it is needed
+  //     rather than 26 domains × ~25 tokens in a cached prefix forever. That
+  //     was the alternative, and it is ~650 tokens against 8 of headroom.
+  //
+  // PROMPT, −40, and every token of it is a coverage line that became FALSE —
+  // the only reason a line may leave that list (src/lib/ai/tools/index.ts):
+  //   · "the food catalog, per-item micronutrients and saved meal templates
+  //     (Eat)" — three domains now.
+  //   · "saved workouts (Train)".
+  //   · "progress photos and their AI readings" and "generated reports and
+  //     doctor packs" — the owner reopened both (Q4a). The 2026-08-12 photo
+  //     call was a PREFIX-COST argument against a bespoke tool, and a registry
+  //     key costs ~3 tokens; the reports entry said "revisit if transcripts
+  //     show the user asking about past reports", and the direction is wider.
+  //     READ-ONLY, no pixels, no writes.
+  //   · the lab line NARROWED to the PDF and the files: the report LIST reads.
+  //   · one label ADDED (+12), "the rest of the app, domain by domain
+  //     (query_records)" — ONE entry for fifteen domains, because the keys are
+  //     already in the enum.
+  //
+  // THE HAIKU PASS IS UNCHANGED AT 7,067, and that is deliberate rather than
+  // incidental: `query_records` is excluded from it (PASS_EXCLUDED_TOOLS).
+  // Haiku's selection over a fifteen-key enum is unmeasured, a discovery call
+  // would spend one of the pass's eight round trips AND re-bill the ~1.4k
+  // uncached state block, and the pass is triage over curated reads. The
+  // assertion below now bills the pass's OWN tool set, not every read tool.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(
@@ -1051,7 +1096,10 @@ console.log('6. the prompt budget: the fixed payload every request carries');
     : bad('the food-entry prompt has leaked into the cached prefix');
 
   const HAIKU_CACHE_MINIMUM = 4096;
-  const passPrefix = systemTokens + readToolTokens;
+  // The pass's OWN tool set, not every read tool: `query_records` is held back
+  // from the unattended pass (PASS_EXCLUDED_TOOLS, src/lib/ai/tools/index.ts),
+  // so billing it here would guard a prefix nothing sends.
+  const passPrefix = systemTokens + jsonTok(JSON.stringify(toWireTools(PASS_READ_TOOLS)));
   passPrefix > HAIKU_CACHE_MINIMUM
     ? ok(
         `the pass prefix (~${passPrefix} tok) still clears Haiku's ${HAIKU_CACHE_MINIMUM}-token cache floor`

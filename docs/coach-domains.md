@@ -162,7 +162,41 @@ Six tools retired into `edit_record`, because each executed one `UPDATE … SET 
   `save_knowledge_entry` would force `title` and `body` optional, so a create could arrive bodiless.
   `edit_record` is not that flag: it has no create path into the knowledge domain at all.
 
-## 9. The card learned two things
+## 9. `query_records` (Commit B, 2026-09-19) — fifteen domains
+
+| Domain | Read | What it closed |
+| --- | --- | --- |
+| `meals` | list, by day, items on a single-id call | `get_nutrition_summary` gave totals and the snapshot gave today. "What was in yesterday's lunch" had no answer |
+| `food_catalog` | list, `query` searches | a CANNOT line |
+| `meal_templates` | list | the same CANNOT line |
+| `micronutrients` | **compute**, `id` = a day | the same CANNOT line |
+| `water` | list, by day, one row per tap | `get_metric_series water` gave totals only; an entry had no id |
+| `captures` | list, by day (`listEntriesOn`, new beside `listTodayEntries`) | the log tools always backdated and nothing could read a past day back |
+| `protocol_adherence` | **compute**, `id` = protocol slug, from/to | the Protocols screen's own computation |
+| `exercise_stats` | **compute**, `id` = exercise id or name | personal records, e1RM series, recent top sets |
+| `exercise_catalog` | list, `query` searches | names resolved inside `log_workout` and nowhere else |
+| `saved_workouts` | list, exercises on a single-id call | a CANNOT line; the parked Modes revamp assumes this |
+| `protocol_versions` | list, `id` = protocol slug | `get_protocols` returns the LIVE version only |
+| `lab_reports` | list | narrowed a CANNOT line to the PDF and the files |
+| `knowledge` | list, `query` searches | browse — `search_history` finds, nothing listed |
+| `progress_photos` | list, metadata + reading summaries | a CANNOT line (Q4a). **No pixels** |
+| `reports` | list | a CANNOT line (Q4a). The list only; generation stays on its screen |
+
+Four coverage lines left `UNCOVERED_DOMAINS` and one narrowed, which is **−40 prompt tokens**, and
+one label was added for all fifteen (+12): the keys are already on the wire, in the enum.
+
+**The discovery call.** `query_records { domain }` with no filter returns that domain's `fields`,
+whether it is `editable`, which tool creates there, and whether it is `removable`. This is where
+the field vocabulary lives instead of the cached prompt: the alternative is 26 domains × ~25 tokens
+in a prefix with single-digit headroom.
+
+**The unattended pass does not get it** (`PASS_EXCLUDED_TOOLS`). Haiku's selection over a
+fifteen-key enum is unmeasured, a discovery call would spend one of the pass's eight round trips and
+re-bill the ~1.4k uncached state block, and the pass is triage over curated reads. The pass prefix is
+therefore unchanged at 7,067 — 2,931 clear of Haiku's 4,096-token cache floor, which its whole
+economics depend on.
+
+## 10. The card learned two things
 
 `WriteConfirmation` and `PendingWrite` now carry `kind` (`create | edit | delete | status`) and
 `selfEvident`. `src/components/coach/pending-write-card.tsx` had held a hardcoded set of four tool
@@ -173,7 +207,7 @@ one-off is self-evident, `dismissed` is not, and a set of names cannot say that.
 `kind: 'delete'` is the first time the card can word a removal as one: its fixed "this is written to
 your on-device record" line is false of a delete, and until now there was nothing to branch on.
 
-## 10. Adding a domain
+## 11. Adding a domain
 
 1. Write it in the right area file under `src/lib/ai/domains/`, or a new one.
 2. Call the repository function the screen calls. Nothing else.
@@ -183,7 +217,7 @@ your on-device record" line is false of a delete, and until now there was nothin
    from `src/lib/ai/tools/index.ts`. The suite fails if you do one and not the other.
 5. Re-measure the two ceilings. A new enum key is ~3 tokens; a new field is 0.
 
-## 11. Revert criteria — what a week of use has to show
+## 12. Revert criteria — what a week of use has to show
 
 The suite pins which tool a scripted turn selects. It cannot say whether a real Sonnet or Opus turn
 reaches for `edit_record { status }` as reliably as it reached for `complete_reminder`, whether it

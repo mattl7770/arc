@@ -13,6 +13,7 @@
  *     from, so `delete_record`'s schema refuses the rest at zero round trips.
  *     Deletion must never be a VALUE the model can set in passing.
  */
+import { READ_DOMAINS } from './read-domains';
 import { STATUS_DOMAINS } from './status-domains';
 import type { CoachDomainEntry } from './types';
 
@@ -20,7 +21,7 @@ export * from './types';
 export { EXPERIMENT_ABANDON_NOTE, RECURRING_REMINDER_NOTE } from './status-domains';
 
 /** Every domain, in the order the enums print. */
-export const COACH_DOMAIN_REGISTRY: CoachDomainEntry[] = [...STATUS_DOMAINS];
+export const COACH_DOMAIN_REGISTRY: CoachDomainEntry[] = [...STATUS_DOMAINS, ...READ_DOMAINS];
 
 const BY_KEY = new Map(COACH_DOMAIN_REGISTRY.map((entry) => [entry.key, entry]));
 

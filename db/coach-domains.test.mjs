@@ -22,13 +22,14 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { todayISODate } from '../src/lib/db/date.ts';
+import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import {
   completeExperiment,
   createExperiment,
   getExperiment,
 } from '../src/lib/db/repositories/experiments.ts';
 import { createReminder } from '../src/lib/db/repositories/reminders.ts';
+import { logMeal } from '../src/lib/db/repositories/nutrition.ts';
 import { rememberFact } from '../src/lib/db/repositories/coach-memory.ts';
 import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
 import { insertKnowledgeChunk } from '../src/lib/db/repositories/rag.ts';
@@ -45,6 +46,8 @@ import {
 } from '../src/lib/ai/domains/index.ts';
 import {
   COACH_TOOLS,
+  PASS_READ_TOOLS,
+  READ_TOOLS,
   RETIRED_WRITE_NAMES,
   UNCOVERED_DOMAINS,
   coverageProblems,
@@ -121,6 +124,7 @@ function freshDb() {
 const NOW = new Date();
 const TODAY = todayISODate(NOW);
 const editRecord = toolByName('edit_record');
+const queryRecords = toolByName('query_records');
 /** A FRESH context per call — `edit_record` writes its staleness slot into it. */
 const card = (db, domain, id, fields) =>
   editRecord.confirmSummary({ domain, id, fields }, db, { now: NOW });
@@ -139,15 +143,26 @@ console.log('0. registry shape, and the three enums derived from it');
     (d) =>
       typeof d.key === 'string' &&
       typeof d.label === 'string' &&
-      typeof d.resolve === 'function' &&
-      typeof d.summarize === 'function' &&
       d.read &&
       typeof d.read.kind === 'string' &&
       d.fields &&
       Object.keys(d.fields).length > 0
   )
-    ? ok('every domain declares key, label, resolve, summarize, read and at least one field')
+    ? ok('every domain declares key, label, read and at least one field')
     : bad('domain shape');
+  // `resolve` and `summarize` travel with the ABILITY TO WRITE, not with being
+  // a domain — a read-only domain has no id to resolve anything FOR and no
+  // card to draw. That is the invariant `edit_record` relies on.
+  COACH_DOMAIN_REGISTRY.filter((d) => d.edit || d.create || d.remove).every(
+    (d) => typeof d.resolve === 'function' && typeof d.summarize === 'function'
+  )
+    ? ok('every WRITABLE domain resolves an id to a named row and draws a card')
+    : bad('a writable domain cannot resolve or summarize');
+  COACH_DOMAIN_REGISTRY.filter((d) => !d.edit && !d.create && !d.remove).every(
+    (d) => d.resolve === undefined && d.summarize === undefined
+  )
+    ? ok('…and the read-only domains carry neither, so there is nothing to be wrong')
+    : bad('a read-only domain carries write machinery');
   COACH_DOMAIN_REGISTRY.every((d) =>
     Object.values(d.fields).every(
       (f) => typeof f.parse === 'function' && typeof f.editable === 'boolean' && f.note
@@ -333,11 +348,13 @@ console.log('3. the parser: unknown fields, non-editable fields, refused creates
 
   // PREFER THE SPECIFIC TOOL is a parser rule, not only prompt copy. No domain
   // in Phase 1 has a create path at all, and each names the tool that does.
-  COACH_DOMAIN_REGISTRY.every((d) => d.create === undefined && typeof d.createVia === 'string')
-    ? ok('no domain creates through the generic path; each names its bespoke tool')
-    : bad('a domain grew a create path with no bespoke alternative');
-  COACH_DOMAIN_REGISTRY.every((d) => toolByName(d.createVia) !== undefined)
-    ? ok('…and every tool named that way is actually registered')
+  COACH_DOMAIN_REGISTRY.every((d) => d.create === undefined)
+    ? ok('no domain creates through the generic path in Phase 1')
+    : bad('a domain grew a create path');
+  COACH_DOMAIN_REGISTRY.filter((d) => d.createVia !== undefined).every(
+    (d) => toolByName(d.createVia) !== undefined
+  )
+    ? ok('…and every bespoke create tool a domain names is actually registered')
     : bad('createVia names a tool that does not exist');
   // `id` is REQUIRED in Phase 1 — there is no create arm to reach.
   JSON.stringify(editRecord.inputSchema.required) === JSON.stringify(['domain', 'id', 'fields'])
@@ -388,6 +405,87 @@ console.log('4. the seals: what is not registrable, and the shipped pack');
   db.get(`SELECT COUNT(*) AS n FROM knowledge_chunks WHERE source = 'arc-longevity-v1'`).n === 1
     ? ok('…and the chunk is still there, untouched')
     : bad('the pack chunk moved');
+}
+
+console.log('4b. query_records: list, compute, windows and the discovery call');
+{
+  const { db } = freshDb();
+  const query = (args) => JSON.parse(queryRecords.execute(db, args, { now: NOW }));
+
+  // THE DISCOVERY CALL — the domain alone. This is where the field vocabulary
+  // lives INSTEAD of the cached prompt: one warm round trip on the turn it is
+  // needed, never a permanent tax on every turn forever.
+  const bare = query({ domain: 'saved_workouts' });
+  bare.fields &&
+  Object.keys(bare.fields).length > 0 &&
+  bare.editable === false &&
+  bare.removable === 'no'
+    ? ok('the domain alone returns its fields, and says it cannot be written yet')
+    : bad('discovery call', JSON.stringify(bare));
+  // Read-only fields SAY SO, so the model never proposes an edit the parser
+  // would refuse a round trip later.
+  Object.values(bare.fields).every((note) => /read-only/.test(note))
+    ? ok('…and every field of a read-only domain is marked read-only')
+    : bad('read-only fields unmarked', JSON.stringify(bare.fields));
+  query({ domain: 'saved_workouts', query: 'nothing' }).fields === undefined
+    ? ok('a FILTERED call omits the vocabulary — it is discovery, not a header')
+    : bad('vocabulary billed on every call');
+
+  // A domain a bespoke tool already reads is not in the enum, and the refusal
+  // NAMES that tool rather than leaving the model to guess.
+  queryRecords.inputSchema.properties.domain.enum.includes('reminders') === false
+    ? ok('reminders are absent from the enum — list_reminders reads them')
+    : bad('a bespoke-read domain is in the query enum');
+  const steered = throwText(() => query({ domain: 'reminders' }));
+  steered && /list_reminders/.test(steered)
+    ? ok('…and asking anyway is refused by name, at zero further round trips')
+    : bad('no steer', String(steered));
+  const unknown = throwText(() => query({ domain: 'nope' }));
+  unknown && /must be one of/.test(unknown)
+    ? ok('an unknown domain is refused with the whole set named')
+    : bad('unknown domain', String(unknown));
+
+  // COMPUTE domains are not lists, and saying so is the point: a model must
+  // not go looking for "the third row" of a number.
+  const computed = throwText(() => query({ domain: 'micronutrients' }));
+  computed && /computed, not listed/.test(computed) && /YYYY-MM-DD/.test(computed)
+    ? ok('a compute domain with no id errors, naming what it needs')
+    : bad('compute without id', String(computed));
+  const micros = query({ domain: 'micronutrients', id: TODAY });
+  micros.result.date === TODAY && /absence, not a set of zeroes/.test(micros.result.note ?? '')
+    ? ok('…and an empty day is an ABSENCE in words, never a panel of zeroes')
+    : bad('micros', JSON.stringify(micros));
+
+  // The cap, and ids on every row of a list domain.
+  createReminder(db, { title: 'x', repeat: 'once' }, NOW);
+  for (let i = 0; i < 30; i++) {
+    logMeal(db, { date: TODAY, time: null, name: `meal ${i}`, kcal: 100 });
+  }
+  const capped = query({ domain: 'meals', limit: 999 });
+  capped.count === 25 && capped.rows.every((r) => typeof r.id === 'string' && r.id.length > 0)
+    ? ok('a list domain caps at 25 and carries an id on every row')
+    : bad('cap or ids', JSON.stringify({ count: capped.count }));
+  query({ domain: 'meals' }).count === 10
+    ? ok('…and defaults to 10')
+    : bad('default limit', String(query({ domain: 'meals' }).count));
+
+  // The WINDOW respects the logical day: a meal logged for yesterday is not in
+  // today's read, and is in a window that includes it.
+  const yesterday = shiftISODate(TODAY, -1);
+  logMeal(db, { date: yesterday, time: '12:30', name: 'yesterday lunch', kcal: 620 });
+  query({ domain: 'meals', limit: 25 }).rows.every((r) => r.date === TODAY) &&
+  query({ domain: 'meals', from: yesterday, to: yesterday, limit: 25 }).rows.some(
+    (r) => r.name === 'yesterday lunch'
+  )
+    ? ok('a from/to window reads a PAST day back — which no tool could do before')
+    : bad('window');
+
+  // THE PASS. query_records is held back from the unattended Haiku pass, and
+  // no write has ever been in it.
+  PASS_READ_TOOLS.every((t) => t.readOnly && t.name !== 'query_records') &&
+  PASS_READ_TOOLS.length === READ_TOOLS.length - 1
+    ? ok('the unattended pass gets every read EXCEPT query_records, and no write')
+    : bad('pass tool set', PASS_READ_TOOLS.map((t) => t.name).join(','));
 }
 
 console.log('5. retired names still answer as writes, so no receipt is lost');

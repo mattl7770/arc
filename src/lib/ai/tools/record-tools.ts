@@ -35,12 +35,17 @@ import type { Database } from '@/lib/db/database';
 import {
   domainByKey,
   domainSelfEvident,
+  domainVocabulary,
   EDIT_DOMAIN_KEYS,
+  QUERY_DOMAIN_KEYS,
   type CoachDomainEntry,
   type DomainRow,
 } from '../domains/index';
 import {
   asRecord,
+  optDate,
+  optNumber,
+  optString,
   reqString,
   type CoachTool,
   type CoachToolContext,
@@ -107,11 +112,14 @@ function planEdit(
     patch[name] = field.parse(fields, name, context);
   }
 
+  // `resolve`, `edit` and `summarize` travel together — a domain with one has
+  // all three, asserted in db/coach-domains.test.mjs §0. The guard is here so
+  // the types stay honest for the read-only domains that have none of them.
+  if (!entry.resolve || !entry.edit || !entry.summarize) {
+    throw new Error(`${entry.label} is read-only.`);
+  }
   const id = reqString(args, 'id');
   const row = entry.resolve(db, id, context);
-  if (!entry.edit) {
-    throw new Error(`${entry.label} cannot be edited.`);
-  }
   // A patch that touches `status` is a STATUS change on the card, which is the
   // one kind whose summary can be the whole consequence.
   return { entry, row, patch, op: 'status' in patch ? 'status' : 'edit' };
@@ -146,7 +154,7 @@ const editRecordTool: CoachTool = {
   readOnly: false,
   confirmSummary: (input, db, context) => {
     const plan = planEdit(db, input, context);
-    const line = plan.entry.summarize({
+    const line = plan.entry.summarize!({
       op: plan.op,
       row: plan.row,
       patch: plan.patch,
@@ -198,5 +206,89 @@ const editRecordTool: CoachTool = {
   },
 };
 
-export const RECORD_READ_TOOLS: CoachTool[] = [];
+// --- query_records -----------------------------------------------------------
+
+/** The read cap, matching the registry's other capped read (read-tools.ts). */
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 25;
+
+const queryRecordsTool: CoachTool = {
+  name: 'query_records',
+  description:
+    // The enum below IS the list of domains, so naming them here again would be
+    // the description-recites-its-own-schema class (db/coach-eval.test.mjs §6)
+    // at 15 × ~5 tokens. What the description has to carry is what the enum
+    // cannot: the filters, the cap, and the discovery call.
+    'Read a domain the specific tools do not cover. Filter with "id", "query" or a from/to day ' +
+    'window; 10 rows by default, 25 at most. The domain ALONE returns that domain’s fields and ' +
+    'whether it can be written — ask once, then filter.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      domain: { type: 'string', enum: [...QUERY_DOMAIN_KEYS] },
+      id: { type: 'string' },
+      query: { type: 'string' },
+      from: { type: 'string' },
+      to: { type: 'string' },
+      limit: { type: 'number' },
+    },
+    required: ['domain'],
+    additionalProperties: false,
+  },
+  readOnly: true,
+  execute: (db, input, context) => {
+    const args = asRecord(input);
+    const key = reqString(args, 'domain');
+    const entry = domainByKey(key);
+    if (!entry) throw new Error(`"domain" must be one of: ${QUERY_DOMAIN_KEYS.join(', ')}.`);
+    // A domain a registered tool already reads is not in the enum, and the
+    // error NAMES that tool — one round trip, and the model learns the right
+    // habit instead of the generic one.
+    if (entry.read.kind === 'bespoke') {
+      throw new Error(`${entry.label}s are read by ${entry.read.via}. Call that instead.`);
+    }
+
+    const id = optString(args, 'id');
+    const query = optString(args, 'query');
+    const from = optDate(args, 'from');
+    const to = optDate(args, 'to');
+    const rawLimit = optNumber(args, 'limit');
+    if (rawLimit !== undefined && (!Number.isInteger(rawLimit) || rawLimit < 1)) {
+      throw new Error('"limit" must be a positive integer.');
+    }
+    const limit = Math.min(rawLimit ?? DEFAULT_LIMIT, MAX_LIMIT);
+    const readArgs = { id, query, from, to, limit, now: context.now };
+
+    // THE DISCOVERY CALL: domain alone. This is where the field vocabulary
+    // lives instead of the cached prompt — one warm round trip on the turn it
+    // is needed, never a permanent tax on every turn forever.
+    const bare = id === undefined && query === undefined && from === undefined && to === undefined;
+    const vocabulary = bare
+      ? {
+          fields: domainVocabulary(entry),
+          editable: entry.edit !== undefined,
+          ...(entry.createVia ? { createWith: entry.createVia } : {}),
+          removable: entry.remove?.mode ?? 'no',
+        }
+      : {};
+
+    if (entry.read.kind === 'compute') {
+      if (id === undefined) {
+        // Not a list, and saying so is the point: the model must not go looking
+        // for "the third row" of a number.
+        throw new Error(`${entry.label} is computed, not listed — pass "id": ${entry.read.needs}.`);
+      }
+      return json({ domain: key, ...vocabulary, result: entry.read.run(db, { ...readArgs, id }) });
+    }
+
+    // The cap is applied HERE as well as inside each domain's read. A domain
+    // that folds several days together (meals, water, captures) can overshoot
+    // its own slice, and "≤ limit" has to be a property of the tool rather than
+    // a promise fourteen separate functions keep.
+    const rows = entry.read.run(db, readArgs).slice(0, limit);
+    return json({ domain: key, ...vocabulary, count: rows.length, rows });
+  },
+};
+
+export const RECORD_READ_TOOLS: CoachTool[] = [queryRecordsTool];
 export const RECORD_WRITE_TOOLS: CoachTool[] = [editRecordTool];

@@ -37,6 +37,29 @@ export const WRITE_TOOLS: CoachTool[] = [...BESPOKE_WRITE_TOOLS, ...RECORD_WRITE
 export const COACH_TOOLS: CoachTool[] = [...READ_TOOLS, ...WRITE_TOOLS];
 
 /**
+ * Read tools the UNATTENDED pass does not get.
+ *
+ * `query_records` is excluded, and this is a measured call rather than caution
+ * (docs/spikes/coach-whole-app-access.md §3.4). The pass runs `claude-haiku-4-5`
+ * on a trigger nobody asked for, with a hard cap of eight round trips: Haiku's
+ * selection over a fifteen-key domain enum is unmeasured, a DISCOVERY call
+ * would spend one of those eight AND re-bill the ~1.4k uncached state block,
+ * and the pass is triage over curated reads rather than an investigation. The
+ * writes cannot join it at all — every one of them is `readOnly: false`, and
+ * the pass has no confirmation gate to route them through.
+ *
+ * Keeping it out also keeps the pass prefix where it was: 7,067 tokens, well
+ * clear of Haiku's 4,096-token cache minimum, which the whole pass's economics
+ * depend on (db/coach-eval.test.mjs §6, "THE TRAP").
+ */
+export const PASS_EXCLUDED_TOOLS: ReadonlySet<string> = new Set(['query_records']);
+
+/** The read tools the unattended pass is given. */
+export const PASS_READ_TOOLS: CoachTool[] = READ_TOOLS.filter(
+  (tool) => !PASS_EXCLUDED_TOOLS.has(tool.name)
+);
+
+/**
  * Write tools that USED to exist, by name.
  *
  * `isWriteTool` answers via {@link toolByName} (src/hooks/use-coach-chat.ts),
@@ -208,6 +231,15 @@ export const COACH_DOMAINS: CoachDomain[] = [
     tools: ['search_history', 'save_knowledge_entry', 'edit_record'],
   },
   { label: 'appointments', tools: ['get_screenings'] },
+  // ONE entry for the whole generic read, not fifteen. The domain KEYS are
+  // already on the wire — they are the `query_records` enum — and the house
+  // rule here is that the manifest names domains while the schemas name
+  // themselves (see `buildCoverageManifest`). Naming them twice would be the
+  // same information billed twice on every turn forever.
+  {
+    label: 'the rest of the app, domain by domain (query_records)',
+    tools: ['query_records'],
+  },
 ];
 
 /**
@@ -228,15 +260,27 @@ export const UNCOVERED_DOMAINS: string[] = [
   //     (app/program-edit.tsx and the repository deleted) and routines were
   //     re-branded "Saved workouts" in the same round, so the old phrasing named
   //     one live thing twice and one dead thing once.
-  'the food catalog, per-item micronutrients and saved meal templates (Eat)',
-  'saved workouts (Train)',
-  'lab report files and the PDF import (Data, Labs)',
-  // 0036. Deliberately a blind spot rather than a tool (owner call, 2026-08-12):
-  // the catalog is ~66-72% of the cached prompt prefix and every addition
-  // invalidates it, while photo METADATA — counts, dates, poses — gives the model
-  // almost nothing actionable. The pixels are the value, and those flow through
-  // the user-triggered reading on the screen itself.
-  'progress photos and their AI readings (Data › Progress photos)',
+  // FOUR LINES LEFT THIS LIST ON 2026-09-19 and one narrowed, because
+  // `query_records` made them false — which is the only reason a line may be
+  // removed, and the list's own rule (`:195`). Each is declared in `retires` on
+  // the domain that closed it, and db/coach-domains.test.mjs fails if a
+  // retired string is still printed here:
+  //   · "the food catalog, per-item micronutrients and saved meal templates
+  //     (Eat)" — three domains now: food_catalog, micronutrients, meal_templates
+  //   · "saved workouts (Train)" — the saved_workouts domain
+  //   · "progress photos and their AI readings (Data › Progress photos)" — the
+  //     2026-08-12 call was a PREFIX-COST argument against a bespoke tool, and
+  //     a registry key costs ~3 tokens, so the owner reopened it. READ-ONLY:
+  //     dates, poses and the text of readings the user already asked for. No
+  //     pixels, ever.
+  //   · "generated reports and doctor packs (Data › Reports)" — its own entry
+  //     said "revisit only if transcripts show the user asking about past
+  //     reports", and the owner's direction is wider than that. The LIST is
+  //     readable; generation is still the screen's, and no model prose enters a
+  //     doctor pack.
+  // The lab line NARROWED rather than leaving: the report list is readable now,
+  // the PDF and its import are not.
+  'the lab PDF import and the report files themselves (Data, Labs)',
   'booking, moving or cancelling an appointment (Data, Screenings)',
   'creating a protocol or a screening from scratch',
   // NARROWED BY C14, because the wider claim became FALSE — which is the worst
@@ -247,13 +291,6 @@ export const UNCOVERED_DOMAINS: string[] = [
   // what it always was: a logged meal, workout, metric or capture, once
   // written, can only be changed on its own screen.
   'editing or deleting anything already logged — a meal, workout, metric, capture (its screen in Eat, Train or Data)',
-  // Reports (0039, docs/reports-subapp.md §8). Named rather than tooled, on
-  // purpose: the registry is billed on every turn, generation ends in a share
-  // sheet the model cannot drive and a preview the doctrine requires anyway,
-  // and every number a report contains is already reachable through the read
-  // tools. What the model must NOT do is deny the feature exists — hence the
-  // entry. Revisit only if transcripts show the user asking about past reports.
-  'generated reports and doctor packs (Data › Reports)',
   'Settings: profile, units, Health sync, app lock, API key',
 ];
 

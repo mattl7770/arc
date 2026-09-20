@@ -160,8 +160,12 @@ export type CoachDomainEntry = {
    * id → the row, THROWING when it is unknown with a message naming the read
    * that hands ids out. A bare id must never reach the user (../tools/types),
    * and an unknown id must never reach a repository.
+   *
+   * Optional only because a READ-ONLY domain has nothing to resolve an id FOR.
+   * The suite asserts that any domain with `edit`, `create` or `remove` has
+   * one, which is the invariant that actually matters.
    */
-  resolve: (db: Database, id: string, context: CoachToolContext) => DomainRow;
+  resolve?: (db: Database, id: string, context: CoachToolContext) => DomainRow;
   fields: Record<string, DomainField>;
   read: DomainRead;
   /**
@@ -184,8 +188,8 @@ export type CoachDomainEntry = {
    * refusal actionable.
    */
   createVia?: string;
-  /** The one human line the confirmation card shows. */
-  summarize: (args: DomainWriteArgs) => string;
+  /** The one human line the confirmation card shows. Writable domains only. */
+  summarize?: (args: DomainWriteArgs) => string;
   /** Defaults to false — see the file header. */
   selfEvident?: (args: DomainWriteArgs) => boolean;
   remove?: RemovePolicy;
@@ -200,6 +204,19 @@ export type CoachDomainEntry = {
 /** The card's weight for one write — fail-closed when the domain says nothing. */
 export function domainSelfEvident(entry: CoachDomainEntry, args: DomainWriteArgs): boolean {
   return entry.selfEvident?.(args) ?? false;
+}
+
+/**
+ * The domain's own vocabulary, as `query_records` returns it on a no-filter
+ * call. This is where the field names live INSTEAD of the cached prompt:
+ * discovery costs one warm round trip, never a permanent tax on every turn.
+ */
+export function domainVocabulary(entry: CoachDomainEntry): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, field] of Object.entries(entry.fields)) {
+    out[name] = field.editable ? field.note : `${field.note} (read-only)`;
+  }
+  return out;
 }
 
 // --- Shared field parsers ----------------------------------------------------
