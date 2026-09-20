@@ -31,7 +31,7 @@ import {
   statusDayNumber,
   statusesIn,
 } from '@/lib/db/repositories/statuses';
-import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
+import { getGoalDirection, getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { formatUtcOffset, offsetShift } from '@/lib/timezone/classify';
@@ -82,9 +82,21 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
   const who: string[] = [];
   if (user.biological_sex) who.push(user.biological_sex);
   if (age !== null) who.push(`${age}y`);
+  // The goal direction rides this line rather than taking one of its own: it is
+  // the same kind of fact (who the user is and how their numbers are to be
+  // read), and a whole line for one word is a permanent uncached tax.
+  //
+  // Printed at its DEFAULT too, unlike Status and Timezone below. Those are
+  // events — absent means nothing happened. This is a dial that always has a
+  // position, and `maintain` withheld is indistinguishable from `maintain`
+  // never asked about, which is exactly the blind spot the coverage manifest
+  // exists to close. It is what Home's nutrition pillar grades against
+  // (home/readiness.ts `kcalLevel`), so a model reasoning about a 600 kcal
+  // surplus without it is guessing at whether that is the plan or the problem.
   lines.push(
     `User: ${who.length > 0 ? who.join(', ') : 'profile not filled in'} · units: ` +
-      `weight ${units.weight}, volume ${units.volume}, length ${units.length}`
+      `weight ${units.weight}, volume ${units.volume}, length ${units.length}` +
+      ` · goal: ${getGoalDirection(db)}`
   );
 
   // --- Readiness, derived HERE rather than at its own line below, because the

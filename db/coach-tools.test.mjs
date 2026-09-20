@@ -23,7 +23,12 @@ import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.
 import { logWorkout, weekSummary } from '../src/lib/db/repositories/exercise.ts';
 import { pairIngestedWorkouts } from '../src/lib/db/repositories/workout-ingest.ts';
 
-import { setUnitPreference, updateProfile } from '../src/lib/db/repositories/user.ts';
+import {
+  setGoalDirection,
+  setUnitPreference,
+  setWaterTarget,
+  updateProfile,
+} from '../src/lib/db/repositories/user.ts';
 import { SOURCE_PRIORITY, upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 // The real ingest mappers — fixtures below are built by the pipeline that runs
 // on device, not by hand-written rows that only resemble it.
@@ -1876,6 +1881,28 @@ console.log('22. snapshot carries readiness, profile, mission ids, experiments')
   empty.experiments.length === 0
     ? ok('empty day: readiness unknown, profile nulls, experiments []')
     : bad('empty snapshot extras', JSON.stringify(empty.readiness));
+
+  // THE TWO SETTINGS THE DAY IS JUDGED BY, and both were the `nutritionTargets`
+  // blind spot again: the Home nutrition pillar grades an over-target day as a
+  // fault while cutting and as the point while gaining, and the water screen
+  // shows no denominator until a goal exists. `waterTarget` is explicitly NULL
+  // rather than omitted — unset is a setting the user has not chosen, never a
+  // feature ARC lacks.
+  empty.goalDirection === 'maintain' && empty.waterTarget === null
+    ? ok('the snapshot states the goal direction and an UNSET water target, never silence')
+    : bad('goal/water absent', JSON.stringify([empty.goalDirection, empty.waterTarget]));
+  {
+    const { db: wdb } = freshDb();
+    setGoalDirection(wdb, 'gain');
+    setWaterTarget(wdb, 3000);
+    setUnitPreference(wdb, 'volume', 'oz');
+    const snapped = run('get_today_snapshot', wdb);
+    snapped.goalDirection === 'gain' &&
+    snapped.waterTarget.unit === 'oz' &&
+    Math.round(snapped.waterTarget.value) === 101
+      ? ok('…and a set target is reported in the user’s own volume unit (3,000 ml → 101 oz)')
+      : bad('water target units', JSON.stringify(snapped.waterTarget));
+  }
 
   updateProfile(db, { dateOfBirth: '1992-01-15', biologicalSex: 'male' });
   for (let d = 1; d <= 6; d++) seedWearableRow(raw, 'hrv', d, 50);

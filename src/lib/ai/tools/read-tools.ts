@@ -33,7 +33,12 @@ import {
   upcomingAppointments,
 } from '@/lib/db/repositories/screenings';
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
-import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
+import {
+  getGoalDirection,
+  getOrCreateUser,
+  getPreferences,
+  getWaterTarget,
+} from '@/lib/db/repositories/user';
 import { deviceLabel, pickDailyMetric } from '@/lib/db/repositories/wearables';
 import {
   pairedIngestForMany,
@@ -718,6 +723,24 @@ const getTodaySnapshot: CoachTool = {
       // set with what is left of each, or an explicit `set: false` that says
       // unset, not unsupported. See todayTargetsPayload.
       nutritionTargets: todayTargetsPayload(db, date, meals),
+      // The two SETTINGS the day is judged by that no other field carries, and
+      // both were blind spots of the `nutritionTargets` class: the Home
+      // nutrition pillar grades an over-target day as a fault while cutting and
+      // as the point while gaining (home/readiness.ts `kcalLevel`), and the
+      // water screen shows no denominator at all until a goal exists. Payload,
+      // so neither costs the schema budget anything.
+      //
+      // `waterTarget` is `null` rather than omitted, exactly as
+      // `nutritionTargets.set: false` is explicit: unset is a setting the user
+      // has not chosen, never a feature ARC lacks. It is reported in the user's
+      // Settings › Units volume, like every other value here.
+      goalDirection: getGoalDirection(db),
+      waterTarget: ((): { value: number; unit: string } | null => {
+        const ml = getWaterTarget(db);
+        if (ml === null) return null;
+        const display = resolveDisplay(metricByKey('water')!, units);
+        return { value: roundTo(display.fromCanonical(ml), display.decimals), unit: display.unit };
+      })(),
       workouts,
       symptoms: listTodaySymptoms(db, date).map((s) => ({
         time: s.time,

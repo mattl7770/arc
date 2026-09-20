@@ -12,7 +12,7 @@ import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { getOrCreateDailyLog, insertMissionItem } from '../src/lib/db/repositories/mission.ts';
 import { endStatus, startStatus } from '../src/lib/db/repositories/statuses.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
-import { updateProfile } from '../src/lib/db/repositories/user.ts';
+import { setGoalDirection, updateProfile } from '../src/lib/db/repositories/user.ts';
 import { addGroceryItems } from '../src/lib/db/repositories/grocery.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import { ageOn, buildTurnContext } from '../src/lib/ai/turn-context.ts';
@@ -170,6 +170,21 @@ console.log('3. seeded database: profile, status, readiness, mission, experiment
   context.includes('male') && context.includes('units: weight lb')
     ? ok('profile line carries sex + unit preferences')
     : bad('profile', context);
+  // The goal direction rides this same line, and is printed AT ITS DEFAULT
+  // unlike Status and Timezone: those are events, where absence means nothing
+  // happened, and this is a dial that always has a position. `maintain`
+  // withheld is indistinguishable from `maintain` never asked about — the
+  // coverage manifest's whole failure mode, one line further down.
+  context.includes('· goal: maintain')
+    ? ok('…and the goal direction, stated even at its default (a dial, not an event)')
+    : bad('goal direction missing from the state block', context);
+  {
+    const { db: gdb } = freshDb();
+    setGoalDirection(gdb, 'cut');
+    buildTurnContext(gdb, NOW).includes('· goal: cut')
+      ? ok('…and it follows the setting the nutrition pillar actually grades against')
+      : bad('goal direction not read back');
+  }
   context.includes('Status: sick — since today, through') &&
   context.includes('(set by you)') &&
   context.includes('leave the readiness baselines')
