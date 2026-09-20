@@ -23,7 +23,13 @@
 import type { Database } from '../database';
 import { addDays, daysBetween } from '@/lib/protocols/cadence';
 
-import { DONE_LATE_SQL, NOT_CARRIED_SQL, NOT_REMOVED_SQL, PLANNED_ROW_SQL } from './mission';
+import {
+  DONE_LATE_SQL,
+  NOT_CARRIED_SQL,
+  NOT_REMOVED_SQL,
+  NOT_UNSEEN_SQL,
+  PLANNED_ROW_SQL,
+} from './mission';
 
 /** One repeated item's record under a protocol, across the window. */
 export type ProtocolItemRecord = {
@@ -135,6 +141,10 @@ export function protocolAdherence(
         -- new one: counting it here would make a protocol's rate WORSE for
         -- having carry-over on, which is the opposite of what it is for.
         AND ${NOT_CARRIED_SQL}
+        -- Nor is a row written ahead of its day and never acted on: a day
+        -- committed on the Plan screen and then never opened owes nothing, for
+        -- the same reason and to protect the same invariant (NOT_UNSEEN_SQL).
+        AND ${NOT_UNSEEN_SQL}
       GROUP BY json_extract(e.value, '$.item'), e.title`,
     [protocolId, from, to]
   );

@@ -92,6 +92,18 @@ export type MissionItem = {
    * 14 Sep* and what {@link skipCarried} reaches through.
    */
   carriedFrom?: { date: string; entry: string };
+  /**
+   * How far the TICK was from the row — signed days, negative for early
+   * (2026-09-19). A row ticked on the Plan screen two days before its own day
+   * reads `-2` and prints "DONE 2 DAYS EARLY"; a past row backfilled this
+   * morning reads `+1` and prints "TICKED 1 DAY LATER".
+   *
+   * Undefined on every ordinary row — a tick made on the day it belongs to
+   * leaves nothing to say, and so does every row written before `value.done_on`
+   * existed. Label voice beside the category, never a signal colour: this is
+   * provenance about BEHAVIOUR, and the signal palette marks biology.
+   */
+  tickedDays?: number;
 };
 
 export type Readiness = {

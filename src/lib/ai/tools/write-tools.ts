@@ -92,9 +92,10 @@ import {
   rememberFact,
 } from '@/lib/db/repositories/coach-memory';
 import {
-  generateMissionForDay,
-  rederiveMissionForDay,
+  rederiveDaysAhead,
+  rederiveMissionFromToday,
 } from '@/lib/db/repositories/mission-generate';
+import { arriveDay } from '@/lib/db/seed';
 import {
   getOrCreateDailyLog,
   insertMissionItem,
@@ -1177,7 +1178,7 @@ const updateProtocolTool: CoachTool = {
       // It reaches TODAY like every other protocol write, through the same
       // diff: a protocol the user just approved that put nothing on the day
       // would read as a broken promise.
-      const rederived = rederiveMissionForDay(db, todayISODate(context.now));
+      const rederived = rederiveMissionFromToday(db, todayISODate(context.now));
       return json({
         created: true,
         protocol: created?.slug ?? null,
@@ -1195,7 +1196,7 @@ const updateProtocolTool: CoachTool = {
     // The edit reaches TODAY, through the same diff a mode change uses:
     // untouched machine-made rows follow the new content, and everything the
     // user has already acted on is preserved.
-    const rederived = rederiveMissionForDay(db, todayISODate(context.now));
+    const rederived = rederiveMissionFromToday(db, todayISODate(context.now));
     return json({
       updated: true,
       protocol: target.slug,
@@ -1425,14 +1426,18 @@ const adjustTodayTool: CoachTool = {
     const date = todayISODate(context.now);
     const ops = parseAdjustOps(asRecord(input));
 
-    // Make sure the day EXISTS before adjusting it. `ensureTodaySeeded` normally
-    // does this when Home first renders, but the Coach tab can be the first
-    // thing opened — and then an `add` created the daily_log and a planned row,
-    // which made the seed guard (`countMissionEntries > 0`) skip generation
-    // permanently. The user's whole protocol-driven day vanished, replaced by
-    // the one item the Coach added. Idempotent, so this is a no-op the other
-    // 99% of the time.
-    generateMissionForDay(db, date);
+    // Make sure the day EXISTS before adjusting it. Home normally does this on
+    // its first render, but the Coach tab can be the first thing opened — and
+    // then an `add` created the daily_log and a planned row, which made the
+    // seed guard (`countMissionEntries > 0`) skip generation permanently. The
+    // user's whole protocol-driven day vanished, replaced by the one item the
+    // Coach added. Idempotent, so this is a no-op the other 99% of the time.
+    //
+    // `arriveDay`, not the bare generator: if the user committed this day ahead
+    // on the Plan screen and the Coach is the first surface to open it, the
+    // arrival re-derive has to happen here too — otherwise the Coach would
+    // adjust a day still wearing its `ahead` marks and missing its carry.
+    arriveDay(db, date);
 
     const log = getOrCreateDailyLog(db, date);
     const applied: string[] = [];
@@ -1476,7 +1481,10 @@ const adjustTodayTool: CoachTool = {
               reason: `already ${current.status} today — its record stands; change it on the mission if that's wrong`,
             });
           } else {
-            setMissionStatus(db, op.id!, target);
+            // `date` is the turn's own logical today (context.now), which is
+            // what `value.done_on` must record — never the wall clock inside
+            // the repository, which a long turn can outrun.
+            setMissionStatus(db, op.id!, target, date);
             applied.push(`${op.action}d "${current.title}"`);
           }
         } else if (op.action === 'move') {
@@ -1499,6 +1507,11 @@ const adjustTodayTool: CoachTool = {
         }
       }
     });
+
+    // Outside the batch transaction, because it opens its own: a completion in
+    // the batch can change what lands on a day already committed ahead (an
+    // `adjusting` clock, a quota's allowance), exactly as a tap on Home does.
+    rederiveDaysAhead(db, date);
 
     return json({
       adjusted: true,
@@ -1625,7 +1638,7 @@ const setModeTool: CoachTool = {
     //
     // A FUTURE-dated mode has nothing to reshape yet: that day generates under
     // the mode when it seeds (planForDay reads getActiveMode for its own date).
-    const rederived = startDate === today ? rederiveMissionForDay(db, startDate) : undefined;
+    const rederived = startDate === today ? rederiveMissionFromToday(db, startDate) : undefined;
     return json({
       set: true,
       mode,
@@ -1714,6 +1727,12 @@ const createExperimentTool: CoachTool = {
       durationDays,
       successCriteria: optString(args, 'success_criteria') ?? null,
     });
+    // A RUNNING experiment's intervention is a mission row (mission-generate.ts),
+    // so creating one changes what today and every committed day ahead should
+    // hold. This seam re-derived nothing at all until 2026-09-19: the row
+    // appeared only when the next unrelated write happened to re-derive, or the
+    // next morning.
+    rederiveMissionFromToday(db, todayISODate(context.now));
     // Warn at CREATE time about metrics no tool can read, rather than letting
     // readout day arrive with nothing to measure (the schema's own old example
     // — "sleep score" — was exactly this trap).
@@ -1827,7 +1846,7 @@ const completeExperimentTool: CoachTool = {
   readOnly: false,
   confirmSummary: (input, db) =>
     `Conclude experiment "${requireExperiment(db, reqString(asRecord(input), 'id')).title}"`,
-  execute: (db, input) => {
+  execute: (db, input, context) => {
     const args = asRecord(input);
     const exp = requireExperiment(db, reqString(args, 'id'));
     if (exp.status !== 'active') {
@@ -1837,6 +1856,11 @@ const completeExperimentTool: CoachTool = {
       conclusion: reqString(args, 'conclusion'),
       outcomeNotes: optString(args, 'outcome_notes') ?? null,
     });
+    // The mirror of createExperimentTool's call: a concluded experiment stops
+    // being a running one, so its intervention must come OFF today and off
+    // every day already committed ahead, rather than lingering as a task with
+    // nothing left to measure.
+    rederiveMissionFromToday(db, todayISODate(context.now));
     return json({ completed: true, id: exp.id, title: exp.title });
   },
 };

@@ -23,7 +23,11 @@ import {
   setMissionStatus,
 } from '../src/lib/db/repositories/mission.ts';
 import { activeModesIn, getActiveMode, setMode } from '../src/lib/db/repositories/day-modes.ts';
-import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+import {
+  commitDayAhead,
+  generateMissionForDay,
+  planForDay,
+} from '../src/lib/db/repositories/mission-generate.ts';
 import { createProtocolWithVersion, deleteProtocol } from '../src/lib/db/repositories/protocols.ts';
 import { logSymptom, symptomDailySeries } from '../src/lib/db/repositories/symptoms.ts';
 
@@ -876,6 +880,142 @@ console.log('\n14g. carry-over: the carried row is out of every denominator (005
   sources[0].planned
     ? ok('the ledger still sums to planned — done-late is a subset of skipped, not a fifth term')
     : bad('ledger does not sum', JSON.stringify(sources[0]));
+}
+
+console.log('\n14h. a tick made AHEAD lands under the row’s own day, and costs no rate');
+{
+  const { db } = freshDb();
+  const WEDNESDAY = '2026-08-05';
+  const FRIDAY = '2026-08-07';
+  createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: '2026-08-03' },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'creatine',
+              title: 'Creatine',
+              scheduled_time: '08:00',
+              dose: '5 g',
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+            {
+              id: 'zinc',
+              title: 'Zinc',
+              scheduled_time: '21:00',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  generateMissionForDay(db, WEDNESDAY);
+  const wednesdayBefore = missionDailySeries(db, 7, WEDNESDAY).find((p) => p.date === WEDNESDAY);
+
+  // Friday committed on Wednesday, Creatine ticked there.
+  const plan = planForDay(db, FRIDAY, { today: WEDNESDAY });
+  const ordinal = plan.findIndex((e) => e.extras.item === 'creatine');
+  commitDayAhead(db, FRIDAY, WEDNESDAY, {
+    ordinal,
+    expect: {
+      title: plan[ordinal].title,
+      protocolId: plan[ordinal].protocolId,
+      itemId: 'creatine',
+    },
+  });
+
+  const wednesdayAfter = missionDailySeries(db, 7, WEDNESDAY).find((p) => p.date === WEDNESDAY);
+  JSON.stringify(wednesdayBefore) === JSON.stringify(wednesdayAfter)
+    ? ok('ticking Friday on Wednesday moves Wednesday’s point not at all')
+    : bad(
+        'wednesday moved',
+        `${JSON.stringify(wednesdayBefore)} → ${JSON.stringify(wednesdayAfter)}`
+      );
+
+  // Saturday: Friday has passed and was never opened. It must read as ONE
+  // obligation met, not as two planned and one done — 0050's invariant, which
+  // is that using a feature can never make a rate look worse. An untouched
+  // Thursday, which has no rows at all, is the comparison.
+  const saturday = missionDailySeries(db, 7, '2026-08-08');
+  const friday = saturday.find((p) => p.date === FRIDAY);
+  const thursday = saturday.find((p) => p.date === '2026-08-06');
+  friday.planned === 1 && friday.completed === 1 && friday.doneLate === 0
+    ? ok('a committed-ahead day that passed unopened reads planned 1 · completed 1')
+    : bad('friday', JSON.stringify(friday));
+  thursday.planned === 0
+    ? ok('…beside a day nobody opened at all, which is still planned 0')
+    : bad('thursday', JSON.stringify(thursday));
+  missionAdherence(saturday.filter((p) => p.date >= WEDNESDAY && p.date <= FRIDAY)) === 1 / 3
+    ? ok('…so the window is 1 of 3, exactly what Wednesday’s two rows and Friday’s one owe')
+    : bad(
+        'adherence',
+        String(missionAdherence(saturday.filter((p) => p.date >= WEDNESDAY && p.date <= FRIDAY)))
+      );
+
+  const bySource = missionBySource(db, WEDNESDAY, FRIDAY);
+  bySource.length === 1 && bySource[0].planned === 3 && bySource[0].completed === 1
+    ? ok('“Where it’s failing” counts the same three obligations')
+    : bad('bySource', JSON.stringify(bySource));
+
+  // THE RECORD START. A committed future day writes real rows on a real future
+  // date; left unclamped, min() would put the record's beginning after today
+  // and mission-history would clip its window to nothing.
+  missionRecordStart(db, WEDNESDAY) === WEDNESDAY
+    ? ok('the record begins on Wednesday, never on the Friday committed ahead of it')
+    : bad('recordStart', String(missionRecordStart(db, WEDNESDAY)));
+  missionRecordStart(db, '2026-08-08') === WEDNESDAY
+    ? ok('…and still does once Friday has passed')
+    : bad('recordStart after', String(missionRecordStart(db, '2026-08-08')));
+
+  // A database whose ONLY rows are a day committed ahead: the record has not
+  // begun, and saying so is the honest answer rather than a date in the future.
+  const youngDb = freshDb();
+  createProtocolWithVersion(
+    youngDb.db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: WEDNESDAY },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p1',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'creatine',
+              title: 'Creatine',
+              scheduled_time: '08:00',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  const youngPlan = planForDay(youngDb.db, FRIDAY, { today: WEDNESDAY });
+  commitDayAhead(youngDb.db, FRIDAY, WEDNESDAY, {
+    ordinal: 0,
+    expect: {
+      title: youngPlan[0].title,
+      protocolId: youngPlan[0].protocolId,
+      itemId: youngPlan[0].extras.item,
+    },
+  });
+  missionRecordStart(youngDb.db, WEDNESDAY) === null
+    ? ok('a database whose only rows sit in the future has no record start at all')
+    : bad('young recordStart', String(missionRecordStart(youngDb.db, WEDNESDAY)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

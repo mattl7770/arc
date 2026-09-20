@@ -34,12 +34,16 @@ import {
 import { reminderTrigger } from '../src/lib/notifications/reminders.ts';
 import {
   fireInstant,
+  PROTOCOL_REMINDER_HORIZON_DAYS,
   protocolReminderKey,
   protocolRemindersDue,
 } from '../src/lib/notifications/protocol-reminders.ts';
 import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
 import {
+  commitDayAhead,
   generateMissionForDay,
+  MISSION_HORIZON_DAYS,
+  planForDay,
   rederiveMissionForDay,
 } from '../src/lib/db/repositories/mission-generate.ts';
 import { addVersion, createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
@@ -515,6 +519,130 @@ console.log('7b. the fire time is the OS CLOCK, not the logical day');
   fireInstant('2026-08-03', '99:99', '00:00') === null
     ? ok('a non-clock time is not a moment')
     : bad('bad time accepted');
+}
+
+console.log('7c. a day COMMITTED ahead: what stops buzzing, and what must not');
+{
+  // THE INVARIANT BETWEEN THE TWO HORIZONS. The Plan screen's is deliberately
+  // NOT defined in terms of the scheduler's — a UI answer must not retune the
+  // notification layer — so what is asserted is the relationship: every day the
+  // picker can commit is a day the scheduler already reads.
+  MISSION_HORIZON_DAYS < PROTOCOL_REMINDER_HORIZON_DAYS
+    ? ok(
+        `the picker's horizon (${MISSION_HORIZON_DAYS}) stays inside the scheduler's (${PROTOCOL_REMINDER_HORIZON_DAYS})`
+      )
+    : bad(
+        'the two horizons crossed',
+        `${MISSION_HORIZON_DAYS} vs ${PROTOCOL_REMINDER_HORIZON_DAYS}`
+      );
+
+  const { db } = freshDb();
+  const MONDAY = '2026-08-03';
+  const WEDNESDAY = '2026-08-05';
+  const NOW = new Date(2026, 7, 3, 8, 0, 0, 0); // Monday 08:00
+  // BOTH items land on WEDNESDAY ONLY, which is what makes the subtraction
+  // observable at all: for a daily item the dedupe would take today's moment
+  // and Wednesday would never come up, so the assertion would pass vacuously.
+  createProtocolWithVersion(
+    db,
+    { name: 'Midweek', type: 'supplement_stack', startedOn: MONDAY },
+    protocolDoc([
+      protocolItem({
+        id: 'mag',
+        title: 'Magnesium',
+        time: '21:00',
+        cadence: { kind: 'weekdays', days: [3] },
+      }),
+      protocolItem({
+        id: 'zinc',
+        title: 'Zinc',
+        time: '22:00',
+        cadence: { kind: 'weekdays', days: [3] },
+      }),
+    ])
+  );
+  generateMissionForDay(db, MONDAY);
+
+  const before = protocolRemindersDue(db, NOW, '00:00')
+    .filter((r) => r.day === WEDNESDAY)
+    .map((r) => r.itemId)
+    .sort();
+  JSON.stringify(before) === JSON.stringify(['mag', 'zinc'])
+    ? ok('uncommitted, both Wednesday-only items are scheduled for Wednesday')
+    : bad('the fixture did not schedule both', JSON.stringify(before));
+
+  // Wednesday is committed ahead on Monday, with Magnesium ticked.
+  const plan = planForDay(db, WEDNESDAY, { today: MONDAY });
+  const ordinal = plan.findIndex((e) => e.extras.item === 'mag');
+  commitDayAhead(db, WEDNESDAY, MONDAY, {
+    ordinal,
+    expect: {
+      title: plan[ordinal].title,
+      protocolId: plan[ordinal].protocolId,
+      itemId: 'mag',
+    },
+  });
+
+  const after = protocolRemindersDue(db, NOW, '00:00')
+    .filter((r) => r.day === WEDNESDAY)
+    .map((r) => r.itemId);
+  !after.includes('mag')
+    ? ok('…and once one is ticked ahead, its Wednesday moment is gone')
+    : bad('a row ticked ahead still buzzes', JSON.stringify(after));
+  after.includes('zinc')
+    ? ok('…while the row he committed but did not tick keeps its reminder')
+    : bad('an unseen pending row lost its reminder', JSON.stringify(after));
+
+  // NOW THE HALF THAT MUST NOT BE LOST. Monday's Magnesium is missed and the
+  // protocol carries; at 22:30 Monday its own 21:00 has passed, so the ONLY
+  // source left for the nudge is TUESDAY's plan entry — which is the carried
+  // debt, and which exists only because the future reads keep no `{ today }`.
+  const carryDb = freshDb();
+  const carried = createProtocolWithVersion(
+    carryDb.db,
+    {
+      name: 'Evening stack',
+      type: 'supplement_stack',
+      startedOn: MONDAY,
+      carryOver: true,
+    },
+    protocolDoc([
+      protocolItem({
+        id: 'mag',
+        title: 'Magnesium',
+        time: '21:00',
+        cadence: { kind: 'weekdays', days: [1] },
+      }),
+    ])
+  );
+  generateMissionForDay(carryDb.db, MONDAY); // left untouched — the debt
+  const lateMonday = new Date(2026, 7, 3, 22, 30, 0, 0);
+  const nudge = protocolRemindersDue(carryDb.db, lateMonday, '00:00').find(
+    (r) => r.key === protocolReminderKey(carried, 'mag')
+  );
+  nudge && nudge.day === '2026-08-04'
+    ? ok('a debt whose own time has passed today is still nudged tomorrow')
+    : bad('the carried nudge was lost', JSON.stringify(nudge));
+
+  // The scheduler's own edge, restated because the two horizons now have to be
+  // read together: today+6 is reached, today+7 is not.
+  const reachDb = freshDb();
+  createProtocolWithVersion(
+    reachDb.db,
+    { name: 'Weekly', type: 'daily_routine', startedOn: MONDAY },
+    protocolDoc([
+      protocolItem({
+        id: 'weekly',
+        title: 'Long run',
+        time: '09:00',
+        cadence: { kind: 'weekdays', days: [7] }, // Sunday = Monday + 6
+      }),
+    ])
+  );
+  const reach = protocolRemindersDue(reachDb.db, NOW, '00:00').find((r) => r.itemId === 'weekly');
+  reach && reach.day === '2026-08-09'
+    ? ok('…and the scheduler still reaches today+6')
+    : bad('today+6 not reached', JSON.stringify(reach));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

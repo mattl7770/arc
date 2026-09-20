@@ -176,7 +176,10 @@ function plural(n: number, word: string): string {
 function read(): MissionRecordView {
   const db = getDb();
   const today = todayISODate();
-  const recordStart = missionRecordStart(db);
+  // `today` goes through: a day committed ahead writes real rows on a real
+  // future date, and an unclamped min() would begin the record after today and
+  // clip the window below to nothing.
+  const recordStart = missionRecordStart(db, today);
 
   const series = missionDailySeries(db, WINDOW_DAYS, today);
   const days = recordStart === null ? [] : series.filter((p) => p.date >= recordStart);

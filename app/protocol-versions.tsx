@@ -8,7 +8,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
-import { rederiveMissionForDay } from '@/lib/db/repositories/mission-generate';
+import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import { restoreVersion } from '@/lib/db/repositories/protocols';
 import { diffContent, diffLines } from '@/lib/protocols/diff';
 import { protocolTypeLabel } from '@/lib/protocols/format';
@@ -166,7 +166,7 @@ export default function ProtocolVersionsScreen() {
             try {
               const db = getDb();
               restoreVersion(db, protocol.id, versionId);
-              rederiveMissionForDay(db, todayISODate());
+              rederiveMissionFromToday(db, todayISODate());
             } catch (error) {
               console.warn('[protocols] restore failed', error);
               Alert.alert('Restore failed', 'Nothing was changed. Please try again.');
