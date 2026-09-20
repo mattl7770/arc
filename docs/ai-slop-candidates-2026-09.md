@@ -1,6 +1,12 @@
 # AI-slop candidates — September 2026
 
-**Status: APPLIED, 2026-09-15, by owner approval** (Matt: *"go ahead and implement the proposed slop removals"*). Every entry below carries an **Outcome:** line recording what was actually done. §0 (the protocol adherence plate) was already re-set in an earlier branch, before this approval.
+**Status: FULLY APPLIED, 2026-09-19, by owner approval of the WHOLE list** (Matt: *"Execute the full AI slop candidate list, we can always add stuff back later if we need to."*). This supersedes the partial approval below.
+
+A first pass applied 40 of the 46 candidates on **2026-09-15** (Matt: *"go ahead and implement the proposed slop removals"*) and **kept five** on the list's own argument — `progress-photos`, `settings-units`, `workout-log`, the ended-protocol rule on `app/protocols.tsx`, and the `Open chat` label on `src/components/home/coach-brief.tsx`. The owner has overruled that judgement. Every one of the five is now applied; each carries a second **Outcome (2026-09-19):** line saying what happened to the fact it was carrying. §0 (the protocol adherence plate) was re-set in an earlier branch, before either approval.
+
+**The rule that survives the blanket approval:** *never take a FACT with the cut.* "We can always add stuff back later" licenses removing COPY, not removing information that exists nowhere else. Where a cut would have dropped a measurement, a unit, a consequence-of-save line, an honest caveat or the way out of an error, the fact was kept and the filler alone went — those entries say `applied, fact kept — <what>`. Where a kept entry's own argument was that it stated a fact with no other home, the fact was moved to where it belongs rather than deleted, and the Outcome says where it went.
+
+**Nine new entries** were found by re-walking the app on 2026-09-19 under the same method, and are filed as **§8 — Found on the second walk**. The `not found` entry in §2 was re-checked and reopened: the sentence had *moved*, not gone.
 
 **Why it is a list and not a diff.** The standing rule on this repo is that copy is not removed without sign-off — over-deletion has cost this project real information more than once, and two of the entries below are lines that a previous sweep cut and had to be *restored* because the cut took a fact with it (`app/settings-units.tsx`, `app/labs.tsx`). So: mark the ones you want gone, and they go in one commit.
 
@@ -34,6 +40,8 @@ Every `.tsx` under `app/` (68 screens) and every `.tsx` under `src/components/` 
 **One thing that materially shapes this list: much of the app has already been through an owner pass.** **Eleven files** carry a comment recording that the owner cut *explanatory copy* on **2026-08-11**, naming which sentence went and which survived (`+not-found`, `barcode-scan`, `coach-memory`, `settings-coach`, `settings-units`, `settings`, `suggested-prompts`, `hero-card`, `recent-logs`, `app-lock-screen`, `error-boundary`), and 36 files reference that round in some form. Where a line below is one of those survivors it is marked **[survived 08-11]**, listed at the bottom of its section, low priority — you already looked at it once and kept it. Do not read its presence as a recommendation. (Two files in that list, `suggested-prompts` and `settings`, had a *different* sentence cut than the one proposed here, so their candidates are not marked.)
 
 **Counts.** **46 candidates** across 31 files. **20 confident** — I would remove or rewrite these on sight. **26 unsure** — a real case either way, and for several (`progress-photos`, `settings-units`, `workout-log`) the case for keeping is the stronger one; they are here because "be thorough" was the instruction, not because I think they should go. A further **6 lines are noted but not counted**, marked **[survived 08-11]**: you have already ruled on them.
+
+**Counts, revised 2026-09-19.** **55 candidates** across 38 files: the original 46, plus **9 found on the second walk** and filed as §8. All 46 originals are now applied, including the five the first pass kept and the one it recorded as `not found` — that one had *moved*, and was applied where it had moved to. Of the 6 noted-but-not-counted lines, **all 6 were re-read and all 6 kept**: each is already one sentence carrying one fact, and §7's Outcome says why for each. **One line was judged too risky to trim and is flagged rather than cut** (`settings-backups.tsx:576`). A further **7 lines read on the second walk were deliberately not cut**, listed in §9 with reasons. **Across all 55 applied entries, 27 are `applied, fact kept` — no entry on this list removed a fact that exists nowhere else.**
 
 ---
 
@@ -101,8 +109,10 @@ A contents list under "Settings". It is accurate and it saves a trip, but it wil
 The whole brief is one `Pressable` that opens the chat, with a chevron beside this label.
 **Proposal:** DELETE, keep the chevron. *Unsure: a bare chevron with no word is a weaker affordance, and the Label voice on it is deliberate per §3.*
 **Outcome:** kept — the component's own docblock documents both halves of this as deliberate: the Label-voice text on what is "still a button" (00-design-spec.md §3), and the fact that Home's actual pine "Open chat" link was already retired elsewhere for the identical affordance reason. The stronger case here is keeping.
+**Outcome (2026-09-19):** applied — the words are gone, the chevron stays. **No fact went with it:** the block is one `Pressable` whose `accessibilityLabel` reads "Open the full Coach conversation", so the destination is still spoken to a screen-reader user and still visible as a chevron to everyone else. The docblock paragraph that defended the neutral-ink link was rewritten to record why the words went. Refuted on the `home` render in `db/screens-render.test.mjs`.
 
 **[survived 08-11]** `src/components/home/hero-card.tsx:389` "Today is handled" — reads slightly pat for the house register, but the wind-down advice that followed it was already cut and the file says the statement itself is load-bearing. Listed for completeness; I would keep it.
+**Outcome (2026-09-19):** kept, re-examined under the blanket approval. It is the *headline* of a completion stamp (22px serif, under a stamped check), not a sentence in an empty state — `00-design-spec.md` H-02 authors this exact state and names it. Below it, "Nothing left on the list." is the one sentence shape 1 asks for. There is no second paragraph to cut: the wind-down advice that was the actual slop here went on 2026-08-11. Cutting either of the two surviving lines would leave a bare check mark with no statement of what is complete.
 
 ---
 
@@ -131,6 +141,8 @@ Two statements of one fact; "Preview mode" is also internal vocabulary.
 Teaches the mechanism on an empty screen. Note the file records that the owner *already* cut a standing explainer here on 2026-08-11 and this one stayed.
 **Proposal:** DELETE, or cut to "The Coach asks before it remembers anything."
 **Outcome:** not found. `app/coach-memory.tsx` was restructured after this list was written — its own docblock now records that the list view relocated to the Knowledge hub (`app/knowledge.tsx`) and this route is the editor only; this sentence, and the standing-explainer text around it, is no longer in the file under any wording. Nothing to remove.
+**Outcome (2026-09-19):** **reopened and applied — it had moved, not gone.** Re-checking under any wording found it rewritten at `app/knowledge.tsx:341–345`, in the Coach-memory empty state: *"One line each, carried into every turn — how you like to train, something that disagrees with you, what you're working toward. Write one yourself, or tell the Coach and it will ask to keep it."* Same sentence, same job, new address. Cut to **"Write one yourself, or tell the Coach and it will ask to keep it."**
+*Fact kept —* the consent fact (nothing is remembered without being asked), which is the Proposal's own fallback sentence and is stated nowhere else. *Facts NOT lost by the cut —* "one line each, carried into every turn" is the editor's own sentence at `app/coach-memory.tsx:138–142` ("The Coach carries this in every single turn, so keep it to a line"), stated where the line is being written; the examples were a tutorial. This is the "keep the statement nearest the action" shape. Pinned in `db/screens-render.test.mjs` (`knowledge hub (no memories)`), with both halves of the old sentence refuted.
 
 ---
 
@@ -234,6 +246,7 @@ On the review screen, above the editable numbers. The instruction to check a tra
 "Add sets below" points at the obvious control; the rest states a real permission (a set-less session is valid) that nothing else says.
 **Proposal:** "Nothing drafted yet. A session saves with no sets, for cardio and mobility work."
 **Outcome:** kept — named explicitly in the Counts section as one of the entries where the case for keeping is the stronger one.
+**Outcome (2026-09-19):** applied, **fact kept — a session saves with no sets, for cardio and mobility work.** That permission is the half nothing else in the app states, and it survives verbatim; what went is "Add sets below", the pointer at the control immediately underneath. No render covers `app/workout-log.tsx`, so there is no assertion to update and none to add.
 
 **`src/components/exercise/muscle-figure.tsx:427`** · `chatty-helper` · **unsure**
 > "No training in the last 14 days, so every muscle reads fresh. Log a session and the figure starts fading."
@@ -256,6 +269,7 @@ Three sentences of documentation on the empty hub. The versioning sentence is a 
 Under a section already labelled "Ended". Precise, though — and "until a phase is extended" tells you the fix.
 **Proposal:** DELETE. *Unsure: it is the only place the ended-protocol rule is stated.*
 **Outcome:** kept — the entry's own words are the reason: this is the only place the ended-protocol rule is stated, and the standing rule on this list is that a fact does not go with a cut when nothing else carries it.
+**Outcome (2026-09-19):** applied — and **the premise was wrong**. The ended-protocol rule is *not* stated only here. `app/protocol-detail.tsx:120–128` already carries it, in a fuller form, on the screen where the fix is taken: *"This protocol has ended. Its last phase ran out on {date}. It puts nothing on a day until you extend a phase or add another."* That version adds the date and sits beside the Edit control that extends the phase, so **the fact did not move — it was already where it belongs**, and the hub line was the duplicate. This is shape 2 (a mechanism stated twice; keep the one nearest the action). The hub's "Ended" section label and its count are untouched. *No test assertion changed and none added: no render in `db/screens-render.test.mjs` reaches an ended protocol, so a refutation there would be vacuous. Flagged rather than faked.*
 
 **`app/protocol-versions.tsx:207`** · `feature-explainer` · **unsure**
 > "This protocol has no saved content. The first save writes v1, and every save after it keeps the one before."
@@ -332,6 +346,7 @@ Definition of "report" under a section called "Generated reports", on a screen w
 This is *advice*, not chrome — and it is good advice that changes what the user does at capture time. It is also the kind of line the owner may read as a coach speaking out of turn on a gallery screen.
 **Proposal:** keep. Listed because it is the closest thing in the app to an unsolicited tip.
 **Outcome:** kept — named explicitly in the Counts section as one of the entries where the case for keeping is the stronger one.
+**Outcome (2026-09-19):** applied — deleted. **No fact went with it.** The pose set it recommended is already named in the sentence directly above, which survives untouched: *"No photos yet. Photograph yourself in the iOS Camera app — front, side, back — then bring them in here. ARC keeps a working copy; your originals stay in Photos."* What went is the advice about morning and light — capture technique, not a measurement, a unit, a consequence or a caveat, and the one line in the app the list itself called "the closest thing to an unsolicited tip". This is also shape 1: the empty state is back to one authored statement. Refuted on `progress photos (empty)` in `db/screens-render.test.mjs`. *(The shorter sibling `app/progress-photos.tsx:349`, "Pick two photos to compare. Same pose reads best.", was NOT cut — see §9.)*
 
 **`app/wearables.tsx:144`** · `marketing` · **unsure**
 > "The HealthKit module rides the next dev build. Once it lands, connect Apple Health and your ring or watch data flows in here."
@@ -340,6 +355,7 @@ This is *advice*, not chrome — and it is good advice that changes what the use
 **Outcome:** applied, fact kept — the build-gate fact.
 
 **[survived 08-11]** `app/labs.tsx:253` "Function Health PDF, parsed on-device. Review every row before anything is saved; the markers ARC carries an optimal range for are graded against it." — dense but every clause is load-bearing, and the file records that the unverifiable "160+ biomarkers" claim was already removed from it. Keep.
+**Outcome (2026-09-19):** kept, re-examined. Three clauses, three facts, no filler between them: *parsed on-device* (where the data goes — CLAUDE.md §2), *review every row before anything is saved* (the no-auto-commit guarantee, the same one the list protected at `meal-estimate.tsx`), and *only markers with an optimal range are graded* (the honest caveat that an ungraded row is not a passing row). Every clause is on the protected list at the top of this document. Nothing here is copy.
 
 ---
 
@@ -356,8 +372,93 @@ This is *advice*, not chrome — and it is good advice that changes what the use
 The first clause is a fact nothing else states and the file records that it was cut once and restored for exactly that reason. The tail is a roadmap note in a settings screen — it will be wrong the moment those land.
 **Proposal:** "Storage stays metric; these toggles only change how numbers display."
 **Outcome:** kept — named explicitly in the Counts section as one of the entries where the case for keeping is the stronger one, and this exact line already carries scar tissue from an earlier cut-and-restore (see the intro). Left untouched rather than re-trimmed. Note for a future pass: the code has moved since this entry was written — `app/settings-units.tsx` now ships all five unit rows (distance and temperature included), so the roadmap half of this sentence ("distance and temperature once workouts and environment tracking land") is now factually stale, independent of the slop question.
+**Outcome (2026-09-19):** applied — now **"Storage stays metric; these toggles only change how numbers display."** **Fact kept — storage stays metric**, which is the clause the 2026-08-11 cut took and which had to be restored; it is untouched and it is the whole reason this line exists. The tail was not a second fact to protect but a *false* one: all five unit rows ship above it today, so "distance and temperature once workouts and environment tracking land" described a roadmap the screen had already overtaken. **Cutting it removed a wrong statement and a filler in the same edit** — the one case on this list where the slop and the staleness were the same words. The file's comment now records both the 2026-08-11 restore and this trim, so the next reader does not re-litigate either. No render covers `app/settings-units.tsx`; no assertion to update.
 
 **[survived 08-11]** `app/settings-backups.tsx:576` (the encryption paragraph), `app/settings-profile.tsx:181` ("This record never leaves the phone."), `src/components/ui/error-boundary.tsx:70` ("Your data is safe on this device — nothing is written when a screen fails."), `app/+not-found.tsx:49` ("Nothing was lost — every log, protocol and lab on this device is exactly where you left it.") — all privacy or data-safety statements on screens where the user is most likely to be worried. All four read as reassurance, which is why they are noted; all four state a fact you cannot get anywhere else, which is why none is proposed for removal.
+**Outcome (2026-09-19):** all four kept, each re-read line by line against the blanket approval. Each is already **one sentence carrying one fact**, with nothing around it to cut:
+- `settings-profile.tsx:242` "This record never leaves the phone." — seven words, and CLAUDE.md §2's first non-negotiable. The file records that it was cut once and restored *because* the sweep left the app asserting local-first ownership nowhere. Cutting it a second time would repeat a known mistake.
+- `error-boundary.tsx:70` "Your data is safe on this device — nothing is written when a screen fails." — the second clause is the fact (a crash is not a partial write) and the first is what makes it legible at the moment a person is worried. The two sentences that *were* slop here — one restating the headline, one restating the button — went on 2026-08-11.
+- `+not-found.tsx:49` "Nothing was lost — every log, protocol and lab on this device is exactly where you left it." — same shape, same round; the restatement of the headline is already gone.
+- `settings-backups.tsx:576` (the encryption paragraph) — the only one of the four with more than a sentence, and the one place I stopped. Four clauses, four distinct facts: *encrypted before it is written* (when), *the encrypted file is the only thing that reaches iCloud* (what leaves), *Apple stores bytes it cannot read; ARC keeps the key* (**who holds the key — not a restatement of "encrypted"; it is the custody fact, and it is stated nowhere else in the app**), and *photos are not included, the originals are in Photos, which has its own backup* (the scope gap and why it is safe). This paragraph is the user-facing form of the architecture CLAUDE.md §2 and `docs/backups-subapp.md` are built on. **Judged too risky to trim; flagged rather than cut silently — the owner can still overrule.**
+
+---
+
+## §8 — Found on the second walk (2026-09-19)
+
+The app was walked again under the same method — every `.tsx` under `app/` and `src/components/`, every rendered string, `accessibilityLabel`, `Alert` title and body, and placeholder, with docblocks and system prompts excluded. Nine lines the first walk missed. All nine are applied; each says what the first walk would have tagged it.
+
+**`app/reports.tsx:320`** · `ai-label`/aphorism · **confident**
+> "Raw data export — everything, as one JSON file — lives in Settings › Security & data. **A report is a document for a reader; the export is the data itself.**"
+The first sentence is the fact and the route. The second is the same conceit shape `00-design-spec.md` §5 rules out and the same one that took `knowledge-entry-edit.tsx:267` ("An entry is a page, not a paper") in the first round — an aphorism explaining a distinction the two destinations make for themselves.
+**Proposal:** end at "…Security & data."
+**Outcome:** applied, **fact kept — the route** (raw export lives in Settings › Security & data, and it is one JSON file). `db/screens-render.test.mjs` already asserted the route clause; a refutation of the aphorism was added, and the stale comment claiming the clause "survives, unrelated, further down this screen" was corrected.
+
+**`app/settings-coach.tsx:184`** · `marketing` · **confident**
+> "Sonnet handles this workload **at near-Opus quality for a fraction of the cost**; Opus is **worth it** for deep, whole-history analysis."
+Vendor-brochure register — the most obviously *sold* sentence left in the app, in the house's own voice about someone else's product.
+**Proposal:** "Sonnet is the cheaper of the two; Opus is stronger on deep, whole-history analysis."
+**Outcome:** applied, **fact kept — the choice itself** (Sonnet costs less; Opus is the one for deep, whole-history work), which is a real decision aid on a picker where the user is billed directly. The billing fact stays where it belongs, on the key row above ("pay-as-you-go, billed to you"). No render covers this screen.
+
+**`src/components/home/metrics-strip.tsx:116`** · `chatty-helper` · **confident**
+> "No readings yet today. Connect Apple Health in Settings **to populate this**."
+The tail narrates the widget reacting to you.
+**Proposal:** "No readings yet today. Connect Apple Health in Settings."
+**Outcome:** applied, **fact kept — the route in** (Apple Health, in Settings), which is the only way this strip ever fills. *No refutation added: the component's own docblock records that this branch is defensive and unreachable from today's caller, so an assertion on it would be vacuous.*
+
+**`app/water.tsx:397`** · `chatty-helper` · **confident**
+> "No water logged yet. **Tap an amount below and the record starts.**"
+Points at the quick-add row three lines under it, then narrates what happens when you use it.
+**Proposal:** "No water logged yet."
+**Outcome:** applied. No fact lost — the quick-add row is on the same screen and labelled. Pinned and refuted on `water (never logged)`.
+
+**`app/water.tsx:535`** · `restates-obvious` · **confident**
+> "Nothing logged today. **Anything you add appears here to correct or remove.**"
+Describes rows the first entry shows for itself; the sibling branch ("Nothing was logged on {date}.") is already one sentence.
+**Proposal:** "Nothing logged today."
+**Outcome:** applied. Shape 1. Pinned and refuted on `water (never logged)`.
+
+**`app/exercise.tsx:530`** · `chatty-helper` · **confident**
+> "Nothing logged yet — **start a workout above.**"
+The identical archetype to `app/exercise.tsx:506` in §4, in the same file, missed the first time: an empty state that sends you to the control directly above it.
+**Proposal:** "Nothing logged yet."
+**Outcome:** applied. Refuted on `exercise hub (never trained)`.
+
+**`app/workout-live.tsx:1209`** · `chatty-helper` · **confident**
+> "Nothing logged yet. **Add the first exercise to start recording sets.**"
+Same archetype again; the "Add exercise" button is ~55 lines below in the same view. The sibling branch ("This session has no sets left. Save to keep it empty, or delete it.") states two real options and is untouched.
+**Proposal:** "Nothing logged yet."
+**Outcome:** applied. No render covers `app/workout-live.tsx`.
+
+**`src/components/exercise/exercise-picker.tsx:457`** · `chatty-helper` · **confident**
+> "**Not one of these?** ARC doesn't have a close match."
+A rhetorical question in assistant voice — and the branch beside it, for a search with no results at all, is already a plain statement ("ARC doesn't have this one."). The two branches now match.
+**Proposal:** drop "Not one of these? "
+**Outcome:** applied, **fact kept — the review guarantee** in the sentence that follows it ("AI can write the catalog entry — you review it before it's saved") is untouched. No render covers this component.
+
+**`app/exercise-detail.tsx:312`** · `chatty-helper` · **confident**
+> "Log a couple of weighted sessions and **the estimated-1RM trend appears here.**"
+Narrates the chart's arrival. The requirement behind it is real and precise — the chart is gated on `series.length >= 2`, and only weighted sets produce a point.
+**Proposal:** "An estimated-1RM trend needs two weighted sessions."
+**Outcome:** applied, **fact kept and sharpened — two weighted sessions**, which is the actual gate; "a couple" was vaguer than the code. Newly pinned on `exercise detail` (which has exactly one session on record), with the old wording refuted.
+
+**`app/nutrition-history.tsx:474`** · `chatty-helper` · **confident**
+> "No energy logged in the last {window} days. Log meals with calories and **the trend fills in here.**"
+**Proposal:** "No energy logged in the last {window} days. Only meals with calories count toward this."
+**Outcome:** applied, **fact kept — a meal logged without calories contributes nothing**, which is the same class of caveat the list protected at `nutrition-micros.tsx` ("Only foods with recorded micronutrients contribute, so these totals can run low"). Refuted on `nutrition-history (an empty day)`.
+
+---
+
+## §9 — Read on the second walk and deliberately not cut
+
+Lines the second walk stopped on and left. Each is here so the decision is on the record rather than invisible; the owner can still overrule any of them.
+
+- **`app/settings-backups.tsx:576`** — the encryption paragraph. The one entry I judged too risky. Reasoning in §7 above: four clauses, four facts, one of them (key custody) stated nowhere else in the app.
+- **`app/barcode-scan.tsx:314`** "Not in Open Food Facts. Add it manually and it's yours for next time." — reads close to the deleted `food-new.tsx` footer, but this one is a **failure message with the way out in it**, which the method excludes by name, and the two sibling branches already end at "Add it manually for now." The tail states a real consequence (it is cached for the next scan).
+- **`app/progress-photos.tsx:349`** "Pick two photos to compare. Same pose reads best." — four words of guidance *at the moment of a live choice*, not an unsolicited gallery tip, and `progress-photo-compare.tsx:238` states the full caveat only after you have already picked badly. The long-form sibling on the same screen was cut; this one earns its place.
+- **`app/knowledge.tsx:381`** — the prompt-cap sentence. It duplicates `coach-memory.tsx:253`, which looks like shape 2, but it renders **only when the cap bites**, and the file's own comment explains why: a store that has silently stopped riding along is the exact failure this run exists to make visible.
+- **`app/mission-history.tsx:253`** "No mission has been planned yet — activate a protocol and each day gets a plan." — one sentence that names the absence and the only fix. Borderline on the tail, kept whole.
+- **`app/nutrition.tsx:632`** "Nothing logged yet today, and no targets set — so there is nothing here to measure the day against." — a "no data, no number" line, excluded by the method.
+- **`app/wearables.tsx:146`** and **`src/components/home/mode-control.tsx:273`** — lists of what arrives, and consequence-of-a-mode-change lines. Facts throughout.
 
 ---
 
@@ -366,6 +467,12 @@ The first clause is a fact nothing else states and the file records that it was 
 1. **The empty state that grew a second paragraph.** Nine of these. The first line names the absence (correct, keep); the paragraph under it explains the feature (`meal-templates`, `protocols`, `reports`, `exercise`, `knowledge` ×2, `recipe-folders`, `food-search`, `experiments`). A rule that says *an empty state gets one sentence* would settle all nine.
 2. **The mechanism explained three times in one sub-app.** The Coach's experiment loop is described on `experiments.tsx` twice and `experiment-detail.tsx` once; the knowledge precedence rule on `knowledge.tsx` twice and `knowledge-entry-edit.tsx` once. Keep the statement nearest the action; delete the rest.
 3. **The flow narrated back to the user before they take it.** "You'll see the revised items…", "Check every number…", "…and it will be placed on this horizon." Where these sit beside a real guarantee (what is *not* touched, what is *not* written), the guarantee is the half worth keeping.
+
+**Outcome (2026-09-19) — the three shapes, applied as rules.** The owner's blanket approval turned all three from suggestions into the pass's working rule, and the second walk found each still live somewhere the first walk had not looked:
+
+1. *An empty state gets ONE sentence.* Nine cases in the first round. The second walk found five more and applied the rule to every one: `progress-photos:304` (the kept entry), `water:397`, `water:535`, `exercise:530`, `workout-live:1209`. Every remaining empty state in the app is now one authored statement — **none was left blank**, which `00-design-spec.md` §5 forbids.
+2. *A mechanism is stated once, nearest the action.* Two new cases. The Coach-memory length rule was stated on the Knowledge hub and on the editor; the hub's copy went and the editor's — stated where the line is being written — stayed. The ended-protocol rule was stated on the Protocols hub and on the protocol's own detail screen; the hub's went and the detail screen's, which carries the date and sits beside the control that extends a phase, stayed. In both cases the **fact was already in the right place**; the cut removed the copy, not the information.
+3. *A flow is not narrated before it is taken.* Four new cases, all of the "…and it fills in here" family: `metrics-strip:116`, `nutrition-history:474`, `exercise-detail:312`, `water:397`. In three of the four the sentence carried a real precondition (the route in, meals needing calories, two weighted sessions) and only the narration was cut.
 
 **One non-slop finding, worth a line of your attention:** `app/routine-edit.tsx:314` still says **"routine"**. Everywhere else in the app the noun is **saved workout**. That is the only user-facing survivor of the retired vocabulary I found in the whole walk.
 

@@ -1230,7 +1230,7 @@ function WorkoutLive({
           <Text className="mt-8 font-serif text-[14px] leading-6 text-ink-secondary">
             {editing
               ? 'This session has no sets left. Save to keep it empty, or delete it.'
-              : 'Nothing logged yet. Add the first exercise to start recording sets.'}
+              : 'Nothing logged yet.'}
           </Text>
         ) : (
           <View className="mt-6">

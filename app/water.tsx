@@ -394,7 +394,7 @@ export default function WaterScreen() {
   // beneath it is exactly the filler the owner has twice asked to lose.
   let verdict: string | null = null;
   if (recordStart === null) {
-    verdict = 'No water logged yet. Tap an amount below and the record starts.';
+    verdict = 'No water logged yet.';
   } else if (!logged && isToday) {
     verdict = 'Nothing logged today yet.';
   } else if (!logged) {
@@ -532,7 +532,7 @@ export default function WaterScreen() {
           {entries.length === 0 ? (
             <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
               {isToday
-                ? 'Nothing logged today. Anything you add appears here to correct or remove.'
+                ? 'Nothing logged today.'
                 : `Nothing was logged on ${shortDate(day)}.`}
             </Text>
           ) : (

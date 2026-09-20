@@ -113,7 +113,7 @@ export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
       */}
       {metrics.length === 0 ? (
         <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
-          No readings yet today. Connect Apple Health in Settings to populate this.
+          No readings yet today. Connect Apple Health in Settings.
         </Text>
       ) : (
         <View className="mt-2 flex-row flex-wrap">

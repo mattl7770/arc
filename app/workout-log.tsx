@@ -544,8 +544,7 @@ export default function WorkoutLogScreen() {
 
             {sets.length === 0 ? (
               <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                Nothing drafted yet. Add sets below — or save a session with none, for cardio and
-                mobility work.
+                Nothing drafted yet. A session saves with no sets, for cardio and mobility work.
               </Text>
             ) : (
               <View className="mt-1">

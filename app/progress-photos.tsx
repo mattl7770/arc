@@ -300,10 +300,6 @@ export default function ProgressPhotosScreen() {
               No photos yet. Photograph yourself in the iOS Camera app — front, side, back — then
               bring them in here. ARC keeps a working copy; your originals stay in Photos.
             </Text>
-            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
-              Three poses on the same morning, in the same light, is the set that compares well
-              months later.
-            </Text>
           </Block>
         </View>
       ) : (

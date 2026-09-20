@@ -309,7 +309,7 @@ export default function ExerciseDetailScreen() {
               </View>
             ) : (
               <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                Log a couple of weighted sessions and the estimated-1RM trend appears here.
+                An estimated-1RM trend needs two weighted sessions.
               </Text>
             )}
             {/* The key for the mark above — drawn only when there is something

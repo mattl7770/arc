@@ -276,10 +276,6 @@ export default function ProtocolsScreen() {
               ))}
             </Block>
           </View>
-          <Text className="mt-2 font-serif text-[11.5px] leading-4 text-ink-muted">
-            These ran their last phase out. They put nothing on a day until a phase is extended or
-            another is added.
-          </Text>
         </View>
       ) : null}
 

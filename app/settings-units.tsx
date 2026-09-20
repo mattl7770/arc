@@ -155,11 +155,16 @@ export default function SettingsUnitsScreen() {
               is what makes switching reversible and an export readable
               (CLAUDE.md §2), and without it the survivor's "apply now" had
               nothing to apply TO. Restored as one sentence, the referent
-              supplied by the clause it lost. */}
+              supplied by the clause it lost.
+
+              The roadmap tail — "weight, volume, and length already do, distance
+              and temperature once workouts and environment tracking land" — went
+              in the A9 slop pass (2026-09-19, owner approval). By then it carried
+              no fact worth a line: all five unit rows ship above it, so the tail
+              had gone false as well as filler. The clause that carries the fact
+              is the one that survives. */}
           <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-            Storage stays metric; these toggles only change how numbers display — weight, volume,
-            and length already do, distance and temperature once workouts and environment tracking
-            land.
+            Storage stays metric; these toggles only change how numbers display.
           </Text>
         </Block>
       </View>
