@@ -119,7 +119,8 @@ export type AdherenceRow = {
   completed: number;
   partial: number;
   skipped: number;
-  /** Skips on a day whose mode excuses them (`accountForDay`). */
+  /** Skips on an EXCUSED day — see `excusedDatesIn`, which names all three
+   *  reasons a day can be one. */
   excused: number;
   /** Items on a past day that were never marked either way. */
   unmarked: number;

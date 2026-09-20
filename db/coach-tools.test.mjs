@@ -757,7 +757,10 @@ console.log('13b. the Coach can SEE a why-line, so an edit no longer erases ever
   const plain = createProtocolWithVersion(
     db,
     { name: 'Evening Stack', type: 'supplement_stack' },
-    { schema: 2, phases: [{ id: 'p', title: null, duration_days: null, items: [item('j1', 'Zinc', null)] }] }
+    {
+      schema: 2,
+      phases: [{ id: 'p', title: null, duration_days: null, items: [item('j1', 'Zinc', null)] }],
+    }
   );
   const slugOf = (id) => raw.prepare('SELECT slug FROM protocols WHERE id = ?').get(id).slug;
   const slug = slugOf(withNotes);
@@ -769,9 +772,7 @@ console.log('13b. the Coach can SEE a why-line, so an edit no longer erases ever
   !('notes' in seenItems[1])
     ? ok('get_protocols emits a why-line, and omits it rather than nulling it when empty')
     : bad('notes emission', JSON.stringify(seenItems));
-  seen.carryOver === true &&
-  seen.checkoffMode === 'adjusting' &&
-  seen.startedOn === '2026-08-03'
+  seen.carryOver === true && seen.checkoffMode === 'adjusting' && seen.startedOn === '2026-08-03'
     ? ok('…and the three policy facts a plan means nothing without')
     : bad('policy emission', JSON.stringify(seen));
   const defaults = read().find((p) => p.slug === slugOf(plain));
@@ -801,7 +802,10 @@ console.log('13b. the Coach can SEE a why-line, so an edit no longer erases ever
   };
   toolByName('update_protocol').confirmSummary(resend, db, CTX).includes('why-line') === false
     ? ok('a call that re-sends a note unchanged says nothing about why-lines on the card')
-    : bad('spurious why-line phrase', toolByName('update_protocol').confirmSummary(resend, db, CTX));
+    : bad(
+        'spurious why-line phrase',
+        toolByName('update_protocol').confirmSummary(resend, db, CTX)
+      );
   run('update_protocol', db, resend);
   read().find((p) => p.slug === slug).phases[0].items[0].notes ===
   'Loading is done — this is the maintenance dose.'
@@ -861,7 +865,9 @@ console.log('13b. the Coach can SEE a why-line, so an edit no longer erases ever
     : bad('clear did not clear');
 }
 
-console.log('13c. update_protocol learns to CREATE — the hub said the Coach could and it could not');
+console.log(
+  '13c. update_protocol learns to CREATE — the hub said the Coach could and it could not'
+);
 {
   const { db, raw } = freshDb();
   const call = {
@@ -884,7 +890,10 @@ console.log('13c. update_protocol learns to CREATE — the hub said the Coach co
     : bad('create card', card);
 
   const out = run('update_protocol', db, call);
-  out.created === true && out.versionNumber === 1 && out.itemCount === 2 && out.effective === 'today'
+  out.created === true &&
+  out.versionNumber === 1 &&
+  out.itemCount === 2 &&
+  out.effective === 'today'
     ? ok('a call with name and type and NO slug creates the protocol and its v1')
     : bad('create result', JSON.stringify(out));
   const row = raw.prepare('SELECT * FROM protocols WHERE slug = ?').get(out.protocol);
@@ -895,9 +904,8 @@ console.log('13c. update_protocol learns to CREATE — the hub said the Coach co
   row.current_version_id !== null
     ? ok('…with a repository-minted slug, active, pointing at v1')
     : bad('created row', JSON.stringify(row));
-  raw
-    .prepare('SELECT created_by FROM protocol_versions WHERE protocol_id = ?')
-    .get(row.id).created_by === 'ai'
+  raw.prepare('SELECT created_by FROM protocol_versions WHERE protocol_id = ?').get(row.id)
+    .created_by === 'ai'
     ? ok('…and the version is stamped as the Coach’s')
     : bad('authorship not ai');
   // It reaches TODAY like every other protocol write: a protocol the user just

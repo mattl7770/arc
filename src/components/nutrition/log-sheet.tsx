@@ -34,7 +34,7 @@ import { logMeal } from '@/lib/db/repositories/nutrition';
  * reading `Log`, and this is what it opens.
  *
  * **A modal, not a pushed route.** Same shape as the mode picker and the
- * exercise picker (src/components/home/mode-control.tsx): a native `Modal`
+ * exercise picker (src/components/home/status-control.tsx): a native `Modal`
  * building its own root, so it dismisses with a close control and never leaves
  * a back-stack entry behind a meal you logged. Because it is its own root it
  * also prints its own {@link PaperGrid} — a Modal never passes through

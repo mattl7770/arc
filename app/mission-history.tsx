@@ -198,7 +198,8 @@ function statusLabelsIn(db: Database, from: string, to: string): Map<string, str
     if (row.excuses !== 1) continue;
     const span = clampStatusSpan(row, from, to);
     if (!span) continue;
-    const label = row.label.length === 0 ? row.label : row.label[0]!.toUpperCase() + row.label.slice(1);
+    const label =
+      row.label.length === 0 ? row.label : row.label[0]!.toUpperCase() + row.label.slice(1);
     for (let date = span.start; date <= span.end; date = addDays(date, 1)) {
       const held = byDay.get(date);
       if (held) held.push(label);

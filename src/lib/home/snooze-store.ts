@@ -18,7 +18,7 @@
  * and by nothing else, anywhere. The mission item sheet is a PUSHED route, and
  * a pushed route cannot reach another screen's component state — so *Unsnooze*
  * had no way to exist. This is the same listener-set idiom `subscribeModeChange`
- * uses (src/lib/modes/store.ts) and for the same reason: a screen that is not
+ * uses (src/lib/status/store.ts) and for the same reason: a screen that is not
  * mounted, or one presented over Home so Home never loses focus, still has to
  * be able to change what Home shows.
  *

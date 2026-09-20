@@ -60,18 +60,13 @@ export type DayStatusRow = {
    * Home's line and the Coach's state block do.
    */
   ended: number;
-  /** 0 or 1 — SQLite's boolean. Read it through {@link statusExcuses}. */
+  /** 0 or 1 — SQLite's boolean, the owner's Q2(b). `=== 1` at every reader. */
   excuses: number;
   note: string | null;
   source: StatusSource;
   created_at: string;
   updated_at: string;
 };
-
-/** The stored 0/1 as a boolean. One reading, so no caller re-decides it. */
-export function statusExcuses(row: DayStatusRow): boolean {
-  return row.excuses === 1;
-}
 
 /**
  * The canonical form of a label: trimmed, collapsed and lower-cased.
@@ -247,7 +242,7 @@ export type StartStatusInput = {
 /**
  * Open a status, or return the one already open under that label.
  *
- * **The re-tap guard** (`src/lib/modes/store.ts` had the same one, for the same
+ * **The re-tap guard** (the retired modes store had the same one, for the same
  * reason): tapping an on-chip is the RE-ASK gesture, and it must not append a
  * second row on every tap. An already-open row is returned untouched — except
  * for an explicitly-stated `excuses`, which is the Coach changing its mind and
@@ -333,8 +328,6 @@ export function endAllStatuses(db: Database, date: string): number {
 export function statusDayNumber(row: DayStatusRow, date: string): number {
   const [sy, sm, sd] = row.start_date.split('-').map(Number);
   const [dy, dm, dd] = date.split('-').map(Number);
-  const diff = Math.round(
-    (Date.UTC(dy!, dm! - 1, dd!) - Date.UTC(sy!, sm! - 1, sd!)) / 86_400_000
-  );
+  const diff = Math.round((Date.UTC(dy!, dm! - 1, dd!) - Date.UTC(sy!, sm! - 1, sd!)) / 86_400_000);
   return diff + 1;
 }

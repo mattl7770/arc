@@ -16,7 +16,7 @@
  * (app/protocols.tsx's seam), so the two surfaces cannot drift on what a tap
  * means.
  *
- * The listener set is the same idiom `src/lib/modes/store.ts` used, for the
+ * The listener set is the same idiom the retired modes store used, for the
  * same reason and with one more caller: a status set from a sheet presented
  * OVER Home never costs Home its focus, so `useFocusEffect` alone would leave
  * the line above the hero stale.

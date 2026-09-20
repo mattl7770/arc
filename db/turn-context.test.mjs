@@ -282,24 +282,39 @@ console.log('S. the status line: two at once, the exclusion clause, and the reve
   // A status the Coach recorded as context WITHOUT absolution says so — the
   // owner's Q2(b) reaching the model, not just the ledger.
   const { db: counting } = freshDb();
-  startStatus(counting, { label: 'work crunch', startDate: TODAY, source: 'coach', excuses: false });
-  (buildTurnContext(counting, NOW).split('\n').find((l) => l.startsWith('Status:')) ?? '').includes(
-    'skips still count'
-  )
+  startStatus(counting, {
+    label: 'work crunch',
+    startDate: TODAY,
+    source: 'coach',
+    excuses: false,
+  });
+  (
+    buildTurnContext(counting, NOW)
+      .split('\n')
+      .find((l) => l.startsWith('Status:')) ?? ''
+  ).includes('skips still count')
     ? ok('a NON-excusing status is marked; the excusing default is left unsaid')
     : bad('non-excusing not marked', buildTurnContext(counting, NOW));
 
   // THE REVERT CUE. Nothing else tells the Coach a window it bounded with
   // update_protocol has closed.
   const { db: over } = freshDb();
-  const row = startStatus(over, { label: 'traveling', startDate: isoDaysAgo(NOW, 5), source: 'user' });
+  const row = startStatus(over, {
+    label: 'traveling',
+    startDate: isoDaysAgo(NOW, 5),
+    source: 'user',
+  });
   endStatus(over, row.id, isoDaysAgo(NOW, 1));
   const ended = buildTurnContext(over, NOW);
   ended.includes('traveling ended yesterday — put back what it took out.')
     ? ok('the day after it ends, the block says so once')
     : bad('no revert cue', ended);
   const { db: longOver } = freshDb();
-  const old = startStatus(longOver, { label: 'traveling', startDate: isoDaysAgo(NOW, 9), source: 'user' });
+  const old = startStatus(longOver, {
+    label: 'traveling',
+    startDate: isoDaysAgo(NOW, 9),
+    source: 'user',
+  });
   endStatus(longOver, old.id, isoDaysAgo(NOW, 2));
   !buildTurnContext(longOver, NOW).includes('Status:')
     ? ok('…and the day after THAT, nothing — it is not a sentence re-sent forever')

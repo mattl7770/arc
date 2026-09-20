@@ -7,7 +7,7 @@ import type { DayStatusRow } from '@/lib/db/repositories/statuses';
 /**
  * Today's running statuses, for any surface that draws them.
  *
- * Same shape as use-readiness and the retired use-mode: a synchronous first
+ * Same shape as use-readiness: a synchronous first
  * read in the useState initializer (op-sqlite is sync), a re-read on focus, and
  * a subscription for in-place changes. The subscription is the one that matters
  * — the rail is ON the Coach screen and Home's sheet is presented OVER Home, so

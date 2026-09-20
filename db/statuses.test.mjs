@@ -31,10 +31,7 @@ import {
   missionDailySeries,
   missionOwed,
 } from '../src/lib/db/repositories/mission.ts';
-import {
-  generateMissionForDay,
-  planForDay,
-} from '../src/lib/db/repositories/mission-generate.ts';
+import { generateMissionForDay, planForDay } from '../src/lib/db/repositories/mission-generate.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 import { deriveReadiness } from '../src/lib/home/readiness.ts';
@@ -128,7 +125,9 @@ console.log('1. 0061 on a fresh database: the table, every CHECK, and the retire
   table ? ok('day_statuses exists') : bad('no day_statuses table');
 
   const idx = raw
-    .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'day_statuses_start_idx'`)
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'day_statuses_start_idx'`
+    )
     .get();
   idx ? ok('…with the start_date index') : bad('no index');
 
@@ -154,49 +153,77 @@ console.log('1. 0061 on a fresh database: the table, every CHECK, and the retire
     : bad('good row', JSON.stringify(good));
 
   // The NOT-NULL id. SQLite's PRIMARY KEY alone permits nulls on a text key.
-  refuses(raw, `INSERT INTO day_statuses (id, label, start_date, excuses, source)
-                VALUES (NULL, 'sick', '2026-09-10', 1, 'user')`)
+  refuses(
+    raw,
+    `INSERT INTO day_statuses (id, label, start_date, excuses, source)
+                VALUES (NULL, 'sick', '2026-09-10', 1, 'user')`
+  )
     ? ok('a NULL id is refused — the NOT NULL, not the PRIMARY KEY')
     : bad('null id accepted');
 
   const long = 'x'.repeat(41);
-  refuses(raw, `INSERT INTO day_statuses (id, label, start_date, excuses, source)
-                VALUES ('s-long', ?, '2026-09-10', 1, 'user')`, [long])
+  refuses(
+    raw,
+    `INSERT INTO day_statuses (id, label, start_date, excuses, source)
+                VALUES ('s-long', ?, '2026-09-10', 1, 'user')`,
+    [long]
+  )
     ? ok('a 41-character label is refused')
     : bad('long label accepted');
 
-  refuses(raw, `INSERT INTO day_statuses (id, label, start_date, excuses, source)
-                VALUES ('s-empty', '', '2026-09-10', 1, 'user')`)
+  refuses(
+    raw,
+    `INSERT INTO day_statuses (id, label, start_date, excuses, source)
+                VALUES ('s-empty', '', '2026-09-10', 1, 'user')`
+  )
     ? ok('an empty label is refused')
     : bad('empty label accepted');
 
-  refuses(raw, `INSERT INTO day_statuses (id, label, start_date, excuses, source)
-                VALUES ('s-normal', 'normal', '2026-09-10', 1, 'user')`)
+  refuses(
+    raw,
+    `INSERT INTO day_statuses (id, label, start_date, excuses, source)
+                VALUES ('s-normal', 'normal', '2026-09-10', 1, 'user')`
+  )
     ? ok("'normal' is refused as a row — it is a COMMAND")
     : bad('normal accepted as a row');
 
-  refuses(raw, `INSERT INTO day_statuses (id, label, start_date, end_date, excuses, source)
-                VALUES ('s-back', 'sick', '2026-09-10', '2026-09-09', 1, 'user')`)
+  refuses(
+    raw,
+    `INSERT INTO day_statuses (id, label, start_date, end_date, excuses, source)
+                VALUES ('s-back', 'sick', '2026-09-10', '2026-09-09', 1, 'user')`
+  )
     ? ok('end_date before start_date is refused')
     : bad('inverted span accepted');
 
-  refuses(raw, `INSERT INTO day_statuses (id, label, start_date, excuses, source)
-                VALUES ('s-date', 'sick', '10 Sep 2026', 1, 'user')`)
+  refuses(
+    raw,
+    `INSERT INTO day_statuses (id, label, start_date, excuses, source)
+                VALUES ('s-date', 'sick', '10 Sep 2026', 1, 'user')`
+  )
     ? ok('a non-ISO start_date is refused by the GLOB')
     : bad('bad date accepted');
 
-  refuses(raw, `INSERT INTO day_statuses (id, label, start_date, excuses, source)
-                VALUES ('s-src', 'sick', '2026-09-10', 1, 'health')`)
+  refuses(
+    raw,
+    `INSERT INTO day_statuses (id, label, start_date, excuses, source)
+                VALUES ('s-src', 'sick', '2026-09-10', 1, 'health')`
+  )
     ? ok("an unknown source is refused ('user' | 'coach')")
     : bad('bad source accepted');
 
-  refuses(raw, `INSERT INTO day_statuses (id, label, start_date, excuses, source)
-                VALUES ('s-exc', 'sick', '2026-09-10', 2, 'user')`)
+  refuses(
+    raw,
+    `INSERT INTO day_statuses (id, label, start_date, excuses, source)
+                VALUES ('s-exc', 'sick', '2026-09-10', 2, 'user')`
+  )
     ? ok('excuses = 2 is refused — the column is a boolean')
     : bad('excuses 2 accepted');
 
-  refuses(raw, `INSERT INTO day_statuses (id, label, start_date, source)
-                VALUES ('s-null-exc', 'sick', '2026-09-10', 'user')`)
+  refuses(
+    raw,
+    `INSERT INTO day_statuses (id, label, start_date, source)
+                VALUES ('s-null-exc', 'sick', '2026-09-10', 'user')`
+  )
     ? ok('excuses has NO DEFAULT — a row cannot carry a judgement nobody made')
     : bad('excuses defaulted');
 
@@ -336,8 +363,11 @@ console.log('\n3. the repository: spans, the re-tap guard, and the excusal flag'
   openStatuses(future, shiftISODate(TODAY, 4)).length === 1
     ? ok('a future-dated status covers its own days and not today')
     : bad('future span');
-  clampStatusSpan(statusesIn(future, TODAY, shiftISODate(TODAY, 10))[0], TODAY, shiftISODate(TODAY, 10))
-    .days === 4
+  clampStatusSpan(
+    statusesIn(future, TODAY, shiftISODate(TODAY, 10))[0],
+    TODAY,
+    shiftISODate(TODAY, 10)
+  ).days === 4
     ? ok('…and clampStatusSpan counts its four days')
     : bad('clamped span days');
 
@@ -350,7 +380,8 @@ console.log('\n3. the repository: spans, the re-tap guard, and the excusal flag'
     endDate: TODAY,
     source: 'user',
   });
-  openStatuses(ended, TODAY).length === 1 && openStatuses(ended, shiftISODate(TODAY, 1)).length === 0
+  openStatuses(ended, TODAY).length === 1 &&
+  openStatuses(ended, shiftISODate(TODAY, 1)).length === 0
     ? ok('a status born bounded at today is ON today and gone tomorrow')
     : bad('bounded status', openStatuses(ended, TODAY).length);
 
@@ -598,7 +629,8 @@ console.log('\n6. the readiness baselines: excluded, counted, and honest about i
     view.excludedStatusDays === 3
       ? ok('three status days are excluded — and COUNTED, so the copy can say so')
       : bad('excluded count', view.excludedStatusDays);
-    view.recoveryDaysRemaining === 0 && view.pillars.find((p) => p.label === 'Recovery').level !== 'unknown'
+    view.recoveryDaysRemaining === 0 &&
+    view.pillars.find((p) => p.label === 'Recovery').level !== 'unknown'
       ? ok('…Recovery still has a verdict, graded against the other 27 days')
       : bad('recovery lost', JSON.stringify(view.pillars.find((p) => p.label === 'Recovery')));
 
@@ -633,7 +665,8 @@ console.log('\n6. the readiness baselines: excluded, counted, and honest about i
     strain.level !== 'unknown'
       ? ok('…while STRAIN keeps grading — its baseline is session-counted, never excluded')
       : bad('strain lost its verdict', JSON.stringify(strain));
-    view.pillars.find((p) => p.label === 'Sleep') && view.pillars.find((p) => p.label === 'Nutrition')
+    view.pillars.find((p) => p.label === 'Sleep') &&
+    view.pillars.find((p) => p.label === 'Nutrition')
       ? ok('…and Sleep and Nutrition read today only, so they are untouched')
       : bad('pillars missing');
   }

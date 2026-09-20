@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
+import { useCallback } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { CoachBrief } from '@/components/home/coach-brief';
@@ -9,16 +10,20 @@ import { HeroCard } from '@/components/home/hero-card';
 import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
 import { MissionEmpty } from '@/components/home/mission-empty';
-import { ModeBanner, ModeControl } from '@/components/home/mode-control';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
+import { StatusControl } from '@/components/home/status-control';
 import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import { useCoachPassMessage } from '@/hooks/use-coach-pass';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
-import { useMode } from '@/hooks/use-mode';
 import { useReadiness } from '@/hooks/use-readiness';
+import { useStatuses } from '@/hooks/use-statuses';
 import { useTimezoneNote } from '@/hooks/use-timezone-note';
 import { useTodayMission } from '@/hooks/use-today-mission';
+import { todayISODate } from '@/lib/db/date';
+import { reaskFor, type RailChip } from '@/lib/status/chips';
+import { statusLine } from '@/lib/status/line';
+import { endOpenStatus, toggleStatus } from '@/lib/status/store';
 
 /**
  * Home — "What should I do right now, and what are the non-negotiables today?"
@@ -41,7 +46,6 @@ import { useTodayMission } from '@/hooks/use-today-mission';
  *
  *   hero-card       stamp   the one next action, in the accent — drawn
  *   mission         plate   a record, ruled — drawn
- *   mode-banner     field   what today's mode is — unmarked, only when set
  *   readiness-strip field   a verdict — unmarked
  *   coach-brief     margin  prose — unmarked
  *   metrics-strip   grid    metrics — unmarked
@@ -62,22 +66,25 @@ import { useTodayMission } from '@/hooks/use-today-mission';
  * Each component still declares its own device, so nothing here nests one
  * inside another; the Views below are layout and spacing only.
  *
- * ## The day's mode (2026-08-09)
+ * ## The day's status (2026-09-19, replacing the mode banner)
  *
- * When a mode is set, a banner sits between the folio line and the hero stating
- * what today IS ("Recover: sleep, fluids, rest. No training today.") and, under
- * a mode that excuses skips, how the day is being judged. Under Normal it
- * renders nothing at all, so the default Home is byte-for-byte the screen
- * above.
+ * When a status is open, ONE MONO LINE sits between the folio line and the
+ * hero: what is on, since when, and what it is doing to the numbers. On every
+ * other day it renders nothing and costs no vertical space, so the default Home
+ * is byte-for-byte the screen above.
  *
- * It exists because the mode was previously invisible: `heroFocus` reached only
- * the Coach's tool snapshot, and the injected mission items carried no
- * scheduled time, so they sorted to the BOTTOM of the day and the hero kept
- * leading with a protocol item. Setting Sick removed a workout and changed
- * nothing else you could see — which is exactly what the owner reported. The
- * fix is in two halves: the banner here says what the mode means, and
- * src/lib/modes/registry.ts times each mode's lead item at 07:00 so the mode
- * wins the hero slot on the clock, with no special-casing in HeroCard.
+ * It replaces a `field` block that printed a DIRECTIVE a registry had written
+ * ("Recover: sleep, fluids, rest. No training today.") — the hardcoded clinical
+ * layer migration 0061 exists to remove. A status carries no directive, because
+ * what a sick day should contain is the Coach's call on the day. So what is left
+ * is a fact, and it takes the timezone line's register rather than a device of
+ * its own.
+ *
+ * The control beside the date opens the Coach rail's OWN five chips in a sheet
+ * (the owner's Q5(c): the line and a control, not one or the other). Home never
+ * sends a turn — it writes the row and carries the canned prompt to the Coach
+ * tab, seeded. A status Home wrote that no prompt followed would be the old
+ * Modes failure with a new name.
  *
  * Two things hold the design to its principles:
  *   - The hero is *derived* from the mission, not authored separately, so
@@ -141,7 +148,35 @@ export default function HomeScreen() {
   const mission = useTodayMission();
   const brief = useDailyBrief();
   const readiness = useReadiness();
-  const modeView = useMode();
+  // What the user has SAID about today (0061). The line below the folio row
+  // states it; the control on that row opens the same five chips the Coach's
+  // rail draws.
+  const statuses = useStatuses();
+  const statusNote = statusLine({
+    open: statuses.open,
+    today: todayISODate(),
+    excludedStatusDays: readiness.excludedStatusDays,
+    recoveryPausedByStatus: readiness.recoveryPausedByStatus,
+  });
+  // Home never sends. Setting a status from here does exactly what the rail
+  // does — writes the row FIRST — and then carries the canned prompt to the
+  // Coach tab, seeded (app/protocols.tsx's seam). A status Home wrote that no
+  // prompt followed would be the old Modes failure with a new name: a fact
+  // recorded, and nothing asked to act on it.
+  const carryToCoach = useCallback(
+    (next: { prompt: string } | null) => {
+      if (next) router.push({ pathname: '/(tabs)/coach', params: { prompt: next.prompt } });
+    },
+    [router]
+  );
+  const onStatusChip = useCallback(
+    (chip: RailChip) => carryToCoach(toggleStatus(chip)),
+    [carryToCoach]
+  );
+  const onStatusEnd = useCallback(
+    (chip: RailChip & { openId: string }) => carryToCoach(endOpenStatus(chip)),
+    [carryToCoach]
+  );
   // D4: one line, on the day the device's timezone changed, and never again.
   const timezoneNote = useTimezoneNote();
   const planned = mission.total > 0;
@@ -151,12 +186,12 @@ export default function HomeScreen() {
 
   return (
     <Screen scroll>
-      {/* The folio line: today on the left, the mode control on the right — a
-          mode is a fact about today, so it belongs beside the date (§Modes).
-          Still unruled; the row is alignment only, not a box. */}
+      {/* The folio line: today on the left, the status control on the right — a
+          status is a fact about today, so it belongs beside the date. Still
+          unruled; the row is alignment only, not a box. */}
       <View className="flex-row items-center justify-between pt-2">
         <DateEyebrow />
-        <ModeControl mode={modeView.mode} onSelect={modeView.setMode} />
+        <StatusControl open={statuses.open} onToggle={onStatusChip} onEnd={onStatusEnd} />
       </View>
 
       {/*
@@ -168,7 +203,7 @@ export default function HomeScreen() {
           CALENDAR, so it takes neither the accent (Home's budget is the hero,
           the completion stamps and the active tab) nor a `signal-*` — that
           palette marks biology, and the firewall is stated in exactly this
-          context at src/components/home/mode-control.tsx. It appears on one day
+          context at src/components/status/status-rail.tsx. It appears on one day
           and then disappears; on every other day the hook returns null and this
           costs no vertical space at all.
       */}
@@ -177,17 +212,36 @@ export default function HomeScreen() {
       ) : null}
 
       {/*
-          What the mode DID, stated above the hero — see ModeBanner. It renders
-          nothing under Normal, so the default day is unchanged and the section
-          costs no vertical space. `skipped` is derived here rather than in the
-          banner because `settled` (completed + skipped) and `completed` are
-          both already computed by deriveMissionView; recomputing it downstream
-          would be a second definition of the same number.
+          The open status, its age, and what it is doing to the numbers (0061).
+
+          It takes the retired ModeBanner's place and deliberately not its
+          shape: the banner was a `field` printing a DIRECTIVE a registry had
+          written ("Recover: sleep, fluids, rest."), which is the hardcoded
+          clinical layer the retirement exists to remove. What is left is a
+          FACT, so it takes the timezone line's device — mono, 11px, muted, zero
+          height on every ordinary day — because a fact about the calendar and a
+          fact about the person's own declaration belong in the same register.
+
+          This is what keeps information-architecture.md's "never silently on"
+          rule true without an expiry rule: no automatic timeout, but the one
+          screen he opens every morning says what is on and for how long.
+
+          Pressable, to the Coach tab with the re-ask seeded — so the second
+          morning of a trip is two taps from a re-check rather than a sentence
+          he has to type again.
       */}
-      {modeView.isActive ? (
-        <View className="mt-4">
-          <ModeBanner mode={modeView.mode} skipped={mission.settled - mission.completed} />
-        </View>
+      {statusNote ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${statusNote}. Ask the Coach to re-check today`}
+          // The RE-ASK for the newest open status, carried straight to the
+          // composer. It writes nothing — the row is already there — so this
+          // goes to `carryToCoach` directly rather than through `toggleStatus`,
+          // which would read a bare line tap as a new declaration.
+          onPress={() => carryToCoach({ prompt: reaskFor(statuses.open[0]!.label) })}
+          className="mt-3 active:opacity-60">
+          <Text className="font-mono text-[11px] leading-4 text-ink-muted">{statusNote}</Text>
+        </Pressable>
       ) : null}
 
       <View className="mt-5">

@@ -33,9 +33,7 @@ import { addDays, cadenceLandsOn, daysBetween, weekStart } from '@/lib/protocols
 import { parseProtocolContent } from '@/lib/protocols/content';
 import { phaseOn } from '@/lib/protocols/phase';
 import type { ProtocolItem } from '@/lib/protocols/types';
-import { getModeDefinition, type ModeItem, type ModeKey } from '@/lib/modes/registry';
 
-import { getActiveMode } from './day-modes';
 import { experimentsRunningOn } from './experiments';
 import {
   countMissionEntries,
@@ -69,11 +67,11 @@ const LOG_TYPE_BY_PROTOCOL: Record<ProtocolType, LogEntryType> = {
  *
  *   - a PROTOCOL item sets `protocol` and lets `category` fall back to
  *     CATEGORY_BY_TYPE, so the row reads "TRAINING · STRENGTH BLOCK";
- *   - a MODE item sets `category` to the mode's label and no `protocol`, so the
- *     row reads "SICK" — one attribution, not "ROUTINE · SICK", which is what
- *     the earlier `protocol: def.label` produced. A mode is not a protocol and
- *     should not be dressed as one; naming the mode in the category slot also
- *     puts it in the hero's tag line ("Sick · Do this next").
+ *   - a row from the retired MODE system (0026, gone in 0061) set `category` to
+ *     the mode's label and no `protocol`, so it read "SICK". Nothing writes one
+ *     any more — a status injects nothing, because what a sick day should
+ *     contain is the Coach's call — but rows written before the retirement are
+ *     still on their days and still render.
  */
 type GeneratedExtras = {
   protocol?: string;
@@ -98,8 +96,12 @@ type GeneratedExtras = {
    * many items and they hold separate quotas.
    */
   item?: string;
-  /** Present on mode-injected items, absent on protocol items. */
-  mode?: ModeKey;
+  /**
+   * Present on a MODE-injected row, absent on everything else. Modes were
+   * retired in 0061 and nothing writes one any more; the field stays because
+   * rows written before then still carry it and still render.
+   */
+  mode?: string;
   /** Present on a running experiment's intervention row (its experiment id). */
   experiment?: string;
   /**
@@ -543,7 +545,6 @@ export function planForDay(
   opts: { committing?: boolean } = {}
 ): PlannedEntry[] {
   const committing = opts.committing !== false;
-  const def = getModeDefinition(getActiveMode(db, date));
   const active = listProtocols(db).filter((p) => p.isActive && p.versionNumber !== null);
   const plan: PlannedEntry[] = [];
   // Not read on a projection: no quota item is placed there, so the count that
@@ -560,8 +561,6 @@ export function planForDay(
 
   for (const protocol of active) {
     const type = LOG_TYPE_BY_PROTOCOL[protocol.type];
-    // Mode can pull a whole protocol type for the day (e.g. Sick drops workouts).
-    if (def.dropTypes.includes(type)) continue;
     const content = parseProtocolContent(getCurrentVersion(db, protocol.id)?.content ?? null);
     // A NULL anchor is read as "starts today" — the same reading ensureStartedOn
     // then makes permanent. Doing it here as well keeps planForDay a pure
@@ -624,32 +623,6 @@ export function planForDay(
       });
     }
   }
-  // Mode-injected standard items, tagged with the mode so they're
-  // distinguishable from protocol items and the mock seed.
-  //
-  // Their `scheduledTime` is REQUIRED by ModeItem and is load-bearing, not
-  // decoration: the mission is one chronological list, and
-  // src/lib/home/derive-mission.ts sorts an untimed item to MAX_SAFE_INTEGER.
-  // When these carried no time they sank beneath every protocol item, so Sick's
-  // "Rest — no training today" rendered at the BOTTOM of the day and the hero
-  // still led with a protocol item — the mode changed the list without changing
-  // the day. Timed, the 07:00 leads beat anything a protocol schedules and the
-  // mode takes the hero slot, with no surface needing to special-case it.
-  for (const item of def.addItems as ModeItem[]) {
-    plan.push({
-      type: item.type,
-      protocolId: null,
-      title: item.title,
-      scheduledTime: item.scheduledTime,
-      extras: {
-        category: def.label,
-        ...(item.why ? { why: item.why } : {}),
-        generated: true,
-        mode: def.key,
-      },
-    });
-  }
-
   // A RUNNING experiment's intervention belongs on the day it is being tested.
   //
   // Without this the loop had a dead middle: the Coach could design an
@@ -800,10 +773,9 @@ export function generateMissionForDay(db: Database, date: string): number {
 }
 
 export type RederiveResult = {
-  mode: ModeKey;
-  /** New plan entries inserted (mode items, newly-applicable protocol items). */
+  /** New plan entries inserted (newly-applicable protocol items). */
   added: number;
-  /** Untouched pending generated/seed rows the new mode no longer wants. */
+  /** Untouched pending generated/seed rows the new plan no longer wants. */
   removed: number;
   /** Replaceable rows that still match the new plan, kept in place (same id) —
    *  re-synced to the live plan's dose/why/scheduled_time when it changed. */
@@ -833,8 +805,7 @@ export const planKey = (
   protocolId: string | null,
   /** Whether this entry is a CARRIED debt rather than the day's own occurrence. */
   carried = false
-): string =>
-  `${protocolId ?? '-'}\u0000${title}\u0000${carried ? 'carried' : 'native'}`;
+): string => `${protocolId ?? '-'}\u0000${title}\u0000${carried ? 'carried' : 'native'}`;
 
 /**
  * Re-shape `date`'s ALREADY-GENERATED mission to its currently-active mode
@@ -867,14 +838,13 @@ export const planKey = (
  * This reads each protocol's LIVE version, which is now the POINT rather than a
  * caveat: **a protocol edit applies to today's mission immediately** (owner
  * call, 2026-08-25), and it applies through exactly this machinery, so an edit
- * and a mode change are one mechanism. Pending machine-made rows only; anything
+ * a re-derive are one mechanism. Pending machine-made rows only; anything
  * completed, skipped, partial or ad-hoc is preserved untouched. An item whose
  * quota is already met today is therefore not re-added, and an item the edit
  * removed does not take its completed row with it.
  */
 export function rederiveMissionForDay(db: Database, date: string): RederiveResult {
   const log = getOrCreateDailyLog(db, date);
-  const mode = getActiveMode(db, date);
   // Same anchoring as the first generation — a protocol activated today and
   // edited an hour later must not be read as never having started.
   ensureStartedOn(db, date);
@@ -896,18 +866,17 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
 
   // Nothing planned yet → this is a first generation, not a re-derive.
   if (rows.length === 0) {
-    return { mode, added: generateMissionForDay(db, date), removed: 0, kept: 0, preserved: 0 };
+    return { added: generateMissionForDay(db, date), removed: 0, kept: 0, preserved: 0 };
   }
 
-  const def = getModeDefinition(mode);
   const plan = planForDay(db, date);
 
   // Classify every planned row. The re-derive OWNS only what it generated:
-  // `planForDay` knows about protocols + mode items and nothing else, so a row
-  // it doesn't recognise is not evidence the row is unwanted. The mock seed
+  // `planForDay` knows about protocols and experiments and nothing else, so a
+  // row it doesn't recognise is not evidence the row is unwanted. The mock seed
   // (`seed: true`, planted by ensureTodaySeeded on a protocol-less first run) is
   // exactly such a row — treating it as ours would delete the entire first-run
-  // mission on any mode change and nothing would ever put it back.
+  // mission on any re-derive and nothing would ever put it back.
   // `carried` is read off the row here and carried alongside it, because it is
   // the THIRD component of the match key below and the value json is already
   // being parsed once. A carried row and a native row of the same item under
@@ -929,12 +898,15 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
       preservedRows.push(classified); // acted on: completed / skipped / partial
     } else if (extras.generated === true) {
       replaceable.push(classified); // ours — the plan decides whether it stays
-    } else if (extras.seed === true && def.dropTypes.includes(row.type)) {
-      // A mock row whose whole TYPE the mode pulls (Sick drops training) is the
-      // one seed case worth removing — the mode is explicit about that type.
-      replaceable.push(classified);
     } else {
-      preservedRows.push(classified); // seed the mode doesn't touch, or hand-added
+      // EVERY SEED ROW SURVIVES. The one case that used to be removed was a
+      // mock row whose whole TYPE a mode pulled (Sick dropped training), and
+      // that branch went with the modes in 0061: nothing in the deterministic
+      // layer decides any more that a kind of thing does not belong on a day.
+      // A status injects nothing and removes nothing; if today's workout should
+      // come off, the Coach takes it off with adjust_today, which the user sees
+      // and approves.
+      preservedRows.push(classified); // a seed row, or something hand-added
     }
   }
 
@@ -992,7 +964,7 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
 
   const kept = replaceable.length - toRemove.length;
   if (toRemove.length === 0 && toAdd.length === 0 && toUpdate.length === 0) {
-    return { mode, added: 0, removed: 0, kept, preserved: preservedRows.length };
+    return { added: 0, removed: 0, kept, preserved: preservedRows.length };
   }
 
   db.transaction(() => {
@@ -1021,7 +993,6 @@ export function rederiveMissionForDay(db: Database, date: string): RederiveResul
   });
 
   return {
-    mode,
     added: toAdd.length,
     removed: toRemove.length,
     kept,

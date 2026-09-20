@@ -16,7 +16,7 @@ import { MessageBubble } from '@/components/coach/message-bubble';
 import { PendingWriteCard } from '@/components/coach/pending-write-card';
 import { RemindersCard } from '@/components/coach/reminders-card';
 import { SessionKeyPanel } from '@/components/coach/session-key-panel';
-import { StatusRail } from '@/components/coach/status-rail';
+import { StatusRail } from '@/components/status/status-rail';
 import { SuggestedPrompts } from '@/components/coach/suggested-prompts';
 import { Divider } from '@/components/ui/block';
 import { PaperGrid } from '@/components/ui/screen';

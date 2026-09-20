@@ -46,6 +46,11 @@ import { displayStatus, railChips, type RailChip } from '@/lib/status/chips';
  * end tonight by construction (the owner's Q4(a)), so there is nothing for an ×
  * to do to them and offering one would be a control that does nothing.
  *
+ * **It lives outside both surfaces that draw it.** Home opens the same row in
+ * a sheet beside the date (the owner asked for both, his Q5(c)), and a chip row
+ * that existed twice would start offering two vocabularies of the same five
+ * words.
+ *
  * **Pure props.** No database, no hooks, no navigation — db/screens-render.mjs
  * renders it in isolation, which is the only way this screen's chrome gets
  * tested at all (the Coach tab is not in that suite's screen list).

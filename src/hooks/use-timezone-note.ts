@@ -9,7 +9,7 @@ import { timezoneHomeLine } from '@/lib/db/repositories/day-meta';
  * Home's timezone line (D4) — *"Timezone changed (UTC−8 → UTC+1). Today is 15
  * hours long."* — or `null`, which is what it returns on every day but one.
  *
- * Same shape as use-mode / use-readiness: a synchronous first read in the
+ * Same shape as use-statuses / use-readiness: a synchronous first read in the
  * useState initializer (op-sqlite is sync) and a re-read on focus. Focus matters
  * here specifically — the observer runs on foreground, so a landing while ARC is
  * resident writes the row and Home regains focus immediately afterwards.

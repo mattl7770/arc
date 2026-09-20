@@ -22,8 +22,28 @@ import {
   removeMissionItem,
   setMissionStatus,
 } from '../src/lib/db/repositories/mission.ts';
-import { activeModesIn, getActiveMode, setMode } from '../src/lib/db/repositories/day-modes.ts';
+import { activeModesIn, getActiveMode } from '../src/lib/db/repositories/day-modes.ts';
+import { startStatus } from '../src/lib/db/repositories/statuses.ts';
 import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+
+/**
+ * Plant a HISTORICAL `day_modes` row by raw INSERT.
+ *
+ * `setMode` is gone — modes were retired in 0061 and nothing writes one any
+ * more — but the rows already on a device still decide how the days they cover
+ * were judged, and that rule is exactly what these sections exist to pin.
+ * Inserted in call order, because "most recently SET wins" is resolved by
+ * created_at then rowid, and a raw insert gets its rowid in order.
+ */
+let modeSeq = 0;
+const plantMode = (db, { mode, startDate, endDate = null }) =>
+  db.run('INSERT INTO day_modes (id, mode, start_date, end_date) VALUES (?, ?, ?, ?)', [
+    'dm-' + ++modeSeq,
+    mode,
+    startDate,
+    endDate,
+  ]);
+
 import { createProtocolWithVersion, deleteProtocol } from '../src/lib/db/repositories/protocols.ts';
 import { logSymptom, symptomDailySeries } from '../src/lib/db/repositories/symptoms.ts';
 
@@ -476,8 +496,8 @@ console.log('\n13d. mode-aware adherence: a skip while Sick is the right call, n
   }
   // Sick for one day only. Deload is the control that must NOT excuse: it is a
   // plan you are still meant to execute (registry.excusesSkips === false).
-  setMode(db, { mode: 'sick', startDate: SICK, endDate: SICK });
-  setMode(db, { mode: 'deload', startDate: NORMAL, endDate: NORMAL });
+  plantMode(db, { mode: 'sick', startDate: SICK, endDate: SICK });
+  plantMode(db, { mode: 'deload', startDate: NORMAL, endDate: NORMAL });
 
   const series = missionDailySeries(db, 14, TODAY);
   const sick = series.find((p) => p.date === SICK);
@@ -549,7 +569,7 @@ console.log('\n13d-ii. an untouched item is excused only once the day is OVER');
       insertMissionItem(db, log.id, 'habit', { id: '', title, status, category: 'Routine' });
     }
   }
-  setMode(db, { mode: 'travel', startDate: YESTERDAY, endDate: TODAY });
+  plantMode(db, { mode: 'travel', startDate: YESTERDAY, endDate: TODAY });
 
   const series = missionDailySeries(db, 14, TODAY);
   const past = series.find((p) => p.date === YESTERDAY);
@@ -601,10 +621,10 @@ console.log('\n13e. activeModesIn matches getActiveMode day-for-day');
   const { db } = freshDb();
   // Overlapping, out-of-order, open-ended, and a reset — the four shapes the
   // "most recently SET covering row wins" rule has to arbitrate.
-  setMode(db, { mode: 'travel', startDate: '2026-07-20', endDate: '2026-07-26' });
-  setMode(db, { mode: 'sick', startDate: '2026-07-22', endDate: '2026-07-24' });
-  setMode(db, { mode: 'social', startDate: '2026-07-23', endDate: '2026-07-23' });
-  setMode(db, { mode: 'normal', startDate: '2026-07-25' });
+  plantMode(db, { mode: 'travel', startDate: '2026-07-20', endDate: '2026-07-26' });
+  plantMode(db, { mode: 'sick', startDate: '2026-07-22', endDate: '2026-07-24' });
+  plantMode(db, { mode: 'social', startDate: '2026-07-23', endDate: '2026-07-23' });
+  plantMode(db, { mode: 'normal', startDate: '2026-07-25' });
   const from = '2026-07-18';
   const to = '2026-07-28';
   const bulk = activeModesIn(db, from, to);
@@ -869,10 +889,7 @@ console.log('\n14g. carry-over: the carried row is out of every denominator (005
   sources.length === 1 && sources[0].planned === 1 && sources[0].doneLate === 1
     ? ok('"Where it’s failing" counts the obligation once and names the late finish')
     : bad('bySource', JSON.stringify(sources));
-  sources[0].completed +
-    sources[0].skipped +
-    sources[0].excused +
-    sources[0].partial ===
+  sources[0].completed + sources[0].skipped + sources[0].excused + sources[0].partial ===
   sources[0].planned
     ? ok('the ledger still sums to planned — done-late is a subset of skipped, not a fifth term')
     : bad('ledger does not sum', JSON.stringify(sources[0]));
