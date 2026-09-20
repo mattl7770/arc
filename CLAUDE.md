@@ -188,7 +188,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `/docs/design-research/implementation/00-design-spec.md` — **The visual spec in full**: the surface devices, the palette's two cuts per biological state, the three type voices, the accent budget, the honesty rules. Its sibling `02-migration-plan.md` records what actually shipped and what was skipped.
 - `/docs/design-directions.md` — Every visual direction ARC has explored and which is current. **Read before proposing a new one.**
 - `/docs/data-model.md` — Detailed schema + what is actually shipped
-- `/docs/information-architecture.md` — **Where every feature lives** (5 tabs + pushed sub-screens), the Log-tab spec, and the Modes model (locked 2026-07-25)
+- `/docs/information-architecture.md` — **Where every feature lives** (5 tabs + pushed sub-screens), the Log-tab spec, and the **Status** model (locked 2026-09-19, migration `0061`, retiring Modes). Its governing sentence: *a status is a fact the user states about themself; what to do about it is the Coach's call, every time.* The row records the fact and nothing in the deterministic layer adds, drops or reschedules anything because of it — a `day_statuses` row is read only by the adherence ledger, the readiness baselines and the record. Read it before touching `src/lib/status/`, `src/lib/db/repositories/statuses.ts`, `excusedDatesIn` or `baselineExclusionsIn`
 - `/docs/labs-subapp.md` — **the Function Health PDF → biomarkers pipeline**: what the report actually is, the mapping rules that refuse to guess, and why migration 0024 rebuilds a table
 - `/docs/home-screen.md` — Home screen information architecture (detail)
 - `/docs/ai-coach.md` — System prompt, tools, memory design

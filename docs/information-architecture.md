@@ -1,10 +1,10 @@
 # Information Architecture — where everything lives
 
-**Decided 2026-07-25** (owner review), **shell revised 2026-08-09** (owner call on hardware — see "The tab bar" below). This maps every feature in `docs/project-status.md` §1 to a home in the app, specifies the Log tab, and defines the Modes model. Read alongside `docs/home-screen.md` (Home detail) and `docs/decisions.md` (the ADR).
+**Decided 2026-07-25** (owner review), **shell revised 2026-08-09** (owner call on hardware — see "The tab bar" below). This maps every feature in `docs/project-status.md` §1 to a home in the app, specifies the Log tab, and defines the **Status** model (which replaced Modes on 2026-09-19). Read alongside `docs/home-screen.md` (Home detail) and `docs/decisions.md` (the ADR).
 
 The shell is **six tabs** — Home · Coach · Log · Eat · Train · Data — plus **stack-pushed sub-screens** (Settings, the metric keypad, Protocols editor, Labs import, etc.) reached from within a tab. Not everything is a tab; deep domains are pushed screens.
 
-> ⚠️ **Two things in this document are OPEN, not settled** (owner calls from device use, 2026-08-10), and each is flagged where it appears: **what the Eat, Train and Data tabs should contain** (the six-tab bar itself is settled) and **Modes** (built, still thin). The work queue for both is `docs/project-status.md` §1. The third — **the Protocol model** — was settled and built on 2026-08-25 (content schema 2: ordered phases, a cadence per item); see the Protocols entry below. Where this document reads as a locked spec, the two open sections do not.
+> ⚠️ **One thing in this document is OPEN, not settled** (owner call from device use, 2026-08-10), flagged where it appears: **what the Eat, Train and Data tabs should contain** (the six-tab bar itself is settled). The second open item, **Modes**, was CLOSED on 2026-09-19 by retiring it — see §Status. The work queue for both is `docs/project-status.md` §1. The third — **the Protocol model** — was settled and built on 2026-08-25 (content schema 2: ordered phases, a cadence per item); see the Protocols entry below. Where this document reads as a locked spec, the one open section does not.
 
 ## Feature → destination
 
@@ -69,7 +69,7 @@ Two further changes came out of the build:
 Until that rework lands, treat the Train row of the table above as *where that domain lives*, not as *what that screen should contain*.
 
 **Deferred placement calls (revisit as they grow):**
-- **Protocols** — ✅ **graduated to its own sub-app, 2026-08-25** (owner call, with the model rework: `docs/project-status.md` §1 › Data domains). It had been one row inside Data's foldable "The full file" section, three interactions deep for the thing that is the *only* source of Home's mission. Now: `/protocols` (the hub — Running / **Ended** / Paused, each row leading with what the protocol puts on TODAY) → `/protocol-detail` (the working screen: Now with tappable items, Coming up, adherence, the document; *Settings* in the header) → `/protocol-item` (one item) → `/protocol-settings` (identity, status, policy, Delete) → `/protocol-edit` (create, and structure on the edit path) → `/protocol-versions` (the timeline, with a **diff** between adjacent versions and **Restore**). **Two ways in, one hub**, like Nutrition and Exercise: a quiet label-voice link in Home's mission area, and Data's existing row. The first-run path from `mission-empty.tsx` lands on the hub rather than on a blank form, and the hub's empty state offers both "build it yourself" and "ask the Coach to draft one" — there is deliberately no template library, because the Coach can read a record a canned "Morning Stack" cannot. **The model behind it**: content schema 2 — ordered phases with durations, and a cadence per item (daily · specific weekdays · every-N-days · an N-per-week flexible quota); migration `0043` adds the phase clock. **An edit reaches TODAY**, through the same re-derive a mode change uses, so the asymmetry that used to be explained in an 11px margin note is gone. **Since 2026-09-14 (C9/C10/C11, migration `0050`)** an item also carries a **time selector** (a collapsed line that states the time, opening to six anchor presets, the app's existing `HH:MM` field and Clear) and a per-item **reminder** (off by default, only where there is a time; scheduled through the one OS reconciliation pass in `src/lib/notifications/`, cancelled by the same pass when the item is edited away, ticked, skipped or paused). The protocol ROW carries two toggles of execution **policy** — *If you miss it* (`carry_over`: a missed item is re-offered as a marked row for up to 7 days, never across a phase boundary and never out of a Sick/Travel/Social day) and *When you check it off* (`checkoff_mode`: `strict` keeps the calendar, `adjusting` counts every-N-days from the last completion). A carried row is held out of every adherence denominator (`NOT_CARRIED_SQL`), so the missed day stays a miss and reads **"done late"** on the ledger — the design and its five departures from the spike are in `docs/spikes/protocol-carryover.md`.
+- **Protocols** — ✅ **graduated to its own sub-app, 2026-08-25** (owner call, with the model rework: `docs/project-status.md` §1 › Data domains). It had been one row inside Data's foldable "The full file" section, three interactions deep for the thing that is the *only* source of Home's mission. Now: `/protocols` (the hub — Running / **Ended** / Paused, each row leading with what the protocol puts on TODAY) → `/protocol-detail` (the working screen: Now with tappable items, Coming up, adherence, the document; *Settings* in the header) → `/protocol-item` (one item) → `/protocol-settings` (identity, status, policy, Delete) → `/protocol-edit` (create, and structure on the edit path) → `/protocol-versions` (the timeline, with a **diff** between adjacent versions and **Restore**). **Two ways in, one hub**, like Nutrition and Exercise: a quiet label-voice link in Home's mission area, and Data's existing row. The first-run path from `mission-empty.tsx` lands on the hub rather than on a blank form, and the hub's empty state offers both "build it yourself" and "ask the Coach to draft one" — there is deliberately no template library, because the Coach can read a record a canned "Morning Stack" cannot. **The model behind it**: content schema 2 — ordered phases with durations, and a cadence per item (daily · specific weekdays · every-N-days · an N-per-week flexible quota); migration `0043` adds the phase clock. **An edit reaches TODAY**, through the same re-derive the Coach’s own protocol writes use, so the asymmetry that used to be explained in an 11px margin note is gone. **Since 2026-09-14 (C9/C10/C11, migration `0050`)** an item also carries a **time selector** (a collapsed line that states the time, opening to six anchor presets, the app's existing `HH:MM` field and Clear) and a per-item **reminder** (off by default, only where there is a time; scheduled through the one OS reconciliation pass in `src/lib/notifications/`, cancelled by the same pass when the item is edited away, ticked, skipped or paused). The protocol ROW carries two toggles of execution **policy** — *If you miss it* (`carry_over`: a missed item is re-offered as a marked row for up to 7 days, never across a phase boundary and never out of an excused day — a status, a frozen mode, or a timezone change) and *When you check it off* (`checkoff_mode`: `strict` keeps the calendar, `adjusting` counts every-N-days from the last completion). A carried row is held out of every adherence denominator (`NOT_CARRIED_SQL`), so the missed day stays a miss and reads **"done late"** on the ledger — the design and its five departures from the spike are in `docs/spikes/protocol-carryover.md`.
 
   **The INTERFACE over that model was re-cut on 2026-09-19** (`docs/spikes/protocol-interface-rethink.md`, Phases 0–4). The sub-app had been organised as a **filing system** — documents, each with a reference sheet and one long editor — when what a daily user does with a protocol is *adjust it while running it*. A dose change cost five taps, two scrolls and a guess about which protocol a mission row came from. Five things changed:
 
@@ -147,7 +147,7 @@ gets is an annotation, and four consequences:
 | --- | --- |
 | **Home** | One line, on that day only, directly under the folio line: *"Timezone changed (UTC−8 → UTC+1). Today is 15 hours long."* Then it is gone. Unmarked, no accent, no `signal-*` — a zone is a fact about the calendar, not the body. |
 | **The records** | The same fact as a quiet register line on the day's row in **mission history**, **water** and **nutrition history**. The figures beside it are untouched: a 29-hour day genuinely held more water. |
-| **Today's Mission** | That day's skipped and untouched items are **excused**, through the same `excusesSkips` machinery Sick/Travel/Social use — and **no mode is set**. ARC cannot tell a flight from a Settings change, and a mode reshapes the plan and the Coach's tone, which stays the owner's call. The record says *"excused · Timezone change"* rather than naming a mode nobody chose. |
+| **Today's Mission** | That day's skipped and untouched items are **excused**, through the one shared definition (`excusedDatesIn`) — and **no status is set**. ARC cannot tell a flight from a Settings change, and a status is a thing the user states, which stays the owner's call. The record says *"excused · Timezone change"* rather than naming a status nobody declared. |
 | **Readiness** | The day is excluded from every baseline window (HRV, resting HR, active energy) but still renders its own reading, and the **nutrition verdict goes quiet** on it — a one-day calorie target against a 29-hour day is the sharpest wrong number in the whole item. Fixed-length trend windows are untouched. |
 
 The Coach is handed the fact and nothing else — no jet-lag rule table — for the
@@ -189,7 +189,7 @@ That was defensible on the reasoning that *the mission is Home's* — and it is 
 **`app/mission-history.tsx` (title "Mission", parent "Data")** is that answer, and it is three objects, in the order the question is asked:
 
 1. **Execution** — a `field` (a verdict, and the only one on the sheet): the adherence rate over a 14-day window, the four-way ledger beneath it (`done · skipped · partial · untouched`, summing to the denominator printed beside the rate), and the record's true extent.
-2. **Where it's failing** — a `plate`, one row per **source**: a protocol, a mode, or an experiment. Worst-missed first, each row naming its own worst item and each tapping through to `/protocol-detail` where the protocol still exists (the doc said `/protocol-edit` until 2026-09-19; the code has always pushed the detail, and the detail’s Now rows now make an item two taps from the record). This sits **above** the day-by-day record on purpose: the protocol is the thing the user can change, and *"a protocol whose items are never done is a protocol to change"*.
+2. **Where it's failing** — a `plate`, one row per **source**: a protocol or an experiment. Worst-missed first, each row naming its own worst item and each tapping through to `/protocol-detail` where the protocol still exists (the doc said `/protocol-edit` until 2026-09-19; the code has always pushed the detail, and the detail’s Now rows now make an item two taps from the record). This sits **above** the day-by-day record on purpose: the protocol is the thing the user can change, and *"a protocol whose items are never done is a protocol to change"*.
 3. **By day** — the record itself, newest first, one completion bar per day. It is the evidence for the two above it, so it is last.
 
 Then the row into **Protocols**, so a screen about a plan you are not executing reaches the plan.
@@ -203,7 +203,7 @@ Four rules govern what it may claim, all of them §5 (`00-design-spec.md`):
 
 **No migration was needed**: `log_entries.status` and `log_entries.protocol_id` already carry it. The two new reads (`missionRecordStart`, `missionBySource`) live beside `missionDailySeries` in `src/lib/db/repositories/mission.ts` and interpolate the same `PLANNED_ROW_SQL` / `NOT_REMOVED_SQL` constants, so "the record" is exactly the rows Home draws — ad-hoc Log-tab captures and tombstoned removals excluded. Because `log_entries.protocol_id` is `ON DELETE SET NULL`, a **deleted** protocol keeps its history and its name (from the row's own extras) and simply loses its chevron.
 
-**Deliberately not built: a streak.** A streak needs a rule for what breaks it, and every candidate is currently a lie — modes are specified to *excuse* skips (§Modes below) and nothing downstream reads that back, so a streak would punish the user for correctly resting while sick. It becomes possible when mode-aware adherence accounting exists.
+**Deliberately not built: a streak.** A streak needs a rule for what breaks it, and answering it means deciding what a partially-excused day does to it, what a day with no plan does, and what a `partial` does — three product decisions, none forced by the data. The blocker it USED to have is gone: adherence honours excusal (§Status), so a streak would no longer punish the user for correctly resting while sick. It is unbuilt because nobody has asked for it, not because it would lie.
 
 ### Water: the one trend that tracks, logs AND edits (2026-08-14)
 
@@ -262,41 +262,126 @@ All eight rows carried a boxed `Set up` tag. By the time all eight were built th
 
 **Nothing was stranded.** The chip was a plain `Text` inside the row's own `Pressable`, never a control; every row keeps the exact route it already had, and `built` still counts `onPress`, so the header tally is unchanged at `8 of 8 built`. What remains is `FileRow.state`, the row's live *reading* — the direction this tab has been moving in anyway. The `chip` field is deleted from the type; the `'later'` variant went with it, having had no user since the Knowledge base row was built. `db/screens-render.test.mjs` §14 now **refutes** both strings on the Data tab, so they cannot come back unnoticed.
 
-## Modes
+## Status (Modes, retired)
 
-A **mode** is how ARC handles a day that isn't normal — the concrete form of "support imperfect days gracefully" (CLAUDE.md §5, `docs/home-screen.md`). You declare the context once and the day adapts, instead of the app showing the standard plan and marking half of it missed. A mode changes **four things**:
+**Locked and BUILT 2026-09-19** — migration `0061`, design in
+`docs/spikes/coach-status-buttons-modes-retirement.md`. This section replaces
+the Modes model that stood here from 2026-07-25, and answers the open question
+that section closed with.
 
-1. **The plan** — which mission items appear and their targets (Sick pulls training, adds rest/hydration/immune; Travel swaps in a circadian-adjustment routine + a portable supplement subset; Deload cuts volume).
-2. **Priorities** — what the "Do this next" hero pushes (Social → "eat earlier / hydrate / cap it," not "hit your macros").
-3. **The Coach's tone** — evidence-based but context-aware (Sick → recovery talk, no nagging about the missed workout; Social → harm-reduction, not adherence guilt).
-4. **Adherence accounting** — a skipped workout in Sick mode is **excused, not a miss**; the streak/score isn't punished for doing the right thing.
+> **A status is a fact the user states about themself. What to do about it is
+> the Coach's call, every time.**
 
-**The set:** Normal (default) · Travel · Sick · Deload · Social · Custom.
-**Duration:** just today, a date range (a whole trip), or on-until-turned-off.
-**Where:** the **Home** screen — a quiet control near the date/status, because a mode is a fact about *today* set in the moment (landing in a new city, waking up sick); burying it in Settings would add friction exactly when it's needed. A small persistent indicator shows the active mode so it's never silently on; setting it visibly re-derives the mission and re-tones the brief.
-**Data model — BUILT** (engine 2026-07-31, UI 2026-08-01). The override model this section used to describe as hypothetical shipped as migration **0026**, `day_modes` — the "small table for ranges" option, since it supports single-day, date-range, and open-ended-until-turned-off durations. What exists today:
+### What a status is
 
-- **`day_modes` (0026)** + a mode registry (Normal · Travel · Sick · Deload · Social · Custom), each mode carrying drop-types, injected items, a `heroFocus`, a `coachTone`, and whether it excuses skips — which is exactly the four-part change described above.
-- **A mode-aware mission generator**, and **`rederiveMissionForDay`** for setting a mode mid-day. That re-derive is a **diff, never a wipe**: untouched pending machine-made items the new mode drops are removed, the new mode's items are added, and anything completed, skipped, **partial**, or ad-hoc is preserved. Declaring you're sick at 3pm must never erase the morning you actually did.
-- **The Home control** (`src/components/home/mode-control.tsx`) — beside the date, deliberately neutral: a paper-deep/mono status chip when a mode is on, a bare muted "Set mode" when it isn't. Home's one pine stays with the hero, because a mode is a *state*, not an action.
-- **The `set_mode` Coach tool** (registered, confirmation-gated) plus the active mode in `get_today_snapshot`, so the Coach both sees and can change the day's context.
+A row in `day_statuses`: a free-text `label` ("sick", "traveling", "work
+crunch"), a span, an `excuses` bit, and who set it. There is no registry behind
+it. Nothing in the app branches on the value. **No status ever adds or removes a
+mission item**, changes the hero, or changes anyone's tone.
 
-Headless coverage: `db/modes.test.mjs`, 39 assertions, including the mid-day re-derive's preserve-work cases.
+Three things read the row, and all three are ACCOUNTING — the work that has to
+happen on days the Coach is never opened at all:
 
-### ⚠️ Modes is OPEN for significant improvement (owner call, 2026-08-10)
+1. **The adherence ledger.** An excusing status day is excused, through the ONE
+   shared definition (`excusedDatesIn`), which now has three reasons: an
+   excusing status, a frozen mode, a timezone change.
+2. **The readiness baselines.** Every status day leaves the 30-day HRV, RHR and
+   active-energy baselines, through the ONE shared helper
+   (`src/lib/home/baseline-exclusions.ts`, which gained one member).
+3. **The record.** The self-review names each reason; mission-history's by-day
+   rows name their own.
 
-**The spec above describes the intent. The build below it describes the mechanism. The owner has now used it on hardware twice and still finds it thin — so read the two together, not the spec alone.** This is the second round of the same feedback: the 2026-08-09 pass answered the first ("the modes switcher right now doesn't do much") by wiring three dormant levers, and it was not enough.
+Everything else — what today should actually become — is a Coach turn:
+`adjust_today` for today, `update_protocol` for anything longer, both gated and
+approved, with the user present.
 
-Where the shipped feature falls short of this section's own four-part promise:
+### Why Modes went
 
-1. **"The plan"** is a subtraction, not an adaptation. `dropTypes` removes a whole `LogEntryType` for the day and is used by exactly one mode (Sick → `workout`); `addItems` injects a fixed literal list. There is no "half the volume", no substitution, no interaction with the user's actual protocols. **Deload is the clearest case:** it drops nothing, so the planned workout lands exactly as written and the entire deload is a habit item that *tells you* to cut volume ~40%.
-2. **"Priorities"** reaches one banner line above Home's hero (`modeDirective` → `ModeBanner`). Real, and the most visible thing a mode does — but it is a sentence, not a re-prioritisation.
-3. **"The Coach's tone"** has exactly one consumer: `get_today_snapshot` hands `coachTone` to the model as `toneGuidance`. No app surface changes voice, so this lever only exists for a user who opens the Coach tab.
-4. **"Adherence accounting"** is one Home line (`"3 skipped · excused under Sick"`) and nothing downstream. `log_entries` carry the mode in their extras and nothing ever reads it back — no "your adherence under Travel", no cost-of-Sick-days over a quarter.
+The Modes section that stood here described four levers. Two of them
+(`dropTypes`, `addItems`) were clinical decisions as constants: Sick dropped
+every `workout` row and injected "Immune support — Vitamin D, zinc"; Deload
+injected "cut training volume ~40%". That is the deterministic layer deciding
+the response, which `docs/ai-coach.md` forbids in the same sentence it forbids
+fabrication. The other two reached one banner line and one field in a tool
+result.
 
-Two capabilities this section specifies that the UI does not reach:
+The owner used it on hardware twice and called it thin both times, and the
+second round of wiring did not fix it because the gap was never mechanical. The
+question this section closed with — *should a mode be a profile the user
+authors, versioned like a protocol?* — is **answered: no.** A registry with the
+user as author is still a fixed response bound to a fact, and still a rule
+deciding the day. The Coach is the adapter.
 
-- **Duration.** The spec promises "just today, a date range, or on-until-turned-off", and `day_modes` (0026) supports all three. **The Home picker offers none of it** — it lists the six keys and calls `applyMode(key)` with no end date, so every mode set from Home is open-ended-until-changed. A trip or a deload week can only be ranged by asking the Coach's `set_mode`.
-- **Custom.** "Your own context" currently means: no dropped types, no injected items, no `heroFocus`. `day_modes` has `label` and `note` columns for precisely this, and **`label` has no writer anywhere in the repo**. So the mode you were meant to define yourself is the one that changes nothing and cannot be named.
+### The rail, and Home
 
-The full record, lever by lever, is in `docs/project-status.md` §1 › *Screens still to build* › **"Modes needs significant improvement"**. **The gap is conceptual, not mechanical** — every part above is built and tested. Switching mode reshapes a list and prints a banner; what the owner wants is for the day to genuinely *feel* different, which every other tab being mode-blind currently prevents. Worth deciding before building: whether a mode should be a **profile the user authors** — versioned, with its own items and rules, like a protocol — rather than a hard-coded registry entry. That is the shape the empty Custom mode is pointing at.
+**Five chips, docked above the Coach's composer** (the owner's Q1(a)): Sick ·
+Traveling · Injured · Off day · Night out. Anything else he types is a
+first-class status the Coach records with `set_status`; the five are a claim
+about frequency, not a taxonomy. Deload is not among them and is not a status
+at all — a deload is a PLAN change, `update_protocol`.
+
+Three gestures. **Off → on** writes the row and *then* sends a canned prompt
+("I'm sick right now. Check what's up and adjust accordingly.") — that order is
+load-bearing: on a plane the fact lands and only the turn fails. **Tapping an
+on-chip** is the re-ask, day two of a five-day flu. **The ×** ends it and SEEDS
+the composer rather than sending, because ending is bookkeeping that may not
+warrant a turn. The rail wraps to two rows rather than scrolling, and draws at
+most two statuses beyond the five.
+
+**Home has both a line and a control** (his Q5(c)). The line sits above the
+hero in the timezone line's register — mono, muted, zero height on an ordinary
+day — and states what is on, since when, whether skips are excused, and how
+many days have left the baselines, escalating to *"no recovery verdict until it
+ends"* when the exclusion is what stopped Recovery grading. Tapping it carries
+the re-ask to the Coach. The control beside the date is ONE small target in the
+label voice opening the rail's own chips in a sheet: five chips inlined on the
+folio row would be five controls competing with the one action Home exists for
+(CLAUDE.md §5). Home never sends — it writes the row and carries the prompt to
+the Coach tab, seeded.
+
+**"Never silently on"** — the rule the old mode indicator existed for — is kept
+by the LINE rather than by a picker. There is no automatic expiry, because a
+timeout is a rule with a number about biology; what replaces it is visibility
+gated on the consequence.
+
+### Excusal is per status, not uniform
+
+The owner's **Q2(b)**: the Coach decides, through an `excuses` flag on
+`set_status`. A status it judged to be context without absolution is still a
+status — it just does not forgive the skips, and the state block and Home's line
+both say so.
+
+Two rules keep that honest:
+
+- **The rail's own write defaults to excusing.** It happens before any model
+  turn, so it needs a deterministic answer; all five chips say *don't judge me
+  by today*, a wrong `true` is recoverable by the Coach on the same turn, and a
+  wrong `false` silently counts a flu day as a run of misses. The argument is in
+  the `0061` header.
+- **An omitted flag never re-excuses.** `set_status` with no `excuses` leaves an
+  open status exactly as it is. "Still sick" is a re-ask, not a re-decision.
+
+**Baseline exclusion is uniform** (his **Q3(a)**), and that is not an
+inconsistency: excusal asks *should this be held against him*, a baseline asks
+*is this day evidence of what his normal looks like*. A fortnight of work
+crunch the Coach declined to excuse is still a fortnight that should not define
+a resting heart rate.
+
+### The cost, stated once
+
+A status never touches generation, so **the only thing that reshapes a day is a
+Coach turn on that day**. Day two of a flu regenerates whole: the workout is on
+the mission, in the hero if the protocol schedules it first, and its reminder
+fires. That is strictly less than Modes did on that axis, and it is the price of
+judgment over rules. It is paid down by the re-ask gesture, by Home's line
+seeding the same re-ask, and by the doctrine telling the Coach to bound a known
+length with `update_protocol` and revert it on the "ended" cue.
+
+### What the data does
+
+`day_modes` and every row in it **stay forever**. They decide how past days were
+judged, and rewriting that would silently change verdicts on days already lived.
+The registry is a frozen shim holding `label` and `excusesSkips` and nothing
+else; `0061` writes one `normal` row to end all mode coverage from its own date,
+because every mode the owner ever set from Home was open-ended and the picker
+that could have ended one is gone.

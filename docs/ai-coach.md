@@ -2,7 +2,7 @@
 
 **Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, and protocol write-back (2026-07-27)
 **Last updated:** 2026-08-14 (§5 write receipts + phantom-write detection; §4 day-stamped thread history)
-**Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, protocol write-back (2026-07-27); Modes + Experiments tools shipped (2026-07-31/08-01); **perception layer shipped (2026-08-08** — per-turn "Current state" context block, readiness/sleep/training-engine/lab-trend visibility; see `docs/coach-intelligence-review.md` for the review that drove it and the phases that follow**)**
+**Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, protocol write-back (2026-07-27); Modes + Experiments tools shipped (2026-07-31/08-01), **Modes retired and replaced by `set_status` (2026-09-19, migration 0061 — see `docs/information-architecture.md` §Status)**; **perception layer shipped (2026-08-08** — per-turn "Current state" context block, readiness/sleep/training-engine/lab-trend visibility; see `docs/coach-intelligence-review.md` for the review that drove it and the phases that follow**)**
 **Last updated:** 2026-08-08
 
 > **Governing principle (owner call, 2026-08-08):** deterministic code **detects and grounds**; the **model decides**; tools **enact**; the user **confirms**. No pure function may encode a clinical judgment ("low HRV → cut volume") — detection can surface a signal, but what to do about it is always the model's call, weighed with the user. The review doc's §4 table is the reference.
@@ -53,10 +53,10 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 
 | Tool | Input | Reads | Returns |
 | --- | --- | --- | --- |
-| `get_today_snapshot` | — | mission (`log_entries`), `meals`, `workouts`, `symptoms`, ad-hoc captures, the day's mode, reminders due today, **the whole wearables plane**, readiness | Today's full picture in one call. `remindersDueToday` is **ranked today-first** and each item carries its pinned `date` + `daysOverdue`; capped at 10 with a sibling `remindersDueTodayOmitted` count — see "Reminder due-ness and ordering" below. `wearables` carries `today` (every metric with a value), `noDataToday` (core metrics **named**, never zeroed), `availableMetrics` (every `metric_type` on this device — all valid `get_metric_series` input) and an honest `note` when nothing has synced. `readiness` is the *same* derivation Home renders (`src/lib/home/readiness.ts`), reused rather than recomputed, so the Coach and Home can never disagree |
+| `get_today_snapshot` | — | mission (`log_entries`), `meals`, `workouts`, `symptoms`, ad-hoc captures, any open **statuses**, reminders due today, **the whole wearables plane**, readiness | Today's full picture in one call. `remindersDueToday` is **ranked today-first** and each item carries its pinned `date` + `daysOverdue`; capped at 10 with a sibling `remindersDueTodayOmitted` count — see "Reminder due-ness and ordering" below. `wearables` carries `today` (every metric with a value), `noDataToday` (core metrics **named**, never zeroed), `availableMetrics` (every `metric_type` on this device — all valid `get_metric_series` input) and an honest `note` when nothing has synced. `readiness` is the *same* derivation Home renders (`src/lib/home/readiness.ts`), reused rather than recomputed, so the Coach and Home can never disagree |
 | `get_metric_series` | `metric` — **any** body metric or wearable `metric_type`, plus friendly aliases; `days?≤365` | `body_metrics` / `wearable_data` daily series | Daily points + min/avg/max in display units. See "The wearables plane" below |
 | `get_training_summary` | `days?` (28) | `workouts` (+ recent sessions) | Totals, weekly rates, per-day load |
-| `get_today_snapshot` | — | **readiness (`deriveReadiness` — the same verdict Home shows)**, the day's **mode**, mission (`log_entries`, **with item ids**), `meals`, `workouts`, `symptoms`, ad-hoc captures (in the user's units), reminders due today, **running experiments**, **profile (age/sex)** | Today's full picture in one call |
+| `get_today_snapshot` | — | **readiness (`deriveReadiness` — the same verdict Home shows)**, any open **statuses**, mission (`log_entries`, **with item ids**), `meals`, `workouts`, `symptoms`, ad-hoc captures (in the user's units), reminders due today, **running experiments**, **profile (age/sex)** | Today's full picture in one call |
 | `get_metric_series` | `metric: weight\|body_fat\|waist\|hrv\|rhr\|water\|sleep\|sleep_deep\|steps\|active_energy`, `days?≤365` | `body_metrics` / `wearable_data` daily series, windows closed at today | Daily points + min/avg/max (display units; sleep/steps/energy in fixed min/steps/kcal) |
 | `get_training_summary` | `days?` (28) | `workouts` (+ recent sessions) | Totals, weekly rates, per-day load, `thisWeek` calendar block |
 | `get_training_recommendation` | — | the whole training engine (`buildRecommendation`) | Today's session recommendation + per-exercise progression targets, muscle freshness ledger, program week/deload state, weekly volume vs MEV/MAV/MRV. **Reports state; the tool description tells the model the training decision is its own to make with the user** |
@@ -70,7 +70,7 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 | `get_experiments` | `include_completed?` | `experiments` | Active experiments w/ daysLeft + ready flags; recent verdicts on request |
 | `search_knowledge` | `query`, `scope?` | RAG layer (0025) | Honest "not available yet" until the on-device embedder ships |
 
-**Every turn also opens with a "Current state" system block** (`src/lib/ai/turn-context.ts`, 2026-08-08): date+weekday, profile+units, mode, readiness verdict+pillars, mission progress, running/ready experiments, and the deterministic brief — sent as a second uncached system block after the prompt-cache breakpoint. The model starts oriented and spends tool calls on depth, not on discovering what Home already shows.
+**Every turn also opens with a "Current state" system block** (`src/lib/ai/turn-context.ts`, 2026-08-08): date+weekday, profile+units, any open **status** (only when there is one — no `Mode: Normal` on every turn forever), readiness verdict+pillars, mission progress, running/ready experiments, and the deterministic brief — sent as a second uncached system block after the prompt-cache breakpoint. The model starts oriented and spends tool calls on depth, not on discovering what Home already shows.
 
 #### The wearables plane — the Coach reads all of it (corrected 2026-08-09)
 
@@ -103,7 +103,7 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 | `complete_reminder` | `id` (one-offs only — refuses recurring) | `completeReminder` | "Mark reminder "Book DEXA" done" |
 | `dismiss_reminder` | `id` | `dismissReminder` | "Dismiss reminder "Take magnesium"" |
 | `update_protocol` | `protocol_slug`, `phases[]` (the COMPLETE new content), `change_notes` | `addVersion(…, 'ai')` — writes a NEW immutable version, never edits the live one — then re-derives TODAY | "Update "Evening Stack": 3 items (was 2) — added magnesium · applies to today's plan now" |
-| `set_mode` | `mode`, `until?`, `note?` | `setMode` + `rederiveMissionForDay` (today reshapes immediately, work preserved) | "Set Sick mode for today" |
+| `set_status` | `label`, `from?`, `until?`, `excuses?`, `note?` | `startStatus` — **and nothing else**. A status records the fact; reshaping today is `adjust_today` on the same turn | "Status: sick today" |
 | `create_experiment` | `name`, `hypothesis`, `intervention`, `metrics[]`, `duration_days`, `success_criteria?` | `createExperiment` (starts today, computed end date) | "Start experiment "Magnesium PM" — 14 days" |
 | `complete_experiment` | `id`, `conclusion`, `outcome_notes?` | `completeExperiment` (active-only guard) | "Conclude experiment "Magnesium PM"" |
 
@@ -121,11 +121,11 @@ That last rule covers a day the tool **derives** as well as one the user passes.
 
 ### 2c. Shipped since — modes, experiments, knowledge, nutrition targets, screenings
 
-Earlier revisions of this doc listed `set_mode` and `create_experiment` as unregistered stubs. **Every tool below is registered.**
+Earlier revisions of this doc listed `set_mode` (retired 2026-09-19) and `create_experiment` as unregistered stubs. **Every tool below is registered.**
 
 | Tool | Kind | Notes |
 | --- | --- | --- |
-| `set_mode` | write | Sets today's mode (Normal/Travel/Sick/Deload/Social/Custom) so plan, priorities, tone and adherence adapt. Shipped with `day_modes` (**0026**); mid-day changes re-derive the mission as a diff that preserves completed work. The active mode also appears in `get_today_snapshot`. |
+| `set_status` | write | Records a standing state the user reports ("sick", "traveling") in `day_statuses` (**0061**), so its days are excused in adherence and left out of the readiness baselines. **It re-derives nothing** — what today should become is the model's call on the turn, through `adjust_today` or `update_protocol`. `excuses: false` records a state that is context without absolution; an OMITTED `excuses` leaves an open status as it is, so a re-ask never silently re-excuses a day. `"normal"` ends every open one. Open-ended is a RAIL affordance only, so the model can never mint a permanently-open row. |
 | `create_experiment` | write | n-of-1: hypothesis, intervention, watched metrics, duration, success criteria. Shipped with `experiments` (**0027**). Rejects empty metrics and durations under 3 days. |
 | `complete_experiment` | write | Concludes a running experiment with a verdict. Refuses an unknown id, and refuses to re-conclude one that already has a verdict. |
 | `abandon_experiment` | write | Drops a running experiment without a verdict. |
@@ -147,7 +147,7 @@ Withheld from the model on purpose: a tool that always fails teaches the model n
 | --- | --- | --- |
 | `complete_mission_item` | **Mission ids must be surfaced to the Coach** — the snapshot exposes titles/status read-only today | Would let the Coach tick off work you tell it you did. |
 | `navigate_to` | **A navigation seam** — tools execute headless; navigation is a UI side effect the service must broker (an event the screen subscribes to) | "Pull up my labs" ends on the Labs screen, not in prose. |
-Withheld from the model on purpose: a tool that always fails teaches the model not to call it. Each ships when its dependency lands. *(2026-08-08: `create_experiment` and `set_mode` graduated to registered writes — see 2b; the coach-assist wrapper stub was deleted outright.)*
+Withheld from the model on purpose: a tool that always fails teaches the model not to call it. Each ships when its dependency lands. *(2026-08-08: `create_experiment` and `set_mode` graduated to registered writes — see 2b; the coach-assist wrapper stub was deleted outright. 2026-09-19: `set_mode` was deleted and replaced by `set_status`.)*
 
 | Tool | Blocked on | Notes |
 | --- | --- | --- |
@@ -244,7 +244,7 @@ What it says is written into the thread as a normal assistant turn (auditable, i
 2. **Self-initiated reminders (shipped):** the Coach can propose a nudge for a logging gap ("want a daily nudge?") → `set_reminder`, still user-confirmed.
 3. **Evening accountability (shipped as a trigger):** `PassTrigger.checkin` carries a morning/evening part, and the evening directive compares what the day planned against what happened. `⚑ MATT`: cadence and quiet hours are still yours to set — it is off by default.
 4. **Predictive alerts** — "3 poor sleeps + rising RHR: historically your next 2 days trend sick." Needs more history. Note the phrasing: the *detector* surfaces the pattern; whether it means a deload is the model's call, not a rule's.
-5. **Mid-day corrections (shipped):** `adjust_today` + `set_mode`'s re-derive give the Coach real levers on the current day, behind one confirmation.
+5. **Mid-day corrections (shipped):** `adjust_today` gives the Coach a real lever on the current day, behind one confirmation. As of 2026-09-19 it is the ONLY one — `set_status` records the fact and reshapes nothing, which is the point: what a sick day should contain is a judgment, made on the day, with the user present.
 
 ---
 
@@ -422,8 +422,8 @@ Neither `isDueOn` nor the notification path changed; only ranking, labelling and
 - Home reads `generateDailyBrief` ✅. Mission-id exposure for `complete_mission_item` is still undecided — that tool remains withheld (§2d).
 - Row types remain slice-local per convention (`src/lib/ai/types.ts`, `src/lib/reminders/types.ts`).
 
-**Feature deps — status:** Protocols ✅ (`update_protocol` live) · Modes ✅ (`set_mode` live, 0026) · `experiments` ✅ (0027, four tools live) · sqlite-vec + chunking ✅ (0025; `search_knowledge` written but **deliberately unregistered** — see §2c) — **the on-device embedder model is still missing**, so *semantic* retrieval degrades to an honest "not available yet" and `explain_metric` waits on it. The **corpus is no longer empty and no longer read-only**: the knowledge base shipped 2026-08-12 (0038), so the user writes entries and `search_history` retrieves them by keyword today. Navigation seam ✗ → `navigate_to` still withheld. `propose_today_adjustment` and `generate_grocery_list` are unblocked but unbuilt.
-**Feature deps (updated 2026-08-08):** ~~Protocols → `update_protocol`~~, ~~Modes → `set_mode`~~, ~~experiments migration → `create_experiment`~~ — all shipped. Still dependent: mission write access → `adjust_today` (design in coach-intelligence-review.md §4 Phase 2) · protocol-derived targets → target-adherence signals (Phase 5) · knowledge base + on-device embedder → working RAG + `explain_metric` (Phase 6) · navigation seam → `navigate_to`.
+**Feature deps — status:** Protocols ✅ (`update_protocol` live) · Status ✅ (`set_status` live, 0061; Modes retired) · `experiments` ✅ (0027, four tools live) · sqlite-vec + chunking ✅ (0025; `search_knowledge` written but **deliberately unregistered** — see §2c) — **the on-device embedder model is still missing**, so *semantic* retrieval degrades to an honest "not available yet" and `explain_metric` waits on it. The **corpus is no longer empty and no longer read-only**: the knowledge base shipped 2026-08-12 (0038), so the user writes entries and `search_history` retrieves them by keyword today. Navigation seam ✗ → `navigate_to` still withheld. `propose_today_adjustment` and `generate_grocery_list` are unblocked but unbuilt.
+**Feature deps (updated 2026-08-08):** ~~Protocols → `update_protocol`~~, ~~Modes → `set_mode`~~ (retired 2026-09-19 → `set_status`), ~~experiments migration → `create_experiment`~~ — all shipped. Still dependent: mission write access → `adjust_today` (design in coach-intelligence-review.md §4 Phase 2) · protocol-derived targets → target-adherence signals (Phase 5) · knowledge base + on-device embedder → working RAG + `explain_metric` (Phase 6) · navigation seam → `navigate_to`.
 
 **Known approximations (reviewed 2026-07-26, accepted for now):**
 - `body_metrics` daily series group by the **UTC** day of `measured_at` while window boundaries are local days — an evening weigh-in near the boundary can land on the adjacent day. Weight thresholds are conservative and the tone is info; the clean fix (store a local `date` alongside, like every other table) is a future migration.

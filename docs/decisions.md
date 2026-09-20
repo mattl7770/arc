@@ -1,5 +1,119 @@
 # Architecture Decision Records (ADR)
 
+## 2026-09-19 — Modes are retired: a status is a fact, and the Coach is what adapts the day
+
+**Decision:** the Modes system is **retired**. `day_statuses` (migration `0061`) replaces it, and
+the governing rule is one sentence:
+
+> **A status is a fact the user states about themself. What to do about it is the Coach's call,
+> every time.**
+
+A status is a row: a free-text `label`, a span, an `excuses` bit, and who set it. **Nothing
+branches on the value, and no status ever adds, drops or reschedules a mission item.** Three
+things read it, and all three are accounting — the work that must happen on days the Coach is
+never opened: the adherence ledger (`excusedDatesIn`), the readiness baselines
+(`baselineExclusionsIn`), and the record. Everything else goes through a Coach turn:
+`adjust_today` for today, `update_protocol` for anything longer, both gated and approved.
+
+`set_mode` is deleted; `set_status` replaces it. The Home picker and banner are deleted; a line
+above the hero and one small control beside the date replace them. `day_modes` and every row in it
+**stay forever**, and the registry survives as a frozen shim holding `label` and `excusesSkips`.
+
+**This supersedes the Modes half of the 2026-07-25 ADR below** (*"Log tab direction, Nutrition/
+Exercise sub-apps, and the Modes model"*). That ADR's other three decisions stand.
+
+**Reasoning.**
+
+1. **Two of the four levers were clinical decisions as constants.** Sick dropped every `workout`
+   row for the day and injected "Immune support — Vitamin D, zinc"; Deload injected "cut training
+   volume ~40%". `docs/ai-coach.md`'s governing principle says the deterministic layer detects and
+   grounds, the model decides. A table deciding that a sick person should not train, and which
+   supplements they should take, is that rule broken in the place it matters most.
+2. **The owner used it on hardware twice and called it thin both times.** *"The modes switcher
+   right now doesn't do much"* (2026-08-09), and still thin after three dormant levers were wired
+   (2026-08-10). The gap was never mechanical — every lever was built and tested. Switching mode
+   reshaped a list and printed a banner.
+3. **The open question is answered.** `information-architecture.md` closed its Modes section
+   asking whether a mode should be *a profile the user authors, versioned like a protocol*. No: a
+   registry with the user as author is still a fixed response bound to a fact, and still a rule
+   deciding the day.
+4. **A ROW is still needed, and a memory is not enough.** The rail writes before any model turn,
+   so the fact survives a failed or offline turn; reports resolve it per past day and the ledger
+   needs dates over a window, which a preference scalar and a Coach memory both lack.
+
+**The owner's five calls (2026-09-19).** Three took the recommendation, two did not.
+
+| # | Question | Call |
+| --- | --- | --- |
+| 1 | The chip set | (a) Sick · Traveling · Injured · Off day · Night out; everything else typed |
+| 2 | Does a status excuse the day? | **(b) — DIVERGED.** The Coach decides per status, through an `excuses` flag on `set_status` |
+| 3 | Do status days leave the baselines? | (a) Yes while open; Home and the Coach say how many days are excluded |
+| 4 | How does a status end? | (a) The × on its chip, seeding an end prompt; Off day and Night out end tonight |
+| 5 | Home | **(c) — DIVERGED.** The line AND a control beside the date |
+
+**Q2(b) is the one that shaped the schema.** Uniform excusal would have needed no column.
+Per-status excusal needs `day_statuses.excuses`, and two rules keep it honest:
+
+- **The rail's own write defaults to excusing (`1`).** It happens before any model turn, so it
+  needs a deterministic answer with no model in the loop. All five chips say *don't judge me by
+  today*; a wrong `true` is recoverable by the Coach on the same turn; a wrong `false` silently
+  counts a flu day as a run of misses. The asymmetry of harm is the whole argument, and it is
+  written into the migration header.
+- **An omitted flag never re-excuses.** `set_status` with no `excuses` leaves an open status
+  exactly as it is — "still sick" is a re-ask, not a re-decision.
+
+It also makes the deload carve-out cheap rather than a refusal: the Coach can record a
+non-excusing state without the registry having to say no. **A deload remains a PLAN change, never
+a status.**
+
+**Baseline exclusion stays uniform** (Q3(a)) and that is not an inconsistency: excusal asks
+*should this be held against him*, a baseline asks *is this day evidence of what his normal looks
+like*.
+
+**Consequences.**
+
+- **THE COST, STATED ONCE.** A status never touches generation, so the only thing that reshapes a
+  day is a Coach turn on that day. Day two of a flu regenerates whole — the workout is on the
+  mission and its reminder fires. Strictly less than Modes on that axis. Paid down by the re-ask
+  gesture, by Home's line seeding the same re-ask, and by the doctrine telling the Coach to bound
+  a known length with `update_protocol` and revert it on the "ended" cue. **If judgment proves
+  insufficient, the escalation is an owner decision then, not a rollback** — the row alone excuses
+  the day and guards the baselines with no model in the loop.
+- **Three deliberate changes ride along, named so nobody reads them as accidents.**
+  `outstandingCarries` adopted the shared excusal definition, so **nothing carries out of a
+  timezone-excused day** either — which C11 never considered. The **self-review moved onto the
+  same definition**, so a timezone day stops reading as a miss in a report of a week Home called
+  excused; it had been a second, silently diverged ledger. And **status days join the readiness
+  baselines' exclusions**, which can leave Recovery without a verdict during a status open past
+  ~25 days.
+- **That last one is reported, not silent.** `deriveReadiness` returns `excludedStatusDays` and
+  `recoveryPausedByStatus`, and the escalated sentence is gated on the COUNTERFACTUAL rather than
+  on "Recovery is unknown": on a phone with no watch Recovery has no verdict for a reason that
+  predates this morning's status by months, and blaming the status would be a lie the user could
+  check.
+- **`0061` writes one `normal` row into `day_modes`.** Every mode the owner ever set from Home was
+  open-ended, and the picker that could have ended one is gone. `date('now')` there is UTC and a
+  migration cannot read the day preference, so a Pacific-evening install leaves one evening
+  covered by an old mode — accepted, because `'-1 day'` could re-judge a local yesterday he has
+  already lived and seen graded.
+- **`allTrips` gained a second declaration source rather than losing its only one.** A bounded
+  `traveling` status closes an open trip; a frozen Travel mode still does too, because a trip read
+  a month later has to close the way it closed at the time.
+- **Ceilings held, both sides ahead.** Tool schemas 9,237 → **9,233**; the static prompt 3,669 →
+  **3,692**, after taking the spike's own named fallback trim when the first measurement landed at
+  exactly 3,700. Haiku's cache floor is clear (pass prefix 7,076 vs 4,096).
+- Docs: `information-architecture.md` §Status (replacing §Modes), `ai-coach.md`, `home-screen.md`,
+  `reports-subapp.md`, `CLAUDE.md` §11. Spec:
+  `docs/spikes/coach-status-buttons-modes-retirement.md`.
+
+**What only a device can settle:** whether the Coach actually adjusts. Every test here is
+deterministic; the owner's sentence is a request to a model. The acceptance bar is in the spike's
+§8 and it is specific — of the first three real taps, at least two must produce a
+`get_today_snapshot` then an `adjust_today` card, or an explicit "nothing to change today,
+because …", in the same turn.
+
+---
+
 ## 2026-08-25 — Durability comes back as ciphertext: the ARCB1 snapshot rides the device backup on purpose
 
 **Decision:** ARC writes an **XChaCha20-Poly1305-encrypted snapshot of its SQLite file** to
@@ -558,6 +672,9 @@ Capture (Supplement/Therapy) needed no table — it writes ad-hoc `log_entries`.
 ---
 
 ## 2026-07-25 — Log tab direction, Nutrition/Exercise sub-apps, and the Modes model
+
+> ⚠️ **The Modes half of this ADR was SUPERSEDED on 2026-09-19** — see the Status ADR at the top
+> of this file. The other three decisions stand.
 
 **Decision:** Full map + rationale in `docs/information-architecture.md`. In brief:
 
