@@ -104,6 +104,19 @@ export type MissionItem = {
    * provenance about BEHAVIOUR, and the signal palette marks biology.
    */
   tickedDays?: number;
+  /**
+   * `value.done_on` — the logical day the completion was recorded, present only
+   * when the row is completed. {@link tickedDays} is this fact as the number a
+   * row prints; this is the fact itself, which the Coach's payload states.
+   */
+  doneOn?: string;
+  /**
+   * `value.late_on` — this row is the ORIGINAL of a debt that was finally paid
+   * on a later day through a carried copy (0050). It stays `skipped`, because
+   * the day it was missed is still a miss; the stamp is what lets a surface say
+   * so out loud, and what makes a second tick on this row refusable.
+   */
+  lateOn?: string;
 };
 
 export type Readiness = {

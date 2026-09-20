@@ -64,6 +64,13 @@ type MissionExtras = {
    */
   done_on?: string;
   /**
+   * On the ORIGINAL of a debt a carried copy finally paid: the day it was done
+   * (0050, {@link DONE_LATE_SQL}). Read back so a surface can say so, and so a
+   * second tick on the original can be refused rather than quietly counting the
+   * item done twice.
+   */
+  late_on?: string;
+  /**
    * `true` on a row that was written BEFORE its day — a day committed ahead by
    * a tick on the Plan screen. It is what {@link NOT_UNSEEN_SQL} keys on, and
    * it is stripped from every still-pending row when the day arrives and
@@ -129,6 +136,8 @@ export function toMissionItem(row: LogEntryRow, date?: string): MissionItem {
       date !== undefined && typeof extras.done_on === 'string' && extras.done_on !== date
         ? daysBetween(date, extras.done_on)
         : undefined,
+    doneOn: extras.done_on,
+    lateOn: extras.late_on,
     // The four fields that make the row a door (see MissionItem). Every one of
     // them was already on the stored row; nothing new is written to get them,
     // and each is left UNDEFINED rather than null when absent, so `item.protocolId
@@ -429,6 +438,37 @@ export function settledPlannedItems(
         AND json_extract(e.value, '$.item') IS NOT NULL
         AND ${PLANNED_ROW_SQL}`,
     [date]
+  );
+}
+
+/**
+ * Every COMPLETED row sitting on a day AFTER `today` — what the user has
+ * already ticked off days that have not happened.
+ *
+ * The Coach's one new window onto the Plan screen (`get_today_snapshot`'s
+ * `ahead` array). It is payload, not schema: nothing about the tool's
+ * description or input changes, and the array is omitted altogether when it is
+ * empty, which is every database that has never used the feature.
+ *
+ * Deliberately no horizon: a day committed ahead under some earlier, larger
+ * horizon is still a fact the Coach should not be blind to.
+ */
+export function completedAheadOf(
+  db: Database,
+  today: string
+): { day: string; title: string; protocol: string | null }[] {
+  return db.all<{ day: string; title: string; protocol: string | null }>(
+    `SELECT d.date AS day,
+            e.title AS title,
+            json_extract(e.value, '$.protocol') AS protocol
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date > ?
+        AND e.status = 'completed'
+        AND ${PLANNED_ROW_SQL}
+        AND ${NOT_REMOVED_SQL}
+      ORDER BY d.date, e.scheduled_time, e.created_at, e.id`,
+    [today]
   );
 }
 

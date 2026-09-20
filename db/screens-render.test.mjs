@@ -3678,7 +3678,7 @@ console.log('20. 0059 — the count of pieces, on the record and on the control'
 }
 
 // -------------------------------------------------------------------------
-console.log('\n21. The Plan screen — today, a day ahead, and a day nobody opened');
+console.log('\n21. The Plan screen — today, a day ahead, and the past days behind it');
 {
   // The only headless gate on app/mission-day.tsx: its `useState` initializer
   // reads the day, and on a FUTURE day that read is a whole `planForDay` with
@@ -3749,6 +3749,89 @@ console.log('\n21. The Plan screen — today, a day ahead, and a day nobody open
     'Back to today',
   ]);
   refute('mission-day (a day nobody opened)', past, ['The day', 'Evening walk']);
+
+  // A PAST DAY INSIDE THE WINDOW, holding a carried copy. The row is drawn and
+  // says in one serif line where the gesture belongs — never a checkbox that
+  // silently refuses.
+  const fiveBack = shiftISODate(today, -5);
+  const fourBack = shiftISODate(today, -4);
+  createProtocolWithVersion(
+    db,
+    {
+      name: 'Backfill check',
+      type: 'therapy_protocol',
+      startedOn: fiveBack,
+      carryOver: true,
+    },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'bf',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'sauna',
+              title: 'Sauna session',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'every_n_days', n: 5 },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  generateMissionForDay(db, fiveBack); // left untouched: the debt
+  generateMissionForDay(db, fourBack); // re-offers it as a carried copy
+  const carriedDay = render('mission-day (a carried copy in the past)', MissionDayScreen, {
+    date: fourBack,
+  });
+  expect('mission-day (a carried copy in the past)', carriedDay, [
+    'Sauna session',
+    'live on today',
+    'tick it there',
+  ]);
+  refute('mission-day (a carried copy in the past)', carriedDay, ['This day is settled']);
+
+  // A PAST DAY BEYOND IT. One line for the whole day: a miss older than a week
+  // is a fact about the protocol, which is what mission-history answers.
+  const tenBack = shiftISODate(today, -10);
+  createProtocolWithVersion(
+    db,
+    { name: 'Old course', type: 'daily_routine', startedOn: shiftISODate(today, -12) },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'oc',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'dose',
+              title: 'Old dose',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  generateMissionForDay(db, tenBack);
+  const settled = render('mission-day (beyond the carry window)', MissionDayScreen, {
+    date: tenBack,
+  });
+  expect('mission-day (beyond the carry window)', settled, [
+    'Old dose',
+    'This day is settled',
+    'the record stands as it is',
+  ]);
 
   // A `?date=` past the horizon is clamped, exactly as the arrow is.
   const beyond = render('mission-day (beyond the horizon)', MissionDayScreen, {

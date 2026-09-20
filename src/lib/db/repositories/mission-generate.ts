@@ -1405,3 +1405,82 @@ export function rederiveMissionFromToday(db: Database, today: string): RederiveR
   rederiveDaysAhead(db, today);
   return result;
 }
+
+/**
+ * Why a past tick was refused, or `'ok'` when it was not.
+ *
+ * A total result rather than a boolean, because each refusal has a different
+ * authored line and a screen that cannot tell them apart can only say "no".
+ */
+export type PastTickResult = 'ok' | 'not_found' | 'too_old' | 'carried' | 'settled_by_copy';
+
+/**
+ * Tick (or un-tick) a row on a day that has already passed — the **backfill**.
+ *
+ * ## What it is for, and the one thing it reverses
+ *
+ * Yesterday's untouched magnesium, remembered this morning. With carry-over on,
+ * ticking TODAY's carried copy settles the original `skipped + late_on` — done
+ * late, no credit (0050, the owner's 2026-09-14 call). Ticking the ORIGINAL on
+ * its own day instead makes it `completed` there, with full credit. Those are
+ * two different claims — *I did it today, late* versus *I did it yesterday and
+ * forgot to tick* — and the second is the most common reason to look back. For
+ * a `daily` item it is the ONLY correction available, because `daily` never
+ * grows a carried row.
+ *
+ * The owner took option (a) on question 3: **yes, for the seven settled days
+ * behind today**, stamped with the day of the tap and shown as *ticked N days
+ * later*. Older days are read-only and say so.
+ *
+ * ## The three guards, and they ship WITH the gesture
+ *
+ * A tick without them corrupts the done-late ledger, which is why they are here
+ * and not in a follow-up:
+ *
+ *  1. **The window.** Seven days, the carry window: a miss older than a week is
+ *     a fact about the protocol, not a bookkeeping slip.
+ *  2. **A CARRIED row is refused** (question 4, option a). The debt is live on
+ *     today's copy, where the gesture belongs. Allowing it would stamp the
+ *     original with `late_on = <the carried row's own day>` — a day on which
+ *     nothing was asserted — and leave one row wearing both `carried_days` and
+ *     `tickedDays`.
+ *  3. **A row a carried copy already SETTLED is refused.** `late_on` is the
+ *     late-completion form: flipping a `skipped + late_on` original to
+ *     `completed` would leave the stamp in `value`, silently drop the
+ *     `doneLate` annotation, and count the item done twice. `skipped_via` is
+ *     the same fact by the other route (a copy that was hand-skipped), and it
+ *     is guarded in the same breath rather than as a fourth rule: both mean
+ *     "a copy has already spoken for this row", and both are undone from the
+ *     copy.
+ *
+ * The allowed case triggers {@link rederiveMissionFromToday}, so today's
+ * carried copy — a debt that no longer exists — is removed by the diff.
+ */
+export function backfillPastRow(db: Database, id: string, today: string): PastTickResult {
+  const row = db.get<{ date: string; status: string; value: string | null }>(
+    `SELECT d.date AS date, e.status AS status, e.value AS value
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE e.id = ? AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`,
+    [id]
+  );
+  if (!row || row.date >= today) return 'not_found';
+  if (daysBetween(row.date, today) > CARRY_MAX_DAYS) return 'too_old';
+
+  let extras: { carried?: boolean; late_on?: string; skipped_via?: string } = {};
+  try {
+    extras = row.value ? (JSON.parse(row.value) as typeof extras) : {};
+  } catch {
+    extras = {};
+  }
+  if (extras.carried === true) return 'carried';
+  if (extras.late_on !== undefined || extras.skipped_via !== undefined) return 'settled_by_copy';
+
+  const settled = row.status === 'completed' || row.status === 'skipped';
+  setMissionStatus(db, id, settled ? 'pending' : 'completed', today);
+  // The correction reaches TODAY: a debt that has just been paid on its own day
+  // is no longer outstanding, so the carried copy standing on today's mission is
+  // removed by the same diff every other plan change goes through.
+  rederiveMissionFromToday(db, today);
+  return 'ok';
+}

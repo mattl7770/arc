@@ -879,6 +879,27 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // §8.1 and §8.3 above moved NOTHING, and this round's trims are inside a
   // WRITE tool, so `readToolTokens` — and therefore the Haiku pass prefix — is
   // untouched at 7,053. All four assertions below hold on the same run.
+  //
+  // ── 2026-09-19: THE MISSION DAY PICKER AND THE FUTURE CHECK-OFF, §3.10.
+  // **NEITHER CEILING MOVES, AND NEITHER NUMBER MOVES: 9,237 / 3,669.**
+  //
+  // The Coach gains VISIBILITY of a day the user planned ahead, and visibility
+  // is payload. `get_today_snapshot` emits `doneOn` on a mission row whose
+  // completion was recorded on a different day — omitted on every ordinary
+  // tick, so the usual day carries no field at all — and an `ahead` array of
+  // `{day, title, protocol}` for every completed row on a day after today,
+  // omitted when empty, which is every database that has never used the Plan
+  // screen. Neither is a schema: no description sentence, no `inputSchema`
+  // property, nothing in the cached prefix these two ceilings guard.
+  //
+  // What was NOT done, and why: `adjust_today` does not learn a `date`. That is
+  // ~13 tokens of headroom against a property plus the rewrite of its "Today
+  // only" sentence, and acting on a day ahead rides the parked whole-app-access
+  // item (docs/spikes/coach-whole-app-access.md) where the `update_protocol`
+  // sweep — still the largest schema at 425, still unswept — pays for it.
+  //
+  // No rule is attached about whether ticking ahead is good practice. That is
+  // judgment, and judgment lives in the model (memory: coach-judgment-not-rules).
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

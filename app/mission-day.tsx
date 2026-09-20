@@ -13,6 +13,8 @@ import { todayISODate } from '@/lib/db/date';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { listMission, missionRecordStart, toggleMission } from '@/lib/db/repositories/mission';
 import {
+  backfillPastRow,
+  CARRY_MAX_DAYS,
   commitDayAhead,
   MISSION_HORIZON_DAYS,
   planForDay,
@@ -24,7 +26,8 @@ import { arriveDay } from '@/lib/db/seed';
 import { deriveMissionView } from '@/lib/home/derive-mission';
 import { getModeDefinition } from '@/lib/modes/registry';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
-import { addDays } from '@/lib/protocols/cadence';
+import { addDays, daysBetween } from '@/lib/protocols/cadence';
+import { weekdayDate } from '@/lib/protocols/format';
 import { stepDay } from '@/lib/utils/day-cursor';
 import type { MissionItem } from '@/types/home';
 
@@ -51,8 +54,14 @@ import type { MissionItem } from '@/types/home';
  *     un-ticking the last tick un-commits it again. It is **tick-only**: a skip
  *     ahead would be a permanent suppression (a hand-tapped skip is never
  *     carried) and a remove ahead a tombstone on a plan that may still change.
- *   - **A PAST DAY** renders the rows it actually holds, read-only for now —
- *     the backfill gesture and its three guards ship together in Phase 3.
+ *   - **A PAST DAY** renders the rows it actually holds, and inside the carry
+ *     window (seven days) they can be **backfilled**: a row you did and forgot
+ *     to tick is ticked on its own day, stamped with the day of the tap and
+ *     shown as *ticked N days later*. Two rows refuse, each saying why in one
+ *     serif line rather than through a checkbox that quietly does nothing — a
+ *     carried copy (the debt is live on today's mission, where the gesture
+ *     belongs) and a row a carried copy has already settled. Beyond the window
+ *     the day is the record, and says so.
  *
  * ## The synthetic ids
  *
@@ -207,7 +216,15 @@ export default function MissionDayScreen() {
    */
   const onToggle = (id: string) => {
     const db = getDb();
-    if (isPast) return;
+    if (isPast) {
+      // The repository owns the guards — the lines below are the explanation,
+      // never the enforcement. A screen that only refused visually would leave
+      // the gesture reachable from the next caller.
+      backfillPastRow(db, id, today);
+      setView(readDay(date, today));
+      void syncReminderNotifications(db);
+      return;
+    }
     if (view.committed || !isAhead) {
       toggleMission(db, id, today);
       if (isAhead) uncommitDayAhead(db, date, today);
@@ -258,29 +275,44 @@ export default function MissionDayScreen() {
               note={`${ordered.filter((i) => i.status === 'completed').length} of ${ordered.length}`}
             />
             <View className="mt-1">
-              {ordered.map((item, index) => (
-                <View key={item.id}>
-                  <Divider first={index === 0} />
-                  {/* No `onOpen`: a computed row has no stored row to open,
-                      and the item sheet's verbs are Home's business. This
-                      screen is the plan, not the item — so the chevron is not
-                      drawn and the named VoiceOver action is not offered,
-                      rather than being offered and doing nothing. */}
-                  <MissionItemRow item={item} ahead={isAhead} onToggle={onToggle} />
-                </View>
-              ))}
+              {ordered.map((item, index) => {
+                const refusal = isPast ? pastRefusal(item, date, today) : null;
+                return (
+                  <View key={item.id}>
+                    <Divider first={index === 0} />
+                    {/* No `onOpen`: a computed row has no stored row to open,
+                        and the item sheet's verbs are Home's business. This
+                        screen is the plan, not the item — so the chevron is not
+                        drawn and the named VoiceOver action is not offered,
+                        rather than being offered and doing nothing. */}
+                    <MissionItemRow item={item} ahead={isAhead} onToggle={onToggle} />
+                    {/* Why this one row cannot be ticked here, in words. A
+                        disabled checkbox with no explanation is the failure
+                        00-design-spec.md §5 names; the line says where the
+                        gesture does belong. */}
+                    {refusal ? (
+                      <Text className="mb-3 font-serif text-[13px] italic leading-5 text-ink-secondary">
+                        {refusal}
+                      </Text>
+                    ) : null}
+                  </View>
+                );
+              })}
             </View>
           </Block>
         ) : (
-          <EmptyDay date={date} today={today} committed={view.committed} />
+          <EmptyDay date={date} today={today} />
         )}
       </View>
 
-      {/* The one line that says what a PAST day's rows can and cannot do, and
-          it is said in words rather than by a checkbox that refuses. */}
-      {isPast && ordered.length > 0 ? (
+      {/* Beyond the carry window a past day is the record and nothing else. A
+          miss older than a week is a fact about the PROTOCOL — which is what
+          mission-history's "Where it's failing" answers — not a tick someone
+          forgot. Said in one line, never by a plate of checkboxes that refuse
+          without explaining. */}
+      {isPast && ordered.length > 0 && daysBetween(date, today) > CARRY_MAX_DAYS ? (
         <Text className="mt-4 font-serif text-[14px] leading-6 text-ink-secondary">
-          This day is settled. Its record stands as it is.
+          This day is settled. More than a week back, the record stands as it is.
         </Text>
       ) : null}
     </Screen>
@@ -291,6 +323,25 @@ export default function MissionDayScreen() {
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
 /**
+ * Why THIS row on a past day cannot be ticked here, or null when it can.
+ *
+ * The explanation only — `backfillPastRow` owns the enforcement, and the two
+ * must agree. Each line says where the gesture does belong rather than merely
+ * that it is refused; the one thing worse than a control that does nothing is a
+ * control that does nothing silently.
+ */
+function pastRefusal(item: MissionItem, date: string, today: string): string | null {
+  if (daysBetween(date, today) > CARRY_MAX_DAYS) return null; // the day says it once, below
+  if (item.carriedFrom !== undefined) {
+    return `Owed from ${weekdayDate(item.carriedFrom.date)}. It is live on today’s mission — tick it there.`;
+  }
+  if (item.lateOn !== undefined) {
+    return `Already done late, on ${weekdayDate(item.lateOn)}. Un-tick it there to re-open it.`;
+  }
+  return null;
+}
+
+/**
  * An empty day, authored — never a blank (00-design-spec.md §5). Three
  * different facts, and a reader must be able to tell them apart:
  *
@@ -298,18 +349,17 @@ const EMPTY_SET: ReadonlySet<string> = new Set<string>();
  *     every-3-days stack has empty days by design, and those are exactly the
  *     days worth checking tomorrow on.
  *   - a PAST day on which no plan was ever generated — the app was not opened,
- *     or nothing applied.
+ *     or nothing applied. Distinct from a day that HAD a plan, which draws its
+ *     rows instead.
  *   - TODAY with nothing on it, which is Home's own empty state and says so
  *     there; here it is one line, because the action belongs on Home.
  */
-function EmptyDay({ date, today, committed }: { date: string; today: string; committed: boolean }) {
+function EmptyDay({ date, today }: { date: string; today: string }) {
   const line =
     date > today
       ? 'Your protocols put nothing on this day.'
-      : committed
-        ? 'Everything planned for this day was removed.'
-        : date < today
-          ? 'No plan was generated on this day.'
-          : 'Your protocols put nothing on today.';
+      : date < today
+        ? 'No plan was generated on this day.'
+        : 'Your protocols put nothing on today.';
   return <Text className="font-serif text-[15px] leading-6 text-ink-secondary">{line}</Text>;
 }
