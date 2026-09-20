@@ -62,7 +62,7 @@
 
 **All eight are now BUILT** (2026-09-19) — struck through below, each against the plan the owner approved and behind the full gate. What remains parked is the one line added on the way (the serving-name snapshot).
 
-**Every one of these had a written plan first** (2026-09-15/16, in `docs/spikes/`): each was drafted against `main`, attacked by an independent critic with file:line evidence, and rewritten to answer every finding. **Nothing is built**, and each ends in the handful of questions only the owner can answer.
+**Every one of these had a written plan first** (2026-09-15/16, in `docs/spikes/`): each was drafted against `main`, attacked by an independent critic with file:line evidence, and rewritten to answer every finding. Each ended in the handful of questions only the owner can answer — and those answers are what the builds above were made against.
 
 - ~~**Protocol interface rethink**~~ — **BUILT 2026-09-19 (Phases 0–4), no migration.** — *"just make a note in project status and we will continue later, it will require much rethinking."* → **`docs/spikes/protocol-interface-rethink.md`** — mission-first: a mission row opens its item, a per-item editor writes a version, the detail leads with now and next. 5 questions, no migration.
 - ~~**Modes revamp**~~ — **BUILT 2026-09-19, migration `0061`**; day-Modes retired, their rows frozen as history. — the shape is decided, the build is later: **status quick-buttons on the Coach screen** (Sick, Traveling, …) that send a canned prompt — *"I am traveling right now. Check what's up and adjust accordingly"* — after which the Coach adjusts mission items, the workout plan, etc. itself. Pairs with retiring the old Modes system (`claude/modes-feature-evaluation-579177`, which must renumber its migration on landing — its `0043` collides). → **`docs/spikes/coach-status-buttons-modes-retirement.md`** — a five-chip rail above the Coach composer that writes the fact first and sends the prompt second, and retires day-Modes in the same migration. 5 questions.
@@ -76,7 +76,7 @@
 
 ---
 
-## Migration ledger — final (head is `0059` on this branch; re-check `git ls-tree main -- db/migrations/` before claiming the next number)
+## Migration ledger — final (head is `0061`, so the next free number is `0062`; re-check `git ls-tree main -- db/migrations/` before claiming it)
 
 | Number | Item | File |
 |---|---|---|
@@ -91,6 +91,8 @@
 | `0057` | C3 | `pending_estimates` — authored 0048 |
 | `0058` | C4 | `composite_meal_items` — authored 0049 |
 | `0059` | Slices | `meal_item_piece_name` — the one column the parked "slices" item needed |
+| `0060` | Timezone, 2nd pass | `timezone_zone_pair` — the arrival zone's seasonal offsets, nullable so a 0053 row claims no probe it never took |
+| `0061` | Modes revamp | `status_replaces_modes` — `day_statuses`, plus the one `normal` row that retires day-Modes without editing a day already lived |
 
 **Dead gaps from this batch: `0048` · `0049` · `0051` · `0052`** (joining 0005 · 0006 · 0010 · 0019 · 0022 · 0023 · 0040 · 0041). A2–A9, B3, C1, C2, C5–C10, C14 and D2 needed no migration.
 
