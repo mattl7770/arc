@@ -815,5 +815,419 @@ console.log('10. 0060 adds the seasonal pair and leaves every 0053 row unable to
   db.close();
 }
 
+// ===========================================================================
+// 11. THE OWNER'S ACTUAL DEVICE STAMP: 44, WITH HIS DATA IN IT, TO HEAD.
+//
+// Every section above stages at a number chosen to sit one below the migration
+// it is testing — 28, 45, 58, 59. **None of them is 44**, and 44 is the only
+// number that exists on hardware: it is what the installed TestFlight build
+// stamped, and nothing has been built since, so the first launch of the next
+// build runs 0045 → head in one go over a database holding a year of the
+// owner's life. That is the upgrade this project actually has to survive, and
+// until this section existed nothing tested it.
+//
+// Two things make it different in kind from the sections above:
+//
+//  1. **It is populated across the whole schema**, not just the table under
+//     test. 0034's header records the trap — SQLite validates a cross-column
+//     CHECK on ADD COLUMN against existing rows — and the migrations between 44
+//     and head include ADD COLUMNs with CHECKs, three column RENAMEs, several
+//     backfill UPDATEs and one INSERT. Any of those can pass on an empty
+//     fixture and reject, or quietly mangle, a real one.
+//
+//  2. **It asks SQLite whether the result is SOUND.** No section above ever
+//     ran `PRAGMA foreign_key_check` or `PRAGMA integrity_check`, so nothing in
+//     this file proved an upgrade leaves the database usable — only that the
+//     rows it thought to look at were where it left them. A rename that
+//     orphaned a child row, or an index left disagreeing with its table, would
+//     have passed every assertion in this file.
+//
+// The comparison is column-by-column against a pre-upgrade snapshot, and the
+// three legitimate side effects are asserted **as intended, not tolerated as
+// loss**: `exercises.updated_at` and `workouts.updated_at` move because the
+// 0046/0054/0056 backfills are UPDATEs and fire the AFTER UPDATE triggers, and
+// `day_modes` gains exactly one row — 0061's `modes-retired`, which is the
+// whole reason that migration writes a row at all (the owner's modes were
+// stored open-ended and the picker is gone, so nothing else could ever end
+// them). Anything else that moved is a defect.
+// ===========================================================================
+console.log("11. A device at 44 — the owner's real stamp — upgrades to head with its data intact");
+{
+  const db = new DatabaseSync(':memory:');
+  const staged = stageAt(db, 44);
+  staged === 44
+    ? ok('staged at 44 — the user_version the installed TestFlight build left behind')
+    : bad('stage at 44', String(staged));
+
+  // Raw SQL, never the repositories: the point is to test the migrations
+  // against rows as SQLite holds them, not against a repository's idea of a
+  // row — the same reason section 5's fixture is hand-written.
+  const T = (n) => `2026-09-0${n}T08:00:00.000Z`;
+  db.exec(`
+    INSERT INTO users (id, email, full_name, date_of_birth, biological_sex, timezone, preferences, created_at, updated_at)
+      VALUES ('u-1','matt@example.com','Matt','1985-04-12','male','America/Los_Angeles','{"dayStartsAt":"04:00"}','${T(1)}','${T(1)}');
+
+    INSERT INTO protocols (id, slug, name, description, type, is_active, current_version_id, started_on, created_at, updated_at)
+      VALUES ('p-1','morning-stack','Morning Stack','AM supplements','supplement_stack',1,NULL,'2026-08-01','${T(1)}','${T(1)}');
+    -- BOTH content schemas, because parseProtocolContent must normalise v1
+    -- forever and protocol_versions is immutable: a migration that touched
+    -- either shape would be rewriting a version the user already approved.
+    INSERT INTO protocol_versions (id, protocol_id, version_number, content, change_notes, created_by, created_at)
+      VALUES ('pv-1','p-1',1,'{"schema":2,"phases":[{"name":"Base","durationDays":28,"items":[{"id":"it-1","title":"Creatine 5g","cadence":{"kind":"daily"}}]}]}','initial','user','${T(1)}');
+    INSERT INTO protocol_versions (id, protocol_id, version_number, content, change_notes, created_by, created_at)
+      VALUES ('pv-2','p-1',2,'{"items":[{"title":"legacy v1 item"}]}','v1 legacy shape kept immutable','user','${T(2)}');
+    UPDATE protocols SET current_version_id = 'pv-1' WHERE id = 'p-1';
+
+    INSERT INTO daily_logs (id, date, summary, overall_adherence_score, notes, created_at, updated_at)
+      VALUES ('dl-1','2026-09-01','good day',88.5,NULL,'${T(1)}','${T(1)}'),
+             ('dl-2','2026-09-02',NULL,NULL,'travel','${T(2)}','${T(2)}');
+
+    INSERT INTO log_entries (id, daily_log_id, type, protocol_id, title, status, scheduled_time, completed_at, value, source, notes, created_at, updated_at)
+      VALUES ('le-1','dl-1','supplement','p-1','Creatine 5g','completed','07:00','${T(1)}','{"dose":5}','manual',NULL,'${T(1)}','${T(1)}'),
+             ('le-2','dl-1','workout',NULL,'Upper A','completed','17:30','${T(1)}',NULL,'manual',NULL,'${T(1)}','${T(1)}'),
+             ('le-3','dl-2','habit','p-1','Sunlight 10m','pending','06:30',NULL,NULL,'manual',NULL,'${T(2)}','${T(2)}'),
+             ('le-4','dl-2','note',NULL,'Slept badly','skipped',NULL,NULL,NULL,'manual','red-eye','${T(2)}','${T(2)}');
+
+    INSERT INTO foods (id, name, name_norm, brand, serving_name, serving_grams, kcal_100g, protein_g_100g, carbs_g_100g, fat_g_100g, source, created_at, updated_at)
+      VALUES ('f-1','Whole Milk','whole milk','Straus','1 cup',244,61,3.2,4.8,3.3,'user','${T(1)}','${T(1)}');
+
+    INSERT INTO meals (id, date, time, name, kcal, protein_g, carbs_g, fat_g, source, notes, created_at, updated_at)
+      VALUES ('m-1','2026-09-01','08:15','Breakfast',620,44,55,22,'manual',NULL,'${T(1)}','${T(1)}'),
+             ('m-2','2026-09-02','13:00','Lunch',780,52,70,28,'manual',NULL,'${T(2)}','${T(2)}');
+
+    INSERT INTO meal_items (id, meal_id, food_id, name, grams, serving_qty, kcal, protein_g, carbs_g, fat_g, fiber_g, confidence, micros, created_at, updated_at)
+      VALUES ('mi-1','m-1','f-1','Whole Milk',244,1,149,7.8,11.7,8,0,'high','{"calcium_mg":276}','${T(1)}','${T(1)}'),
+             ('mi-2','m-1',NULL,'Eggs, 3 large',150,NULL,215,19,1.1,14.3,0,'medium',NULL,'${T(1)}','${T(1)}'),
+             ('mi-3','m-2',NULL,'Chicken breast',300,NULL,495,93,0,11,0,NULL,NULL,'${T(2)}','${T(2)}');
+
+    INSERT INTO exercises (id, name, aliases, equipment, movement_pattern, mechanic, logging_type, unilateral, is_custom, archived, created_at, updated_at)
+      VALUES ('ex-custom','Matt Row Variant',NULL,'dumbbell','pull_h','compound','weight_reps',1,1,0,'${T(1)}','${T(1)}');
+
+    INSERT INTO workouts (id, date, name, kind, duration_min, notes, routine_id, created_at, updated_at)
+      VALUES ('w-1','2026-09-01','Upper A','strength',62,NULL,NULL,'${T(1)}','${T(1)}'),
+             ('w-2','2026-09-02','Zone 2','cardio',45,'treadmill',NULL,'${T(2)}','${T(2)}');
+
+    INSERT INTO workout_sets (id, workout_id, exercise, exercise_id, set_index, reps, weight_kg, set_type, rpe, duration_sec, superset_group, created_at, updated_at)
+      VALUES ('ws-1','w-1','Bench Press',NULL,0,8,80,'normal',8,NULL,NULL,'${T(1)}','${T(1)}'),
+             ('ws-2','w-1','Bench Press',NULL,1,8,80,'normal',9,NULL,NULL,'${T(1)}','${T(1)}'),
+             ('ws-3','w-1','Matt Row Variant','ex-custom',0,10,32.5,'normal',7,NULL,1,'${T(1)}','${T(1)}'),
+             ('ws-4','w-2','Treadmill',NULL,0,NULL,NULL,'normal',NULL,2700,NULL,'${T(2)}','${T(2)}');
+
+    INSERT INTO wearable_data (id, date, metric_type, value, unit, source_device, source_raw_id, start_time, end_time, metadata, created_at, updated_at)
+      VALUES ('wd-1','2026-09-01','hrv',62,'ms','apple_watch',NULL,NULL,NULL,'{}','${T(1)}','${T(1)}'),
+             ('wd-2','2026-09-01','rhr',48,'bpm','apple_watch',NULL,NULL,NULL,'{}','${T(1)}','${T(1)}'),
+             ('wd-3','2026-09-01','steps',11342,'count','apple_health',NULL,NULL,NULL,'{}','${T(1)}','${T(1)}'),
+             ('wd-4','2026-09-02','sleep_duration',411,'min','apple_watch',NULL,'2026-09-01T23:10:00.000Z','2026-09-02T06:01:00.000Z','{}','${T(2)}','${T(2)}'),
+             ('wd-5','2026-09-02','steps',7781,'count','apple_health',NULL,NULL,NULL,'{}','${T(2)}','${T(2)}');
+
+    INSERT INTO body_metrics (id, measured_at, weight_kg, body_fat_pct, muscle_mass_kg, bone_mass_kg, visceral_fat_rating, waist_cm, hip_cm, source, notes, created_at, updated_at)
+      VALUES ('bm-1','2026-09-01T06:30:00.000Z',82.4,14.2,38.1,3.2,6,84,98,'manual',NULL,'${T(1)}','${T(1)}'),
+             ('bm-2','2026-09-02T06:28:00.000Z',82.1,14.1,38.2,3.2,6,83.5,98,'manual',NULL,'${T(2)}','${T(2)}');
+
+    -- An OPEN-ENDED day mode: the exact state 0061's header says the owner's
+    -- build leaves behind, and the reason that migration writes a row at all.
+    INSERT INTO day_modes (id, mode, start_date, end_date, label, note, created_at, updated_at)
+      VALUES ('dm-1','travel','2026-08-20',NULL,'Tokyo','red-eye','${T(1)}','${T(1)}');
+  `);
+
+  const DATA_TABLES = [
+    'users',
+    'protocols',
+    'protocol_versions',
+    'daily_logs',
+    'log_entries',
+    'foods',
+    'meals',
+    'meal_items',
+    'exercises',
+    'workouts',
+    'workout_sets',
+    'wearable_data',
+    'body_metrics',
+    'day_modes',
+  ];
+  const colsOf = (t) =>
+    db
+      .prepare(`PRAGMA table_info(${t})`)
+      .all()
+      .map((c) => c.name);
+  const before = {};
+  const beforeCols = {};
+  for (const t of DATA_TABLES) {
+    beforeCols[t] = colsOf(t);
+    before[t] = db.prepare(`SELECT ${beforeCols[t].join(',')} FROM ${t} ORDER BY id`).all();
+  }
+  // The 31 rows written by hand above. They are NOT the whole snapshot: the
+  // migrations themselves seed the food and exercise catalogs, so `before`
+  // also holds ~256 shipped rows — which is a bonus, not noise. The
+  // byte-identity comparison below therefore covers the entire catalog as the
+  // device carries it, and that is where 0046's `measures` and 0056's `source`
+  // backfills actually do their work (the one custom exercise is the exception
+  // they have to leave alone).
+  const MINE = {
+    users: ['u-1'],
+    protocols: ['p-1'],
+    protocol_versions: ['pv-1', 'pv-2'],
+    daily_logs: ['dl-1', 'dl-2'],
+    log_entries: ['le-1', 'le-2', 'le-3', 'le-4'],
+    foods: ['f-1'],
+    meals: ['m-1', 'm-2'],
+    meal_items: ['mi-1', 'mi-2', 'mi-3'],
+    exercises: ['ex-custom'],
+    workouts: ['w-1', 'w-2'],
+    workout_sets: ['ws-1', 'ws-2', 'ws-3', 'ws-4'],
+    wearable_data: ['wd-1', 'wd-2', 'wd-3', 'wd-4', 'wd-5'],
+    body_metrics: ['bm-1', 'bm-2'],
+    day_modes: ['dm-1'],
+  };
+  const mineCount = Object.values(MINE).reduce((n, ids) => n + ids.length, 0);
+  const total = DATA_TABLES.reduce((n, t) => n + before[t].length, 0);
+  const absent = Object.entries(MINE).flatMap(([t, ids]) =>
+    ids.filter((id) => !before[t].some((r) => r.id === id)).map((id) => `${t}.${id}`)
+  );
+  absent.length === 0
+    ? ok(
+        `fixture staged: ${mineCount} hand-written rows over the ${total - mineCount} the migrations seed — ${total} rows across ${DATA_TABLES.length} tables, all of them compared below`
+      )
+    : bad('fixture insert', absent.join(', '));
+
+  // The applied set is DERIVED from pendingMigrations rather than written out,
+  // for section 9's reason one step further on: the owner's device stays at 44
+  // until he builds, so the number of migrations this upgrade carries grows
+  // every time one lands. A literal would be a fact about the week it was
+  // written. What is invariant is that the runner applies exactly the pending
+  // set, ascending, and stops at the head.
+  const expectedPending = pendingMigrations(44, MIGRATIONS).map((m) => m.name);
+  const result = migrate(executor(db), MIGRATIONS);
+  JSON.stringify(result.applied) === JSON.stringify(expectedPending)
+    ? ok(
+        `applied exactly the ${expectedPending.length} pending migrations, ascending: ${result.applied.join(', ')}`
+      )
+    : bad('applied set', JSON.stringify(result.applied));
+  result.from === 44 ? ok('from = 44') : bad('from', String(result.from));
+  const landed = db.prepare('PRAGMA user_version').get().user_version;
+  landed === LATEST
+    ? ok(`lands on user_version = ${landed} (head)`)
+    : bad('final user_version', String(landed));
+
+  // --- (a) the structure those migrations promise --------------------------
+  const tableExists = (t) =>
+    db.prepare("SELECT count(*) c FROM sqlite_master WHERE type='table' AND name=?").get(t).c === 1;
+  const newTables = [
+    'workout_drafts',
+    'timezone_changes',
+    'workout_ingest_links',
+    'pending_estimates',
+    'day_statuses',
+  ];
+  const missingTables = newTables.filter((t) => !tableExists(t));
+  missingTables.length === 0
+    ? ok(`the ${newTables.length} new tables exist: ${newTables.join(', ')}`)
+    : bad('new tables missing', missingTables.join(', '));
+
+  const EXPECT_COLS = {
+    exercises: ['measures', 'source'],
+    workout_sets: ['distance_m'],
+    foods: ['serving_amount', 'basis'],
+    meal_items: ['amount', 'unit', 'parent_item_id', 'is_composite', 'piece_name'],
+    meal_template_items: ['amount', 'unit'],
+    protocols: ['carry_over', 'checkoff_mode'],
+    workouts: ['started_at', 'away'],
+    timezone_changes: ['zone_jan_offset_min', 'zone_jul_offset_min'],
+  };
+  const missingCols = Object.entries(EXPECT_COLS).flatMap(([t, cols]) =>
+    cols.filter((c) => !colsOf(t).includes(c)).map((c) => `${t}.${c}`)
+  );
+  missingCols.length === 0
+    ? ok('every new column exists across the 8 altered tables')
+    : bad('columns missing', missingCols.join(', '));
+  const stillThere = Object.entries({
+    foods: 'serving_grams',
+    meal_items: 'grams',
+    meal_template_items: 'grams',
+  }).filter(([t, gone]) => colsOf(t).includes(gone));
+  stillThere.length === 0
+    ? ok('the three renamed-away columns are gone (foods/meal_items/meal_template_items)')
+    : bad('rename incomplete', stillThere.map(([t, c]) => `${t}.${c}`).join(', '));
+  const tablesNow = new Set(
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+      .all()
+      .map((r) => r.name)
+  );
+  const droppedTables = DATA_TABLES.filter((t) => !tablesNow.has(t));
+  droppedTables.length === 0
+    ? ok('no table the device had was dropped')
+    : bad('dropped tables', droppedTables.join(', '));
+
+  // --- (b) every pre-existing row, column by column ------------------------
+  const RENAMED = { foods: { serving_grams: 'serving_amount' }, meal_items: { grams: 'amount' } };
+  // The ONLY columns allowed to move, and only on these tables: 0046 (measures)
+  // and 0056 (source) UPDATE `exercises`, 0054 UPDATEs `workouts`, and each
+  // fires that table's AFTER UPDATE trigger. Intended — and asserted as such
+  // below rather than merely excused here.
+  const TRIGGER_TOUCHED = { exercises: ['updated_at'], workouts: ['updated_at'] };
+  // day_modes legitimately GAINS exactly one row: 0061's retirement reset.
+  const EXPECT_NEW_ROWS = { day_modes: ['modes-retired'] };
+
+  for (const t of DATA_TABLES) {
+    const map = RENAMED[t] || {};
+    const select = beforeCols[t].map((c) => (map[c] ? `${map[c]} AS ${c}` : c)).join(',');
+    const added = EXPECT_NEW_ROWS[t] || [];
+    const rowsNow = db
+      .prepare(`SELECT ${select} FROM ${t} ORDER BY id`)
+      .all()
+      .filter((r) => !added.includes(r.id));
+    const prev = before[t];
+    if (rowsNow.length !== prev.length) {
+      bad(`${t} row count`, `${prev.length} -> ${rowsNow.length} (rows lost or duplicated)`);
+      continue;
+    }
+    const allowed = TRIGGER_TOUCHED[t] || [];
+    const diffs = [];
+    const touched = new Set();
+    for (let i = 0; i < prev.length; i++) {
+      for (const c of beforeCols[t]) {
+        if (JSON.stringify(prev[i][c]) === JSON.stringify(rowsNow[i][c])) continue;
+        if (allowed.includes(c)) {
+          touched.add(c);
+          continue;
+        }
+        diffs.push(
+          `${prev[i].id}.${c}: ${JSON.stringify(prev[i][c])} -> ${JSON.stringify(rowsNow[i][c])}`
+        );
+      }
+    }
+    const note = touched.size
+      ? ` (only ${[...touched].join('/')} moved — AFTER UPDATE trigger)`
+      : '';
+    const gained = added.length ? ` + ${added.length} row the migration adds` : '';
+    diffs.length === 0
+      ? ok(`${t}: ${prev.length} row(s) survived, every value byte-identical${note}${gained}`)
+      : bad(`${t}: ${diffs.length} value(s) changed UNEXPECTEDLY`, diffs.join(' | '));
+  }
+
+  // --- (c) the three side effects, asserted as INTENDED --------------------
+  const bumped = Object.entries({ exercises: ['ex-custom'], workouts: ['w-1', 'w-2'] }).every(
+    ([t, ids]) =>
+      ids.every(
+        (id) =>
+          before[t].find((r) => r.id === id).updated_at !==
+          db.prepare(`SELECT updated_at FROM ${t} WHERE id = ?`).get(id).updated_at
+      )
+  );
+  bumped
+    ? ok('exercises.updated_at and workouts.updated_at DID move — the 0046/0054/0056 backfills')
+    : bad(
+        'a backfill UPDATE did not fire',
+        'expected the AFTER UPDATE trigger to stamp these rows'
+      );
+  const alsoMoved = [
+    'log_entries',
+    'meals',
+    'meal_items',
+    'body_metrics',
+    'wearable_data',
+    'protocols',
+    'users',
+  ].filter(
+    (t) =>
+      JSON.stringify(before[t].map((r) => r.updated_at)) !==
+      JSON.stringify(
+        db
+          .prepare(`SELECT updated_at FROM ${t} ORDER BY id`)
+          .all()
+          .map((r) => r.updated_at)
+      )
+  );
+  alsoMoved.length === 0
+    ? ok('…and updated_at moved NOWHERE else — no migration above 44 rewrites those 7 tables')
+    : bad('updated_at moved unexpectedly', alsoMoved.join(', '));
+
+  // --- (d) the documented backfills ----------------------------------------
+  const mi = db
+    .prepare(
+      'SELECT id, amount, unit, is_composite, piece_name, parent_item_id FROM meal_items ORDER BY id'
+    )
+    .all();
+  mi.every((r) => r.unit === 'g')
+    ? ok(`0047: meal_items.unit backfilled to 'g' on all ${mi.length} rows`)
+    : bad('unit backfill', JSON.stringify(mi));
+  mi.every((r) => r.is_composite === 0 && r.piece_name === null && r.parent_item_id === null)
+    ? ok(
+        '0058/0059: the new meal_item columns default clean — no composite invented, no noun guessed'
+      )
+    : bad('new meal_item defaults', JSON.stringify(mi));
+  const f = db.prepare("SELECT serving_amount, basis FROM foods WHERE id = 'f-1'").get();
+  f.serving_amount === 244 && f.basis === 'g'
+    ? ok("0047: foods.serving_amount = 244 carried through the rename, basis backfilled to 'g'")
+    : bad('food backfill', JSON.stringify(f));
+  const ex = db.prepare("SELECT measures, source FROM exercises WHERE id = 'ex-custom'").get();
+  ex.measures === 'reps,load' && ex.source === null
+    ? ok(
+        "0046/0056: measures = 'reps,load' from logging_type; source stays NULL on a custom exercise"
+      )
+    : bad('exercise backfill', JSON.stringify(ex));
+  const pr = db
+    .prepare("SELECT carry_over, checkoff_mode, started_on FROM protocols WHERE id = 'p-1'")
+    .get();
+  pr.carry_over === 0 && pr.checkoff_mode === 'strict' && pr.started_on === '2026-08-01'
+    ? ok("0050: carry_over = 0, checkoff_mode = 'strict'; 0043's started_on untouched")
+    : bad('protocol backfill', JSON.stringify(pr));
+  const wk = db
+    .prepare('SELECT id, started_at, away, created_at, duration_min FROM workouts ORDER BY id')
+    .all();
+  wk.every((r) => r.away === 0)
+    ? ok('0055: workouts.away = 0 on every pre-existing session')
+    : bad('away default', JSON.stringify(wk));
+  // 0054 derives the start instant from the end: created_at MINUS duration.
+  const startedOk = wk.every(
+    (r) =>
+      r.started_at ===
+      db
+        .prepare("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?, ?) s")
+        .get(r.created_at, `-${r.duration_min} minutes`).s
+  );
+  startedOk
+    ? ok('0054: started_at = created_at − duration_min on every row that had a duration')
+    : bad('started_at backfill', JSON.stringify(wk));
+  const retired = db
+    .prepare("SELECT mode, end_date FROM day_modes WHERE id = 'modes-retired'")
+    .get();
+  retired && retired.mode === 'normal' && retired.end_date === null
+    ? ok("0061: the 'modes-retired' reset row was written, open-ended, as `normal`")
+    : bad('modes-retired row', JSON.stringify(retired));
+  const ownMode = db.prepare("SELECT * FROM day_modes WHERE id = 'dm-1'").get();
+  ownMode && ownMode.end_date === null && ownMode.label === 'Tokyo'
+    ? ok("…and the owner's open-ended 'travel' row is untouched beside it — history, not cleanup")
+    : bad('owner mode row', JSON.stringify(ownMode));
+
+  // --- (e) is the database SOUND? ------------------------------------------
+  // The two questions no other section in this file asks.
+  const fkc = db.prepare('PRAGMA foreign_key_check').all();
+  fkc.length === 0
+    ? ok('PRAGMA foreign_key_check: no violations — nothing orphaned by a rename or a rebuild')
+    : bad('foreign_key_check', JSON.stringify(fkc));
+  const ic = db.prepare('PRAGMA integrity_check').all();
+  JSON.stringify(ic) === JSON.stringify([{ integrity_check: 'ok' }])
+    ? ok('PRAGMA integrity_check: ok')
+    : bad('integrity_check', JSON.stringify(ic));
+  db.prepare('PRAGMA foreign_keys').get().foreign_keys === 1
+    ? ok('foreign_keys is still ON afterwards (a table rebuild can silently drop it)')
+    : bad('foreign_keys off after upgrade');
+
+  // --- (f) the second launch -----------------------------------------------
+  const second = migrate(executor(db), MIGRATIONS);
+  second.applied.length === 0 && second.from === LATEST && second.to === LATEST
+    ? ok('a second launch applies nothing')
+    : bad('relaunch', JSON.stringify(second));
+  const dmCount = db.prepare('SELECT count(*) c FROM day_modes').get().c;
+  dmCount === 2
+    ? ok("…and 0061 did not insert a second 'modes-retired' row")
+    : bad('modes-retired duplicated', String(dmCount));
+
+  db.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
