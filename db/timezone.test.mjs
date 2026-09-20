@@ -37,6 +37,8 @@
  */
 process.env.TZ = 'America/Los_Angeles';
 
+import { readFileSync } from 'node:fs';
+
 import { DatabaseSync } from 'node:sqlite';
 
 import { buildTurnContext } from '../src/lib/ai/turn-context.ts';
@@ -50,12 +52,16 @@ import {
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
+  allTrips,
+  awayDaysIn,
+  currentTrip,
   isTimezoneChangedDay,
   observeTimezone,
   recentTimezoneChange,
   timezoneChangedDaysIn,
   timezoneHomeLine,
   timezoneNotesIn,
+  tripsIn,
 } from '../src/lib/db/repositories/day-meta.ts';
 import { getActiveMode, setMode } from '../src/lib/db/repositories/day-modes.ts';
 import {
@@ -68,7 +74,15 @@ import {
 import { logMeal, setNutritionTargets } from '../src/lib/db/repositories/nutrition.ts';
 import { getTimezoneCursor, setTimezoneCursor } from '../src/lib/db/repositories/user.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
-import { deriveReadiness, nutritionVerdict } from '../src/lib/home/readiness.ts';
+import {
+  baselineExclusionsIn,
+  hasExclusionSource,
+} from '../src/lib/home/baseline-exclusions.ts';
+import {
+  baselineDaysRemaining,
+  deriveReadiness,
+  nutritionVerdict,
+} from '../src/lib/home/readiness.ts';
 import {
   classifyOffsetChange,
   dayLengthHours,
@@ -78,6 +92,12 @@ import {
   offsetEastMinutes,
   zoneProbe,
 } from '../src/lib/timezone/classify.ts';
+import {
+  awayDayNumber,
+  deriveTrips,
+  TRIP_SETTLE_DAYS,
+  tripOn,
+} from '../src/lib/timezone/trips.ts';
 
 let pass = 0;
 let fail = 0;
@@ -663,6 +683,19 @@ console.log('\n10. the Coach’s state block — the fact, its horizon, and its 
 
   // THE HORIZON. Jet lag's practical span is about a day per hour of shift; past
   // that the line is noise on every turn forever, so it stops.
+  //
+  // The horizon is a claim about the SEAM line, and since 0060 the seam line only
+  // has the field once the trip has CLOSED — an open trip prints the away line
+  // instead, on every day of it, which §21 is about. So the journey is closed
+  // here first: the observed row above left UTC+1 for UTC−8, and this is the leg
+  // that comes back. Inserted rather than observed, because the observer's "to"
+  // offset is always the host's (see this file's header).
+  db.run(
+    `INSERT INTO timezone_changes
+       (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date,
+        zone_jan_offset_min, zone_jul_offset_min)
+     VALUES ('tz-return', '2026-01-16T20:00:00.000Z', -480, 60, '2026-01-16', '2026-01-16', 0, 60)`
+  );
   const later = buildTurnContext(db, new Date(2026, 0, 18, 9, 0)); // 3 days on
   /Timezone:/.test(later)
     ? ok('three days on it is still there — the body has not finished adjusting')
@@ -670,6 +703,9 @@ console.log('\n10. the Coach’s state block — the fact, its horizon, and its 
   !/this day’s readings|this day's readings/.test(later)
     ? ok('… but the baseline clause is gone, because that day is behind us')
     : bad('baseline clause still claimed on a later day');
+  !/day \d+ away/.test(later)
+    ? ok('… and it is the seam line, not a trip: the trip closed on the return')
+    : bad('away line on a closed trip', later);
   const wayLater = buildTurnContext(db, new Date(2026, 0, 25, 9, 0)); // 10 days on
   !/Timezone:/.test(wayLater)
     ? ok('ten days on it is gone — the fact stays in the record, not in the prompt')
@@ -808,6 +844,597 @@ console.log('\n12. the 0053 schema itself');
   indexes.includes('timezone_changes_to_date_idx')
     ? ok('both day indexes exist, so the OR can use one')
     : bad('indexes', JSON.stringify(indexes));
+}
+
+// ===========================================================================
+// THE SECOND PASS (0060) — §13 on.
+//
+// D4 annotated the SEAM. These sections are about the RUN OF DAYS BETWEEN two
+// seams: the derived trip, the away days it puts in the baselines' excluded
+// set, the reason the copy gives for a paused baseline, the Coach's away line,
+// and the migration that makes the close rule read-time independent.
+//
+// Everything here is seeded by INSERTING rows rather than by observing, for the
+// reason this file's header gives: the observer's "to" offset is always the
+// host's, and a nine-day journey needs both ends. `seedSeam` is the only way a
+// row is made below, so the derivation is exercised over exactly the columns a
+// device would carry.
+// ===========================================================================
+
+/** Minutes east, by the city the plan keeps naming. */
+const LONDON_WINTER = 0;
+const LONDON_SUMMER = 60;
+const PARIS_SUMMER = 120;
+const CHICAGO_WINTER = -360;
+const CHICAGO_SUMMER = -300;
+const PHOENIX = -420; // …all year. Arizona does not observe DST, and that matters below.
+
+/** The probe pairs those zones would have returned at the arrival instant. */
+const PAIR_LONDON = [LONDON_WINTER, LONDON_SUMMER];
+const PAIR_PARIS = [LONDON_SUMMER, PARIS_SUMMER];
+const PAIR_LA = [UTC_MINUS_8, UTC_MINUS_7];
+const PAIR_CHICAGO = [CHICAGO_WINTER, CHICAGO_SUMMER];
+const PAIR_PHOENIX = [PHOENIX, PHOENIX]; // jan === jul: no DST, so equality is the whole test.
+
+let seamSeq = 0;
+/**
+ * Insert one observed change exactly as `observeTimezone` would have written it.
+ *
+ * `pair` omitted means a 0053 row — one written before migration 0060, which
+ * can never answer the seasonal question and must therefore close on exact
+ * equality alone.
+ */
+function seedSeam(db, { day, from, to, fromDay, toDay, pair, id }) {
+  const rowId = id ?? `tz-${++seamSeq}`;
+  db.run(
+    `INSERT INTO timezone_changes
+       (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date,
+        zone_jan_offset_min, zone_jul_offset_min)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      rowId,
+      `${day}T20:00:00.000Z`,
+      from,
+      to,
+      fromDay ?? day,
+      toDay ?? day,
+      pair ? pair[0] : null,
+      pair ? pair[1] : null,
+    ]
+  );
+  return rowId;
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n13. trips — the run of days between two seams, and how it closes');
+{
+  // (a) OUT AND BACK. The plan's opening example: out on the 12th, back on the
+  // 21st, and the eight days in between are what D4 could not see.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-09-30');
+    eq('out and back is ONE trip', trips.length, 1);
+    eq('… closed by the return row', trips[0].closedBy, 'return');
+    eq('… which left on the 12th', trips[0].startedOn, '2026-09-12');
+    eq('… and stopped being a trip on the 21st', trips[0].closedOn, '2026-09-21');
+    eq('… so its away days are the eight days between the seams', trips[0].awayDays.length, 8);
+    eq('… beginning the morning after the flight', trips[0].awayDays[0], '2026-09-13');
+    eq('… and ending the day before the return', trips[0].awayDays[7], '2026-09-20');
+    eq('the seam days are NOT away days — they are the bounds', tripOn(trips, '2026-09-12'), null);
+    eq('… at either end', tripOn(trips, '2026-09-21'), null);
+    eq('and the home offset is the one it left from', trips[0].homeOffsetMin, UTC_MINUS_8);
+  }
+
+  // (b) OUT, LEG, BACK. A connecting hop does not end the trip and does not
+  // restart the "how long have I been away" count.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-09-15', from: LONDON_SUMMER, to: PARIS_SUMMER, pair: PAIR_PARIS });
+    seedSeam(db, { day: '2026-09-21', from: PARIS_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-09-30');
+    eq('a leg keeps it one trip', trips.length, 1);
+    eq('… still eight away days', trips[0].awayDays.length, 8);
+    eq('… the settle clock moved to the leg', trips[0].latestSeamOn, '2026-09-15');
+    eq('… but the day count still runs from the departure', awayDayNumber(trips[0], '2026-09-16'), 4);
+    eq('… and the body is under the leg’s offset', trips[0].offsetMin, PARIS_SUMMER);
+  }
+
+  // (c) THE STORED PAIR. LA in winter → London → LA in SUMMER. The return
+  // arrives on −420 and the trip left −480, so exact equality says "not home"
+  // and the trip would hang open for another three weeks. The arrival zone's own
+  // pair is what says otherwise, and it is on the row.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-03-01', from: UTC_MINUS_8, to: LONDON_WINTER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-03-20', from: LONDON_WINTER, to: UTC_MINUS_7, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-04-10');
+    eq('a trip that left in PST and returned in PDT has come home', trips[0].closedBy, 'return');
+    eq('… on the return row’s own day', trips[0].closedOn, '2026-03-20');
+
+    // …and the same journey with a 0053 row does NOT close there. A NULL pair
+    // means "this row cannot answer that question", and the fallback is the
+    // behaviour 0053 already had.
+    const { db: old } = freshDb();
+    seedSeam(old, { day: '2026-03-01', from: UTC_MINUS_8, to: LONDON_WINTER, pair: PAIR_LONDON });
+    seedSeam(old, { day: '2026-03-20', from: LONDON_WINTER, to: UTC_MINUS_7 });
+    // Read from far enough out to see the stillness close land: the return row
+    // became a LEG, so the settle clock runs from the 20th and the trip is still
+    // open on 10 April. That lateness IS the cost of a missing pair.
+    eq('a NULL pair leaves the trip open on the day the pair would have closed it',
+      allTrips(old, '2026-04-10')[0].closedOn, null);
+    const oldTrips = allTrips(old, '2026-04-15');
+    eq('a NULL pair closes on equality only', oldTrips[0].closedBy, 'settled');
+    eq('… three weeks after the last seam, not on the return', oldTrips[0].closedOn, '2026-04-11');
+  }
+
+  // (d) LA → CHICAGO STAYS OPEN, AND THE ANSWER DOES NOT MOVE WITH THE READER.
+  // Chicago's pair is {−360, −300} and home is −480, so neither test matches.
+  // The point of the case is the SECOND assertion: the same rows through the
+  // pure derivation, with no database, no clock and no zone, give the same trip.
+  {
+    const { db } = freshDb();
+    const rowId = seedSeam(db, {
+      day: '2026-09-12',
+      from: UTC_MINUS_8,
+      to: CHICAGO_WINTER,
+      pair: PAIR_CHICAGO,
+    });
+    const trips = allTrips(db, '2026-09-20');
+    eq('a domestic hop with no way home in its pair stays open', trips[0].closedOn, null);
+    eq('… and every day since is an away day', trips[0].awayDays.length, 8);
+
+    const pure = deriveTrips({
+      rows: [
+        {
+          id: rowId,
+          from_offset_min: UTC_MINUS_8,
+          to_offset_min: CHICAGO_WINTER,
+          from_local_date: '2026-09-12',
+          to_local_date: '2026-09-12',
+          zone_jan_offset_min: CHICAGO_WINTER,
+          zone_jul_offset_min: CHICAGO_SUMMER,
+        },
+      ],
+      travelWindows: [],
+      today: '2026-09-20',
+    });
+    eq('the derivation reads no probe, so the answer is the same anywhere', pure[0].closedOn, null);
+    eq('… down to the away-day count', pure[0].awayDays.length, 8);
+  }
+
+  // (e) MARCH ACROSS DST, THEN JUNE. Two trips, and the June one is measured
+  // against the offset the March one came home to.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-03-05', from: UTC_MINUS_8, to: LONDON_WINTER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-03-20', from: LONDON_WINTER, to: UTC_MINUS_7, pair: PAIR_LA });
+    seedSeam(db, { day: '2026-06-10', from: UTC_MINUS_7, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-06-20', from: LONDON_SUMMER, to: UTC_MINUS_7, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-07-01');
+    eq('March and June are two trips, not one that never ended', trips.length, 2);
+    eq('… both closed on their return', trips[1].closedBy, 'return');
+    eq('… and June is measured from PDT, the offset March came home to', trips[1].homeOffsetMin, UTC_MINUS_7);
+  }
+
+  // (f) A FIRST-EVER ROW THAT IS INBOUND. `observeTimezone` writes the cursor and
+  // no row on its first observation, so a build first launched abroad — or a
+  // database restored abroad — makes its first row a RETURN leg. Without the
+  // settle rule that opens a trip whose home is London and never closes.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-01', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    const trips = allTrips(db, '2026-10-01');
+    eq('an inbound first row opens a trip against the wrong home', trips[0].homeOffsetMin, LONDON_SUMMER);
+    eq('… and three weeks of stillness is what closes it', trips[0].closedBy, 'settled');
+    eq('… on day 22', trips[0].closedOn, '2026-09-23');
+    eq('… having called 21 days away', trips[0].awayDays.length, TRIP_SETTLE_DAYS);
+    eq('day 22 is home again', tripOn(trips, '2026-09-23'), null);
+
+    // …and the NEXT trip opens against the offset the settle left ARC sitting in.
+    seedSeam(db, { day: '2026-10-10', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    const healed = allTrips(db, '2026-10-15');
+    eq('the next trip opens against the re-seated home', healed[1].homeOffsetMin, UTC_MINUS_8);
+  }
+
+  // (g) A RELOCATION, THEN A LATER TRIP. Same self-heal, the other way round:
+  // the move opens a trip that settles, and the trip taken from the new city is
+  // measured against the new city.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-01-05', from: UTC_MINUS_8, to: LONDON_WINTER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-06-01', from: LONDON_SUMMER, to: PARIS_SUMMER, pair: PAIR_PARIS });
+    seedSeam(db, { day: '2026-06-05', from: PARIS_SUMMER, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    const trips = allTrips(db, '2026-06-30');
+    eq('the move settles rather than swallowing every later trip', trips[0].closedBy, 'settled');
+    eq('the trip from the new city is its own', trips.length, 2);
+    eq('… measured against the new home', trips[1].homeOffsetMin, LONDON_SUMMER);
+    eq('… and closed by its return', trips[1].closedBy, 'return');
+  }
+
+  // (h) THE DECLARATION. A Traveling window you set closes an open trip the day
+  // after it ends — the immediate correction for both cases above.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    setMode(db, { mode: 'travel', startDate: '2026-09-12', endDate: '2026-09-20' });
+    const trips = allTrips(db, '2026-09-30');
+    eq('“I am back” closes the trip', trips[0].closedBy, 'declaration');
+    eq('… the day after the window ends', trips[0].closedOn, '2026-09-21');
+    eq('… so the window’s own last day is still an away day', trips[0].awayDays.at(-1), '2026-09-20');
+  }
+
+  // (i) WHERE THEY DISAGREE, THE EARLIER CLOSE WINS. A return row is a fact; a
+  // later `until` simply ran over.
+  {
+    const { db: early } = freshDb();
+    seedSeam(early, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(early, { day: '2026-09-25', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    setMode(early, { mode: 'travel', startDate: '2026-09-12', endDate: '2026-09-18' });
+    eq('a window that ends first wins', allTrips(early, '2026-09-30')[0].closedBy, 'declaration');
+
+    const { db: late } = freshDb();
+    seedSeam(late, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(late, { day: '2026-09-25', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    setMode(late, { mode: 'travel', startDate: '2026-09-12', endDate: '2026-09-30' });
+    eq('a return row that lands first wins', allTrips(late, '2026-10-05')[0].closedBy, 'return');
+  }
+
+  // (j) A WINDOW WITH NO ROW OPENS NOTHING. Los Angeles → Seattle is a real
+  // trip and not an "away" one: the body is under the same offset, which is what
+  // readiness's exclusion is about. The declaration closes trips; it never opens.
+  {
+    const { db } = freshDb();
+    setMode(db, { mode: 'travel', startDate: '2026-09-12', endDate: '2026-09-20' });
+    eq('a declared trip with no zone change is no trip here', allTrips(db, '2026-09-30').length, 0);
+    eq('… and contributes no away days', awayDaysIn(db, '2026-09-01', '2026-09-30').size, 0);
+  }
+
+  // (k) A TRIP THAT OPENED BEFORE THE WINDOW IS STILL SEEN. The walk is
+  // unbounded for exactly this: a windowed read would report the middle of a
+  // journey as home.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+    eq('a two-day window in the middle still finds the trip', tripsIn(db, '2026-09-18', '2026-09-19').length, 1);
+    const days = awayDaysIn(db, '2026-09-18', '2026-09-19');
+    days.size === 2 && days.has('2026-09-18') && days.has('2026-09-19')
+      ? ok('… and reports exactly the away days inside it')
+      : bad('windowed away days', JSON.stringify([...days]));
+  }
+
+  // (l) THE CLOSE RULE, PROVED AGAINST ITS OWN OUTBOUND LEG.
+  //
+  // This is the assertion the seasonal leniency exists to survive. Phoenix does
+  // not observe DST, so a trip that leaves it has home = −420; Los Angeles in
+  // winter is −480 and its pair is {−480, −420}, which CONTAINS that home
+  // offset. Tested as a close, the outbound flight would shut the trip it just
+  // opened and no day of the journey would ever be away.
+  {
+    const { db } = freshDb();
+    seedSeam(db, { day: '2026-01-10', from: PHOENIX, to: UTC_MINUS_8, pair: PAIR_LA });
+    PAIR_LA.includes(PHOENIX)
+      ? ok('the outbound row’s own arrival pair CONTAINS the home offset — the trap is live')
+      : bad('the fixture does not reproduce the trap', JSON.stringify(PAIR_LA));
+    const trips = allTrips(db, '2026-01-20');
+    eq('…and the trip is open anyway: the opening row is never its own close', trips[0].closedOn, null);
+    eq('… so the days since are away', trips[0].awayDays.length, 10);
+    eq('… against Phoenix, the offset it left', trips[0].homeOffsetMin, PHOENIX);
+
+    // The return does close it, on plain equality, because Phoenix's pair
+    // degenerates to a single value and the leniency has nothing to add.
+    seedSeam(db, { day: '2026-01-20', from: UTC_MINUS_8, to: PHOENIX, pair: PAIR_PHOENIX });
+    const closed = allTrips(db, '2026-01-25');
+    eq('the return closes it on exact equality', closed[0].closedBy, 'return');
+    eq('… on the 20th', closed[0].closedOn, '2026-01-20');
+  }
+
+  // (m) A SEAM THAT CROSSED THE DAY BOUNDARY. The trip's bounds are the ARRIVAL
+  // day at the start and the DEPARTURE day at the end, so a two-day seam never
+  // steals a day from the run or gives one to it.
+  {
+    const { db } = freshDb();
+    seedSeam(db, {
+      day: '2026-09-12',
+      fromDay: '2026-09-12',
+      toDay: '2026-09-13',
+      from: UTC_MINUS_8,
+      to: LONDON_SUMMER,
+      pair: PAIR_LONDON,
+    });
+    seedSeam(db, {
+      day: '2026-09-21',
+      fromDay: '2026-09-20',
+      toDay: '2026-09-21',
+      from: LONDON_SUMMER,
+      to: UTC_MINUS_8,
+      pair: PAIR_LA,
+    });
+    const trip = allTrips(db, '2026-09-30')[0];
+    eq('the run starts after the arrival day', trip.awayDays[0], '2026-09-14');
+    eq('… and ends before the departure day', trip.awayDays.at(-1), '2026-09-19');
+    eq('… so both marked days of both seams stay seams', trip.awayDays.length, 6);
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n14. the baselines exclude away days — one list, two sources');
+{
+  const TODAY = '2026-09-25';
+  // A flat 50 ms at home; 20 ms on the days abroad, which is what a nine-day
+  // trip actually does to HRV and exactly the shape that drags a 30-day mean
+  // down for a month after the return.
+  const AWAY = new Set([
+    '2026-09-13',
+    '2026-09-14',
+    '2026-09-15',
+    '2026-09-16',
+    '2026-09-17',
+    '2026-09-18',
+    '2026-09-19',
+    '2026-09-20',
+  ]);
+  const plant = (db, end) => {
+    const rows = [];
+    for (let i = 0; i <= 40; i++) {
+      const date = shiftISODate(end, -i);
+      rows.push({
+        date,
+        metricType: 'hrv',
+        value: AWAY.has(date) ? 20 : 50,
+        unit: 'ms',
+        sourceDevice: 'apple_watch',
+        sourceRawId: `hk:hrv:${date}`,
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      });
+    }
+    upsertWearableRows(db, rows);
+  };
+  const flight = (db) => {
+    seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+    seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+  };
+
+  // Without the trip, the eight low days sit unmarked in the window and a normal
+  // 50 ms morning reads as ABOVE a baseline they pulled down. That is the silent
+  // failure this whole section exists for.
+  const { db: unmarked } = freshDb();
+  plant(unmarked, TODAY);
+  const before = deriveReadiness(unmarked, TODAY, { now: new Date(2026, 8, 25, 9, 0) });
+  /above your 30-day baseline/.test(before.readiness.detail)
+    ? ok('with the away days counted, a normal morning reads as above baseline')
+    : bad('unmarked post-trip baseline', before.readiness.detail);
+
+  const { db } = freshDb();
+  plant(db, TODAY);
+  flight(db);
+  const after = deriveReadiness(db, TODAY, { now: new Date(2026, 8, 25, 9, 0) });
+  eq(
+    'excluded, the baseline is the home days exactly — and says so',
+    after.readiness.detail,
+    'HRV 50 ms · at your 30-day baseline (home days)'
+  );
+
+  // THE EXCLUDED SET, AND ITS SOURCES. One list; a seam day and an away day are
+  // in it for different reasons and the helper can still tell them apart. This
+  // is the contract the day-statuses build extends.
+  const exclusions = baselineExclusionsIn(db, '2026-08-25', TODAY, TODAY);
+  exclusions.days.has('2026-09-12') && exclusions.days.has('2026-09-16')
+    ? ok('the seam day and an away day are both in the one excluded list')
+    : bad('excluded set', JSON.stringify([...exclusions.days]));
+  hasExclusionSource(exclusions, 'timezone-change') && hasExclusionSource(exclusions, 'away')
+    ? ok('… and each is still attributable to the source that put it there')
+    : bad('sources not nameable', JSON.stringify([...exclusions.bySource.keys()]));
+  eq(
+    'the seam day is named by the seam source, not the trip',
+    exclusions.bySource.get('away').has('2026-09-12'),
+    false
+  );
+
+  // EXCLUDED, NOT DELETED. An away day still renders its own reading.
+  const awayDay = deriveReadiness(db, '2026-09-16', { now: new Date(2026, 8, 16, 9, 0) });
+  eq(
+    'an away day still shows what the body actually did',
+    awayDay.metrics.find((m) => m.id === 'hrv').value,
+    '20 ms'
+  );
+
+  // POST-RETURN. The morning after landing grades against pre-trip home days,
+  // not against the fortnight it just lived through.
+  const { db: back } = freshDb();
+  plant(back, '2026-09-22');
+  flight(back);
+  const landed = deriveReadiness(back, '2026-09-22', { now: new Date(2026, 8, 22, 9, 0) });
+  eq(
+    'the morning after landing grades against pre-trip home days',
+    landed.readiness.detail,
+    'HRV 50 ms · at your 30-day baseline (home days)'
+  );
+
+  // …AND ONLY WHILE AN AWAY DAY IS IN THE WINDOW. Once the trip has aged out of
+  // the 30 days, the cohort clause goes: a distinction that made no difference
+  // is noise about a distinction.
+  const { db: settled } = freshDb();
+  plant(settled, '2026-11-01');
+  flight(settled);
+  const long = deriveReadiness(settled, '2026-11-01', { now: new Date(2026, 10, 1, 9, 0) });
+  !/home days/.test(long.readiness.detail)
+    ? ok('once the trip is out of the window the cohort clause goes quiet')
+    : bad('cohort clause outstayed the trip', long.readiness.detail);
+
+  // THE NAMED EXCEPTION. `setsBaseline` is computed from days that were TRAINED,
+  // which is already the right population — a travel week's sessions were real
+  // sessions — so it takes no excluded set, and this is a claim about the source
+  // rather than about one fixture.
+  const source = readFileSync(new URL('../src/lib/home/readiness.ts', import.meta.url), 'utf8');
+  const setsBlock = source.slice(source.indexOf('const setsBaseline ='), source.indexOf('const stepsToday'));
+  !setsBlock.includes('oddDays')
+    ? ok('the sets baseline takes no excluded set — the exception is in the code, not just the docs')
+    : bad('setsBaseline started filtering', setsBlock);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n15. a paused baseline says why it is paused');
+{
+  // Four home days of HRV, then a flight. The gate needs five, so the verdict is
+  // still `unknown` — and the number it reports will not move for as long as the
+  // trip lasts, because the days arriving do not count. A reader watching "1 more
+  // day" hold at 1 for a fortnight is owed the reason.
+  const plant = (db, dates) =>
+    upsertWearableRows(
+      db,
+      dates.map((date) => ({
+        date,
+        metricType: 'hrv',
+        value: 50,
+        unit: 'ms',
+        sourceDevice: 'apple_watch',
+        sourceRawId: `hk:hrv:${date}`,
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      }))
+    );
+  const HOME = ['2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11'];
+
+  const { db } = freshDb();
+  plant(db, [...HOME, '2026-09-13', '2026-09-14', '2026-09-15', '2026-09-16']);
+  seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  const away = deriveReadiness(db, '2026-09-16', { now: new Date(2026, 8, 16, 9, 0) });
+  const note = away.pillars.find((p) => p.label === 'Recovery').note;
+  eq(
+    'the wait names the cohort and the reason, not just a number',
+    note,
+    '1 more home day of HRV or resting heart rate before a baseline — paused while away from UTC−8'
+  );
+  eq('… and it is still an honest count', baselineDaysRemaining(
+    [...HOME, '2026-09-13', '2026-09-14', '2026-09-15'].map((date) => ({ date, value: 50 })),
+    '2026-09-16',
+    baselineExclusionsIn(db, '2026-08-16', '2026-09-16', '2026-09-16').days
+  ), 1);
+
+  // DAY 22. The trip settles, the pause is over, and the wait goes back to the
+  // plain sentence — ARC has stopped calling this place away.
+  const { db: settled } = freshDb();
+  plant(settled, [...HOME, '2026-10-04']);
+  seedSeam(settled, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  const home = deriveReadiness(settled, '2026-10-04', { now: new Date(2026, 9, 4, 9, 0) });
+  const settledNote = home.pillars.find((p) => p.label === 'Recovery').note;
+  !/paused/.test(settledNote)
+    ? ok('on day 22 the pause clause is gone — ARC calls this place home')
+    : bad('still paused past the settle', settledNote);
+  eq('and no trip is open to pause it', currentTrip(settled, '2026-10-04'), null);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n21. the Coach’s line during a trip — one shape or the other, never both');
+{
+  const { db } = freshDb();
+  seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  const lineOn = (y, m, d) =>
+    buildTurnContext(db, new Date(y, m, d, 9, 0))
+      .split('\n')
+      .find((l) => l.startsWith('Timezone:')) ?? null;
+
+  const seam = lineOn(2026, 8, 12);
+  seam && seam.includes('changed today') && !/day \d+ away/.test(seam)
+    ? ok(`the seam day prints the seam line: "${seam}"`)
+    : bad('seam day', seam);
+
+  const day1 = lineOn(2026, 8, 13);
+  eq(
+    'the first morning abroad prints the trip',
+    day1,
+    'Timezone: UTC+1 — day 1 away from UTC−8 (left 2026-09-12, 9h east); readiness baseline is home days only'
+  );
+
+  // DAY 4 IS INSIDE THE SHIPPED FIVE-DAY TAIL, and the trip still wins: the away
+  // line carries the seam fact itself, so the tail would add nothing.
+  const day4 = lineOn(2026, 8, 16);
+  day4.includes('day 4 away') && !day4.includes('changed')
+    ? ok('inside the five-day tail the trip line wins — never both')
+    : bad('precedence inside the tail', day4);
+
+  // THE COST. Uncached, on every away-day turn, so it is measured.
+  const bare = buildTurnContext(freshDb().db, new Date(2026, 8, 16, 9, 0));
+  const withTrip = buildTurnContext(db, new Date(2026, 8, 16, 9, 0));
+  const delta = Math.round((withTrip.length - bare.length) / 2.8);
+  delta < 45
+    ? ok(`the away line costs ~${delta} uncached tokens, and only while a trip is open`)
+    : bad('away line over budget', `${delta} tok`);
+
+  // DAY 22. The trip has settled; nothing is said, because there is nothing
+  // standing to say.
+  eq('day 22 says nothing at all', lineOn(2026, 9, 4), null);
+
+  // THE RETURN SEAM, AND THE TAIL AFTER IT.
+  const { db: home } = freshDb();
+  seedSeam(home, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  seedSeam(home, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+  const homeLineOn = (y, m, d) =>
+    buildTurnContext(home, new Date(y, m, d, 9, 0))
+      .split('\n')
+      .find((l) => l.startsWith('Timezone:')) ?? null;
+  const returned = homeLineOn(2026, 8, 21);
+  returned.includes('changed today') && !/day \d+ away/.test(returned)
+    ? ok('the return seam prints the seam line, not a trip')
+    : bad('return seam', returned);
+  const tail = homeLineOn(2026, 8, 24);
+  tail.includes('changed 2026-09-21') && !/day \d+ away/.test(tail)
+    ? ok('and the five-day tail prints only after the trip has closed')
+    : bad('tail after close', tail);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n23. the 0060 columns, and what the observer now writes into them');
+{
+  const { db, raw } = freshDb();
+  // THE OBSERVER WRITES THE PROBE. Host TZ is America/Los_Angeles, so the pair
+  // the observer has in hand at this instant is LA's own {−480, −420} — the
+  // ARRIVAL zone, which is the one whose seasons the close rule asks about.
+  setTimezoneCursor(db, UTC_PLUS_1);
+  const row = observeTimezone(db, WINTER_NOON);
+  eq('the arrival zone’s January offset is kept', row.zone_jan_offset_min, UTC_MINUS_8);
+  eq('… and its July one', row.zone_jul_offset_min, UTC_MINUS_7);
+  eq('… beside the offsets 0053 already stored', row.to_offset_min, UTC_MINUS_8);
+
+  // A RESTORED CURSOR PRODUCES EXACTLY ONE ROW. The cursor rides inside the
+  // ARCB1 snapshot, so a database restored in another zone synthesises one row
+  // on the next launch's observation — one, not one per foreground.
+  eq('a second observation at the same offset writes nothing', observeTimezone(db, WINTER_NOON), null);
+  eq(
+    'so the restore is one row, not one per foreground',
+    raw.prepare('SELECT count(*) c FROM timezone_changes').get().c,
+    1
+  );
+
+  // THE CHECKS. Nullable, so a 0053 row stays valid; ±840 is the real range.
+  const insert = (id, jan, jul) =>
+    raw.exec(
+      `INSERT INTO timezone_changes
+         (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date,
+          zone_jan_offset_min, zone_jul_offset_min)
+       VALUES ('${id}', '2026-02-01T20:00:00.000Z', -480, 60, '2026-02-01', '2026-02-01', ${jan}, ${jul})`
+    );
+  let nullOk = true;
+  try {
+    insert('pair-null', 'NULL', 'NULL');
+  } catch {
+    nullOk = false;
+  }
+  nullOk ? ok('a NULL pair is accepted — every 0053 row is still a valid row') : bad('NULL pair rejected');
+  let refused = false;
+  try {
+    insert('pair-bad', '0', '841');
+  } catch {
+    refused = true;
+  }
+  refused ? ok('±841 is refused, as the two offset columns already are') : bad('841 accepted');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

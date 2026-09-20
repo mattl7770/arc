@@ -18,9 +18,11 @@
 import type { Database } from '@/lib/db/database';
 import { dayStartMinutes, getDayStartsAt, shiftISODate, todayISODate } from '@/lib/db/date';
 import {
+  currentTrip,
   isTimezoneChangedDay as timezoneChangedDayOnRecord,
-  timezoneChangedDaysIn,
 } from '@/lib/db/repositories/day-meta';
+import { formatUtcOffset } from '@/lib/timezone/classify';
+import { baselineExclusionsIn, hasExclusionSource } from './baseline-exclusions';
 import {
   dailyMetricSeries,
   deviceLabel,
@@ -185,6 +187,20 @@ export type StrainInputs = {
   priorSessions: number;
   /** Yesterday's active energy ÷ its own 30-day mean; null without a baseline. */
   energyRatio: number | null;
+  /**
+   * Was the energy mean taken over HOME days only — i.e. is an away day sitting
+   * in the window (0060)? Names the cohort in the note, for the same reason
+   * {@link baselineSentence} does: the sets baseline and the energy baseline are
+   * two claims in one sentence, and they must not disagree about which days they
+   * counted.
+   *
+   * **The SETS baseline is not filtered and this flag does not claim it is.**
+   * `priorSessions` has a row only on days that were trained, so it already IS
+   * the session population, and a travel week's sessions were real sessions. It
+   * is the named exception to "every baseline excludes away days", not an
+   * oversight.
+   */
+  energyHomeDaysOnly?: boolean;
 };
 
 /**
@@ -213,6 +229,7 @@ export type StrainInputs = {
  */
 export function strainVerdict(inputs: StrainInputs): { level: SignalLevel; note?: string } {
   const { setsYesterday, setsBaseline, priorSessions, energyRatio } = inputs;
+  const energyHomeDaysOnly = inputs.energyHomeDaysOnly ?? false;
 
   if (setsBaseline === null || setsBaseline <= 0) {
     // Deliberately never mentions Apple Health. Strain reads ARC's own sets, so
@@ -226,7 +243,10 @@ export function strainVerdict(inputs: StrainInputs): { level: SignalLevel; note?
 
   const setsRatio = setsYesterday / setsBaseline;
   const ratio = energyRatio === null ? setsRatio : Math.max(setsRatio, energyRatio);
-  return { level: strainLevel(ratio), note: strainNote(setsYesterday, setsRatio, energyRatio) };
+  return {
+    level: strainLevel(ratio),
+    note: strainNote(setsYesterday, setsRatio, energyRatio, energyHomeDaysOnly),
+  };
 }
 
 /**
@@ -238,13 +258,18 @@ export function strainVerdict(inputs: StrainInputs): { level: SignalLevel; note?
  * purely because 0.70 outranks a zero it agrees with, which explains a number
  * nobody asked about instead of the plain fact that nothing was trained.
  */
-function strainNote(setsYesterday: number, setsRatio: number, energyRatio: number | null): string {
+function strainNote(
+  setsYesterday: number,
+  setsRatio: number,
+  energyRatio: number | null,
+  energyHomeDaysOnly: boolean
+): string {
   if (
     energyRatio !== null &&
     energyRatio > setsRatio &&
     strainLevel(energyRatio) !== strainLevel(setsRatio)
   ) {
-    return `active energy ${baselineSentence(energyRatio)}`;
+    return `active energy ${baselineSentence(energyRatio, energyHomeDaysOnly)}`;
   }
   // Not "a rest day": ARC knows nothing was LOGGED, which is a different fact.
   if (setsYesterday === 0) return 'no training logged yesterday';
@@ -696,14 +721,20 @@ const NO_EXCLUDED_DAYS: ReadonlySet<string> = new Set();
  * The points a baseline is entitled to average — strictly before `date`, minus
  * the days ARC knows were not normal days.
  *
- * Right now that is exactly one thing: a day the device's timezone changed on
- * (D4, migration 0053). Such a day is `24 + Δ` hours long, and a BASELINE is a
- * claim about what a normal day looks like for this person, so a 29-hour day
- * gets no vote on it. The size of the distortion is why this is worth a filter
- * rather than a shrug: on HRV a long day perturbs a 30-day mean by ~3%, but on
- * `steps` and `active_energy_kcal` it is ~20% inflation before you count that an
- * airport day can be triple the step count — and active energy feeds the strain
- * pillar's `energyRatio`.
+ * A BASELINE is a claim about what a normal day looks like for this person, so
+ * a day ARC knows was not one gets no vote on it. **What counts as "not one" is
+ * not decided here** — the set arrives already resolved from
+ * src/lib/home/baseline-exclusions.ts, which is the one place the sources are
+ * named (a seam day, an away day, and whatever is added next). This function's
+ * only job is to honour it.
+ *
+ * The size of the distortion is why this is worth a filter rather than a shrug:
+ * on HRV a long day perturbs a 30-day mean by ~3%, but on `steps` and
+ * `active_energy_kcal` it is ~20% inflation before you count that an airport day
+ * can be triple the step count — and active energy feeds the strain pillar's
+ * `energyRatio`. An away day distorts differently and worse: it is a perfectly
+ * ordinary 24 hours, so it perturbs nothing on its own and simply sits in the
+ * window for a month afterwards holding the home mean down.
  *
  * **Excluded, never deleted.** The day's own reading still renders in the
  * metrics strip and still stands in every trend window (those are fixed-length
@@ -758,11 +789,23 @@ function fmtRatio(ratio: number): string {
   return ratio.toFixed(1);
 }
 
-/** "14% below your 30-day baseline" | "at your 30-day baseline" | above. */
-function baselineSentence(ratio: number): string {
+/**
+ * "14% below your 30-day baseline" | "at your 30-day baseline" | above.
+ *
+ * `homeDaysOnly` appends the cohort, and ONLY while an away day is actually
+ * sitting in the window (0060). A baseline computed over home days is not the
+ * same claim as one computed over every day, and a reader comparing this
+ * morning's reading against it is entitled to know which one it is — but on the
+ * 340-odd days a year where the two are identical, saying so would be noise
+ * about a distinction that made no difference.
+ */
+function baselineSentence(ratio: number, homeDaysOnly = false): string {
+  const cohort = homeDaysOnly ? ' (home days)' : '';
   const pct = Math.round(Math.abs(1 - ratio) * 100);
-  if (pct < 1) return 'at your 30-day baseline';
-  return ratio < 1 ? `${pct}% below your 30-day baseline` : `${pct}% above your 30-day baseline`;
+  if (pct < 1) return `at your 30-day baseline${cohort}`;
+  return ratio < 1
+    ? `${pct}% below your 30-day baseline${cohort}`
+    : `${pct}% above your 30-day baseline${cohort}`;
 }
 
 /** `n` local days before a YYYY-MM-DD (src/lib/db/date.ts is the arithmetic). */
@@ -826,6 +869,11 @@ function evidenceNote(opts: {
   signal: string;
   /** What the current reading would cover: 'today', 'yesterday', 'last night'. */
   period: string;
+  /**
+   * The home offset a trip is currently away from (`"UTC−8"`), when one is open
+   * AND the baseline is still filling. Undefined on every ordinary day.
+   */
+  pausedAwayFrom?: string;
 }): string {
   if (!opts.hasHistory) {
     if (opts.link === 'unsupported') return 'Apple Health is not connected in this build';
@@ -834,7 +882,18 @@ function evidenceNote(opts: {
   }
   if (opts.daysRemaining > 0) {
     const days = opts.daysRemaining === 1 ? 'day' : 'days';
-    return `${opts.daysRemaining} more ${days} of ${opts.signal} before a baseline`;
+    // Never let a number sit still unexplained. A baseline that is filtered to
+    // home days can go BACKWARDS while a trip is open — the window keeps moving
+    // and the days arriving into it do not count — so a reader watching "2 more
+    // days" hold at 2 for a fortnight is owed the reason rather than left to
+    // conclude the sync is broken. The clause names the OFFSET, not the person:
+    // ARC observed a zone, and it cannot tell a flight from a Settings change.
+    const wait =
+      opts.pausedAwayFrom === undefined
+        ? `${opts.daysRemaining} more ${days} of ${opts.signal} before a baseline`
+        : `${opts.daysRemaining} more home ${days} of ${opts.signal} before a baseline` +
+          ` — paused while away from ${opts.pausedAwayFrom}`;
+    return wait;
   }
   return `no ${opts.signal} reading ${opts.period}`;
 }
@@ -852,9 +911,26 @@ export function deriveReadiness(
   const rhrSeries = dailyMetricSeries(db, 'rhr', BASELINE_WINDOW_DAYS + 1, today);
   const hrvToday = pointOn(hrvSeries, today);
   const rhrToday = pointOn(rhrSeries, today);
-  // Days the device's timezone changed on (D4) get no vote in any baseline —
-  // one query for the whole window, shared by every baseline below.
-  const oddDays = timezoneChangedDaysIn(db, shiftISODate(today, -BASELINE_WINDOW_DAYS - 1), today);
+  // The days that get no vote in any baseline, from every source ARC has —
+  // resolved ONCE for the whole window and shared by every baseline below.
+  //
+  // Two sources today: a day the device's timezone changed on (D4, `24 + Δ`
+  // hours long) and an away day inside a derived trip (0060, an ordinary 24
+  // hours lived under someone else's sun). They are unioned behind one helper on
+  // purpose — this call site used to hold the first predicate inline, and a
+  // second one beside it is how a "days that don't count" rule ends up spelled
+  // three different ways. A new source is a key in
+  // src/lib/home/baseline-exclusions.ts and nothing here.
+  const exclusions = baselineExclusionsIn(
+    db,
+    shiftISODate(today, -BASELINE_WINDOW_DAYS - 1),
+    today,
+    today
+  );
+  const oddDays = exclusions.days;
+  // Is a baseline below computed over home days only? Drives the cohort clause
+  // in the copy, and nothing else.
+  const homeDaysOnly = hasExclusionSource(exclusions, 'away');
   const hrvBaseline = baselineBefore(hrvSeries, today, oddDays);
   const rhrBaseline = baselineBefore(rhrSeries, today, oddDays);
 
@@ -919,6 +995,7 @@ export function deriveReadiness(
       energyYesterday && energyBaseline !== null && energyBaseline > 0
         ? energyYesterday.value / energyBaseline
         : null,
+    energyHomeDaysOnly: homeDaysOnly,
   });
 
   const targets = activeNutritionTargets(db, today);
@@ -939,6 +1016,9 @@ export function deriveReadiness(
     baselineDaysRemaining(hrvSeries, today, oddDays),
     baselineDaysRemaining(rhrSeries, today, oddDays)
   );
+  // The open trip, read once — the home offset the evidence note names while a
+  // baseline is paused. Null on a seam day and on every day at home.
+  const trip = currentTrip(db, today);
 
   const pillars: Pillar[] = [
     {
@@ -968,6 +1048,7 @@ export function deriveReadiness(
               hasCurrent: hrvToday !== null || rhrToday !== null,
               signal: 'HRV or resting heart rate',
               period: 'today',
+              ...(trip ? { pausedAwayFrom: formatUtcOffset(trip.homeOffsetMin) } : {}),
             })
           : undefined,
     },
@@ -979,7 +1060,7 @@ export function deriveReadiness(
   const verdict = worse(recovery, sleep);
   let detail: string;
   if (hrvToday && hrvRatio !== null) {
-    detail = `HRV ${Math.round(hrvToday.value)} ms · ${baselineSentence(hrvRatio)}`;
+    detail = `HRV ${Math.round(hrvToday.value)} ms · ${baselineSentence(hrvRatio, homeDaysOnly)}`;
   } else if (rhrToday && rhrDelta !== null) {
     detail = `Resting HR ${Math.round(rhrToday.value)} bpm · ${fmtDelta(rhrDelta)} bpm vs your 30-day baseline`;
   } else if (sleepToday) {

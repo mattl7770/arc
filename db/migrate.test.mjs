@@ -706,8 +706,13 @@ console.log('9. 0059 adds the piece noun without touching a single existing row'
   result.applied.includes('0059_meal_item_piece_name')
     ? ok('0059 applied on a populated database (a nullable ADD COLUMN cannot reject rows)')
     : bad('0059 not applied', JSON.stringify(result.applied));
-  db.prepare('PRAGMA user_version').get().user_version === 59
-    ? ok('and the runner stamps user_version = 59')
+  // The stamp is the HEAD, not 0059's own number: this section stages at 58 and
+  // then runs the whole remaining chain, so every migration authored after 0059
+  // rides along and the runner stamps the last of them. Asserting the literal 59
+  // would have been asserting "0059 is the head", which is a fact about the week
+  // it was written and not about what this section is testing.
+  db.prepare('PRAGMA user_version').get().user_version === LATEST
+    ? ok(`and the runner stamps user_version = ${LATEST}`)
     : bad('user_version', String(db.prepare('PRAGMA user_version').get().user_version));
 
   const staged = db.prepare('SELECT id, piece_name FROM meal_items ORDER BY id').all();
@@ -737,6 +742,75 @@ console.log('9. 0059 adds the piece noun without touching a single existing row'
   egg.serving_qty === 2 && egg.piece_name === null && egg.food_serving_name === '1 egg'
     ? ok('…while a catalog item still gets its noun from the live join, untouched')
     : bad('egg join', JSON.stringify(egg));
+
+  db.close();
+}
+
+// ===========================================================================
+// 10. 0060 — the arrival zone's seasonal pair, on a database that already
+//     recorded zone changes under 0053.
+//
+// The two columns are nullable and take a NULL-tolerant CHECK, so the ALTER
+// cannot reject a populated table — and the POSITIVE half matters more than
+// that: a 0053 row must come out of the migration with a NULL pair rather than
+// a plausible-looking default, because the probe it would be claiming was never
+// taken. A default here would be a fabricated observation, and the trip
+// derivation would close trips on it.
+// ===========================================================================
+console.log('10. 0060 adds the seasonal pair and leaves every 0053 row unable to answer');
+{
+  const db = new DatabaseSync(':memory:');
+  stageAt(db, 59);
+  db.prepare('PRAGMA user_version').get().user_version === 59
+    ? ok('staged at 59 — the state a device sits in before this migration')
+    : bad('stage version');
+
+  // Two rows of the kind 0053 wrote: an outbound leg and the return.
+  db.exec(`
+    INSERT INTO timezone_changes
+      (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date)
+    VALUES
+      ('tz-out', '2026-09-12T20:00:00.000Z', -480, 60, '2026-09-12', '2026-09-12'),
+      ('tz-back', '2026-09-21T18:00:00.000Z', 60, -480, '2026-09-21', '2026-09-21');
+  `);
+
+  const result = migrate(executor(db), MIGRATIONS);
+  result.applied.includes('0060_timezone_zone_pair')
+    ? ok('0060 applied on a populated timezone_changes')
+    : bad('0060 not applied', JSON.stringify(result.applied));
+
+  const rows = db.prepare('SELECT * FROM timezone_changes ORDER BY id').all();
+  rows.length === 2 &&
+  rows.every((r) => r.zone_jan_offset_min === null && r.zone_jul_offset_min === null)
+    ? ok('every pre-existing row carries a NULL pair — no backfill, no invented probe')
+    : bad('pair backfilled', JSON.stringify(rows));
+  rows.every((r) => r.from_offset_min !== null && r.to_offset_min !== null)
+    ? ok('…and the 0053 columns are byte-identical beside them')
+    : bad('0053 columns disturbed', JSON.stringify(rows));
+
+  // The CHECK is NULL-tolerant by construction, so both a real pair and an
+  // explicit NULL must land, and an impossible offset must not.
+  db.exec(
+    `INSERT INTO timezone_changes
+       (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date,
+        zone_jan_offset_min, zone_jul_offset_min)
+     VALUES ('tz-pair', '2026-10-01T09:00:00.000Z', -480, 60, '2026-10-01', '2026-10-01', 0, 60)`
+  );
+  let refused = false;
+  try {
+    db.exec(
+      `INSERT INTO timezone_changes
+         (id, changed_at, from_offset_min, to_offset_min, from_local_date, to_local_date,
+          zone_jan_offset_min, zone_jul_offset_min)
+       VALUES ('tz-bad', '2026-10-02T09:00:00.000Z', -480, 60, '2026-10-02', '2026-10-02', 0, 900)`
+    );
+  } catch {
+    refused = true;
+  }
+  const paired = db.prepare(`SELECT * FROM timezone_changes WHERE id = 'tz-pair'`).get();
+  paired.zone_jan_offset_min === 0 && paired.zone_jul_offset_min === 60 && refused
+    ? ok('a real pair lands, and ±841 is refused')
+    : bad('pair CHECK', JSON.stringify({ paired, refused }));
 
   db.close();
 }

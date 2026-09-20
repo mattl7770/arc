@@ -21,7 +21,7 @@ import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 import { recentDeclines } from '@/lib/db/repositories/ai-chat';
 import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
-import { recentTimezoneChange } from '@/lib/db/repositories/day-meta';
+import { currentTrip, recentTimezoneChange } from '@/lib/db/repositories/day-meta';
 import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { consolidatedOpenList } from '@/lib/db/repositories/grocery';
 import { activeExperiments } from '@/lib/db/repositories/experiments';
@@ -30,7 +30,8 @@ import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { getModeDefinition } from '@/lib/modes/registry';
-import { formatUtcOffset } from '@/lib/timezone/classify';
+import { formatUtcOffset, offsetShift } from '@/lib/timezone/classify';
+import { awayDayNumber } from '@/lib/timezone/trips';
 
 import { generateDailyBrief } from './insights';
 
@@ -108,16 +109,37 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
   // TIMEZONE_COACH_HORIZON_DAYS (jet lag's practical span is about a day per
   // hour of shift; past that it is noise on every turn forever), and the fact
   // stays in the record either way, reachable by tools.
-  const tz = recentTimezoneChange(db, today);
-  if (tz) {
-    const shiftHours = (tz.to_offset_min - tz.from_offset_min) / 60;
-    const direction = shiftHours > 0 ? 'east' : 'west';
-    const magnitude = Math.abs(shiftHours);
-    const size = Number.isInteger(magnitude) ? String(magnitude) : magnitude.toFixed(1);
+  //
+  // Two shapes, and NEVER both (0060). A SEAM day prints the shipped line
+  // below. An AWAY day — a day strictly inside a derived trip — prints the trip
+  // instead, and does so even inside the shipped five-day tail, because it
+  // carries the seam fact itself ("left 2026-09-12, 9h east") and the tail would
+  // add nothing it does not already say. The tail prints only once the trip has
+  // CLOSED. `currentTrip` returns null on a seam day by construction, so the
+  // precedence is the data's rather than a rule laid over it.
+  //
+  // Why the away line may outlast the 5-day horizon: that horizon exists because
+  // a SEAM is an event whose relevance decays. An away day is a STANDING STATE —
+  // the readiness pillars on this same turn are graded against home days, and a
+  // model not told that reads a fortnight of `caution` as a fact about the user,
+  // which is the exact misreading the seam line's baseline clause exists to
+  // prevent. It also changes every day (day 4 → day 5), so it is not the same
+  // sentence re-sent, and it stops the day the trip closes — at 21 days at the
+  // outside (TRIP_SETTLE_DAYS), or the day after a Traveling window ends.
+  const trip = currentTrip(db, today);
+  const tz = trip === null ? recentTimezoneChange(db, today) : null;
+  if (trip) {
+    lines.push(
+      `Timezone: ${formatUtcOffset(trip.offsetMin)} — day ${awayDayNumber(trip, today)} away from ` +
+        `${formatUtcOffset(trip.homeOffsetMin)} (left ${trip.startedOn}, ` +
+        `${offsetShift(trip.homeOffsetMin, trip.offsetMin)}); ` +
+        'readiness baseline is home days only'
+    );
+  } else if (tz) {
     const when = tz.to_local_date === today ? 'today' : tz.to_local_date;
     lines.push(
       `Timezone: ${formatUtcOffset(tz.to_offset_min)} — changed ${when} from ` +
-        `${formatUtcOffset(tz.from_offset_min)} (${size}h ${direction})` +
+        `${formatUtcOffset(tz.from_offset_min)} (${offsetShift(tz.from_offset_min, tz.to_offset_min)})` +
         (tz.to_local_date === today || tz.from_local_date === today
           ? "; this day's readings are excluded from baselines"
           : '')

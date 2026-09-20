@@ -185,6 +185,21 @@ export function formatOffsetChange(fromMinutes: number, toMinutes: number): stri
 }
 
 /**
+ * How far the clock moved and which way — `"9h east"`, `"5.5h west"`.
+ *
+ * The offsets are minutes EAST, so a RISING number is an eastbound move, which
+ * is the same arithmetic {@link dayLengthHours} inverts and the same trap. The
+ * Coach's state block is the only consumer; it exists here rather than there so
+ * the direction is decided once, beside the sign convention it depends on.
+ */
+export function offsetShift(fromMinutes: number, toMinutes: number): string {
+  const hours = (toMinutes - fromMinutes) / 60;
+  const magnitude = Math.abs(hours);
+  const size = Number.isInteger(magnitude) ? String(magnitude) : magnitude.toFixed(1);
+  return `${size}h ${hours > 0 ? 'east' : 'west'}`;
+}
+
+/**
  * How long the day containing this change is, in hours.
  *
  * **Travelling EAST shortens the day and travelling WEST lengthens it**, which
