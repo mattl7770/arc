@@ -51,6 +51,20 @@ import {
   setDayStartsAt,
   shiftISODate,
 } from '../src/lib/db/date.ts';
+import {
+  FIRST_SYNC_DAYS,
+  rebucketWindowDays,
+  sampleQuerySpan,
+  SYNC_WINDOW_DAYS,
+  syncDayWindows,
+} from '../src/lib/health/sync.ts';
+import {
+  localDayOf,
+  quantityDailyRows,
+  SAMPLE_METRICS,
+  sleepDailyRows,
+  SLEEP_VALUE,
+} from '../src/lib/health/mapping.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
@@ -62,6 +76,7 @@ import {
   recentTimezoneChange,
   timezoneChangedDaysIn,
   timezoneHomeLine,
+  offsetHistory,
   timezoneNotesIn,
   tripsIn,
 } from '../src/lib/db/repositories/day-meta.ts';
@@ -103,6 +118,7 @@ import {
   tripOn,
 } from '../src/lib/timezone/trips.ts';
 import { onForeground } from '../src/lib/timezone/foreground.ts';
+import { offsetAt } from '../src/lib/timezone/offset-history.ts';
 
 let pass = 0;
 let fail = 0;
@@ -1636,6 +1652,226 @@ console.log('\n22. the landing wakes the Coach once, and the brief never hears a
   const withoutRow = JSON.stringify(computeInsights(brief, NOW));
   seedSeam(brief, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
   eq('the brief is byte-identical on a seam day', JSON.stringify(computeInsights(brief, NOW)), withoutRow);
+}
+
+// ===========================================================================
+// THE WEARABLE SEAM (§18–20).
+//
+// D4's rule is *annotate the day, never re-attribute the rows*, and its own
+// docblock names the health sync as the one place ARC broke it: the pass
+// re-derived every sample's day under the device's CURRENT zone, so the first
+// sync after landing re-dated a fortnight of history and the prune then deleted
+// what the re-dating orphaned.
+//
+// §18 pins the OLD behaviour explicitly, so §19 is a diff against a known
+// baseline rather than an assertion floating in space.
+// ===========================================================================
+
+/** One HRV sample, as the reader hands it to the mapper. */
+const hrvSample = (iso) => ({
+  startISO: iso,
+  endISO: iso,
+  value: 50,
+  provenance: { bundleId: 'com.apple.health.ABC', productType: 'Watch6,1', sourceName: 'Watch' },
+});
+const HRV_SPEC = SAMPLE_METRICS.find((s) => s.metricType === 'hrv');
+
+// ---------------------------------------------------------------------------
+console.log('\n18. localDayOf takes an offset — the old behaviour, pinned');
+{
+  // An evening reading in Los Angeles: 20:00 on 1 September is 03:00 UTC on the
+  // 2nd. Read under −480 it is the 1st; read under +60 it is the 2nd. That one
+  // sample is the whole defect in miniature, and this is the assertion the first
+  // spike left open (its test 10).
+  const EVENING_LA = '2026-09-02T03:00:00.000Z';
+  eq('under the zone it was lived in, it is the 1st', localDayOf(EVENING_LA, UTC_MINUS_8), '2026-09-01');
+  eq('read from London afterwards, it becomes the 2nd', localDayOf(EVENING_LA, LONDON_SUMMER), '2026-09-02');
+  eq('and with no offset it is the host’s own day', localDayOf(EVENING_LA, null), '2026-09-01');
+
+  // The same statement through the mapper, which is where the bucket key is
+  // built: two offsets, two `hk:` ids, one sample.
+  const under = (offset) => quantityDailyRows(HRV_SPEC, [hrvSample(EVENING_LA)], () => offset);
+  eq('the bucket key moves with the offset', under(UTC_MINUS_8)[0].sourceRawId, 'hk:hrv:2026-09-01');
+  eq('… which is exactly how a fortnight of history re-dated itself', under(LONDON_SUMMER)[0].sourceRawId, 'hk:hrv:2026-09-02');
+
+  // THE THREE BRANCHES of the step function, over one journey.
+  const rows = [
+    {
+      changed_at: '2026-09-12T20:00:00.000Z',
+      from_offset_min: UTC_MINUS_8,
+      to_offset_min: LONDON_SUMMER,
+    },
+    {
+      changed_at: '2026-09-21T18:00:00.000Z',
+      from_offset_min: LONDON_SUMMER,
+      to_offset_min: UTC_MINUS_8,
+    },
+  ];
+  eq(
+    'before the first row: the zone ARC was watching from, NOT the live getters',
+    offsetAt(rows, new Date('2026-09-01T12:00:00.000Z')),
+    UTC_MINUS_8
+  );
+  eq(
+    'between rows: what the earlier one arrived in',
+    offsetAt(rows, new Date('2026-09-15T12:00:00.000Z')),
+    LONDON_SUMMER
+  );
+  eq(
+    'after the latest row: null, meaning ask the runtime (it knows about DST)',
+    offsetAt(rows, new Date('2026-09-25T12:00:00.000Z')),
+    null
+  );
+  eq('an empty table is null everywhere', offsetAt([], new Date()), null);
+  // The first branch is the OUTBOUND LEG, and it is why it is not the live
+  // getters: sending pre-departure instants to the runtime would re-bucket every
+  // one of them under the destination — the defect, reintroduced for the
+  // commonest case.
+  eq(
+    'the one-row case: samples before it keep the zone they were lived in',
+    offsetAt([rows[0]], new Date('2026-09-01T12:00:00.000Z')),
+    UTC_MINUS_8
+  );
+  eq(
+    '… and samples after it go to the runtime',
+    offsetAt([rows[0]], new Date('2026-09-15T12:00:00.000Z')),
+    null
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n19. a night keeps the wake day it was lived on');
+{
+  const { db } = freshDb();
+  seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  const outboundOnly = offsetHistory(db);
+  seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+  const returned = offsetHistory(db);
+
+  // A London night: asleep 23:00 on the 15th local (22:00 UTC), awake 07:00 on
+  // the 16th local (06:00 UTC). Under +60 the wake day is the 16th. Read back
+  // from Los Angeles — where 06:00 UTC is 23:00 on the 15th — it would move a
+  // day EARLIER, which is what used to happen the first sync after coming home.
+  const night = [
+    {
+      startISO: '2026-09-15T22:00:00.000Z',
+      endISO: '2026-09-16T06:00:00.000Z',
+      value: SLEEP_VALUE.asleepCore,
+      provenance: { bundleId: 'com.apple.health.ABC', productType: 'Watch6,1', sourceName: 'Watch' },
+    },
+  ];
+  const lived = sleepDailyRows(night, returned).find((r) => r.metricType === 'sleep_duration_min');
+  eq('the London night keeps its London wake day', lived.date, '2026-09-16');
+  eq('… and its bucket key with it', lived.sourceRawId, 'hk:sleep_duration_min:2026-09-16');
+  const reread = sleepDailyRows(night, () => UTC_MINUS_8).find(
+    (r) => r.metricType === 'sleep_duration_min'
+  );
+  eq('re-read in the home zone it would have moved a day earlier', reread.date, '2026-09-15');
+
+  // PRE-SEAM SAMPLES SURVIVE BOTH CASES — the one-row case (only the outbound
+  // leg recorded, the user still abroad) and the two-row one.
+  const morningLA = '2026-09-10T15:00:00.000Z'; // 08:00 on the 10th in Los Angeles
+  eq(
+    'with only the outbound row, a pre-departure sample keeps its day',
+    quantityDailyRows(HRV_SPEC, [hrvSample(morningLA)], outboundOnly)[0].date,
+    '2026-09-10'
+  );
+  eq(
+    '… and still does once the return is recorded',
+    quantityDailyRows(HRV_SPEC, [hrvSample(morningLA)], returned)[0].date,
+    '2026-09-10'
+  );
+  eq(
+    'an empty table buckets exactly as it always did',
+    quantityDailyRows(HRV_SPEC, [hrvSample(morningLA)], offsetHistory(freshDb().db))[0].date,
+    localDayOf(morningLA)
+  );
+
+  // THE SEAM DAY'S BOUNDS SPAN ITS REAL LENGTH. The outbound is nine hours east,
+  // so the 12th is a 15-hour day: it starts under −480 and ends under +60.
+  const NOW = new Date('2026-09-22T18:00:00.000Z');
+  const windows = syncDayWindows(NOW, 14, returned);
+  const seamDay = windows.find((w) => w.date === '2026-09-12');
+  eq('the seam day is 15 hours long, start to end', (seamDay.end - seamDay.start) / 3_600_000, 15);
+  const abroad = windows.find((w) => w.date === '2026-09-15');
+  eq('an ordinary day abroad is 24', (abroad.end - abroad.start) / 3_600_000, 24);
+  eq('… and begins at London midnight', abroad.start.toISOString(), '2026-09-14T23:00:00.000Z');
+  const home = windows.find((w) => w.date === '2026-09-22');
+  eq('a day after the latest row is 24 too', (home.end - home.start) / 3_600_000, 24);
+
+  // THE NOON LEAD-IN IS UNDER THE FIRST DAY'S OWN OFFSET, so a date-line hop
+  // cannot shift the cushion out from under the night it exists to cover.
+  // The window's first day is the 9th, so the lead-in day is the 8th — a day
+  // BEFORE the outbound row, which the step function answers with that row's
+  // `from_offset_min`. So the cushion is 12:00 where that day was actually
+  // lived, not 12:00 where the phone is standing now.
+  const span = sampleQuerySpan(NOW, 14, returned);
+  eq('the lead-in is noon of the day before the window', span.start.toISOString(), '2026-09-08T20:00:00.000Z');
+  eq('… taken in the zone that day was lived in', localDayOf(span.start.toISOString(), UTC_MINUS_8), '2026-09-08');
+  eq('… and it really is noon there', new Date(span.start.getTime() + UTC_MINUS_8 * 60_000).getUTCHours(), 12);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n20. the one-time reach back, and when it is empty');
+{
+  const NOW = new Date(2026, 8, 22, 12, 0);
+  const synced = { lastSyncedAt: '2026-09-21T12:00:00.000Z', firstSyncedAt: '2026-06-01T12:00:00.000Z' };
+
+  // NO ROWS, NO WIDENING. This is what makes shipping the offset-aware bucketing
+  // in the same binary as 0053 a no-op on first launch: with an empty table the
+  // step function is null everywhere and the pass is identical to the one before
+  // it. The risk moment is the first sync after the first observed TRIP.
+  const { db: quiet } = freshDb();
+  eq(
+    'with no rows the window is the ordinary steady-state one',
+    rebucketWindowDays(quiet, { ...synced, rebucketedAt: null }, NOW),
+    SYNC_WINDOW_DAYS
+  );
+
+  // ROWS PRESENT: the window reaches the oldest row's own day and no further.
+  const { db } = freshDb();
+  seedSeam(db, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  seedSeam(db, { day: '2026-09-21', from: LONDON_SUMMER, to: UTC_MINUS_8, pair: PAIR_LA });
+  eq(
+    'the reach covers 2026-09-12 … 2026-09-22 inclusive',
+    rebucketWindowDays(db, { ...synced, rebucketedAt: null }, NOW),
+    SYNC_WINDOW_DAYS // 11 days is shorter than the steady-state window, which wins
+  );
+
+  const { db: old } = freshDb();
+  seedSeam(old, { day: '2026-07-01', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  eq(
+    'an older row widens the window to reach it',
+    rebucketWindowDays(old, { ...synced, rebucketedAt: null }, NOW),
+    84
+  );
+
+  const { db: ancient } = freshDb();
+  seedSeam(ancient, { day: '2025-01-01', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  eq(
+    'and it is capped at the 90-day backfill, never a year',
+    rebucketWindowDays(ancient, { ...synced, rebucketedAt: null }, NOW),
+    FIRST_SYNC_DAYS
+  );
+
+  // ONCE. A stamped cursor means the reach is spent.
+  eq(
+    'a stamped cursor never widens again',
+    rebucketWindowDays(ancient, { ...synced, rebucketedAt: '2026-09-22T00:00:00.000Z' }, NOW),
+    SYNC_WINDOW_DAYS
+  );
+
+  // THE PASS OBSERVES BEFORE IT WINDOWS. Asserted as a property of the ordering
+  // in the source, not of a subscription: a run that windowed first would send
+  // the whole fortnight to the live getters and re-bucket it under the new zone.
+  const src = readFileSync(new URL('../src/lib/health/sync.ts', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('export async function syncHealthData'));
+  const observedAt = body.indexOf('observeTimezone(db, now)');
+  const historyAt = body.indexOf('offsetHistory(db)');
+  const windowedAt = body.indexOf('syncDayWindows(now');
+  observedAt > 0 && observedAt < historyAt && historyAt < windowedAt
+    ? ok('the pass observes, then reads the history, then windows — in that order')
+    : bad('ordering', JSON.stringify({ observedAt, historyAt, windowedAt }));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

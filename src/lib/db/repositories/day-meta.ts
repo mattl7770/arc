@@ -43,6 +43,12 @@ import {
   offsetEastMinutes,
   zoneProbe,
 } from '@/lib/timezone/classify';
+import {
+  NO_OFFSET_HISTORY,
+  offsetAt,
+  type OffsetHistoryRow,
+  type OffsetLookup,
+} from '@/lib/timezone/offset-history';
 import { deriveTrips, tripOn, type Trip } from '@/lib/timezone/trips';
 
 import { getTimezoneCursor, setTimezoneCursor } from './user';
@@ -281,6 +287,32 @@ export function timezoneHomeLine(db: Database, date: string = todayISODate()): s
   if (row.from_local_date !== row.to_local_date) return `${fact}.`;
   const hours = dayLengthHours(row.from_offset_min, row.to_offset_min);
   return `${fact}. Today is ${formatDayLength(hours)} long.`;
+}
+
+/**
+ * The offset history as a lookup — what the wearable pipeline buckets by (0060).
+ *
+ * Read once and closed over, not queried per sample: a 90-day pass maps tens of
+ * thousands of instants, and the table holds tens of rows a year. The rows are
+ * the whole of it, so the answer does not depend on where the phone is standing
+ * — which is the entire point of bucketing a sample under the zone it was lived
+ * in rather than the zone it is read from.
+ */
+export function offsetHistory(db: Database): OffsetLookup {
+  const rows = db.all<OffsetHistoryRow>(
+    `SELECT changed_at, from_offset_min, to_offset_min FROM timezone_changes
+      ORDER BY changed_at, rowid`
+  );
+  if (rows.length === 0) return NO_OFFSET_HISTORY;
+  return (instant) => offsetAt(rows, instant);
+}
+
+/** The oldest day any row speaks for, or `null` when there are no rows. */
+export function earliestTimezoneDay(db: Database): string | null {
+  const row = db.get<{ day: string }>(
+    `SELECT min(from_local_date) AS day FROM timezone_changes`
+  );
+  return row?.day ?? null;
 }
 
 // --- Trips: the run of days between two seams (0060) -------------------------

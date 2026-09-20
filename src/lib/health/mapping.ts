@@ -22,7 +22,8 @@
  * ({@link unsuppressedEchoIdentifiers}) is only checkable when both lists sit in
  * one place.
  */
-import { formatLocalDate } from '@/lib/db/date';
+import { calendarDateAtOffset, formatLocalDate } from '@/lib/db/date';
+import { NO_OFFSET_HISTORY, type OffsetLookup } from '@/lib/timezone/offset-history';
 import type { BodyColumn } from '@/lib/db/repositories/body';
 import type { WearableUpsert } from '@/lib/db/repositories/wearables';
 import type { WearableDevice } from '@/lib/db/types';
@@ -137,12 +138,39 @@ export function sourceDeviceFor(provenance: HealthProvenance): WearableDevice {
  * calendar day; everything the user logs follows his boundary.** Both live in
  * `wearable_data`; the discriminator is `source_raw_id` (an `hk:` id is a device
  * bucket, NULL is a manual capture — the same line water's editability already
- * draws, see src/lib/db/repositories/water.ts). If that ever needs revisiting,
- * the fix is a re-bucket MIGRATION over the stored samples, not a read-time
- * change here.
+ * draws, see src/lib/db/repositories/water.ts).
+ *
+ * ## WHICH calendar day — the 0060 change, and the rebuttal it owes
+ *
+ * `offsetOf` answers *"what zone was the phone in when this instant happened"*
+ * from the `timezone_changes` rows (src/lib/timezone/offset-history.ts). Given
+ * an offset, the day is computed at THAT offset; given `null` — no history, or
+ * an instant after the latest recorded change — it is the live local getters, as
+ * it always was. So a London night keeps the London wake day it was lived on,
+ * instead of moving a day earlier the first time the phone syncs from home.
+ *
+ * This paragraph used to end *"if that ever needs revisiting, the fix is a
+ * re-bucket MIGRATION over the stored samples, not a read-time change here"*.
+ * The rebuttal is owed and is this: **ARC stores no samples.** It stores
+ * `hk:<metric>:<date>` aggregates, so there is nothing for a migration to walk;
+ * the only way to re-bucket is to read HealthKit again, and a sync pass IS that
+ * read. The one-time widened pass in sync.ts is the migration, spelled the only
+ * way this data model can spell one.
+ *
+ * Point 1 above still stands unchanged and is not weakened: the key means the
+ * same thing before and after, because the day a sample was LIVED in does not
+ * change when the reader moves. That is the property the old code did not have.
+ * Point 2 — the mirror with the Health app — is the price, and it is the owner's
+ * call (Q4(a)): ARC's steps for a pre-trip day stay the Los Angeles sum while
+ * the Health app, if it redraws history in the current zone, shows the London
+ * one until he is home. A disagreement on trip-adjacent days, in exchange for a
+ * history that does not rewrite itself.
  */
-export function localDayOf(iso: string): string {
-  return formatLocalDate(new Date(iso));
+export function localDayOf(iso: string, offsetEastMinutes: number | null = null): string {
+  const instant = new Date(iso);
+  return offsetEastMinutes === null
+    ? formatLocalDate(instant)
+    : calendarDateAtOffset(instant, offsetEastMinutes);
 }
 
 /** Minutes between two ISO instants, floored at 0. */
@@ -261,7 +289,8 @@ export const SAMPLE_METRICS: readonly SampleMetricSpec[] = [
  */
 export function quantityDailyRows(
   spec: SampleMetricSpec,
-  samples: HealthQuantitySample[]
+  samples: HealthQuantitySample[],
+  offsetOf: OffsetLookup = NO_OFFSET_HISTORY
 ): WearableUpsert[] {
   type Bucket = {
     device: WearableDevice;
@@ -276,7 +305,11 @@ export function quantityDailyRows(
   for (const sample of samples) {
     if (!Number.isFinite(sample.value)) continue;
     const value = spec.transform ? spec.transform(sample.value) : sample.value;
-    const date = localDayOf(spec.attributeBy === 'end' ? sample.endISO : sample.startISO);
+    // The day is read at the offset that was in force WHEN the sample happened
+    // (0060), so a night abroad keeps the day it was lived on instead of moving
+    // the first time the phone syncs from somewhere else.
+    const attributedTo = spec.attributeBy === 'end' ? sample.endISO : sample.startISO;
+    const date = localDayOf(attributedTo, offsetOf(new Date(attributedTo)));
     const device = sourceDeviceFor(sample.provenance);
     const key = `${device}|${date}`;
     let bucket = buckets.get(key);
@@ -443,7 +476,10 @@ type SleepSession = {
  * inBed-only writer even the duration row is withheld — time in bed is not
  * time asleep, and 0 ≠ unknown).
  */
-export function sleepDailyRows(samples: HealthCategorySample[]): WearableUpsert[] {
+export function sleepDailyRows(
+  samples: HealthCategorySample[],
+  offsetOf: OffsetLookup = NO_OFFSET_HISTORY
+): WearableUpsert[] {
   // Bucket samples per source device first — two writers describe two nights.
   const byDevice = new Map<WearableDevice, HealthCategorySample[]>();
   for (const sample of samples) {
@@ -493,7 +529,10 @@ export function sleepDailyRows(samples: HealthCategorySample[]): WearableUpsert[
       );
     const byWakeDay = new Map<string, SleepSession>();
     for (const session of sessions) {
-      const wakeDay = localDayOf(session.endISO);
+      // A night belongs to the day it ENDS on, under the offset in force at that
+      // waking — which is what stops a westbound return moving every London
+      // night a day earlier.
+      const wakeDay = localDayOf(session.endISO, offsetOf(new Date(session.endISO)));
       const best = byWakeDay.get(wakeDay);
       if (!best || asleepMin(session) > asleepMin(best)) byWakeDay.set(wakeDay, session);
     }
@@ -621,11 +660,14 @@ export function workoutActivityName(raw: number): string {
  * `duration` excludes pauses — never end−start), the raw id is the HK sample
  * UUID (real per-object identity), the date is the local day the workout ended.
  */
-export function workoutRows(workouts: HealthWorkoutSample[]): WearableUpsert[] {
+export function workoutRows(
+  workouts: HealthWorkoutSample[],
+  offsetOf: OffsetLookup = NO_OFFSET_HISTORY
+): WearableUpsert[] {
   return workouts
     .filter((w) => w.uuid.length > 0 && Number.isFinite(w.durationSec) && w.durationSec > 0)
     .map((w) => ({
-      date: localDayOf(w.endISO),
+      date: localDayOf(w.endISO, offsetOf(new Date(w.endISO))),
       metricType: 'workout',
       value: round(w.durationSec / 60, 1),
       unit: 'min',
