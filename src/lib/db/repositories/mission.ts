@@ -14,6 +14,7 @@ import { newId } from '../id';
 import type { DailyLogRow, LogEntryRow, LogEntryStatus, LogEntryType } from '../types';
 import { activeModesIn } from './day-modes';
 import { timezoneChangedDaysIn } from './day-meta';
+import { excusingStatusDaysIn } from './statuses';
 import { getModeDefinition, type ModeKey } from '@/lib/modes/registry';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
@@ -634,28 +635,40 @@ export function modeExcusesSkips(mode: ModeKey): boolean {
 }
 
 /**
- * Every day in `from … to` whose skips are EXCUSED — the union of two
- * independent reasons, resolved once so no figure on any screen can honour one
- * and miss the other.
+ * Every day in `from … to` whose skips are EXCUSED — **the one definition**,
+ * the union of three independent reasons, resolved once so no figure on any
+ * screen can honour one and miss another.
  *
- * 1. **The day's MODE excuses them** ({@link modeExcusesSkips}) — Sick, Travel,
- *    Social. The user declared it.
- * 2. **The device's timezone changed on it** (D4, migration 0053). Nobody
+ * 1. **An open STATUS excuses them** (0061) — the live source. The user said
+ *    "I'm sick" on the rail, or told the Coach and it recorded one.
+ * 2. **The day's MODE excused them** ({@link modeExcusesSkips}) — Sick, Travel,
+ *    Social. **Frozen history only.** Modes were retired in 0061 and nothing
+ *    writes a `day_modes` row any more, but every row already written still
+ *    decides how the day it covers is judged: changing that would silently
+ *    rewrite verdicts on days already lived.
+ * 3. **The device's timezone changed on it** (D4, migration 0053). Nobody
  *    declared anything: a 19-hour day simply ends before its 21:00 items come
  *    round, and a 29-hour one gets 24 hours of plan for 29 hours of living.
  *    Counting either as a compliance dip would be describing the calendar as a
  *    character flaw — which is the complaint a trip would actually produce.
  *
- * **A timezone change deliberately does NOT set a mode**, and this is where
- * that decision is mechanically kept (owner, 2026-09-14). ARC cannot tell a
- * flight from a Settings change, and Travel mode reshapes the plan and the
- * Coach's tone — that is the user's call. What ARC observed is one fact about
+ * **A timezone change deliberately does NOT set a status**, and this is where
+ * that decision is mechanically kept (owner, 2026-09-14, carried over from
+ * modes). ARC cannot tell a flight from a Settings change, and a status is a
+ * thing the user states — that is his call. What ARC observed is one fact about
  * one day, so it changes exactly one thing: how the skips are judged. Anything
- * that wants to say WHY a day was excused reads the mode and the timezone note
- * separately (app/mission-history.tsx does).
+ * that wants to say WHY a day was excused reads the three reasons separately
+ * (app/mission-history.tsx does).
+ *
+ * **Only EXCUSING statuses count here** — the owner's Q2(b). The flag is per
+ * status and the Coach sets it; a status it judged to be context without
+ * absolution is still a status, and still leaves the readiness baselines
+ * (src/lib/home/baseline-exclusions.ts), but it does not forgive a skip. The
+ * two questions and their two answers are argued at `excusingStatusDaysIn`.
  */
 export function excusedDatesIn(db: Database, from: string, to: string): Set<string> {
   const dates = new Set<string>();
+  for (const date of excusingStatusDaysIn(db, from, to)) dates.add(date);
   for (const [date, mode] of activeModesIn(db, from, to)) {
     if (modeExcusesSkips(mode)) dates.add(date);
   }

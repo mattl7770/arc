@@ -85,6 +85,24 @@ export type ReadinessView = {
   metrics: Metric[];
   /** False when not a single wearable signal exists — Home's first-run state. */
   hasSignal: boolean;
+  /**
+   * How many days in the baseline window a STATUS barred (0061). Reported, not
+   * merely applied: the owner's Q3(a) is "yes, while open — **and Home and the
+   * Coach say how many days are excluded**", because a baselines change nobody
+   * can see is the forgotten-open-status failure mode wearing a new hat. Zero
+   * on the ordinary day, and Home's line prints the clause only above zero.
+   *
+   * It counts every status day, excusing or not — see
+   * src/lib/home/baseline-exclusions.ts for why those are different questions.
+   */
+  excludedStatusDays: number;
+  /**
+   * Days of evidence Recovery is still short of a verdict — already computed
+   * here for the pillar's own note, surfaced so Home's status line can escalate
+   * from *"baselines exclude N status days"* to *"no recovery verdict until it
+   * ends"* at the moment it stops being able to grade. Zero when it can.
+   */
+  recoveryDaysRemaining: number;
 };
 
 const LEVEL_ORDER: SignalLevel[] = ['optimal', 'good', 'caution', 'poor'];
@@ -1138,5 +1156,15 @@ export function deriveReadiness(
     },
   ];
 
-  return { readiness, pillars, metrics, hasSignal };
+  return {
+    readiness,
+    pillars,
+    metrics,
+    hasSignal,
+    // Read off the map the exclusions helper already built — NOT recounted, and
+    // not a second query. `days` stays the only thing a baseline filters on;
+    // `bySource` exists for exactly this, copy that has to name the reason.
+    excludedStatusDays: exclusions.bySource.get('status')?.size ?? 0,
+    recoveryDaysRemaining,
+  };
 }

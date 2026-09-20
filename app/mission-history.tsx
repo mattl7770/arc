@@ -8,9 +8,12 @@ import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import type { Database } from '@/lib/db/database';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { timezoneNotesIn } from '@/lib/db/repositories/day-meta';
+import { clampStatusSpan, statusesIn } from '@/lib/db/repositories/statuses';
+import { addDays } from '@/lib/protocols/cadence';
 import {
   missionAdherence,
   missionBySource,
@@ -62,20 +65,23 @@ import { daysBetween } from '@/lib/screenings/format';
  * **No streak.** A streak needs a rule about what breaks it, and the rule would
  * still have to answer what a partially-excused day does to it, what a day with
  * no plan does to it, and what a `partial` does — three product decisions, none
- * of them forced by the data. The blocker it USED to have is gone: adherence is
- * mode-aware as of 2026-08-25, so a streak would no longer punish the user for
- * correctly resting while sick. It remains unbuilt because nobody has asked for
+ * of them forced by the data. The blocker it USED to have is gone: adherence
+ * honours excusal, so a streak would no longer punish the user for correctly
+ * resting while sick. It remains unbuilt because nobody has asked for
  * it, not because it would lie.
  *
- * ## Modes, and what a skip means
+ * ## Excusal, and what a skip means
  *
- * `excusesSkips` (lib/modes/registry.ts) says a skip under Sick / Travel /
- * Social is the right call. Every figure on this screen honours that: an
- * excused skip leaves the DENOMINATOR (it was never owed) rather than counting
- * as a miss or — worse — as a completion, so the rate reads `of N owed`, the
- * ledger names the excused ones as their own term, and a day that was entirely
- * excused says "All excused" instead of `0 of 0`. The reasoning is recorded
- * once, at `modeExcusesSkips` in lib/db/repositories/mission.ts.
+ * A day can be excused for three reasons, and `excusedDatesIn` in
+ * lib/db/repositories/mission.ts is the ONE place that says which: an open
+ * STATUS the user declared and the Coach left excusing (0061), a frozen MODE on
+ * a day lived before modes were retired, or the device's TIMEZONE changing on
+ * it. Every figure on this screen honours it: an excused skip leaves the
+ * DENOMINATOR (it was never owed) rather than counting as a miss or — worse —
+ * as a completion, so the rate reads `of N owed`, the ledger names the excused
+ * ones as their own term, and a day that was entirely excused says "All
+ * excused" instead of `0 of 0`. Each by-day row names its OWN reason; they must
+ * never be attributed to one another.
  *
  * ## Today is not a miss, and a young install is not a failing one
  *
@@ -100,9 +106,9 @@ import { daysBetween } from '@/lib/screenings/format';
  * | The record starts today | "The record starts today. Nothing has finished yet." |
  * | Days on record, none planned | "No plan was generated on any of the last 14 days." |
  * | Planned, nothing missed | "Nothing was missed. All N planned items were completed." |
- * | Planned, every item excused | "Every planned item on these days was excused by the day's mode." |
+ * | Planned, every item excused | "Every planned item on these days was excused." |
  * | A day inside the record with no plan | the row reads "No plan" and an em-dash — never `0 of 0` |
- * | A day the mode excused entirely | the row reads "All excused" — a different fact from "No plan" |
+ * | A day excused entirely | the row reads "All excused" — a different fact from "No plan" |
  *
  * The last two are the pair this codebase has already confused twice: *nothing
  * was skipped* and *nothing was ever logged* are different facts.
@@ -148,7 +154,7 @@ type MissionRecordView = {
    */
   totals: {
     planned: number;
-    /** What was actually owed: planned minus what the day's mode excused. */
+    /** What was actually owed: planned minus what the day excused. */
     owed: number;
     completed: number;
     skipped: number;
@@ -165,9 +171,42 @@ type MissionRecordView = {
    * every window that contains no change, which is nearly all of them.
    */
   timezoneNotes: Map<string, string>;
+  /**
+   * The days an excusing STATUS covered (0061), keyed by day, each carrying the
+   * labels the user declared — "Sick", "Sick · Traveling". Empty on every
+   * window with no status in it.
+   */
+  statusLabels: Map<string, string>;
   /** Protocols that WILL contribute to a mission — the generator's own filter. */
   activeProtocols: number;
 };
+
+/**
+ * The excusing statuses covering each day of the window, as the label the row
+ * states.
+ *
+ * Built here rather than carried on `MissionDayPoint` because it is COPY, not
+ * accounting: the ledger already knows the day was excused (that is
+ * `excusedDatesIn`, one definition, three reasons), and this only answers which
+ * word to print beside the count. Non-excusing statuses are left out on
+ * purpose — they did not excuse the day, so naming them here would explain a
+ * number they had no part in.
+ */
+function statusLabelsIn(db: Database, from: string, to: string): Map<string, string> {
+  const byDay = new Map<string, string[]>();
+  for (const row of statusesIn(db, from, to)) {
+    if (row.excuses !== 1) continue;
+    const span = clampStatusSpan(row, from, to);
+    if (!span) continue;
+    const label = row.label.length === 0 ? row.label : row.label[0]!.toUpperCase() + row.label.slice(1);
+    for (let date = span.start; date <= span.end; date = addDays(date, 1)) {
+      const held = byDay.get(date);
+      if (held) held.push(label);
+      else byDay.set(date, [label]);
+    }
+  }
+  return new Map([...byDay].map(([date, labels]) => [date, labels.join(' · ')]));
+}
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -230,6 +269,7 @@ function read(): MissionRecordView {
     },
     sources,
     timezoneNotes: timezoneNotesIn(db, days[0]?.date ?? today, today),
+    statusLabels: statusLabelsIn(db, days[0]?.date ?? today, today),
     activeProtocols: listProtocols(db).filter((p) => p.isActive && p.versionNumber !== null).length,
   };
 }
@@ -241,7 +281,7 @@ export default function MissionHistoryScreen() {
   useFocusEffect(reload);
 
   const { today, recordStart, daysOnRecord, days, settled, adherence, totals, sources } = view;
-  const { timezoneNotes } = view;
+  const { timezoneNotes, statusLabels } = view;
 
   const rate = adherence !== null ? `${Math.round(adherence * 100)}%` : '—';
 
@@ -254,12 +294,12 @@ export default function MissionHistoryScreen() {
   } else if (settled.length === 0) {
     verdict = 'The record starts today. Nothing has finished yet.';
   } else if (adherence === null) {
-    // Two different nothings. A window where every planned item was excused by
-    // its mode is not a window with no plan — a sick fortnight is a fact about
+    // Two different nothings. A window where every planned item was excused
+    // is not a window with no plan — a sick fortnight is a fact about
     // the fortnight, and saying "no plan was generated" about it would be false.
     verdict =
       totals.planned > 0
-        ? 'Every planned item on these days was excused by the day’s mode. There is nothing to rate.'
+        ? 'Every planned item on these days was excused. There is nothing to rate.'
         : `No plan was generated on any of the last ${WINDOW_DAYS} days.`;
   } else if (settled.length < TREND_FLOOR) {
     verdict = `Only ${plural(settled.length, 'finished day')} on record — too little to read as a trend.`;
@@ -268,8 +308,8 @@ export default function MissionHistoryScreen() {
   // The four judged terms sum to `totals.owed` — the denominator printed beside
   // the rate — and adding `excused` gets back to `planned`. Excused sits
   // directly after skipped because that is where most of it comes from, but it
-  // also holds the days an item was never touched under a Sick/Travel/Social
-  // mode: not touching it is the same fact as tapping skip, and only one of
+  // also holds the days an item was never touched on an excused day: not
+  // touching it is the same fact as tapping skip, and only one of
   // those used to be forgiven (lib/db/repositories/mission.ts).
   const ledger =
     totals.planned > 0
@@ -337,7 +377,7 @@ export default function MissionHistoryScreen() {
               {rate}
             </Text>
             {adherence !== null ? (
-              // "Owed", not "planned", once a mode has excused something: the
+              // "Owed", not "planned", once the ledger has excused something: the
               // rate's denominator is what the days actually asked of you, and
               // printing `planned` beside it would not reconcile.
               <Text className="font-mono text-sm text-ink-muted">
@@ -376,7 +416,7 @@ export default function MissionHistoryScreen() {
                 {totals.planned === 0
                   ? 'No plan was generated on any of these days.'
                   : totals.owed === 0
-                    ? 'Every planned item on these days was excused by the day’s mode.'
+                    ? 'Every planned item on these days was excused.'
                     : totals.excused > 0
                       ? `Nothing was missed. All ${totals.owed} owed items were completed.`
                       : `Nothing was missed. All ${totals.planned} planned items were completed.`}
@@ -431,7 +471,7 @@ export default function MissionHistoryScreen() {
                           failing" the failure is the headline. */}
                       <View className="items-end">
                         <Text className="font-mono text-[15px] text-ink">{`${missed} missed`}</Text>
-                        {/* Owed, not planned, once a mode has excused some of
+                        {/* Owed, not planned, once the ledger has excused some of
                             them — the miss count above is over the owed set,
                             and the excused ones are named rather than
                             disappearing into a smaller denominator. */}
@@ -452,7 +492,7 @@ export default function MissionHistoryScreen() {
                       {navigable ? (
                         <Pressable
                           accessibilityRole="button"
-                          accessibilityLabel={`${source.name}. ${missed} of ${owed} owed items missed${source.excused > 0 ? `, ${source.excused} excused by the day’s mode` : ''}${source.doneLate > 0 ? `, ${source.doneLate} done late` : ''}. Open the protocol.`}
+                          accessibilityLabel={`${source.name}. ${missed} of ${owed} owed items missed${source.excused > 0 ? `, ${source.excused} excused` : ''}${source.doneLate > 0 ? `, ${source.doneLate} done late` : ''}. Open the protocol.`}
                           onPress={() =>
                             router.push({
                               pathname: '/protocol-detail',
@@ -490,22 +530,30 @@ export default function MissionHistoryScreen() {
             <View className="mt-1">
               {newestFirst.map((point, index) => {
                 // Three states, and they must not collapse into each other:
-                // a day with a plan, a day whose plan the mode entirely excused
+                // a day with a plan, a day whose plan was entirely excused
                 // ("I rested correctly", NOT "I did it" and NOT "0 of 0"), and
                 // a day with no plan at all.
                 const owed = missionOwed(point);
                 const judged = owed > 0;
                 const allExcused = owed === 0 && point.planned > 0;
                 const pct = judged ? Math.round((point.completed / owed) * 100) : 0;
-                // D4. A day can be excused by its MODE or by the device's
-                // timezone changing on it — two different reasons, and the row
-                // must not attribute one to the other. A timezone change
-                // deliberately sets no mode, so `point.mode` reads `normal` on a
-                // travel day and "excused · Normal" would be nonsense.
+                // THREE reasons a day can be excused, and the row must not
+                // attribute one to another (D4's rule, extended in 0061):
+                //
+                //   · an open STATUS he declared — "Sick", "Traveling";
+                //   · a frozen MODE, on a day lived before modes were retired;
+                //   · the device's TIMEZONE changing on it, which deliberately
+                //     declares nothing, so `point.mode` reads `normal` on a
+                //     travel day and "excused · Normal" would be nonsense.
+                //
+                // Ordered by how much the user said: his own word first, the
+                // retired system's second, the calendar's last.
                 const timezoneNote = timezoneNotes.get(point.date) ?? null;
-                const excusedBy = getModeDefinition(point.mode).excusesSkips
-                  ? getModeDefinition(point.mode).label
-                  : 'Timezone change';
+                const excusedBy =
+                  statusLabels.get(point.date) ??
+                  (getModeDefinition(point.mode).excusesSkips
+                    ? getModeDefinition(point.mode).label
+                    : 'Timezone change');
                 return (
                   <View key={point.date}>
                     <Divider first={index === 0} />

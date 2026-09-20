@@ -266,9 +266,9 @@ console.log('2. The adherence ledger SUMS, and the mode decides `excused`');
   // Accountable = 7 − 2 excused = 5; completed 2 → 40%.
   is('completion is over ACCOUNTABLE items', row.completionLabel, '40%');
   yes(
-    'the mode ledger names the excusing days',
-    report.adherence.modeNote != null && report.adherence.modeNote.includes('Travel'),
-    String(report.adherence.modeNote)
+    'the excusal ledger names the excusing days',
+    report.adherence.excusedNote != null && report.adherence.excusedNote.includes('travel'),
+    String(report.adherence.excusedNote)
   );
   yes(
     'the reconciliation is stated in words',

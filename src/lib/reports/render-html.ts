@@ -277,7 +277,7 @@ function renderSelfReview(data: SelfReviewData, read: CoachRead | null): string 
         `<th class="n">Unmarked</th><th class="n">Completion</th></tr></thead><tbody>` +
         a.rows.map((r) => `<tr>${adherenceCells(r)}</tr>`).join('') +
         `</tbody><tfoot><tr>${adherenceCells(a.totals)}</tr></tfoot></table>` +
-        noteLine(a.modeNote) +
+        noteLine(a.excusedNote) +
         (a.reconciliation ? `<p class="rule-legend">${escapeHtml(a.reconciliation)}</p>` : '');
     }
     parts.push(section(a.title, body, a.provenance));

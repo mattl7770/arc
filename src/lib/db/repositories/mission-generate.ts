@@ -35,12 +35,12 @@ import { phaseOn } from '@/lib/protocols/phase';
 import type { ProtocolItem } from '@/lib/protocols/types';
 import { getModeDefinition, type ModeItem, type ModeKey } from '@/lib/modes/registry';
 
-import { activeModesIn, getActiveMode } from './day-modes';
+import { getActiveMode } from './day-modes';
 import { experimentsRunningOn } from './experiments';
 import {
   countMissionEntries,
+  excusedDatesIn,
   getOrCreateDailyLog,
-  modeExcusesSkips,
   NOT_CARRIED_SQL,
   NOT_REMOVED_SQL,
   PLANNED_ROW_SQL,
@@ -318,10 +318,11 @@ type CarryDebt = {
  *     it; re-levying it tomorrow would make the skip button meaningless, and it
  *     gives the user an explicit "not this one" gesture that needs no new
  *     control. A `partial` is real progress and is not re-offered whole either.
- *   - **Not an excused day.** `modeExcusesSkips` says a miss under Sick /
- *     Travel / Social was the right call; carrying it would re-levy a debt the
- *     mode just forgave and make Travel mode produce a pile of work waiting on
- *     the day you get home — exactly the nag the mode exists to prevent.
+ *   - **Not an excused day** ({@link excusedDatesIn}, all three of its
+ *     reasons). A miss on a day an open status forgave — or a frozen mode, or a
+ *     timezone change — was the right call; carrying it would re-levy a debt the
+ *     ledger just forgave and produce a pile of work waiting on the day you get
+ *     home, which is exactly the nag a status exists to prevent.
  *   - **Not itself carried** ({@link NOT_CARRIED_SQL}). The debt is always the
  *     ORIGINAL day; an untouched carried copy is a second view of the same
  *     obligation, and counting it would let one miss breed.
@@ -335,13 +336,18 @@ type CarryDebt = {
  */
 function outstandingCarries(db: Database, date: string): Map<string, CarryDebt> {
   const from = addDays(date, -CARRY_MAX_DAYS);
-  // Resolved once in JS from the registry rather than restated in SQL, exactly
-  // as missionBySource does it, so the excusal rule has one definition. `'0'` —
-  // a false literal — covers the ordinary case of no excusing day in the
-  // window; the list is bounded by CARRY_MAX_DAYS.
-  const excusedDates = [...activeModesIn(db, from, addDays(date, -1))]
-    .filter(([, mode]) => modeExcusesSkips(mode))
-    .map(([day]) => day);
+  // Resolved once in JS rather than restated in SQL, exactly as missionBySource
+  // does it, so the excusal rule has ONE definition. `'0'` — a false literal —
+  // covers the ordinary case of no excused day in the window; the list is
+  // bounded by CARRY_MAX_DAYS.
+  //
+  // It reads the SHARED definition (`excusedDatesIn`) as of 0061, where it used
+  // to apply a mode-only filter of its own. The deliberate consequence, named
+  // rather than discovered: **nothing carries out of a timezone-excused day
+  // either**, which C11 never considered. A day the ledger forgave should not
+  // breed a debt, and having two answers to "was this day excused" in one
+  // module was the older bug.
+  const excusedDates = [...excusedDatesIn(db, from, addDays(date, -1))];
   const isExcusedDay =
     excusedDates.length > 0 ? `d.date IN (${excusedDates.map(() => '?').join(', ')})` : '0';
 
