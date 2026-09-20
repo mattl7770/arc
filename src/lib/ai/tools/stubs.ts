@@ -34,9 +34,10 @@ const unavailable = (feature: string): never => {
 // backed by the Protocols repository's versioning. It lived here as a stub
 // until the Protocols feature landed.
 
-// create_experiment / complete_experiment have shipped — real write tools now
-// (write-tools.ts), backed by the experiments repository (0027). They lived here
-// as a stub until the experiments table landed.
+// create_experiment has shipped — a real write tool now (write-tools.ts),
+// backed by the experiments repository (0027). It lived here as a stub until
+// the experiments table landed. Concluding and abandoning shipped beside it and
+// have since folded into `edit_record` (src/lib/ai/domains/status-domains.ts).
 
 // set_status has shipped — it is a real write tool now (write-tools.ts),
 // backed by the day_statuses repository (0061). Its predecessor set_mode lived

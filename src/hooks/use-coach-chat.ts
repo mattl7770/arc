@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { streamCoachReply } from '@/lib/ai/coach-service';
 import { CoachTurnError } from '@/lib/ai/model-client';
-import { humanizeToolName, toolByName } from '@/lib/ai/tools';
+import { humanizeToolName, isRetiredWriteName, toolByName } from '@/lib/ai/tools';
 import { claimsCompletedWrite } from '@/lib/ai/write-claim';
 import type { CoachToolCall } from '@/lib/ai/types';
 import { usageCaption } from '@/lib/ai/cost';
@@ -99,9 +99,20 @@ function makeId(seq: number): string {
   return `${Date.now()}-${seq}`;
 }
 
-/** The registry is the authority on which tools mutate the record. */
+/**
+ * The registry is the authority on which tools mutate the record — PLUS the
+ * names it used to hold.
+ *
+ * This reads persisted rows, and `ai_messages` is append-only and lives
+ * forever, so it is routinely asked about tool calls made by a build that no
+ * longer exists. Answering from the live registry alone classified a retired
+ * write as a READ, which silently dropped it out of the "these changes landed"
+ * line — in a thread where that line is the only record that the change
+ * happened. `RETIRED_WRITE_NAMES` (src/lib/ai/tools/index.ts) is the fix, and
+ * the suite asserts every name in it still answers true here.
+ */
 function isWriteTool(name: string): boolean {
-  return toolByName(name)?.readOnly === false;
+  return toolByName(name)?.readOnly === false || isRetiredWriteName(name);
 }
 
 /** The receipts for the "these changes landed" line; [] for a read-only turn. */
@@ -285,6 +296,9 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
         // long thread silently loses its first half — including whatever set it
         // up ("my knee has been sore since March").
         priorSummary: getConversationSummary(getDb(), conversationId),
+        // The thread's own id, so `delete_record` can tell a row THIS
+        // conversation's Coach wrote from one it merely found.
+        conversationId,
         onToken: (chunk) => patch((m) => ({ ...m, content: m.content + chunk })),
         onToolCall: ({ label }) => setActivity(label),
         confirmWrite: (request) =>

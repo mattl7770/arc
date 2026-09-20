@@ -102,6 +102,14 @@ Full data dashboards live elsewhere. Never let the home screen become a data dum
 - Must have tool access (logging, protocol updates, reminders, etc.)
 - Safety: Never give definitive medical advice that should come from a doctor. Flag uncertainty.
 
+**Tool access is now a DOMAIN REGISTRY, not one tool per act (2026-09-19, `docs/coach-domains.md`).** The owner's direction — *"basically the entire app should be accessible for reading and writing for the coach"* — cannot be met one tool at a time: the schemas ride the cached prefix, a bespoke tool per gap prices at ~14,000 tokens against a 9,250 ceiling, and the ceiling is not being raised a fourth time. So the app is described once in TypeScript (`src/lib/ai/domains/`) and three generic tools — `query_records`, `edit_record`, `delete_record` — read that description. Three rules make it safe, and all three are load-bearing:
+
+- **Parity with the screens, through the repositories, never past them.** Every generic read and write calls the same repository function the matching screen calls. No raw SQL, no `run_query`, ever: a confirmation card cannot say what arbitrary SQL will do. What a repository refuses, the Coach cannot do either.
+- **Edit is read-modify-write.** A field the patch omits is preserved. `replaceWorkout` deletes every set and re-inserts its argument, so a literal patch would wipe a session behind a card that did not say so.
+- **The card is drawn before the gate and re-read after it.** A row that moved while the user was deciding refuses rather than minting a receipt for something else.
+
+Deletion is a separate tool over a smaller enum, because a removal must never be a *value* the model can set in passing — and it is only ever **undo**, never history: a record of a day refuses and names its screen.
+
 ---
 
 ## 7. Function Health Integration
@@ -192,6 +200,7 @@ The database is **on-device SQLite** (`op-sqlite`). The source of truth is `db/m
 - `/docs/labs-subapp.md` — **the Function Health PDF → biomarkers pipeline**: what the report actually is, the mapping rules that refuse to guess, and why migration 0024 rebuilds a table
 - `/docs/home-screen.md` — Home screen information architecture (detail)
 - `/docs/ai-coach.md` — System prompt, tools, memory design
+- `/docs/coach-domains.md` — **the domain registry behind `query_records` / `edit_record` / `delete_record`**: the parity rule, the shape of a domain, the three enums and why they are different subsets, the staleness guard, what is permanently off-limits, and the 2026-09-19 fold that funded it
 - `/docs/wearables-subapp.md` — Apple Health ingestion: library, scopes, mapping, dedup, readiness seam
 - `/docs/recipes-grocery.md` — **the recipe book, grocery list, AI recipe import (Instagram/TikTok/YouTube/websites), and the Coach's recipe/grocery tools** (migrations 0031/0032 — the numbers here read 0030/0031 until 2026-08-12, a leftover from the pre-merge renumbering; the import ADR)
 - `/docs/progress-photos-subapp.md` — **BUILT 2026-08-12 (migration 0036):** the body-progress gallery — working-copy storage (**amending the 2026-07-24 PhotoKit-reference letter**, owner-accepted, and why), library-pick import with EXIF-date honesty, compare, on-demand AI reading. Headless-verified only; the picker/manipulator are in the binary as of the owner's 2026-08-25 EAS build

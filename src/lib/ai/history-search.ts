@@ -30,7 +30,8 @@ export type HistoryHit = {
   /**
    * The row's own id, on the two hits the Coach can WRITE BACK to: a knowledge
    * entry of the user's own (`save_knowledge_entry` with an id replaces it,
-   * `retire_knowledge_entry` archives it) and a durable memory (`forget`).
+   * `edit_record` archives it) and a durable memory (`edit_record` again —
+   * both retired their bespoke tools into it on 2026-09-19).
    *
    * Added by C14, and it is what makes "read and write on both stores" true
    * rather than half-true. Before it, a search hit was a dead end: the Coach
@@ -303,33 +304,35 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
     const lower = hit.text.toLowerCase();
     return terms.filter((t) => lower.includes(t)).length;
   };
-  return rows
-    .sort((a, b) => {
-      const byScore = score(b) - score(a);
-      if (byScore !== 0) return byScore;
-      // The user's own history outranks reference material at equal relevance:
-      // "have we tried magnesium?" is a question about them, not about ApoB.
-      const aRef = a.date === 'reference';
-      const bRef = b.date === 'reference';
-      if (aRef !== bRef) return aRef ? 1 : -1;
-      // Among references, the three owners rank: the user's own record of
-      // HIMSELF, then his own doctrine, then ARC's shipped pack (0038, widened
-      // by 0044). Where both have something to say on a topic, what the user has
-      // committed to is the more binding — and what is true OF him outranks what
-      // he believes about the world, because a personal constraint changes the
-      // answer while a stance only colours it. They are never silently merged:
-      // all are returned, labelled by provenance, and the Coach's doctrine is to
-      // cite both and name the difference rather than resolve it.
-      if (aRef && bRef && a.refRank !== b.refRank) {
-        return (a.refRank ?? 2) - (b.refRank ?? 2);
-      }
-      return a.date < b.date ? 1 : a.date > b.date ? -1 : 0;
-    })
-    .slice(0, limit)
-    // `cap`/`refRank` are ranking inputs, not part of the contract — the
-    // returned object is a plain HistoryHit.
-    .map(({ cap, refRank: _refRank, ...hit }) => ({
-      ...hit,
-      text: excerpt(hit.text, terms, cap),
-    }));
+  return (
+    rows
+      .sort((a, b) => {
+        const byScore = score(b) - score(a);
+        if (byScore !== 0) return byScore;
+        // The user's own history outranks reference material at equal relevance:
+        // "have we tried magnesium?" is a question about them, not about ApoB.
+        const aRef = a.date === 'reference';
+        const bRef = b.date === 'reference';
+        if (aRef !== bRef) return aRef ? 1 : -1;
+        // Among references, the three owners rank: the user's own record of
+        // HIMSELF, then his own doctrine, then ARC's shipped pack (0038, widened
+        // by 0044). Where both have something to say on a topic, what the user has
+        // committed to is the more binding — and what is true OF him outranks what
+        // he believes about the world, because a personal constraint changes the
+        // answer while a stance only colours it. They are never silently merged:
+        // all are returned, labelled by provenance, and the Coach's doctrine is to
+        // cite both and name the difference rather than resolve it.
+        if (aRef && bRef && a.refRank !== b.refRank) {
+          return (a.refRank ?? 2) - (b.refRank ?? 2);
+        }
+        return a.date < b.date ? 1 : a.date > b.date ? -1 : 0;
+      })
+      .slice(0, limit)
+      // `cap`/`refRank` are ranking inputs, not part of the contract — the
+      // returned object is a plain HistoryHit.
+      .map(({ cap, refRank: _refRank, ...hit }) => ({
+        ...hit,
+        text: excerpt(hit.text, terms, cap),
+      }))
+  );
 }

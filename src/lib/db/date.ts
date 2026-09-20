@@ -337,14 +337,26 @@ export function localDayUtcRange(
   now: Date = new Date(),
   dayStartsAt: string = installedDayStartsAt
 ): { startUtc: string; endUtc: string } {
+  return logicalDayUtcRange(logicalDate(now, dayStartsAt), dayStartsAt);
+}
+
+/**
+ * The same window for a LOGICAL day named directly, rather than derived from an
+ * instant — what a by-day read needs (`listEntriesOn`, repositories/logs.ts).
+ *
+ * Factored out of {@link localDayUtcRange} rather than written beside it: two
+ * implementations of "when does 2026-09-19 start and end" would be two places
+ * for the day boundary to be applied, and the whole point of date.ts is that
+ * there is one.
+ */
+export function logicalDayUtcRange(
+  date: string,
+  dayStartsAt: string = installedDayStartsAt
+): { startUtc: string; endUtc: string } {
   const boundary = boundaryMinutes(dayStartsAt) ?? 0;
   const hours = Math.floor(boundary / 60);
   const minutes = boundary % 60;
-  const [y, m, d] = logicalDate(now, dayStartsAt).split('-').map(Number) as [
-    number,
-    number,
-    number,
-  ];
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
   const start = new Date(y, m - 1, d, hours, minutes, 0, 0);
   const end = new Date(y, m - 1, d + 1, hours, minutes, 0, 0);
   return { startUtc: start.toISOString(), endUtc: end.toISOString() };

@@ -23,7 +23,13 @@ import { estimateCost, usageCaption } from '../src/lib/ai/cost.ts';
 import { checkNumberProvenance, extractNumbers } from '../src/lib/ai/provenance.ts';
 import { runCoachTurn } from '../src/lib/ai/model-client.ts';
 import { buildTurnContext } from '../src/lib/ai/turn-context.ts';
-import { toolByName, COACH_TOOLS, READ_TOOLS, toWireTools } from '../src/lib/ai/tools/index.ts';
+import {
+  toolByName,
+  COACH_TOOLS,
+  PASS_READ_TOOLS,
+  READ_TOOLS,
+  toWireTools,
+} from '../src/lib/ai/tools/index.ts';
 import { buildCoachSystemPrompt } from '../src/lib/ai/system-prompt.ts';
 import {
   FOOD_ENTRY_SYSTEM_PROMPT,
@@ -950,6 +956,130 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // `get_metric_series` (354), `adjust_today` (348). 8 tokens of prompt
   // headroom is the thinnest this has been, and the honest reading is that the
   // prompt is FULL: the next bullet pays for itself or does not land.
+  // ── 2026-09-19: WHOLE-APP ACCESS, COMMIT A — THE FOLD.
+  // **BOTH CEILINGS HELD AND BOTH SIDES CAME OUT AHEAD: 9,233 → 8,479 schema,
+  // 3,692 → 3,691 prompt.** Measured on `main` first, with these same proxies
+  // over the live registry, rather than inherited from the entry above.
+  //
+  // WHY THIS IS THE SHAPE IT IS. docs/spikes/coach-whole-app-access.md asked
+  // for whole-app read/write access for the Coach, and a bespoke tool per gap
+  // was priced at ~14,000 tokens — more than the entire existing toolbox. The
+  // answer is a DOMAIN REGISTRY (src/lib/ai/domains/) behind generic tools,
+  // which costs one schema instead of sixty-eight.
+  //
+  // SCHEMA, −754 NET:
+  //   · SIX status-change tools DELETED, −970: complete_reminder (144),
+  //     dismiss_reminder (115), complete_experiment (221), abandon_experiment
+  //     (218), forget (153), retire_knowledge_entry (119). Every one of them
+  //     executed a single `UPDATE … SET status`.
+  //   · `edit_record` ADDED, +216 over a four-key enum. It carries the
+  //     vocabulary the six descriptions carried, once.
+  //   · `get_experiments`' description −8: "complete_experiment needs the id"
+  //     named a tool that no longer exists, and "closing one (you need the id)"
+  //     says the same thing without it. This is why `readToolTokens` moved at
+  //     all — the Haiku pass prefix is 7,076 → 7,067, still 2,971 clear of the
+  //     4,096 cache floor. (It moves again in commit B, DOWNWARD, when the
+  //     prompt shrinks; the pass's read SET does not move after this.)
+  //
+  // PROMPT, −1 NET, and this is the part that had to be earned. Main had **8
+  // tokens of headroom** and the spike's doctrine bullet was priced at +27, so
+  // it did not fit. It was paid for out of three restatements, which is what
+  // the rule at :393 asks for rather than a fourth raise:
+  //   · the INVITATION-ONLY rule was stated TWICE — once as "not to tidy their
+  //     list unasked" on the adjust_today bullet and once as "ONLY on their
+  //     request or clear invitation, never to file away your own output" inside
+  //     the Memory bullet. It is now ONE bullet governing adjust_today,
+  //     save_knowledge_entry and edit_record, which is strictly more coverage
+  //     for fewer characters.
+  //   · the knowledge split carried THREE examples for a distinction with two
+  //     sides. "Magnesium forms differ in absorption…" illustrates `scientific`,
+  //     which the clause two sentences above it defines — and the split being
+  //     illustrated is LENGTH (a memory vs a personal entry), which that example
+  //     is not about. The status build's precedent: four examples → two, −8.
+  //   · "adds today's mission items" — `adjust_today`'s own description says
+  //     "Today only", the `protocol_slug` class.
+  //
+  // WHAT WAS **NOT** DONE: the VOICE section was not touched. The spike names
+  // it as the reserve of last resort and it was not needed. No ceiling moved,
+  // which also means the revert arithmetic holds: putting the six tools back
+  // returns the registry to 9,233 exactly.
+  //
+  // COMMIT A IS PROMPT-NEGATIVE BY ONE TOKEN, which matters more than it
+  // sounds: B (query_records) cannot land before A, because query_records is
+  // built on the registry A introduces, so A's own moment is the tightest one
+  // this branch ever has. It is 3,691 — better than main's 3,692.
+  // ── 2026-09-19: WHOLE-APP ACCESS, COMMIT B — `query_records`.
+  // **9,233 → 8,750 schema and 3,692 → 3,651 prompt, measured against MAIN.**
+  // Both sides are still ahead of where the branch started, on a branch whose
+  // whole purpose is to ADD capability.
+  //
+  // SCHEMA, +271 on top of commit A's −754:
+  //   · `query_records` over a FIFTEEN-key enum. The description does NOT name
+  //     the fifteen: the enum is already on the wire, and naming them twice is
+  //     the description-recites-its-own-schema class this comment exists about
+  //     (~75 tok saved against the first draft). What it carries instead is
+  //     what an enum cannot — the filters, the 10/25 cap, and the DISCOVERY
+  //     call.
+  //   · Field vocabularies cost **0**. A no-filter call returns each domain's
+  //     `fields`, so discovery is one warm round trip on the turn it is needed
+  //     rather than 26 domains × ~25 tokens in a cached prefix forever. That
+  //     was the alternative, and it is ~650 tokens against 8 of headroom.
+  //
+  // PROMPT, −40, and every token of it is a coverage line that became FALSE —
+  // the only reason a line may leave that list (src/lib/ai/tools/index.ts):
+  //   · "the food catalog, per-item micronutrients and saved meal templates
+  //     (Eat)" — three domains now.
+  //   · "saved workouts (Train)".
+  //   · "progress photos and their AI readings" and "generated reports and
+  //     doctor packs" — the owner reopened both (Q4a). The 2026-08-12 photo
+  //     call was a PREFIX-COST argument against a bespoke tool, and a registry
+  //     key costs ~3 tokens; the reports entry said "revisit if transcripts
+  //     show the user asking about past reports", and the direction is wider.
+  //     READ-ONLY, no pixels, no writes.
+  //   · the lab line NARROWED to the PDF and the files: the report LIST reads.
+  //   · one label ADDED (+12), "the rest of the app, domain by domain
+  //     (query_records)" — ONE entry for fifteen domains, because the keys are
+  //     already in the enum.
+  //
+  // THE HAIKU PASS'S READ SET IS UNCHANGED, and that is deliberate rather than
+  // incidental: `query_records` is excluded from it (PASS_EXCLUDED_TOOLS), so
+  // the pass still carries exactly the eighteen tools it always did — 3,376
+  // tokens. Its PREFIX is that plus the system prompt, so it moves with the
+  // prompt alone: 7,067 → 7,027, downward.
+  // Haiku's selection over a fifteen-key enum is unmeasured, a discovery call
+  // would spend one of the pass's eight round trips AND re-bill the ~1.4k
+  // uncached state block, and the pass is triage over curated reads. The
+  // assertion below now bills the pass's OWN tool set, not every read tool.
+  // ── 2026-09-19: WHOLE-APP ACCESS, COMMIT C — THE WRITES (Phase 2).
+  // **9,067 schema and 3,652 prompt**, against main's 9,233 / 3,692. The branch
+  // ends with MORE headroom on both ceilings than it started with, having added
+  // twenty-six writable/readable domains, and NO CEILING WAS RAISED.
+  //
+  // SCHEMA, +317 on commit B's 8,750:
+  //   · `edit_record`'s enum 4 → 18 keys, and its description gains the fourth
+  //     status vocabulary plus one sentence sending the model to
+  //     `query_records` for every other domain's fields. The per-domain FIELD
+  //     names are still not here: 26 domains × ~25 tok is ~650 of cached prefix
+  //     for something a warm no-filter call returns.
+  //   · `delete_record` ADDED over an ELEVEN-key enum — the removable set, not
+  //     the editable one. A record of a day is absent from that enum entirely,
+  //     so the schema refuses it at zero round trips, which is cheaper than any
+  //     sentence explaining the rule would be.
+  //
+  // PROMPT, +1 on commit B's 3,651, and it buys a whole tool:
+  //   · the doctrine bullet gains `delete_record` and one clause — "a record of
+  //     a day is corrected, never removed" (+~30).
+  //   · PAID FOR by three coverage lines that became FALSE: appointments (a
+  //     registry domain now), "creating a protocol or a screening from scratch"
+  //     (already half-false since §8.2 gave `update_protocol` a create arm),
+  //     and the logged-history line, REWRITTEN to what the owner's Q2(b) answer
+  //     leaves true — a logged metric and a capture, which have no repository
+  //     edit path and therefore no screen path either. The Settings line
+  //     narrowed to the security boundary (Q3a).
+  //
+  // THE HAIKU PASS'S READ SET IS STILL 3,376 — untouched by three commits,
+  // because `query_records` never joined it and no write ever could. Its prefix
+  // is 7,028, down from main's 7,076, entirely because the prompt shrank.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(
@@ -1000,7 +1130,10 @@ console.log('6. the prompt budget: the fixed payload every request carries');
     : bad('the food-entry prompt has leaked into the cached prefix');
 
   const HAIKU_CACHE_MINIMUM = 4096;
-  const passPrefix = systemTokens + readToolTokens;
+  // The pass's OWN tool set, not every read tool: `query_records` is held back
+  // from the unattended pass (PASS_EXCLUDED_TOOLS, src/lib/ai/tools/index.ts),
+  // so billing it here would guard a prefix nothing sends.
+  const passPrefix = systemTokens + jsonTok(JSON.stringify(toWireTools(PASS_READ_TOOLS)));
   passPrefix > HAIKU_CACHE_MINIMUM
     ? ok(
         `the pass prefix (~${passPrefix} tok) still clears Haiku's ${HAIKU_CACHE_MINIMUM}-token cache floor`

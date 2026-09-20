@@ -15,7 +15,7 @@
  * units and persistence targets are defined once.
  */
 import type { Database } from '../database';
-import { localDayUtcRange, clockFromISO, todayISODate } from '../date';
+import { clockFromISO, logicalDayUtcRange, todayISODate } from '../date';
 import { newId } from '../id';
 import { getOrCreateDailyLog } from './mission';
 import type { BodyMetricRow, LogEntryRow, WearableDataRow } from '../types';
@@ -192,8 +192,21 @@ export function listTodayEntries(
   now: Date = new Date(),
   units?: UnitPreferences
 ): LogFeedItem[] {
-  const date = todayISODate(now);
-  const { startUtc, endUtc } = localDayUtcRange(now);
+  return listEntriesOn(db, todayISODate(now), units);
+}
+
+/**
+ * The same feed for ANY logical day.
+ *
+ * Added 2026-09-19 for the Coach's `captures` domain: the log tools have always
+ * backdated, and nothing could read a past day back. It is
+ * {@link listTodayEntries}' body with the day named instead of derived — one
+ * implementation, so the two can never disagree about what a day is, and the
+ * body-metrics window comes from `logicalDayUtcRange` so the day boundary is
+ * applied exactly once.
+ */
+export function listEntriesOn(db: Database, date: string, units?: UnitPreferences): LogFeedItem[] {
+  const { startUtc, endUtc } = logicalDayUtcRange(date);
   const rows: (LogFeedItem & { sortKey: string })[] = [];
 
   // 1) Ad-hoc log_entries — notes and generic metrics.

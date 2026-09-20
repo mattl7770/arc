@@ -10,17 +10,90 @@
  * coverage manifest at the foot of this file, and the report that forced it.
  */
 import type { WireTool } from '../model-client';
-import { READ_TOOLS } from './read-tools';
-import { WRITE_TOOLS } from './write-tools';
+import { READ_TOOLS as BESPOKE_READ_TOOLS } from './read-tools';
+import { RECORD_READ_TOOLS, RECORD_WRITE_TOOLS } from './record-tools';
+import { WRITE_TOOLS as BESPOKE_WRITE_TOOLS } from './write-tools';
 import type { CoachTool } from './types';
 
-export type { CoachTool, CoachToolContext } from './types';
-export { READ_TOOLS, UNREGISTERED_READ_TOOLS } from './read-tools';
-export { WRITE_TOOLS } from './write-tools';
+export type { CoachTool, CoachToolContext, WriteKind, WriteMeta } from './types';
+export { DEFAULT_WRITE_META } from './types';
+export { UNREGISTERED_READ_TOOLS } from './read-tools';
 export { STUB_TOOLS } from './stubs';
+
+/**
+ * Every read tool, bespoke ones first.
+ *
+ * The generic reads ride at the END rather than beside their subject matter:
+ * a model scanning the list should meet `get_today_snapshot` before it meets a
+ * domain enum, because a tool that answers one question exactly is always the
+ * better call than one that answers any question adequately.
+ */
+export const READ_TOOLS: CoachTool[] = [...BESPOKE_READ_TOOLS, ...RECORD_READ_TOOLS];
+
+/** Every write tool, bespoke ones first — same argument as the reads. */
+export const WRITE_TOOLS: CoachTool[] = [...BESPOKE_WRITE_TOOLS, ...RECORD_WRITE_TOOLS];
 
 /** Every tool the model is given, reads first (the order it should reach). */
 export const COACH_TOOLS: CoachTool[] = [...READ_TOOLS, ...WRITE_TOOLS];
+
+/**
+ * Read tools the UNATTENDED pass does not get.
+ *
+ * `query_records` is excluded, and this is a measured call rather than caution
+ * (docs/spikes/coach-whole-app-access.md §3.4). The pass runs `claude-haiku-4-5`
+ * on a trigger nobody asked for, with a hard cap of eight round trips: Haiku's
+ * selection over a fifteen-key domain enum is unmeasured, a DISCOVERY call
+ * would spend one of those eight AND re-bill the ~1.4k uncached state block,
+ * and the pass is triage over curated reads rather than an investigation. The
+ * writes cannot join it at all — every one of them is `readOnly: false`, and
+ * the pass has no confirmation gate to route them through.
+ *
+ * Keeping it out keeps the pass's READ SET exactly where it was: 3,376 tokens
+ * of schema, the same eighteen tools it had before the registry existed. The
+ * pass prefix itself is that plus the system prompt (7,028 at the end of this
+ * branch, down from 7,076 on main because the prompt shrank), well clear of
+ * Haiku's 4,096-token cache minimum — which the whole pass's economics depend
+ * on (db/coach-eval.test.mjs §6, "THE TRAP").
+ */
+export const PASS_EXCLUDED_TOOLS: ReadonlySet<string> = new Set(['query_records']);
+
+/** The read tools the unattended pass is given. */
+export const PASS_READ_TOOLS: CoachTool[] = READ_TOOLS.filter(
+  (tool) => !PASS_EXCLUDED_TOOLS.has(tool.name)
+);
+
+/**
+ * Write tools that USED to exist, by name.
+ *
+ * `isWriteTool` answers via {@link toolByName} (src/hooks/use-coach-chat.ts),
+ * so a persisted `ai_messages.tool_calls` row naming a tool the registry no
+ * longer holds would be classified as a READ — and silently drop out of the
+ * "these changes landed" receipt line, in a thread where that line is the only
+ * record that the change happened at all. The registry is append-only history
+ * from the audit trail's point of view, so retiring a name means recording it,
+ * not deleting it.
+ *
+ * Every entry here was folded into `edit_record` on 2026-09-19
+ * (src/lib/ai/domains/status-domains.ts). Their stored receipts are unaffected
+ * — a receipt is the card line the user approved, not a tool name — and
+ * `humanizeToolName` still renders each one for the rows written before
+ * receipts existed.
+ *
+ * db/coach-domains.test.mjs asserts `isWriteTool` is true for every name here.
+ */
+export const RETIRED_WRITE_NAMES: ReadonlySet<string> = new Set([
+  'complete_reminder',
+  'dismiss_reminder',
+  'complete_experiment',
+  'abandon_experiment',
+  'forget',
+  'retire_knowledge_entry',
+]);
+
+/** Was this name a write tool once, even though the registry no longer holds it? */
+export function isRetiredWriteName(name: string): boolean {
+  return RETIRED_WRITE_NAMES.has(name);
+}
 
 const BY_NAME = new Map(COACH_TOOLS.map((tool) => [tool.name, tool]));
 
@@ -124,14 +197,14 @@ export const COACH_DOMAINS: CoachDomain[] = [
   { label: 'day notes', tools: ['log_note'] },
   { label: 'protocols', tools: ['get_protocols', 'update_protocol'] },
   { label: 'your status', tools: ['set_status'] },
-  {
-    label: 'experiments',
-    tools: ['get_experiments', 'create_experiment', 'complete_experiment', 'abandon_experiment'],
-  },
-  {
-    label: 'reminders',
-    tools: ['list_reminders', 'set_reminder', 'complete_reminder', 'dismiss_reminder'],
-  },
+  // The four domains the 2026-09-19 fold moved onto `edit_record`. Their
+  // LABELS do not move — what the model needs here is the domain vocabulary,
+  // and "experiments" is still exactly what it can read and write. The fold is
+  // therefore free against the manifest, which is part of why it was the fold
+  // chosen: the registry shrinks by 767 tokens and this section does not move
+  // by one.
+  { label: 'experiments', tools: ['get_experiments', 'create_experiment', 'edit_record'] },
+  { label: 'reminders', tools: ['list_reminders', 'set_reminder', 'edit_record'] },
   { label: 'the recipe book', tools: ['get_recipes', 'get_recipe', 'save_recipe', 'log_recipe'] },
   {
     label: 'the grocery list',
@@ -143,7 +216,7 @@ export const COACH_DOMAINS: CoachDomain[] = [
     ],
   },
   { label: 'screenings', tools: ['get_screenings', 'log_screening_done'] },
-  { label: 'durable memories', tools: ['get_memories', 'remember', 'forget'] },
+  { label: 'durable memories', tools: ['get_memories', 'remember', 'edit_record'] },
   { label: 'labs and biomarkers', tools: ['get_biomarkers', 'get_biomarker_history'] },
   {
     label: 'Apple Health and readiness',
@@ -158,9 +231,18 @@ export const COACH_DOMAINS: CoachDomain[] = [
   // entries are now the half that outranks it.
   {
     label: 'the knowledge base and past conversations',
-    tools: ['search_history', 'save_knowledge_entry', 'retire_knowledge_entry'],
+    tools: ['search_history', 'save_knowledge_entry', 'edit_record'],
   },
   { label: 'appointments', tools: ['get_screenings'] },
+  // ONE entry for the whole generic read, not fifteen. The domain KEYS are
+  // already on the wire — they are the `query_records` enum — and the house
+  // rule here is that the manifest names domains while the schemas name
+  // themselves (see `buildCoverageManifest`). Naming them twice would be the
+  // same information billed twice on every turn forever.
+  {
+    label: 'the rest of the app, domain by domain (query_records)',
+    tools: ['query_records', 'edit_record', 'delete_record'],
+  },
 ];
 
 /**
@@ -181,17 +263,32 @@ export const UNCOVERED_DOMAINS: string[] = [
   //     (app/program-edit.tsx and the repository deleted) and routines were
   //     re-branded "Saved workouts" in the same round, so the old phrasing named
   //     one live thing twice and one dead thing once.
-  'the food catalog, per-item micronutrients and saved meal templates (Eat)',
-  'saved workouts (Train)',
-  'lab report files and the PDF import (Data, Labs)',
-  // 0036. Deliberately a blind spot rather than a tool (owner call, 2026-08-12):
-  // the catalog is ~66-72% of the cached prompt prefix and every addition
-  // invalidates it, while photo METADATA — counts, dates, poses — gives the model
-  // almost nothing actionable. The pixels are the value, and those flow through
-  // the user-triggered reading on the screen itself.
-  'progress photos and their AI readings (Data › Progress photos)',
-  'booking, moving or cancelling an appointment (Data, Screenings)',
-  'creating a protocol or a screening from scratch',
+  // FOUR LINES LEFT THIS LIST ON 2026-09-19 and one narrowed, because
+  // `query_records` made them false — which is the only reason a line may be
+  // removed, and the list's own rule (`:195`). Each is declared in `retires` on
+  // the domain that closed it, and db/coach-domains.test.mjs fails if a
+  // retired string is still printed here:
+  //   · "the food catalog, per-item micronutrients and saved meal templates
+  //     (Eat)" — three domains now: food_catalog, micronutrients, meal_templates
+  //   · "saved workouts (Train)" — the saved_workouts domain
+  //   · "progress photos and their AI readings (Data › Progress photos)" — the
+  //     2026-08-12 call was a PREFIX-COST argument against a bespoke tool, and
+  //     a registry key costs ~3 tokens, so the owner reopened it. READ-ONLY:
+  //     dates, poses and the text of readings the user already asked for. No
+  //     pixels, ever.
+  //   · "generated reports and doctor packs (Data › Reports)" — its own entry
+  //     said "revisit only if transcripts show the user asking about past
+  //     reports", and the owner's direction is wider than that. The LIST is
+  //     readable; generation is still the screen's, and no model prose enters a
+  //     doctor pack.
+  // The lab line NARROWED rather than leaving: the report list is readable now,
+  // the PDF and its import are not.
+  'the lab PDF import and the report files themselves (Data, Labs)',
+  // BOTH LINES LEFT 2026-09-19. Appointments are a registry domain now
+  // (create, edit, cancel, delete). The create line was ALREADY half-false
+  // before this branch — `update_protocol` has created a protocol since
+  // §8.2 — and the screenings domain makes the other half false too, so it
+  // goes rather than being trimmed to a claim about nothing.
   // NARROWED BY C14, because the wider claim became FALSE — which is the worst
   // thing a line in this list can be. It read "…incl. your own writes and
   // knowledge entries (Data, Knowledge base)"; `save_knowledge_entry` now takes
@@ -199,15 +296,17 @@ export const UNCOVERED_DOMAINS: string[] = [
   // the CANNOT-see list to the read-and-write one. What remains uncovered is
   // what it always was: a logged meal, workout, metric or capture, once
   // written, can only be changed on its own screen.
-  'editing or deleting anything already logged — a meal, workout, metric, capture (its screen in Eat, Train or Data)',
-  // Reports (0039, docs/reports-subapp.md §8). Named rather than tooled, on
-  // purpose: the registry is billed on every turn, generation ends in a share
-  // sheet the model cannot drive and a preview the doctrine requires anyway,
-  // and every number a report contains is already reachable through the read
-  // tools. What the model must NOT do is deny the feature exists — hence the
-  // entry. Revisit only if transcripts show the user asking about past reports.
-  'generated reports and doctor packs (Data › Reports)',
-  'Settings: profile, units, Health sync, app lock, API key',
+  // REWRITTEN 2026-09-19 for the owner's Q2(b) answer, which SUPERSEDES the
+  // rule this line carried (ADR in docs/decisions.md). A meal, a workout and a
+  // water entry are now editable behind a before → after card, and deletable
+  // only as an UNDO of a row this conversation's Coach wrote. What is left
+  // uncovered is what has no repository edit path at all — the Log tab's own
+  // rows, which the user corrects where they were written.
+  'correcting a logged metric or a capture — its row in the Log tab',
+  // NARROWED 2026-09-19 for Q3(a): profile, units, the day boundary, the goal
+  // direction and the water target are a registry domain now. What stays out
+  // is the security boundary, not a preference.
+  'Settings: Apple Health sync, the app lock and the API key',
 ];
 
 const WRITE_NAMES = new Set(WRITE_TOOLS.map((tool) => tool.name));

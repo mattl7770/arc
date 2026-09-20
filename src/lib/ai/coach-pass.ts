@@ -37,7 +37,7 @@ import { buildCoachSystemPrompt } from './system-prompt';
 import { buildTurnContext } from './turn-context';
 // Explicit /index: a bare directory import resolves under Metro but not under
 // Node ESM, and this module IS loaded headlessly (db/coach-pass.test.mjs).
-import { READ_TOOLS, toolByName, toWireTools } from './tools/index';
+import { PASS_EXCLUDED_TOOLS, PASS_READ_TOOLS, toolByName, toWireTools } from './tools/index';
 import type { CoachToolCall } from './types';
 
 /** The model replies with exactly this when the day needs nothing said. */
@@ -229,15 +229,19 @@ export async function runCoachPass(
         system: buildCoachSystemPrompt(),
         systemContext: buildTurnContext(db, now),
         messages: [{ role: 'user', content: passDirective(options.trigger, today) }],
-        // READ tools only: with no write in the registry there is nothing to
-        // gate, so an unattended pass cannot change anything.
-        tools: toWireTools(READ_TOOLS),
+        // READ tools only, MINUS the generic one: with no write in the registry
+        // there is nothing to gate, so an unattended pass cannot change
+        // anything, and `query_records` is held back for the reasons at
+        // PASS_EXCLUDED_TOOLS (a discovery call would spend one of eight round
+        // trips and re-bill the uncached state block, for a selection
+        // behaviour nobody has measured on Haiku).
+        tools: toWireTools(PASS_READ_TOOLS),
       },
       {
         onToken: () => {},
         executeTool: async (name, input) => {
           const tool = toolByName(name);
-          if (!tool || !tool.readOnly) {
+          if (!tool || !tool.readOnly || PASS_EXCLUDED_TOOLS.has(name)) {
             // Defence in depth: even if a write tool somehow reaches here, the
             // pass refuses it rather than running it unattended.
             return {

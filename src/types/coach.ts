@@ -8,6 +8,7 @@
  * a widening, not a redesign.
  */
 import type { CoachToolCall } from '@/lib/ai/types';
+import type { WriteKind } from '@/lib/ai/tools/types';
 
 export type ChatRole = 'user' | 'assistant';
 
@@ -58,4 +59,12 @@ export type PendingWrite = {
   tool: string;
   /** The one human line: "Log weight 178.0 lb". */
   summary: string;
+  /**
+   * What the card is asking about. The card used to infer this from the tool
+   * NAME against a hardcoded set, which is why a `delete_record` could not have
+   * been worded as a removal: there was nothing to branch on.
+   */
+  kind: WriteKind;
+  /** Short card (the summary is the whole consequence) vs the long one. */
+  selfEvident: boolean;
 };

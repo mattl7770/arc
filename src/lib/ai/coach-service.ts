@@ -10,10 +10,13 @@ import { buildTurnContext } from './turn-context';
 import { buildWireHistory } from './history-window';
 import {
   COACH_TOOLS,
+  DEFAULT_WRITE_META,
   humanizeToolName,
   toolByName,
   toWireTools,
   type CoachToolContext,
+  type WriteKind,
+  type WriteMeta,
 } from './tools';
 import type { CoachTurnResult } from './types';
 
@@ -48,6 +51,21 @@ export type WriteConfirmation = {
   tool: string;
   /** The one human line to show: "Log weight 178.0 lb". */
   summary: string;
+  /**
+   * What is being approved. Only `'delete'` changes the card's copy today — its
+   * fixed "This is written to your on-device record" line is false for a
+   * removal — but the card could never tell one write from another by anything
+   * except the tool NAME before this existed, which is why it kept a hardcoded
+   * allowlist of four names.
+   */
+  kind: WriteKind;
+  /**
+   * Whether the summary is already the whole consequence (the SHORT card).
+   * Declared by the tool, defaulted to false — the card's own proposal, made
+   * real: each tool now says its own weight beside the `confirmSummary` that is
+   * the only place that knows what that summary says.
+   */
+  selfEvident: boolean;
 };
 
 export type StreamOptions = {
@@ -81,6 +99,13 @@ export type StreamOptions = {
    * call — see the single read in `executeTool` below.
    */
   now?: () => Date;
+  /**
+   * The thread this turn belongs to (`ai_conversations.id`). Threaded into
+   * every tool's context, and read by exactly one thing: `delete_record`'s
+   * `own` mode, which may remove a logged row only when this conversation's
+   * Coach wrote it. Absent ⇒ nothing counts as the Coach's own write.
+   */
+  conversationId?: string;
 };
 
 /**
@@ -164,7 +189,10 @@ export async function streamCoachReply(
         // The card VALIDATES against this same instant too, so a knowable
         // failure (a log date in the future, a mode window that ends before it
         // begins) throws before the user spends an Approve tap on it.
-        const context: CoachToolContext = { now: clock() };
+        const context: CoachToolContext = {
+          now: clock(),
+          ...(options.conversationId ? { conversationId: options.conversationId } : {}),
+        };
 
         // The line the user approved, held for the receipt below. Stays
         // undefined for reads (nothing to receipt) and for any write that never
@@ -173,16 +201,30 @@ export async function streamCoachReply(
 
         if (!tool.readOnly) {
           let summary: string;
+          let meta: WriteMeta;
           try {
             summary =
               tool.confirmSummary?.(input as Record<string, unknown>, db, context) ??
               humanizeToolName(tool.name);
+            // AFTER the summary, and against the same `context`: the generic
+            // write path writes its staleness slot inside `confirmSummary`, and
+            // a tool's weight can depend on what that summary turned out to
+            // say. Fail closed — a tool that declares nothing gets the long
+            // card.
+            meta =
+              tool.confirmMeta?.(input as Record<string, unknown>, db, context) ??
+              DEFAULT_WRITE_META;
           } catch (error) {
             // Invalid input surfaces at summary time — report it, don't gate.
             return { content: errorText(error), isError: true };
           }
           const approved = options.confirmWrite
-            ? await options.confirmWrite({ tool: name, summary })
+            ? await options.confirmWrite({
+                tool: name,
+                summary,
+                kind: meta.kind,
+                selfEvident: meta.selfEvident,
+              })
             : false;
           if (!approved) {
             return {

@@ -48,7 +48,6 @@ import {
   getProtocolBySlug,
 } from '@/lib/db/repositories/protocols';
 import {
-  archiveKnowledgeEntry,
   getKnowledgeEntry,
   KNOWLEDGE_SECTIONS,
   saveKnowledgeEntry,
@@ -56,9 +55,7 @@ import {
   type KnowledgeEntryRow,
 } from '@/lib/db/repositories/knowledge';
 import {
-  completeReminder,
   createReminder,
-  dismissReminder,
   listActiveReminders,
   resolveOneOffDay,
 } from '@/lib/db/repositories/reminders';
@@ -85,18 +82,8 @@ import {
 } from '@/lib/db/repositories/recipes';
 import { catalogResolveRecipe } from '@/lib/recipes/estimate';
 import type { RecipePortion } from '@/lib/recipes/types';
-import {
-  abandonExperiment,
-  completeExperiment,
-  createExperiment,
-  getExperiment,
-} from '@/lib/db/repositories/experiments';
-import {
-  findMemories,
-  forgetMemory,
-  getMemory,
-  rememberFact,
-} from '@/lib/db/repositories/coach-memory';
+import { createExperiment } from '@/lib/db/repositories/experiments';
+import { findMemories, rememberFact } from '@/lib/db/repositories/coach-memory';
 import {
   rederiveDaysAhead,
   rederiveMissionFromToday,
@@ -780,65 +767,14 @@ const setReminderTool: CoachTool = {
   },
 };
 
-// --- complete_reminder / dismiss_reminder ------------------------------------
-
-function requireActiveReminder(db: Database, id: string) {
-  const match = listActiveReminders(db).find((r) => r.id === id);
-  if (!match) throw new Error(`No active reminder with id ${id}. Call list_reminders first.`);
-  return match;
-}
-
-const completeReminderTool: CoachTool = {
-  name: 'complete_reminder',
-  description:
-    'Mark an active ONE-OFF reminder done (the user did the thing). Get the id from ' +
-    'list_reminders. Recurring (daily/weekly) reminders cannot be completed — doing a ' +
-    'recurring one today needs no write at all; use dismiss_reminder only to END it.',
-  inputSchema: {
-    type: 'object',
-    properties: { id: { type: 'string' } },
-    required: ['id'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  // The card must name what a model-chosen id actually points at.
-  confirmSummary: (input, db) =>
-    `Mark reminder "${requireActiveReminder(db, reqString(asRecord(input), 'id')).title}" done`,
-  execute: (db, input) => {
-    const id = reqString(asRecord(input), 'id');
-    const reminder = requireActiveReminder(db, id);
-    if (reminder.repeat !== 'once') {
-      throw new Error(
-        `"${reminder.title}" repeats ${reminder.repeat} — completing would end it permanently. ` +
-          'Nothing to write for today; use dismiss_reminder only if the user wants it gone.'
-      );
-    }
-    completeReminder(db, id);
-    return json({ completed: true, id, title: reminder.title });
-  },
-};
-
-const dismissReminderTool: CoachTool = {
-  name: 'dismiss_reminder',
-  description:
-    'Turn a reminder off permanently (the way a daily/weekly one ends, or a one-off is ' +
-    'cancelled). Get the id from list_reminders. Use when the user asks to stop it.',
-  inputSchema: {
-    type: 'object',
-    properties: { id: { type: 'string' } },
-    required: ['id'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  confirmSummary: (input, db) =>
-    `Dismiss reminder "${requireActiveReminder(db, reqString(asRecord(input), 'id')).title}"`,
-  execute: (db, input) => {
-    const id = reqString(asRecord(input), 'id');
-    const reminder = requireActiveReminder(db, id);
-    dismissReminder(db, id);
-    return json({ dismissed: true, id, title: reminder.title });
-  },
-};
+// `complete_reminder` and `dismiss_reminder` RETIRED 2026-09-19 into
+// `edit_record { domain: 'reminders', fields: { status } }` — both were one
+// `UPDATE reminders SET status`, and the two of them cost 259 tokens of the
+// cached prefix. The cards, the id-resolution and the recurring-reminder rail
+// all moved intact to src/lib/ai/domains/status-domains.ts; the rail is now a
+// card-time throw plus a `list_reminders` payload note, because a generic
+// tool's description cannot carry domain prose. See `RETIRED_WRITE_NAMES` in
+// ./index — a stored call naming either of these must still print its receipt.
 
 // --- update_protocol (versioned stack / routine edit) ------------------------
 
@@ -1269,44 +1205,12 @@ const rememberTool: CoachTool = {
   },
 };
 
-const forgetTool: CoachTool = {
-  name: 'forget',
-  description:
-    // The "archived, not destroyed — the user can still see it in Settings"
-    // sentence went with C14, and it had to: memory moved out of Settings onto
-    // the Knowledge hub, so the claim had become false in the one place the
-    // model would repeat it to the user. Naming the new screen instead would
-    // have bought a fact the model has no use for — where a surface lives is
-    // the coverage manifest's job, and `forget` is soft either way.
-    'Forget one durable memory by its id (ids come with the memories in your context block, ' +
-    'and from get_memories or search_history). Use when the user says something is no longer ' +
-    'true or asks you to drop it. Prefer forgetting a stale fact over silently accumulating ' +
-    'contradictions.',
-  inputSchema: {
-    type: 'object',
-    properties: { id: { type: 'string' } },
-    required: ['id'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  confirmSummary: (input, db) => {
-    const id = reqString(asRecord(input), 'id');
-    const memory = getMemory(db, id);
-    if (!memory) throw new Error(`No memory with id ${id}. Call get_memories first.`);
-    return `Forget: "${memory.content}"`;
-  },
-  execute: (db, input) => {
-    const id = reqString(asRecord(input), 'id');
-    const memory = getMemory(db, id);
-    if (!memory) throw new Error(`No memory with id ${id}. Call get_memories first.`);
-    const forgotten = forgetMemory(db, id);
-    return json({
-      forgotten,
-      id,
-      ...(forgotten ? {} : { note: 'That memory was already forgotten.' }),
-    });
-  },
-};
+// `forget` RETIRED 2026-09-19 into `edit_record { domain: 'memories', fields:
+// { status: 'archived' } }` (153 tok). `remember` deliberately did NOT fold:
+// its input is a fact plus a category, not a patch, and putting a fact into the
+// base is not the same act as taking one out. The card is unchanged —
+// `Forget: "…"` — and RESTORING is still the user's alone, which is why the
+// memories domain accepts `archived` and no other value.
 
 // --- adjust_today (mission surgery, one card) --------------------------------
 
@@ -1838,83 +1742,15 @@ function isReadableSeries(metric: string): boolean {
   );
 }
 
-const abandonExperimentTool: CoachTool = {
-  name: 'abandon_experiment',
-  description:
-    'Abandon a running experiment that can no longer produce an honest answer — the user ' +
-    'stopped following the intervention, life intervened, or the design turned out wrong. Get ' +
-    'the id from get_experiments. Use this INSTEAD of concluding it: a verdict with no adherence ' +
-    'behind it is worse than no verdict, and an abandoned experiment can simply be re-run later.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string' },
-      reason: { type: 'string', description: 'One line: why it cannot be read out.' },
-    },
-    required: ['id', 'reason'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  confirmSummary: (input, db) => {
-    const args = asRecord(input);
-    const experiment = requireExperiment(db, reqString(args, 'id'));
-    return `Abandon experiment "${experiment.title}" — ${reqString(args, 'reason')}`;
-  },
-  execute: (db, input) => {
-    const args = asRecord(input);
-    const experiment = requireExperiment(db, reqString(args, 'id'));
-    if (experiment.status !== 'active') {
-      throw new Error(`Experiment "${experiment.title}" is already ${experiment.status}.`);
-    }
-    abandonExperiment(db, experiment.id, reqString(args, 'reason'));
-    return json({ abandoned: true, id: experiment.id, title: experiment.title });
-  },
-};
-
-/** Resolve an experiment id → its row, with a message pointing at the fix. */
-function requireExperiment(db: Database, id: string) {
-  const exp = getExperiment(db, id);
-  if (!exp) throw new Error(`No experiment with id ${id}. Call get_experiments first.`);
-  return exp;
-}
-
-const completeExperimentTool: CoachTool = {
-  name: 'complete_experiment',
-  description:
-    'Conclude an active experiment (get its id from get_experiments): record the one-line ' +
-    'conclusion — did the hypothesis hold? — and optional outcome_notes on how the watched ' +
-    'metrics moved. Read the metrics first (get_metric_series). Use when an experiment has ended.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      id: { type: 'string' },
-      conclusion: { type: 'string', description: 'The verdict, e.g. "HRV up 9% — supported".' },
-      outcome_notes: { type: 'string', description: 'How the metrics moved, the readout.' },
-    },
-    required: ['id', 'conclusion'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  confirmSummary: (input, db) =>
-    `Conclude experiment "${requireExperiment(db, reqString(asRecord(input), 'id')).title}"`,
-  execute: (db, input, context) => {
-    const args = asRecord(input);
-    const exp = requireExperiment(db, reqString(args, 'id'));
-    if (exp.status !== 'active') {
-      throw new Error(`Experiment "${exp.title}" is already ${exp.status} — nothing to conclude.`);
-    }
-    completeExperiment(db, exp.id, {
-      conclusion: reqString(args, 'conclusion'),
-      outcomeNotes: optString(args, 'outcome_notes') ?? null,
-    });
-    // The mirror of createExperimentTool's call: a concluded experiment stops
-    // being a running one, so its intervention must come OFF today and off
-    // every day already committed ahead, rather than lingering as a task with
-    // nothing left to measure.
-    rederiveMissionFromToday(db, todayISODate(context.now));
-    return json({ completed: true, id: exp.id, title: exp.title });
-  },
-};
+// `abandon_experiment` and `complete_experiment` RETIRED 2026-09-19 into
+// `edit_record { domain: 'experiments', fields: { status } }` — 439 tokens, the
+// most expensive pair in the fold. `create_experiment` stays: designing one is
+// a hypothesis, an intervention, watched metrics and a duration, which is not a
+// patch. The abandon-not-conclude rail their descriptions carried now rides the
+// `get_experiments` payload and a card-time refusal; the status patch's
+// companions (`conclusion` for concluded, `reason` for abandoned) are required
+// in code, since a schema cannot express "this field when that value" without
+// becoming two tools again.
 
 // --- Grocery + recipes (docs/recipes-grocery.md §6) ---------------------------
 
@@ -1979,6 +1815,10 @@ const addGroceryItemsTool: CoachTool = {
     const names = items.map((i) => (i.qty ? `${i.name} (${i.qty})` : i.name));
     return `Add ${plural(items.length, 'item')} to the grocery list: ${itemListForCard(names)}`;
   },
+  // The summary IS the consequence, already in the proposed tense. One of the
+  // three survivors of the card's old hardcoded allowlist, now declared here
+  // beside the line it is a judgment about.
+  confirmMeta: () => ({ kind: 'create', selfEvident: true }),
   execute: (db, input) => {
     const items = parseGroceryItems(asRecord(input));
     const ids = addGroceryItems(
@@ -2024,6 +1864,8 @@ const completeGroceryItemsTool: CoachTool = {
     const names = ids.map((id) => requireGroceryItem(db, id).name);
     return `Check off ${plural(ids.length, 'item')}: ${itemListForCard(names)}`;
   },
+  // A soft state on a working list, undone with a tap on the Eat tab.
+  confirmMeta: () => ({ kind: 'status', selfEvident: true }),
   execute: (db, input) => {
     const ids = parseIdArray(asRecord(input), 'ids');
     for (const id of ids) {
@@ -2068,6 +1910,8 @@ const addRecipeToGroceryListTool: CoachTool = {
     }
     return `Add ${plural(include.length, 'ingredient')} from "${recipe.title}" to the grocery list`;
   },
+  // The same working-list argument as add_grocery_items.
+  confirmMeta: () => ({ kind: 'create', selfEvident: true }),
   execute: (db, input) => {
     const args = asRecord(input);
     const recipe = requireRecipe(db, reqString(args, 'recipe_id'));
@@ -2474,6 +2318,13 @@ const logScreeningDoneTool: CoachTool = {
 
 // --- save_knowledge_entry (the knowledge base, 0035) -------------------------
 
+/** The entry behind an id, or an error naming the tool that hands ids out. */
+function requireEntry(db: Database, id: string): KnowledgeEntryRow {
+  const entry = getKnowledgeEntry(db, id);
+  if (!entry) throw new Error(`No knowledge entry with id ${id}. Find it with search_history.`);
+  return entry;
+}
+
 /**
  * The Coach's one write path into the knowledge base
  * (docs/knowledge-subapp.md §6).
@@ -2602,43 +2453,19 @@ const saveKnowledgeEntryTool: CoachTool = {
   },
 };
 
-// --- retire_knowledge_entry (C14) --------------------------------------------
-
-/** The entry behind an id, or an error naming the tool that hands ids out. */
-function requireEntry(db: Database, id: string): KnowledgeEntryRow {
-  const entry = getKnowledgeEntry(db, id);
-  if (!entry) throw new Error(`No knowledge entry with id ${id}. Find it with search_history.`);
-  return entry;
-}
-
-const retireKnowledgeEntryTool: CoachTool = {
-  name: 'retire_knowledge_entry',
-  description:
-    // Deliberately silent about restoring: the user can restore it, but saying
-    // so here invites the model to treat retiring as cheap, and the whole point
-    // of the separate tool is that it is not.
-    'Retire ONE knowledge entry by id — it leaves every search and you can no longer cite it. ' +
-    'Use when the user retracts something or it is superseded, never to tidy up.',
-  inputSchema: {
-    type: 'object',
-    properties: { id: { type: 'string' } },
-    required: ['id'],
-    additionalProperties: false,
-  },
-  readOnly: false,
-  confirmSummary: (input, db) =>
-    `Retire entry "${requireEntry(db, reqString(asRecord(input), 'id')).title}"`,
-  execute: (db, input) => {
-    const id = reqString(asRecord(input), 'id');
-    requireEntry(db, id);
-    const retired = archiveKnowledgeEntry(db, id);
-    return json({
-      retired,
-      id,
-      ...(retired ? {} : { note: 'That entry was already retired.' }),
-    });
-  },
-};
+// `retire_knowledge_entry` RETIRED 2026-09-19 into `edit_record { domain:
+// 'knowledge', fields: { status: 'archived' } }` (119 tok).
+//
+// This REVERSES C14's separate-tool call, and the reversal is narrower than it
+// looks. C14's argument had two halves. The CARD half — "taking something out
+// of the base is not a smaller version of putting something in it, and it
+// deserves its own card" — the fold keeps exactly: the line still reads
+// `Retire entry "…"`, `selfEvident` is false, and the lanes are drawn. The
+// SCHEMA half was that a `retire: true` FLAG on `save_knowledge_entry` would
+// force `title` and `body` to become optional, so a create could arrive with no
+// body. `edit_record` is not that flag: it has no create path into this domain
+// at all (`createVia: 'save_knowledge_entry'`), so nothing here can mint a
+// bodiless entry. Only the tool NAME beneath the card changed.
 
 export const WRITE_TOOLS: CoachTool[] = [
   logMetricTool,
@@ -2650,21 +2477,15 @@ export const WRITE_TOOLS: CoachTool[] = [
   setNutritionTargetsTool,
   logScreeningDoneTool,
   rememberTool,
-  forgetTool,
   adjustTodayTool,
   updateProtocolTool,
   setStatusTool,
   createExperimentTool,
-  completeExperimentTool,
-  abandonExperimentTool,
   setReminderTool,
-  completeReminderTool,
-  dismissReminderTool,
   addGroceryItemsTool,
   completeGroceryItemsTool,
   addRecipeToGroceryListTool,
   logRecipeTool,
   saveRecipeTool,
   saveKnowledgeEntryTool,
-  retireKnowledgeEntryTool,
 ];

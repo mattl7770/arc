@@ -24,7 +24,71 @@ export type CoachToolContext = {
    * {@link CoachTool.execute} cannot disagree about what time it is.
    */
   now: Date;
+  /**
+   * THE STALENESS SLOT — what the confirmation card PRINTED as "was X", so
+   * `execute` can check it is still true.
+   *
+   * The card is built before `await options.confirmWrite` and the row can move
+   * inside that window: an Apple Health sync, the pending-estimate drain, a
+   * carry-over re-derive, or the user editing the same row on its own screen
+   * while the gate is up. Approving "kcal 700 → 640" and having 640 written
+   * over a row that now reads 900 is a receipt for something the user never
+   * saw.
+   *
+   * So the generic write path writes the printed values here at card time and
+   * re-reads them past the gate; a mismatch THROWS, which means no receipt is
+   * minted (coach-service.ts mints past `execute`) and the model is told to
+   * read and propose once more. Set by `edit_record` / `delete_record` only —
+   * every bespoke tool either has no before-state on its card or resolves its
+   * id afresh inside `execute`.
+   */
+  card?: {
+    domain: string;
+    id: string;
+    /** Field → the value the card printed as "was". */
+    before: Record<string, unknown>;
+  };
+  /**
+   * The thread this turn belongs to, when there is one.
+   *
+   * Read by exactly one thing: `delete_record`'s `own` mode, which may remove a
+   * logged row only when THIS conversation's Coach wrote it (the owner's Q2
+   * answer, 2026-09-19). The evidence is already on disk — every write tool
+   * returns its new row's id, and `ai_messages.tool_calls` keeps the result —
+   * so the undo set derives with no migration.
+   *
+   * OPTIONAL, and its absence is the fail-closed answer rather than an
+   * inconvenience: with no thread to check, nothing counts as the Coach's own
+   * write and every `own` removal is refused.
+   */
+  conversationId?: string;
 };
+
+/**
+ * What a confirmation card is being asked to approve.
+ *
+ * Only `'delete'` changes the card's copy today — its fixed "This is written to
+ * your on-device record" line is false for a removal. The others are carried
+ * because the receipt is the audit trail and "what kind of change" is worth
+ * more in it than nothing.
+ */
+export type WriteKind = 'create' | 'edit' | 'delete' | 'status';
+
+/** A proposed write's weight and shape, as the card needs it. */
+export type WriteMeta = {
+  kind: WriteKind;
+  /**
+   * Is the summary line already the whole consequence? True draws the SHORT
+   * card (no before/after lanes). Defaulted to false everywhere it is not
+   * stated — see src/components/coach/pending-write-card.tsx: a wordy card on a
+   * trivial write is an irritation, a terse one on a destructive write is a
+   * change approved without being told what it cost.
+   */
+  selfEvident: boolean;
+};
+
+/** The card's default weight: the long form, for anything that has not spoken. */
+export const DEFAULT_WRITE_META: WriteMeta = { kind: 'edit', selfEvident: false };
 
 export type CoachTool = {
   /** Wire name the model calls, snake_case. */
@@ -65,6 +129,22 @@ export type CoachTool = {
     db: Database,
     context: CoachToolContext
   ) => string;
+  /**
+   * Writes only: this call's {@link WriteMeta}. Omitted ⇒
+   * {@link DEFAULT_WRITE_META}, which is the long card — the fail-closed
+   * direction the card file argues for at length.
+   *
+   * A FUNCTION rather than a boolean because the generic tools' weight is
+   * per-call: `edit_record { reminders, status: done }` is as self-evident as
+   * `complete_reminder` was, and `{ status: dismissed }` is not, because
+   * permanence is exactly the consequence a summary cannot carry on its own.
+   * Called after {@link confirmSummary}, with the same `context`.
+   */
+  confirmMeta?: (
+    input: Record<string, unknown>,
+    db: Database,
+    context: CoachToolContext
+  ) => WriteMeta;
   /**
    * Run the tool against the on-device database. Returns the tool_result
    * content (JSON), or a Promise of it — most tools are synchronous SQL, but a

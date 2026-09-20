@@ -242,7 +242,7 @@ console.log('3. create_experiment Coach tool (was a stub) creates + validates');
     : bad('short duration accepted');
 }
 
-console.log('4. get_experiments + complete_experiment tools close the loop');
+console.log('4. get_experiments + edit_record close the loop');
 {
   const { db } = freshDb();
   const now = new Date(2026, 7, 20); // 2026-08-20
@@ -261,15 +261,34 @@ console.log('4. get_experiments + complete_experiment tools close the loop');
     ? ok('get_experiments surfaces the active experiment as ready for readout')
     : bad('get_experiments', JSON.stringify(view));
 
-  const complete = toolByName('complete_experiment');
-  const cSummary = complete.confirmSummary({ id: view.active[0].id, conclusion: 'x' }, db);
+  // `complete_experiment` folded into `edit_record { experiments, status:
+  // concluded }` on 2026-09-19. Everything asserted here — the card wording,
+  // the verdict landing, the re-conclude refusal — is unchanged; the call shape
+  // is not.
+  const complete = toolByName('edit_record');
+  const call = (id, fields) => ({ domain: 'experiments', id, fields });
+  const cSummary = complete.confirmSummary(
+    call(view.active[0].id, { status: 'concluded', conclusion: 'x' }),
+    db,
+    ctx
+  );
   cSummary === 'Conclude experiment "mag"'
     ? ok(`complete confirmation names the target ("${cSummary}")`)
     : bad('complete confirm', cSummary);
+  // The verdict is REQUIRED with `concluded`, enforced in the domain rather
+  // than in the schema — a card that says "Conclude" with nothing recorded is
+  // exactly the empty verdict the experiments loop exists to prevent.
+  throws(() => complete.confirmSummary(call(view.active[0].id, { status: 'concluded' }), db, ctx))
+    ? ok('concluding with no verdict is refused at the card')
+    : bad('verdictless conclude accepted');
 
   complete.execute(
     db,
-    { id: view.active[0].id, conclusion: 'HRV up 6% — supported', outcome_notes: 'steady rise' },
+    call(view.active[0].id, {
+      status: 'concluded',
+      conclusion: 'HRV up 6% — supported',
+      outcome_notes: 'steady rise',
+    }),
     ctx
   );
   const after = JSON.parse(
@@ -278,10 +297,10 @@ console.log('4. get_experiments + complete_experiment tools close the loop');
   after.active.length === 0 &&
   after.completed.length === 1 &&
   after.completed[0].conclusion === 'HRV up 6% — supported'
-    ? ok('after complete_experiment it leaves active and appears under completed with its verdict')
+    ? ok('after concluding it leaves active and appears under completed with its verdict')
     : bad('post-complete', JSON.stringify(after));
 
-  throws(() => complete.execute(db, { id: 'nope', conclusion: 'x' }, ctx))
+  throws(() => complete.execute(db, call('nope', { status: 'concluded', conclusion: 'x' }), ctx))
     ? ok('concluding an unknown id is rejected with guidance')
     : bad('unknown id accepted');
 
@@ -289,8 +308,13 @@ console.log('4. get_experiments + complete_experiment tools close the loop');
   // so a second readout can't overwrite the recorded verdict.
   const magId = view.active[0].id;
   const before = getExperiment(db, magId).conclusion;
-  throws(() => complete.execute(db, { id: magId, conclusion: 'a different verdict' }, ctx)) &&
-  getExperiment(db, magId).conclusion === before
+  throws(() =>
+    complete.execute(
+      db,
+      call(magId, { status: 'concluded', conclusion: 'a different verdict' }),
+      ctx
+    )
+  ) && getExperiment(db, magId).conclusion === before
     ? ok('an already-concluded experiment can’t be re-concluded (its verdict is safe)')
     : bad('re-conclude overwrote the verdict');
 }

@@ -1,11 +1,43 @@
 # Whole-app read/write access for the Coach
 
-**Status: PROPOSAL** (2026-09-15). Nothing here is built. The owner parked the item on 2026-09-14
-with the instruction to note it and check on it later (`docs/backlog-2026-09.md:66`); this is the
-audit and plan that note asked for. Every number was measured against `main` at migration head
-`0058` (`:72`) by running the ceiling test's own proxies (`db/coach-eval.test.mjs:386-387`) over the
-live registry — a scratchpad script, no network, no key, no writes — and by reading
-`db/measure-coach-request.mjs`.
+**Status: BUILT (Phases 0–2), 2026-09-19.** Phase 3 is not built and stays a list of separate
+items (§3.9). The implementation is `src/lib/ai/domains/*` and `src/lib/ai/tools/record-tools.ts`;
+**`docs/coach-domains.md` is now the spec of record**, and this file is the audit that produced it.
+The owner answered all five questions on 2026-09-19: **Q1(a)** hold 9,250 and fold the six;
+**Q2(b)** edit any logged row behind the card, delete only this conversation's own writes;
+**Q3(a)** all five Settings; **Q4(a)** photos and reports as read-only domains; **Q5(a)** screenings
+editable except `interval_months`.
+
+## What was built, and where it departed from this plan
+
+| | planned | built | why |
+| --- | --- | --- | --- |
+| Commit A schema | −767 | **−754** | `edit_record` measured 216 over a four-key enum, not 203 |
+| Commit A prompt | **+27** | **−1** | The plan's +27 did not fit: main had **8 tokens**, not the 31 this document measured against, because the day-status build spent them. The doctrine was folded into the `adjust_today` bullet instead of added beside it, and paid for by three restatements — the invitation rule stated twice (once per bullet), a third example for a two-sided distinction, and `adjust_today`'s own "Today only" restated. **The VOICE section was not touched.** |
+| Commit B schema | +291 | **+271** | the description does not enumerate the domains; the enum already does |
+| Commit B prompt | −57 | **−41** | the same four coverage lines and one label, measured rather than estimated |
+| Commit C schema | +268 | **+317** | `edit_record`'s enum reached 18 keys and `delete_record`'s 11 |
+| Commit C prompt | −8 | **+1** | three coverage lines paid for the `delete_record` clause |
+| **Ceilings** | 9,250 / 3,700, never moved | **9,067 / 3,652** | both ceilings held; **both ended with more headroom than main had** |
+| Ordering | "A and B land the same day" | **A, then B, then C** | B cannot precede A — `query_records` is built on A's registry — so A's own moment is the branch's tightest, and A was made prompt-negative rather than landing at 3,696 |
+| Registry layout | one file per domain | **four area files** under `src/lib/ai/domains/` | 26 files of boilerplate imports against the repository layout the rest of `src/lib/db/repositories/` uses |
+| `summarize` / `resolve` | required on every domain | **required on WRITABLE domains** | a read-only domain has no id to resolve anything FOR and no card to draw; asserted either way |
+| Phase 0 | a half-day of payload fields | **two fields and one state line** | the protocol rethink had already landed `notes`, `carryOver`, `checkoffMode` and `startedOn` |
+
+Everything else shipped as written: the fold's six cards byte-identical, `RETIRED_WRITE_NAMES`, the
+two rails moved into `list_reminders` / `get_experiments` payloads behind card-time refusals, the
+staleness re-read in the specified words, `kind`/`selfEvident` on the card, the pass exclusion, the
+`own`-write undo derived from `ai_messages.tool_calls`, and **no migration**.
+
+**The revert criteria are in `docs/coach-domains.md` §13**, written out rather than referenced, so
+a week of use can be judged against them.
+
+---
+
+*The audit below is as it was written on 2026-09-15, against `main` at migration head `0058`.
+Its measured numbers are of that day; the ones above supersede them.* Every number was taken by
+running the ceiling test's own proxies (`db/coach-eval.test.mjs:386-387`) over the live registry — a
+scratchpad script, no network, no key, no writes — and by reading `db/measure-coach-request.mjs`.
 
 **The short form.** A domain registry behind three generic tools, funded inside the existing
 ceilings by folding six status-change tools (970 tokens) into one generic edit (203). The costs sit
