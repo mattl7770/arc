@@ -168,6 +168,109 @@ console.log('4. setMissionStatus / toggle persist and stamp completed_at');
   rowT.completed_at === null
     ? ok('completed_at cleared when un-completing')
     : bad('completed_at cleared', rowT.completed_at);
+  // The undo the hero docblock asked for: a mis-tapped Skip is taken back by
+  // tapping the row, not by ticking the item you just declined and unticking it.
+  toggleMission(db, zone2.id);
+  listMission(db, TODAY).find((i) => i.id === zone2.id).status === 'completed'
+    ? ok('toggle flips pending -> completed')
+    : bad('toggle pending', listMission(db, TODAY).find((i) => i.id === zone2.id).status);
+  setMissionStatus(db, zone2.id, 'skipped');
+  toggleMission(db, zone2.id);
+  const afterUnskip = listMission(db, TODAY).find((i) => i.id === zone2.id);
+  afterUnskip.status === 'pending'
+    ? ok('toggle flips skipped -> pending (the undo, not a second decision)')
+    : bad('toggle skipped', afterUnskip.status);
+  // A partial row is progress, not a decision, so a tap still finishes it.
+  setMissionStatus(db, zone2.id, 'partial');
+  toggleMission(db, zone2.id);
+  listMission(db, TODAY).find((i) => i.id === zone2.id).status === 'completed'
+    ? ok('toggle still commits a partial row')
+    : bad('toggle partial', listMission(db, TODAY).find((i) => i.id === zone2.id).status);
+  raw.close();
+}
+
+console.log('4b. the four "door" fields ride the view-model off what a row already carries');
+{
+  const { db, raw } = freshDb();
+  const log = getOrCreateDailyLog(db, TODAY);
+  raw
+    .prepare(
+      `INSERT INTO protocols (id, slug, name, type) VALUES ('p1', 'stack', 'Evening stack', 'supplement_stack')`
+    )
+    .run();
+  const insert = raw.prepare(
+    `INSERT INTO log_entries (id, daily_log_id, type, protocol_id, title, status, value, source)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, 'manual')`
+  );
+  insert.run(
+    'carried-row',
+    log.id,
+    'supplement',
+    'p1',
+    'Creatine',
+    JSON.stringify({
+      generated: true,
+      protocol: 'Evening stack',
+      item: 'item-1',
+      carried: true,
+      carried_from: { date: '2026-09-14', entry: 'origin-row' },
+      carried_days: 2,
+    })
+  );
+  // A mode item: no protocol, no item id — the row belongs to its day, and the
+  // absence of all four is what a surface checks before offering a verb that
+  // needs a protocol behind it.
+  insert.run(
+    'mode-row',
+    log.id,
+    'habit',
+    null,
+    'Rest — no training today',
+    JSON.stringify({ generated: true, category: 'Sick', mode: 'sick' })
+  );
+
+  const items = listMission(db, TODAY);
+  const carried = items.find((i) => i.id === 'carried-row');
+  carried.dailyLogId === log.id &&
+  carried.protocolId === 'p1' &&
+  carried.itemId === 'item-1' &&
+  carried.carriedFrom?.date === '2026-09-14' &&
+  carried.carriedFrom?.entry === 'origin-row'
+    ? ok('a generated protocol row carries dailyLogId, protocolId, itemId and carriedFrom')
+    : bad('door fields', JSON.stringify(carried));
+
+  const mode = items.find((i) => i.id === 'mode-row');
+  mode.protocolId === undefined &&
+  mode.itemId === undefined &&
+  mode.carriedFrom === undefined &&
+  mode.dailyLogId === log.id
+    ? ok('a mode row has none of the three, and still knows its day')
+    : bad('mode row door fields', JSON.stringify(mode));
+
+  // toMissionItem is the mapping, so pin it directly too: a NATIVE protocol row
+  // has no carriedFrom even when the value json holds a stale one.
+  const native = toMissionItem({
+    id: 'x',
+    daily_log_id: log.id,
+    type: 'supplement',
+    protocol_id: 'p1',
+    title: 'Creatine',
+    status: 'pending',
+    scheduled_time: null,
+    completed_at: null,
+    value: JSON.stringify({
+      generated: true,
+      item: 'item-1',
+      carried_from: { date: '2026-09-14', entry: 'origin-row' },
+    }),
+    source: 'manual',
+    notes: null,
+    created_at: '',
+    updated_at: '',
+  });
+  native.carriedFrom === undefined && native.itemId === 'item-1'
+    ? ok('carriedFrom is gated on the `carried` flag, not on the key being present')
+    : bad('carriedFrom leaked onto a native row', JSON.stringify(native));
   raw.close();
 }
 

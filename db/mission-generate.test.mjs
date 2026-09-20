@@ -21,11 +21,21 @@ import {
   createProtocolWithVersion,
   setActive,
 } from '../src/lib/db/repositories/protocols.ts';
-import { listMission, setMissionStatus } from '../src/lib/db/repositories/mission.ts';
-import { isoWeekday, weekStart } from '../src/lib/protocols/cadence.ts';
+import {
+  listMission,
+  setMissionStatus,
+  skipCarried,
+} from '../src/lib/db/repositories/mission.ts';
+import { addDays, isoWeekday, weekStart } from '../src/lib/protocols/cadence.ts';
 import {
   generateMissionForDay,
+  nextOccurrence,
+  planForDay,
   planKey,
+  projectDays,
+  quotaCompletionsThisWeek,
+  quotaDoneThisWeek,
+  quotaKey,
   rederiveMissionForDay,
 } from '../src/lib/db/repositories/mission-generate.ts';
 import { setMode } from '../src/lib/db/repositories/day-modes.ts';
@@ -807,6 +817,59 @@ console.log('17. completing a carried row settles the ORIGINAL as done-late');
     : bad('undo failed', JSON.stringify(reopened));
 }
 
+console.log('17b. skipCarried settles BOTH rows, and the undo re-opens either mark');
+{
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    content([{ items: [{ title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 5] } }] }])
+  );
+  const monday = entriesOn(db, raw, '2026-08-03')[0];
+  const carried = carriedOn(db, raw, '2026-08-04', 'Lower body')[0];
+  const untouched = raw
+    .prepare("SELECT id FROM log_entries WHERE status = 'pending' AND id NOT IN (?, ?)")
+    .all(monday.id, carried.id);
+
+  skipCarried(db, carried.id);
+  const copy = raw.prepare('SELECT * FROM log_entries WHERE id = ?').get(carried.id);
+  const origin = raw.prepare('SELECT * FROM log_entries WHERE id = ?').get(monday.id);
+  copy.status === 'skipped' &&
+  origin.status === 'skipped' &&
+  valueOf(origin).skipped_via === carried.id
+    ? ok('a hand-tapped skip on a carried row settles the copy AND stamps the original')
+    : bad('skipCarried', `${copy.status} / ${origin.status} / ${origin.value}`);
+  untouched.length === 0
+    ? ok('…and only those two rows — nothing else on the device was pending to reach')
+    : bad('skipCarried reached further', JSON.stringify(untouched));
+
+  // The debt is a decision now, not an outstanding day: the original is no
+  // longer `pending`, so nothing re-levies it tomorrow.
+  carriedOn(db, raw, '2026-08-05', 'Lower body').length === 0
+    ? ok('the skip sticks — Wednesday re-levies nothing')
+    : bad('a skipped debt came back');
+
+  setMissionStatus(db, carried.id, 'pending');
+  const reopened = raw.prepare('SELECT * FROM log_entries WHERE id = ?').get(monday.id);
+  reopened.status === 'pending' && valueOf(reopened).skipped_via === undefined
+    ? ok('Put back re-opens an original marked skipped_via and removes the mark')
+    : bad('skipped_via undo failed', JSON.stringify(reopened));
+
+  // The SAME undo path still handles the late-completion mark, and an original
+  // marked neither is not something a carried row may touch.
+  setMissionStatus(db, carried.id, 'completed');
+  setMissionStatus(db, carried.id, 'pending');
+  const afterLate = raw.prepare('SELECT * FROM log_entries WHERE id = ?').get(monday.id);
+  afterLate.status === 'pending' && valueOf(afterLate).late_on === undefined
+    ? ok('…and the late_on mark, through the one widened branch')
+    : bad('late_on undo broke', JSON.stringify(afterLate));
+  setMissionStatus(db, monday.id, 'skipped');
+  setMissionStatus(db, carried.id, 'pending');
+  raw.prepare('SELECT status FROM log_entries WHERE id = ?').get(monday.id).status === 'skipped'
+    ? ok('an original marked NEITHER is left exactly as it is')
+    : bad('undo reached an unmarked original');
+}
+
 console.log('18. daily marks, never a second row; a quota never carries at all');
 {
   const { db, raw } = freshDb();
@@ -1001,6 +1064,185 @@ console.log('21. adjusting is a no-op for daily, weekdays and quota');
   wed.includes('Lower body')
     ? ok('…and Wednesday still comes round exactly when the list says')
     : bad('weekdays moved', JSON.stringify(wed));
+}
+
+console.log('22. the projection flag: the SAME function, minus the two future-day artefacts');
+{
+  const { db, raw } = freshDb();
+  // One fixture carrying every case at once, because the claim under test is
+  // that the flag touches NOTHING except the carry and the quota — which can
+  // only be shown by running both paths over the same varied days.
+  const stack = createProtocolWithVersion(
+    db,
+    {
+      name: 'Stack',
+      type: 'supplement_stack',
+      startedOn: '2026-08-03',
+      carryOver: true,
+    },
+    content([
+      {
+        items: [
+          { id: 'creatine', title: 'Creatine', dose: '5 g' },
+          { id: 'lower', title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 3, 5] } },
+          { id: 'lift', title: 'Lift', cadence: { kind: 'quota', per_week: 3 } },
+        ],
+      },
+    ])
+  );
+  // `adjusting`, so each projected day also exercises the lastCompletions read.
+  const training = createProtocolWithVersion(
+    db,
+    {
+      name: 'Training',
+      type: 'training_block',
+      startedOn: '2026-08-03',
+      checkoffMode: 'adjusting',
+    },
+    content([{ items: [{ id: 'sauna', title: 'Sauna', cadence: { kind: 'every_n_days', n: 3 } }] }])
+  );
+  // Two phases, so the horizon crosses a boundary on 2026-08-06.
+  createProtocolWithVersion(
+    db,
+    { name: 'Course', type: 'daily_routine', startedOn: '2026-08-03' },
+    content([
+      { days: 3, items: [{ id: 'loading', title: 'Loading dose', dose: '2 caps' }] },
+      { items: [{ id: 'maintenance', title: 'Maintenance dose', dose: '1 cap' }] },
+    ])
+  );
+  // A mode that DROPS a whole type on one day of the horizon — a Travel or Sick
+  // window set through the week is a fact about the plan, so the projection
+  // must honour it exactly as the committing path does.
+  setMode(db, { mode: 'sick', startDate: '2026-08-06', endDate: '2026-08-06' });
+
+  // Monday is committed. Sauna is done (the `adjusting` clock has something to
+  // read); everything else is left untouched, which is what makes Monday's
+  // Lower body a DEBT and Monday's Creatine an outstanding daily.
+  const monday = entriesOn(db, raw, '2026-08-03');
+  setMissionStatus(db, monday.find((r) => r.title === 'Sauna').id, 'completed');
+
+  const QUOTA_ITEMS = new Set(['lift']);
+  // `missed_days` is the third thing that comes off a projected day, and for
+  // the carry's own reason: it counts UNTOUCHED earlier rows, which projected
+  // forward would read today's un-ticked creatine as outstanding on every day
+  // of next week. It rides a native row rather than a row of its own, so it is
+  // stripped here rather than filtered.
+  const withoutCarryMarks = (entry) => {
+    const { missed_days, ...extras } = entry.extras;
+    return { ...entry, extras };
+  };
+
+  let identical = true;
+  let sawCarried = false;
+  let sawQuota = false;
+  let sawMissedMark = false;
+  let sawDrop = false;
+  for (let i = 0; i < 6; i++) {
+    const date = addDays('2026-08-04', i);
+    const committing = planForDay(db, date);
+    const projected = planForDay(db, date, { committing: false });
+    sawCarried ||= committing.some((e) => e.extras.carried === true);
+    sawQuota ||= committing.some((e) => QUOTA_ITEMS.has(e.extras.item));
+    sawMissedMark ||= committing.some((e) => e.extras.missed_days !== undefined);
+    sawDrop ||= date === '2026-08-06' && !committing.some((e) => e.title === 'Sauna');
+    const expected = committing
+      .filter((e) => e.extras.carried !== true && !QUOTA_ITEMS.has(e.extras.item))
+      .map(withoutCarryMarks);
+    if (JSON.stringify(projected) !== JSON.stringify(expected)) {
+      identical = false;
+      bad(
+        `the flag changed something else on ${date}`,
+        `${JSON.stringify(projected)} vs ${JSON.stringify(expected)}`
+      );
+      break;
+    }
+  }
+  identical
+    ? ok('day by day over the six-day horizon, the projection is the committing plan minus both')
+    : null;
+  // Without these the loop above would pass vacuously on a plan that happened
+  // to contain neither artefact.
+  sawCarried && sawQuota && sawMissedMark
+    ? ok('…and the committing plan really did contain a carry, a quota and a missed-days mark')
+    : bad(
+        'the fixture produced no artefact to strip',
+        `carried ${sawCarried} / quota ${sawQuota} / missed ${sawMissedMark}`
+      );
+  sawDrop
+    ? ok('a mode that drops the type drops it on the projected day too')
+    : bad('the mode was not honoured by the projection fixture');
+  // The boundary, read off the projection rather than asserted about the flag:
+  // phase 1 runs 3 days from Monday, so Thursday is phase 2.
+  const projection = projectDays(db, '2026-08-04');
+  projection.length === 6 && projection[0].date === '2026-08-04'
+    ? ok('projectDays walks six days and starts TOMORROW — today is the committed rows')
+    : bad('projection horizon', JSON.stringify(projection.map((d) => d.date)));
+  const thursday = projection.find((d) => d.date === '2026-08-06');
+  thursday.entries.some((e) => e.title === 'Maintenance dose') &&
+  !thursday.entries.some((e) => e.title === 'Loading dose')
+    ? ok('…across a phase boundary, the projected day holds the phase live on IT')
+    : bad('phase boundary', JSON.stringify(thursday.entries.map((e) => e.title)));
+
+  // nextOccurrence, and its four honest nulls.
+  nextOccurrence(projection, stack, 'lower') === '2026-08-05'
+    ? ok('nextOccurrence finds the first projected day carrying the item')
+    : bad('nextOccurrence', String(nextOccurrence(projection, stack, 'lower')));
+  nextOccurrence(projection, stack, 'lift') === null
+    ? ok('…null for a quota: it has an allowance, not a day')
+    : bad('quota got a day', String(nextOccurrence(projection, stack, 'lift')));
+  setActive(db, training, false);
+  nextOccurrence(projectDays(db, '2026-08-04'), training, 'sauna') === null
+    ? ok('…null for a paused protocol')
+    : bad('a paused protocol projected a day');
+}
+
+console.log('22b. quotaDoneThisWeek counts TODAY, and the addDays shortcut would not');
+{
+  const { db, raw } = freshDb();
+  const id = createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03' },
+    content([{ items: [{ id: 'lift', title: 'Lift', cadence: { kind: 'quota', per_week: 3 } }] }])
+  );
+  // Monday and Tuesday done, then this morning's — three sessions, of which the
+  // generator's bound can only ever see two.
+  for (const date of ['2026-08-03', '2026-08-04', '2026-08-05']) {
+    setMissionStatus(db, entriesOn(db, raw, date).find((r) => r.title === 'Lift').id, 'completed');
+  }
+  const today = '2026-08-05';
+  const key = quotaKey(id, 'lift');
+  quotaDoneThisWeek(db, today).get(key) === 3
+    ? ok('the display count includes the session ticked this morning: 3 of 3')
+    : bad('quotaDoneThisWeek', String(quotaDoneThisWeek(db, today).get(key)));
+  quotaCompletionsThisWeek(db, today).get(key) === 2
+    ? ok('…while the generator still counts 2, because a row must not be judged by its own day')
+    : bad('quotaCompletionsThisWeek moved', String(quotaCompletionsThisWeek(db, today).get(key)));
+
+  // THE SUNDAY TRAP, on its own fixture — the one above has met its quota by
+  // Wednesday and stops landing. Faking an inclusive bound with
+  // addDays(today, 1) rolls weekStart into the NEXT week one day in seven, and
+  // the range goes empty.
+  const sundayDb = freshDb();
+  const weekly = createProtocolWithVersion(
+    sundayDb.db,
+    { name: 'Walk', type: 'daily_routine', startedOn: '2026-08-03' },
+    content([{ items: [{ id: 'walk', title: 'Walk', cadence: { kind: 'quota', per_week: 7 } }] }])
+  );
+  const sunday = '2026-08-09'; // Aug 3 2026 is a Monday, so this is a Sunday.
+  const walkKey = quotaKey(weekly, 'walk');
+  setMissionStatus(
+    sundayDb.db,
+    entriesOn(sundayDb.db, sundayDb.raw, sunday).find((r) => r.title === 'Walk').id,
+    'completed'
+  );
+  quotaDoneThisWeek(sundayDb.db, sunday).get(walkKey) === 1 &&
+  (quotaCompletionsThisWeek(sundayDb.db, addDays(sunday, 1)).get(walkKey) ?? 0) === 0
+    ? ok('on a Sunday the addDays shortcut reads 0 — which is why this is a sibling query')
+    : bad(
+        'the Sunday trap did not reproduce',
+        `${quotaDoneThisWeek(sundayDb.db, sunday).get(walkKey)} / ${quotaCompletionsThisWeek(sundayDb.db, addDays(sunday, 1)).get(walkKey)}`
+      );
+  sundayDb.raw.close();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

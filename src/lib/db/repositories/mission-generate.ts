@@ -176,8 +176,12 @@ export type PlannedEntry = {
  * stack's items each hold their own quota. Same `\u0000` join as {@link planKey}
  * — written as an ESCAPE, never as a literal NUL byte in the source, which is a
  * mistake this file has had to have cleaned out of it before.
+ *
+ * Exported because the screens that read {@link quotaDoneThisWeek} need to look
+ * one item up in it, and a second key-building expression next to this one is
+ * how the two definitions drift.
  */
-const quotaKey = (protocolId: string | null, itemId: string): string =>
+export const quotaKey = (protocolId: string | null, itemId: string): string =>
   `${protocolId ?? '-'}\u0000${itemId}`;
 
 /**
@@ -196,8 +200,12 @@ const quotaKey = (protocolId: string | null, itemId: string): string =>
  *     what it means everywhere else (mission.ts owns both constants).
  *
  * One query per day, not one per item.
+ *
+ * Exported for the test that pins it against {@link quotaDoneThisWeek}: the two
+ * differ only in that bound, the difference is deliberate, and an assertion
+ * that cannot see both halves cannot prove it.
  */
-function quotaCompletionsThisWeek(db: Database, date: string): Map<string, number> {
+export function quotaCompletionsThisWeek(db: Database, date: string): Map<string, number> {
   const rows = db.all<{ protocolId: string | null; item: string | null; done: number }>(
     `SELECT e.protocol_id AS protocolId,
             json_extract(e.value, '$.item') AS item,
@@ -211,6 +219,53 @@ function quotaCompletionsThisWeek(db: Database, date: string): Map<string, numbe
         AND ${NOT_REMOVED_SQL}
       GROUP BY e.protocol_id, json_extract(e.value, '$.item')`,
     [weekStart(date), date]
+  );
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.item === null) continue;
+    counts.set(quotaKey(row.protocolId, row.item), row.done);
+  }
+  return counts;
+}
+
+/**
+ * How many times each protocol item has been completed in the calendar week
+ * containing `today`, **including today** — what a surface prints when it says
+ * `1 of 3 this week`.
+ *
+ * A SIBLING of {@link quotaCompletionsThisWeek}, deliberately not a call to it,
+ * and the two bounds are the whole difference:
+ *
+ *   - the generator's bound is `< date` **on purpose** — a row standing on its
+ *     own day must not be judged by it, or a completed quota item would be
+ *     computed "met" and removed from the day it was met on;
+ *   - a DISPLAY that excluded today would under-report by exactly the session
+ *     just ticked, which is the one the user is looking at. Tapping a 3×/wk
+ *     session and watching the line still read `1 of 3` is the feature reading
+ *     as broken.
+ *
+ * Nor can a display call the generator's query with `addDays(today, 1)` to fake
+ * an inclusive bound: on a **Sunday** that is next Monday, `weekStart` moves
+ * with it, and the range `[next Monday, next Monday)` is empty — the figure
+ * would silently read `0 of 3` one day in seven.
+ *
+ * Everything else — completed-only, the two standing predicates, one grouped
+ * query rather than one per item — is identical, for the same reasons.
+ */
+export function quotaDoneThisWeek(db: Database, today: string): Map<string, number> {
+  const rows = db.all<{ protocolId: string | null; item: string | null; done: number }>(
+    `SELECT e.protocol_id AS protocolId,
+            json_extract(e.value, '$.item') AS item,
+            count(*) AS done
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date >= ? AND d.date <= ?
+        AND e.status = 'completed'
+        AND json_extract(e.value, '$.item') IS NOT NULL
+        AND ${PLANNED_ROW_SQL}
+        AND ${NOT_REMOVED_SQL}
+      GROUP BY e.protocol_id, json_extract(e.value, '$.item')`,
+    [weekStart(today), today]
   );
   const counts = new Map<string, number>();
   for (const row of rows) {
@@ -443,17 +498,56 @@ function landsOn(
  * carry (`landsOn` puts it on every remaining day of the week until it is met)
  * and a second row would let `quotaCompletionsThisWeek` count one week's
  * session twice.
+ *
+ * ## `committing: false` — the same function, asked about a day that has not
+ * happened
+ *
+ * `planForDay` has always been a pure read over ANY date, and the notification
+ * scheduler already walks it six days ahead. **On a future date two of its four
+ * sources produce artefacts**, and a visual list has neither of the scheduler's
+ * accidental guards:
+ *
+ *   - **the carry.** `outstandingCarries(db, date)` reads `pending` rows in
+ *     `[date − 7, date)`. Projected from today, every untouched row of TODAY
+ *     reads as a debt on every future day — so tomorrow, Wednesday and Thursday
+ *     would each show this morning's un-ticked creatine as owed. A debt is a
+ *     fact about days that have HAPPENED; a day that has not happened cannot
+ *     owe one.
+ *   - **the quota.** `quotaCompletionsThisWeek` counts `[weekStart(date),
+ *     date)`, so any day in NEXT week has `done = 0` and a 3×/wk item lands on
+ *     every day of it. A quota is an ALLOWANCE, not a day: `1 of 3 this week`
+ *     is the honest reading, and any surface that prints a day for one is
+ *     printing this artefact.
+ *
+ * So `committing: false` never reads the carry and never places a quota item.
+ * **Everything else is byte-for-byte the committing path** — the
+ * active-with-a-version filter, the mode's `dropTypes` for that date (a Travel
+ * mode set through Sunday is a fact about the plan), `phaseOn`,
+ * `cadenceLandsOn`, and the `adjusting` clock read from `lastCompletions` for
+ * that date. That is the whole point of a flag rather than a sibling: the
+ * docblock rule above says a plan computed anywhere else would drift from this
+ * one inside a release, and it does not stop being true because the day is in
+ * the future.
+ *
+ * The default is `true`, so every existing caller is unchanged.
  */
-export function planForDay(db: Database, date: string): PlannedEntry[] {
+export function planForDay(
+  db: Database,
+  date: string,
+  opts: { committing?: boolean } = {}
+): PlannedEntry[] {
+  const committing = opts.committing !== false;
   const def = getModeDefinition(getActiveMode(db, date));
   const active = listProtocols(db).filter((p) => p.isActive && p.versionNumber !== null);
   const plan: PlannedEntry[] = [];
-  const quotaDone = quotaCompletionsThisWeek(db, date);
+  // Not read on a projection: no quota item is placed there, so the count that
+  // would decide whether one lands is never consulted.
+  const quotaDone = committing ? quotaCompletionsThisWeek(db, date) : new Map<string, number>();
   // Both are one query for the whole day, read only when a protocol on the
   // device actually asks for them — the default of every protocol is
   // `carry_over = 0, checkoff_mode = 'strict'`, which is a database with
   // neither behaviour and therefore neither query.
-  const wantsCarry = active.some((p) => p.carryOver);
+  const wantsCarry = committing && active.some((p) => p.carryOver);
   const wantsAdjusting = active.some((p) => p.checkoffMode === 'adjusting');
   const carries = wantsCarry ? outstandingCarries(db, date) : new Map<string, CarryDebt>();
   const lastDone = wantsAdjusting ? lastCompletions(db, date) : new Map<string, string>();
@@ -471,6 +565,9 @@ export function planForDay(db: Database, date: string): PlannedEntry[] {
     if (state.kind !== 'running') continue; // ended, or not started yet
     const { phase, dayInPhase } = state.window;
     for (const item of phase.items) {
+      // A quota has no day, only an allowance — see the header. Skipped BEFORE
+      // `landsOn`, which is also what keeps the quota count unread above.
+      if (!committing && item.cadence.kind === 'quota') continue;
       const lands = landsOn(
         item,
         date,
@@ -582,6 +679,81 @@ export function planForDay(db: Database, date: string): PlannedEntry[] {
     });
   }
   return plan;
+}
+
+/** One projected day: what {@link planForDay} says it would contain. */
+export type ProjectedDay = {
+  date: string;
+  entries: PlannedEntry[];
+};
+
+/**
+ * How far forward a projection looks. The notification scheduler's horizon,
+ * taken deliberately rather than coincidentally: both answer "when does this
+ * next come round", and two different horizons would mean a reminder set for a
+ * day no screen shows, or a screen naming a day no reminder covers.
+ */
+export const PROJECTION_DAYS = 6;
+
+/**
+ * The next `days` days, each under `planForDay(…, { committing: false })`.
+ *
+ * **Strictly forward-looking: `from` is TOMORROW.** Today is never projected,
+ * because today is the committed rows — the day's plan already exists as
+ * `log_entries`, and re-computing it would produce a second, subtly different
+ * answer beside the one the user has been ticking. Any surface that wants
+ * today's figure counts today's rows.
+ *
+ * That bound is also what makes the `adjusting` clock honest here. Each day's
+ * `lastCompletions(db, date)` counts completions strictly before it, so
+ * tomorrow's read includes a completion made this morning — exactly as
+ * tomorrow's real generation will read it when tomorrow arrives.
+ *
+ * Cost, stated because it is paid per render: `days` flagged `planForDay`
+ * calls, each one `getActiveMode` + `listProtocols` + one `getCurrentVersion`
+ * per protocol + `experimentsRunningOn`, plus `lastCompletions` on any day
+ * where a protocol runs `adjusting`. For six protocols that is on the order of
+ * sixty small synchronous statements — read ONCE per screen and sliced per row,
+ * never called inside a row loop.
+ */
+export function projectDays(
+  db: Database,
+  from: string,
+  days: number = PROJECTION_DAYS
+): ProjectedDay[] {
+  const projection: ProjectedDay[] = [];
+  for (let i = 0; i < days; i++) {
+    const date = addDays(from, i);
+    projection.push({ date, entries: planForDay(db, date, { committing: false }) });
+  }
+  return projection;
+}
+
+/**
+ * The first day in a projection that carries this item — "next Wed".
+ *
+ * **Null is a real answer, not a failure**, and there are four ways to get it:
+ * a QUOTA item (never projected — it has an allowance, not a day), a protocol
+ * that has ENDED or not started, a PAUSED protocol (filtered out of every
+ * plan), and an item whose next occurrence is past the horizon. A surface must
+ * print nothing rather than guess at any of them; the allowance is what a quota
+ * row prints instead.
+ *
+ * Matched on `protocolId` AND `extras.item`, never on the title: two protocols
+ * may name an item the same thing, and a retitled item keeps its id.
+ */
+export function nextOccurrence(
+  projection: readonly ProjectedDay[],
+  protocolId: string,
+  itemId: string
+): string | null {
+  for (const day of projection) {
+    const found = day.entries.some(
+      (entry) => entry.protocolId === protocolId && entry.extras.item === itemId
+    );
+    if (found) return day.date;
+  }
+  return null;
 }
 
 /** 1-based day number of `date` within an experiment that began `startDate`. */

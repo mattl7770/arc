@@ -9,9 +9,9 @@
  */
 import type { ProtocolType } from '@/lib/db/types';
 
-import { WEEKDAY_LABELS } from './cadence';
+import { isoWeekday, WEEKDAY_LABELS } from './cadence';
 import type { PhaseState } from './phase';
-import type { Cadence, ProtocolContent } from './types';
+import type { Cadence } from './types';
 
 /** Every schema type, in the order the editor's chips present them. */
 export const PROTOCOL_TYPES: { type: ProtocolType; label: string }[] = [
@@ -51,6 +51,20 @@ export function shortDate(date: string): string {
 }
 
 /**
+ * "2026-09-17" → "Wed 17 Sep" — a day named the way a person names one.
+ *
+ * The weekday is the part that carries, which is why {@link shortDate} is not
+ * enough on its own here: "next 17 Sep" asks the reader to count, and "next
+ * Wed" is the answer to the question they had. The date stays because a
+ * weekday alone is ambiguous past seven days.
+ */
+export function weekdayDate(date: string): string {
+  const day = isoWeekday(date);
+  const label = Number.isNaN(day) ? undefined : WEEKDAY_LABELS[day - 1];
+  return label ? `${label} ${shortDate(date)}` : shortDate(date);
+}
+
+/**
  * How a cadence reads on screen. Sentence-shaped, unlike `cadenceText`'s terse
  * round-trippable form, because these are read by a person on a row rather than
  * parsed by a model.
@@ -86,17 +100,18 @@ export function cadenceShort(cadence: Cadence): string {
   }
 }
 
-/**
- * One line summarising what a whole protocol asks of a week — "daily",
- * "3×/wk", or "mixed" once its items disagree. Null for a protocol with no
- * items: there is no frequency to state and inventing one would be furniture.
+/*
+ * `contentCadenceSummary` was deleted on 2026-09-19 with its one caller.
+ *
+ * It summarised a whole protocol's week as "daily", "3×/wk", or **"mixed"** the
+ * moment two items disagreed — which a daily creatine beside a Mon/Wed/Fri lift
+ * does, and which a single 3×/wk quota does on its own. The word was
+ * technically true and told the reader nothing they could act on, while nothing
+ * on the hub said what any protocol put on TODAY or when the next thing landed.
+ * The row now says both (src/hooks/use-protocols.ts), so the summary has no
+ * reader. `cadenceShort` survives — it is a per-item form, and per item there is
+ * always one honest answer.
  */
-export function contentCadenceSummary(content: ProtocolContent): string | null {
-  const items = content.phases.flatMap((p) => p.items);
-  if (items.length === 0) return null;
-  const forms = new Set(items.map((item) => cadenceShort(item.cadence)));
-  return forms.size === 1 ? [...forms][0]! : 'mixed';
-}
 
 /** Days as the unit a person would say: "28 days" reads better as "4 weeks". */
 export function durationLabel(days: number): string {

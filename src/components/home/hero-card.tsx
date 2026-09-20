@@ -228,12 +228,18 @@ const MAX_DIMENSIONED_FIGURE = 24;
  * (a quarter of the row rather than the width of the word).
  *
  * The cost, recorded because it is real: the vertical break was also a safety
- * margin, and a mis-tapped Skip is awkward to undo — `toggleMission` moves a
+ * margin, and a mis-tapped Skip was awkward to undo — `toggleMission` moved a
  * `skipped` row to `completed`, not back to `pending`. Skip is mitigated here by
  * being the furthest control from the primary, the only one with no border, and
  * the faintest ink, with ~16pt of clear space between Snooze's border and its
- * text. If that proves not to be enough on hardware, the fix is `toggleMission`
- * — the undo — not a third row of chrome.
+ * text. ~~If that proves not to be enough on hardware, the fix is
+ * `toggleMission` — the undo — not a third row of chrome.~~
+ *
+ * **Taken, 2026-09-19.** `toggleMission` now moves `skipped → pending`, so a
+ * mis-tapped Skip is undone by tapping the row it left behind, and no control
+ * was added to this card to do it. Completing a skipped item costs the second
+ * tap; see the function's own docblock for why that is the right side of the
+ * trade (src/lib/db/repositories/mission.ts).
  *
  * **4. Vertical rhythm, against the sheet at its own scale.** The mockup is drawn
  * at 344px to represent a 390pt device, so its numbers are pt × 0.882 and every

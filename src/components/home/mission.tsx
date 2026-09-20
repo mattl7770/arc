@@ -24,6 +24,8 @@ type Props = {
    */
   activeId?: string | null;
   onToggle: (id: string) => void;
+  /** Open one row's sheet — passed to every row's trailing chevron. */
+  onOpen: (id: string) => void;
 };
 
 /**
@@ -229,7 +231,15 @@ function progressLabel(items: MissionItem[]): string {
   return `Progress by item: ${parts.join(', ')}. ${items.length} in total.`;
 }
 
-export function Mission({ leadingSettled, rest, completed, total, activeId, onToggle }: Props) {
+export function Mission({
+  leadingSettled,
+  rest,
+  completed,
+  total,
+  activeId,
+  onToggle,
+  onOpen,
+}: Props) {
   const [showSettled, setShowSettled] = useState(false);
   // Folding one row saves nothing and costs a tap, so the control only exists
   // for a run of two or more. `foldable` is whether the control is drawn at
@@ -306,7 +316,12 @@ export function Mission({ leadingSettled, rest, completed, total, activeId, onTo
         {visible.map((item, index) => (
           <View key={item.id}>
             <Divider first={index === 0 && !foldable} />
-            <MissionItemRow item={item} active={item.id === activeId} onToggle={onToggle} />
+            <MissionItemRow
+              item={item}
+              active={item.id === activeId}
+              onToggle={onToggle}
+              onOpen={onOpen}
+            />
           </View>
         ))}
       </View>

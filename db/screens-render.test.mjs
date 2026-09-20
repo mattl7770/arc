@@ -20,6 +20,8 @@ import React from 'react';
 import { renderToString } from 'react-dom/server';
 
 import { selectAllOnFocus } from '../src/components/ui/select-on-focus.ts';
+import { snoozeItem, unsnoozeItem } from '../src/lib/home/snooze-store.ts';
+import { isoWeekday } from '../src/lib/protocols/cadence.ts';
 
 import { __setParams } from './render-stubs/expo-router.mjs';
 import { getDb } from './render-stubs/db-client.mjs';
@@ -58,9 +60,16 @@ import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import { clearWorkoutDraft, saveWorkoutDraft } from '../src/lib/db/repositories/workout-drafts.ts';
 import { DRAFT_VERSION } from '../src/lib/exercise/draft.ts';
 import { importProgressPhotos } from '../src/lib/media/progress-photo-store.ts';
-import { addVersion, createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
-import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
-import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
+import {
+  addVersion,
+  createProtocolWithVersion,
+  deleteProtocol,
+} from '../src/lib/db/repositories/protocols.ts';
+import {
+  generateMissionForDay,
+  rederiveMissionForDay,
+} from '../src/lib/db/repositories/mission-generate.ts';
+import { setMissionStatus, skipCarried } from '../src/lib/db/repositories/mission.ts';
 import { clearMuscleAnchor, setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 
@@ -109,6 +118,10 @@ import ProtocolsScreen from '../app/protocols.tsx';
 import ProtocolDetailScreen from '../app/protocol-detail.tsx';
 import ProtocolEditScreen from '../app/protocol-edit.tsx';
 import ProtocolVersionsScreen from '../app/protocol-versions.tsx';
+import MissionItemScreen from '../app/mission-item.tsx';
+import ProtocolSettingsScreen from '../app/protocol-settings.tsx';
+import ProtocolItemScreen from '../app/protocol-item.tsx';
+import { MissionItemRow } from '../src/components/home/mission-item.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
 import HomeScreen from '../app/(tabs)/index.tsx';
 import LogScreen from '../app/(tabs)/log.tsx';
@@ -2257,8 +2270,46 @@ const db = getDb();
     'Maintenance',
     'Mon · Wed · Fri',
     'Save as',
-    'Delete protocol',
   ]);
+  // The edit path is STRUCTURE only since 2026-09-19: identity, status, the two
+  // 0050 policies and Delete all moved to the settings sheet, which is the
+  // single surface that writes them.
+  refute('protocol-edit (phased)', editPhased, [
+    'Delete protocol',
+    'Supplement stack', // the type chips
+    'If you miss it',
+    'When you check it off',
+  ]);
+  // …and it gained the one thing the per-item editor cannot express.
+  expect('protocol-edit (phased)', editPhased, ['Move phase 2 up', 'Move Creatine down']);
+
+  // The CREATE path keeps identity, because a new protocol has to be named and
+  // typed before it can exist.
+  expect('protocol-edit (create, still whole)', render('protocol-edit (create)', ProtocolEditScreen), [
+    'New Protocol',
+    'Supplement stack',
+    'Create protocol',
+  ]);
+
+  // The settings sheet: everything the editor stopped carrying, in one place,
+  // with the consequence of re-typing said where the control is.
+  const settings = render('protocol-settings', ProtocolSettingsScreen, { id: phasedId });
+  expect('protocol-settings', settings, [
+    'Settings',
+    'Creatine loading', // the back control names where it goes
+    'Supplement stack',
+    'Status',
+    'Phase 1 starts',
+    'If you miss it',
+    'When you check it off',
+    'Delete protocol',
+    'Changing it applies from tomorrow.',
+  ]);
+  expect(
+    'protocol-settings (gone)',
+    render('protocol-settings (gone)', ProtocolSettingsScreen, { id: 'nope' }),
+    ['This protocol no longer exists.']
+  );
 
   // A second version, so the history has an adjacent pair to diff.
   addVersion(
@@ -2319,6 +2370,457 @@ const db = getDb();
   ]);
   // v1 is the start of the record, not a change, so it prints no diff.
   refute('protocol-versions', versions, ['no change to the items']);
+}
+
+// ---------------------------------------------------------------------------
+// The two screens that turn a mission row from a dead end into a door
+// (docs/spikes/protocol-interface-rethink.md §6.1, §6.4).
+// ---------------------------------------------------------------------------
+{
+  console.log('15b. The mission item sheet and the per-item editor');
+
+  const sheetProtocol = createProtocolWithVersion(
+    db,
+    { name: 'Evening ritual', type: 'supplement_stack', startedOn: todayISODate() },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'only',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'mag',
+              title: 'Magnesium glycinate',
+              scheduled_time: '21:00',
+              dose: '400 mg',
+              notes: 'Sleep latency, not sedation.',
+              cadence: { kind: 'daily' },
+            },
+            {
+              id: 'sauna',
+              // Lands TODAY and again in two days, whatever weekday the suite
+              // runs on — so its next occurrence is strictly later than
+              // tomorrow and the sheet has a day worth naming.
+              title: 'Sauna',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: {
+                kind: 'weekdays',
+                days: [isoWeekday(todayISODate()), ((isoWeekday(todayISODate()) + 1) % 7) + 1].sort(
+                  (a, b) => a - b
+                ),
+              },
+            },
+            {
+              id: 'zone2',
+              title: 'Zone 2',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'quota', per_week: 3 },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  // The day is already committed by earlier sections, so the new protocol
+  // reaches it the way a real edit does.
+  rederiveMissionForDay(db, todayISODate());
+  const rowsToday = new Map(
+    db
+      .all(
+        `SELECT e.id, e.title FROM log_entries e
+           JOIN daily_logs d ON d.id = e.daily_log_id
+          WHERE d.date = ?`,
+        [todayISODate()]
+      )
+      .map((r) => [r.title, r.id])
+  );
+
+  const magSheet = render('mission-item (daily)', MissionItemScreen, {
+    id: rowsToday.get('Magnesium glycinate'),
+  });
+  expect('mission-item (daily)', magSheet, [
+    'Magnesium glycinate',
+    'Evening ritual', // which protocol put it there — the row itself cannot say
+    '21:00',
+    '400 mg',
+    'Sleep latency, not sedation.', // the why-line, printed whole
+    'Cadence',
+    'Every day',
+    'Skip today',
+    'Move to',
+    'Remove from today',
+    'Edit this item',
+    'Open Evening ritual',
+  ]);
+  // An item that lands every day has no "next" worth printing: tomorrow is
+  // tomorrow, and the sheet suppresses the first projected day for exactly
+  // that reason.
+  refute('mission-item (daily)', magSheet, ['next ']);
+  // Accent budget zero: this is a screen you read and choose from, and none of
+  // these verbs is THE next action. `bg-pine` is the accent fill.
+  magSheet !== null && !magSheet.includes('bg-pine')
+    ? ok('mission-item spends no accent')
+    : bad('mission-item drew an accent fill');
+
+  const quotaSheet = render('mission-item (quota)', MissionItemScreen, {
+    id: rowsToday.get('Zone 2'),
+  });
+  expect('mission-item (quota)', quotaSheet, ['3× a week', 'of 3 this week']);
+  // A quota is an ALLOWANCE, not a day. It is spread across every remaining
+  // day of the week until it is met, so printing a day for one would invent a
+  // fact the plan does not hold.
+  refute('mission-item (quota)', quotaSheet, ['next ']);
+
+  // An item whose next occurrence is strictly later than tomorrow DOES get a
+  // day, which is what makes the suppression above a rule rather than a bug.
+  const saunaSheet = render('mission-item (next later)', MissionItemScreen, {
+    id: rowsToday.get('Sauna'),
+  });
+  expect('mission-item (next later)', saunaSheet, ['next ']);
+
+  // Snoozed: the verb exists only when there is something to undo, and it is
+  // reachable from a PUSHED route at all only because the snoozed set left
+  // useTodayMission for a module store.
+  snoozeItem(rowsToday.get('Magnesium glycinate'));
+  expect(
+    'mission-item (snoozed)',
+    render('mission-item (snoozed)', MissionItemScreen, {
+      id: rowsToday.get('Magnesium glycinate'),
+    }),
+    ['Unsnooze']
+  );
+  unsnoozeItem(rowsToday.get('Magnesium glycinate'));
+  refute(
+    'mission-item (unsnoozed again)',
+    render('mission-item (unsnoozed again)', MissionItemScreen, {
+      id: rowsToday.get('Magnesium glycinate'),
+    }),
+    ['Unsnooze']
+  );
+
+  // A CARRIED row — the debt itself. Its cadence lands on yesterday only, so
+  // today's row can only be the carry.
+  const yesterdayIdx = ((isoWeekday(todayISODate()) + 5) % 7) + 1;
+  const yesterday = shiftISODate(todayISODate(), -1);
+  createProtocolWithVersion(
+    db,
+    {
+      name: 'Debt block',
+      type: 'training_block',
+      startedOn: shiftISODate(todayISODate(), -7),
+      carryOver: true,
+    },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'owed',
+              title: 'Owed session',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'weekdays', days: [yesterdayIdx] },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  rederiveMissionForDay(db, yesterday); // planned, and left untouched
+  rederiveMissionForDay(db, todayISODate()); // …so today carries it
+  const carriedId = db.get(
+    `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND e.title = 'Owed session'`,
+    [todayISODate()]
+  )?.id;
+  const carriedSheet = render('mission-item (carried)', MissionItemScreen, { id: carriedId });
+  expect('mission-item (carried)', carriedSheet, [
+    'Owed from',
+    '1 day late',
+    // What *Remove* does to a debt, said where it can be acted on: the copy
+    // goes, the obligation does not.
+    'comes back tomorrow',
+  ]);
+  // Skipping a carried row settles the debt too, and *Put back* is then the
+  // only verb — the row's own tap on Home cannot reach the original.
+  skipCarried(db, carriedId);
+  const settled = render('mission-item (carried, skipped)', MissionItemScreen, { id: carriedId });
+  expect('mission-item (carried, skipped)', settled, ['Put back']);
+  refute('mission-item (carried, skipped)', settled, ['Tap the row on Home to put it back.']);
+
+  // A row with no protocol behind it — a mode item, an experiment's
+  // intervention, or (as here) a row whose protocol has since been deleted,
+  // which `log_entries.protocol_id` ON DELETE SET NULL is designed to survive.
+  // It draws the day's verbs and nothing else: there is no cadence to state
+  // and no document to open.
+  const ghostId = createProtocolWithVersion(
+    db,
+    { name: 'Retired block', type: 'daily_routine', startedOn: todayISODate() },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'g',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'ghost',
+              title: 'Legacy step',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  rederiveMissionForDay(db, todayISODate());
+  const ghostRow = db.get(
+    `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND e.title = 'Legacy step'`,
+    [todayISODate()]
+  )?.id;
+  deleteProtocol(db, ghostId);
+  const orphan = render('mission-item (no protocol)', MissionItemScreen, { id: ghostRow });
+  expect('mission-item (no protocol)', orphan, ['Today', 'Skip today', 'Remove from today']);
+  refute('mission-item (no protocol)', orphan, ['Cadence', 'Edit this item']);
+
+  expect(
+    'mission-item (gone)',
+    render('mission-item (gone)', MissionItemScreen, { id: 'nope' }),
+    ['This item is no longer on today.']
+  );
+
+  // The per-item editor. It is a FORM, so it carries no plate; its one accent
+  // is Save, and it is labelled with the version it will write.
+  const itemEdit = render('protocol-item (edit)', ProtocolItemScreen, {
+    id: sheetProtocol,
+    item: 'mag',
+  });
+  expect('protocol-item (edit)', itemEdit, [
+    'Magnesium glycinate',
+    'Evening ritual', // the back control names where it goes
+    'Item',
+    'When',
+    'How often',
+    'Save as',
+    'Remove this item',
+    'Sleep latency, not sedation.', // the why-line is EDITABLE here
+    'Why this is here', // …and the field says whose line it is
+  ]);
+  // Its two controls open on arrival: this form draws ONE item and has the
+  // room, unlike the full editor where eight would cost thirty-two chips.
+  expect('protocol-item (edit)', itemEdit, ['Every day', 'Reminder', '07:00']);
+
+  const itemAdd = render('protocol-item (add)', ProtocolItemScreen, { id: sheetProtocol });
+  expect('protocol-item (add)', itemAdd, ['New item', 'Save as']);
+  refute('protocol-item (add)', itemAdd, ['Remove this item']);
+
+  expect(
+    'protocol-item (gone)',
+    render('protocol-item (gone)', ProtocolItemScreen, { id: sheetProtocol, item: 'no-such' }),
+    ['This item is not in the live version any more.']
+  );
+
+  // ── The row itself ───────────────────────────────────────────────────────
+  // `accessibilityActions` has no web equivalent, so react-native-web emits
+  // nothing for it and no HTML assertion can see it. The component is a plain
+  // function, so the element tree is inspected directly — which is the only
+  // honest way to prove a reader can reach the sheet at all.
+  const rowTree = MissionItemRow({
+    item: {
+      id: 'x',
+      title: 'Magnesium glycinate',
+      category: 'Supplements',
+      status: 'pending',
+      scheduledTime: '21:00',
+    },
+    onToggle: () => {},
+    onOpen: () => {},
+  });
+  const children = React.Children.toArray(rowTree.props.children);
+  const checkbox = children.find((child) => child?.props?.accessibilityRole === 'checkbox');
+  const chevron = children.find((child) => child?.props?.accessibilityElementsHidden === true);
+  checkbox?.props?.accessibilityLabel?.includes('Magnesium glycinate') &&
+  checkbox?.props?.accessibilityState?.checked === false
+    ? ok('the mission row keeps its checkbox role and its spoken label')
+    : bad('mission row role/label', JSON.stringify(checkbox?.props?.accessibilityLabel));
+  checkbox?.props?.accessibilityActions?.length === 1 &&
+  checkbox.props.accessibilityActions[0].name === 'open'
+    ? ok('…and gains exactly one named action, so VoiceOver reaches the sheet')
+    : bad('row actions', JSON.stringify(checkbox?.props?.accessibilityActions));
+  // A SIBLING of the checkbox, not a child: an accessible Touchable collapses
+  // its subtree on iOS, so a nested chevron could never be focused on its own.
+  chevron !== undefined
+    ? ok('…and the chevron is a sibling, hidden from assistive tech')
+    : bad('no chevron sibling on the mission row');
+
+  // ── The hub row's lead figure, in each of its forms ──────────────────────
+  // It leads with what the protocol is DOING; adherence moved to the foot. The
+  // cadence summary it replaced said "mixed" the moment two items disagreed.
+  const quotaOnly = createProtocolWithVersion(
+    db,
+    { name: 'Walk block', type: 'daily_routine', startedOn: todayISODate() },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'w',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'walk',
+              title: 'Long walk',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'quota', per_week: 3 },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  const pausedId = createProtocolWithVersion(
+    db,
+    { name: 'Resting block', type: 'therapy_protocol', startedOn: todayISODate() },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'r',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'sauna2',
+              title: 'Contrast therapy',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  rederiveMissionForDay(db, todayISODate());
+  db.run('UPDATE protocols SET is_active = 0 WHERE id = ?', [pausedId]);
+  // A protocol whose one bounded phase ran out — still is_active = 1, and it
+  // generates nothing, which is why the hub lists it apart.
+  createProtocolWithVersion(
+    db,
+    {
+      name: 'Finished course',
+      type: 'supplement_stack',
+      startedOn: shiftISODate(todayISODate(), -40),
+    },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'f',
+          title: null,
+          duration_days: 7,
+          items: [
+            {
+              id: 'course',
+              title: 'Course dose',
+              scheduled_time: null,
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+
+  const hubNow = render('protocols (re-cut)', ProtocolsScreen);
+  expect('protocols (re-cut)', hubNow, [
+    ' today', // the lead figure — what it puts on today
+    'today · next ', // …and the next day, on the protocol whose item is days away
+    ' of 3 this wk', // …an allowance, for the quota-only protocol
+    'paused',
+    'Version',
+    // The ended group's one sentence — the only statement of that rule in the
+    // app, and A9 kept it deliberately.
+    'They put nothing on a day until a phase is extended or another is added.',
+  ]);
+  // "mixed" is gone with contentCadenceSummary, and the description left the row.
+  refute('protocols (re-cut)', hubNow, ['mixed', 'Sleep latency, not sedation.']);
+
+  // The detail, re-cut: Coming up with its honesty line, and a quota item that
+  // reads its ALLOWANCE on its Now row instead of appearing in the projection.
+  const ritual = render('protocol-detail (re-cut)', ProtocolDetailScreen, { id: sheetProtocol });
+  expect('protocol-detail (re-cut)', ritual, [
+    'Settings', // the header action
+    'Coming up',
+    'next 6 days',
+    'Projected from the plan. These days are not committed yet.',
+    'Magnesium glycinate', // a Now row, tappable into the item editor
+    'of 3', // the quota item's allowance, on its own row
+  ]);
+  // A quota never appears in Coming up: an allowance is not a day.
+  const comingBlock = ritual === null ? '' : ritual.slice(ritual.indexOf('Coming up'));
+  !comingBlock.includes('Zone 2')
+    ? ok('protocol-detail: no quota item in Coming up')
+    : bad('a quota item was projected onto a day');
+
+  const pausedDetail = render('protocol-detail (paused)', ProtocolDetailScreen, { id: pausedId });
+  expect('protocol-detail (paused)', pausedDetail, [
+    'Paused',
+    'Paused — puts nothing on a day',
+    // The phase clock RUNS while paused by design — pausing a titration for a
+    // fortnight must not put you back on week 1 — so the line stays true and
+    // is prefixed rather than hidden.
+    'clock reads',
+  ]);
+  refute('protocol-detail (paused)', pausedDetail, ['Coming up']);
+
+  // The longest real category string plus a carry mark plus Snoozed, on one
+  // line. This proves the LINE, not its legibility at 375pt — that stays a
+  // device question (docs/spikes/protocol-interface-rethink.md §11).
+  const longRow = MissionItemRow({
+    item: {
+      id: 'y',
+      title: 'A deliberately long supplement name that used to wrap',
+      category: 'Medications',
+      status: 'pending',
+      scheduledTime: '21:00',
+      carriedDays: 2,
+      snoozed: true,
+    },
+    onToggle: () => {},
+    onOpen: () => {},
+  });
+  const texts = [];
+  const walk = (node) => {
+    if (node === null || node === undefined || typeof node !== 'object') return;
+    for (const child of React.Children.toArray(node.props?.children ?? [])) walk(child);
+    if (node.props?.numberOfLines !== undefined) texts.push(node.props.numberOfLines);
+  };
+  walk(longRow);
+  texts.length >= 2 && texts.every((n) => n === 1)
+    ? ok('every run on the row line is held to one line, so the row cannot become two')
+    : bad('row line limits', JSON.stringify(texts));
 }
 
 // —————————————————————————————————————————————————————————————————————————

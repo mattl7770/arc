@@ -8,6 +8,13 @@ import { listMission, setMissionStatus, toggleMission } from '@/lib/db/repositor
 import { listProtocols } from '@/lib/db/repositories/protocols';
 import { ensureTodaySeeded } from '@/lib/db/seed';
 import { deriveMissionView, type MissionView } from '@/lib/home/derive-mission';
+import {
+  clearSnoozed,
+  snoozeItem,
+  snoozedItems,
+  subscribeSnoozeChange,
+  unsnoozeItem,
+} from '@/lib/home/snooze-store';
 import { subscribeModeChange } from '@/lib/modes/store';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import type { MissionItem, MissionStatus } from '@/types/home';
@@ -24,16 +31,6 @@ export type TodayMission = MissionView & {
   toggle: (id: string) => void;
   snooze: (id: string) => void;
 };
-
-const EMPTY_SNOOZED: ReadonlySet<string> = new Set();
-
-/** Remove `id` from a snoozed set, returning the same set if it wasn't there. */
-function withoutId(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
-  if (!set.has(id)) return set;
-  const next = new Set(set);
-  next.delete(id);
-  return next;
-}
 
 type DayState = {
   items: MissionItem[];
@@ -82,7 +79,11 @@ export function useTodayMission(): TodayMission {
   const initialDay = todayISODate();
   const dayRef = useRef(initialDay);
   const [day, setDay] = useState<DayState>(() => readDay(initialDay));
-  const [snoozed, setSnoozed] = useState(EMPTY_SNOOZED);
+  // Mirrored from the module store, not owned here — a pushed route has to be
+  // able to un-snooze a row, and it cannot reach this component's state
+  // (src/lib/home/snooze-store.ts). The store hands out a new set identity on
+  // every real change, so this is a plain re-read.
+  const [snoozed, setSnoozed] = useState<ReadonlySet<string>>(snoozedItems);
 
   const reload = useCallback(() => {
     setDay(readDay(dayRef.current));
@@ -105,7 +106,7 @@ export function useTodayMission(): TodayMission {
     const rolled = day !== dayRef.current;
     if (rolled) {
       dayRef.current = day;
-      setSnoozed(EMPTY_SNOOZED);
+      clearSnoozed();
     }
     setDay(readDay(day));
     // A new day has a new plan, so its items' reminders (C10) have new moments
@@ -134,6 +135,10 @@ export function useTodayMission(): TodayMission {
   // modal presented OVER Home, so Home never loses (or regains) focus.
   useEffect(() => subscribeModeChange(reload), [reload]);
 
+  // The snoozed set is a module store, so *Unsnooze* on the pushed item sheet —
+  // a screen Home never loses focus to and cannot see — reaches this list.
+  useEffect(() => subscribeSnoozeChange(() => setSnoozed(snoozedItems())), []);
+
   // Ticking an item is what silences its reminder (C10): the scheduler lists
   // only PENDING rows, so re-running the sync after a status write drops the
   // notification for anything just settled — and puts it back if the user
@@ -142,7 +147,7 @@ export function useTodayMission(): TodayMission {
   const setStatus = useCallback(
     (id: string, status: MissionStatus) => {
       setMissionStatus(getDb(), id, status);
-      setSnoozed((prev) => withoutId(prev, id));
+      unsnoozeItem(id);
       reload();
       void syncReminderNotifications(getDb());
     },
@@ -152,7 +157,7 @@ export function useTodayMission(): TodayMission {
   const toggle = useCallback(
     (id: string) => {
       toggleMission(getDb(), id);
-      setSnoozed((prev) => withoutId(prev, id));
+      unsnoozeItem(id);
       reload();
       void syncReminderNotifications(getDb());
     },
@@ -160,7 +165,7 @@ export function useTodayMission(): TodayMission {
   );
 
   const snooze = useCallback((id: string) => {
-    setSnoozed((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+    snoozeItem(id);
   }, []);
 
   const view = useMemo(() => deriveMissionView(day.items, snoozed), [day.items, snoozed]);

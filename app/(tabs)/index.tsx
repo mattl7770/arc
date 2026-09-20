@@ -137,6 +137,7 @@ function ProtocolsLink() {
 }
 
 export default function HomeScreen() {
+  const router = useRouter();
   const mission = useTodayMission();
   const brief = useDailyBrief();
   const readiness = useReadiness();
@@ -226,6 +227,9 @@ export default function HomeScreen() {
             // guessing at it. One definition of "next", passed down.
             activeId={mission.next?.id ?? null}
             onToggle={mission.toggle}
+            // The row's tap stays the toggle; its chevron is the door. Home
+            // holds the router, so the row component stays free of navigation.
+            onOpen={(id) => router.push({ pathname: '/mission-item', params: { id } })}
           />
           {/* Under the list, not above it: the day comes first, and the plan
               behind it is where you go when the day is wrong. */}

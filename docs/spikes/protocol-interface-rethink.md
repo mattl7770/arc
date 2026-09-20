@@ -1,6 +1,37 @@
-# Parked — The protocol interface rethink
+# The protocol interface rethink
 
-**Status: PROPOSAL, third draft** (2026-09-15, after two independent critiques; every disputed citation re-read on `main` at `0ae73ea`). Nothing here is built.
+**Status: BUILT (Phases 0–4)** — 2026-09-19, branch `claude/protocols`, **no migration** (head stays `0058`; `0059` was still free at the time of writing and three sibling builds were holding `0059`/`0060`/`0061`). **Phase 5, the mission day picker, is NOT built** and is deliberately left for its own build after the Modes removal, from `docs/spikes/mission-day-picker-and-future-checkoff.md` — see *What Phase 5 inherits* below.
+
+The owner answered all five questions in §12 and **took option (a) every time**. §5's recommendation therefore shipped whole: the mission row's chevron and its named VoiceOver action; the description off the hub row; the owner writing the why-line with the Coach allowed to reword or clear it; the day picker sequenced as Phase 5; and `update_protocol` learning to create.
+
+## What the build departs from what is written below
+
+| # | The plan | What shipped | Why |
+| --- | --- | --- | --- |
+| 1 | *Move to …* opens the shared `TimeControl` (§6.1) | a sibling **`MoveControl`** reusing its presets, its field and its keyboard — but not its second half | `TimeControl`'s other half is the **reminder** toggle, and a reminder is a fact about the protocol ITEM: it lives in the versioned content and applies on every day the item lands. Moving today's row writes `log_entries.scheduled_time` on one row of one day. Drawing "Remind me" there would offer a control that either does nothing or silently edits the protocol from a screen about today |
+| 2 | a quota-only protocol's hub row reads `3 today · 1 of 3 this wk` (§6.2) | the allowance is printed only when the live phase holds **exactly one item and it is a quota** | there is no one honest figure for two allowances, and a combined one would be invented. A protocol with several quota items prints the day count alone |
+| 3 | the per-item save's document rebuild lives in the screen (§6.4) | the placement rules are pure, in **`src/lib/protocols/item-edit.ts`** | the plan's own test 5 asks that a per-item save be *byte-identical to the full editor's for the same change*. That cannot be asserted headlessly against logic inside a `.tsx` save handler, and it is the one rule where a second implementation would drift |
+| 4 | the settings sheet writes and pops (§6.5) | it also **re-derives today** | the editor's standing rule since 2026-08-25 is that a save reaches today, and a pause must pull that protocol's untouched rows off it. Not re-deriving would have made pausing take effect tomorrow, silently |
+| 5 | `committing: false` drops the carry and the quota (§6.0) | it also drops **`missed_days`** | that mark is computed from the same `outstandingCarries` read and is the same artefact wearing a native row: projected forward, today's un-ticked creatine would read as outstanding on every day of next week |
+| 6 | the ledger's accounting starts from **9,241** (§8.2) | measured on `main`: **9,236** | the figure in `db/coach-eval.test.mjs` §6's C13 entry was stale. The +1 arithmetic is unchanged and reproduced exactly (`update_protocol` **424 → 425**); the headroom is 14 rather than 9. Corrected in the test's own comment |
+| 7 | `quotaDoneThisWeek` is tested against `quotaCompletionsThisWeek` (§9.2) | `quotaCompletionsThisWeek` is **exported** for that test | the two differ only in their bound, the difference is deliberate, and an assertion that cannot see both halves cannot prove it |
+| 8 | the detail's *Add an item* appears on a version-less protocol (§6.4) | it appears whenever the live phase **lists no items** | the same state arrives by a second route — an edit that emptied a phase — and the row is the only way out of either |
+| 9 | `day-cursor.ts:5` cites a "§9" that does not exist; whichever phase touches the file fixes it (§1.4) | **left alone** | Phases 0–4 do not touch that file. Phase 5 rewrites it (the bound widening) and should take the fix with it |
+
+Everything else is as written, including every "Considered and rejected" note.
+
+## What Phase 5 inherits
+
+The two things its plan expects are in place and in the shape it expects:
+
+- **`planForDay(db, date, { committing })`** — `src/lib/db/repositories/mission-generate.ts`. Default `true`, so every existing caller is unchanged. Phase 5 flips the flag for a future day rather than writing a third rule set.
+- **`projectDays` / `nextOccurrence` / `quotaDoneThisWeek` / `PROJECTION_DAYS`** — same file, over that flag. `projectDays` is strictly forward-looking from **tomorrow**, and the day picker's own plan may widen that; nothing else reads it.
+
+Not done, and still Phase 5's: the arrival re-derive of a pre-committed day, the widening of `DayBounds.latest` past today (`src/lib/utils/day-cursor.ts`, pinned by `db/day-boundary.test.mjs` §7 and §8), `value.checked_ahead_on`, and the `day-cursor.ts:5` citation fix. Nothing in Phases 0–4 writes a future day or moves a bound.
+
+---
+
+**Status of the text below: PROPOSAL, third draft** (2026-09-15, after two independent critiques; every disputed citation re-read on `main` at `0ae73ea`). It is kept verbatim as the reasoning record; read the banner above for what actually shipped.
 **Expected migration: none** — every read below is over columns and JSON that exist (§7). What is new is computation: one flag on `planForDay`, a projection over
 it, two small repository functions, and three pushed routes. **Backlog:** `docs/backlog-2026-09.md` › Parked, first bullet (`:63`); the owner's note is at the
 head of `docs/project-status.md` §1 (`:9`, item (1)). The model behind these screens is settled — content schema 2 and the phase clock (`0043`), the time control,
