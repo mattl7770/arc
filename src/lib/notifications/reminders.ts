@@ -167,6 +167,38 @@ export function notificationsAvailable(): boolean {
   return notifications !== null && typeof notifications.scheduleNotificationAsync === 'function';
 }
 
+/**
+ * The four things a sync pass does to the OS, as a seam.
+ *
+ * Extracted for the same reason `publishBodyMetrics` takes `deps`: the pass's
+ * INTERESTING behaviour — what it cancels, what it reschedules, and what a
+ * re-anchor after a zone change actually yields — is logic, and logic that can
+ * only be observed through a native module is logic nothing asserts. The
+ * headless suite injects a recorder and reads the schedule back.
+ */
+export type ReminderSyncDeps = {
+  /** Is `expo-notifications` in the RUNNING binary at all? */
+  available(): boolean;
+  cancelAll(): Promise<void>;
+  ensurePermission(): Promise<boolean>;
+  schedule(request: {
+    content: { title: string; body?: string; sound?: string; data?: Record<string, unknown> };
+    trigger: ReminderTrigger;
+  }): Promise<void>;
+};
+
+/** The real thing: a no-op on every count when the module is absent. */
+export const NATIVE_REMINDER_DEPS: ReminderSyncDeps = {
+  available: () => notificationsAvailable(),
+  cancelAll: async () => {
+    await notifications?.cancelAllScheduledNotificationsAsync();
+  },
+  ensurePermission: async () => (notifications ? ensurePermission(notifications) : false),
+  schedule: async (request) => {
+    await notifications?.scheduleNotificationAsync(request);
+  },
+};
+
 /** Ask for notification permission once; returns whether it's granted. */
 async function ensurePermission(mod: NotificationsModule): Promise<boolean> {
   const current = await mod.getPermissionsAsync();
@@ -299,24 +331,99 @@ export type NotificationSyncResult = {
  * returned result rather than disappearing. Permission is only requested when
  * there is actually something to deliver, so a user with neither is never
  * prompted.
+ *
+ * **Serialized, with a coalescing tail.** Because this opens by cancelling the
+ * whole OS schedule, two overlapping passes either double every nudge or drop
+ * them — a race that has existed since `use-today-mission.ts` and `coach.tsx`
+ * both began calling it, and that the timezone re-anchor would have made
+ * deterministic (an eastbound overnight landing is also a day rollover, so both
+ * fire on the same AppState event). A call arriving mid-pass neither joins nor
+ * starts a second; it queues ONE trailing run. See the body.
+ *
+ * **What a re-anchor after a zone change does, stated rather than hidden.** A
+ * protocol nudge is an absolute instant, built componentwise in the zone the
+ * phone was in when it was scheduled, so a 07:00 magnesium set in Los Angeles
+ * fires at 16:00 in London until something rebuilds the schedule. Rebuilding it
+ * at the foreground that observes the change has two asymmetric consequences,
+ * both deliberate: WESTBOUND, an item still owed may buzz TWICE — the day is 32
+ * hours long and the item is genuinely still owed. EASTBOUND, an item whose new
+ * local time has already passed is DROPPED rather than moved, because
+ * {@link reminderTrigger} and `protocolRemindersDue` both refuse a moment in the
+ * past. The item stays on the mission; only the buzz goes. Re-scheduling it for
+ * "now + 5 minutes" was rejected: that is ARC deciding to nudge for something
+ * the user may well have taken on the plane.
  */
-export async function syncReminderNotifications(
+export function syncReminderNotifications(
   db: Database,
-  now: Date = new Date()
+  now: Date = new Date(),
+  deps: ReminderSyncDeps = NATIVE_REMINDER_DEPS
 ): Promise<NotificationSyncResult> {
-  const mod = notifications;
+  if (inFlight === null) return startReminderSyncPass(db, now, deps);
+
+  // A call arriving MID-PASS does not join the running one — unlike
+  // publishBodyMetrics, where joining is honest because the running pass did the
+  // caller's work too. Here it would not: the pass in flight has ALREADY read
+  // the reminders, so a change made a moment ago is not in the schedule it is
+  // building, and a caller handed that result would be told its change landed
+  // when it did not. It does not start a second pass either: this function opens
+  // by cancelling the WHOLE OS schedule, so two overlapping passes either
+  // double every nudge or drop them.
+  //
+  // So it coalesces: ONE trailing run after the current pass settles, carrying
+  // the latest caller's arguments, and every waiting caller gets that run's
+  // result. publish.ts's shape with a tail instead of a join.
+  trailingDb = db;
+  trailingNow = now;
+  trailingDeps = deps;
+  trailing ??= inFlight.then(() => {
+    const nextDb = trailingDb as Database;
+    const nextNow = trailingNow as Date;
+    const nextDeps = trailingDeps as ReminderSyncDeps;
+    trailing = null;
+    trailingDb = null;
+    trailingNow = null;
+    trailingDeps = null;
+    return startReminderSyncPass(nextDb, nextNow, nextDeps);
+  });
+  return trailing;
+}
+
+/** The single in-flight pass, and the one trailing run coalesced behind it. */
+let inFlight: Promise<NotificationSyncResult> | null = null;
+let trailing: Promise<NotificationSyncResult> | null = null;
+let trailingDb: Database | null = null;
+let trailingNow: Date | null = null;
+let trailingDeps: ReminderSyncDeps | null = null;
+
+function startReminderSyncPass(
+  db: Database,
+  now: Date,
+  deps: ReminderSyncDeps
+): Promise<NotificationSyncResult> {
+  const pass = runReminderSyncPass(db, now, deps).finally(() => {
+    if (inFlight === pass) inFlight = null;
+  });
+  inFlight = pass;
+  return pass;
+}
+
+async function runReminderSyncPass(
+  db: Database,
+  now: Date,
+  deps: ReminderSyncDeps
+): Promise<NotificationSyncResult> {
   const result: NotificationSyncResult = {
-    moduleAvailable: Boolean(mod) && typeof mod?.scheduleNotificationAsync === 'function',
+    moduleAvailable: deps.available(),
     permissionGranted: null,
     scheduledIds: [],
     scheduledProtocolItems: [],
     failed: false,
   };
-  if (!mod || !result.moduleAvailable) return result;
+  if (!result.moduleAvailable) return result;
 
   try {
     // Always clear first so a removed/cleared reminder can't linger on the OS.
-    await mod.cancelAllScheduledNotificationsAsync();
+    await deps.cancelAll();
 
     const timed = listActiveReminders(db)
       .map((reminder) => ({ reminder, trigger: reminderTrigger(reminder, now) }))
@@ -326,11 +433,11 @@ export async function syncReminderNotifications(
     const items = protocolRemindersDue(db, now);
     if (timed.length === 0 && items.length === 0) return result;
 
-    result.permissionGranted = await ensurePermission(mod);
+    result.permissionGranted = await deps.ensurePermission();
     if (!result.permissionGranted) return result;
 
     for (const { reminder, trigger } of timed) {
-      await mod.scheduleNotificationAsync({
+      await deps.schedule({
         content: {
           title: reminder.title,
           body: reminder.notes ?? undefined,
@@ -343,7 +450,7 @@ export async function syncReminderNotifications(
     }
 
     for (const item of items) {
-      await mod.scheduleNotificationAsync({
+      await deps.schedule({
         content: {
           title: item.title,
           body: item.body ?? undefined,

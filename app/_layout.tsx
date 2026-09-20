@@ -13,7 +13,6 @@ import { useAppLock } from '@/hooks/use-app-lock';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { autoBackupIfDue } from '@/lib/backup/snapshot';
 import { getDb } from '@/lib/db/client';
-import { observeTimezone } from '@/lib/db/repositories/day-meta';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
 import { runMealPhotoSweep } from '@/lib/media/meal-photo-store';
 import { runPendingEstimateSweep } from '@/lib/media/pending-estimate-store';
@@ -25,6 +24,7 @@ import {
   syncReminderNotifications,
 } from '@/lib/notifications/reminders';
 import { runEstimateQueueDrain } from '@/lib/nutrition/estimate-queue';
+import { onForeground } from '@/lib/timezone/foreground';
 import { useCoachPassRunner } from '@/hooks/use-coach-pass';
 
 /**
@@ -161,6 +161,27 @@ export default function RootLayout() {
     // app is idle-resumed, not racing to first paint.
     const backupTimer = setTimeout(() => void autoBackupIfDue(getDb()), 4000);
     void runEstimateQueueDrain(getDb());
+    // The timezone observer, and what a zone change has to re-anchor (0060).
+    //
+    // Registered HERE, above the health sync, and with its own subscription
+    // rather than riding the backup's: the health pass windows its 14 days under
+    // the CURRENT zone, and the Coach's landing signal reads today's rows, so
+    // both want the row to already exist. Listener order is what gives them
+    // that. It is a soft dependency — the signal is read from the row and not
+    // from this call — so a resume that read first would fire the landing turn
+    // on the next foreground rather than never.
+    //
+    // Guarded for the same reason the observer was guarded where it used to
+    // live: a throw in an AppState handler is not caught by the error boundary
+    // and would take the app down on resume.
+    const timezoneSub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      try {
+        onForeground(getDb());
+      } catch (error) {
+        console.warn('[timezone] could not record the offset', error);
+      }
+    });
     const stopHealthSync = registerForegroundHealthSync(getDb());
     // The backup's own foreground listener. It is written out here rather than
     // hidden behind a `registerForegroundBackup` helper because
@@ -171,18 +192,12 @@ export default function RootLayout() {
     const backupSub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
       void autoBackupIfDue(getDb());
-      // And the timezone observer (D4, 0053). It rides this subscription rather
-      // than opening a fourth: it is a synchronous read of one preference that
-      // writes only when the offset actually moved, and iOS changes the device
-      // zone by itself minutes after the phone attaches to a foreign carrier —
-      // so a foreground is exactly where the change is caught. Guarded here and
-      // not inside the observer because a throw in an AppState handler is not
-      // caught by the error boundary and would take the app down on resume.
-      try {
-        observeTimezone(getDb());
-      } catch (error) {
-        console.warn('[timezone] could not record the offset', error);
-      }
+      // The timezone observer used to ride this subscription. It moved out to
+      // its own, registered ABOVE the health sync (see `timezoneSub` below the
+      // effect's opening), because a zone change now has to be visible to the
+      // health pass's windowing and the Coach's landing signal before either
+      // runs — and a listener that is also doing the backup cannot promise that.
+      // The backup and the drain stay here; nothing about them moved.
 
       // …and the offline estimate queue (0057, backlog C3). React Native has no
       // reconnect event without a netinfo dependency, and returning to the app
@@ -210,6 +225,7 @@ export default function RootLayout() {
     });
     return () => {
       clearTimeout(backupTimer);
+      timezoneSub.remove();
       stopHealthSync();
       backupSub.remove();
       stopRouting();

@@ -177,6 +177,23 @@ export function isTimezoneChangedDay(db: Database, date: string): boolean {
 }
 
 /**
+ * Every change that marks `date` — the row form of {@link isTimezoneChangedDay}.
+ *
+ * The Coach's landing signal is built from this and keys on the row `id`, which
+ * is what makes it fire once per SEAM rather than once per marked day: a change
+ * that crossed the day boundary marks two days and both of them see the same
+ * row, so the pass that runs on the first silences the second.
+ */
+export function timezoneChangesOn(db: Database, date: string): TimezoneChangeRow[] {
+  return db.all<TimezoneChangeRow>(
+    `SELECT * FROM timezone_changes
+      WHERE from_local_date = ? OR to_local_date = ?
+      ORDER BY changed_at, rowid`,
+    [date, date]
+  );
+}
+
+/**
  * Every marked day in the inclusive window `from … to`, as a set.
  *
  * The bulk form of {@link isTimezoneChangedDay}, and the one every window

@@ -41,6 +41,8 @@ import { readFileSync } from 'node:fs';
 
 import { DatabaseSync } from 'node:sqlite';
 
+import { computeInsights } from '../src/lib/ai/insights.ts';
+import { currentSignals, duePass, markPassRan } from '../src/lib/ai/pass-schedule.ts';
 import { buildTurnContext } from '../src/lib/ai/turn-context.ts';
 import {
   forwardCursor,
@@ -72,8 +74,10 @@ import {
   missionOwed,
 } from '../src/lib/db/repositories/mission.ts';
 import { logMeal, setNutritionTargets } from '../src/lib/db/repositories/nutrition.ts';
+import { createReminder, listActiveReminders } from '../src/lib/db/repositories/reminders.ts';
 import { getTimezoneCursor, setTimezoneCursor } from '../src/lib/db/repositories/user.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
+import { syncReminderNotifications } from '../src/lib/notifications/reminders.ts';
 import {
   baselineExclusionsIn,
   hasExclusionSource,
@@ -98,6 +102,7 @@ import {
   TRIP_SETTLE_DAYS,
   tripOn,
 } from '../src/lib/timezone/trips.ts';
+import { onForeground } from '../src/lib/timezone/foreground.ts';
 
 let pass = 0;
 let fail = 0;
@@ -1435,6 +1440,202 @@ console.log('\n23. the 0060 columns, and what the observer now writes into them'
     refused = true;
   }
   refused ? ok('±841 is refused, as the two offset columns already are') : bad('841 accepted');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n16. the re-anchor fires on the observation, once, and never interleaves');
+{
+  // `onForeground` is the whole of the wiring, so it is asserted against an
+  // injected re-sync rather than against the OS.
+  const { db } = freshDb();
+  const calls = [];
+  const deps = {
+    syncReminders: (_db, when) => {
+      calls.push(when);
+      return Promise.resolve();
+    },
+  };
+
+  eq('a first observation writes the cursor and re-anchors nothing', onForeground(db, WINTER_NOON, deps), null);
+  eq('… because there was no change to react to', calls.length, 0);
+
+  setTimezoneCursor(db, UTC_PLUS_1);
+  const row = onForeground(db, WINTER_NOON, deps);
+  row !== null ? ok('an observed change returns its row') : bad('no row on a real change');
+  eq('… and re-anchors the schedule, once', calls.length, 1);
+
+  onForeground(db, WINTER_NOON, deps);
+  eq('an ordinary foreground re-anchors nothing at all', calls.length, 1);
+
+  // A DST change moves the cursor and writes no row (0053), so it must not
+  // rebuild the schedule either: the wall clock did not move relative to the
+  // zone, and daily reminders float natively.
+  const { db: dst } = freshDb();
+  const dstCalls = [];
+  setTimezoneCursor(dst, UTC_MINUS_7); // LA summer → LA winter is the autumn shift
+  onForeground(dst, WINTER_NOON, {
+    syncReminders: () => {
+      dstCalls.push(1);
+      return Promise.resolve();
+    },
+  });
+  eq('a DST shift re-anchors nothing — no row, no rebuild', dstCalls.length, 0);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n17. the two seam behaviours, both deliberate and both stated');
+{
+  // The asymmetries are a consequence of ONE rule — `reminderTrigger` and
+  // `protocolRemindersDue` both refuse a moment in the past — so they are
+  // exercised over the injected `now`, never by moving the host's zone. That is
+  // the same discipline classify.ts is built on, and it is what makes these two
+  // assertions mean the same thing on any machine.
+  const scheduleOf = async (db, now) => {
+    const scheduled = [];
+    await syncReminderNotifications(db, now, {
+      available: () => true,
+      cancelAll: async () => scheduled.splice(0, scheduled.length),
+      ensurePermission: async () => true,
+      schedule: async (request) => {
+        scheduled.push(request);
+      },
+    });
+    return scheduled;
+  };
+
+  // WESTBOUND. The landing rolled the clock back to 13:00; the 21:00 item is
+  // still ahead, and it is genuinely still owed — the day is 32 hours long. The
+  // rebuilt schedule carries it ONCE, for 21:00 where the body now is. That it
+  // may therefore buzz twice in one calendar day is the cost, and it is the
+  // right cost: the item was not done.
+  {
+    const { db } = freshDb();
+    createReminder(db, { title: 'Magnesium', time: '21:00', repeat: 'once', date: '2026-09-12' });
+    const scheduled = await scheduleOf(db, new Date(2026, 8, 12, 13, 0));
+    eq('westbound: the still-owed item is on the rebuilt schedule', scheduled.length, 1);
+    eq('… exactly once', scheduled.filter((s) => s.content.title === 'Magnesium').length, 1);
+    const when = scheduled[0].trigger.date;
+    when.getHours() === 21 && when.getDate() === 12
+      ? ok('… for 21:00 local, where the body is standing')
+      : bad('westbound anchor', String(when));
+  }
+
+  // EASTBOUND. The landing moved the clock forward past 07:00. The item's new
+  // local time has already gone, so it is DROPPED rather than moved — ARC does
+  // not decide to nudge for something that may well have been taken on the
+  // plane. The item stays on the list; only the buzz goes.
+  {
+    const { db } = freshDb();
+    createReminder(db, { title: 'Magnesium', time: '07:00', repeat: 'once', date: '2026-09-12' });
+    const scheduled = await scheduleOf(db, new Date(2026, 8, 12, 9, 0));
+    eq('eastbound: a passed item is not buzzed today', scheduled.length, 0);
+    eq('… and it is still there to be done', listActiveReminders(db).length, 1);
+    eq('… still active, not quietly closed', listActiveReminders(db)[0].status, 'active');
+  }
+
+  // THE RACE, which existed before any of this and which the re-anchor would
+  // have made deterministic: an eastbound overnight landing is also a day
+  // rollover, so the rollover's re-sync and the observer's fire on the same
+  // AppState event. This function opens by cancelling the WHOLE OS schedule, so
+  // two overlapping passes either double every nudge or drop them.
+  {
+    const { db } = freshDb();
+    createReminder(db, { title: 'Evening', time: '21:00', repeat: 'once', date: '2026-09-12' });
+    let live = 0;
+    let overlapped = false;
+    const schedule = [];
+    const deps = {
+      available: () => true,
+      cancelAll: async () => {
+        live += 1;
+        if (live > 1) overlapped = true;
+        await Promise.resolve();
+        schedule.splice(0, schedule.length);
+      },
+      ensurePermission: async () => {
+        await Promise.resolve();
+        return true;
+      },
+      schedule: async (request) => {
+        await Promise.resolve();
+        schedule.push(request);
+      },
+    };
+    const release = () => {
+      live -= 1;
+    };
+    const now = new Date(2026, 8, 12, 13, 0);
+    const a = syncReminderNotifications(db, now, deps).then(release);
+    const b = syncReminderNotifications(db, now, deps).then(release);
+    const c = syncReminderNotifications(db, now, deps).then(release);
+    await Promise.all([a, b, c]);
+    !overlapped
+      ? ok('three concurrent calls never interleave — one pass, then one tail')
+      : bad('passes overlapped');
+    eq('and the final schedule matches the database exactly', schedule.length, 1);
+    eq('… with the item it should carry', schedule[0].content.title, 'Evening');
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n22. the landing wakes the Coach once, and the brief never hears about it');
+{
+  // THE SIGNAL. Read from the ROW, not from the observer's return value — which
+  // is what makes app/_layout.tsx's listener order a soft dependency rather than
+  // a correctness requirement.
+  const { db } = freshDb();
+  const NOW = new Date(2026, 8, 12, 13, 0);
+  eq('no change, no landing signal', currentSignals(db, NOW).length, 0);
+
+  const id = seedSeam(db, {
+    day: '2026-09-12',
+    from: UTC_MINUS_8,
+    to: LONDON_SUMMER,
+    pair: PAIR_LONDON,
+  });
+  const signals = currentSignals(db, NOW);
+  signals.includes(`timezone-changed:${id}`)
+    ? ok('a change observed today is a signal, seeded directly with no observer call')
+    : bad('no landing signal', JSON.stringify(signals));
+  duePass(db, NOW)?.kind === 'daily'
+    ? ok('the first pass of the day is still the daily one')
+    : bad('daily pass missing');
+
+  // ONCE PER SEAM. Keyed on the ROW id, so a change that crossed the day
+  // boundary — two marked days, one row — fires on the first and is silent on
+  // the second.
+  markPassRan(db, NOW);
+  eq('a pass that ran silences it', duePass(db, NOW), null);
+
+  const { db: crossing } = freshDb();
+  const crossingId = seedSeam(crossing, {
+    day: '2026-09-12',
+    fromDay: '2026-09-12',
+    toDay: '2026-09-13',
+    from: UTC_MINUS_8,
+    to: LONDON_SUMMER,
+    pair: PAIR_LONDON,
+  });
+  const day1 = new Date(2026, 8, 12, 13, 0);
+  const day2 = new Date(2026, 8, 13, 13, 0);
+  currentSignals(crossing, day1).includes(`timezone-changed:${crossingId}`) &&
+  currentSignals(crossing, day2).includes(`timezone-changed:${crossingId}`)
+    ? ok('both marked days see the SAME id — one row, one signal')
+    : bad('boundary-crossing signal');
+  markPassRan(crossing, day1);
+  duePass(crossing, day2)?.kind === 'daily'
+    ? ok('day two is a new day, so the daily pass carries it')
+    : bad('day two pass');
+  // …and once the day's pass has run, the seam does not buy a second one.
+  markPassRan(crossing, day2);
+  eq('the second marked day never re-fires the seam', duePass(crossing, day2), null);
+
+  // THE BRIEF IS UNTOUCHED. Nothing entered computeInsights, so Home's brief is
+  // byte-identical with the row and without it.
+  const { db: brief } = freshDb();
+  const withoutRow = JSON.stringify(computeInsights(brief, NOW));
+  seedSeam(brief, { day: '2026-09-12', from: UTC_MINUS_8, to: LONDON_SUMMER, pair: PAIR_LONDON });
+  eq('the brief is byte-identical on a seam day', JSON.stringify(computeInsights(brief, NOW)), withoutRow);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
