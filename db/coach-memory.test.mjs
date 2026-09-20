@@ -163,7 +163,23 @@ console.log('1. remember / forget / restore, with dedupe and soft delete');
     : bad('empty accepted');
 }
 
-console.log('2. the tools: remember, forget, get_memories');
+/** Forgetting folded into `edit_record { memories, status: archived }` on 2026-09-19. */
+const forgetCard = (db, id) =>
+  toolByName('edit_record').confirmSummary(
+    { domain: 'memories', id, fields: { status: 'archived' } },
+    db,
+    { now: NOW }
+  );
+const forget = (db, id) =>
+  JSON.parse(
+    toolByName('edit_record').execute(
+      db,
+      { domain: 'memories', id, fields: { status: 'archived' } },
+      { now: NOW }
+    )
+  );
+
+console.log('2. the tools: remember, edit_record (forget), get_memories');
 {
   const { db } = freshDb();
   card('remember', db, {
@@ -183,15 +199,28 @@ console.log('2. the tools: remember, forget, get_memories');
     ? ok('get_memories returns it with its id (the address forget needs)')
     : bad('get_memories', JSON.stringify(listed));
 
-  card('forget', db, { id: result.id }).includes('Magnesium citrate')
+  // The card is VERBATIM what `forget` printed — `Forget: "…"` — which is the
+  // whole test of the fold: the user sees the same line and the same lanes, and
+  // only the tool name beneath it changed.
+  forgetCard(db, result.id) === 'Forget: "Magnesium citrate upsets his stomach"'
     ? ok('the forget card names the fact, never a bare id')
-    : bad('forget card');
-  run('forget', db, { id: result.id }).forgotten && run('get_memories', db).memories.length === 0
-    ? ok('forget removes it from what the Coach knows')
+    : bad('forget card', forgetCard(db, result.id));
+  forget(db, result.id).edited && run('get_memories', db).memories.length === 0
+    ? ok('edit_record status:archived removes it from what the Coach knows')
     : bad('forget tool');
-  throws(() => card('forget', db, { id: 'nope' }))
+  throws(() => forgetCard(db, 'nope'))
     ? ok('forgetting an unknown id fails at the card, before an approval is spent')
     : bad('unknown id accepted');
+  // Restoring stays the USER's undo. The memories domain accepts one value.
+  throws(() =>
+    toolByName('edit_record').confirmSummary(
+      { domain: 'memories', id: result.id, fields: { status: 'active' } },
+      db,
+      { now: NOW }
+    )
+  )
+    ? ok('there is no un-forget: `archived` is the only value the domain accepts')
+    : bad('the Coach can restore a memory it forgot');
 }
 
 console.log('3. memories and declines ride the per-turn context block');

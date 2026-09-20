@@ -10,10 +10,13 @@ import { buildTurnContext } from './turn-context';
 import { buildWireHistory } from './history-window';
 import {
   COACH_TOOLS,
+  DEFAULT_WRITE_META,
   humanizeToolName,
   toolByName,
   toWireTools,
   type CoachToolContext,
+  type WriteKind,
+  type WriteMeta,
 } from './tools';
 import type { CoachTurnResult } from './types';
 
@@ -48,6 +51,21 @@ export type WriteConfirmation = {
   tool: string;
   /** The one human line to show: "Log weight 178.0 lb". */
   summary: string;
+  /**
+   * What is being approved. Only `'delete'` changes the card's copy today — its
+   * fixed "This is written to your on-device record" line is false for a
+   * removal — but the card could never tell one write from another by anything
+   * except the tool NAME before this existed, which is why it kept a hardcoded
+   * allowlist of four names.
+   */
+  kind: WriteKind;
+  /**
+   * Whether the summary is already the whole consequence (the SHORT card).
+   * Declared by the tool, defaulted to false — the card's own proposal, made
+   * real: each tool now says its own weight beside the `confirmSummary` that is
+   * the only place that knows what that summary says.
+   */
+  selfEvident: boolean;
 };
 
 export type StreamOptions = {
@@ -173,16 +191,30 @@ export async function streamCoachReply(
 
         if (!tool.readOnly) {
           let summary: string;
+          let meta: WriteMeta;
           try {
             summary =
               tool.confirmSummary?.(input as Record<string, unknown>, db, context) ??
               humanizeToolName(tool.name);
+            // AFTER the summary, and against the same `context`: the generic
+            // write path writes its staleness slot inside `confirmSummary`, and
+            // a tool's weight can depend on what that summary turned out to
+            // say. Fail closed — a tool that declares nothing gets the long
+            // card.
+            meta =
+              tool.confirmMeta?.(input as Record<string, unknown>, db, context) ??
+              DEFAULT_WRITE_META;
           } catch (error) {
             // Invalid input surfaces at summary time — report it, don't gate.
             return { content: errorText(error), isError: true };
           }
           const approved = options.confirmWrite
-            ? await options.confirmWrite({ tool: name, summary })
+            ? await options.confirmWrite({
+                tool: name,
+                summary,
+                kind: meta.kind,
+                selfEvident: meta.selfEvident,
+              })
             : false;
           if (!approved) {
             return {

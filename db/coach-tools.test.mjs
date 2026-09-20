@@ -47,6 +47,7 @@ import { ingestCorpus } from '../src/lib/rag/corpus.ts';
 import {
   COACH_TOOLS,
   READ_TOOLS,
+  RETIRED_WRITE_NAMES,
   STUB_TOOLS,
   WRITE_TOOLS,
   humanizeToolName,
@@ -114,6 +115,17 @@ const NOW = new Date();
 const CTX = { now: NOW };
 const TODAY = todayISODate(NOW);
 const run = (name, db, input = {}) => JSON.parse(toolByName(name).execute(db, input, CTX));
+/**
+ * The generic write path, as the six folded status tools used to be called.
+ * A FRESH context each time, because `edit_record` writes its staleness slot
+ * into the one it is given and a shared object would leak a previous card's
+ * "was" into the next call.
+ */
+const edit = (db, domain, id, fields) =>
+  JSON.parse(toolByName('edit_record').execute(db, { domain, id, fields }, { now: NOW }));
+/** The confirmation line `edit_record` would show for that call. */
+const editCard = (db, domain, id, fields) =>
+  toolByName('edit_record').confirmSummary({ domain, id, fields }, db, { now: NOW });
 /** For tools whose execute is async — set_reminder resyncs the OS schedule so it
  * can report what was really scheduled, which can only be known by asking. */
 const runAsync = async (name, db, input = {}) =>
@@ -171,9 +183,18 @@ console.log('0. registry shape: unique names, read/write split, wire mapping');
   humanizeToolName('get_metric_series') === 'metric series' &&
   humanizeToolName('list_reminders') === 'reminders' &&
   humanizeToolName('set_reminder') === 'set reminder' &&
-  humanizeToolName('complete_reminder') === 'complete reminder'
+  humanizeToolName('edit_record') === 'edit record'
     ? ok('reads render as nouns, writes as verb phrases')
     : bad('humanize shape', humanizeToolName('set_reminder'));
+  // The retired names still humanize, because `landedWriteReceipts` falls back
+  // to this for rows written before receipts existed — including rows written
+  // by a build that held `complete_reminder`.
+  [...RETIRED_WRITE_NAMES].every((name) => humanizeToolName(name).length > 0) &&
+  [...RETIRED_WRITE_NAMES].every((name) => !names.includes(name))
+    ? ok(
+        `${RETIRED_WRITE_NAMES.size} retired write names are gone from the registry and still humanize`
+      )
+    : bad('retired names');
   READ_TOOLS.every((t) => !/^(get|list)[ _]/.test(humanizeToolName(t.name)))
     ? ok('no read chip still carries its get_/list_ verb')
     : bad('read verb survived stripping');
@@ -338,10 +359,17 @@ console.log('5. reminders end to end: set → list → complete/dismiss, with gu
     ? ok('list_reminders surfaces it, due today (daily)')
     : bad('list', JSON.stringify(listed));
 
-  // Completing a RECURRING reminder would end it permanently — guarded.
-  throws(() => run('complete_reminder', db, { id: daily.id }))
-    ? ok('complete_reminder refuses a daily reminder (would end it for good)')
+  // The RECURRING RAIL, which used to live in `complete_reminder`'s description
+  // and now lives in the reminders DOMAIN — refused at CARD time, one Approve
+  // tap earlier than the old tool refused it.
+  throws(() => editCard(db, 'reminders', daily.id, { status: 'done' }))
+    ? ok('edit_record refuses to complete a daily reminder, at card time')
     : bad('recurring completed');
+  // …and the payload that hands out the ids carries the rule in words, because
+  // no generic tool description can.
+  /recurring reminder is never completed/i.test(listed.note ?? '')
+    ? ok('list_reminders states the recurring rule when a recurring reminder exists')
+    : bad('missing recurring note', JSON.stringify(listed.note));
 
   const once = await runAsync('set_reminder', db, { title: 'Book DEXA', repeat: 'once' });
   once.notification &&
@@ -422,28 +450,34 @@ console.log('5. reminders end to end: set → list → complete/dismiss, with gu
       : bad('summary untimed', summaryWith({ title: 'Book DEXA' }));
 
     // Housekeeping: these three would otherwise pollute the list assertions below.
-    for (const r of [rolled, sameDay, backdated]) run('dismiss_reminder', db, { id: r.id });
+    for (const r of [rolled, sameDay, backdated]) {
+      edit(db, 'reminders', r.id, { status: 'dismissed' });
+    }
   }
-  const summary = toolByName('complete_reminder').confirmSummary({ id: once.id }, db);
+  const summary = editCard(db, 'reminders', once.id, { status: 'done' });
   summary === 'Mark reminder "Book DEXA" done'
     ? ok(`confirmation names the target, never a bare id ("${summary}")`)
     : bad('confirm summary', summary);
-  const completed = run('complete_reminder', db, { id: once.id });
-  completed.completed === true &&
+  const completed = edit(db, 'reminders', once.id, { status: 'done' });
+  completed.edited === true &&
   run('list_reminders', db).reminders.every((r) => r.title !== 'Book DEXA')
-    ? ok('complete_reminder retires the one-off from the active list')
+    ? ok('edit_record status:done retires the one-off from the active list')
     : bad('complete');
 
-  const dismissSummary = toolByName('dismiss_reminder').confirmSummary({ id: daily.id }, db);
+  const dismissSummary = editCard(db, 'reminders', daily.id, { status: 'dismissed' });
   dismissSummary === 'Dismiss reminder "Take magnesium"'
     ? ok('dismiss confirmation names the target too')
     : bad('dismiss summary', dismissSummary);
-  run('dismiss_reminder', db, { id: daily.id });
-  run('list_reminders', db).reminders.length === 0
-    ? ok('dismiss_reminder ends the daily one')
+  edit(db, 'reminders', daily.id, { status: 'dismissed' });
+  const emptied = run('list_reminders', db);
+  emptied.reminders.length === 0
+    ? ok('edit_record status:dismissed ends the daily one')
     : bad('dismiss');
+  emptied.note === undefined
+    ? ok('…and with no recurring reminder left, the note costs nothing')
+    : bad('note emitted with no recurring reminder', JSON.stringify(emptied.note));
 
-  throws(() => run('dismiss_reminder', db, { id: 'nope' }))
+  throws(() => edit(db, 'reminders', 'nope', { status: 'dismissed' }))
     ? ok('unknown reminder id rejected with guidance')
     : bad('unknown id accepted');
   (await rejects(() => runAsync('set_reminder', db, { title: 'Weekly check', repeat: 'weekly' })))
@@ -2407,6 +2441,7 @@ console.log('32. schema/parser drift: every key a tool reads is a key it declare
   const sources = [
     readFileSync(new URL('../src/lib/ai/tools/read-tools.ts', import.meta.url), 'utf8'),
     readFileSync(new URL('../src/lib/ai/tools/write-tools.ts', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/lib/ai/tools/record-tools.ts', import.meta.url), 'utf8'),
   ];
 
   /** The tool object literal: `const xTool: CoachTool = {` … a lone `};`. */
@@ -2914,9 +2949,19 @@ console.log('36. the coverage manifest: the model is told what it CANNOT see');
   /follow THEIR committed stance/.test(promptText)
     ? ok('…and the hierarchy: the user’s stance wins for personal coaching')
     : bad('conflict hierarchy missing');
-  /present the drafted entry in full BEFORE calling/.test(promptText)
+  /[Pp]resent the drafted entry in full BEFORE calling/.test(promptText)
     ? ok('the present-before-calling rail is stated in full in the cached prompt')
     : bad('present-before-calling missing from the prompt');
+  // The invitation-only rail moved out of this bullet and into its own on
+  // 2026-09-19, where it now governs adjust_today, save_knowledge_entry AND
+  // edit_record from one sentence — which is how the doctrine was funded
+  // without raising a ceiling. Assert the RULE, and that it still names the
+  // knowledge write, rather than the sentence it used to live in.
+  /INVITATION ONLY\./.test(promptText) &&
+  /never to tidy, never to file away your own output/.test(promptText) &&
+  /save_knowledge_entry and edit_record/.test(promptText)
+    ? ok('one INVITATION ONLY bullet covers adjust_today, save_knowledge_entry and edit_record')
+    : bad('the invitation-only doctrine is missing or no longer names the three tools');
   promptText.includes('"Magnesium citrate upsets his stomach" is a memory.')
     ? ok('the memory-vs-knowledge litmus is in the prompt verbatim')
     : bad('memory/knowledge litmus missing');
@@ -3098,27 +3143,15 @@ console.log('37. log_workout carries time and distance, and the card promises th
     : bad('training read', JSON.stringify(session));
 }
 
-console.log('37. retire_knowledge_entry (C14) — the Coach can take a page back out');
+console.log('37. retiring a knowledge entry (C14, folded into edit_record 2026-09-19)');
 {
   const { db } = freshDb();
-  const summary = (name, input) => toolByName(name).confirmSummary(input, db, CTX);
 
-  const tool = toolByName('retire_knowledge_entry');
-  tool ? ok('retire_knowledge_entry is registered') : bad('not registered');
-  tool.readOnly === false ? ok('it is a WRITE tool — gated') : bad('registered read-only');
-  tool.inputSchema.additionalProperties === false
-    ? ok('additionalProperties: false')
-    : bad('schema is open');
-  // Separate from save_knowledge_entry for the same reason `forget` is separate
-  // from `remember`: taking something out is not a smaller version of putting
-  // something in, and it earns its own card.
-  JSON.stringify(tool.inputSchema.required) === JSON.stringify(['id'])
-    ? ok('id, and nothing else — the terse schema `forget` established')
-    : bad('required keys', JSON.stringify(tool.inputSchema.required));
-  /never to tidy/i.test(tool.description)
-    ? ok('the description forbids tidying — retiring is the user’s retraction, not housekeeping')
-    : bad('the tidy-up rail is missing', tool.description);
-
+  // `retire_knowledge_entry` was its own tool until the 2026-09-19 fold. What
+  // that tool argued for was the CARD — "taking something out of the base is
+  // not a smaller version of putting something in it" — and every assertion
+  // below is about the card, the archive and the search, which is why they all
+  // still read the same. Only the tool name beneath changed.
   const id = run('save_knowledge_entry', db, {
     title: 'Zone 2 three times a week',
     topic: 'training',
@@ -3126,16 +3159,29 @@ console.log('37. retire_knowledge_entry (C14) — the Coach can take a page back
     body: 'Three ninety-minute sessions a week, conversational pace, heart rate capped.',
   }).id;
 
-  const card = summary('retire_knowledge_entry', { id });
+  const card = editCard(db, 'knowledge', id, { status: 'archived' });
   card === 'Retire entry "Zone 2 three times a week"'
-    ? ok('the card names the entry by title, not by id')
+    ? ok('the card names the entry by title, not by id — verbatim from the old tool')
     : bad('card wording', card);
-  throws(() => summary('retire_knowledge_entry', { id: 'nope' }))
+  toolByName('edit_record').confirmMeta(
+    { domain: 'knowledge', id, fields: { status: 'archived' } },
+    db,
+    { now: NOW }
+  ).selfEvident === false
+    ? ok('…and it keeps its consequence lanes: retiring is never self-evident')
+    : bad('retiring went brief');
+  throws(() => editCard(db, 'knowledge', 'nope', { status: 'archived' }))
     ? ok('an unknown id fails at the card')
     : bad('unknown id accepted');
+  // The knowledge domain has NO create path — `save_knowledge_entry` owns it —
+  // so C14's schema objection (a flag would make title and body optional)
+  // cannot arise here: nothing in edit_record can mint a bodiless entry.
+  throws(() => editCard(db, 'knowledge', id, { title: 'Renamed' }))
+    ? ok('edit_record cannot rewrite an entry’s text — that is save_knowledge_entry’s')
+    : bad('knowledge text edited through the generic path');
 
-  const out = run('retire_knowledge_entry', db, { id });
-  out.retired === true ? ok('execute reports the retirement') : bad(JSON.stringify(out));
+  const out = edit(db, 'knowledge', id, { status: 'archived' });
+  out.edited === true ? ok('execute reports the retirement') : bad(JSON.stringify(out));
   db.get('SELECT archived_at FROM knowledge_entries WHERE id = ?', [id]).archived_at !== null
     ? ok('the row is archived — SOFT, so the user can restore what the Coach retired')
     : bad('the entry was not archived');
@@ -3146,11 +3192,11 @@ console.log('37. retire_knowledge_entry (C14) — the Coach can take a page back
     ? ok('search_history confirms it: a retired entry cannot be cited again')
     : bad('a retired entry still comes back from search');
 
-  // Retiring twice is honest rather than a phantom success — the `forget` shape.
-  const again = run('retire_knowledge_entry', db, { id });
-  again.retired === false && /already retired/i.test(again.note)
-    ? ok('retiring an already-retired entry says so instead of claiming a second success')
-    : bad('double retire', JSON.stringify(again));
+  // Restoring is the USER's. The domain accepts one value, so a model that
+  // wants the page back has to ask for it rather than take it.
+  throws(() => editCard(db, 'knowledge', id, { status: 'active' }))
+    ? ok('there is no un-retire: `archived` is the only value the domain accepts')
+    : bad('the Coach can un-retire an entry');
 }
 
 console.log('38. the id bridge (C14): a search hit the Coach can actually write back to');

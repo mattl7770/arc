@@ -950,6 +950,57 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // `get_metric_series` (354), `adjust_today` (348). 8 tokens of prompt
   // headroom is the thinnest this has been, and the honest reading is that the
   // prompt is FULL: the next bullet pays for itself or does not land.
+  // ── 2026-09-19: WHOLE-APP ACCESS, COMMIT A — THE FOLD.
+  // **BOTH CEILINGS HELD AND BOTH SIDES CAME OUT AHEAD: 9,233 → 8,479 schema,
+  // 3,692 → 3,691 prompt.** Measured on `main` first, with these same proxies
+  // over the live registry, rather than inherited from the entry above.
+  //
+  // WHY THIS IS THE SHAPE IT IS. docs/spikes/coach-whole-app-access.md asked
+  // for whole-app read/write access for the Coach, and a bespoke tool per gap
+  // was priced at ~14,000 tokens — more than the entire existing toolbox. The
+  // answer is a DOMAIN REGISTRY (src/lib/ai/domains/) behind generic tools,
+  // which costs one schema instead of sixty-eight.
+  //
+  // SCHEMA, −754 NET:
+  //   · SIX status-change tools DELETED, −970: complete_reminder (144),
+  //     dismiss_reminder (115), complete_experiment (221), abandon_experiment
+  //     (218), forget (153), retire_knowledge_entry (119). Every one of them
+  //     executed a single `UPDATE … SET status`.
+  //   · `edit_record` ADDED, +216 over a four-key enum. It carries the
+  //     vocabulary the six descriptions carried, once.
+  //   · `get_experiments`' description −8: "complete_experiment needs the id"
+  //     named a tool that no longer exists, and "closing one (you need the id)"
+  //     says the same thing without it. This is why `readToolTokens` moved at
+  //     all — the Haiku pass prefix is 7,076 → 7,067, still 2,971 clear of the
+  //     4,096 cache floor.
+  //
+  // PROMPT, −1 NET, and this is the part that had to be earned. Main had **8
+  // tokens of headroom** and the spike's doctrine bullet was priced at +27, so
+  // it did not fit. It was paid for out of three restatements, which is what
+  // the rule at :393 asks for rather than a fourth raise:
+  //   · the INVITATION-ONLY rule was stated TWICE — once as "not to tidy their
+  //     list unasked" on the adjust_today bullet and once as "ONLY on their
+  //     request or clear invitation, never to file away your own output" inside
+  //     the Memory bullet. It is now ONE bullet governing adjust_today,
+  //     save_knowledge_entry and edit_record, which is strictly more coverage
+  //     for fewer characters.
+  //   · the knowledge split carried THREE examples for a distinction with two
+  //     sides. "Magnesium forms differ in absorption…" illustrates `scientific`,
+  //     which the clause two sentences above it defines — and the split being
+  //     illustrated is LENGTH (a memory vs a personal entry), which that example
+  //     is not about. The status build's precedent: four examples → two, −8.
+  //   · "adds today's mission items" — `adjust_today`'s own description says
+  //     "Today only", the `protocol_slug` class.
+  //
+  // WHAT WAS **NOT** DONE: the VOICE section was not touched. The spike names
+  // it as the reserve of last resort and it was not needed. No ceiling moved,
+  // which also means the revert arithmetic holds: putting the six tools back
+  // returns the registry to 9,233 exactly.
+  //
+  // COMMIT A IS PROMPT-NEGATIVE BY ONE TOKEN, which matters more than it
+  // sounds: B (query_records) cannot land before A, because query_records is
+  // built on the registry A introduces, so A's own moment is the tightest one
+  // this branch ever has. It is 3,691 — better than main's 3,692.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

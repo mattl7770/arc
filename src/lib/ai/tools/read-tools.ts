@@ -62,6 +62,7 @@ import {
 import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 import type { UnitPreferences } from '@/lib/user/types';
 
+import { EXPERIMENT_ABANDON_NOTE, RECURRING_REMINDER_NOTE } from '../domains/status-domains';
 import { computeInsights, dueRemindersFor, generateDailyBrief } from '../insights';
 import {
   bodyDailySeries,
@@ -1488,10 +1489,27 @@ const listRemindersTool: CoachTool = {
     'before setting a reminder (avoid duplicates) and when asked what is scheduled.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   readOnly: true,
+  // ## The recurring rail lives HERE now, not in a tool description
+  //
+  // `complete_reminder` carried it — "recurring reminders cannot be completed;
+  // use dismiss_reminder only to END it" — and that tool folded into
+  // `edit_record` on 2026-09-19. A generic tool's description cannot hold
+  // domain prose without becoming a second copy of the registry, and the system
+  // prompt has single-digit headroom, so the rail rides the payload that hands
+  // out the ids instead. This read always precedes the write: the id comes from
+  // here.
+  //
+  // Emitted only when it is TRUE of this device — a user with no recurring
+  // reminder pays nothing to be told a rule about them — which is the
+  // `get_screenings` precedent for a conditional result field. Result fields
+  // are not in the ceiling budget; descriptions are. The belt is the card-time
+  // throw in the reminders domain, so a model that skips the read meets a
+  // refusal rather than an approved write.
   execute: (db, _input, context) => {
     const today = todayISODate(context.now);
+    const reminders = listActiveReminders(db);
     return json({
-      reminders: listActiveReminders(db).map((r) => ({
+      reminders: reminders.map((r) => ({
         id: r.id,
         title: r.title,
         time: r.time,
@@ -1500,6 +1518,7 @@ const listRemindersTool: CoachTool = {
         createdBy: r.created_by,
         dueToday: isDueOn(r, today),
       })),
+      ...(reminders.some((r) => r.repeat !== 'once') ? { note: RECURRING_REMINDER_NOTE } : {}),
     });
   },
 };
@@ -1665,8 +1684,8 @@ const getExperiments: CoachTool = {
   description:
     "The user's n-of-1 experiments: ACTIVE ones (each with daysLeft, and ready=true once its " +
     'window has closed and it is time to read out) and, when include_completed is set, recent ' +
-    'concluded ones with their verdicts. Call before concluding one (complete_experiment needs ' +
-    'the id), or when the user asks how an experiment is going.',
+    'concluded ones with their verdicts. Call before closing one (you need the id), or when ' +
+    'the user asks how an experiment is going.',
   inputSchema: {
     type: 'object',
     properties: { include_completed: { type: 'boolean' } },
@@ -1696,7 +1715,15 @@ const getExperiments: CoachTool = {
             endDate: e.end_date,
           }))
         : undefined;
-    return json({ active, ...(completed ? { completed } : {}) });
+    // The abandon-not-conclude rail, moved out of `abandon_experiment`'s
+    // description when that tool folded into `edit_record` — see the same
+    // argument on `list_reminders` above. Emitted only when there is a running
+    // experiment the rule could apply to.
+    return json({
+      active,
+      ...(completed ? { completed } : {}),
+      ...(active.length > 0 ? { note: EXPERIMENT_ABANDON_NOTE } : {}),
+    });
   },
 };
 

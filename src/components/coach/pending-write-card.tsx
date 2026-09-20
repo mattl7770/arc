@@ -67,52 +67,37 @@ import type { PendingWrite } from '@/types/coach';
  */
 
 /**
- * The writes whose summary is already the whole consequence.
+ * ## The allowlist moved into the registry, 2026-09-19
  *
- * The test is deliberately strict, and it is not "small": the write's entire
- * effect must be one line item on a **working list** — a list the owner can see
- * and edit by hand elsewhere in the app, and undo with a tap — rather than
- * anything that enters the durable health record. The grocery list and a one-off
- * reminder qualify. Logs, protocol revisions, modes, experiments, memory and
- * recipes do not: they are the record, or they supersede something in it.
+ * This file used to hold `SELF_EVIDENT_WRITES`, a hardcoded set of four tool
+ * names, and said so in a long note ending "until then the map is here, and it
+ * fails closed". The smallest honest fix it proposed is the one that shipped:
+ * a `PendingWrite` now carries `selfEvident` and `kind`, declared by each tool
+ * beside its own `confirmSummary` (src/lib/ai/tools/types.ts `confirmMeta`),
+ * threaded through `WriteConfirmation` and `use-coach-chat`.
  *
- * Two neighbours are deliberately absent to show where the line falls.
- * `set_reminder` also arms an OS notification, which the summary does not say.
- * `dismiss_reminder` ends a recurring reminder **permanently** — its own tool
- * description uses that word — and permanence is exactly the consequence a
- * summary cannot carry on its own.
+ * The rule the list encoded is unchanged and now lives where the answer is
+ * known: the write's entire effect must be one line item on a **working list**
+ * the owner can see, edit by hand and undo with a tap — never anything that
+ * enters the durable health record. The grocery adds, a batched check-off and
+ * marking a ONE-OFF reminder done still qualify; logs, protocol revisions,
+ * statuses, experiments, memory and recipes still do not.
  *
- * ## This list should not live here, and here is the smallest fix
+ * It had to move to stay true. `complete_reminder` was one of the four names,
+ * and it no longer exists — it folded into `edit_record`, whose weight depends
+ * on the call: `{ status: 'done' }` on a one-off is as self-evident as the old
+ * tool was, and `{ status: 'dismissed' }` is not, because ending a recurring
+ * nudge **permanently** is exactly the consequence a summary cannot carry on
+ * its own. A set of names cannot express that distinction; a function on the
+ * domain can.
  *
- * A `PendingWrite` is `{ id, tool, summary }` (src/types/coach.ts), built in
- * use-coach-chat from `WriteConfirmation` `{ tool, summary }`
- * (src/lib/ai/coach-service.ts) — so the card genuinely cannot tell a grocery add
- * from a protocol revision by anything but the tool's NAME, which is why this
- * map exists. The registry is where the answer belongs: `CoachTool` already
- * carries `readOnly` as its safety pivot (src/lib/ai/tools/types.ts), and the
- * smallest honest change is one more optional field beside it —
- * `selfEvident?: boolean`, set on the four tools below — threaded through
- * `WriteConfirmation` and `PendingWrite` as one boolean. Each tool would then
- * declare its own weight next to its `confirmSummary`, which is the only place
- * that knows what that summary says. Until then the map is here, and it fails
- * closed.
+ * The default is still FALSE (src/lib/ai/tools/types.ts `DEFAULT_WRITE_META`),
+ * so a tool that declares nothing keeps its consequence statement.
  */
-const SELF_EVIDENT_WRITES = new Set([
-  'add_grocery_items',
-  'add_recipe_to_grocery_list',
-  'complete_grocery_items',
-  'complete_reminder',
-]);
-
-/** Is this write's summary the whole story? Unknown tools are never assumed to be. */
-function isSelfEvidentWrite(tool: string): boolean {
-  return SELF_EVIDENT_WRITES.has(tool);
-}
 
 /**
  * The before/after lanes: what the record says NOW, and what it will say ON
- * APPROVE. Drawn for every write except the self-evident ones — see
- * {@link SELF_EVIDENT_WRITES}.
+ * APPROVE. Drawn for every write but the self-evident ones.
  *
  * **No lane rules.** Each lane used to carry a 2px left rule (neutral for Now,
  * pine for On approve) with a 10px indent. That is the exact mark the `margin`
@@ -122,8 +107,15 @@ function isSelfEvidentWrite(tool: string): boolean {
  * The tense and the two labels were always what told the lanes apart — "Now" in
  * muted ink, "On approve" in pine — and they still do, inside a stamp that is
  * already drawn. Nothing here needed a second enclosure.
+ *
+ * **A removal is worded as one.** The ON APPROVE line is fixed copy, and
+ * "this is written to your on-device record" is simply false of a delete: what
+ * happens is that a row LEAVES the record. The card could not tell the two
+ * apart until `PendingWrite` carried `kind`, so this is the first write shape
+ * that has ever been able to say the true thing here.
  */
-function ConsequenceLanes() {
+function ConsequenceLanes({ kind }: { kind: PendingWrite['kind'] }) {
+  const removing = kind === 'delete';
   return (
     <View className="mt-3">
       <View>
@@ -140,7 +132,9 @@ function ConsequenceLanes() {
           On approve
         </Text>
         <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink">
-          This is written to your on-device record, once, and the Coach carries on from there.
+          {removing
+            ? 'This row leaves your on-device record, once, and the Coach carries on from there.'
+            : 'This is written to your on-device record, once, and the Coach carries on from there.'}
         </Text>
       </View>
     </View>
@@ -178,7 +172,7 @@ export function PendingWriteCard({
   /** Carries the request's nonce so a tap can only answer what it was shown. */
   onResolve: (id: number, approved: boolean) => void;
 }) {
-  const brief = isSelfEvidentWrite(pending.tool);
+  const brief = pending.selfEvident;
 
   return (
     <View accessibilityLiveRegion="polite" className="bg-paper">
@@ -210,7 +204,7 @@ export function PendingWriteCard({
             </Text>
           )}
 
-          {brief ? null : <ConsequenceLanes />}
+          {brief ? null : <ConsequenceLanes kind={pending.kind} />}
 
           {/* The sheet draws `.cf-btnrow--3`: Approve / Edit / Reject in
             `grid-template-columns: 1fr 1fr 1fr`. **Two of those three can ship

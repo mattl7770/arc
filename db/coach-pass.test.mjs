@@ -413,7 +413,7 @@ console.log('6. a running experiment is ON the day, and its readout surfaces its
     : bad('ready detail', ready && ready.detail);
 }
 
-console.log('7. abandon_experiment exists so a broken run needs no fabricated verdict');
+console.log('7. abandoning exists so a broken run needs no fabricated verdict');
 {
   const { db } = freshDb();
   const id = createExperiment(db, {
@@ -424,14 +424,37 @@ console.log('7. abandon_experiment exists so a broken run needs no fabricated ve
     startDate: isoDaysAgo(NOW, 3),
     durationDays: 14,
   });
-  toolByName('abandon_experiment')
-    .confirmSummary({ id, reason: 'Sauna was closed all week' }, db, CTX)
-    .includes('Sauna nightly')
+  // `abandon_experiment` folded into `edit_record` on 2026-09-19. The card is
+  // verbatim; the rail its description carried ("use this INSTEAD of concluding
+  // it") now rides the `get_experiments` payload, asserted below.
+  const abandon = {
+    domain: 'experiments',
+    id,
+    fields: { status: 'abandoned', reason: 'Sauna was closed all week' },
+  };
+  toolByName('edit_record').confirmSummary(abandon, db, { now: NOW }) ===
+  'Abandon experiment "Sauna nightly" — Sauna was closed all week'
     ? ok('the card names the experiment and the reason')
-    : bad('abandon card');
-  const result = run('abandon_experiment', db, { id, reason: 'Sauna was closed all week' });
-  result.abandoned ? ok('it abandons cleanly') : bad('abandon failed', JSON.stringify(result));
-  throws(() => run('abandon_experiment', db, { id, reason: 'again' }))
+    : bad('abandon card', toolByName('edit_record').confirmSummary(abandon, db, { now: NOW }));
+  // A reason is REQUIRED in code, since a schema cannot say "this field when
+  // that value" without splitting the tool in two again.
+  throws(() =>
+    toolByName('edit_record').confirmSummary(
+      { domain: 'experiments', id, fields: { status: 'abandoned' } },
+      db,
+      { now: NOW }
+    )
+  )
+    ? ok('abandoning with no reason is refused at the card')
+    : bad('reasonless abandon accepted');
+  const running = JSON.parse(toolByName('get_experiments').execute(db, {}, CTX));
+  /abandoned \(with a reason\), never concluded/i.test(running.note ?? '')
+    ? ok('get_experiments carries the abandon-not-conclude rail, where the id comes from')
+    : bad('missing abandon note', JSON.stringify(running.note));
+
+  const result = JSON.parse(toolByName('edit_record').execute(db, abandon, { now: NOW }));
+  result.edited ? ok('it abandons cleanly') : bad('abandon failed', JSON.stringify(result));
+  throws(() => toolByName('edit_record').execute(db, abandon, { now: NOW }))
     ? ok('abandoning twice is refused')
     : bad('double abandon');
 }

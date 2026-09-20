@@ -10,17 +10,64 @@
  * coverage manifest at the foot of this file, and the report that forced it.
  */
 import type { WireTool } from '../model-client';
-import { READ_TOOLS } from './read-tools';
-import { WRITE_TOOLS } from './write-tools';
+import { READ_TOOLS as BESPOKE_READ_TOOLS } from './read-tools';
+import { RECORD_READ_TOOLS, RECORD_WRITE_TOOLS } from './record-tools';
+import { WRITE_TOOLS as BESPOKE_WRITE_TOOLS } from './write-tools';
 import type { CoachTool } from './types';
 
-export type { CoachTool, CoachToolContext } from './types';
-export { READ_TOOLS, UNREGISTERED_READ_TOOLS } from './read-tools';
-export { WRITE_TOOLS } from './write-tools';
+export type { CoachTool, CoachToolContext, WriteKind, WriteMeta } from './types';
+export { DEFAULT_WRITE_META } from './types';
+export { UNREGISTERED_READ_TOOLS } from './read-tools';
 export { STUB_TOOLS } from './stubs';
+
+/**
+ * Every read tool, bespoke ones first.
+ *
+ * The generic reads ride at the END rather than beside their subject matter:
+ * a model scanning the list should meet `get_today_snapshot` before it meets a
+ * domain enum, because a tool that answers one question exactly is always the
+ * better call than one that answers any question adequately.
+ */
+export const READ_TOOLS: CoachTool[] = [...BESPOKE_READ_TOOLS, ...RECORD_READ_TOOLS];
+
+/** Every write tool, bespoke ones first — same argument as the reads. */
+export const WRITE_TOOLS: CoachTool[] = [...BESPOKE_WRITE_TOOLS, ...RECORD_WRITE_TOOLS];
 
 /** Every tool the model is given, reads first (the order it should reach). */
 export const COACH_TOOLS: CoachTool[] = [...READ_TOOLS, ...WRITE_TOOLS];
+
+/**
+ * Write tools that USED to exist, by name.
+ *
+ * `isWriteTool` answers via {@link toolByName} (src/hooks/use-coach-chat.ts),
+ * so a persisted `ai_messages.tool_calls` row naming a tool the registry no
+ * longer holds would be classified as a READ — and silently drop out of the
+ * "these changes landed" receipt line, in a thread where that line is the only
+ * record that the change happened at all. The registry is append-only history
+ * from the audit trail's point of view, so retiring a name means recording it,
+ * not deleting it.
+ *
+ * Every entry here was folded into `edit_record` on 2026-09-19
+ * (src/lib/ai/domains/status-domains.ts). Their stored receipts are unaffected
+ * — a receipt is the card line the user approved, not a tool name — and
+ * `humanizeToolName` still renders each one for the rows written before
+ * receipts existed.
+ *
+ * db/coach-domains.test.mjs asserts `isWriteTool` is true for every name here.
+ */
+export const RETIRED_WRITE_NAMES: ReadonlySet<string> = new Set([
+  'complete_reminder',
+  'dismiss_reminder',
+  'complete_experiment',
+  'abandon_experiment',
+  'forget',
+  'retire_knowledge_entry',
+]);
+
+/** Was this name a write tool once, even though the registry no longer holds it? */
+export function isRetiredWriteName(name: string): boolean {
+  return RETIRED_WRITE_NAMES.has(name);
+}
 
 const BY_NAME = new Map(COACH_TOOLS.map((tool) => [tool.name, tool]));
 
@@ -124,14 +171,14 @@ export const COACH_DOMAINS: CoachDomain[] = [
   { label: 'day notes', tools: ['log_note'] },
   { label: 'protocols', tools: ['get_protocols', 'update_protocol'] },
   { label: 'your status', tools: ['set_status'] },
-  {
-    label: 'experiments',
-    tools: ['get_experiments', 'create_experiment', 'complete_experiment', 'abandon_experiment'],
-  },
-  {
-    label: 'reminders',
-    tools: ['list_reminders', 'set_reminder', 'complete_reminder', 'dismiss_reminder'],
-  },
+  // The four domains the 2026-09-19 fold moved onto `edit_record`. Their
+  // LABELS do not move — what the model needs here is the domain vocabulary,
+  // and "experiments" is still exactly what it can read and write. The fold is
+  // therefore free against the manifest, which is part of why it was the fold
+  // chosen: the registry shrinks by 767 tokens and this section does not move
+  // by one.
+  { label: 'experiments', tools: ['get_experiments', 'create_experiment', 'edit_record'] },
+  { label: 'reminders', tools: ['list_reminders', 'set_reminder', 'edit_record'] },
   { label: 'the recipe book', tools: ['get_recipes', 'get_recipe', 'save_recipe', 'log_recipe'] },
   {
     label: 'the grocery list',
@@ -143,7 +190,7 @@ export const COACH_DOMAINS: CoachDomain[] = [
     ],
   },
   { label: 'screenings', tools: ['get_screenings', 'log_screening_done'] },
-  { label: 'durable memories', tools: ['get_memories', 'remember', 'forget'] },
+  { label: 'durable memories', tools: ['get_memories', 'remember', 'edit_record'] },
   { label: 'labs and biomarkers', tools: ['get_biomarkers', 'get_biomarker_history'] },
   {
     label: 'Apple Health and readiness',
@@ -158,7 +205,7 @@ export const COACH_DOMAINS: CoachDomain[] = [
   // entries are now the half that outranks it.
   {
     label: 'the knowledge base and past conversations',
-    tools: ['search_history', 'save_knowledge_entry', 'retire_knowledge_entry'],
+    tools: ['search_history', 'save_knowledge_entry', 'edit_record'],
   },
   { label: 'appointments', tools: ['get_screenings'] },
 ];

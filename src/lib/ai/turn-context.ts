@@ -354,7 +354,7 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
     const hidden = total - memories.length;
     sections.push(
       `What you know about this user (durable memories — say so if one is now wrong, ` +
-        `and use "forget" with its id):\n` +
+        `and retire it with edit_record by its id):\n` +
         memories.map((m) => `- [${m.category}] ${m.content} (id: ${m.id})`).join('\n') +
         (hidden > 0
           ? `\n- (${hidden} older ${hidden === 1 ? 'memory is' : 'memories are'} not shown here — ` +
