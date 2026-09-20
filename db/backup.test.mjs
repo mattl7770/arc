@@ -1041,5 +1041,60 @@ async function tryImport(spec) {
   }
 }
 
+// ---------------------------------------------------------------------------
+{
+  console.log('8. The exclusion seam and its native module, pinned to each other by name');
+
+  const src = (p) => fs.readFileSync(new URL('../' + p, import.meta.url), 'utf8');
+
+  // Three strings have to agree for the backup exclusion to work at all: the
+  // name the JS seam asks `requireOptionalNativeModule` for, the name the Swift
+  // module answers to, and the class autolinking is told to register. Nothing
+  // fails to compile when one of them drifts — the exclusion just goes quiet
+  // and the health record rides iCloud again, which is precisely the failure
+  // that already shipped once (module specced 2026-08-23, absent from the
+  // 2026-08-25 build). So they are compared here, at the source.
+  const seam = src('src/lib/files/backup-exclusion.ts');
+  const swift = src('modules/arc-backup/ios/ArcBackupModule.swift');
+  const config = JSON.parse(src('modules/arc-backup/expo-module.config.json'));
+
+  const asked = /requireOptionalNativeModule[^(]*\(\s*'([^']+)'/.exec(seam)?.[1];
+  const declared = /\bName\("([^"]+)"\)/.exec(swift)?.[1];
+  const swiftClass = /public class (\w+): Module/.exec(swift)?.[1];
+
+  asked && declared && asked === declared
+    ? ok(`the JS asks for '${asked}' and the Swift module answers to '${declared}'`)
+    : bad('module name drift', `JS asked ${asked ?? 'nothing'}, Swift declared ${declared ?? 'nothing'}`); // prettier-ignore
+
+  swiftClass && config.apple?.modules?.includes(swiftClass)
+    ? ok(`expo-module.config.json registers the class that exists: ${swiftClass}`)
+    : bad('module class drift', `Swift class ${swiftClass ?? '?'} vs ${JSON.stringify(config.apple?.modules)}`); // prettier-ignore
+
+  config.platforms?.includes('apple') && !config.platforms.includes('android')
+    ? ok('the module is declared apple-only, like the app')
+    : bad('platforms drift', JSON.stringify(config.platforms));
+
+  /\bFunction\("excludeFromBackup"\)/.test(swift) && /excludeFromBackup\(pathOrUri: string\)/.test(seam) // prettier-ignore
+    ? ok('the exposed function is excludeFromBackup on both sides')
+    : bad('function name drift');
+
+  fs.existsSync(new URL('../modules/arc-backup/ios/ArcBackup.podspec', import.meta.url))
+    ? ok('a podspec sits beside the Swift — without one the pod never reaches the Podfile')
+    : bad('the podspec is missing');
+
+  // THE NON-CALL THAT IS LOAD-BEARING. Documents/backups/ holds ARCB1
+  // ciphertext and DELIBERATELY rides the device backup: that blob is what a
+  // restored phone finds waiting. An excludeFromBackup call added here "for
+  // consistency" would silently turn the whole feature into no backup at all.
+  // (Comments are stripped first: that file's header spends a paragraph on the
+  // call it must never make, and the warning must not trip its own check.)
+  const storeCode = src('src/lib/backup/backup-file-store.ts')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
+  !/excludeFromBackup/.test(storeCode)
+    ? ok('backup-file-store.ts still excludes nothing — the ciphertext must ride the backup')
+    : bad('someone added an excludeFromBackup call to backup-file-store.ts');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
