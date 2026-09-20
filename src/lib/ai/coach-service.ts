@@ -99,6 +99,13 @@ export type StreamOptions = {
    * call — see the single read in `executeTool` below.
    */
   now?: () => Date;
+  /**
+   * The thread this turn belongs to (`ai_conversations.id`). Threaded into
+   * every tool's context, and read by exactly one thing: `delete_record`'s
+   * `own` mode, which may remove a logged row only when this conversation's
+   * Coach wrote it. Absent ⇒ nothing counts as the Coach's own write.
+   */
+  conversationId?: string;
 };
 
 /**
@@ -182,7 +189,10 @@ export async function streamCoachReply(
         // The card VALIDATES against this same instant too, so a knowable
         // failure (a log date in the future, a mode window that ends before it
         // begins) throws before the user spends an Approve tap on it.
-        const context: CoachToolContext = { now: clock() };
+        const context: CoachToolContext = {
+          now: clock(),
+          ...(options.conversationId ? { conversationId: options.conversationId } : {}),
+        };
 
         // The line the user approved, held for the receipt below. Stays
         // undefined for reads (nothing to receipt) and for any write that never

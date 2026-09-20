@@ -296,6 +296,9 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
         // long thread silently loses its first half — including whatever set it
         // up ("my knee has been sore since March").
         priorSummary: getConversationSummary(getDb(), conversationId),
+        // The thread's own id, so `delete_record` can tell a row THIS
+        // conversation's Coach wrote from one it merely found.
+        conversationId,
         onToken: (chunk) => patch((m) => ({ ...m, content: m.content + chunk })),
         onToolCall: ({ label }) => setActivity(label),
         confirmWrite: (request) =>

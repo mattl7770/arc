@@ -193,10 +193,44 @@ in a prefix with single-digit headroom.
 **The unattended pass does not get it** (`PASS_EXCLUDED_TOOLS`). Haiku's selection over a
 fifteen-key enum is unmeasured, a discovery call would spend one of the pass's eight round trips and
 re-bill the ~1.4k uncached state block, and the pass is triage over curated reads. The pass prefix is
-therefore unchanged at 7,067 — 2,931 clear of Haiku's 4,096-token cache floor, which its whole
-economics depend on.
+therefore carries the same eighteen read tools it always did (3,376 tokens of schema). The prefix
+itself moves only with the system prompt, which SHRANK: 7,076 on main → 7,027 here, still ~2,900
+clear of Haiku's 4,096-token cache floor, which the pass's whole economics depend on.
 
-## 10. The card learned two things
+## 10. The writes (Commit C, 2026-09-19) — twenty-six domains
+
+`edit_record` reaches **18**; `delete_record` reaches **11**. The two sets are different on
+purpose.
+
+| Domain | Editable | Removable | Why |
+| --- | --- | --- | --- |
+| `meals` | name, date, time, notes | **own** | macros are read-only: an itemized total is the sum of its items and must not disagree with them |
+| `workouts` | kind, date, duration, notes, `away` | **own** | `sets` is not a field — `replaceWorkout` deletes and re-inserts them |
+| `water` | ml | hard | manual rows only; a device row refuses at resolve |
+| `food_catalog` | name, brand, per-100 macros, basis, favourite | hard | `meal_items.food_id` is SET NULL and every item carries its own snapshot |
+| `meal_templates` | name, notes | hard | a stamp, never a record of a day |
+| `saved_workouts` | name | hard | `workouts.routine_id` is SET NULL |
+| `exercise_catalog` | `status: archived` | — | `routine_exercises` CASCADES, so archive is the only safe retirement |
+| `recipes` | title, servings, notes, favourite | hard | `meals.recipe_id` and `grocery_items.recipe_id` are SET NULL |
+| `grocery` | name, qty, `status` (incl. **uncheck**), staple | hard | a working list |
+| `screenings` | name, category, notes, next_due · **create** | hard (= untrack) | `interval_months` stays off the Coach — a clinical decision |
+| `appointments` | title, provider, when, location, notes, status · **create** | hard | a booking that never happened is not a day |
+| `muscle_anchors` | freshness | hard (= clear) | an override of a derived figure |
+| `protocols` | name, type, description, active, carry-over, check-off mode, start date | **refuse** | `content` is not a field: `update_protocol` takes the complete set |
+| `settings` | date of birth, sex, five units, day boundary, goal direction, water target | — | Q3(a). The API key, app lock, Health sync and backups are **not here** |
+| reminders · experiments · memories · knowledge | `status` | — | the Commit A fold |
+
+**`own` is the undo, and it derives.** Every write tool returns its new row's id; the service
+records the result in `ai_messages.tool_calls`; `idsWrittenInConversation` reads that back for THIS
+thread. No migration, no new column. With no conversation it is empty, which is the fail-closed
+answer. It is scoped to the thread rather than to "the Coach, ever", because the latter is a licence
+over every row it ever logged — history, not undo.
+
+**Q2(b) supersedes a shipped rule**, and the ADR in `docs/decisions.md` records exactly how far:
+correction is not rewriting, deletion is undo. Mission rows are still `adjust_today`'s alone, and a
+logged metric or capture is still untouchable — by *parity*, since no repository function edits one.
+
+## 11. The card learned two things
 
 `WriteConfirmation` and `PendingWrite` now carry `kind` (`create | edit | delete | status`) and
 `selfEvident`. `src/components/coach/pending-write-card.tsx` had held a hardcoded set of four tool
@@ -207,7 +241,7 @@ one-off is self-evident, `dismissed` is not, and a set of names cannot say that.
 `kind: 'delete'` is the first time the card can word a removal as one: its fixed "this is written to
 your on-device record" line is false of a delete, and until now there was nothing to branch on.
 
-## 11. Adding a domain
+## 12. Adding a domain
 
 1. Write it in the right area file under `src/lib/ai/domains/`, or a new one.
 2. Call the repository function the screen calls. Nothing else.
@@ -217,7 +251,7 @@ your on-device record" line is false of a delete, and until now there was nothin
    from `src/lib/ai/tools/index.ts`. The suite fails if you do one and not the other.
 5. Re-measure the two ceilings. A new enum key is ~3 tokens; a new field is 0.
 
-## 12. Revert criteria — what a week of use has to show
+## 13. Revert criteria — what a week of use has to show
 
 The suite pins which tool a scripted turn selects. It cannot say whether a real Sonnet or Opus turn
 reaches for `edit_record { status }` as reliably as it reached for `complete_reminder`, whether it

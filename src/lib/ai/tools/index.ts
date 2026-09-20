@@ -48,9 +48,12 @@ export const COACH_TOOLS: CoachTool[] = [...READ_TOOLS, ...WRITE_TOOLS];
  * writes cannot join it at all — every one of them is `readOnly: false`, and
  * the pass has no confirmation gate to route them through.
  *
- * Keeping it out also keeps the pass prefix where it was: 7,067 tokens, well
- * clear of Haiku's 4,096-token cache minimum, which the whole pass's economics
- * depend on (db/coach-eval.test.mjs §6, "THE TRAP").
+ * Keeping it out keeps the pass's READ SET exactly where it was: 3,376 tokens
+ * of schema, the same eighteen tools it had before the registry existed. The
+ * pass prefix itself is that plus the system prompt (7,028 at the end of this
+ * branch, down from 7,076 on main because the prompt shrank), well clear of
+ * Haiku's 4,096-token cache minimum — which the whole pass's economics depend
+ * on (db/coach-eval.test.mjs §6, "THE TRAP").
  */
 export const PASS_EXCLUDED_TOOLS: ReadonlySet<string> = new Set(['query_records']);
 
@@ -238,7 +241,7 @@ export const COACH_DOMAINS: CoachDomain[] = [
   // same information billed twice on every turn forever.
   {
     label: 'the rest of the app, domain by domain (query_records)',
-    tools: ['query_records'],
+    tools: ['query_records', 'edit_record', 'delete_record'],
   },
 ];
 
@@ -281,8 +284,11 @@ export const UNCOVERED_DOMAINS: string[] = [
   // The lab line NARROWED rather than leaving: the report list is readable now,
   // the PDF and its import are not.
   'the lab PDF import and the report files themselves (Data, Labs)',
-  'booking, moving or cancelling an appointment (Data, Screenings)',
-  'creating a protocol or a screening from scratch',
+  // BOTH LINES LEFT 2026-09-19. Appointments are a registry domain now
+  // (create, edit, cancel, delete). The create line was ALREADY half-false
+  // before this branch — `update_protocol` has created a protocol since
+  // §8.2 — and the screenings domain makes the other half false too, so it
+  // goes rather than being trimmed to a claim about nothing.
   // NARROWED BY C14, because the wider claim became FALSE — which is the worst
   // thing a line in this list can be. It read "…incl. your own writes and
   // knowledge entries (Data, Knowledge base)"; `save_knowledge_entry` now takes
@@ -290,8 +296,17 @@ export const UNCOVERED_DOMAINS: string[] = [
   // the CANNOT-see list to the read-and-write one. What remains uncovered is
   // what it always was: a logged meal, workout, metric or capture, once
   // written, can only be changed on its own screen.
-  'editing or deleting anything already logged — a meal, workout, metric, capture (its screen in Eat, Train or Data)',
-  'Settings: profile, units, Health sync, app lock, API key',
+  // REWRITTEN 2026-09-19 for the owner's Q2(b) answer, which SUPERSEDES the
+  // rule this line carried (ADR in docs/decisions.md). A meal, a workout and a
+  // water entry are now editable behind a before → after card, and deletable
+  // only as an UNDO of a row this conversation's Coach wrote. What is left
+  // uncovered is what has no repository edit path at all — the Log tab's own
+  // rows, which the user corrects where they were written.
+  'correcting a logged metric or a capture — its row in the Log tab',
+  // NARROWED 2026-09-19 for Q3(a): profile, units, the day boundary, the goal
+  // direction and the water target are a registry domain now. What stays out
+  // is the security boundary, not a preference.
+  'Settings: Apple Health sync, the app lock and the API key',
 ];
 
 const WRITE_NAMES = new Set(WRITE_TOOLS.map((tool) => tool.name));

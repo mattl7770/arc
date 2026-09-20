@@ -29,11 +29,17 @@ import {
   getExperiment,
 } from '../src/lib/db/repositories/experiments.ts';
 import { createReminder } from '../src/lib/db/repositories/reminders.ts';
-import { logMeal } from '../src/lib/db/repositories/nutrition.ts';
+import { getMeal, logMeal } from '../src/lib/db/repositories/nutrition.ts';
+import { getWorkoutDetail, logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { rememberFact } from '../src/lib/db/repositories/coach-memory.ts';
 import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
 import { insertKnowledgeChunk } from '../src/lib/db/repositories/rag.ts';
-import { landedWriteReceipts } from '../src/lib/db/repositories/ai-chat.ts';
+import {
+  appendMessage,
+  landedWriteReceipts,
+  createConversation,
+} from '../src/lib/db/repositories/ai-chat.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import {
   COACH_DOMAIN_REGISTRY,
@@ -346,11 +352,26 @@ console.log('3. the parser: unknown fields, non-editable fields, refused creates
     ? ok('an unregistered domain is refused')
     : bad('unknown domain accepted');
 
-  // PREFER THE SPECIFIC TOOL is a parser rule, not only prompt copy. No domain
-  // in Phase 1 has a create path at all, and each names the tool that does.
-  COACH_DOMAIN_REGISTRY.every((d) => d.create === undefined)
-    ? ok('no domain creates through the generic path in Phase 1')
-    : bad('a domain grew a create path');
+  // PREFER THE SPECIFIC TOOL is a parser rule, not only prompt copy. A domain
+  // whose create has a bespoke tool has NO generic create, and names it.
+  COACH_DOMAIN_REGISTRY.every((d) => d.create === undefined || d.createVia === undefined)
+    ? ok('no domain offers both a generic create and a bespoke one')
+    : bad('a domain has two ways to create the same thing');
+  ['meals', 'workouts', 'recipes', 'grocery', 'protocols', 'reminders', 'experiments'].every(
+    (k) => domainByKey(k).create === undefined && typeof domainByKey(k).createVia === 'string'
+  )
+    ? ok('…and every domain with a log/save tool routes creates to it, not to edit_record')
+    : bad('a bespoke-create domain grew a generic create');
+  // Creating is refused BY NAME, which is what makes the refusal actionable.
+  (() => {
+    const { db } = freshDb();
+    const text = throwText(() =>
+      editRecord.confirmSummary({ domain: 'meals', fields: { name: 'x' } }, db, { now: NOW })
+    );
+    return text !== null && /"id" must be/.test(text);
+  })()
+    ? ok('edit_record with no id is refused — it patches, it never mints')
+    : bad('a create slipped through edit_record');
   COACH_DOMAIN_REGISTRY.filter((d) => d.createVia !== undefined).every(
     (d) => toolByName(d.createVia) !== undefined
   )
@@ -418,15 +439,22 @@ console.log('4b. query_records: list, compute, windows and the discovery call');
   const bare = query({ domain: 'saved_workouts' });
   bare.fields &&
   Object.keys(bare.fields).length > 0 &&
-  bare.editable === false &&
-  bare.removable === 'no'
-    ? ok('the domain alone returns its fields, and says it cannot be written yet')
+  bare.editable === true &&
+  bare.removable === 'hard'
+    ? ok('the domain alone returns its fields, and says how it can be written')
     : bad('discovery call', JSON.stringify(bare));
-  // Read-only fields SAY SO, so the model never proposes an edit the parser
-  // would refuse a round trip later.
-  Object.values(bare.fields).every((note) => /read-only/.test(note))
-    ? ok('…and every field of a read-only domain is marked read-only')
-    : bad('read-only fields unmarked', JSON.stringify(bare.fields));
+  // A READ-ONLY field SAYS SO, so the model never proposes an edit the parser
+  // would refuse a round trip later — and an editable one does not, so the
+  // marking means something.
+  /read-only/.test(bare.fields.exercises) && !/read-only/.test(bare.fields.name)
+    ? ok('…and a read-only field is marked while an editable one is not')
+    : bad('read-only marking wrong', JSON.stringify(bare.fields));
+  (() => {
+    const readOnly = query({ domain: 'lab_reports' });
+    return readOnly.editable === false && readOnly.removable === 'no';
+  })()
+    ? ok('…and a wholly read-only domain says it cannot be written or removed from')
+    : bad('lab_reports looks writable');
   query({ domain: 'saved_workouts', query: 'nothing' }).fields === undefined
     ? ok('a FILTERED call omits the vocabulary — it is discovery, not a header')
     : bad('vocabulary billed on every call');
@@ -486,6 +514,177 @@ console.log('4b. query_records: list, compute, windows and the discovery call');
   PASS_READ_TOOLS.length === READ_TOOLS.length - 1
     ? ok('the unattended pass gets every read EXCEPT query_records, and no write')
     : bad('pass tool set', PASS_READ_TOOLS.map((t) => t.name).join(','));
+}
+
+console.log('4c. READ-MODIFY-WRITE: a patch never erases what it did not mention');
+{
+  const { db } = freshDb();
+
+  // THE C10 CLASS, and the sharpest instance in the registry. `replaceWorkout`
+  // DELETES every set and re-inserts its argument, so a literal patch of one
+  // field would empty the session — every rep, every load, every PR the engine
+  // computes from those rows — behind a card that named the duration.
+  const workoutId = logWorkout(
+    db,
+    { date: TODAY, kind: 'strength', durationMin: 45, notes: 'felt good' },
+    [
+      { exercise: 'Bench Press', reps: 8, weightKg: 80, setType: 'normal' },
+      { exercise: 'Bench Press', reps: 8, weightKg: 82.5, setType: 'normal' },
+    ]
+  );
+  const before = JSON.stringify(getWorkoutDetail(db, workoutId).sets);
+  edit(db, 'workouts', workoutId, { duration_min: 50 });
+  const after = getWorkoutDetail(db, workoutId);
+  JSON.stringify(after.sets.map(({ id: _id, ...s }) => s)) ===
+  JSON.stringify(JSON.parse(before).map(({ id: _id, ...s }) => s))
+    ? ok('patching a workout’s duration leaves every set byte-identical')
+    : bad('sets lost', JSON.stringify(after.sets));
+  after.durationMin === 50 && after.notes === 'felt good' && after.kind === 'strength'
+    ? ok('…and the fields the patch never mentioned are untouched')
+    : bad('workout fields', JSON.stringify(after));
+  // `sets` is not a field the model can send AT ALL.
+  throws(() => card(db, 'workouts', workoutId, { sets: [] }))
+    ? ok('“sets” is refused as a field — the session screen owns them')
+    : bad('sets patched through the generic path');
+
+  // `updateMealMeta` rewrites name, time AND notes in one statement.
+  const mealId = logMeal(db, {
+    date: TODAY,
+    time: '12:30',
+    name: 'Salmon bowl',
+    kcal: 700,
+    notes: 'with extra rice',
+  });
+  const line = card(db, 'meals', mealId, { name: 'Salmon bowl, large' });
+  line === 'Edit meal "Salmon bowl" — name Salmon bowl → Salmon bowl, large'
+    ? ok(`the card is before → after, resolved from the row ("${line}")`)
+    : bad('meal card', line);
+  edit(db, 'meals', mealId, { name: 'Salmon bowl, large' });
+  const meal = getMeal(db, mealId);
+  meal.name === 'Salmon bowl, large' && meal.notes === 'with extra rice' && meal.time === '12:30'
+    ? ok('renaming a meal keeps its notes and its clock')
+    : bad('meal fields', JSON.stringify(meal));
+  // A patch that changes nothing costs no Approve tap.
+  throws(() => card(db, 'meals', mealId, { name: 'Salmon bowl, large' }))
+    ? ok('a patch that changes nothing throws instead of drawing a card')
+    : bad('no-op card drawn');
+  // The macros are READ-ONLY through this path — parity with the Eat screen.
+  throws(() => card(db, 'meals', mealId, { kcal: 640 }))
+    ? ok('a meal’s macros are not patchable — an itemized total would disagree with its items')
+    : bad('macros patched');
+  // A future date is refused at CARD time, the log tools' own rule.
+  throws(() => card(db, 'meals', mealId, { date: shiftISODate(TODAY, 3) }))
+    ? ok('a future date is refused before the gate, not after it')
+    : bad('future date accepted');
+
+  // `content` is not a field of the protocol domain, for the same reason.
+  createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack' },
+    { phases: [{ title: null, duration_days: null, items: [] }] },
+    'seed'
+  );
+  throws(() => card(db, 'protocols', 'evening_stack', { content: {} }))
+    ? ok('a protocol’s document is refused — update_protocol takes the complete set')
+    : bad('protocol content patched');
+  card(db, 'protocols', 'evening_stack', { is_active: false }).startsWith('Edit protocol')
+    ? ok('…while its identity and policy are patchable')
+    : bad('protocol policy not editable');
+}
+
+console.log('4d. removal: refuse, hard, and undo-only');
+{
+  const { db } = freshDb();
+  const deleteRecord = toolByName('delete_record');
+  const del = (domain, id, conversationId) =>
+    deleteRecord.confirmSummary({ domain, id }, db, { now: NOW, conversationId });
+
+  // The three policies, as the registry declares them.
+  const byMode = (mode) =>
+    COACH_DOMAIN_REGISTRY.filter((d) => d.remove?.mode === mode).map((d) => d.key);
+  JSON.stringify(byMode('own')) === JSON.stringify(['meals', 'workouts'])
+    ? ok('only a meal and a workout are UNDO-deletable — the two the Coach logs and owns')
+    : bad('own set', byMode('own').join(','));
+  byMode('refuse').includes('protocols')
+    ? ok('a protocol refuses removal — its versions are what past days were lived under')
+    : bad('protocols removable');
+  // `refuse` domains are absent from delete_record's enum entirely, so the
+  // schema turns them down at zero round trips.
+  deleteRecord.inputSchema.properties.domain.enum.includes('protocols') === false
+    ? ok('…and it is not in the enum at all, so the schema refuses it for free')
+    : bad('a refuse domain is in the delete enum');
+  // …and asking anyway gets the SCREEN, not just a no. A refusal that only
+  // says "you cannot" leaves the user with nowhere to go.
+  const refused = throwText(() => del('protocols', 'x'));
+  refused && /Pause it with/.test(refused) && /delete it on Protocols/.test(refused)
+    ? ok('asking anyway names the affordance and the screen, not just a refusal')
+    : bad('refusal text', String(refused));
+  const unknown = throwText(() => del('nope', 'x'));
+  unknown && /must be one of/.test(unknown)
+    ? ok('an unregistered domain names the removable set')
+    : bad('unknown delete domain', String(unknown));
+
+  // HARD, and it must not strand history: `PRAGMA foreign_key_list` on every
+  // table pointing at a `hard` domain's table must be SET NULL, never CASCADE,
+  // from anything that is a log.
+  const HARD_TABLES = {
+    food_catalog: 'foods',
+    meal_templates: 'meal_templates',
+    saved_workouts: 'routines',
+    recipes: 'recipes',
+    screenings: 'screenings',
+  };
+  const strands = [];
+  for (const [key, table] of Object.entries(HARD_TABLES)) {
+    for (const child of ['meals', 'meal_items', 'workouts', 'grocery_items', 'appointments']) {
+      for (const fk of db.all(`PRAGMA foreign_key_list(${child})`)) {
+        if (fk.table === table && fk.on_delete === 'CASCADE') strands.push(`${key}: ${child}`);
+      }
+    }
+  }
+  strands.length === 0
+    ? ok('no `hard` domain cascades into a log table — history cannot be stranded')
+    : bad('a hard delete would strand history', strands.join(', '));
+
+  // THE UNDO. A meal the Coach did not log is refused AT CARD TIME, so the
+  // user never answers a gate for it.
+  const mealId = logMeal(db, { date: TODAY, time: '12:30', name: 'Salmon bowl', kcal: 700 });
+  const conversationId = createConversation(db);
+  const notMine = throwText(() => del('meals', mealId, conversationId));
+  notMine && /not one you logged in this conversation/.test(notMine)
+    ? ok('deleting a meal the Coach did not log is refused before the gate')
+    : bad('undo check', String(notMine));
+  // …and with no thread at all, nothing counts as the Coach's own write.
+  throws(() => del('meals', mealId, undefined))
+    ? ok('…and with no conversation, nothing counts as its own write (fail closed)')
+    : bad('no-conversation delete allowed');
+
+  // Now record a turn in which the Coach logged one, exactly as the service
+  // layer would: the tool RESULT carries the new id.
+  const mineId = logMeal(db, { date: TODAY, time: '19:00', name: 'Chicken and rice', kcal: 800 });
+  appendMessage(db, conversationId, 'assistant', 'Logged it.', [
+    {
+      id: 'toolu_1',
+      name: 'log_meal',
+      input: {},
+      result: JSON.stringify({ logged: true, id: mineId }),
+      receipt: 'Log meal "Chicken and rice" · 800 kcal',
+    },
+  ]);
+  del('meals', mineId, conversationId) === 'Delete meal "Chicken and rice"'
+    ? ok('a meal THIS thread’s Coach logged can be undone, and the card says Delete')
+    : bad('undo card', del('meals', mineId, conversationId));
+  toolByName('delete_record').confirmMeta({}, db, { now: NOW }).kind === 'delete'
+    ? ok('…and the card is told it is a removal, so its lanes can word one')
+    : bad('delete kind');
+  JSON.parse(
+    deleteRecord.execute(db, { domain: 'meals', id: mineId }, { now: NOW, conversationId })
+  ).deleted === true && getMeal(db, mineId) === undefined
+    ? ok('…and the row is gone')
+    : bad('undo did not delete');
+  getMeal(db, mealId) !== undefined
+    ? ok('…while the meal it did not log is still there')
+    : bad('the wrong meal was deleted');
 }
 
 console.log('5. retired names still answer as writes, so no receipt is lost');

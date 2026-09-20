@@ -36,8 +36,11 @@ import {
   domainByKey,
   domainSelfEvident,
   domainVocabulary,
+  describeDelete,
   EDIT_DOMAIN_KEYS,
+  idsWrittenInConversation,
   QUERY_DOMAIN_KEYS,
+  REMOVABLE_DOMAIN_KEYS,
   type CoachDomainEntry,
   type DomainRow,
 } from '../domains/index';
@@ -137,10 +140,16 @@ function printedBefore(plan: EditPlan): Record<string, unknown> {
 const editRecordTool: CoachTool = {
   name: 'edit_record',
   description:
-    'Change ONE existing row: send only the fields that change. Domains and their fields: ' +
-    'reminders `status` done (one-offs only) | dismissed; experiments `status` concluded ' +
-    '(with `conclusion`) | abandoned (with `reason`); memories and knowledge `status` archived. ' +
-    'Get the id from the matching read tool. Prefer a specific tool where one exists.',
+    // The per-domain FIELD vocabulary is not here: 26 domains of field names
+    // would be ~650 tokens of cached prefix, and `query_records` returns them
+    // warm. Only the four STATUS vocabularies are, because they are the ones
+    // whose value set cannot be guessed from the field name.
+    'Change ONE existing row: send only the fields that change, and the card shows each as ' +
+    'before → after. Statuses: reminders done (one-offs only) | dismissed; experiments ' +
+    'concluded (with `conclusion`) | abandoned (with `reason`); memories, knowledge and a ' +
+    'custom exercise archived. For any other domain call query_records with the domain alone ' +
+    'to learn its fields. Get the id from the matching read. Prefer a specific tool where one ' +
+    'exists.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -290,5 +299,96 @@ const queryRecordsTool: CoachTool = {
   },
 };
 
+// --- delete_record -----------------------------------------------------------
+
+/**
+ * Removal is its own tool, over its own smaller enum.
+ *
+ * It is NOT a `status: 'deleted'` value on `edit_record`, and the reason is the
+ * same one that kept `retire_knowledge_entry` separate from
+ * `save_knowledge_entry`: a removal must never be a VALUE the model can set in
+ * passing, alongside three other fields, on a card that opens with "Edit". Its
+ * own tool means its own enum (so the schema refuses a record of a day at zero
+ * round trips), its own chip, its own receipt verb, and a card whose fixed
+ * consequence line says a row LEAVES the record rather than that one is written
+ * to it.
+ */
+function planDelete(db: Database, input: Record<string, unknown>, context: CoachToolContext) {
+  const args = asRecord(input);
+  const key = reqString(args, 'domain');
+  const entry = domainByKey(key);
+  if (!entry || !entry.remove || entry.remove.mode === 'refuse' || !entry.resolve) {
+    // The refusal NAMES the screen when there is one, so the answer is useful
+    // rather than merely a no.
+    if (entry?.remove?.mode === 'refuse') throw new Error(entry.remove.because);
+    throw new Error(`"domain" must be one of: ${REMOVABLE_DOMAIN_KEYS.join(', ')}.`);
+  }
+  const row = entry.resolve(db, reqString(args, 'id'), context);
+  return { entry, row, remove: entry.remove };
+}
+
+const deleteRecordTool: CoachTool = {
+  name: 'delete_record',
+  description:
+    'Remove ONE row, permanently. Only where a screen would let the user remove it, and for a ' +
+    'logged meal, workout or water entry ONLY as an undo of something you wrote in THIS ' +
+    'conversation. Everything else is corrected on its own screen.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      domain: { type: 'string', enum: [...REMOVABLE_DOMAIN_KEYS] },
+      id: { type: 'string' },
+    },
+    required: ['domain', 'id'],
+    additionalProperties: false,
+  },
+  readOnly: false,
+  confirmSummary: (input, db, context) => {
+    const plan = planDelete(db, input, context);
+    if (plan.remove.mode === 'own') {
+      // THE UNDO CHECK, at CARD time: a refusal the user never has to answer a
+      // gate for. The evidence is `ai_messages.tool_calls` for THIS thread.
+      const own = idsWrittenInConversation(db, context.conversationId);
+      if (!own.has(plan.row.id)) {
+        throw new Error(
+          `That ${plan.entry.label} is not one you logged in this conversation, so deleting it ` +
+            'would be rewriting the record rather than undoing yourself. Correct it with ' +
+            'edit_record, or let the user remove it on its own screen.'
+        );
+      }
+    }
+    context.card = { domain: plan.entry.key, id: plan.row.id, before: { ...plan.row.values } };
+    return describeDelete(plan.entry.label, plan.row);
+  },
+  confirmMeta: () => ({ kind: 'delete', selfEvident: false }),
+  execute: (db, input, context) => {
+    const plan = planDelete(db, input, context);
+    // The same re-read `edit_record` does. A row that changed between the card
+    // and the approval is not the row the user agreed to remove.
+    const card = context.card;
+    if (card && card.domain === plan.entry.key && card.id === plan.row.id) {
+      for (const [name, was] of Object.entries(card.before)) {
+        const now = plan.row.values[name];
+        if (!Object.is(was, now)) {
+          throw new Error(
+            `${name} changed while the card was open (was ${show(was)}, now ${show(now)}). ` +
+              'Nothing deleted. Read it again and propose once more.'
+          );
+        }
+      }
+    }
+    if (plan.remove.mode === 'own') {
+      const own = idsWrittenInConversation(db, context.conversationId);
+      if (!own.has(plan.row.id)) {
+        throw new Error(
+          `That ${plan.entry.label} is not one you logged in this conversation. Nothing deleted.`
+        );
+      }
+    }
+    plan.remove.run(db, plan.row);
+    return json({ deleted: true, domain: plan.entry.key, id: plan.row.id, title: plan.row.name });
+  },
+};
+
 export const RECORD_READ_TOOLS: CoachTool[] = [queryRecordsTool];
-export const RECORD_WRITE_TOOLS: CoachTool[] = [editRecordTool];
+export const RECORD_WRITE_TOOLS: CoachTool[] = [editRecordTool, deleteRecordTool];

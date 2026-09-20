@@ -37,6 +37,7 @@
  * is a change the owner approved without being told what it cost.
  */
 import type { Database } from '@/lib/db/database';
+import { todayISODate } from '@/lib/db/date';
 
 import type { CoachToolContext, WriteKind } from '../tools/types';
 
@@ -238,4 +239,172 @@ export function enumField(allowed: readonly string[], note: string, editable = t
       return value;
     },
   };
+}
+
+/**
+ * A text field. `null` is a real value here — it CLEARS the field — which is
+ * the one place the registry deliberately differs from `optString` (which
+ * cannot tell an omitted key from an empty one). The patch only ever carries
+ * keys the model sent, so "omitted" is already expressed by absence.
+ */
+export function textField(note: string, options: { requiredOnCreate?: boolean } = {}): DomainField {
+  return {
+    editable: true,
+    note,
+    ...(options.requiredOnCreate ? { requiredOnCreate: true } : {}),
+    parse: (fields, key) => {
+      const value = fields[key];
+      if (value === null) return null;
+      if (typeof value !== 'string') {
+        throw new Error(`"${key}" must be a string, or null to clear.`);
+      }
+      const trimmed = value.trim();
+      return trimmed.length === 0 ? null : trimmed;
+    },
+  };
+}
+
+/** A number field; `null` clears it. Bounds beyond these are the repository's. */
+export function numberField(
+  note: string,
+  options: { requiredOnCreate?: boolean; min?: number; max?: number } = {}
+): DomainField {
+  return {
+    editable: true,
+    note,
+    ...(options.requiredOnCreate ? { requiredOnCreate: true } : {}),
+    parse: (fields, key) => {
+      const value = fields[key];
+      if (value === null) return null;
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new Error(`"${key}" must be a finite number, or null to clear.`);
+      }
+      if (options.min !== undefined && value < options.min) {
+        throw new Error(`"${key}" must be at least ${options.min}.`);
+      }
+      if (options.max !== undefined && value > options.max) {
+        throw new Error(`"${key}" must be at most ${options.max}.`);
+      }
+      return value;
+    },
+  };
+}
+
+/** A boolean field. `null` is not a value — a flag is on or off. */
+export function boolField(note: string): DomainField {
+  return {
+    editable: true,
+    note,
+    parse: (fields, key) => {
+      const value = fields[key];
+      if (typeof value !== 'boolean') throw new Error(`"${key}" must be true or false.`);
+      return value;
+    },
+  };
+}
+
+/** `"HH:MM"`, 24-hour, with real clock values; `null` clears it. */
+export function timeField(note: string): DomainField {
+  return {
+    editable: true,
+    note,
+    parse: (fields, key) => {
+      const value = fields[key];
+      if (value === null) return null;
+      if (typeof value !== 'string') {
+        throw new Error(`"${key}" must be "HH:MM", or null to clear.`);
+      }
+      const match = /^(\d{2}):(\d{2})$/.exec(value.trim());
+      if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) {
+        throw new Error(`"${key}" must be a 24-hour "HH:MM" time, e.g. "21:00".`);
+      }
+      return value.trim();
+    },
+  };
+}
+
+/**
+ * A `"YYYY-MM-DD"` calendar day. `kind: 'past'` refuses a future one, which is
+ * the log tools' own rule — a mis-parsed "next Tuesday" poisons every trend
+ * window it lands in — judged against the turn's clock so tests stay
+ * deterministic.
+ */
+export function dateField(
+  note: string,
+  kind: 'past' | 'any' = 'any',
+  options: { requiredOnCreate?: boolean } = {}
+): DomainField {
+  return {
+    editable: true,
+    note,
+    ...(options.requiredOnCreate ? { requiredOnCreate: true } : {}),
+    parse: (fields, key, context) => {
+      const value = fields[key];
+      if (typeof value !== 'string') throw new Error(`"${key}" must be a "YYYY-MM-DD" date.`);
+      const shaped = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+      const y = Number(shaped?.[1]);
+      const m = Number(shaped?.[2]);
+      const d = Number(shaped?.[3]);
+      const parsed = new Date(Date.UTC(y, m - 1, d));
+      const roundTrips =
+        shaped !== null &&
+        !Number.isNaN(parsed.getTime()) &&
+        parsed.getUTCFullYear() === y &&
+        parsed.getUTCMonth() === m - 1 &&
+        parsed.getUTCDate() === d;
+      if (!roundTrips) throw new Error(`"${key}" must be a real "YYYY-MM-DD" calendar date.`);
+      const day = value.trim();
+      if (kind === 'past' && day > todayISODate(context.now)) {
+        throw new Error(
+          `"${key}" (${day}) is in the future — a record is of what already happened. ` +
+            `Today is ${todayISODate(context.now)}.`
+        );
+      }
+      return day;
+    },
+  };
+}
+
+// --- The generic card --------------------------------------------------------
+
+/** One value, as a card prints it. */
+function printed(value: unknown): string {
+  if (value === null || value === undefined) return 'nothing';
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (typeof value === 'string') return value.length === 0 ? 'nothing' : value;
+  if (typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? '' : 's'}`;
+  return JSON.stringify(value);
+}
+
+/**
+ * The BEFORE → AFTER card, built from the ROW rather than from the request.
+ *
+ * "Edit meal" says nothing a user can refuse. What they are being asked about
+ * is the change, so every field the patch touches is printed as it reads now
+ * and as it would read — and a field whose new value equals the old one is
+ * DROPPED, because a card listing a change that is not a change trains the
+ * reader to stop reading it. A patch that changes nothing throws instead of
+ * costing an Approve tap.
+ */
+export function describeEdit(
+  label: string,
+  row: DomainRow,
+  patch: Record<string, unknown>
+): string {
+  const changes: string[] = [];
+  for (const [name, next] of Object.entries(patch)) {
+    const before = row.values[name];
+    if (Object.is(before, next)) continue;
+    changes.push(`${name} ${printed(before)} → ${printed(next)}`);
+  }
+  if (changes.length === 0) {
+    throw new Error('Nothing would change — every field you sent already reads that way.');
+  }
+  return `Edit ${label} "${row.name}" — ${changes.join(', ')}`;
+}
+
+/** The removal card. A deletion is worded as one, never as an edit. */
+export function describeDelete(label: string, row: DomainRow): string {
+  return `Delete ${label} "${row.name}"`;
 }

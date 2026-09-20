@@ -1,5 +1,75 @@
 # Architecture Decision Records (ADR)
 
+## 2026-09-19 — The Coach may correct a logged row; it may delete only its own
+
+**Decision:** the rule that **logged history is not the Coach's to rewrite** is **superseded**.
+In its place, two rules:
+
+> **Correction is not rewriting.** Any logged row a screen can edit, the Coach may edit — behind a
+> confirmation card that prints every field as **before → after**, resolved from the row.
+>
+> **Deletion is undo, not history.** The Coach may delete a logged row only when **this
+> conversation's Coach wrote it**. Everything else it cannot remove at all.
+
+This is the owner's answer to Q2 of `docs/spikes/coach-whole-app-access.md` (option b), and it
+supersedes the shipped rule in two places: `adjust_today`'s refusal prose about a settled mission
+row, and the coverage line *"editing or deleting anything already logged — a meal, workout, metric,
+capture (its screen in Eat, Train or Data)"*, which is rewritten to what is left true.
+
+**What actually changed.** A meal, a workout, a water entry, a saved workout, a food, a template, a
+recipe, a screening, an appointment, a muscle anchor, a protocol's identity and policy, and five
+Settings are editable through `edit_record`. A meal and a workout are deletable through
+`delete_record`, and **only** when `ai_messages.tool_calls` for this thread shows the Coach logged
+them. Everything else that is a record of a day refuses and names its screen.
+
+**What did NOT change, and each is load-bearing:**
+
+- **Mission rows are still not an `edit_record` domain.** `adjust_today`'s *"already completed
+  today — its record stands"* stays true, because today's plan is that tool's, in one approved
+  batch, and nothing else addresses a mission row.
+- **A logged metric and a capture still cannot be touched** — not by policy, but by **parity**:
+  no repository function edits one, so no screen does either, so the Coach does not get a path the
+  user does not have.
+- **A meal's macros are read-only.** A free-form meal's totals come from `log_meal`; an itemized
+  meal's are the sum of its item snapshots. Overwriting that sum leaves the total and the items
+  saying different things, with nothing on screen to say which is right.
+- **`replaceWorkout` deletes every set and re-inserts the argument**, so every edit in the registry
+  is READ-MODIFY-WRITE and `sets` is not a field the model can send. A literal patch of a duration
+  would otherwise empty a session behind a card that said "45 → 50".
+- **A screening's `interval_months` stays off the Coach**, per the 2026-08-12 call the owner kept
+  at Q5. How often a colonoscopy is owed is decided with a physician.
+
+**Reasoning.**
+
+1. **The old rule was written when the Coach could not see a logged row at all.** "Correct it on
+   its screen" was the only honest answer available: nothing could list yesterday's meals, so
+   nothing could propose a correction to one either. `query_records` removed that constraint, and
+   a rule justified by a missing capability should not outlive the capability arriving.
+2. **The failure mode it guarded against was silent rewriting, and the card is a better guard than
+   a prohibition.** What makes a correction safe is not that the Coach is forbidden from
+   proposing one; it is that the user reads `kcal 700 → 640` and taps Approve. The gate already
+   existed; the before → after card is what makes it informative.
+3. **Deletion is genuinely different, and the asymmetry is deliberate.** An edit leaves a row that
+   can be inspected and corrected again. A deletion leaves nothing, and ARC's data has exactly one
+   copy. So deletion is scoped to the span in which "no, delete that" means something — this
+   thread, where the receipt is a few lines up — and derives from what the Coach already recorded,
+   with no migration and no new column.
+4. **"The Coach wrote it, ever" was rejected.** That is a licence over every row it has ever
+   logged, forever, which is history rather than undo.
+
+**Consequences.** `CoachToolContext` gains an optional `conversationId`, threaded from
+`use-coach-chat`; absent, nothing counts as the Coach's own write, which is the fail-closed answer.
+`delete_record` is a separate tool over a smaller enum, because a removal must never be a *value*
+the model can set in passing. The confirmation card gains `kind`, so a removal can finally be
+worded as one. An edit leaves **no authorship trace on the row** — a receipt in
+`ai_messages.tool_calls` and a moved `updated_at`, and nothing saying who changed it. v1 accepts
+that; an `edit_log` written by the Coach *and* the screens' edit paths is its own spike.
+
+**Revert criteria** are in `docs/coach-domains.md` §13 and are part of the deliverable: the
+Phase-2 commit is reverted on any of four measured signals over a week of use.
+
+---
+
 ## 2026-09-19 — Modes are retired: a status is a fact, and the Coach is what adapts the day
 
 **Decision:** the Modes system is **retired**. `day_statuses` (migration `0061`) replaces it, and

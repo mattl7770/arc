@@ -15,13 +15,19 @@
  */
 import { READ_DOMAINS } from './read-domains';
 import { STATUS_DOMAINS } from './status-domains';
+import { WRITE_DOMAINS } from './write-domains';
 import type { CoachDomainEntry } from './types';
 
 export * from './types';
 export { EXPERIMENT_ABANDON_NOTE, RECURRING_REMINDER_NOTE } from './status-domains';
+export { idsWrittenInConversation } from './own-writes';
 
 /** Every domain, in the order the enums print. */
-export const COACH_DOMAIN_REGISTRY: CoachDomainEntry[] = [...STATUS_DOMAINS, ...READ_DOMAINS];
+export const COACH_DOMAIN_REGISTRY: CoachDomainEntry[] = [
+  ...STATUS_DOMAINS,
+  ...READ_DOMAINS,
+  ...WRITE_DOMAINS,
+];
 
 const BY_KEY = new Map(COACH_DOMAIN_REGISTRY.map((entry) => [entry.key, entry]));
 

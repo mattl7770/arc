@@ -10,10 +10,10 @@
  * Protocols and Exercise screens' own computations, read rather than
  * re-derived, so the Coach and the screen can never disagree about a number.
  *
- * They carry no `edit`, no `create` and no `remove` in this commit. Writes
- * arrive in Phase 2, after a week of the read path on a device — the audit's
- * whole reason for splitting the phases is that a model's *selection* behaviour
- * over a domain enum is the thing the headless suite cannot measure.
+ * They landed read-only in commit B and several gained `edit` and `remove` in
+ * commit C, after the device week the audit's phase split exists for — a
+ * model's SELECTION behaviour over a domain enum is the one thing the headless
+ * suite cannot measure, so the read path shipped first and alone.
  *
  * ## `list` vs `compute`, and why the distinction is in the type
  *
@@ -35,31 +35,70 @@
  * text of any stored reading; a report's kind, period and when it was made.
  */
 import { shiftISODate, todayISODate } from '@/lib/db/date';
-import { listExercises, resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
-import { searchFoods, listFavoriteFoods, listRecentFoods } from '@/lib/db/repositories/foods';
+import {
+  archiveExercise,
+  getExercise,
+  listExercises,
+  resolveExerciseByName,
+} from '@/lib/db/repositories/exercise-catalog';
+import {
+  deleteFood,
+  getFood,
+  searchFoods,
+  listFavoriteFoods,
+  listRecentFoods,
+  setFoodFavorite,
+  updateFood,
+} from '@/lib/db/repositories/foods';
 import { listLabReports } from '@/lib/db/repositories/labs';
 import { listEntriesOn } from '@/lib/db/repositories/logs';
-import { listTemplateItems, listTemplates } from '@/lib/db/repositories/meal-templates';
+import {
+  deleteTemplate,
+  getTemplate,
+  listTemplateItems,
+  listTemplates,
+  renameTemplate,
+} from '@/lib/db/repositories/meal-templates';
 import {
   dayFiberTotal,
   dayMicroTotals,
+  deleteMeal,
+  getMeal,
   listMealItems,
   listTodayMeals,
+  updateMealMeta,
+  updateMealTime,
 } from '@/lib/db/repositories/nutrition';
 import { protocolAdherence } from '@/lib/db/repositories/protocol-adherence';
 import { getProtocolBySlug, listProtocols, listVersions } from '@/lib/db/repositories/protocols';
 import { listPhotoAnalyses, listProgressPhotos } from '@/lib/db/repositories/progress-photos';
 import { listReports } from '@/lib/db/repositories/reports';
-import { getRoutine, listRoutines } from '@/lib/db/repositories/routines';
+import {
+  deleteRoutine,
+  getRoutine,
+  listRoutines,
+  updateRoutine,
+} from '@/lib/db/repositories/routines';
 import {
   e1rmSeries,
   exerciseSessionTops,
   personalRecords,
 } from '@/lib/db/repositories/training-stats';
 import { getPreferences } from '@/lib/db/repositories/user';
-import { listWaterEntries } from '@/lib/db/repositories/water';
+import { deleteWaterEntry, listWaterEntries, updateWaterEntry } from '@/lib/db/repositories/water';
 
-import type { CoachDomainEntry, DomainField, DomainReadArgs } from './types';
+import {
+  describeEdit,
+  numberField,
+  textField,
+  timeField,
+  dateField,
+  boolField,
+  enumField,
+  type CoachDomainEntry,
+  type DomainField,
+  type DomainReadArgs,
+} from './types';
 
 /** A read-only field: declared so `query_records` can name it, never patchable. */
 const ro = (note: string): DomainField => ({
@@ -85,14 +124,69 @@ const mealsDomain: CoachDomainEntry = {
   key: 'meals',
   label: 'meal',
   fields: {
-    name: ro('what it was'),
-    time: ro('HH:MM'),
-    kcal: ro('calories'),
+    name: textField('what it was'),
+    date: dateField('the day it was eaten', 'past'),
+    time: timeField('HH:MM, or null for untimed'),
+    notes: textField('free text'),
+    // The MACROS are read-only through this path, and that is parity rather
+    // than caution: the Eat screen has no field for them either. A free-form
+    // meal's totals come from `log_meal`, and an ITEMIZED meal's are the sum of
+    // its item snapshots — overwriting that sum would leave the total and the
+    // items saying different things, with nothing on screen to say which is
+    // right. Correcting an itemized meal means correcting an item, which is the
+    // item editor's job on its own screen.
+    kcal: ro('calories — from log_meal, or summed from the items'),
     protein_g: ro('protein, grams'),
     carbs_g: ro('carbohydrate, grams'),
     fat_g: ro('fat, grams'),
-    notes: ro('free text'),
   },
+  resolve: (db, id) => {
+    const meal = getMeal(db, id);
+    if (!meal) {
+      throw new Error(`No meal with id ${id}. Find it with query_records { domain: "meals" }.`);
+    }
+    return {
+      id: meal.id,
+      name: meal.name,
+      values: {
+        name: meal.name,
+        date: meal.date,
+        time: meal.time,
+        notes: meal.notes ?? null,
+      },
+      raw: meal,
+    };
+  },
+  summarize: ({ row, patch }) => describeEdit('meal', row!, patch),
+  // READ-MODIFY-WRITE. `updateMealMeta` rewrites name, time AND notes in one
+  // statement, so a literal patch of `name` alone would clear the notes and
+  // blank the clock behind a card that said "name X → Y". The row supplies
+  // everything the patch does not.
+  edit: (db, row, patch) => {
+    const next = { ...row.values, ...patch } as {
+      name: string;
+      date: string;
+      time: string | null;
+      notes: string | null;
+    };
+    if (next.name.trim() === '') {
+      throw new Error('A meal keeps its name — "" is not one.');
+    }
+    updateMealMeta(db, row.id, { name: next.name, time: next.time, notes: next.notes });
+    if (next.date !== row.values.date) {
+      updateMealTime(db, row.id, { date: next.date, time: next.time });
+    }
+  },
+  // UNDO, not history (the owner's Q2 answer). A meal is a record of a day, so
+  // it goes only when THIS conversation's Coach logged it.
+  remove: { mode: 'own', run: (db, row) => deleteMeal(db, row.id) },
+  // The line the owner's Q2(b) answer SUPERSEDES (ADR, docs/decisions.md). It
+  // is replaced by a narrower one, not simply dropped: a logged metric and a
+  // capture still have no repository edit path, so the Coach still cannot
+  // touch them.
+  retires: [
+    'editing or deleting anything already logged — a meal, workout, metric, capture (its screen in Eat, Train or Data)',
+  ],
   // The gap this closes: `get_nutrition_summary` gives TOTALS and
   // `get_today_snapshot` gives today. Nothing could list a past day's meals, or
   // any day's ITEMS — so "what was in yesterday's lunch" had no answer at all.
@@ -135,13 +229,82 @@ const foodCatalogDomain: CoachDomainEntry = {
   key: 'food_catalog',
   label: 'catalog food',
   fields: {
-    name: ro('the food'),
-    brand: ro('brand, if any'),
-    kcal_per_100: ro('calories per 100 of the basis below — NEVER per serving'),
-    protein_g_per_100: ro('protein per 100 of the basis below'),
-    basis: ro('what the per-100 numbers are of — g or ml'),
-    is_favorite: ro('starred on the Eat tab'),
+    name: textField('the food', { requiredOnCreate: true }),
+    brand: textField('brand, or null'),
+    kcal_per_100: numberField('calories per 100 of the basis — NEVER per serving', { min: 0 }),
+    protein_g_per_100: numberField('protein per 100 of the basis', { min: 0 }),
+    carbs_g_per_100: numberField('carbohydrate per 100 of the basis', { min: 0 }),
+    fat_g_per_100: numberField('fat per 100 of the basis', { min: 0 }),
+    basis: enumField(['g', 'ml'], 'what the per-100 numbers are of'),
+    is_favorite: boolField('starred on the Eat tab'),
   },
+  resolve: (db, id) => {
+    const food = getFood(db, id);
+    if (!food) {
+      throw new Error(
+        `No catalog food with id ${id}. Find it with query_records { domain: "food_catalog" }.`
+      );
+    }
+    return {
+      id: food.id,
+      name: food.brand ? `${food.name} (${food.brand})` : food.name,
+      values: {
+        name: food.name,
+        brand: food.brand,
+        kcal_per_100: food.kcal_100g,
+        protein_g_per_100: food.protein_g_100g,
+        carbs_g_per_100: food.carbs_g_100g,
+        fat_g_per_100: food.fat_g_100g,
+        basis: food.basis,
+        is_favorite: food.is_favorite === 1,
+      },
+      raw: food,
+    };
+  },
+  summarize: ({ row, patch }) => describeEdit('food', row!, patch),
+  // READ-MODIFY-WRITE, and here it is not optional: `updateFood` takes the
+  // WHOLE food, so a literal patch of `kcal_per_100` alone would null the
+  // barcode, the serving and every other macro.
+  edit: (db, row, patch) => {
+    const food = row.raw as {
+      name: string;
+      brand: string | null;
+      barcode: string | null;
+      serving_name: string | null;
+      serving_amount: number | null;
+      kcal_100g: number | null;
+      protein_g_100g: number | null;
+      carbs_g_100g: number | null;
+      fat_g_100g: number | null;
+      fiber_g_100g: number | null;
+      micros: string | null;
+      basis: 'g' | 'ml';
+    };
+    const next = { ...row.values, ...patch } as Record<string, unknown>;
+    if (typeof next.name !== 'string' || next.name.trim() === '') {
+      throw new Error('A food keeps its name — "" is not one.');
+    }
+    if ('is_favorite' in patch) setFoodFavorite(db, row.id, patch.is_favorite === true);
+    updateFood(db, row.id, {
+      name: next.name,
+      brand: (next.brand as string | null) ?? null,
+      barcode: food.barcode,
+      serving_name: food.serving_name,
+      serving_amount: food.serving_amount,
+      kcal_100g: (next.kcal_per_100 as number | null) ?? null,
+      protein_g_100g: (next.protein_g_per_100 as number | null) ?? null,
+      carbs_g_100g: (next.carbs_g_per_100 as number | null) ?? null,
+      fat_g_100g: (next.fat_g_per_100 as number | null) ?? null,
+      fiber_g_100g: food.fiber_g_100g,
+      micros: food.micros,
+      basis: next.basis as 'g' | 'ml',
+    });
+  },
+  // HARD, and safely so: `meal_items.food_id` is ON DELETE SET NULL (0014) and
+  // every logged item carries its own macro snapshot, so eating history
+  // survives catalog churn untouched. The same holds for recipe ingredients
+  // (0031) and template items (0018).
+  remove: { mode: 'hard', run: (db, row) => deleteFood(db, row.id) },
   read: {
     kind: 'list',
     run: (db, args) => {
@@ -180,10 +343,36 @@ const mealTemplatesDomain: CoachDomainEntry = {
   key: 'meal_templates',
   label: 'meal template',
   fields: {
-    name: ro('what the user calls it'),
-    kcal: ro('the template total'),
-    protein_g: ro('the template total'),
+    name: textField('what the user calls it'),
+    notes: textField('free text, or null'),
+    kcal: ro('the template total, summed from its items'),
+    protein_g: ro('the template total, summed from its items'),
   },
+  resolve: (db, id) => {
+    const template = getTemplate(db, id);
+    if (!template) {
+      throw new Error(
+        `No meal template with id ${id}. Find it with query_records { domain: "meal_templates" }.`
+      );
+    }
+    return {
+      id: template.id,
+      name: template.name,
+      values: { name: template.name, notes: template.notes ?? null },
+      raw: template,
+    };
+  },
+  summarize: ({ row, patch }) => describeEdit('meal template', row!, patch),
+  // `renameTemplate` rewrites name AND notes, so the row supplies the half the
+  // patch omits.
+  edit: (db, row, patch) => {
+    const next = { ...row.values, ...patch } as { name: string; notes: string | null };
+    if (next.name.trim() === '') throw new Error('A template keeps its name — "" is not one.');
+    renameTemplate(db, row.id, { name: next.name, notes: next.notes });
+  },
+  // HARD: a template is a stamp, never a record of a day. Logged meals copied
+  // its items as snapshots and are untouched by its removal.
+  remove: { mode: 'hard', run: (db, row) => deleteTemplate(db, row.id) },
   read: {
     kind: 'list',
     run: (db, args) =>
@@ -247,8 +436,54 @@ const waterDomain: CoachDomainEntry = {
   key: 'water',
   label: 'water entry',
   fields: {
-    ml: ro('the amount, canonical millilitres'),
-    date: ro('the day, YYYY-MM-DD'),
+    ml: numberField('the amount, canonical millilitres', { min: 1 }),
+    date: ro('the day it was logged on'),
+  },
+  resolve: (db, id, context) => {
+    // Water lives in `wearable_data`, so a "water entry" is only ever found by
+    // scanning the days it could be on. Today and the 30 before it is the span
+    // a correction plausibly reaches back over.
+    const today = todayISODate(context.now);
+    for (let i = 0; i < 31; i++) {
+      const date = shiftISODate(today, -i);
+      const hit = listWaterEntries(db, date).find((e) => e.id === id);
+      if (hit) {
+        if (!hit.editable) {
+          // §3.5: a DEVICE-ingested row is the Health upsert's, not the
+          // Coach's. The predicate is `water.ts`'s own.
+          throw new Error(
+            'That water entry came from a device, not from a manual log. ' +
+              'Device rows are Apple Health’s record and are not editable here.'
+          );
+        }
+        return {
+          id: hit.id,
+          name: `${hit.ml} ml on ${date}`,
+          values: { ml: hit.ml, date },
+          raw: hit,
+        };
+      }
+    }
+    throw new Error(
+      `No water entry with id ${id} in the last 31 days. ` +
+        'Find it with query_records { domain: "water", from: "YYYY-MM-DD" }.'
+    );
+  },
+  summarize: ({ row, patch }) => describeEdit('water entry', row!, patch),
+  edit: (db, row, patch) => {
+    if (!updateWaterEntry(db, row.id, patch.ml as number)) {
+      throw new Error('That water entry could not be updated — it may be a device row.');
+    }
+  },
+  // HARD, and narrowly: `deleteWaterEntry` refuses a device row itself, and no
+  // foreign key points at a manual wearable row, so nothing is stranded.
+  remove: {
+    mode: 'hard',
+    run: (db, row) => {
+      if (!deleteWaterEntry(db, row.id)) {
+        throw new Error('That water entry could not be deleted — it may be a device row.');
+      }
+    },
   },
   // `get_metric_series water` gives the day TOTALS. This is the individual
   // entries, which is what an edit or an undo needs an id for.
@@ -375,7 +610,32 @@ const exerciseCatalogDomain: CoachDomainEntry = {
     equipment: ro('barbell, dumbbell, machine, cable, bodyweight, …'),
     primaryMuscles: ro('what it trains'),
     isCustom: ro('written by the user or the Coach rather than seeded'),
+    status: enumField(['archived'], 'archived = retire it from the catalog; its history stays'),
   },
+  resolve: (db, id) => {
+    const exercise = getExercise(db, resolveExerciseByName(db, id) ?? id);
+    if (!exercise) {
+      throw new Error(
+        `No catalog exercise ${id}. Find it with query_records { domain: "exercise_catalog" }.`
+      );
+    }
+    return {
+      id: exercise.id,
+      name: exercise.name,
+      values: { status: 'active' },
+      raw: exercise,
+    };
+  },
+  summarize: ({ row }) => `Retire exercise "${row!.name}" from the catalog`,
+  edit: (db, row) => {
+    archiveExercise(db, row.id);
+  },
+  // ARCHIVE ONLY, and the reason is a CASCADE. `routine_exercises.exercise_id`
+  // is ON DELETE CASCADE (0012), so a hard delete would silently empty every
+  // saved workout that used the movement. `archiveExercise` takes it out of the
+  // catalog and leaves every set, every PR and every routine line intact — the
+  // difference between retiring a movement and erasing the training that used
+  // it. So the domain has NO `remove`, and the retirement is a status patch.
   read: {
     kind: 'list',
     run: (db, args) =>
@@ -397,9 +657,55 @@ const savedWorkoutsDomain: CoachDomainEntry = {
   key: 'saved_workouts',
   label: 'saved workout',
   fields: {
-    name: ro('what the user calls it'),
-    exercises: ro('its movements, in order, with target sets and rep range'),
+    name: textField('what the user calls it'),
+    exercises: ro('its movements, in order — edited on the Train screen'),
   },
+  resolve: (db, id) => {
+    const routine = getRoutine(db, id);
+    if (!routine) {
+      throw new Error(
+        `No saved workout with id ${id}. Find it with query_records { domain: "saved_workouts" }.`
+      );
+    }
+    return { id: routine.id, name: routine.name, values: { name: routine.name }, raw: routine };
+  },
+  summarize: ({ row, patch }) => describeEdit('saved workout', row!, patch),
+  // RENAME ONLY, and the lines are read-only for the `replaceWorkout` reason:
+  // `updateRoutine` replaces every line, so a patch that did not restate the
+  // whole list would empty the routine behind a card that said "name X → Y".
+  // Re-sending the lines it already has is the read-modify-write.
+  edit: (db, row, patch) => {
+    const routine = row.raw as {
+      name: string;
+      notes: string | null;
+      exercises: {
+        exerciseId: string;
+        targetSets: number;
+        repLow: number | null;
+        repHigh: number | null;
+        restSec: number | null;
+      }[];
+    };
+    const name = (patch.name as string | null) ?? routine.name;
+    if (typeof name !== 'string' || name.trim() === '') {
+      throw new Error('A saved workout keeps its name — "" is not one.');
+    }
+    updateRoutine(db, row.id, {
+      name,
+      notes: routine.notes,
+      exercises: routine.exercises.map((x) => ({
+        exerciseId: x.exerciseId,
+        targetSets: x.targetSets,
+        repLow: x.repLow,
+        repHigh: x.repHigh,
+        restSec: x.restSec,
+      })),
+    });
+  },
+  // HARD: a routine is a plan, not a record of a day, and `workouts.routine_id`
+  // is ON DELETE SET NULL (0013) — the sessions performed from it keep every
+  // set and simply stop naming a template that no longer exists.
+  remove: { mode: 'hard', run: (db, row) => deleteRoutine(db, row.id) },
   // "Saved workouts (Train)" was a CANNOT line. The parked Modes revamp assumes
   // the Coach can adjust the workout plan itself, and no tool reached a saved
   // workout at all — this is the read half of closing that.

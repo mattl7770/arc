@@ -2959,9 +2959,15 @@ console.log('36. the coverage manifest: the model is told what it CANNOT see');
   // knowledge write, rather than the sentence it used to live in.
   /INVITATION ONLY\./.test(promptText) &&
   /never to tidy, never to file away your own output/.test(promptText) &&
-  /save_knowledge_entry and edit_record/.test(promptText)
-    ? ok('one INVITATION ONLY bullet covers adjust_today, save_knowledge_entry and edit_record')
-    : bad('the invitation-only doctrine is missing or no longer names the three tools');
+  ['adjust_today', 'save_knowledge_entry', 'edit_record', 'delete_record'].every((t) =>
+    new RegExp(`INVITATION ONLY[^\\n]*${t}`).test(promptText)
+  )
+    ? ok('one INVITATION ONLY bullet covers all four tools that act on the record')
+    : bad('the invitation-only doctrine is missing or no longer names all four tools');
+  // Q2(b) in the model's own copy: a record of a day is CORRECTED, not removed.
+  /a record of a day is corrected, never removed/.test(promptText)
+    ? ok('…and the deletion rule rides the same bullet, in one clause')
+    : bad('the delete doctrine is missing');
   promptText.includes('"Magnesium citrate upsets his stomach" is a memory.')
     ? ok('the memory-vs-knowledge litmus is in the prompt verbatim')
     : bad('memory/knowledge litmus missing');

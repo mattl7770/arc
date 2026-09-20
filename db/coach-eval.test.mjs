@@ -978,7 +978,8 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   //     named a tool that no longer exists, and "closing one (you need the id)"
   //     says the same thing without it. This is why `readToolTokens` moved at
   //     all — the Haiku pass prefix is 7,076 → 7,067, still 2,971 clear of the
-  //     4,096 cache floor.
+  //     4,096 cache floor. (It moves again in commit B, DOWNWARD, when the
+  //     prompt shrinks; the pass's read SET does not move after this.)
   //
   // PROMPT, −1 NET, and this is the part that had to be earned. Main had **8
   // tokens of headroom** and the spike's doctrine bullet was priced at +27, so
@@ -1040,12 +1041,45 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   //     (query_records)" — ONE entry for fifteen domains, because the keys are
   //     already in the enum.
   //
-  // THE HAIKU PASS IS UNCHANGED AT 7,067, and that is deliberate rather than
-  // incidental: `query_records` is excluded from it (PASS_EXCLUDED_TOOLS).
+  // THE HAIKU PASS'S READ SET IS UNCHANGED, and that is deliberate rather than
+  // incidental: `query_records` is excluded from it (PASS_EXCLUDED_TOOLS), so
+  // the pass still carries exactly the eighteen tools it always did — 3,376
+  // tokens. Its PREFIX is that plus the system prompt, so it moves with the
+  // prompt alone: 7,067 → 7,027, downward.
   // Haiku's selection over a fifteen-key enum is unmeasured, a discovery call
   // would spend one of the pass's eight round trips AND re-bill the ~1.4k
   // uncached state block, and the pass is triage over curated reads. The
   // assertion below now bills the pass's OWN tool set, not every read tool.
+  // ── 2026-09-19: WHOLE-APP ACCESS, COMMIT C — THE WRITES (Phase 2).
+  // **9,067 schema and 3,652 prompt**, against main's 9,233 / 3,692. The branch
+  // ends with MORE headroom on both ceilings than it started with, having added
+  // twenty-six writable/readable domains, and NO CEILING WAS RAISED.
+  //
+  // SCHEMA, +317 on commit B's 8,750:
+  //   · `edit_record`'s enum 4 → 18 keys, and its description gains the fourth
+  //     status vocabulary plus one sentence sending the model to
+  //     `query_records` for every other domain's fields. The per-domain FIELD
+  //     names are still not here: 26 domains × ~25 tok is ~650 of cached prefix
+  //     for something a warm no-filter call returns.
+  //   · `delete_record` ADDED over an ELEVEN-key enum — the removable set, not
+  //     the editable one. A record of a day is absent from that enum entirely,
+  //     so the schema refuses it at zero round trips, which is cheaper than any
+  //     sentence explaining the rule would be.
+  //
+  // PROMPT, +1 on commit B's 3,651, and it buys a whole tool:
+  //   · the doctrine bullet gains `delete_record` and one clause — "a record of
+  //     a day is corrected, never removed" (+~30).
+  //   · PAID FOR by three coverage lines that became FALSE: appointments (a
+  //     registry domain now), "creating a protocol or a screening from scratch"
+  //     (already half-false since §8.2 gave `update_protocol` a create arm),
+  //     and the logged-history line, REWRITTEN to what the owner's Q2(b) answer
+  //     leaves true — a logged metric and a capture, which have no repository
+  //     edit path and therefore no screen path either. The Settings line
+  //     narrowed to the security boundary (Q3a).
+  //
+  // THE HAIKU PASS'S READ SET IS STILL 3,376 — untouched by three commits,
+  // because `query_records` never joined it and no write ever could. Its prefix
+  // is 7,028, down from main's 7,076, entirely because the prompt shrank.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(
