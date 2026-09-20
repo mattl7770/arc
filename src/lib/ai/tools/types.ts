@@ -104,6 +104,21 @@ export function optString(input: Record<string, unknown>, key: string): string |
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
+/**
+ * An optional boolean — and **`undefined` is a third answer, not a false**.
+ *
+ * `set_status.excuses` is the reason this is not `=== true`: an omitted flag
+ * there means "leave the stored value alone", so collapsing absent into false
+ * would silently un-excuse a day on every re-ask. A caller that wants a default
+ * applies it itself, where the default can be argued for in writing.
+ */
+export function optBool(input: Record<string, unknown>, key: string): boolean | undefined {
+  const value = input[key];
+  if (value == null) return undefined;
+  if (typeof value !== 'boolean') throw new Error(`"${key}" must be true or false.`);
+  return value;
+}
+
 export function reqNumber(input: Record<string, unknown>, key: string): number {
   const value = input[key];
   if (typeof value !== 'number' || !Number.isFinite(value)) {

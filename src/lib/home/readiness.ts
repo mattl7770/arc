@@ -98,11 +98,22 @@ export type ReadinessView = {
   excludedStatusDays: number;
   /**
    * Days of evidence Recovery is still short of a verdict — already computed
-   * here for the pillar's own note, surfaced so Home's status line can escalate
-   * from *"baselines exclude N status days"* to *"no recovery verdict until it
-   * ends"* at the moment it stops being able to grade. Zero when it can.
+   * here for the pillar's own note, surfaced so Home and the Coach can say how
+   * far off one is. Zero when it can grade.
    */
   recoveryDaysRemaining: number;
+  /**
+   * **Is the STATUS why Recovery has no verdict?** The gate for the escalated
+   * sentence, *"no recovery verdict until it ends"*.
+   *
+   * `recoveryDaysRemaining > 0` alone cannot carry that sentence, and the
+   * difference is a lie the user could check: on a phone with no watch Recovery
+   * is `unknown` because nothing has ever synced, and a status opened that
+   * morning would be blamed for a silence that predates it by months. So this
+   * is the counterfactual — would Recovery grade if the status days had
+   * counted? — computed from series already in hand rather than asserted.
+   */
+  recoveryPausedByStatus: boolean;
 };
 
 const LEVEL_ORDER: SignalLevel[] = ['optimal', 'good', 'caution', 'poor'];
@@ -1034,6 +1045,20 @@ export function deriveReadiness(
     baselineDaysRemaining(hrvSeries, today, oddDays),
     baselineDaysRemaining(rhrSeries, today, oddDays)
   );
+  // The counterfactual behind `recoveryPausedByStatus` — the same two counts
+  // over the same two series with the status days PUT BACK. It runs only when
+  // there is a status and Recovery is actually short, so the ordinary day pays
+  // nothing for it.
+  const statusDays = exclusions.bySource.get('status');
+  let recoveryPausedByStatus = false;
+  if (recoveryDaysRemaining > 0 && statusDays && statusDays.size > 0) {
+    const withStatusCounted = new Set([...oddDays].filter((day) => !statusDays.has(day)));
+    recoveryPausedByStatus =
+      Math.min(
+        baselineDaysRemaining(hrvSeries, today, withStatusCounted),
+        baselineDaysRemaining(rhrSeries, today, withStatusCounted)
+      ) === 0;
+  }
   // The open trip, read once — the home offset the evidence note names while a
   // baseline is paused. Null on a seam day and on every day at home.
   const trip = currentTrip(db, today);
@@ -1164,7 +1189,8 @@ export function deriveReadiness(
     // Read off the map the exclusions helper already built — NOT recounted, and
     // not a second query. `days` stays the only thing a baseline filters on;
     // `bySource` exists for exactly this, copy that has to name the reason.
-    excludedStatusDays: exclusions.bySource.get('status')?.size ?? 0,
+    excludedStatusDays: statusDays?.size ?? 0,
     recoveryDaysRemaining,
+    recoveryPausedByStatus,
   };
 }

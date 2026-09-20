@@ -62,7 +62,13 @@ import {
   listActiveReminders,
   resolveOneOffDay,
 } from '@/lib/db/repositories/reminders';
-import { modesSupersededFrom, setMode } from '@/lib/db/repositories/day-modes';
+import {
+  endAllStatuses,
+  normalizeStatusLabel,
+  openStatusNamed,
+  openStatuses,
+  startStatus,
+} from '@/lib/db/repositories/statuses';
 import {
   addGroceryItems,
   addRecipeToGroceryList,
@@ -105,7 +111,6 @@ import {
 } from '@/lib/db/repositories/mission';
 import { logSymptom } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
-import { getModeDefinition, MODE_KEYS, type ModeKey } from '@/lib/modes/registry';
 import { syncAndReportForReminder } from '@/lib/notifications/reminders';
 import { lbToKg, measuredSetLine } from '@/lib/exercise/format';
 import { maskByMeasures } from '@/lib/exercise/measures';
@@ -132,6 +137,7 @@ import type { Cadence, ProtocolContent } from '@/lib/protocols/types';
 
 import {
   asRecord,
+  optBool,
   optDate,
   optEnum,
   optNumber,
@@ -1526,115 +1532,160 @@ const CATEGORY_FOR_TYPE: Record<LogEntryType, string> = {
   note: 'Notes',
 };
 
-// --- set_mode (Normal / Travel / Sick / Deload / Social / Custom) ------------
+// --- set_status (the fact; what to do about it is the model's call) ---------
 
 /**
- * Validate and resolve a set_mode call into the window it will actually write.
+ * Validate and resolve a `set_status` call into the row it will actually write.
  *
- * Shared by `confirmSummary` and `execute` deliberately: when only execute
- * validated, an out-of-range window produced a perfectly reasonable-looking
- * confirmation card that threw the moment the user approved it. Whatever the
- * card says must be what happens — including the case where it can't.
+ * Shared by `confirmSummary` and `execute` deliberately, the rule `set_mode`
+ * established here: when only execute validated, an out-of-range window
+ * produced a perfectly reasonable-looking confirmation card that threw the
+ * moment the user approved it. **A card is a promise — "press yes and this
+ * happens"** — including the case where it cannot.
  */
-function resolveModeWindow(
+function resolveStatus(
   args: Record<string, unknown>,
   today: string
-): { mode: ModeKey; startDate: string; endDate: string | null } {
-  const mode = reqEnum(args, 'mode', MODE_KEYS);
+): {
+  label: string;
+  startDate: string;
+  endDate: string;
+  excuses: boolean | undefined;
+  reset: boolean;
+} {
+  const label = normalizeStatusLabel(reqString(args, 'label'));
+  if (label.length === 0) throw new Error('"label" cannot be empty.');
+  if (label.length > 40) {
+    throw new Error(`"label" is ${label.length} characters — keep it under 40, e.g. "sick".`);
+  }
   const from = optDate(args, 'from');
   if (from !== undefined && from < today) {
     throw new Error(
-      `"from" (${from}) is in the past — a mode can only be set for today or a future day.`
+      `"from" (${from}) is in the past — a status can only be set for today or a future day.`
     );
   }
   const startDate = from ?? today;
   const until = optDate(args, 'until');
   if (until !== undefined && until < startDate) {
     throw new Error(
-      `"until" (${until}) is before the start (${startDate}) — a mode can't end before it begins.`
+      `"until" (${until}) is before the start (${startDate}) — a status can't end before it begins.`
     );
   }
-  // 'normal' is a RESET: open-ended (endDate null) so it ends an earlier
-  // range/open-ended mode for today AND every following day, not just today.
-  // Any other mode: omitted `until` = just today; an explicit `until` bounds a
-  // range. Open-ended non-normal ("until turned off") stays a Home-control
-  // affordance — the model always bounds a mode it sets.
-  return { mode, startDate, endDate: mode === 'normal' ? null : (until ?? startDate) };
+  // **Omitted `until` means one day**, the rule `set_mode` already held. An
+  // OPEN-ENDED status stays a rail affordance — a user gesture with a visible
+  // chip he can see and end — so the model can never mint the permanently-open
+  // row that 0061's retirement row exists to clean up after.
+  return {
+    label,
+    startDate,
+    endDate: until ?? startDate,
+    excuses: optBool(args, 'excuses'),
+    reset: label === 'normal',
+  };
 }
 
-const setModeTool: CoachTool = {
-  name: 'set_mode',
+const setStatusTool: CoachTool = {
+  name: 'set_status',
   description:
-    "Set a day's mode so the plan, priorities, tone and adherence adapt — it reshapes the " +
-    'mission and excuses skips the mode expects. Use when the user says a day is off-normal ' +
-    '("traveling next week", "coming down with something", "deload week", "night out"). ' +
-    "'normal' resets, and also cancels any mode already scheduled from that day on.",
+    'Record a standing state the user reports ("sick", "traveling") so its days are excused in ' +
+    'adherence and left out of readiness baselines. Never for a deload — that is a plan change ' +
+    '(update_protocol). "normal" ends every open status.',
   inputSchema: {
     type: 'object',
     properties: {
-      mode: { type: 'string', enum: [...MODE_KEYS] },
+      // 'normal ends all open ones' is NOT repeated here: the tool description
+      // one line above already says it, and that class of restatement is exactly
+      // what the ceiling comment in db/coach-eval.test.mjs says to delete first.
+      label: { type: 'string', description: 'Short, lower-case.' },
       from: { type: 'string', description: '"YYYY-MM-DD"; omit for today. Never past.' },
       until: { type: 'string', description: '"YYYY-MM-DD" inclusive; omit for one day.' },
-      note: { type: 'string', description: 'e.g. "red-eye to Tokyo".' },
+      // THE OWNER'S Q2(b), IN ONE CLAUSE. The second sentence is the whole
+      // point and is not trimmable: an omitted flag must never silently
+      // re-excuse a day this tool has just un-excused, so "omit" has to mean
+      // "leave it" rather than "default true".
+      excuses: {
+        type: 'boolean',
+        description: 'Do its skips stop counting? Omit to leave an existing one as it is.',
+      },
+      note: { type: 'string', description: 'e.g. "day 3, fever broke".' },
     },
-    required: ['mode'],
+    required: ['label'],
     additionalProperties: false,
   },
   readOnly: false,
   confirmSummary: (input, db, context) => {
-    // Resolve through the SAME function execute uses, so a window the tool will
-    // refuse can never reach a card the user is invited to approve. (A card is
-    // a promise: "press yes and this happens".)
-    const args = asRecord(input);
-    const { mode, startDate, endDate } = resolveModeWindow(
-      args,
-      todayISODate(context?.now ?? new Date())
-    );
     const today = todayISODate(context?.now ?? new Date());
-    const ahead = startDate > today;
+    const { label, startDate, endDate, excuses, reset } = resolveStatus(asRecord(input), today);
 
-    if (mode === 'normal') {
-      // Name what the reset CANCELS. Stored open-ended and newest-wins, it also
-      // clears modes scheduled for days that haven't arrived — the user has to
-      // see that before approving, not discover it next Monday at the airport.
-      const superseded = modesSupersededFrom(db, startDate).filter((r) => r.mode !== 'normal');
-      const cancelled =
-        superseded.length > 0
-          ? ` — also cancels ${superseded
-              .map((r) => `${getModeDefinition(r.mode).label} (${r.start_date})`)
-              .join(', ')}`
-          : '';
-      return `Reset to Normal mode${ahead ? ` from ${startDate}` : ''}${cancelled}`;
+    if (reset) {
+      // Name what it ENDS. "Back to normal" with nothing open is a no-op and
+      // must say so rather than presenting an empty promise.
+      const open = openStatuses(db, today);
+      if (open.length === 0) return 'Nothing is set — no status to end';
+      return `End the ${open.map((r) => r.label).join(' and ')} status${
+        open.length === 1 ? '' : 'es'
+      } today`;
     }
 
-    const label = getModeDefinition(mode).label;
-    // Name the actual span — approving "Travel mode" must never silently mean
+    const already = openStatusNamed(db, label, startDate);
+    // A re-ask is a no-op UNLESS the flag is being changed, and the card has to
+    // be the one the repository will honour: the guard there returns the open
+    // row untouched except for an explicitly-stated `excuses`.
+    if (already && (excuses === undefined || (already.excuses === 1) === excuses)) {
+      return `${label} is already set`;
+    }
+    if (already) {
+      return excuses
+        ? `${label}: skips stop counting again`
+        : `${label}: skips still count from now on`;
+    }
+
+    // Name the actual span — approving "traveling" must never silently mean
     // "starting right now" when the user meant Monday.
-    if (ahead) return `Set ${label} mode ${startDate}${endDate ? ` through ${endDate}` : ''}`;
-    return `Set ${label} mode${endDate && endDate !== startDate ? ` through ${endDate}` : ' for today'}`;
+    const span =
+      startDate > today
+        ? ` from ${startDate}${endDate !== startDate ? ` through ${endDate}` : ''}`
+        : endDate !== startDate
+          ? ` through ${endDate}`
+          : ' today';
+    // …and when it does NOT excuse, say so. Otherwise the one thing the user
+    // would want to argue with is the one thing the card does not mention.
+    return `Status: ${label}${span}${excuses === false ? ' — skips still count' : ''}`;
   },
   execute: (db, input, context) => {
     const args = asRecord(input);
     const today = todayISODate(context.now);
-    const { mode, startDate, endDate } = resolveModeWindow(args, today);
-    const id = setMode(db, { mode, startDate, endDate, note: optString(args, 'note') ?? null });
-    // Re-shape today to match, exactly as the Home control does — otherwise the
-    // same intent through two surfaces gives two outcomes: the user says "I'm
-    // coming down with something", the Coach sets Sick, and today's workout
-    // stays on the mission with no rest/fluids items. Preserves logged work.
-    //
-    // A FUTURE-dated mode has nothing to reshape yet: that day generates under
-    // the mode when it seeds (planForDay reads getActiveMode for its own date).
-    const rederived = startDate === today ? rederiveMissionForDay(db, startDate) : undefined;
+    const { label, startDate, endDate, excuses, reset } = resolveStatus(args, today);
+
+    if (reset) {
+      const ended = endAllStatuses(db, today);
+      return json({ ended, note: ended === 0 ? 'Nothing was open.' : undefined });
+    }
+
+    const row = startStatus(db, {
+      label,
+      startDate,
+      endDate,
+      source: 'coach',
+      note: optString(args, 'note') ?? null,
+      ...(excuses === undefined ? {} : { excuses }),
+    });
+    // NOTHING IS RE-DERIVED. `set_mode` called `rederiveMissionForDay` here,
+    // because a mode reshaped the plan by construction. A status does not: it
+    // records the fact, and what today should become is this turn's own work —
+    // adjust_today, or update_protocol for something longer. That is the whole
+    // split, and it is kept by this function doing less than its predecessor.
     return json({
       set: true,
-      mode,
-      from: startDate,
-      until: endDate,
-      id,
-      ...(rederived
-        ? { missionAdded: rederived.added, missionRemoved: rederived.removed }
-        : { note: `Scheduled — ${startDate}'s mission will generate under this mode.` }),
+      label: row.label,
+      from: row.start_date,
+      until: row.end_date,
+      excuses: row.excuses === 1,
+      id: row.id,
+      note:
+        startDate > today
+          ? `Scheduled — it applies from ${startDate}.`
+          : 'Recorded. Today does not change on its own — adjust it if it should.',
     });
   },
 };
@@ -2578,7 +2629,7 @@ export const WRITE_TOOLS: CoachTool[] = [
   forgetTool,
   adjustTodayTool,
   updateProtocolTool,
-  setModeTool,
+  setStatusTool,
   createExperimentTool,
   completeExperimentTool,
   abandonExperimentTool,

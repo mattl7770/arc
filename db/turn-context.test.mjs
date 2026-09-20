@@ -10,7 +10,7 @@ import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { getOrCreateDailyLog, insertMissionItem } from '../src/lib/db/repositories/mission.ts';
-import { setMode } from '../src/lib/db/repositories/day-modes.ts';
+import { endStatus, startStatus } from '../src/lib/db/repositories/statuses.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { updateProfile } from '../src/lib/db/repositories/user.ts';
 import { addGroceryItems } from '../src/lib/db/repositories/grocery.ts';
@@ -106,7 +106,12 @@ console.log('2. empty database: every line is honest, nothing invented');
   context.includes('profile not filled in')
     ? ok('no profile → says so')
     : bad('profile line', context);
-  context.includes('Mode: Normal') ? ok('mode defaults to Normal') : bad('mode line', context);
+  !context.includes('Mode:')
+    ? ok('NO mode line, ever — modes were retired in 0061')
+    : bad('mode line survived', context);
+  !context.includes('Status:')
+    ? ok('…and no status line on an ordinary day, the Timezone line’s economy')
+    : bad('phantom status line', context);
   context.includes('Readiness: no wearable signal yet')
     ? ok('no wearables → honest no-signal line')
     : bad('readiness line', context);
@@ -119,11 +124,11 @@ console.log('2. empty database: every line is honest, nothing invented');
     : bad('phantom experiment', context);
 }
 
-console.log('3. seeded database: profile, mode, readiness, mission, experiments');
+console.log('3. seeded database: profile, status, readiness, mission, experiments');
 {
   const { db, raw } = freshDb();
   updateProfile(db, { dateOfBirth: '1992-01-15', biologicalSex: 'male' });
-  setMode(db, { mode: 'sick', startDate: TODAY, endDate: TODAY });
+  startStatus(db, { label: 'Sick', startDate: TODAY, endDate: TODAY, source: 'user' });
 
   // 6 baseline days + today, HRV suppressed today → a real readiness verdict.
   for (let d = 1; d <= 6; d++) seedWearable(raw, 'hrv', d, 50);
@@ -165,9 +170,14 @@ console.log('3. seeded database: profile, mode, readiness, mission, experiments'
   context.includes('male') && context.includes('units: weight lb')
     ? ok('profile line carries sex + unit preferences')
     : bad('profile', context);
-  context.includes('Mode: Sick') && context.includes('skipped items are excused today')
-    ? ok('sick mode line carries the excusal semantics')
-    : bad('mode', context);
+  context.includes('Status: sick — since today, through') &&
+  context.includes('(set by you)') &&
+  context.includes('leave the readiness baselines')
+    ? ok('the status line carries the fact, its age, its span and who set it')
+    : bad('status', context);
+  !context.includes('skips still count')
+    ? ok('…and says nothing about excusal, because it excuses (the default)')
+    : bad('excusal named when it is the default', context);
   context.includes('Readiness: ') && context.includes('Pillars: ')
     ? ok('readiness verdict + pillars present with wearable data')
     : bad('readiness', context);
@@ -248,6 +258,66 @@ console.log("R. today's numbers ride in the block, so trivial questions cost no 
   !/Today so far/.test(buildTurnContext(quiet, NOW))
     ? ok('no wearable data → no line at all (never a fabricated zero)')
     : bad('empty day still emits the line');
+}
+
+console.log('S. the status line: two at once, the exclusion clause, and the revert cue');
+{
+  const { db } = freshDb();
+  startStatus(db, { label: 'Traveling', startDate: isoDaysAgo(NOW, 3), source: 'user' });
+  startStatus(db, { label: 'sick', startDate: TODAY, source: 'coach' });
+  const context = buildTurnContext(db, NOW);
+  const line = context.split('\n').find((l) => l.startsWith('Status:')) ?? '';
+
+  line.includes('sick — since today, open-ended (set by me)') &&
+  line.includes('traveling — day 4, open-ended (set by you)')
+    ? ok('both statuses are named, newest first, each with its age, span and author')
+    : bad('two-status line', line);
+  line.includes('Baselines exclude 4 status days')
+    ? ok('…and the line says how many days left the readiness baselines')
+    : bad('exclusion clause', line);
+  !line.includes('No recovery verdict')
+    ? ok('…without the escalation, because Recovery can still grade')
+    : bad('premature escalation', line);
+
+  // A status the Coach recorded as context WITHOUT absolution says so — the
+  // owner's Q2(b) reaching the model, not just the ledger.
+  const { db: counting } = freshDb();
+  startStatus(counting, { label: 'work crunch', startDate: TODAY, source: 'coach', excuses: false });
+  (buildTurnContext(counting, NOW).split('\n').find((l) => l.startsWith('Status:')) ?? '').includes(
+    'skips still count'
+  )
+    ? ok('a NON-excusing status is marked; the excusing default is left unsaid')
+    : bad('non-excusing not marked', buildTurnContext(counting, NOW));
+
+  // THE REVERT CUE. Nothing else tells the Coach a window it bounded with
+  // update_protocol has closed.
+  const { db: over } = freshDb();
+  const row = startStatus(over, { label: 'traveling', startDate: isoDaysAgo(NOW, 5), source: 'user' });
+  endStatus(over, row.id, isoDaysAgo(NOW, 1));
+  const ended = buildTurnContext(over, NOW);
+  ended.includes('traveling ended yesterday — put back what it took out.')
+    ? ok('the day after it ends, the block says so once')
+    : bad('no revert cue', ended);
+  const { db: longOver } = freshDb();
+  const old = startStatus(longOver, { label: 'traveling', startDate: isoDaysAgo(NOW, 9), source: 'user' });
+  endStatus(longOver, old.id, isoDaysAgo(NOW, 2));
+  !buildTurnContext(longOver, NOW).includes('Status:')
+    ? ok('…and the day after THAT, nothing — it is not a sentence re-sent forever')
+    : bad('revert cue outstayed its welcome', buildTurnContext(longOver, NOW));
+
+  // A booking the Coach made for next week, so a later session can see it.
+  const { db: booked } = freshDb();
+  startStatus(booked, {
+    label: 'traveling',
+    startDate: isoDaysAgo(NOW, -4),
+    endDate: isoDaysAgo(NOW, -8),
+    source: 'coach',
+  });
+  const bookedContext = buildTurnContext(booked, NOW);
+  bookedContext.includes(`Scheduled: traveling from ${isoDaysAgo(NOW, -4)}`) &&
+  !bookedContext.includes('Status:')
+    ? ok('a scheduled status is named as scheduled, never as open')
+    : bad('scheduled line', bookedContext);
 }
 
 console.log('G. the standing grocery list rides in the block, so an add costs no pre-read');

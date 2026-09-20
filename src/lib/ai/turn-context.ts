@@ -3,7 +3,7 @@
  * where the user is right now, injected into every Coach turn as the second
  * (UNCACHED) system block (model-client.ts buildMessagesRequest).
  *
- * This exists so the model never starts a turn blind: readiness, mode, mission
+ * This exists so the model never starts a turn blind: readiness, status, mission
  * progress, running experiments, unit preferences, and the daily brief are all
  * already computed for the UI by pure functions — this composes them into a
  * few lines of prompt text. It PERCEIVES and GROUNDS only; it never decides.
@@ -18,18 +18,22 @@
  * disagree about the facts.
  */
 import type { Database } from '@/lib/db/database';
-import { todayISODate } from '@/lib/db/date';
+import { shiftISODate, todayISODate } from '@/lib/db/date';
 import { recentDeclines } from '@/lib/db/repositories/ai-chat';
 import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
 import { currentTrip, recentTimezoneChange } from '@/lib/db/repositories/day-meta';
-import { getActiveMode } from '@/lib/db/repositories/day-modes';
 import { consolidatedOpenList } from '@/lib/db/repositories/grocery';
 import { activeExperiments } from '@/lib/db/repositories/experiments';
 import { listMission } from '@/lib/db/repositories/mission';
+import {
+  openStatuses,
+  scheduledStatuses,
+  statusDayNumber,
+  statusesIn,
+} from '@/lib/db/repositories/statuses';
 import { getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { deriveReadiness } from '@/lib/home/readiness';
-import { getModeDefinition } from '@/lib/modes/registry';
 import { formatUtcOffset, offsetShift } from '@/lib/timezone/classify';
 import { awayDayNumber } from '@/lib/timezone/trips';
 
@@ -83,15 +87,75 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
       `weight ${units.weight}, volume ${units.volume}, length ${units.length}`
   );
 
-  // --- Mode — tone/plan context before the first word is generated.
-  const mode = getActiveMode(db, today);
-  const modeDef = getModeDefinition(mode);
-  lines.push(
-    mode === 'normal'
-      ? 'Mode: Normal'
-      : `Mode: ${modeDef.label}${modeDef.heroFocus ? ` — ${modeDef.heroFocus}` : ''}` +
-          `${modeDef.excusesSkips ? ' (skipped items are excused today)' : ''}`
-  );
+  // --- Readiness, derived HERE rather than at its own line below, because the
+  // status line one paragraph down has to say how many days it excluded. Only
+  // the derivation moves; the lines stay in their order.
+  const readiness = deriveReadiness(db, today);
+
+  // --- Status (0061) — printed ONLY when there is one, the Timezone line's
+  // economy rather than the `Mode: Normal` the retired system printed on every
+  // turn forever.
+  //
+  // THE FACT, AND NOTHING ELSE. There is no heroFocus here and no tone
+  // guidance, because a status has neither: it says what the user told ARC, and
+  // what today should become is this turn's own work. That is the whole point
+  // of the retirement — `Mode: Sick — Recover: sleep, fluids, rest.` was a
+  // sentence a table wrote, handed to the model as if it were an observation.
+  //
+  // Two clauses the model cannot infer and would otherwise get wrong ride
+  // along, and both are about ARC's own arithmetic rather than about the user:
+  // which skips stopped counting, and which days stopped voting on what normal
+  // looks like. Without the second, a model reads a flat HRV trend across a
+  // fortnight of flu and explains it with something that is not true.
+  const open = openStatuses(db, today);
+  if (open.length > 0) {
+    const described = open.map((row) => {
+      const day = statusDayNumber(row, today);
+      const age = day <= 1 ? 'since today' : `day ${day}`;
+      const span = row.end_date === null ? 'open-ended' : `through ${row.end_date}`;
+      const by = row.source === 'user' ? 'set by you' : 'set by me';
+      // Named only when it is NOT the default, so the ordinary case costs
+      // nothing and the exception is the thing that stands out.
+      const counts = row.excuses === 1 ? '' : ', skips still count';
+      return `${row.label} — ${age}, ${span} (${by}${counts})`;
+    });
+    let line =
+      `Status: ${described.join(' · ')}. ` +
+      'Status days leave the readiness baselines; their skips are excused unless marked.';
+    if (readiness.excludedStatusDays > 0) {
+      line += ` Baselines exclude ${readiness.excludedStatusDays} status day${
+        readiness.excludedStatusDays === 1 ? '' : 's'
+      }.`;
+    }
+    // The escalation. Once the baselines have starved, "excluded" is no longer
+    // the honest word for what happened to Recovery.
+    if (readiness.recoveryPausedByStatus) line += ' No recovery verdict until it ends.';
+    lines.push(line);
+  } else {
+    // THE REVERT CUE, and the reason ending a status is worth a line at all: a
+    // status the Coach bounded with update_protocol leaves a protocol version
+    // behind, and nothing but this sentence tells it the window has closed.
+    const yesterday = shiftISODate(today, -1);
+    const justEnded = statusesIn(db, yesterday, yesterday).filter(
+      (row) => row.end_date === yesterday
+    );
+    if (justEnded.length > 0) {
+      lines.push(
+        `Status: ${justEnded.map((r) => r.label).join(' and ')} ended yesterday — ` +
+          'put back what it took out.'
+      );
+    }
+  }
+  // A status the Coach scheduled ahead ("I fly out Monday"). Costs nothing on
+  // every other day, and without it a later session cannot see its own booking.
+  const ahead = scheduledStatuses(db, today);
+  if (ahead.length > 0) {
+    lines.push(
+      `Scheduled: ${ahead
+        .map((r) => `${r.label} from ${r.start_date}${r.end_date ? ` through ${r.end_date}` : ''}`)
+        .join(' · ')}.`
+    );
+  }
 
   // --- Timezone (D4) — ONE line, and only when there is something to say.
   //
@@ -147,8 +211,8 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
   }
 
   // --- Readiness — the same derivation Home renders, so the two surfaces can
-  // never disagree about the morning's facts.
-  const readiness = deriveReadiness(db, today);
+  // never disagree about the morning's facts. Derived once, above, beside the
+  // status line that reports how many days it excluded.
   if (readiness.hasSignal) {
     const pillars = readiness.pillars.map((p) => `${p.label.toLowerCase()} ${p.level}`).join(' · ');
     lines.push(`Readiness: ${readiness.readiness.label} — ${readiness.readiness.detail}`);

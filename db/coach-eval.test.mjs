@@ -879,6 +879,56 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // §8.1 and §8.3 above moved NOTHING, and this round's trims are inside a
   // WRITE tool, so `readToolTokens` — and therefore the Haiku pass prefix — is
   // untouched at 7,053. All four assertions below hold on the same run.
+
+  // ── 2026-09-19: THE MODES REVAMP (migration 0061). **NEITHER CEILING MOVED,
+  // and BOTH sides came out AHEAD of where they started.**
+  //
+  // Measured on main before the change: **9,237 schema / 3,669 prompt** (13 and
+  // 31 of headroom). The comment above quoting 9,241 was stale — the protocol
+  // interface rethink corrected it to 9,237 and this entry re-measures rather
+  // than trusting either number.
+  //
+  // SCHEMA, −4 NET (9,237 → 9,233, 17 of headroom):
+  //
+  //   · `set_mode` DELETED, −285. Six enum keys, each of which stood for a
+  //     table of hardcoded consequences.
+  //   · `set_status` ADDED, +282 — and it is NOT the 236 the spike predicted,
+  //     because the owner diverged on Q2: excusal is decided per status through
+  //     an `excuses` flag, which is a schema property the recommendation did
+  //     not have (~30 tok including the clause that makes an OMITTED flag mean
+  //     "leave it" rather than "default true" — the whole point of it).
+  //   · PAID FOR by deleting a restatement inside the new tool, which is what
+  //     the rule above asks for: `label`'s description said `"normal" ends all
+  //     open ones.` under a tool description reading `"normal" ends every open
+  //     status.` — the `protocol_slug` class exactly. (−11)
+  //
+  // PROMPT, +23 NET (3,669 → 3,692, 8 of headroom):
+  //
+  //   · the Modes bullet −127, the Status bullet +145. The new bullet is the
+  //     feature: there is no switch any more, so the model IS how the day
+  //     adapts, and it has to be told the three moves (adjust_today for today,
+  //     update_protocol for anything longer, set_status to record the fact) and
+  //     the one carve-out that keeps a deload out of the status system.
+  //   · the `excuses: false` clause inside it, +14, is the owner's Q2(b)
+  //     reaching the model at all. Without it the flag exists and nothing ever
+  //     sets it to false.
+  //   · "what mode am I in?" → "what's my status?", −1.
+  //   · the `day modes` domain label → `your status`, 0 (it feeds the cached
+  //     coverage manifest, and +2 characters rounds to nothing).
+  //   · TRIMMED, and this is the spike's own named fallback rather than an
+  //     improvisation: the bullet opened with four examples ("sick",
+  //     "traveling", "jet-lagged", "work crunch") and now carries two. The
+  //     first measurement landed at exactly 3,700 — over, by one — and the
+  //     spike said where to cut if it did. (−8)
+  //
+  // The Haiku pass prefix moved 7,053 → 7,076: `set_status` is a WRITE tool and
+  // does not ride it, so the whole change is the prompt's +23. Still 2,980
+  // clear of Haiku's 4,096 cache floor.
+  //
+  // Where the next addition digs is unchanged: `update_protocol` (425),
+  // `get_metric_series` (354), `adjust_today` (348). 8 tokens of prompt
+  // headroom is the thinnest this has been, and the honest reading is that the
+  // prompt is FULL: the next bullet pays for itself or does not land.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

@@ -194,6 +194,27 @@ console.log('1. get_today_snapshot: empty day is zeros, then reflects writes');
   snap.remindersDueToday.length === 1
     ? ok('snapshot reflects meal, workout, symptom, capture, reminder')
     : bad('populated snapshot', JSON.stringify(snap));
+
+  // 0061: the snapshot carries WHAT THE USER SAID about the day, with no
+  // directive and no tone attached. `mode` carried a heroFocus and a
+  // toneGuidance a registry wrote, handed to the model as if observed.
+  snap.mode === undefined && snap.statuses === undefined
+    ? ok('no `mode` field, and no empty `statuses` array on an ordinary day')
+    : bad('snapshot day fields', JSON.stringify({ mode: snap.mode, statuses: snap.statuses }));
+
+  run('set_status', db, { label: 'traveling', until: isoDaysAgo(NOW, -2) });
+  const withStatus = run('get_today_snapshot', db);
+  withStatus.statuses?.length === 1 &&
+  withStatus.statuses[0].label === 'traveling' &&
+  withStatus.statuses[0].excusesSkips === true &&
+  withStatus.statuses[0].source === 'coach' &&
+  withStatus.statuses[0].until === isoDaysAgo(NOW, -2)
+    ? ok('…and once one is set it carries the label, span, excusal and provenance')
+    : bad('snapshot statuses', JSON.stringify(withStatus.statuses));
+  withStatus.statuses[0].heroFocus === undefined &&
+  withStatus.statuses[0].toneGuidance === undefined
+    ? ok('…and NOTHING telling the model how to lead or how to speak')
+    : bad('a directive leaked into the status', JSON.stringify(withStatus.statuses[0]));
 }
 
 console.log('2. log_metric: display-unit input lands canonical in the right table');
@@ -2031,7 +2052,7 @@ console.log('27. log_workout resolves catalog exercise ids — a unique match on
     : bad('unmatched note', JSON.stringify(result));
 }
 
-console.log('28. future log dates are rejected; set_mode "until" may still be future');
+console.log('28. future log dates are rejected; set_status "until" may still be future');
 {
   const { db } = freshDb();
   const future = isoDaysAgo(NOW, -2);
@@ -2043,10 +2064,10 @@ console.log('28. future log dates are rejected; set_mode "until" may still be fu
     : bad('future meal accepted');
   const past = run('log_metric', db, { metric: 'weight', value: 178, date: isoDaysAgo(NOW, 1) });
   past.logged ? ok('a real backdate still logs') : bad('backdate broken');
-  const mode = run('set_mode', db, { mode: 'travel', until: future });
-  mode.set && mode.until === future
-    ? ok('set_mode "until" legitimately reaches into the future')
-    : bad('set_mode until', JSON.stringify(mode));
+  const status = run('set_status', db, { label: 'traveling', until: future });
+  status.set && status.until === future
+    ? ok('set_status "until" legitimately reaches into the future')
+    : bad('set_status until', JSON.stringify(status));
 
   // The rejection must fire at CARD time too — a knowable failure must never
   // cost the user an Approve tap (card shows, user approves, execute throws).

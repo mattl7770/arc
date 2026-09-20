@@ -13,7 +13,7 @@ import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-m
 import { biomarkerSeries } from '@/lib/db/repositories/labs';
 import { latestBody } from '@/lib/db/repositories/body';
 import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
-import { getActiveMode } from '@/lib/db/repositories/day-modes';
+import { openStatuses } from '@/lib/db/repositories/statuses';
 import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/experiments';
 import { weekSummary } from '@/lib/db/repositories/exercise';
 import {
@@ -44,7 +44,6 @@ import { isAccumulatingMetric } from '@/lib/health/accumulating';
 import { SAMPLE_METRICS, STATISTIC_METRICS } from '@/lib/health/mapping';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
-import { getModeDefinition } from '@/lib/modes/registry';
 import { cadenceText } from '@/lib/protocols/cadence';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import { phaseOn } from '@/lib/protocols/phase';
@@ -561,8 +560,7 @@ const getTodaySnapshot: CoachTool = {
   readOnly: true,
   execute: (db, _input, context) => {
     const date = todayISODate(context.now);
-    const mode = getActiveMode(db, date);
-    const modeDef = getModeDefinition(mode);
+    const statuses = openStatuses(db, date);
     const meals = listTodayMeals(db, date);
     const totals = todayTotals(db, date);
     // Movements, not a name: sessions have no names since 2026-08-14 (owner),
@@ -663,16 +661,22 @@ const getTodaySnapshot: CoachTool = {
       // Age and sex, so age-dependent reasoning (and every reference range) is
       // right from the first token instead of after a question.
       profile: { age: ageOn(user.date_of_birth, date), sex: user.biological_sex },
-      // The day's mode adapts plan/priorities/tone/adherence. When not Normal,
-      // heroFocus + toneGuidance tell the Coach how to lead and speak, and
-      // excusesSkips means a skipped item is the RIGHT call, not a miss.
-      mode: {
-        key: mode,
-        label: modeDef.label,
-        ...(modeDef.heroFocus ? { heroFocus: modeDef.heroFocus } : {}),
-        ...(modeDef.coachTone ? { toneGuidance: modeDef.coachTone } : {}),
-        excusesSkips: modeDef.excusesSkips,
-      },
+      // What the user has SAID about the day (0061) — the fact, with no
+      // directive and no tone attached. `mode` used to sit here carrying a
+      // heroFocus and a toneGuidance the registry wrote; a status has neither,
+      // because what today should become is the model's call on this turn.
+      // Omitted entirely on an ordinary day rather than sent as an empty array.
+      ...(statuses.length > 0
+        ? {
+            statuses: statuses.map((row) => ({
+              label: row.label,
+              since: row.start_date,
+              until: row.end_date,
+              excusesSkips: row.excuses === 1,
+              source: row.source,
+            })),
+          }
+        : {}),
       // The id rides along because adjust_today addresses rows BY id — without
       // it the Coach can see the day but cannot change it. The user still only
       // ever sees titles.

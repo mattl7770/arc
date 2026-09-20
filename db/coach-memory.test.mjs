@@ -216,12 +216,20 @@ console.log('3. memories and declines ride the per-turn context block');
 
   // A decline must outlive the turn it happened in.
   const conversation = getOrCreateActiveConversation(db);
-  appendMessage(db, conversation.id, 'assistant', 'Proposed a deload.', [
-    { id: 't1', name: 'set_mode', input: { mode: 'deload' }, result: 'declined', declined: true },
+  appendMessage(db, conversation.id, 'assistant', 'Proposed a sick status.', [
+    { id: 't1', name: 'set_status', input: { label: 'sick' }, result: 'declined', declined: true },
   ]);
-  recentDeclines(db).length === 1
+  const lines = recentDeclines(db);
+  lines.length === 1
     ? ok('recentDeclines reads the persisted refusal')
-    : bad('declines', JSON.stringify(recentDeclines(db)));
+    : bad('declines', JSON.stringify(lines));
+  // THE KEY LIST. A declined write is rendered from the field that NAMES what
+  // was proposed, and for a status that field is `label` — the list used to
+  // read `mode`, so a declined status would have rendered as a bare tool name
+  // with no noun, for thirty days.
+  lines[0].startsWith('set_status "sick"')
+    ? ok('…and names it: set_status "sick", not a bare tool name')
+    : bad('decline label', JSON.stringify(lines));
   buildTurnContext(db, NOW).includes('Recently declined')
     ? ok('the context block warns the model not to re-propose it')
     : bad('declines not injected', buildTurnContext(db, NOW));
@@ -285,6 +293,7 @@ console.log('5. the rolling summary keeps a long thread’s spine');
   appendMessage(db, conversation.id, 'user', 'My knee has been sore since March.');
   appendMessage(db, conversation.id, 'assistant', 'Noted.', [
     { id: 's1', name: 'log_symptom', input: { name: 'Knee pain' }, result: '{"logged":true}' },
+    { id: 's2', name: 'set_status', input: { label: 'injured' }, result: '{"set":true}' },
   ]);
   for (let i = 0; i < 40; i++) {
     appendMessage(db, conversation.id, 'user', `Filler question ${i}`);
@@ -310,6 +319,13 @@ console.log('5. the rolling summary keeps a long thread’s spine');
   summary && summary.includes('log_symptom "Knee pain"')
     ? ok('and so does what was actually done')
     : bad('actions missing', summary);
+  // THE KEY LIST, from the other side. The did-line names a write by the field
+  // that identifies it, and a status is identified by its `label` — the list
+  // read `mode` until 0061, so a set_status would have summarised as a bare
+  // verb with no object.
+  summary && summary.includes('set_status "injured"')
+    ? ok('…including a status, named by its label')
+    : bad('status not named in the did-line', summary);
 
   listRecentMessages(db, conversation.id, 10).length === 10
     ? ok('the screen pages the thread instead of loading it whole')
@@ -526,8 +542,8 @@ console.log('R6. a decline expires — it is not a permanent veto');
 {
   const { db } = freshDb();
   const conversation = getOrCreateActiveConversation(db);
-  const declined = [{ id: 't1', name: 'set_mode', input: { mode: 'deload' }, declined: true }];
-  const id = appendMessage(db, conversation.id, 'assistant', 'Proposed a deload.', declined);
+  const declined = [{ id: 't1', name: 'set_status', input: { label: 'sick' }, declined: true }];
+  const id = appendMessage(db, conversation.id, 'assistant', 'Proposed a sick status.', declined);
 
   recentDeclines(db).length === 1
     ? ok('a decline from today is surfaced')

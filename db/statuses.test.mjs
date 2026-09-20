@@ -627,8 +627,8 @@ console.log('\n6. the readiness baselines: excluded, counted, and honest about i
     const view = deriveReadiness(db, TODAY);
     const recovery = view.pillars.find((p) => p.label === 'Recovery');
     const strain = view.pillars.find((p) => p.label === 'Strain');
-    recovery.level === 'unknown' && view.recoveryDaysRemaining > 0
-      ? ok('past ~25 days Recovery reads `unknown` and says how far off a verdict is')
+    recovery.level === 'unknown' && view.recoveryDaysRemaining > 0 && view.recoveryPausedByStatus
+      ? ok('past ~25 days Recovery reads `unknown`, and the STATUS is named as the reason')
       : bad('long status recovery', JSON.stringify([recovery.level, view.recoveryDaysRemaining]));
     strain.level !== 'unknown'
       ? ok('…while STRAIN keeps grading — its baseline is session-counted, never excluded')
@@ -642,9 +642,23 @@ console.log('\n6. the readiness baselines: excluded, counted, and honest about i
   {
     const { db } = freshDb();
     plantHistory(db);
-    deriveReadiness(db, TODAY).excludedStatusDays === 0
+    const view = deriveReadiness(db, TODAY);
+    view.excludedStatusDays === 0 && view.recoveryPausedByStatus === false
       ? ok('on an ordinary day the count is zero and Home prints no clause')
       : bad('ordinary day');
+  }
+
+  // (d) THE LIE THE COUNTERFACTUAL PREVENTS. A phone with no watch has no
+  // recovery verdict for a reason that predates this morning's status by
+  // months, and "no recovery verdict until it ends" would blame the status for
+  // a silence it had nothing to do with.
+  {
+    const { db } = freshDb();
+    startStatus(db, { label: 'sick', startDate: TODAY, source: 'user' });
+    const view = deriveReadiness(db, TODAY);
+    view.recoveryDaysRemaining > 0 && view.recoveryPausedByStatus === false
+      ? ok('with NO wearable history the status is not blamed for the missing verdict')
+      : bad('blamed the status', JSON.stringify(view.recoveryPausedByStatus));
   }
 }
 

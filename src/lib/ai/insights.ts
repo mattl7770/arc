@@ -32,8 +32,7 @@ import { getPreferences } from '@/lib/db/repositories/user';
 import { todayISODate } from '@/lib/db/date';
 import { isAccumulatingMetric } from '@/lib/health/accumulating';
 import { deriveReadiness } from '@/lib/home/readiness';
-import { getActiveMode } from '@/lib/db/repositories/day-modes';
-import { getModeDefinition } from '@/lib/modes/registry';
+import { openStatuses } from '@/lib/db/repositories/statuses';
 import { activeExperiments } from '@/lib/db/repositories/experiments';
 import { activeNutritionTargets } from '@/lib/db/repositories/nutrition';
 import type { ReminderRow } from '@/lib/reminders/types';
@@ -910,16 +909,20 @@ export function generateDailyBrief(db: Database, now: Date = new Date()): string
   if (parts.length === 0) {
     const evidence = gatherEvidence(db, now);
     const tracked = Math.max(evidence.hrvDays, evidence.weightDays, evidence.loggedNutritionDays);
-    const mode = getActiveMode(db, today);
     // What the watch alone can show. It grounds every branch below: a synced
     // wearable is real data even when nothing has been logged by hand, and
     // "nothing to report" reads very differently with a number attached.
     const floor = wearableFloorLine(db, now);
 
-    // Sick / Travel / Social excuse the day. Nagging about logging cadence then
-    // contradicts the mode system's whole premise (home-screen.md:110).
-    if (getModeDefinition(mode).excusesSkips) {
-      return `${getModeDefinition(mode).label} day. Nothing in your data needs attention. Look after the basics.`;
+    // An EXCUSING status says "don't judge me by today", and the brief is the
+    // one surface that would otherwise spend a quiet day nagging about logging
+    // cadence — which contradicts the whole premise of having said it. Keyed on
+    // the flag, not on "a status is open" (the owner's Q2(b)): a status the
+    // Coach left counting has not excused anything, so the nag still applies.
+    const excusing = openStatuses(db, today).filter((row) => row.excuses === 1);
+    if (excusing.length > 0) {
+      const named = excusing.map((row) => row.label).join(' and ');
+      return `${named[0]!.toUpperCase()}${named.slice(1)} day. Nothing in your data needs attention. Look after the basics.`;
     }
     if (tracked === 0) {
       return floor
