@@ -1,11 +1,16 @@
 /**
- * Headless RENDER test of the recipes/grocery screens — the real .tsx screen
- * components (app/recipes, recipe-detail, recipe-edit, recipe-import, grocery,
- * plus the edited nutrition hub and meal-detail) rendered to HTML via
- * react-native-web + react-dom/server, over a node:sqlite database running the
- * REAL migrations. Every synchronous DB read the screens do in their useState
- * initializers executes for real; a crash in any component body fails the
- * suite; key content is asserted in the rendered output.
+ * Headless RENDER test of ARC's screens — the real .tsx components rendered to
+ * HTML via react-native-web + react-dom/server, over a node:sqlite database
+ * running the REAL migrations. Every synchronous DB read a screen does in its
+ * `useState` initializers executes for real; a crash in any component body
+ * fails the suite; key content is asserted in the rendered output.
+ *
+ * It began as the recipes/grocery walk and has widened with each build that
+ * added a screen — the nutrition hub and meal-detail, the progress photos, the
+ * knowledge base, the reports, the protocol sub-app, Home, and (2026-09-19)
+ * **app/mission-day.tsx**, the mission on a day other than today. For that
+ * screen this is the only headless gate there is: it computes a FUTURE day's
+ * plan in a `useState` initializer, which this suite executes for real.
  *
  * What this deliberately is NOT: a look/feel or interaction verdict — effects
  * don't run in a server render, and taps can't be simulated here. Device
@@ -119,6 +124,7 @@ import ProtocolDetailScreen from '../app/protocol-detail.tsx';
 import ProtocolEditScreen from '../app/protocol-edit.tsx';
 import ProtocolVersionsScreen from '../app/protocol-versions.tsx';
 import MissionItemScreen from '../app/mission-item.tsx';
+import MissionDayScreen from '../app/mission-day.tsx';
 import ProtocolSettingsScreen from '../app/protocol-settings.tsx';
 import ProtocolItemScreen from '../app/protocol-item.tsx';
 import { MissionItemRow } from '../src/components/home/mission-item.tsx';
@@ -3669,6 +3675,115 @@ console.log('20. 0059 — the count of pieces, on the record and on the control'
     'I ate half of the Pepperoni pizza',
   ]);
   refute('review plate (counted)', countedPlate, ['This is']);
+}
+
+// -------------------------------------------------------------------------
+console.log('\n21. The Plan screen — today, a day ahead, and a day nobody opened');
+{
+  // The only headless gate on app/mission-day.tsx: its `useState` initializer
+  // reads the day, and on a FUTURE day that read is a whole `planForDay` with
+  // the projection rules. A crash there is a crash on the first render.
+  const today = todayISODate();
+  const tomorrow = shiftISODate(today, 1);
+  const longAgo = shiftISODate(today, -30);
+
+  createProtocolWithVersion(
+    db,
+    { name: 'Day picker check', type: 'daily_routine', startedOn: today },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'dp',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'walk',
+              title: 'Evening walk',
+              scheduled_time: '19:00',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  rederiveMissionForDay(db, today);
+
+  // TODAY. The way home has retired, because it is satisfied.
+  const onToday = render('mission-day (today)', MissionDayScreen, {});
+  expect('mission-day (today)', onToday, [
+    'Plan',
+    'Back to Home',
+    'Previous mission',
+    'Next mission',
+    'Today',
+    'Evening walk',
+    'The day',
+  ]);
+  refute('mission-day (today)', onToday, ['Back to today']);
+
+  // A DAY AHEAD. The chin says Tomorrow, the way home is back, and the rows are
+  // spoken as PLANNED — on a day that has not happened, "not done" is a claim
+  // about a miss that cannot have occurred yet.
+  const ahead = render('mission-day (tomorrow)', MissionDayScreen, { date: tomorrow });
+  // The way home is asserted on its visible words: its aria-label carries an
+  // apostrophe, which react-dom escapes to `&#x27;`, and a test that matched
+  // the raw label would be asserting the escaping rather than the control.
+  expect('mission-day (tomorrow)', ahead, ['Tomorrow', 'Evening walk', 'planned', 'Back to today']);
+  refute('mission-day (tomorrow)', ahead, ['not done']);
+  // AND NOTHING WAS WRITTEN BY LOOKING. This is the rule the whole design rests
+  // on, and a render is the only place it can be observed end to end.
+  db.get('SELECT count(*) c FROM daily_logs WHERE date = ?', [tomorrow]).c === 0
+    ? ok('mission-day (tomorrow) wrote no daily_log — a future day is computed, never committed')
+    : bad('rendering a future day committed it');
+
+  // A PAST DAY nobody ever opened: authored in one sentence, never a blank and
+  // never a grid of zeros.
+  const past = render('mission-day (a day nobody opened)', MissionDayScreen, { date: longAgo });
+  expect('mission-day (a day nobody opened)', past, [
+    'No plan was generated on this day.',
+    'Back to today',
+  ]);
+  refute('mission-day (a day nobody opened)', past, ['The day', 'Evening walk']);
+
+  // A `?date=` past the horizon is clamped, exactly as the arrow is.
+  const beyond = render('mission-day (beyond the horizon)', MissionDayScreen, {
+    date: shiftISODate(today, 60),
+  });
+  expect('mission-day (beyond the horizon)', beyond, ['Plan']);
+  refute('mission-day (beyond the horizon)', beyond, ['2026-1']);
+
+  // And Home draws BOTH links, under the list. (The hints are iOS-only and
+  // react-native-web emits nothing for them, so what is asserted here is the
+  // words and the count — the device checks the rest.)
+  const home = render('home (the two links)', HomeScreen);
+  expect('home (the two links)', home, ['Protocols', 'Plan']);
+  (home.match(/aria-label="Plan"/g) || []).length === 1
+    ? ok('home draws exactly one Plan link')
+    : bad('the Plan link is missing or duplicated');
+
+  // THE EMPTY DAY IS THE ONE THAT MOST NEEDS THEM. An every-3-days stack has
+  // empty days by design, and those are the days worth checking tomorrow on —
+  // so the links sit outside the `planned` branch. Every protocol is paused
+  // here, then put back, so the surrounding suite is undisturbed.
+  const active = db.all('SELECT id FROM protocols WHERE is_active = 1').map((r) => r.id);
+  for (const id of active) db.run('UPDATE protocols SET is_active = 0 WHERE id = ?', [id]);
+  db.run(
+    `DELETE FROM log_entries WHERE daily_log_id IN
+            (SELECT id FROM daily_logs WHERE date = ?)`,
+    [today]
+  );
+  const emptyHome = render('home (an empty day)', HomeScreen);
+  expect('home (an empty day)', emptyHome, ['Protocols', 'Plan']);
+  (emptyHome.match(/aria-label="Plan"/g) || []).length === 1
+    ? ok('…and an empty day draws them too, which is the day that most needs them')
+    : bad('the empty day lost the Plan link');
+  for (const id of active) db.run('UPDATE protocols SET is_active = 1 WHERE id = ?', [id]);
+  rederiveMissionForDay(db, today);
 }
 
 // -------------------------------------------------------------------------
