@@ -134,8 +134,10 @@ import { StatusRail } from '../src/components/status/status-rail.tsx';
 import { startStatus } from '../src/lib/db/repositories/statuses.ts';
 import LogScreen from '../app/(tabs)/log.tsx';
 
-import { logWater } from '../src/lib/db/repositories/water.ts';
+import { deleteWaterEntry, logWater } from '../src/lib/db/repositories/water.ts';
+import { metricByKey, resolveDisplay } from '../src/lib/log/metrics.ts';
 import {
+  getPreferences,
   setHealthSyncEnabled,
   setUnitPreference,
   setWaterTarget,
@@ -466,49 +468,107 @@ const db = getDb();
     'average',
   ]);
 
-  // The Log tab's Water tile with nothing to learn from — and this render, like
-  // the two above, only exists here. `usualWaterAmount` returns null on an empty
-  // record and the tile falls back to the Glass literal, which is the state the
-  // owner will actually see on day one. The number has to be ON THE FACE: a
-  // tile that commits and looks like its three navigating neighbours is the one
-  // failure mode this design has (src/components/log/quick-add-grid.tsx).
+  // The Log tab's water row with nothing to learn from — and this render, like
+  // the two above, only exists here: it is the state the owner sees on day one.
+  //
+  // Until 2026-09-21 this block was a single Water TILE that committed a
+  // *derived* amount and hid Glass / Bottle / Large / Other… behind a
+  // long-press. Off device that came back as *"the water no longer really
+  // works, because the button just adds 8"* — the derivation had settled on a
+  // glass and the gesture was invisible, so one amount was the only amount. So
+  // the assertion flips: every vessel must be ON the sheet, each saying the
+  // amount it will write (src/components/log/quick-add-grid.tsx).
   const freshLog = render('log tab (no water on record)', LogScreen);
   expect('log tab (no water on record)', freshLog, [
     'Quick add',
     'Supplement',
-    'Water',
     'Weight',
     'Therapy',
-    '+8 oz', // the Glass literal, printed in mono on the tile's own face
-    // The label must say the amount AND that the tap commits — "Water" alone
-    // would describe a door, which this tile no longer is.
-    'Log water, 8 oz',
+    'Water',
+    // All four cells, at rest, with no gesture and no record behind them.
+    'Glass',
+    'Bottle',
+    'Large',
+    'Other…',
+    'Keypad',
+    '+8 oz',
+    '+16 oz',
+    '+24 oz',
+    // Each cell's label carries its own amount, so no tap is a guess — and the
+    // number in the label is the number the caption prints beside it.
+    'Log 8 oz of water, Glass',
+    'Log 16 oz of water, Bottle',
+    'Log 24 oz of water, Large',
+    'Log another amount of water on the keypad',
     'Nothing logged yet today.',
   ]);
+  refute('log tab (no water on record)', freshLog, [
+    // The one committing tile and its derived face are gone...
+    'Log water, 8 oz',
+    // ...and with an empty record there is no habit to state. An invented
+    // "usually" would be a claim about a pattern that does not exist.
+    'usually',
+    // No receipt until something is actually written.
+    'Logged 8 oz',
+  ]);
 
-  // A long-press is invisible to VoiceOver, so the other amounts have to be
-  // exposed as a real ACTION and not only as a gesture. Neither
-  // `accessibilityHint` nor `accessibilityActions` survives react-native-web —
-  // RNW drops both — so this is the only place the pair is checkable headlessly,
-  // and a source scan is honest about being one. The device check stays the
-  // VoiceOver pass in docs/wearables-subapp.md's on-device list.
+  // **Nothing in this block may depend on a long-press again.** The gesture was
+  // the whole of the bug: invisible, so it was never found, and the tile it hid
+  // behind logged the same 8 oz every time. A rendered sheet cannot prove the
+  // ABSENCE of a handler — RNW drops `accessibilityActions` and `onLongPress`
+  // alike — so this is a source scan and is honest about being one. It also
+  // pins the binding the whole fix rests on: each vessel passes ITS OWN amount.
   {
     const tile = readFileSync(
       new URL('../src/components/log/quick-add-grid.tsx', import.meta.url),
       'utf8'
     );
-    /accessibilityHint=/.test(tile) &&
-    /accessibilityActions=\{\[\{ name: 'longpress'/.test(tile) &&
-    /onAccessibilityAction=/.test(tile)
-      ? ok('the Water tile exposes its long-press as a VoiceOver action, not only as a gesture')
-      : bad('the long-press is gesture-only — undiscoverable to VoiceOver');
+    !/onLongPress=/.test(tile) && !/accessibilityActions=/.test(tile)
+      ? ok('nothing in Quick add is reachable only by a long-press')
+      : bad('a long-press is back — an amount must never hide behind a gesture');
+    /onPress=\{\(\) => log\(q\.amount\)\}/.test(tile)
+      ? ok('each vessel logs its own amount, never a remembered one')
+      : bad('a vessel stopped passing its own amount to log()');
   }
-  // The amounts are BEHIND the long-press: they must not be on the sheet until
-  // the gesture opens them, or the block is five controls tall at rest. (A
-  // server render runs no effects and simulates no taps, so their absence here
-  // is exactly the closed state.) Nor may the tile carry a chevron — that mark
-  // means "this pushes a screen", and this one does not.
-  refute('log tab (no water on record)', freshLog, ['Other…', 'Keypad', 'Logged 8 oz']);
+
+  // ---------------------------------------------------------------------
+  // What a vessel tap DOES, and what Undo takes back.
+  //
+  // A server render runs no effects and dispatches no events, so the press
+  // itself cannot be fired here. What can be proved is the pair either side of
+  // it — the exact call the handler makes (`logWater` of the DISPLAY amount put
+  // through the metric's spec) and the exact call Undo makes
+  // (`deleteWaterEntry` of the id that write handed back) — read back through
+  // the screen's own ledger rather than a repository query, which is the
+  // receipt the owner actually sees.
+  //
+  // Both rows are removed again at the end, so §14 still opens on a water
+  // record that has never been written to.
+  {
+    const wdb = getDb();
+    const spec = resolveDisplay(metricByKey('water'), getPreferences(wdb).units);
+    const today = todayISODate();
+    const glass = logWater(wdb, today, spec.toCanonical(8));
+    const bottle = logWater(wdb, today, spec.toCanonical(16));
+
+    // Exactly what each cell said it would write, and nothing rounded on the
+    // way through: 16 oz stored canonically and read back is 16 oz, not 15.
+    const logged = render('log tab (a glass and a bottle logged)', LogScreen);
+    expect('log tab (a glass and a bottle logged)', logged, ['2 entries', '>8 oz<', '>16 oz<']);
+    refute('log tab (a glass and a bottle logged)', logged, ['Nothing logged yet today.']);
+
+    // Undo deletes by the id its own write returned, so it can only ever remove
+    // the glass it just wrote — never the neighbouring one.
+    deleteWaterEntry(wdb, bottle);
+    const undone = render('log tab (the bottle undone)', LogScreen);
+    expect('log tab (the bottle undone)', undone, ['1 entry', '>8 oz<']);
+    refute('log tab (the bottle undone)', undone, ['>16 oz<']);
+
+    deleteWaterEntry(wdb, glass);
+    const cleared = render('log tab (both undone)', LogScreen);
+    expect('log tab (both undone)', cleared, ['Nothing logged yet today.']);
+    refute('log tab (both undone)', cleared, ['>8 oz<']);
+  }
 
   // 0035: the cabinet before there is anything in it. "Unfiled is a place" is
   // the design statement the whole feature turns on, so it is asserted.
@@ -2311,28 +2371,56 @@ const db = getDb();
   refute('data tab (water + no chips)', dataWithWater, ['Set up', 'Later']);
 
   // ---------------------------------------------------------------------
-  // The Log tab's Water tile, now that there IS a record to learn from. The
-  // fixture above logged 500 ml thirteen times and 750 / 250 once each, so the
-  // remembered amount is 500 ml — and the tile has to say so in the unit the
-  // user reads in, not in the unit it is stored in.
+  // The Log tab's water row in BOTH unit preferences, now that there is a
+  // record to learn from. The fixture above logged 500 ml thirteen times and
+  // 750 / 250 once each, so the remembered amount is 500 ml.
+  //
+  // Two separate claims live here since 2026-09-21, and they used to be one:
+  //
+  //   1. **The vessels are per-unit literals.** Under ml they are 240/500/750,
+  //      never a converted 473 — a metric bottle is 500, and a tap has to write
+  //      the number on the cell.
+  //   2. **The remembered amount is a NOTE, not a button.** It says which one he
+  //      usually takes, in the unit he reads in, and nothing taps it. That is
+  //      the whole of what survives of the one-tap tile.
   setUnitPreference(db, 'volume', 'ml');
   const mlLog = render('log tab (ml, learned amount)', LogScreen);
   expect('log tab (ml, learned amount)', mlLog, [
-    '+500 ml', // the learned amount, in metric literals — never a converted 473
-    'Log water, 500 ml',
+    '+240 ml',
+    '+500 ml',
+    '+750 ml',
+    'Log 500 ml of water, Bottle',
+    'usually 500 ml', // the note, stored and printed metric, unconverted
   ]);
-  // Under a metric preference nothing on the tile may still read in ounces.
-  refute('log tab (ml, learned amount)', mlLog, ['+8 oz', '+17 oz', 'Log water, 8 oz']);
+  // Under a metric preference nothing in this block may still read in ounces.
+  refute('log tab (ml, learned amount)', mlLog, [
+    '+8 oz',
+    '+16 oz',
+    '+24 oz',
+    'usually 17 oz',
+    'Log water, 500 ml', // the committing tile's label is gone for good
+  ]);
 
   setUnitPreference(db, 'volume', 'oz');
   const ozLog = render('log tab (oz, learned amount)', LogScreen);
-  // THE INVARIANT, rendered: the face and the accessibility label carry the SAME
-  // number, and it is the number the tap will log. 500 ml read under an ounce
-  // preference is 17 oz, and the tile offers 17 oz rather than pretending to
-  // offer the stored 500 — a tile that printed one amount and logged another
-  // would be a lie, and nothing else about it would matter.
-  expect('log tab (oz, learned amount)', ozLog, ['+17 oz', 'Log water, 17 oz']);
-  refute('log tab (oz, learned amount)', ozLog, ['+500 ml', 'Log water, 500 ml', '+8 oz']);
+  // THE INVARIANT, rendered: every cell's caption and its accessibility label
+  // carry the SAME number, and it is the number that tap will log. The note
+  // converts with them — 500 ml read under an ounce preference is 17 oz, so the
+  // habit is stated as 17 oz rather than as a stored 500 nobody typed.
+  expect('log tab (oz, learned amount)', ozLog, [
+    '+8 oz',
+    '+16 oz',
+    '+24 oz',
+    'Log 16 oz of water, Bottle',
+    'usually 17 oz',
+  ]);
+  refute('log tab (oz, learned amount)', ozLog, [
+    '+240 ml',
+    '+500 ml',
+    '+750 ml',
+    'usually 500 ml',
+    'Log water, 17 oz',
+  ]);
 }
 
 // ---------------------------------------------------------------------------

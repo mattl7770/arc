@@ -344,16 +344,26 @@ console.log('\n6. The hydration goal: absent by default, never invented');
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n7. The remembered amount — what the Log tab’s Water tile logs in one tap');
+console.log('\n7. The remembered amount — the habit the Log tab states beside the vessels');
 {
+  // The derivation is unchanged since 2026-09-14; what it FEEDS changed on
+  // 2026-09-21. It drove the Log tab's one-tap Water tile, with the other
+  // vessels behind a long-press, and came back off device as *"the button just
+  // adds 8"* — a derived amount is only as good as the gesture that reaches
+  // past it, and nobody found the gesture. The vessels are all on the sheet
+  // now and this figure is printed beside them as `usually 8 oz`, tapped by
+  // nothing (db/screens-render.test.mjs, §0 and §14). Every rule below still
+  // holds: a note that misstates his habit is a smaller fault than a button
+  // that mis-logged his day, but it is still a fault.
+  //
   // Resolved through the real display spec, so the values under test are the
-  // exact doubles the tile would store rather than hand-picked round numbers.
+  // exact doubles a vessel would store rather than hand-picked round numbers.
   const specFor = (db) => resolveDisplay(metricByKey('water'), getPreferences(db).units);
 
   {
     const { db } = freshDb();
     usualWaterAmount(db, TODAY) === null
-      ? ok('an empty record has no usual amount — the caller falls back to a Glass')
+      ? ok('an empty record has no usual amount — so the Log tab states none')
       : bad('empty record must be null', String(usualWaterAmount(db, TODAY)));
   }
 
@@ -369,8 +379,10 @@ console.log('\n7. The remembered amount — what the Log tab’s Water tile logs
       ? ok('five 16 oz against two 8 oz resolves to the 16 oz canonical value')
       : bad('most frequent wins', String(usualWaterAmount(db, TODAY)));
 
-    // The invariant the tile rests on: the number it PRINTS is the number it
-    // logs. Print = round(fromCanonical(usual)); log = toCanonical(print).
+    // The note is printed through the same round trip a vessel's caption takes,
+    // so `usually 16 oz` names an amount that is actually on the sheet rather
+    // than a neighbouring figure nothing can tap. Print =
+    // round(fromCanonical(usual)); a vessel's write = toCanonical(print).
     const printed = roundToSpec(spec, spec.fromCanonical(usualWaterAmount(db, TODAY)));
     printed === 16 && spec.toCanonical(printed) === usualWaterAmount(db, TODAY)
       ? ok('...and it round-trips exactly: the printed 16 oz converts back to the stored value')
@@ -378,7 +390,7 @@ console.log('\n7. The remembered amount — what the Log tab’s Water tile logs
   }
 
   {
-    // Not "last logged": one small dose must not retrain the button.
+    // Not "last logged": one small dose must not become the stated habit.
     const { db } = freshDb();
     const spec = specFor(db);
     for (let i = 0; i < 3; i++) logWater(db, TODAY, spec.toCanonical(16));
@@ -438,7 +450,7 @@ console.log('\n7. The remembered amount — what the Log tab’s Water tile logs
     ]);
     usualWaterAmount(db, TODAY) === spec.toCanonical(8)
       ? ok('a synced day bucket is ignored even when it is the largest and the most recent')
-      : bad('device rows must not train the tile', String(usualWaterAmount(db, TODAY)));
+      : bad('device rows must not train the usual', String(usualWaterAmount(db, TODAY)));
   }
 
   {

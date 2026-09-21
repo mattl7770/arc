@@ -14,12 +14,14 @@ import { useLogFeed } from '@/hooks/use-log-feed';
  * Log — fast capture. Direction A ("Open Line"), locked 2026-07-25
  * (docs/information-architecture.md). Three layers:
  *   1. the command / voice field (free notes + parse) — the hero,
- *   2. four quick-add tiles (Weight opens the metric keypad; Supplement &
- *      Therapy open a capture sheet; **Water logs in place** — tap for the
- *      remembered amount, long-press for the others),
+ *   2. quick add — three door tiles (Weight opens the metric keypad; Supplement
+ *      & Therapy open a capture sheet) and a **water row that logs in place**:
+ *      Glass / Bottle / Large / Other…, all four on the sheet, one tap each.
+ *      They were behind a long-press until 2026-09-21, which is the change the
+ *      owner's device feedback forced (src/components/log/quick-add-grid.tsx),
  *   3. today's running record, read live from the DB.
  *
- * The command field, the tile and the keypad all persist to on-device SQLite;
+ * The command field, the vessels and the keypad all persist to on-device SQLite;
  * the feed reloads on capture and whenever the tab regains focus (returning from
  * the keypad).
  *

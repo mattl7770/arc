@@ -14,8 +14,10 @@
  *     to the readout; the `+` on those faces is load-bearing, and the fact that
  *     they add rather than commit is a property of that screen, not of this
  *     table);
- *   - `src/components/log/quick-add-grid.tsx` — the Log tab's Water tile and the
- *     amounts its long-press reveals (each commits, like the water screen).
+ *   - `src/components/log/quick-add-grid.tsx` — the Log tab's water row, four
+ *     cells on the sheet at all times (each commits, like the water screen).
+ *     Until 2026-09-21 these were behind a long-press there, which is the bug
+ *     the owner reported off device; the table is unchanged, only its visibility.
  *
  * Two copies agreed by luck; a third would not have. The amounts are the only
  * thing shared — every screen keeps its own treatment, its own `+` semantics and
@@ -42,12 +44,17 @@ export const WATER_QUICK_AMOUNTS: Record<'oz' | 'ml', readonly WaterQuickAmount[
   ],
 };
 
-/**
- * The amount a surface falls back to when it has nothing else to go on — a
- * Glass, in the user's unit. Its own function rather than
- * `WATER_QUICK_AMOUNTS[unit][0]!` repeated at the call sites, because "the
- * default is a glass" is a product decision and deserves one place to change.
+/*
+ * `defaultWaterAmount(unit)` — "the amount a surface falls back to when it has
+ * nothing else to go on, a Glass" — lived here from 2026-09-14 and is deleted
+ * on 2026-09-21 with its one caller. It existed for the Log tab's Water tile,
+ * which DERIVED the amount it would log and needed something to fall back to on
+ * an empty record. That tile is gone: the Log tab now shows all three vessels
+ * plus Other…, so there is no derivation left to fall back from and no surface
+ * that has "nothing to go on".
+ *
+ * Nothing else called it. `app/water.tsx`'s first-run stamp still reaches for
+ * `WATER_QUICK_AMOUNTS[unit][0]!` directly, as it always did — a single use is
+ * not a duplication, and re-exporting a one-line accessor to serve it would put
+ * the helper back with the same caller count it is being removed for.
  */
-export function defaultWaterAmount(volumeUnit: 'oz' | 'ml'): number {
-  return WATER_QUICK_AMOUNTS[volumeUnit][0]!.amount;
-}
