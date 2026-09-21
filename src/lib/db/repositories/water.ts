@@ -268,9 +268,8 @@ export function waterRecordStart(db: Database): string | null {
 export const USUAL_WINDOW_DAYS = 14;
 
 /**
- * **The amount the Log tab's Water tile logs in one tap** — canonical ml, or
- * `null` when there is nothing to learn from (the caller then falls back to a
- * Glass, `src/lib/log/water-amounts.ts`).
+ * **The amount the owner usually takes** — canonical ml, or `null` when there is
+ * nothing to learn from.
  *
  * The rule: the **most frequently logged amount across MANUAL captures in the
  * last {@link USUAL_WINDOW_DAYS} days**, ties broken by the most recent.
@@ -282,8 +281,8 @@ export const USUAL_WINDOW_DAYS = 14;
  *     usual": a merged day total is not a vessel, and on a heavy day it would be
  *     the largest number in the table.
  *   - **Most frequent, not most recent.** One 4 oz pill-swallow would retrain a
- *     "last logged" button, and the tile would then quietly log a quarter of a
- *     glass for the rest of the week.
+ *     "last logged" figure, and the Log tab would then describe a quarter of a
+ *     glass as his habit for the rest of the week.
  *   - **Ties by the most recent**, and the final tie-break is `rowid` rather than
  *     `id` — `created_at` resolves to the millisecond and several taps land
  *     inside one of those, while ids are random v4 UUIDs whose order is
@@ -293,12 +292,16 @@ export const USUAL_WINDOW_DAYS = 14;
  * amount converts to canonical through one deterministic multiplication, so two
  * taps of 16 oz store the identical double and group together.
  *
- * **Derived, not configured** — the ask was speed, not another setting. What
- * makes a derived default safe is that the tile PRINTS the amount it will log,
- * so the button cannot mislead about a number it is displaying. If the
- * derivation ever proves surprising on device, the fallback is a user-set
- * default beside the daily goal in the preferences blob; nothing here would need
- * to move but this function.
+ * **It is a reading, not a control (2026-09-21).** From 2026-09-14 this drove
+ * the Log tab's Water tile: one tap logged whatever came back from here, and
+ * the other vessels sat behind a long-press. Off device that read as a button
+ * that only ever added 8 oz — the derivation is only as good as the gesture
+ * nobody found. The vessels are now all on the sheet, and this figure is
+ * printed beside them as `usually 8 oz` and tapped by nothing. The derivation
+ * is unchanged and so are its tests; what changed is that being wrong about it
+ * now costs a sentence rather than a mis-logged day. The escape hatch that used
+ * to be held in reserve — a user-set default in the preferences blob — is
+ * therefore moot: there is no default left to set.
  */
 export function usualWaterAmount(
   db: Database,

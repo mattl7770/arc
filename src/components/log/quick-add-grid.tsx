@@ -11,13 +11,13 @@ import { todayISODate } from '@/lib/db/date';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { deleteWaterEntry, logWater, usualWaterAmount } from '@/lib/db/repositories/water';
 import { metricByKey, resolveDisplay, roundToSpec, type DisplaySpec } from '@/lib/log/metrics';
-import { defaultWaterAmount, WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
+import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
 
 /**
- * The four quick-add tiles: Supplement, **Water**, Weight, Therapy. Three of
- * them open a focused sheet or the metric keypad and come straight back — Weight
- * is a number so it goes to the keypad, Supplement and Therapy open the capture
- * sheet (app/capture.tsx). **Water no longer opens anything: it logs.**
+ * Quick add — three door tiles (Supplement, Weight, Therapy) and, on its own
+ * ruled row, **the water vessels**. Weight is a number so it goes to the metric
+ * keypad; Supplement and Therapy open the capture sheet (app/capture.tsx). The
+ * vessels open nothing at all: each one logs.
  *
  * ## The two gateway tiles are gone (owner, 2026-08-12)
  *
@@ -31,47 +31,70 @@ import { defaultWaterAmount, WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts
  * offering a second, worse route to two screens the tab bar already reaches —
  * and spending a third of the busiest block on the Log tab to do it.
  *
- * Four tiles in a 2 × 2 — see the layout note on TILE for why not three across.
+ * ## The amounts are on the sheet (owner, device, 2026-09-21)
  *
- * ## The Water tile is the vessel (D2, 2026-09-14)
+ * > *"the water no longer really works, because the button just adds 8? need to
+ * > do something different here, idk what tbh."*
  *
- * This block no longer holds "one kind of tile with one behaviour". It held that
- * claim from 2026-08-12 until now, and the claim is retired deliberately rather
- * than quietly — the docblock said it, so the docblock has to unsay it.
+ * D2 (2026-09-14) made the Water tile commit **the remembered amount** in one
+ * tap — the most frequent manual capture of the last 14 days, `usualWaterAmount`
+ * — and put the other vessels behind a **long-press**. On device that came out
+ * as a button that only ever adds 8 oz, because he had logged glasses most often
+ * and never found the gesture.
  *
- * The measurement that forced it: logging a glass of water through this tile
- * cost **four taps and three screen transitions** (tab bar → tile → an amount on
- * the keypad → Log), because the keypad's water amounts are additive onto the
- * readout rather than commits. Every other tile here lands somewhere the FIRST
- * tap finishes the job; this one needed two. Water is also the one metric logged
- * many times a day at unpredictable moments, which is precisely the pattern that
- * punishes a path beginning with "open a screen" (docs/spikes/water-fast-logging.md).
+ * The remembered amount was not the mistake. **Hiding the choice was.** A
+ * long-press is an invisible affordance: nothing on the sheet says it is there,
+ * so a user who does not already know is left with whichever single amount the
+ * derivation happened to pick — and the faster that one tap is, the more firmly
+ * the derivation trains itself on it. D2 measured taps and did not measure
+ * discoverability, and the gesture is the whole of the difference.
  *
- * So the tile stops being a door and becomes the thing itself:
+ * So the vessels come out of hiding and become the block's own row:
  *
- *   - **Tap** — logs the remembered amount to today, in place. No push, no pop.
- *     Two taps from anywhere in the app, one transition.
- *   - **Long-press** — reveals the amounts inline, inside this same plate, under
- *     the grid: Glass / Bottle / Large / **Other…**, where *Other…* is the
- *     existing `/metric-entry?metric=water` route, unchanged. No modal, no sheet,
- *     no navigation. `Pressable` carries `onLongPress` natively, so no gesture
- *     dependency was added.
+ *   - **Glass / Bottle / Large / Other…** are on the sheet at all times, one tap
+ *     each, in the unit preference (`WATER_QUICK_AMOUNTS`, the one shared
+ *     table). A tap writes that exact amount to today, in place — no push, no
+ *     pop, no gesture — and the same `Logged 16 oz` row with the same **Undo**
+ *     reports it. *Other…* is still `/metric-entry?metric=water`, unchanged.
+ *   - **Nothing sits behind a long-press**, because there is nothing left to
+ *     reveal. The handler is deleted rather than kept as an alias: a gesture
+ *     that duplicates a visible control is a second thing to keep working and a
+ *     second thing to get wrong.
+ *   - **The remembered amount is a note now, not a button.** It is printed as
+ *     `usually 8 oz` beside the Water label — his pattern, stated — and nothing
+ *     taps it. `usualWaterAmount` and its 14-day rule are untouched.
  *
- * **The block's real contract survives, in its strongest form.** The rule was
- * never "four is the maximum" or "every tile behaves alike" — it was *every tile
- * lands somewhere that writes* (00-design-spec.md §5: this block is the answer
- * the empty feed below points at, and a tile that opens a screen which cannot
- * finish the job would make that answer a lie). The Water tile now stops landing
- * somewhere that writes and simply **writes**. No fifth tile, so the 2 × 2 is
- * untouched.
+ * **Marked, not reordered.** The obvious alternative was to float the most-used
+ * vessel to the front of the row. It is refused: the vessels read small → large
+ * and sit in that order on the water screen too, and a row that rearranges
+ * itself the week his habit shifts moves a target out from under his thumb — a
+ * quieter version of exactly the bug being fixed here. The positions are fixed;
+ * the note says which one he usually takes.
  *
- * **A tile that behaves differently has to LOOK different, and it does.** It
- * prints the amount it will log on its own face — `+16 oz`, mono, under the
- * label — exactly as the water screen's and the keypad's quick amounts already
- * do. A tile that says what it will do is allowed to do something its neighbours
- * don't; a tile that looks identical and behaves differently is not. That
- * printed number is also what makes a DERIVED default safe (see
- * `usualWaterAmount`): the button cannot mislead about an amount it is showing.
+ * ## Why the vessels are a full-width row and not four chips inside a tile
+ *
+ * They do not fit inside one. At 375 pt the plate's content is about 305 pt, a
+ * half-width tile is about 148 pt, and four targets inside it would be 35 pt
+ * each — under the 44 pt floor. Two rows of two inside the tile would make one
+ * cell of the 2 × 2 twice the height of its neighbours.
+ *
+ * So Water leaves the tile grid and takes a ruled row of this same plate, where
+ * four cells at `w-[23.5%]` are about 72 pt each: comfortably over the floor,
+ * and wide enough for `+750 ml` in mono without truncating.
+ *
+ * **What that costs, and why the cost is the cheaper one.** It leaves three
+ * doors, and three does not divide into two columns. Both failures are named on
+ * {@link TILE}: a three-wide row truncates "Supplement" (it is why the six-tile
+ * layout was abandoned), and a 2 + 1 leaves a half-empty row that reads as a
+ * tile which failed to load. A trailing door that **spans** has neither fault —
+ * every row is complete and no label is squeezed. See {@link TILE_WIDE}.
+ *
+ * A side effect worth naming: the tile grid holds **one kind of thing again**.
+ * Every tile is a door; water — which was never a door, and spent a week as the
+ * one tile that behaved unlike its neighbours — is its own object under its own
+ * label. The block's contract (00-design-spec.md §5: this block is the answer
+ * the empty feed below points at, so every control here must land somewhere that
+ * writes) holds in both halves.
  *
  * **What it says back, and why it is not a toast.** Nothing modal, nothing
  * animated — the design system has no motion language and inventing one here is
@@ -83,19 +106,20 @@ import { defaultWaterAmount, WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts
  *      receipt (§5: ledgers must sum to their own totals), and `/water` corrects
  *      it.
  *   2. *The undo row.* A committing tap can be made by accident, and the Log tab
- *      has no other undo. So the strip under the grid reports the write just
+ *      has no other undo. So the strip under the vessels reports the write just
  *      made and offers **Undo**, which deletes by the id `logWater` handed back
  *      — it can only ever remove the glass it just wrote, never a neighbouring
  *      one. It carries no timer: the design system has no timing vocabulary, and
  *      an affordance you have to race is worse than one that waits. It is
- *      replaced by the next write and dismissed by opening the amounts.
+ *      replaced by the next write.
  *
  * Conformed Set treatment — a **plate** holding boxed tiles, which is what the
- * sheet draws and, as of 2026-08-11, what the app draws again. The inline
- * amounts and the undo row are ruled rows of that same plate (`Divider`), not a
- * second device: a plate rules its own rows, and a nested enclosure here would be
- * two surfaces in one block. **No accent** — the Log tab's single pine is the
- * command field's send action and that budget does not move.
+ * sheet draws and, as of 2026-08-11, what the app draws again. The vessel row
+ * and the undo row are ruled rows of that same plate (`Divider`), not a second
+ * device: a plate rules its own rows, and a nested enclosure here would be two
+ * surfaces in one block. Label voice on every caption, mono on every amount.
+ * **No accent** — the Log tab's single pine is the command field's send action
+ * and that budget does not move.
  *
  * ## This block was never the grid device (and that is why it lost its boxes)
  *
@@ -120,7 +144,7 @@ import { defaultWaterAmount, WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts
  * So the tiles are boxed again, and boxing them is also the right answer on the
  * merits, which is why the sheet does it. **These cells are tap targets, not
  * readouts**, and a border is one of the standard ways a control says it is
- * pressable. Nothing else on the Log tab is a 3×2 field of unbordered words.
+ * pressable. Nothing else on the Log tab is a field of unbordered words.
  *
  * A `gap` and a border, not a rule between cells: closed boxes separated by air
  * cannot produce a half-drawn anything, and each box is uniform on all four
@@ -129,119 +153,129 @@ import { defaultWaterAmount, WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts
  * Class strings are whole literals, never built from a prefix: Tailwind's
  * scanner only sees names that appear literally in source.
  */
-type Tile =
-  | { key: string; label: string; icon: keyof typeof Ionicons.glyphMap; kind: 'door'; href: Href }
-  /** The one tile that writes in place rather than opening a screen. */
-  | { key: 'water'; label: 'Water'; icon: keyof typeof Ionicons.glyphMap; kind: 'commit' };
+type Door = { key: string; label: string; icon: keyof typeof Ionicons.glyphMap; href: Href };
 
 /**
- * One tile: a closed hairline box on plate stock, uniform on all four sides.
+ * One door tile: a closed hairline box on plate stock, uniform on all four
+ * sides.
  *
- * **2 × 2, not 3 + 1.** With six tiles this was three columns; at four, a
- * three-wide row leaves a single orphan on the second row with two tile-widths
- * of empty plate beside it, which reads as a tile that failed to load rather
- * than as a grid that ended. Two columns of two is the only arrangement of four
- * that is regular in both directions.
+ * **Two columns, never three.** With six tiles this was three columns and
+ * "Supplement" had about 41 pt to render in, which truncated; at half width it
+ * has roughly twice that. That constraint survives every change to this block,
+ * and it is why an odd door spans (see {@link TILE_WIDE}) rather than three of
+ * them squeezing into one row.
  *
  * `w-[48.5%]` rather than `w-1/2` because the gutter is real geometry: two
  * halves plus a gap overflows the row and wraps the second tile. 48.5 × 2 = 97%,
  * and the row's `justify-between` spends the remaining 3% as the single gutter,
- * so the outer edges stay flush with the plate's padding at any width. The
- * wider tile also ends the truncation risk the three-wide layout carried —
- * "Supplement" had about 41pt to render in and now has roughly twice that.
+ * so the outer edges stay flush with the plate's padding at any width.
  *
  * **The tile itself must NOT be `justify-between`.** It was for one commit, and
  * with the label as the only flexible child that hands all the slack to the gap
  * after the icon, pinning the caption against the right border. `grow` on the
  * label is the fix: it absorbs the slack itself so every caption starts hard
- * against its icon. The Water tile's label and amount live in a `grow` COLUMN
- * for the same reason — and that column is `items-start`, never `flex-1`, which
- * in a column axis collapses.
+ * against its icon.
  */
 const TILE =
   'w-[48.5%] min-h-[52px] flex-row items-center gap-1.5 border border-hairline bg-paper-hi px-2.5 py-3 active:bg-paper-dim';
 
 /**
- * One inline amount revealed by the long-press. The same 2 × 2 geometry and the
- * same `w-[48.5%]` arithmetic as {@link TILE}, for the same reason: four cells
- * in a row would leave each about 80pt at phone width, and the four amounts read
- * as a grid that ended rather than one that ran out of room. 44pt minimum, which
- * is the tap-target floor.
+ * The same tile, spanning the plate — what the LAST door takes when the doors
+ * are an odd number, which since 2026-09-21 they are.
+ *
+ * An odd tile has two obvious endings and both are faults named on {@link TILE}:
+ * a three-wide row, which truncates "Supplement", or a half-width tile with two
+ * tile-widths of empty plate beside it, which reads as a tile that failed to
+ * load rather than as a grid that ended. Spanning is the third ending and the
+ * only one with neither fault — every row is complete, every label has half the
+ * plate or more.
+ *
+ * A whole literal, and a separate constant rather than a width appended to
+ * {@link TILE} at runtime: Tailwind's scanner only sees names that appear
+ * literally in source.
  */
-const AMOUNT =
-  'w-[48.5%] min-h-[44px] items-center justify-center rounded-btn border border-hairline bg-paper-hi px-1 py-2 active:bg-paper-dim';
+const TILE_WIDE =
+  'w-full min-h-[52px] flex-row items-center gap-1.5 border border-hairline bg-paper-hi px-2.5 py-3 active:bg-paper-dim';
 
-const TILES: Tile[] = [
+/**
+ * One water vessel: four across, always on the sheet.
+ *
+ * `w-[23.5%]` × 4 = 94%, and `justify-between` spends the remaining 6% as the
+ * three gutters. At 375 pt that is about 72 pt per cell against a 44 pt tap
+ * floor, and about 62 pt of text room — enough for `+750 ml` at 10px mono and
+ * for "Bottle" in the condensed label face, which is why four of these fit on
+ * one line where four inside a half-width {@link TILE} could not.
+ *
+ * `numberOfLines={1}` on both captions is the backstop: the widths are
+ * percentages and do not reflow when the system text size grows, so a caption
+ * that outgrows its cell has to clip rather than push the row apart.
+ */
+const VESSEL =
+  'w-[23.5%] min-h-[44px] items-center justify-center rounded-btn border border-hairline bg-paper-hi px-1 py-2 active:bg-paper-dim';
+
+const DOORS: Door[] = [
   {
     key: 'supplement',
     label: 'Supplement',
     icon: 'medkit-outline',
-    kind: 'door',
     href: { pathname: '/capture', params: { type: 'supplement' } },
-  },
-  {
-    key: 'water',
-    label: 'Water',
-    icon: 'water-outline',
-    kind: 'commit',
   },
   {
     key: 'weight',
     label: 'Weight',
     icon: 'scale-outline',
-    kind: 'door',
     href: { pathname: '/metric-entry', params: { metric: 'weight' } },
   },
   {
     key: 'therapy',
     label: 'Therapy',
     icon: 'thermometer-outline',
-    kind: 'door',
     href: { pathname: '/capture', params: { type: 'therapy' } },
   },
 ];
 
-/** The route the long-press's *Other…* opens — unchanged, and still the only
- *  way to log an amount that is not one of the three. */
+/** The route *Other…* opens — unchanged, and still the only way to log an
+ *  amount that is not one of the three vessels. */
 const OTHER_HREF: Href = { pathname: '/metric-entry', params: { metric: 'water' } };
 
 type WaterView = {
   spec: DisplaySpec;
   volumeUnit: 'oz' | 'ml';
-  /** The DISPLAY amount printed on the tile's face and handed to `logWater`. */
-  amount: number;
+  /**
+   * The most-used amount in DISPLAY units, or null when there is nothing to
+   * learn from. It is a NOTE beside the label, never a control — no tap in this
+   * block depends on it.
+   */
+  usual: number | null;
 };
 
 /**
- * What the tile will do, resolved from the record and the unit preference.
+ * The unit preference and the remembered amount, read fresh from the record.
  *
- * **The amount is resolved in DISPLAY units and converted back at write time**,
- * which is what makes the tile's one invariant true by construction: the number
- * on the face is the number `logWater` receives. Resolving the other way round —
- * printing a rounded view of a stored canonical value while logging the
- * unrounded one — is how a tile starts lying about itself, and it is the only
- * thing that could make a derived default unsafe.
+ * **The vessels are per-unit literals, not conversions** — a metric bottle is
+ * 500 ml, not the 473 that 16 oz rounds to — and each is handed to `logWater`
+ * through `spec.toCanonical` at write time, so the number printed on a cell is
+ * the number the tap stores. That invariant used to be the thing that made a
+ * DERIVED default safe; it is now simply true of four fixed amounts, which is
+ * the stronger version of the same property.
  *
- * A stored 500 ml read under an oz preference therefore prints `+17 oz` and logs
- * 17 oz, not 500 ml. That is the honest rendering: the tile is offering an
- * amount in the unit the user reads in, and it says exactly which.
+ * The remembered amount is resolved the same way, so the note reads in the unit
+ * he reads in: a stored 500 ml under an oz preference says `usually 17 oz`. It
+ * is rounded to the display spec, and a record of tiny amounts that rounds to
+ * zero yields no note rather than `usually 0 oz` — an absent note is the honest
+ * rendering of "nothing here is worth calling a habit".
  */
 function readWater(): WaterView {
   const db = getDb();
   const units = getPreferences(db).units;
   const spec = resolveDisplay(metricByKey('water')!, units);
   const volumeUnit = units.volume === 'ml' ? 'ml' : 'oz';
-  const usual = usualWaterAmount(db, todayISODate());
-  const amount =
-    usual === null ? defaultWaterAmount(volumeUnit) : roundToSpec(spec, spec.fromCanonical(usual));
-  // A record of tiny amounts could round to zero in oz (1 ml is 0.03 oz, and
-  // water renders at 0 decimals). `logWater` refuses a non-positive amount, so
-  // falling back to the Glass literal is the difference between a tile that
-  // works and a tile that throws under the thumb.
-  return { spec, volumeUnit, amount: amount > 0 ? amount : defaultWaterAmount(volumeUnit) };
+  const learned = usualWaterAmount(db, todayISODate());
+  const usual = learned === null ? null : roundToSpec(spec, spec.fromCanonical(learned));
+  return { spec, volumeUnit, usual: usual !== null && usual > 0 ? usual : null };
 }
 
-/** "+16 oz" — the tile's own face, and the caption on each inline amount. */
+/** "+16 oz" — the caption under every vessel. */
 function plus(amount: number, unit: string): string {
   return `+${amount} ${unit}`;
 }
@@ -249,21 +283,19 @@ function plus(amount: number, unit: string): string {
 export function QuickAddGrid({ onLogged }: { onLogged?: () => void }) {
   const router = useRouter();
   const [view, setView] = useState(readWater);
-  /** The inline amounts, revealed by a long-press on the Water tile. */
-  const [expanded, setExpanded] = useState(false);
   /** The write just made, so it can be undone by id. Null once undone. */
   const [undo, setUndo] = useState<{ id: string; label: string } | null>(null);
 
   // op-sqlite is synchronous, so the first read already ran in the initializer
   // above; this re-reads on return from /water, the keypad or Settings — any of
-  // which can change what "his usual" is, or which unit it should be said in.
+  // which can change what "his usual" is, or which unit the vessels are in.
   useFocusEffect(
     useCallback(() => {
       setView(readWater());
     }, [])
   );
 
-  const { spec, volumeUnit, amount } = view;
+  const { spec, volumeUnit, usual } = view;
 
   const log = (displayAmount: number) => {
     // The log day is resolved fresh rather than captured at mount: the Log tab
@@ -273,7 +305,6 @@ export function QuickAddGrid({ onLogged }: { onLogged?: () => void }) {
     try {
       const id = logWater(getDb(), todayISODate(), spec.toCanonical(displayAmount));
       setUndo({ id, label: `${displayAmount} ${spec.unit}` });
-      setExpanded(false);
       setView(readWater());
       onLogged?.();
     } catch (error) {
@@ -297,82 +328,59 @@ export function QuickAddGrid({ onLogged }: { onLogged?: () => void }) {
     <Block device="plate">
       <SectionLabel label="Quick add" />
 
-      {/* `gap-y-2` is the 7pt gutter between the two rows; `justify-between`
+      {/* `gap-y-2` is the 7pt gutter between the rows; `justify-between`
           supplies the horizontal one and keeps the outer tiles flush. */}
       <View className="mt-2 flex-row flex-wrap justify-between gap-y-2">
-        {TILES.map((tile) =>
-          tile.kind === 'commit' ? (
-            <Pressable
-              key={tile.key}
-              accessibilityRole="button"
-              // The label states the amount AND that the tap commits — "Water"
-              // alone would describe a door, which this no longer is.
-              accessibilityLabel={`Log water, ${amount} ${spec.unit}`}
-              // A long-press is invisible to VoiceOver, so the other amounts are
-              // exposed as a real action rather than only as a gesture.
-              accessibilityHint="Double tap and hold for other amounts"
-              accessibilityActions={[{ name: 'longpress', label: 'Other amounts' }]}
-              onAccessibilityAction={(event) => {
-                if (event.nativeEvent.actionName === 'longpress') setExpanded((open) => !open);
-              }}
-              onPress={() => log(amount)}
-              onLongPress={() => {
-                setUndo(null);
-                setExpanded((open) => !open);
-              }}
-              className={TILE}>
-              <Ionicons name={tile.icon} size={15} color={palette.inkSecondary} />
-              {/* Label over amount. `items-start` and never `flex-1`: this is a
-                  COLUMN, where `flex-1` collapses the children. `grow` takes the
-                  tile's slack so the stack starts hard against its icon. */}
-              <View className="shrink grow items-start">
-                <Text numberOfLines={1} className="font-label text-[10px] font-bold text-ink">
-                  {tile.label}
-                </Text>
-                {/* A measured value inside a label stays mono (00-design-spec §3). */}
-                <Text numberOfLines={1} className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                  {plus(amount, spec.unit)}
-                </Text>
-              </View>
-            </Pressable>
-          ) : (
-            <Pressable
-              key={tile.key}
-              accessibilityRole="button"
-              accessibilityLabel={tile.label}
-              onPress={() => router.push(tile.href)}
-              className={TILE}>
-              <Ionicons name={tile.icon} size={15} color={palette.inkSecondary} />
-              {/* A tile label is a button label — the label voice. `grow` takes
-                  the tile's slack so every caption starts hard against its icon
-                  rather than floating (see TILE above); `shrink` + `numberOfLines`
-                  stay as the backstop, though at half-width no label is close to
-                  needing them. */}
-              <Text
-                numberOfLines={1}
-                className="shrink grow font-label text-[10px] font-bold text-ink">
-                {tile.label}
-              </Text>
-            </Pressable>
-          )
-        )}
+        {DOORS.map((door, i) => (
+          <Pressable
+            key={door.key}
+            accessibilityRole="button"
+            accessibilityLabel={door.label}
+            onPress={() => router.push(door.href)}
+            // The odd door out spans rather than sitting beside a hole. Derived
+            // from the count, not flagged on the tile, so a fourth door squares
+            // the grid again without anyone remembering to unset a bit.
+            className={i === DOORS.length - 1 && DOORS.length % 2 === 1 ? TILE_WIDE : TILE}>
+            <Ionicons name={door.icon} size={15} color={palette.inkSecondary} />
+            {/* A tile label is a button label — the label voice. `grow` takes
+                the tile's slack so every caption starts hard against its icon
+                rather than floating (see TILE above); `shrink` + `numberOfLines`
+                stay as the backstop, though at half-width no label is close to
+                needing them. */}
+            <Text
+              numberOfLines={1}
+              className="shrink grow font-label text-[10px] font-bold text-ink">
+              {door.label}
+            </Text>
+          </Pressable>
+        ))}
       </View>
 
-      {/* The long-press expansion — a ruled row of this plate, not a new device.
-          Four amounts in the same 2 × 2 the tiles use. */}
-      {expanded ? (
+      {/* Water — a ruled row of this plate, not a new device. Four amounts on
+          the sheet at all times; every one of them writes. */}
+      <View className="mt-3">
+        <Divider />
         <View className="mt-3">
-          <Divider />
-          <View className="mt-3 flex-row flex-wrap justify-between gap-y-2">
+          {/* The note states his pattern and nothing taps it. Absent when the
+              record has nothing to say, because an invented "usually" would be
+              a claim about a habit that does not exist yet. */}
+          <SectionLabel
+            label="Water"
+            note={usual === null ? undefined : `usually ${usual} ${spec.unit}`}
+          />
+          <View className="mt-2 flex-row justify-between">
             {WATER_QUICK_AMOUNTS[volumeUnit].map((q) => (
               <Pressable
                 key={q.label}
                 accessibilityRole="button"
                 accessibilityLabel={`Log ${q.amount} ${spec.unit} of water, ${q.label}`}
                 onPress={() => log(q.amount)}
-                className={AMOUNT}>
-                <Text className="font-label text-[12px] font-semibold text-ink">{q.label}</Text>
-                <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                className={VESSEL}>
+                <Text numberOfLines={1} className="font-label text-[12px] font-semibold text-ink">
+                  {q.label}
+                </Text>
+                {/* A measured value inside a label stays mono (00-design-spec §3). */}
+                <Text numberOfLines={1} className="mt-0.5 font-mono text-[10px] text-ink-muted">
                   {plus(q.amount, spec.unit)}
                 </Text>
               </Pressable>
@@ -382,17 +390,18 @@ export function QuickAddGrid({ onLogged }: { onLogged?: () => void }) {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Log another amount of water on the keypad"
-              onPress={() => {
-                setExpanded(false);
-                router.push(OTHER_HREF);
-              }}
-              className={AMOUNT}>
-              <Text className="font-label text-[12px] font-semibold text-ink">Other…</Text>
-              <Text className="mt-0.5 font-serif text-[10px] text-ink-muted">Keypad</Text>
+              onPress={() => router.push(OTHER_HREF)}
+              className={VESSEL}>
+              <Text numberOfLines={1} className="font-label text-[12px] font-semibold text-ink">
+                Other…
+              </Text>
+              <Text numberOfLines={1} className="mt-0.5 font-serif text-[10px] text-ink-muted">
+                Keypad
+              </Text>
             </Pressable>
           </View>
         </View>
-      ) : null}
+      </View>
 
       {/* The receipt. It reports the write in mono because it is a measurement,
           and offers the one correction the Log tab cannot otherwise make. */}

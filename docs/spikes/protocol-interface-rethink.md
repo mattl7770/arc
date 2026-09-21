@@ -283,8 +283,9 @@ give the title `numberOfLines={1}`. Its cost: a long item name truncates where t
 prints every title in full. Whether the longest real category string plus a carry mark still fits beside a truncated title at 375pt is a device question (§11);
 the render suite proves one line, not legibility.
 
-**Considered and rejected — that a long-press has no accessible equivalent.** `quick-add-grid.tsx:311-317` is a shipped long-press exposed as a named action.
+**Considered and rejected — that a long-press has no accessible equivalent.** `quick-add-grid.tsx` shipped one exposed as a named action.
 Question 1 keeps long-press as (b); it is not recommended because a gesture with nothing visible is undiscoverable on a row that has always been one tap.
+*(2026-09-21: that precedent is gone. The Water tile's long-press was deleted after the owner reported on device that "the button just adds 8" — he never found the gesture, and a named VoiceOver action did nothing for a sighted user. It is the argument in the second sentence here, confirmed on hardware.)*
 
 **The item sheet** (`/mission-item`, pushed, parent *Home*):
 

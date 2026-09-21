@@ -890,7 +890,7 @@ different exclusion mechanism — not more retries.
 `HKQuantityTypeIdentifierDietaryWater` is a read scope. A hydration tap on a watch, in the
 Health app, or in any hydration app already installed becomes an ARC row on the next sync —
 which is the only path in the whole water feature that works when the phone is in another
-room. The in-app half (the Log tab's Water tile) is in `docs/information-architecture.md`;
+room. The in-app half (the Log tab's water row) is in `docs/information-architecture.md`;
 the spike that ranked both is `docs/spikes/water-fast-logging.md`.
 
 **Three literals and an audit row. That was the whole change.**

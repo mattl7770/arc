@@ -1,7 +1,19 @@
 # Faster water logging — a design spike
 
 **Backlog item:** D2, *"Faster water logging"* (`docs/backlog-2026-09.md:55`)
-**Status:** **BUILT — Rank 1 and Rank 2, 2026-09-14.** Ranks 3–6 remain refused or deferred exactly as argued below. Where the build departed from this document it is noted inline; the shipped behaviour is recorded in `docs/information-architecture.md` (the tile) and `docs/wearables-subapp.md` §15 (the Apple Health read).
+**Status:** **BUILT — Rank 1 and Rank 2, 2026-09-14. Rank 1's long-press REVERSED on device, 2026-09-21.** Ranks 3–6 remain refused or deferred exactly as argued below. Where the build departed from this document it is noted inline; the shipped behaviour is recorded in `docs/information-architecture.md` (the Log tab's water row) and `docs/wearables-subapp.md` §15 (the Apple Health read).
+
+> **What the phone said (owner, 2026-09-21 build):**
+>
+> > *"the water no longer really works, because the button just adds 8? need to do something different here, idk what tbh."*
+>
+> Rank 1 fused two bullets — a one-tap remembered vessel, and long-press to reveal the rest — and argued they were only worth building together (§2 › Rank 1). **The fusion was the error, and it is the half of it this document argued hardest for.** He had logged glasses most often, so `usualWaterAmount` settled on 8 oz; the long-press had no affordance, so he never found it; and the tile therefore *was* an 8 oz button, exactly as he describes.
+>
+> The miss is not in the arithmetic. This spike measured **taps** — four paths, counted act by act — and never measured **discoverability**, which is the only axis on which a long-press differs from a visible control. §3.1's own downside 3 worried that a derived amount "moves", and answered it by printing the number on the tile's face. That answer is sound for the amount shown and useless for the three amounts *not* shown: a face cannot advertise what is behind a gesture.
+>
+> **The shipped shape since 2026-09-21:** Glass / Bottle / Large / Other… are a full-width ruled row of the Quick add plate, all four on the sheet at all times, one tap each; the long-press handler is deleted, not kept as an alias; the remembered amount survives as a *note* (`usually 8 oz`) that nothing taps. The tap count is unchanged at two (tab bar → an amount) and it is now two for **every** amount, not just for whichever one the derivation picked. Rank 2 is untouched. Layout arithmetic and the "marked, not reordered" decision: `docs/information-architecture.md`, and the docblock on `src/components/log/quick-add-grid.tsx`.
+>
+> **The lesson worth keeping, for the next spike that ranks options by taps:** a gesture with no affordance is not a cheaper path, it is an *absent* path for anyone who has not been told about it — so a tap count that includes one is measuring a route the user may never take. Count only what the sheet shows.
 **Date:** 2026-09-14
 
 ---
@@ -116,6 +128,8 @@ Ranked by **speed gained per unit of effort**, with the constraint that nothing 
 ### Rank 1 — Make the Water tile the vessel; move the amounts to long-press
 
 **BUILD NOW.** 4 taps → **2 taps** (tab bar → tile), 3 transitions → **1**.
+
+> ⚠️ **Half-reversed on device, 2026-09-21** — see the status block at the top. The *first* half (water logs in place, from the Log tab, in two taps) stands and is the win. The *second* half — "move the amounts to long-press" — is deleted: the amounts are a visible row now. Read what follows as the argument that was made, including the downside at 138 that turned out to be the wrong downside to worry about.
 
 The two bullets in the brief — "a one-tap default vessel" and "long-press to reveal the amounts inline" — are one proposal, and fusing them is what makes either worth doing. Separately, each is worse:
 
@@ -238,6 +252,15 @@ They are recommended **together** because they cover the two genuinely different
 
 ### 3.1 Interaction spec — the Water tile
 
+> ⚠️ **Superseded in part, 2026-09-21.** Everything below about the *tap* — the repository
+> call, the ledger as receipt, the units invariant, the Conformed Set treatment — still
+> describes what ships. Everything about **the long-press, the tile's derived face, and the
+> 2 × 2 of hidden amounts** does not: the four amounts are a full-width row of the plate,
+> visible at all times, and the remembered amount is a note (`usually 8 oz`) that nothing
+> taps. The accessibility paragraph at 297 is inverted — there is no gesture left to expose,
+> and each cell's own label carries its own amount. See the status block at the top of this
+> file for the owner's words and the reasoning.
+>
 > **As built (2026-09-14), four departures from the spec below.**
 >
 > 1. **There IS an undo.** This section argued the ledger alone is the receipt and that a
