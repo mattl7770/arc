@@ -150,8 +150,16 @@ export type PairedIngest = {
   maxHr: number | null;
   /** The `source_device` bucket, for `deviceLabel`. */
   sourceDevice: WearableDevice;
-  /** Who made the link — 'auto' from overlapping clocks, 'user' by hand. */
-  linkedBy: 'auto' | 'user';
+  /**
+   * HOW the two were matched — `'span'` from overlapping clocks, `'day'` from
+   * the same day and a close duration (the 2026-09-21 rule, for the sessions
+   * that carry no `started_at`), `'user'` by hand from the blank inbox.
+   *
+   * Derived at read time from what the link already stores; there is no column
+   * for it. A `'day'` pair is the one worth SAYING on screen: it was made
+   * without a clock, so it is the one the owner might want to break.
+   */
+  pairedBy: 'span' | 'day' | 'user';
 };
 
 /** One row of the "Recent sessions" list — a workout plus its set count. */

@@ -1048,10 +1048,13 @@ agree with the first only until one of them was tuned.
 
 The manual side needs a span, which a `workouts` row did not have. **0054 adds
 `workouts.started_at`**, nullable, and only the live logger writes it. Null means "no knowable
-span", so a backdated log, a photo import and anything the Coach writes **never auto-pair** —
-a wrong pair would pull a run's 600 kcal into a lifting session and no screen would show that
-as wrong. The migration backfills `created_at − duration_min` only where the row was written
-on the day it is about, the duration is present and under six hours.
+span", so a backdated log, a photo import and anything the Coach writes cannot be matched on a
+clock at all. The migration backfills `created_at − duration_min` only where the row was
+written on the day it is about, the duration is present and under six hours.
+
+> ⚠️ **0054 concluded from that "never auto-pair", and the owner reversed it on 2026-09-21.**
+> Those sessions now pair by **day** instead — §17.7. The span rule below is unchanged; it
+> simply no longer has the last word on a session it cannot see.
 
 **The day is an index filter; the overlap is the rule.** Candidates are pre-filtered to the
 session's day ±1, because `workouts.date` is a LOGICAL day (it can start at 04:00) and
@@ -1107,12 +1110,111 @@ is observed working on device**. Built 2026-09-19 — **§18**.
 the logged session, resolved to the `SOURCE_PRIORITY` winner, carrying `linked_by` and the
 overlap; re-running links nothing new; a re-sync corrects the row in place without re-pairing,
 and the corrected kcal is visible *through* the link; both unique indexes refuse a second link;
-a non-overlapping hour and the same hour a day earlier refuse to pair; a session with no
-`started_at` never auto-pairs; one watch record can only ever be claimed once; the
-double-count goes from 100 minutes to 40; the wearables list marks rather than hides; both
-CASCADEs behave; a hand link replaces an automatic one and records no overlap.
+a non-overlapping hour and the same hour a day earlier refuse to pair; the span rule never
+claims a session with no `started_at` (any link such a session carries records no overlap, so
+it was not made here); one watch record can only ever be claimed once; the double-count goes
+from 100 minutes to 40; the wearables list marks rather than hides; both CASCADEs behave; a
+hand link replaces an automatic one and records no overlap.
 `db/coach-tools.test.mjs` §38 pins the same defect at the tool boundary, across both tools and
-the snapshot.
+the snapshot. The day rule's own tests are §17.7 below.
+
+### 17.7 The DAY rule — a second way to pair (owner, 2026-09-21, **no migration**)
+
+The owner, from the device: *"the apple health found workouts should be attempted to be linked
+to workouts i've logged that are around the same time automatically."* Only the live logger
+writes `started_at`, so in practice **most** of his sessions had no span and sat unpaired
+forever beside the watch's copy of the same hour. §17.2's departure — *a session with no span
+never auto-pairs* — is **reversed by that instruction**; the guard it was protecting (a wrong
+pair nothing on screen would show as wrong) is answered by a one-tap unpair instead.
+
+**The rule.** A logged session with `started_at IS NULL` on logical day **D** is offered the
+unpaired ingested sessions whose own logical day is D, and then:
+
+| the day holds | outcome |
+| --- | --- |
+| exactly one record | **pair**, with no tolerance consulted |
+| several, and the log has a `duration_min` | the **closest duration** wins, and only if it clears the tolerance |
+| several, and the closest still fails the tolerance | **nothing is linked** — failing a tolerance is an answer |
+| several, and the log has no duration | **nothing is linked** — there is no ground left to choose on |
+
+**"Exactly one" counts the day, not what is still unclaimed.** Two logs and two records on one
+day: the first log takes the nearer record on duration, and the second is then judged on
+duration too rather than inheriting a free pass because only one candidate remains. Otherwise a
+25-minute walk rejected for one session would be accepted by the next one down the list, and
+whether a pair happened would depend on iteration order.
+
+**The tolerance is `DAY_PAIR_MIN_RATIO = 0.5`: the shorter of the two durations must be at
+least half the longer.** It is the same 0.5 as `SAME_SESSION_OVERLAP`, applied to the only
+quantity this rule can compare — the app has one number for "close enough to be the same
+session". A 60-minute log and a 25-minute record are two sessions; a 60 and a 47 are one
+session measured twice.
+
+**The day is LOGICAL on both sides.** `workouts.date` already is; `wearable_data.date` is the
+plain calendar day the session ended (§4 — the B3 boundary deliberately does not reach the
+wearable pipeline), so the ingested side is re-read through `logicalDate` from its own
+`end_time`, falling back to the stored `date` when there is no readable clock. The known cost
+is stated rather than hidden: that re-read uses the device's *current* zone, so a session lived
+abroad and re-read at home can land a day out. The span rule has no such exposure — it compares
+instants — which is one more reason **it runs first**. The two rules are disjoint on the
+`workouts` side (`started_at` present or not), so they can never fight over a session; they can
+over a `wearable_data` row, and a clock beats a calendar.
+
+**It runs exactly where the span rule runs** — inside `pairIngestedWorkouts`, therefore at the
+end of every HealthKit sync and on workout save, over the same `PAIR_LOOKBACK_DAYS = 90`
+window. So a phone that already holds months of both pairs its history on the next ordinary
+sync; there is no backfill step and nothing to trigger. The **free-form logger** now calls the
+pass on save as well (`app/workout-log.tsx`) — it never did, because nothing it wrote could
+pair; that session is the one the owner is looking at, and it should be paired by the time the
+hub redraws rather than at the next fifteen-minute sync. The call sits in its own `try`: the
+session is already committed, and a pairing problem must not skip the draft discard and leave
+him one tap from saving it twice. A **photo import** still waits for the sync, which is what
+the retroactive window is for.
+
+**How a link's method is read back — with no new column.** The link table already says it:
+
+| `linked_by` | `overlap` | method (`PairedIngest.pairedBy`) |
+| --- | --- | --- |
+| `'user'` | NULL | by hand, from the blank inbox |
+| `'auto'` | a fraction | **span** — the number *is* the justification |
+| `'auto'` | NULL | **day** — nothing on the clock justified it |
+
+Total, because the three writers are. A day pair therefore **says so where it is read**: the
+watch line on the Train hub and in the session editor ends `· same day` (spoken: *"matched by
+day, not by clock"*), and `get_training_summary` adds `watchPairedBy: "same day"` to that row —
+omitted for a span pair, which shares a clock and needs no caveat.
+
+**Unpairing, and the refusal.** `unlinkIngestedWorkout` is one tap on the watch line in the
+session editor: no confirmation, because nothing of the owner's goes — the sets stay, the
+watch's record stays, and what is discarded is an inference. It must not come back on the next
+sync, and it does not: the pair is recorded as a **refusal** which both rules consult. It is
+recorded for the *pair*, not for either row alone — the owner said these two are not one
+session, not that this session was never recorded. A hand link clears any refusal touching
+either side: an assertion outranks having once refused one.
+
+The refusals live in `health_sync_state` under the key `'workout_pairing'` — a **second key**,
+never a field on the `'apple_health'` cursor row, which is named for the sync cursor. 0021
+shaped that table as one row per key with free JSON, and 0060 already used the freedom for a
+second cursor. **No migration is possible on the link table anyway**: `linked_by` is
+`CHECK (linked_by IN ('auto','user'))` so there is no third value, both id columns are NOT NULL
+so there is no tombstone shape, and a kept row would sit inside the two unique indexes —
+blocking both rows from ever pairing again — while reading as a live link to `pairedIngestFor`,
+the Data-tab list and the `UNPAIRED_WORKOUT` predicate. A refusal is not a link. Each entry
+carries the logged session's `date` and is pruned once a pass's window no longer reaches it, so
+the list is bounded by the lookback rather than growing forever.
+
+**Tests.** `db/wearables.test.mjs` §23: the unique case pairs and records `auto` + NULL
+overlap, reads back as `pairedBy: 'day'` and prints `· same day`; the pass is idempotent; a log
+with no duration pairs when nothing competes; three records on a day hand the 60-minute log the
+47-minute one; a 25-minute record against a 60-minute log is refused on the tolerance; two
+candidates against a log with no duration are refused; an adjacent day does not pair; a
+contested record goes to the session sharing its clock; one record is claimed once however many
+span-less sessions share its day; a 60-day-old pair is made on an ordinary pass while a
+120-day-old one is out of the window; unpairing drops the link, records the refusal, survives
+the next pass, returns the record to the unpaired reads, and is cleared by a hand link; and a
+refusal outside the window is pruned. `db/training-engine.test.mjs` §9 pins that a day-paired
+session infers **zero** and the freshness ledger is byte-identical — the same firewall a span
+pair gets. `db/coach-tools.test.mjs` §45 pins the single count across both tools plus the
+`watchPairedBy` field and its absence on a span pair.
 
 ---
 

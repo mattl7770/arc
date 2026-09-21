@@ -18,6 +18,7 @@ import {
   readWorkoutDraft,
   saveWorkoutDraft,
 } from '@/lib/db/repositories/workout-drafts';
+import { pairIngestedWorkouts } from '@/lib/db/repositories/workout-ingest';
 import {
   DRAFT_VERSION,
   parseManualDraft,
@@ -438,6 +439,24 @@ export default function WorkoutLogScreen() {
         }))
       );
       savedRef.current = true;
+      // Pair-on-save, the other half of pair-on-sync (0054, and the day rule of
+      // 2026-09-21 that finally makes it mean something here). This logger never
+      // called it before, for a good reason: it writes no `started_at`, so
+      // nothing it saved could ever pair. Now it can — and this is the session
+      // the owner is looking at, so it should be paired by the time the hub
+      // redraws rather than fifteen minutes later when the next sync runs.
+      //
+      // Its OWN try, not the one around the write. The session is already
+      // committed by this point, and letting a pairing problem fall into the
+      // catch below would skip `discardDraft` and `router.back` — leaving the
+      // owner on a screen holding a draft of a workout that has already been
+      // saved, one tap away from saving it twice. Pairing is a convenience; the
+      // next sync makes exactly the same links.
+      try {
+        pairIngestedWorkouts(getDb());
+      } catch (error) {
+        console.warn('[exercise] pair-on-save failed', error);
+      }
       // The draft has become a workout — but only clear it once the write has
       // actually succeeded; on a throw it is the only copy of what was typed.
       discardDraft();
