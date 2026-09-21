@@ -95,7 +95,7 @@ import RecipeImportScreen, { ReviewDraft } from '../app/recipe-import.tsx';
 import RecipeFoldersScreen from '../app/recipe-folders.tsx';
 import RecipeReviseScreen from '../app/recipe-revise.tsx';
 import GroceryScreen from '../app/grocery.tsx';
-import NutritionScreen from '../app/nutrition.tsx';
+import NutritionScreen, { MACRO_BAR_FILL } from '../app/nutrition.tsx';
 import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
 import NutritionHistoryScreen from '../app/nutrition-history.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
@@ -304,6 +304,67 @@ function barsDrawn(name, html, count, metCount) {
         `${name}: expected ${metCount} terminator(s) at 100%`,
         JSON.stringify(bars.filter((b) => b.terminator || b.pct === 100))
       );
+}
+
+/**
+ * The GRADE each bar was coloured with, in document order (FB2).
+ *
+ * The class itself cannot be read here — NativeWind's babel transform does not
+ * run in a server render, so `bg-signal-poor-ink` and `bg-signal-optimal-ink`
+ * both come out as the same class-less `<div>`, which is exactly why
+ * {@link readBars} reads geometry instead. So the bar carries its level in a
+ * `testID`, which react-native-web DOES emit (`data-testid`), and the level →
+ * class table is asserted separately from the imported {@link MACRO_BAR_FILL}.
+ * The two together are what "the graded class rendered" means in this harness:
+ * the render proves the right LEVEL reached the bar, the table proves the level
+ * maps to the right class, and neither can drift without failing here.
+ */
+function gradedBars(html) {
+  return [...html.matchAll(/data-testid="macro-bar-([a-z]+)"/g)].map((m) => m[1]);
+}
+
+function barsGraded(name, html, levels) {
+  if (html === null) return;
+  const found = gradedBars(html);
+  found.length === levels.length && found.every((l, i) => l === levels[i])
+    ? ok(`${name}: bars graded ${found.join(' · ')}`)
+    : bad(`${name}: expected ${levels.join(' · ')}`, found.join(' · ') || 'no graded bars at all');
+}
+
+/**
+ * Run `fn` with the wall clock frozen at `HH:MM` **on today's own date**.
+ *
+ * The Eat tab's bar colours are graded on the pace curve, so they depend on the
+ * hour the suite happens to run at — every band assertion below would be green
+ * in the evening and `unknown` before 10:00. Freezing the hour is the only way
+ * to pin them; freezing the DATE too would be wrong, because every fixture is
+ * logged under `todayISODate()` and the screen reads today.
+ *
+ * Only the time of day moves, so `todayISODate()` still answers the same
+ * calendar day (the suite never installs a day boundary — `DEFAULT_DAY_STARTS_AT`
+ * is `00:00`, so the logical day is the calendar day here).
+ */
+function atClock(hhmm, fn) {
+  const Real = Date;
+  const [h, m] = hhmm.split(':').map(Number);
+  const fixed = new Real();
+  fixed.setHours(h, m, 0, 0);
+  const ms = fixed.getTime();
+  class Frozen extends Real {
+    constructor(...args) {
+      if (args.length === 0) super(ms);
+      else super(...args);
+    }
+    static now() {
+      return ms;
+    }
+  }
+  globalThis.Date = Frozen;
+  try {
+    return fn();
+  } finally {
+    globalThis.Date = Real;
+  }
 }
 
 function expect(name, html, substrings) {
@@ -836,6 +897,25 @@ const db = getDb();
     // string — the item count they replace is gone from the tab.
     expect('nutrition hub (guarded) meal rows', html, ['P 42g', 'C 68g', 'F 20g', 'P 46g']);
     refute('nutrition hub (guarded)', html, ['P 42g · C 68g', '1 item', '2 items']);
+
+    // FB2 — the colours, on a day closed at 21:30. 1,360 of 2,400 kcal is 43%
+    // short and 88 of 180 g protein is barely half, so this well-logged day is
+    // also a badly-SHORT one: poor / poor / poor, and fat's 53 of 70 (−24%)
+    // lands inside `maintain`'s caution band. The grades come from the Home
+    // pillar's own functions, so this is what Home says about the same day.
+    barsGraded(
+      'nutrition hub (guarded, 21:30)',
+      atClock('21:30', () => render('nutrition hub (graded)', NutritionScreen)),
+      ['poor', 'poor', 'poor', 'caution']
+    );
+    // …and the same day BEFORE the pace clock starts is not graded at all. With
+    // `expected` at 0 the projection is the whole target, so every bar would
+    // open the morning green — the pillar refuses, and so does the tab.
+    barsGraded(
+      'nutrition hub (guarded, 08:00 — before the first anchor)',
+      atClock('08:00', () => render('nutrition hub (pre-pace)', NutritionScreen)),
+      ['unknown', 'unknown', 'unknown', 'unknown']
+    );
   }
 
   console.log('5. The Eat tab — the fallback, when a meal has no numbers');
@@ -897,6 +977,80 @@ const db = getDb();
       'C 40g',
       'F 9g',
     ]);
+
+    // FB2 — the other two bands, on the same closed day. 1,840 of 2,400 kcal is
+    // −23% (caution), 183 of 180 g protein is met (optimal — and one-sided, so
+    // being OVER is not a fault in any direction), 170 of 240 g carbs is −29%
+    // (caution) and 62 of 70 g fat is −11% (good). With §4 above, all four bands
+    // plus `unknown` are now drawn by a real fixture rather than asserted in the
+    // abstract.
+    barsGraded(
+      'nutrition hub (at target, 21:30)',
+      atClock('21:30', () => render('nutrition hub (at target, graded)', NutritionScreen)),
+      ['caution', 'optimal', 'caution', 'good']
+    );
+  }
+
+  console.log('5c. The bars with NO target, and the grade → class table (FB2)');
+  {
+    // A day with meals on it and NO targets at all. `nutrition_targets` refuses
+    // an all-null row by CHECK — a target set that governs nothing is not a
+    // target set — so "no targets" is the absence of the row, and that is what
+    // is staged here. §4's row is put back immediately afterwards, so every
+    // section below (the micronutrients screen included) sees the targets it set.
+    db.run('DELETE FROM nutrition_targets WHERE effective_date = ?', [today]);
+    const html = atClock('21:30', () => render('nutrition hub (no targets)', NutritionScreen));
+    barsGraded('nutrition hub (no targets)', html, ['unknown', 'unknown', 'unknown', 'unknown']);
+    barsDrawn('nutrition hub (no targets)', html, 4, 0);
+    // A neutral bar is a RAIL, not a reading: no fill, and no denominator
+    // anywhere on the grid (00-design-spec.md §5).
+    readBars(html).every((b) => b.pct === 0)
+      ? ok('nutrition hub (no targets): every neutral bar is an empty rail')
+      : bad('a bar claimed progress with no target', JSON.stringify(readBars(html)));
+    refute('nutrition hub (no targets)', html, ['of 2,400 kcal', 'kcal left', 'Protein left']);
+    setNutritionTargets(db, {
+      effective_date: today,
+      kcal: 2400,
+      protein_g: 180,
+      carbs_g: 240,
+      fat_g: 70,
+    });
+    barsGraded(
+      'nutrition hub (targets restored)',
+      atClock('21:30', () => render('nutrition hub (targets restored)', NutritionScreen)),
+      ['caution', 'optimal', 'caution', 'good']
+    );
+
+    // The half the render cannot see. NativeWind compiles className away in a
+    // server render, so the markup above proves only that the right LEVEL
+    // reached each bar; this proves the level maps to the class that colours it.
+    // Whole literals, because Tailwind's scanner never sees a built fragment —
+    // a `bg-signal-${level}-ink` would compile to nothing and ship four
+    // invisible bars.
+    const expectedFill = {
+      optimal: 'h-[6px] bg-signal-optimal-ink',
+      good: 'h-[6px] bg-signal-good-ink',
+      caution: 'h-[6px] bg-signal-caution-ink',
+      poor: 'h-[6px] bg-signal-poor-ink',
+      unknown: 'h-[6px] bg-signal-unknown',
+    };
+    const levels = Object.keys(expectedFill);
+    levels.every((l) => MACRO_BAR_FILL[l] === expectedFill[l]) &&
+    Object.keys(MACRO_BAR_FILL).length === levels.length
+      ? ok(`the grade → fill table is total over all ${levels.length} levels, in whole literals`)
+      : bad('grade → fill table', JSON.stringify(MACRO_BAR_FILL));
+    // The INK cut, not the swatch: two of the four swatches are under 3:1 on
+    // this rail (db/nutrition-remaining.test.mjs §13 carries the measurements).
+    levels
+      .filter((l) => l !== 'unknown')
+      .every((l) => MACRO_BAR_FILL[l].includes(`bg-signal-${l}-ink`))
+      ? ok('every graded fill takes the ink cut, which clears the non-text floor on paper-deep')
+      : bad('a graded fill reached for the swatch cut');
+    // The height the owner asked for, in one place: the rail and its fill must
+    // not disagree, or the fill draws a stripe inside the rail.
+    levels.every((l) => MACRO_BAR_FILL[l].startsWith('h-[6px] '))
+      ? ok('every fill is 6px — the rail’s own height (4px before FB2)')
+      : bad('a fill no longer matches the rail height');
   }
 
   console.log('5b. The Eat tab — a meal waiting on a queued estimate (0057, C3)');

@@ -16,7 +16,8 @@ import {
   type KitchenCounts,
   type OverTime,
 } from '@/hooks/use-nutrition';
-import { barFigure } from '@/lib/nutrition/bar';
+import { expectedDayFraction } from '@/lib/home/readiness';
+import { barFigure, macroGrade } from '@/lib/nutrition/bar';
 import { fmtInt, macroCells } from '@/lib/nutrition/format';
 import {
   dayFigure,
@@ -25,6 +26,7 @@ import {
   type DayMetric,
 } from '@/lib/nutrition/remaining';
 import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
+import type { SignalLevel } from '@/types/home';
 
 /**
  * The **Eat tab** — the nutrition sub-app's root. It renders at two routes: as
@@ -116,9 +118,10 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
  * `Photo` and `Describe` are the screen's only accent in every state; `Set
  * daily targets` and `Other ways to log` are outlined and stay outlined. The
  * full argument for why two pine buttons is one claim and not two is at the
- * buttons. A met macro bar's pine fill is a **state mark** (the class the budget
- * admits by name — completion stamps, 00-design-spec.md §2), not a fourth claim
- * to being the next action.
+ * buttons. Since FB2 the macro bars spend **no accent at all** — a met bar's
+ * pine fill was C6's one state mark here, and the bars now carry the signal
+ * palette instead (see {@link MacroBar}), which gives the budget its headroom
+ * back.
  *
  * ## Readability (C6, 2026-09-14 — docs/spikes/nutrition-readability.md)
  *
@@ -163,7 +166,15 @@ const MACROS: { metric: DayMetric; label: string }[] = [
  * never needs a word to explain itself and the two readings can sit side by
  * side without ambiguity.
  */
-function MacroCell({ label, figure }: { label: string; figure: DayFigure }) {
+function MacroCell({
+  label,
+  figure,
+  level,
+}: {
+  label: string;
+  figure: DayFigure;
+  level: SignalLevel;
+}) {
   const remaining = figure.mode === 'remaining';
   // OVER is a different reading from LEFT, so the label says which. Carrying the
   // sign only in an 11px word under the figure meant "PROTEIN LEFT / 12" over a
@@ -189,8 +200,10 @@ function MacroCell({ label, figure }: { label: string; figure: DayFigure }) {
       <Text className="mt-0.5 font-mono text-[11px] text-ink-secondary">{denominator}</Text>
       {/* The picture of the term that has no picture. `eaten` against `target`,
           whichever mode the NUMBER above is in — a cell showing "86 left" is
-          showing 94 of 180 eaten, and the two reconcile. */}
-      {target !== null ? <MacroBar eaten={figure.eaten} target={target} /> : null}
+          showing 94 of 180 eaten, and the two reconcile. Drawn in every state
+          now (FB2): with no target it is a bare neutral rail, which keeps the
+          three cells the same height whether or not a target governs them. */}
+      <MacroBar eaten={figure.eaten} target={target} level={level} />
     </View>
   );
 }
@@ -217,59 +230,95 @@ function targetsCorner(
 }
 
 /**
- * One progress bar: what has been eaten against what the target is. Drawn under
- * the kcal hero and under each macro cell, in BOTH modes, whenever a target
- * governs the metric — a metric with no target draws no bar, because there are
- * no denominators until targets exist (00-design-spec.md §5).
+ * One progress bar: what has been eaten against what the target is, coloured by
+ * where that metric is heading. Drawn under the kcal hero and under each macro
+ * cell, in BOTH modes, in every state — a metric with no target keeps its rail
+ * and draws no fill, because there are no denominators until targets exist
+ * (00-design-spec.md §5) but there is no reason for the grid to change height
+ * when one is set.
  *
- * ## Colour — the accent, never a signal, and never hue alone
+ * ## Colour — the signal palette, by owner override (FB2, 2026-09-21)
  *
- * Progress against a target is BEHAVIOUR, so it takes the accent. The firewall
- * (00-design-spec.md §2) runs in both directions: *"Signal colours mark
- * biological state only… Conversely the accent never marks biology."* A
- * `bio-caution` carbs bar would breach the rule the spec calls sacred, and it
- * would also be the "red numbers over target" the sub-app rejected on cited
- * behavioural grounds (docs/nutrition-subapp.md §8) — actively wrong for a
- * gaining goal, where over target is a good day.
+ * The owner, from the device: *"colors for nutrition bars are hard to see,
+ * should be more colourful."*
  *
- * **Measured against the plate, 2026-09-14 (WCAG 1.4.11 asks 3:1 for non-text):**
+ * C6 drew this bar in the ACCENT, deliberately: progress against a target is
+ * behaviour, and the firewall (00-design-spec.md §2, docs/project-status.md §3)
+ * says *"signal colours mark biological state only… conversely the accent never
+ * marks biology."* That restraint is overruled — and the override is narrow and
+ * written down where the rule lives (docs/project-status.md §3): **a macro bar
+ * graded against a target is a verdict about the day, which is the same class of
+ * thing the Home pillar shows.** It is not decoration and it is not a fifth
+ * accent; it is the pillar's own reading, drawn where the numbers are.
  *
- * | part | token | on the rail |
- * | --- | --- | --- |
- * | rail | `paper-deep` `#C6C1B0` | — (it is the ground) |
- * | fill, under target | `ink-secondary` `#443F30` | **5.83:1** ✓ |
- * | fill, at/over target | `pine` `#12454E` | **5.87:1** ✓ |
- * | terminator (at/over only) | `ink` `#1C1911` | **9.74:1** ✓, and **1.66:1** against the pine beside it |
+ * What keeps that from becoming "any chrome may be coloured": the fill takes the
+ * level from {@link macroGrade}, which computes no band of its own — the kcal
+ * bar is `kcalLevel`, the protein bar is `proteinLevel`, and both are the exact
+ * halves the Home pillar combines. A bar cannot disagree with the pillar because
+ * it is a component of it.
  *
- * and the pair that decides the design: **`pine` against `ink-secondary` is
- * 1.01:1** — the same luminance. Switching the fill's hue at target is, on its
- * own, an invisible state change; it is the identical defect the pillar cells
- * were rewritten to fix (src/components/home/readiness-strip.tsx — four signal
- * swatches at 1.06–1.59:1, *"to anyone not perceiving hue they are one grey"*).
- * So completion carries **three** cues, only one of which is hue:
+ * The rejected reading this does NOT become: "red numbers over target"
+ * (docs/nutrition-subapp.md §8). Over target is graded by DIRECTION, so a
+ * gaining day at +18% is `optimal` green, not a warning — the thing the old
+ * adherence-neutral rule was protecting is protected by the bands instead of by
+ * refusing to colour at all.
  *
- *   1. **geometry** — a filled 2pt `ink` terminator appears at the rail's right
- *      end. A drafting mark: this measurement is closed.
- *   2. **hue** — the fill turns pine, which is what pine means everywhere else
- *      (completion stamps).
- *   3. **words** — the cell's label already flips `PROTEIN LEFT` → `PROTEIN
- *      OVER`, and the hero already says `kcal over`.
+ * ## Which cut, and the measurements that chose it
  *
- * The rail itself is `paper-deep` on the sheet, 1.42:1 — deliberately under
- * threshold and deliberately not a mark: a rail is the GROUND a reading sits in,
- * the way a well is the ground an input sits in. What has to be legible is the
- * fill against it, and that is the table above.
+ * The palette specifies two values per state: the SWATCH for fills, the INK cut
+ * for text. A bar fill is a fill, so the swatch is the obvious reach — and on
+ * this rail it fails. Measured against `paper-deep` `#C6C1B0`, 2026-09-21:
  *
- * **This settles docs/nutrition-subapp.md §2 (pine at target) against the
- * shipped `bg-ink`, in favour of the spec** — and explains why the code's `ink`
- * was not simply wrong: `ink` on `ink-secondary` is 1.66:1, a real if small
- * luminance step, which is more than pine alone gives. The terminator keeps that
- * step *and* gets the meaning.
+ * | state | swatch | on the rail | ink cut | on the rail |
+ * | --- | --- | --- | --- | --- |
+ * | optimal | `#2E8B57` | 2.36:1 ✗ | `#185A36` | **4.56:1** ✓ |
+ * | good | `#2C6C95` | 3.16:1 ✓ | `#24567A` | **4.34:1** ✓ |
+ * | caution | `#A97B22` | 2.10:1 ✗ | `#6E4F15` | **4.17:1** ✓ |
+ * | poor | `#AA402C` | 3.35:1 ✓ | `#8F3524` | **4.31:1** ✓ |
+ * | unknown | — | — | `#5C5340` | **4.21:1** ✓ |
  *
- * 4px, up from 3px: 3px is 9 device pixels at @3x and reads as a hairline, while
- * 6–8px would cross from rule into gauge — layering here is borders and the
- * paper triad, and a fat filled bar is the one thing on this sheet that would
- * read as a widget.
+ * Two of the four swatches are under WCAG 1.4.11's 3:1 non-text floor on this
+ * stock, and a palette where half the states are invisible is not "more
+ * colourful", it is the same defect in new hues. **So the fill takes the ink
+ * cut**, which clears 3:1 on every state with margin. That is not a
+ * contradiction of §2's "the swatch is for fills": the swatch was measured for
+ * fills on the light paper steps, and `paper-deep` is the darkest stock in the
+ * set — the rule the palette actually states is *reaching for the swatch to
+ * colour a value is the most likely way to fail contrast*, and this is that case.
+ *
+ * The rail stays `paper-deep` (1.42:1 on `paper`) — deliberately under threshold
+ * and deliberately not a mark. A rail is the GROUND a reading sits in.
+ *
+ * ## What colour does NOT carry
+ *
+ * The four ink cuts are near-isoluminant by construction (4.17–4.56 against one
+ * ground), so to anyone not perceiving hue they are one dark mark — the same
+ * fact that rewrote the pillar cells (src/components/home/readiness-strip.tsx).
+ * **Colour here is reinforcement, never the sole carrier**, and nothing was
+ * taken away to make room for it:
+ *
+ *   - the cell's LABEL still flips `PROTEIN LEFT` → `PROTEIN OVER`, and the hero
+ *     still says `kcal over`;
+ *   - the figure and its denominator are unchanged, in mono, above the bar;
+ *   - the FILL LENGTH is still literal progress, and a met bar still reaches
+ *     the terminator;
+ *   - Home still states the pillar's level in a word (`signalConditionLabel`).
+ *
+ * ## Geometry — 6px, and a 3px terminator
+ *
+ * 4px was the C6 compromise between rule and gauge; the owner has now judged it
+ * on hardware and it lost. **6px** (18 device pixels at @3x) reads as a measured
+ * bar rather than a hairline, and the terminator goes **3px** wide and full
+ * height — 18×9 device pixels, 2.25× the area of C6's 2×4pt nick.
+ *
+ * The terminator measures **2.13–2.33:1** against the graded fills (`ink`
+ * `#1C1911` on the four ink cuts). That is under 3:1 and it is accepted, for the
+ * reason the rail is: it is not what carries the state. `met` is carried by the
+ * fill reaching the rail's end (geometry, at full width) and by the label's own
+ * word; the terminator marks WHERE THE TARGET IS, and it is at its most legible
+ * exactly when it matters most for that — 9.74:1 on the bare rail, where the
+ * fill has not arrived. It is strictly better than what shipped, besides: C6's
+ * terminator sat on `ink-secondary` at 1.66:1.
  *
  * Filled views on a filled track, never a border: a one-sided border width
  * beside a border colour is the shape that drops RN off its CoreAnimation border
@@ -280,25 +329,59 @@ function targetsCorner(
  * "86 left" would be two readings of one quantity — which is, for once, exactly
  * what the old withheld-in-`remaining` rule was right to worry about.
  */
-function MacroBar({ eaten, target }: { eaten: number; target: number }) {
-  const { fillPct, met } = barFigure(eaten, target);
+function MacroBar({
+  eaten,
+  target,
+  level,
+}: {
+  eaten: number;
+  target: number | null;
+  level: SignalLevel;
+}) {
+  const { fillPct, met } = barFigure(eaten, target ?? 0);
   return (
     <View
       accessibilityElementsHidden
       importantForAccessibility="no"
-      className="relative mt-1.5 h-[4px] bg-paper-deep">
-      <View
-        className={met ? 'h-[4px] bg-pine' : 'h-[4px] bg-ink-secondary'}
-        style={{ width: `${fillPct}%` }}
-      />
+      testID={`macro-bar-${level}`}
+      className="relative mt-1.5 h-[6px] bg-paper-deep">
+      <View className={MACRO_BAR_FILL[level]} style={{ width: `${fillPct}%` }} />
       {/* The terminator. Absolutely positioned at the rail's right end rather
           than appended after the fill, so it marks where the TARGET is and not
           where the fill happens to stop — they are the same point only because
           the fill caps at 100%, and the mark must not move if that ever changes. */}
-      {met ? <View className="absolute right-0 top-0 h-[4px] w-[2px] bg-ink" /> : null}
+      {met ? <View className="absolute right-0 top-0 h-[6px] w-[3px] bg-ink" /> : null}
     </View>
   );
 }
+
+/**
+ * Grade → fill class, as WHOLE literals: Tailwind's scanner only sees class
+ * names that appear verbatim in source, so a built `bg-signal-${level}-ink`
+ * fragment would compile to nothing at all. Same shape as the pillar's maps
+ * (src/components/home/signal.tsx).
+ *
+ * Exported for db/screens-render.test.mjs: NativeWind's babel transform does not
+ * run in a server render, so a rendered bar carries no class attribute and the
+ * suite reads the grade off `data-testid` instead. Asserting this table there,
+ * beside those renders, is what closes the gap between "the right level reached
+ * the bar" and "the right class is on it".
+ *
+ * `unknown` is the metadata ink, not a fifth hue — an absent verdict is absent.
+ * Its rail is usually empty besides (no target, no denominator, no fill), but
+ * not always: a day before 10:00 or one that changed timezone draws its real
+ * length in this neutral cut, which is the timezone ADR's rule made visible —
+ * show the quantity, withhold the judgment.
+ */
+const MACRO_BAR_FILL: Record<SignalLevel, string> = {
+  optimal: 'h-[6px] bg-signal-optimal-ink',
+  good: 'h-[6px] bg-signal-good-ink',
+  caution: 'h-[6px] bg-signal-caution-ink',
+  poor: 'h-[6px] bg-signal-poor-ink',
+  unknown: 'h-[6px] bg-signal-unknown',
+};
+
+export { MACRO_BAR_FILL };
 
 /** Whole class literals — Tailwind's scanner never sees a built fragment. The
  *  first two cells are fixed so the macros form COLUMNS down the day (a record
@@ -559,8 +642,17 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
   // Which of this file's two routes is rendering — passed in by the one that
   // knows (app/(tabs)/eat.tsx), never inferred. See the header note above.
   const isTabRoot = asTab;
-  const { meals, targets, partialMeals, pendingEstimates, kitchen, overTime, reload } =
-    useNutrition();
+  const {
+    meals,
+    targets,
+    partialMeals,
+    pendingEstimates,
+    kitchen,
+    overTime,
+    direction,
+    timezoneChanged,
+    reload,
+  } = useNutrition();
   const [logOpen, setLogOpen] = useState(false);
 
   const targetFor = (metric: DayMetric): number | null => {
@@ -568,11 +660,27 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     return targets[metric];
   };
 
+  // The grade every bar on this screen is coloured by (FB2). Read ONCE per
+  // render, from the same clock and the same pace curve the Home pillar uses —
+  // four bars grading against four slightly different instants would be the
+  // cheapest possible way to make them disagree with each other.
+  const expected = expectedDayFraction(new Date());
+  const gradeFor = (metric: DayMetric, eaten: number, target: number | null): SignalLevel =>
+    macroGrade({
+      metric,
+      eaten,
+      target,
+      direction,
+      expected,
+      mealCount: meals.length,
+      timezoneChanged,
+    });
+
   const kcal = dayFigure(meals, 'kcal', targetFor('kcal'), partialMeals);
-  const macroFigures = MACROS.map((m) => ({
-    ...m,
-    figure: dayFigure(meals, m.metric, targetFor(m.metric), partialMeals),
-  }));
+  const macroFigures = MACROS.map((m) => {
+    const figure = dayFigure(meals, m.metric, targetFor(m.metric), partialMeals);
+    return { ...m, figure, level: gradeFor(m.metric, figure.eaten, figure.target) };
+  });
   const note = unguardedNote(
     meals,
     {
@@ -653,7 +761,11 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                   says how much of the target is EATEN; the corner above states
                   the same ledger in words. Three statements of one day, none of
                   them the same encoding. */}
-              {kcalTarget !== null ? <MacroBar eaten={kcal.eaten} target={kcalTarget} /> : null}
+              <MacroBar
+                eaten={kcal.eaten}
+                target={kcalTarget}
+                level={gradeFor('kcal', kcal.eaten, kcalTarget)}
+              />
 
               {/* THE BOXES ARE THE DEVICE'S NOW. The owner asked for boxes on
                   2026-08-11 while the grid device drew nothing; the same week
@@ -665,7 +777,7 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
               <View className="mt-2 flex-row flex-wrap">
                 {macroFigures.map((m, index) => (
                   <GridCell key={m.metric} index={index} count={macroFigures.length} columns={3}>
-                    <MacroCell label={m.label} figure={m.figure} />
+                    <MacroCell label={m.label} figure={m.figure} level={m.level} />
                   </GridCell>
                 ))}
               </View>

@@ -14,11 +14,14 @@ import {
   todayTotals,
   type DayIntakePoint,
 } from '@/lib/db/repositories/nutrition';
+import { isTimezoneChangedDay } from '@/lib/db/repositories/day-meta';
 import { checkedGroceryCount, openGroceryLineCount } from '@/lib/db/repositories/grocery';
 import { pendingEstimateMealIds } from '@/lib/db/repositories/pending-estimates';
 import { recipeCount, recipesCookedSince } from '@/lib/db/repositories/recipes';
+import { getGoalDirection } from '@/lib/db/repositories/user';
 import type { PartialMealMetrics } from '@/lib/nutrition/remaining';
 import type { DayTotals, MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
+import type { GoalDirection } from '@/lib/user/types';
 
 /** The window the Eat tab's "Over time" section reads. Matches the History
  *  screen's default so the tab and the screen it opens agree on sight. */
@@ -63,6 +66,14 @@ export type NutritionDay = {
   kitchen: KitchenCounts;
   /** The 14-day read the tab leads its "Over time" section with. */
   overTime: OverTime;
+  /** `users.preferences.goals.direction`. The Today-grid bars are graded in the
+   *  direction the user is actually going, through the same band table the Home
+   *  pillar uses — over target is a good day while gaining (FB2). */
+  direction: GoalDirection;
+  /** D4 — today was not 24 hours long, so no bar may grade against a 24-hour
+   *  target. The Home pillar withholds its verdict on such a day and these bars
+   *  withhold theirs with it. */
+  timezoneChanged: boolean;
   /** Re-read today's meals + totals — call after an in-screen save. */
   reload: () => void;
 };
@@ -142,6 +153,11 @@ function readToday(): Omit<NutritionDay, 'reload'> {
     targets: activeNutritionTargets(db, date) ?? null,
     partialMeals: partialMealMetrics(db, date),
     pendingEstimates: readPendingEstimates(db, date),
+    // Two indexed reads the bars' grade needs, and nothing else uses. Both are
+    // the same ones Home's nutrition pillar takes (src/lib/home/readiness.ts),
+    // so the tab and the pillar are graded off identical inputs.
+    direction: getGoalDirection(db),
+    timezoneChanged: isTimezoneChangedDay(db, date),
     kitchen: readKitchen(db, date),
     overTime: {
       kcal,

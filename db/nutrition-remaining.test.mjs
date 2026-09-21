@@ -10,7 +10,8 @@
  * Pure module, no database. Run: npm run db:test.
  */
 import { palette } from '../src/constants/theme.ts';
-import { barFigure } from '../src/lib/nutrition/bar.ts';
+import { barFigure, macroGrade } from '../src/lib/nutrition/bar.ts';
+import { kcalLevel, paceRatio, proteinLevel } from '../src/lib/home/readiness.ts';
 import {
   DAY_METRIC_LABELS,
   dayFigure,
@@ -307,7 +308,7 @@ console.log('12. barFigure: the geometry of the Today-grid bars (C6)');
     ['an empty day inks nothing', barFigure(0, 2400), 0, false],
     ['a part-logged day fills its fraction', barFigure(1620, 2400), 67.5, false],
     [
-      'exactly on target is MET — the pine fill and the terminator',
+      'exactly on target is MET — the fill reaches the terminator',
       barFigure(2400, 2400),
       100,
       true,
@@ -334,14 +335,105 @@ console.log('12. barFigure: the geometry of the Today-grid bars (C6)');
     : bad('dayFigure zero target', JSON.stringify(dayFigure([], 'kcal', 0)));
 }
 
-console.log('13. the bar’s colours, measured against the plate (C6)');
+console.log('12b. macroGrade: the bar’s colour is the pillar’s own reading (FB2)');
 {
-  // WCAG 1.4.11 asks 3:1 of a non-text visual against what it sits on. The
-  // numbers are asserted rather than documented because the whole design of the
-  // terminator rests on ONE of them — pine and ink-secondary are the same
-  // luminance, so a fill that only changes hue at target changes nothing anyone
-  // can see. If a future palette move makes them distinguishable, this test
-  // should be the thing that says so.
+  // The whole claim of FB2 is that a bar cannot disagree with the Home pillar,
+  // because it is not graded by a second rule — it is graded by the pillar's own
+  // two functions on the pillar's own projected ratio. These cases assert that
+  // identity directly rather than re-deriving the bands: if KCAL_BANDS is ever
+  // retuned, kcalLevel moves and so does every bar, with no edit here.
+  const day = { direction: 'maintain', expected: 1, mealCount: 3 };
+  const same = [
+    ['kcal is kcalLevel, argument for argument', 'kcal', 2400, 2400],
+    ['a 17% overshoot while maintaining', 'kcal', 2800, 2400],
+    ['carbs take the SAME direction-aware table', 'carbs_g', 280, 240],
+    ['and so does fat', 'fat_g', 40, 70],
+  ];
+  for (const [name, metric, eaten, target] of same) {
+    const grade = macroGrade({ ...day, metric, eaten, target });
+    const pillar = kcalLevel(paceRatio(eaten, target, 1), 'maintain');
+    grade === pillar
+      ? ok(`${name}: ${grade}`)
+      : bad(name, `bar says ${grade}, the pillar says ${pillar}`);
+  }
+
+  // The one place a shared table would have LIED. Protein is one-sided in the
+  // pillar — overshooting is not a failure in any direction — so a 200g day on a
+  // 180g target must read optimal, where the calorie bands would call it caution.
+  {
+    const over = { ...day, metric: 'protein_g', eaten: 200, target: 180 };
+    const asProtein = macroGrade(over);
+    const asCalories = kcalLevel(paceRatio(200, 180, 1), 'maintain');
+    asProtein === proteinLevel(paceRatio(200, 180, 1)) &&
+    asProtein === 'optimal' &&
+    asCalories !== 'optimal'
+      ? ok(`protein over target is optimal, not ${asCalories} — the one-sided band holds`)
+      : bad('protein band', `${asProtein} vs ${asCalories}`);
+  }
+
+  // Direction reaches the macros, not just the calories: the same carb day is a
+  // different verdict depending on where the user is going.
+  {
+    const carbs = (direction) =>
+      macroGrade({
+        metric: 'carbs_g',
+        eaten: 288,
+        target: 240,
+        direction,
+        expected: 1,
+        mealCount: 2,
+      });
+    // +20% is INSIDE `gain`'s loose band (optimal), the outer edge of `maintain`'s
+    // even one (good), and exactly on the last rung of `cut`'s tight one
+    // (caution). Three verdicts on one plate of rice, which is the point.
+    carbs('gain') === 'optimal' && carbs('maintain') === 'good' && carbs('cut') === 'caution'
+      ? ok('+20% carbs reads optimal gaining, good maintaining, caution cutting')
+      : bad('direction on carbs', [carbs('gain'), carbs('maintain'), carbs('cut')].join(' / '));
+  }
+
+  // The four refusals, in the pillar's own order. Each is a state where
+  // nutritionVerdict returns `unknown`, so a coloured bar here would be the Eat
+  // tab judging a day Home has declined to judge.
+  const base = {
+    metric: 'kcal',
+    eaten: 2400,
+    target: 2400,
+    direction: 'maintain',
+    expected: 1,
+    mealCount: 3,
+  };
+  macroGrade(base) === 'optimal'
+    ? ok('the control case does grade — the refusals below are not vacuous')
+    : bad('control case', macroGrade(base));
+  const refusals = [
+    ['a day that changed timezone is not graded at all', { ...base, timezoneChanged: true }],
+    ['no target governing the metric', { ...base, target: null }],
+    ['a zero target is no target', { ...base, target: 0 }],
+    ['nothing logged is not a bad day', { ...base, mealCount: 0 }],
+    ['before the pace clock starts, the projection is the whole target', { ...base, expected: 0 }],
+  ];
+  for (const [name, inputs] of refusals) {
+    macroGrade(inputs) === 'unknown' ? ok(name) : bad(name, macroGrade(inputs));
+  }
+
+  // The morning the projection exists to protect: 15% of the day's calories
+  // eaten at 10:00 is a good day, and grading the RAW fraction would call it
+  // poor. This is why colour is projected while the fill is literal.
+  {
+    const morning = { ...base, eaten: 360, expected: 0.15 };
+    macroGrade(morning) === 'optimal' && barFigure(360, 2400).fillPct === 15
+      ? ok('on pace at 10:00: the bar is 15% inked and graded optimal, not poor')
+      : bad('the morning case', `${macroGrade(morning)} at ${barFigure(360, 2400).fillPct}%`);
+  }
+}
+
+console.log('13. the bar’s colours, measured against the plate (FB2, 2026-09-21)');
+{
+  // WCAG 1.4.11 asks 3:1 of a non-text visual against what it sits on. These are
+  // asserted rather than documented because the choice of CUT rests entirely on
+  // them: the palette says the swatch is the fill value, and on THIS rail two of
+  // the four swatches are under the floor, so the fill takes the ink cut
+  // instead. If the palette ever moves, this is the thing that says so.
   const luminance = (hex) => {
     const channel = (i) => {
       const c = parseInt(hex.slice(i, i + 2), 16) / 255;
@@ -353,14 +445,16 @@ console.log('13. the bar’s colours, measured against the plate (C6)');
     const [x, y] = [luminance(a), luminance(b)];
     return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
   };
-  const { ink, inkSecondary, pine, paperDeep, paper } = palette;
+  const { ink, paperDeep, paper, signal, signalInk } = palette;
+  const LEVELS = ['optimal', 'good', 'caution', 'poor'];
 
   const measured = [
-    ['fill under target — ink-secondary on the rail', ratio(inkSecondary, paperDeep), 5.83],
-    ['fill at/over target — pine on the rail', ratio(pine, paperDeep), 5.87],
-    ['the terminator — ink on the rail', ratio(ink, paperDeep), 9.74],
-    ['the terminator against the pine beside it', ratio(ink, pine), 1.66],
-    ['THE REASON FOR THE TERMINATOR — pine against ink-secondary', ratio(pine, inkSecondary), 1.01],
+    ['fill · optimal — signal-optimal-ink on the rail', ratio(signalInk.optimal, paperDeep), 4.56],
+    ['fill · good — signal-good-ink on the rail', ratio(signalInk.good, paperDeep), 4.34],
+    ['fill · caution — signal-caution-ink on the rail', ratio(signalInk.caution, paperDeep), 4.17],
+    ['fill · poor — signal-poor-ink on the rail', ratio(signalInk.poor, paperDeep), 4.31],
+    ['fill · unknown — the metadata ink on the rail', ratio(signalInk.unknown, paperDeep), 4.21],
+    ['the terminator — ink on the bare rail, where it matters', ratio(ink, paperDeep), 9.74],
     ['the rail itself on the sheet (a ground, not a mark)', ratio(paperDeep, paper), 1.42],
   ];
   for (const [name, value, expected] of measured) {
@@ -369,18 +463,48 @@ console.log('13. the bar’s colours, measured against the plate (C6)');
       : bad(name, `${value.toFixed(3)} — the docblock in app/nutrition.tsx says ${expected}`);
   }
 
-  // The three that carry information clear the non-text floor; the two that
-  // deliberately do not are the rail (a ground) and the hue step (which is why
-  // hue is never the only cue).
-  [ratio(inkSecondary, paperDeep), ratio(pine, paperDeep), ratio(ink, paperDeep)].every(
-    (r) => r >= 3
-  )
-    ? ok('every mark that carries meaning clears WCAG 1.4.11’s 3:1')
-    : bad('a bar mark is under the non-text floor');
+  // THE MEASUREMENT THAT CHOSE THE CUT. The palette specifies the swatch for
+  // fills, and on this rail optimal (2.36) and caution (2.10) are under the
+  // non-text floor — half the states invisible is the same defect C6 had, in new
+  // hues. Every ink cut clears it. If a palette move ever lifts the swatches
+  // over 3:1 on paperDeep, this is the assertion that invites the revisit.
+  LEVELS.some((l) => ratio(signal[l], paperDeep) < 3)
+    ? ok(
+        `the SWATCH cut fails on this rail (${LEVELS.map((l) => ratio(signal[l], paperDeep).toFixed(2)).join(' / ')}) — which is why the fill takes the ink cut`
+      )
+    : bad('the swatch cut now clears 3:1 on paperDeep; revisit which cut the fill should take');
 
-  ratio(pine, inkSecondary) < 1.1
-    ? ok('hue alone is NOT a visible state change — the terminator is load-bearing')
-    : bad('pine and ink-secondary have separated; revisit the terminator’s reasoning');
+  ['optimal', 'good', 'caution', 'poor', 'unknown'].every(
+    (l) => ratio(signalInk[l], paperDeep) >= 3
+  )
+    ? ok('every graded fill clears WCAG 1.4.11’s 3:1 against the rail')
+    : bad('a graded fill is under the non-text floor');
+
+  // WHAT COLOUR DOES NOT CARRY, asserted so it cannot be quietly forgotten. The
+  // four cuts are near-isoluminant against one ground, so to anyone not
+  // perceiving hue they are one dark mark — the readiness-strip finding, which
+  // is why the cell's label word and the figures above the bar stay put.
+  const spread = Math.max(...LEVELS.map((l) => ratio(signalInk[l], paperDeep)));
+  const floor = Math.min(...LEVELS.map((l) => ratio(signalInk[l], paperDeep)));
+  spread / floor < 1.2
+    ? ok(
+        `the four graded fills are near-isoluminant (${floor.toFixed(2)}–${spread.toFixed(2)}) — hue is reinforcement, never the sole cue`
+      )
+    : bad(
+        'the graded fills have separated in luminance; the docblock’s reasoning needs revisiting'
+      );
+
+  // The terminator against the fill it lands on. UNDER the floor and accepted:
+  // `met` is carried by the fill reaching the rail's end and by the label's own
+  // word, and the terminator's real job — marking where the target is — happens
+  // on the bare rail at 9.74:1. Asserted so the number stays honest, and because
+  // it is still strictly better than C6's 1.66:1 on ink-secondary.
+  const onFill = LEVELS.map((l) => ratio(ink, signalInk[l]));
+  Math.min(...onFill) > 1.66 && Math.max(...onFill) < 3
+    ? ok(
+        `the terminator on a graded fill: ${Math.min(...onFill).toFixed(2)}–${Math.max(...onFill).toFixed(2)}:1 — under the floor, and better than C6’s 1.66:1`
+      )
+    : bad('terminator-on-fill', onFill.map((r) => r.toFixed(2)).join(' / '));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
