@@ -35,6 +35,7 @@ import {
   pairIngestedWorkouts,
   pendingIngestedStrength,
 } from '../src/lib/db/repositories/workout-ingest.ts';
+import { todayISODate } from '../src/lib/db/date.ts';
 import { activityLoad } from '../src/lib/exercise/activity-load.ts';
 import {
   countsForE1rm,
@@ -779,6 +780,43 @@ console.log('9. ingested workouts → inferred muscle load (0054, backlog D3)');
     JSON.stringify(muscleFreshness(muscleLoadsForFreshness(db, 14, NOW), NOW)) === before
       ? ok('…so the ledger is byte-identical to the manual-only reading')
       : bad('paired ledger drifted');
+  }
+
+  // --- a DAY pair de-duplicates exactly like a span pair (2026-09-21) --------
+  {
+    const { db, raw } = freshDb();
+    // The SAME session as the block above, logged the way the owner actually
+    // logs most of them: no start time. Until the day rule it never paired, so
+    // the watch's copy of the run kept inferring a second helping of leg
+    // fatigue on top of the sets he had already typed — the double count the
+    // pairing feature exists to remove, surviving in the freshness ledger.
+    //
+    // The day is read off the clock rather than written literally, because the
+    // rule compares LOGICAL days and this file's NOW is a UTC instant.
+    const today = todayISODate(NOW);
+    const workoutId = logWorkout(db, { date: today, kind: 'cardio', durationMin: 45 }, [
+      {
+        exercise: 'Treadmill Run',
+        exerciseId: 'treadmill-run',
+        durationSec: 2700,
+        distanceM: 8000,
+      },
+    ]);
+    raw
+      .prepare('UPDATE workouts SET created_at = ? WHERE id = ?')
+      .run(NOW.toISOString(), workoutId);
+    const before = JSON.stringify(muscleFreshness(muscleLoadsForFreshness(db, 14, NOW), NOW));
+
+    ingest(db, { uuid: 'day-run', raw: 37, minutes: 45, date: today });
+    pairIngestedWorkouts(db, NOW) === 1
+      ? ok('a session logged with no start time pairs by DAY with the watch’s copy')
+      : bad('day pair did not happen');
+    ingestedMuscleLoads(db, 14, NOW).length === 0
+      ? ok('…and infers ZERO, by the same predicate a span pair is removed with')
+      : bad('day-paired session inferred a load');
+    JSON.stringify(muscleFreshness(muscleLoadsForFreshness(db, 14, NOW), NOW)) === before
+      ? ok('…so the figure moves once, for the sets — not twice, for the sets and the watch')
+      : bad('day-paired ledger drifted');
   }
 
   // --- the VOLUME firewall ---------------------------------------------------

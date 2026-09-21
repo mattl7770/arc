@@ -44,9 +44,12 @@ import {
   linkIngestedWorkout,
   pairedIngestFor,
   pairIngestedWorkouts,
+  pairingRefusals,
+  unlinkIngestedWorkout,
   unpairedIngestedSessions,
   unpairedWorkoutDailyMinutes,
 } from '../src/lib/db/repositories/workout-ingest.ts';
+import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import { wearableMetricInventory } from '../src/lib/ai/series.ts';
 import { ingestDetail } from '../src/lib/exercise/format.ts';
 import {
@@ -1743,14 +1746,19 @@ console.log('21. ingested-workout pairing (0054) — one session, one link, eith
       : bad('false pair', linkCount(db));
   }
   {
-    // A BACKDATED session has no knowable span, so it never auto-pairs — it can
-    // only be paired by hand. `logWorkout` without `startedAt` is exactly that.
+    // A BACKDATED session has no knowable span, so THIS rule cannot see it at
+    // all. Until 2026-09-21 that meant it never auto-paired; it now pairs by
+    // DAY instead (§23), and the observable difference is the overlap — the
+    // span rule always records the fraction it matched on, so a link with none
+    // did not come from here. That is also how the method is read back
+    // (`pairedBy`), and it is what this assertion pins.
     const { db } = freshDb();
     logWorkout(db, { date: DAY, kind: 'strength', durationMin: 60 });
     ingest(db, { uuid: 'watch', from: '17:00', to: '18:00' });
-    pairIngestedWorkouts(db, NOW) === 0
-      ? ok('a session with no started_at never auto-pairs (backdated, imported, Coach-written)')
-      : bad('backdated paired');
+    pairIngestedWorkouts(db, NOW);
+    !db.get('SELECT id FROM workout_ingest_links WHERE overlap IS NOT NULL')
+      ? ok('the span rule never claims a session with no started_at — no link of its making exists')
+      : bad('span rule paired a session with no span');
   }
   {
     // Two ARC sessions overlapping one watch record: the earlier takes it, and
@@ -2020,6 +2028,282 @@ console.log('22. in-workout heart rate through the store (D3b, docs §15 — no 
           'a link made to a phone row is not revisited — the list shows the watch, the pair the phone'
         )
       : bad('link-to-loser edge changed', JSON.stringify({ paired, listed }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The owner, from the device on 2026-09-21: *"the apple health found workouts
+// should be attempted to be linked to workouts i've logged that are around the
+// same time automatically."* 0054 refused to, by design — only the live logger
+// writes `started_at`, and without a span there is no clock to overlap. This is
+// the second rule, for exactly those sessions, and the refusal that keeps a pair
+// the owner breaks from coming back on the next sync.
+console.log('23. the DAY rule — a session logged with no start time (2026-09-21)');
+{
+  const NOW = new Date('2026-07-26T20:00:00.000Z');
+  const DAY = todayISODate(NOW);
+  const UNITS = { weight: 'lb', distance: 'mi', volume: 'floz', length: 'in', temperature: 'f' };
+
+  /**
+   * A LOCAL wall-clock instant on `day`. Everything in this section is built
+   * through it, and that is the whole trick: the day rule compares an ARC
+   * session's logical day against an ingested session's, and a fixture writing
+   * UTC would agree with the local day on one machine's timezone and disagree
+   * on the next. Hours stay well inside the day so no span crosses midnight.
+   */
+  const at = (day, hour, minute = 0) => {
+    const [y, m, d] = day.split('-').map(Number);
+    return new Date(y, m - 1, d, hour, minute, 0, 0).toISOString();
+  };
+
+  /** One HealthKit workout row, through the real ingest path. */
+  const ingestAt = (
+    db,
+    { uuid, day = DAY, hour = 12, minutes, device = 'garmin', raw = 50, kcal = 300 }
+  ) => {
+    const start = at(day, hour);
+    upsertWearableRows(db, [
+      {
+        date: day,
+        metricType: 'workout',
+        value: minutes,
+        unit: 'min',
+        sourceDevice: device,
+        sourceRawId: uuid,
+        startTime: start,
+        endTime: new Date(Date.parse(start) + minutes * 60_000).toISOString(),
+        metadata: {
+          activity: 'Strength training',
+          activity_type_raw: raw,
+          kcal,
+          distance_km: null,
+        },
+      },
+    ]);
+    return db.get('SELECT id FROM wearable_data WHERE source_raw_id = ?', [uuid]).id;
+  };
+
+  /** A session logged with NO start time — the manual logger, a backdated entry. */
+  const logDay = (db, { day = DAY, minutes = null } = {}) =>
+    logWorkout(db, { date: day, kind: 'strength', durationMin: minutes });
+
+  const linkCount = (db) => db.all('SELECT id FROM workout_ingest_links').length;
+
+  // --- one candidate: pair it, and say HOW ----------------------------------
+  {
+    const { db } = freshDb();
+    const workoutId = logDay(db, { minutes: 60 });
+    const wearableId = ingestAt(db, { uuid: 'only', hour: 17, minutes: 55, kcal: 411 });
+
+    pairIngestedWorkouts(db, NOW) === 1
+      ? ok('one logged session and one watch record on a day pair, with no clock between them')
+      : bad('unique day pair', linkCount(db));
+    const link = db.get('SELECT * FROM workout_ingest_links');
+    link.workout_id === workoutId && link.wearable_id === wearableId
+      ? ok('…the two the owner meant')
+      : bad('day pair target', JSON.stringify(link));
+    link.linked_by === 'auto' && link.overlap === null
+      ? ok('…recorded as automatic with NO overlap — the absence IS the method (no new column)')
+      : bad('day link provenance', JSON.stringify(link));
+
+    const paired = pairedIngestFor(db, workoutId);
+    paired?.pairedBy === 'day'
+      ? ok('…and it reads back as `pairedBy: day`, derived from linked_by + overlap alone')
+      : bad('method derivation', JSON.stringify(paired));
+    ingestDetail(paired, UNITS)?.endsWith('same day')
+      ? ok('…which the line then SAYS, so a pair made without a clock is visibly one')
+      : bad('day wording', ingestDetail(paired, UNITS));
+    ingestDetail(paired, UNITS, { spoken: true })?.endsWith('matched by day, not by clock')
+      ? ok('…in words for VoiceOver, like every other mono shorthand on these lines')
+      : bad('spoken day wording', ingestDetail(paired, UNITS, { spoken: true }));
+
+    pairIngestedWorkouts(db, NOW) === 0 && linkCount(db) === 1
+      ? ok('re-running the pass links nothing new — the day rule is idempotent too')
+      : bad('day rule not idempotent', linkCount(db));
+  }
+
+  // --- a no-duration log still pairs when there is only one candidate --------
+  {
+    const { db } = freshDb();
+    logDay(db);
+    ingestAt(db, { uuid: 'lonely', hour: 9, minutes: 40 });
+    pairIngestedWorkouts(db, NOW) === 1
+      ? ok('a log with no duration at all still pairs when nothing competes for it')
+      : bad('no-duration unique case', linkCount(db));
+  }
+
+  // --- several candidates: the CLOSEST duration wins -------------------------
+  {
+    const { db } = freshDb();
+    const workoutId = logDay(db, { minutes: 60 });
+    ingestAt(db, { uuid: 'short', hour: 7, minutes: 30 });
+    const wanted = ingestAt(db, { uuid: 'close', hour: 17, minutes: 47 });
+    ingestAt(db, { uuid: 'long', hour: 10, minutes: 90 });
+    pairIngestedWorkouts(db, NOW) === 1 &&
+    db.get('SELECT * FROM workout_ingest_links').wearable_id === wanted
+      ? ok('three watch records on one day: the 47-min one takes the 60-min log')
+      : bad('closest duration', JSON.stringify(db.all('SELECT * FROM workout_ingest_links')));
+    pairedIngestFor(db, workoutId)?.durationMin === 47
+      ? ok('…and the other two are left alone, still unpaired')
+      : bad('closest duration read-back');
+  }
+
+  // --- …but only inside the tolerance ---------------------------------------
+  {
+    const { db } = freshDb();
+    logDay(db, { minutes: 60 });
+    ingestAt(db, { uuid: 'tiny', hour: 7, minutes: 20 });
+    ingestAt(db, { uuid: 'small', hour: 17, minutes: 25 });
+    // 25 of 60 is 0.42 — under DAY_PAIR_MIN_RATIO. The point of a tolerance is
+    // that failing it is an ANSWER: two sessions happened, not one.
+    pairIngestedWorkouts(db, NOW) === 0 && linkCount(db) === 0
+      ? ok('a 60-min log and a 25-min record are two sessions — the closest one is still refused')
+      : bad('tolerance not applied', linkCount(db));
+  }
+
+  // --- …and only when there is a duration to compare ------------------------
+  {
+    const { db } = freshDb();
+    logDay(db);
+    ingestAt(db, { uuid: 'a', hour: 7, minutes: 30 });
+    ingestAt(db, { uuid: 'b', hour: 17, minutes: 55 });
+    pairIngestedWorkouts(db, NOW) === 0 && linkCount(db) === 0
+      ? ok(
+          'with no duration and two candidates there is nothing to choose on, so nothing is chosen'
+        )
+      : bad('guessed without a duration', linkCount(db));
+  }
+
+  // --- "exactly one" counts the DAY, not what is left after the first pair --
+  {
+    const { db } = freshDb();
+    // Two sessions logged, two recorded. The first log takes the near record on
+    // duration; the second is then down to one candidate — and must still clear
+    // the tolerance against it, or a record rejected for one session would be
+    // accepted by the next one down the list and the answer would depend on
+    // iteration order.
+    logDay(db, { minutes: 60 });
+    logDay(db, { minutes: 60 });
+    ingestAt(db, { uuid: 'near', hour: 17, minutes: 58 });
+    ingestAt(db, { uuid: 'stray', hour: 7, minutes: 25 });
+    pairIngestedWorkouts(db, NOW) === 1 && linkCount(db) === 1
+      ? ok('a day with two records hands out one link — the leftover 25-min row is not a prize')
+      : bad('unique-case free pass', JSON.stringify(db.all('SELECT * FROM workout_ingest_links')));
+    db.get('SELECT * FROM workout_ingest_links').wearable_id ===
+    db.get(`SELECT id FROM wearable_data WHERE source_raw_id = 'near'`).id
+      ? ok('…and it is the 58-min one, judged on duration like everything on a crowded day')
+      : bad('wrong record taken');
+  }
+
+  // --- a different day is a different session -------------------------------
+  {
+    const { db } = freshDb();
+    logDay(db, { minutes: 60 });
+    ingestAt(db, { uuid: 'yesterday', day: shiftISODate(DAY, -1), hour: 17, minutes: 60 });
+    pairIngestedWorkouts(db, NOW) === 0
+      ? ok('the same hour a day earlier does not pair — the day is the whole of the rule')
+      : bad('cross-day pair');
+  }
+
+  // --- the SPAN rule goes first, because a clock beats a calendar -----------
+  {
+    const { db } = freshDb();
+    const live = logWorkout(db, {
+      date: DAY,
+      kind: 'strength',
+      durationMin: 60,
+      startedAt: at(DAY, 17),
+    });
+    const backdated = logDay(db, { minutes: 60 });
+    ingestAt(db, { uuid: 'contested', hour: 17, minutes: 55 });
+    pairIngestedWorkouts(db, NOW) === 1 && linkCount(db) === 1
+      ? ok('one watch record, two claimants: exactly one link is made')
+      : bad('contested record', linkCount(db));
+    pairedIngestFor(db, live)?.pairedBy === 'span' && pairedIngestFor(db, backdated) === null
+      ? ok('…and the SESSION THAT SHARES ITS CLOCK takes it; the day-only claimant waits')
+      : bad('span rule did not win', JSON.stringify(pairedIngestFor(db, backdated)));
+  }
+
+  // --- two span-less logs, one record: the one-to-one guarantee holds --------
+  {
+    const { db } = freshDb();
+    logDay(db, { minutes: 60 });
+    logDay(db, { minutes: 58 });
+    ingestAt(db, { uuid: 'single', hour: 17, minutes: 59 });
+    pairIngestedWorkouts(db, NOW) === 1 && linkCount(db) === 1
+      ? ok('one watch record can be claimed once however many span-less sessions share its day')
+      : bad('double claim by day', linkCount(db));
+  }
+
+  // --- RETROACTIVE: the day rule reaches back as far as the span rule -------
+  {
+    const { db } = freshDb();
+    const old = shiftISODate(DAY, -60);
+    const ancient = shiftISODate(DAY, -120);
+    logDay(db, { day: old, minutes: 60 });
+    ingestAt(db, { uuid: 'old', day: old, hour: 17, minutes: 58 });
+    logDay(db, { day: ancient, minutes: 60 });
+    ingestAt(db, { uuid: 'ancient', day: ancient, hour: 17, minutes: 58 });
+    // This is what makes the feature arrive on a phone that already holds
+    // months of both: an ordinary sync pairs the history, not only today.
+    pairIngestedWorkouts(db, NOW) === 1
+      ? ok('a session and a record from 60 days ago pair on an ordinary pass — no backfill needed')
+      : bad('retroactive pass', linkCount(db));
+    db.get('SELECT * FROM workout_ingest_links').wearable_id ===
+    db.get(`SELECT id FROM wearable_data WHERE source_raw_id = 'old'`).id
+      ? ok('…and the 120-day-old pair is outside PAIR_LOOKBACK_DAYS, exactly as for the span rule')
+      : bad('lookback not applied');
+  }
+
+  // --- unpair is one tap, and it STAYS unpaired -----------------------------
+  {
+    const { db } = freshDb();
+    const workoutId = logDay(db, { minutes: 60 });
+    const wearableId = ingestAt(db, { uuid: 'wrong', hour: 17, minutes: 55 });
+    pairIngestedWorkouts(db, NOW);
+
+    unlinkIngestedWorkout(db, workoutId);
+    linkCount(db) === 0 && pairedIngestFor(db, workoutId) === null
+      ? ok('unpairing drops the link — one call, nothing of the owner’s touched')
+      : bad('unlink left a link', linkCount(db));
+    const refusals = pairingRefusals(db);
+    refusals.length === 1 &&
+    refusals[0].workoutId === workoutId &&
+    refusals[0].wearableId === wearableId
+      ? ok('…and records the REFUSAL, for that pair rather than for either row alone')
+      : bad('refusal not recorded', JSON.stringify(refusals));
+
+    // The whole point. Without it the next sync finds the same day, the same
+    // duration and the same two rows, and remakes the link the owner rejected.
+    pairIngestedWorkouts(db, NOW) === 0 && linkCount(db) === 0
+      ? ok('…so the next sync does NOT remake it — a refusal outlives the pass that reads it')
+      : bad('refused pair came back', linkCount(db));
+    unpairedIngestedSessions(db, shiftISODate(DAY, -1), 10).length === 1
+      ? ok('…and the watch’s record goes back to standing on its own, counted and inferred again')
+      : bad('unpaired record did not return');
+
+    // An assertion outranks a refusal, in both directions.
+    linkIngestedWorkout(db, workoutId, wearableId);
+    pairingRefusals(db).length === 0 && linkCount(db) === 1
+      ? ok('a hand link clears the refusal — the owner saying "yes" outranks having said "no"')
+      : bad('hand link left a stale refusal', JSON.stringify(pairingRefusals(db)));
+  }
+
+  // --- a refusal is bounded by the same window the pass can see -------------
+  {
+    const { db } = freshDb();
+    const workoutId = logDay(db, { day: shiftISODate(DAY, -40), minutes: 60 });
+    ingestAt(db, { uuid: 'aged', day: shiftISODate(DAY, -40), hour: 17, minutes: 58 });
+    pairIngestedWorkouts(db, NOW);
+    unlinkIngestedWorkout(db, workoutId);
+    pairingRefusals(db).length === 1 ? ok('a refusal is stored') : bad('refusal missing');
+    // A pass that can no longer reach the day it is about drops it: the list is
+    // state, not history, and unbounded state on a device with one copy of the
+    // data is a slow leak nobody would ever notice.
+    pairIngestedWorkouts(db, NOW, 7);
+    pairingRefusals(db).length === 0
+      ? ok('…and a pass whose window no longer reaches that day prunes it')
+      : bad('refusal not pruned', JSON.stringify(pairingRefusals(db)));
   }
 }
 

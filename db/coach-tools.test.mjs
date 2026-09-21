@@ -3399,8 +3399,17 @@ console.log('43. get_training_summary carries the watch’s heart rate, on both 
     startedAt: lift.start.toISOString(),
   });
   // A third session the owner logged that the watch never saw — the row that
-  // proves the field is omitted rather than nulled.
-  logWorkout(db, { date: DAY, kind: 'strength', durationMin: 25 });
+  // proves the field is omitted rather than nulled. It carries a START TIME, of
+  // an hour neither watch record touches, and that is load-bearing since the day
+  // rule landed (2026-09-21): a session with no start time on a day the watch
+  // recorded something IS a pairing candidate now, so "the watch never saw it"
+  // has to be said with a clock rather than assumed from a silence.
+  logWorkout(db, {
+    date: DAY,
+    kind: 'strength',
+    durationMin: 25,
+    startedAt: new Date(NOW.getTime() - 6 * 3_600_000).toISOString(),
+  });
   upsertWearableRows(db, [
     {
       date: DAY,
@@ -3572,6 +3581,114 @@ console.log('44. the Plan screen is payload-only: `doneOn` and `ahead`, both omi
   /ahead|doneOn|day picker|plan screen/i.test(description) === false
     ? ok('the tool description says nothing about either field — payload, not schema')
     : bad('a sentence about the day picker entered the description', description);
+}
+
+// ---------------------------------------------------------------------------
+// The day rule (2026-09-21). §41 proved the de-duplication for a SPAN pair; the
+// whole risk of a second pairing rule is that it makes a link the readers do not
+// recognise as one, and the same hour starts appearing in two tools again. It
+// cannot here, because the predicate is "is there a link" and never "how was it
+// made" — but that is exactly the kind of thing that stays true only while
+// somebody checks.
+console.log('45. a DAY-paired session is counted once too, and the payload says how it paired');
+{
+  const { db } = freshDb();
+  const DAY = TODAY;
+  // LOCAL wall-clock instants on DAY. The day rule compares an ARC session's
+  // logical day against an ingested session's, so a fixture built as an offset
+  // from `new Date()` would land on yesterday whenever the suite happens to run
+  // in the small hours — a test that passes by time of day is not a test.
+  const at = (hour) => {
+    const [y, m, d] = DAY.split('-').map(Number);
+    return new Date(y, m - 1, d, hour, 0, 0, 0);
+  };
+  const lift = { start: at(13), minutes: 60 };
+  const walk = { start: at(7), minutes: 40 };
+  const span = (s, m) => ({
+    startTime: s.toISOString(),
+    endTime: new Date(s.getTime() + m * 60_000).toISOString(),
+  });
+
+  // The owner logs the lift the way he actually logs it — after the fact, with
+  // no start time. The watch recorded the same hour, and a walk besides.
+  logWorkout(db, { date: DAY, kind: 'strength', durationMin: lift.minutes }, [
+    { exercise: 'Bench', exerciseId: 'barbell-bench-press', reps: 5, weightKg: 100 },
+  ]);
+  upsertWearableRows(db, [
+    {
+      date: DAY,
+      metricType: 'workout',
+      value: lift.minutes,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'watch-lift',
+      ...span(lift.start, lift.minutes),
+      metadata: { activity: 'Strength training', activity_type_raw: 50, kcal: 410 },
+    },
+    {
+      date: DAY,
+      metricType: 'workout',
+      value: walk.minutes,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'watch-walk',
+      ...span(walk.start, walk.minutes),
+      metadata: { activity: 'Walking', activity_type_raw: 52, kcal: 120 },
+    },
+  ]);
+
+  pairIngestedWorkouts(db, NOW);
+
+  const ingestedMinutes = (payload) => payload.points.find((p) => p.date === DAY)?.value;
+  const series = run('get_metric_series', db, { metric: 'workout', days: 2 });
+  near(ingestedMinutes(series), 40, 0.5)
+    ? ok('the ingested metric reports 40 — the logged hour is subtracted by a DAY link too')
+    : bad('day-paired ingested minutes', JSON.stringify(series.points));
+
+  const summary = run('get_training_summary', db, { days: 7 });
+  summary.totals.minutes === 60 && summary.totals.sessions === 1
+    ? ok('…and get_training_summary still counts that hour exactly once')
+    : bad('summary totals', JSON.stringify(summary.totals));
+  near(summary.totals.minutes + ingestedMinutes(series), 100, 0.5)
+    ? ok('…so the two tools sum to the 100 minutes that really happened')
+    : bad('sum across tools', summary.totals.minutes + ingestedMinutes(series));
+  summary.ingestedSessions?.length === 1 && summary.ingestedSessions[0].minutes === 40
+    ? ok('the walk is still listed separately — de-duplication never means deletion')
+    : bad('ingestedSessions', JSON.stringify(summary.ingestedSessions));
+
+  // The one thing the model should read differently: this pair was made from a
+  // date and a close duration, with no clock behind it.
+  const paired = summary.recentSessions.find((s) => s.duration_min === lift.minutes);
+  paired?.watchPairedBy === 'same day'
+    ? ok('…and the row says HOW it was matched, so its calories are held a little loosely')
+    : bad('watchPairedBy missing', JSON.stringify(paired));
+
+  // A SPAN pair carries no such field: it shares a clock and needs no caveat.
+  // Omitted rather than spelled out, the rule this payload applies throughout.
+  const { db: db2 } = freshDb();
+  logWorkout(db2, {
+    date: DAY,
+    kind: 'strength',
+    durationMin: lift.minutes,
+    startedAt: lift.start.toISOString(),
+  });
+  upsertWearableRows(db2, [
+    {
+      date: DAY,
+      metricType: 'workout',
+      value: lift.minutes,
+      unit: 'min',
+      sourceDevice: 'garmin',
+      sourceRawId: 'watch-lift',
+      ...span(lift.start, lift.minutes),
+      metadata: { activity: 'Strength training', activity_type_raw: 50, kcal: 410 },
+    },
+  ]);
+  pairIngestedWorkouts(db2, NOW);
+  const spanned = run('get_training_summary', db2, { days: 7 }).recentSessions[0];
+  spanned && 'watchPairedBy' in spanned === false
+    ? ok('a span pair carries no field at all — only the weaker match pays for one')
+    : bad('span pair grew a field', JSON.stringify(spanned));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

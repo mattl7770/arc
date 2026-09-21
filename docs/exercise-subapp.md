@@ -499,6 +499,14 @@ hub** — a training task, not a Data-tab reference row — as a ruled plate hea
 watch*, one row per session: *"Strength session from Apple Health · 47 min · Garmin · muscles
 unknown"*, with **Log sets** opening `workout-live` seeded with the ingested row's id.
 
+**It is the LAST section on the hub** (owner, on the device, 2026-09-21: *"should be at the
+bottom not the top of the page"*). It shipped under Train today, where it argued with the one
+thing the screen exists to answer, and the same round of feedback largely emptied it: pairing
+now reaches a session logged without a start time (§11.7), so most of what used to queue here
+never queues at all. What is left is a genuine remainder, and a remainder belongs after the
+record it did not join. Its empty behaviour is unchanged — it renders nothing rather than
+standing empty, for the reason below.
+
 That seeded session takes its **day, duration and start instant from the watch**, not from the
 elapsed clock: the session happened this morning and is being typed up now, so timing the
 typing would be the wrong number. On Finish it writes the `workouts` row and the link together,
@@ -544,7 +552,8 @@ about these screens rather than about the HealthKit seam:
 weights, labelled inferred; the ingested/logged run parity at 57; the floor and the cap; HIIT,
 yoga and an unmapped type contributing zero and never asking; a strength session contributing
 zero and entering the inbox with its span; the blank answered by a fill; a paired session
-inferring nothing and the ledger staying byte-identical; weekly volume byte-identical while
+inferring nothing and the ledger staying byte-identical; **a DAY-paired session inferring
+nothing either, and the ledger byte-identical for it too**; weekly volume byte-identical while
 freshness moves.
 
 ### 11.6 What only a device can settle
@@ -555,11 +564,47 @@ freshness moves.
 - **Whether `Core training` belongs in *blank* rather than *inferred*.** "Abs, primary" is
   tempting; a session coded Core training on a Garmin is frequently a whole circuit.
 - **The 14-day blank horizon**, against a real backfill on a real device.
+- **Whether the day rule pairs the right things** (§11.7), which is the whole of it: on a day
+  when the owner logs a lift without a start time and the watch also recorded a walk, and
+  nothing else, the two pair if their durations are within the tolerance — a 45-minute walk
+  and a 30-minute lift would. Nothing on screen can prove that wrong; only he can, and the
+  unpair tap is the whole remedy. If it happens often, the next lever is the activity coding
+  (a walk is `inferred`, a lift is `blank`), not a tighter tolerance.
 - **Avg/max HR** — no longer deferred; built 2026-09-19 as D3b
   (`docs/wearables-subapp.md` §18). What a device still settles on *these* screens: whether
   `avg 142 · max 171 bpm` reads as one line under a session title at 10 pt mono on the hub,
   how the spoken form sounds in VoiceOver, and — the question under all of it — whether Garmin
   Connect writes in-workout heart rate to Apple Health at all.
+
+### 11.7 The day rule reaches the sessions the owner actually logs (2026-09-21)
+
+The pairing rule itself is `docs/wearables-subapp.md` §17.7 — this is what it means on the
+Train side. Until this round, only sessions from the **live logger** could pair, because only
+the live logger writes `workouts.started_at` and pairing was span overlap. Everything else —
+the free-form logger, a backdated entry, a photo import, anything the Coach writes — sat
+unpaired forever, its watch copy queuing in the blank inbox beside the sets the owner had
+already typed. The owner overruled that from the device. A logged session with no start time
+now pairs with an unpaired ingested session on the **same logical day**: outright when it is
+the only one, otherwise on the closest duration and only inside a stated tolerance (the shorter
+must be at least half the longer), and never by guessing when there is nothing to choose on.
+
+Three consequences that are facts about these screens:
+
+- **The blank inbox mostly empties**, which is what moved it to the bottom (§11.4). A
+  strength-coded session the owner logged the sets for is now *paired*, so it stops asking.
+- **The pair says how it was made.** A day pair ends its watch line `· same day` (spoken:
+  *"matched by day, not by clock"*) — on the hub's Recent-sessions row and in the session
+  editor. A span pair says nothing extra: it shares a clock and needs no caveat.
+- **Unpairing is one tap, on the watch line in the session editor.** No confirmation, because
+  nothing of the owner's goes — the sets stay, the watch's record stays, and what is discarded
+  is an inference ARC made. The pair is then **refused**, so the next sync does not remake it;
+  a hand link from the blank inbox clears the refusal again.
+
+The two freshness firewalls in §11.3 hold unchanged and by construction: "a paired session
+infers nothing" is one predicate on the *existence* of a link and never on how it was made, so
+a day pair is de-duplicated exactly like a span pair. Unpairing hands the watch's record its
+inferred load back, which is the correct reading once ARC has been told it was a session of its
+own.
 
 ## 12. Phase 8 — the away-gym bit (C13, 2026-09-14)
 

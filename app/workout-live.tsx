@@ -35,6 +35,7 @@ import {
   getIngestedWorkout,
   linkIngestedWorkout,
   pairIngestedWorkouts,
+  unlinkIngestedWorkout,
 } from '@/lib/db/repositories/workout-ingest';
 import { restSecFor } from '@/lib/exercise/constants';
 import {
@@ -65,7 +66,7 @@ import {
   isLoadedRepsMeasures,
   type Measures,
 } from '@/lib/exercise/measures';
-import type { SetType, WorkoutDetail } from '@/lib/exercise/types';
+import type { PairedIngest, SetType, WorkoutDetail } from '@/lib/exercise/types';
 import { cancelRestAlert, scheduleRestAlert } from '@/lib/notifications/rest-timer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import type { UnitPreferences } from '@/lib/user/types';
@@ -579,13 +580,38 @@ function WorkoutLive({
   const filling = ingest != null && !editing;
 
   // The paired watch record of a session being EDITED — a different join from
-  // `ingest` above, which is the seeded-fill path. Two strings for the same
-  // reason the Train hub keeps two: whatever the label says, VoiceOver speaks,
-  // and "avg 142 · max 171 bpm" read aloud is tokens rather than a measurement.
-  const storedWatch = stored?.ingested ? ingestDetail(stored.ingested, units) : null;
-  const storedWatchSpoken = stored?.ingested
-    ? ingestDetail(stored.ingested, units, { spoken: true })
-    : null;
+  // `ingest` above, which is the seeded-fill path.
+  //
+  // In STATE rather than read straight off `stored`, because since 2026-09-21
+  // it is the one thing on this screen the owner can break: pairing now reaches
+  // sessions with no start time, matching them on the day, and the tap that
+  // says "these are not the same session" has to take the line with it.
+  const [pairedWatch, setPairedWatch] = useState<PairedIngest | null>(
+    () => stored?.ingested ?? null
+  );
+  // Two strings for the same reason the Train hub keeps two: whatever the label
+  // says, VoiceOver speaks, and "avg 142 · max 171 bpm" read aloud is tokens
+  // rather than a measurement.
+  const storedWatch = pairedWatch ? ingestDetail(pairedWatch, units) : null;
+  const storedWatchSpoken = pairedWatch ? ingestDetail(pairedWatch, units, { spoken: true }) : null;
+
+  /**
+   * Break the pair. ONE tap and no confirmation, unlike every other control on
+   * this screen that removes something: nothing of the owner's goes. The sets
+   * stay, the watch's own record stays on the Data tab, and what is discarded is
+   * an inference ARC made — which is also why it must not come back on the next
+   * sync, and does not (the refusal is recorded with the unlink).
+   */
+  const unpairWatch = () => {
+    if (!workoutId) return;
+    try {
+      unlinkIngestedWorkout(getDb(), workoutId);
+    } catch (error) {
+      console.warn('[workout-live] unpair failed', error);
+      return;
+    }
+    setPairedWatch(null);
+  };
 
   // A resumed session keeps the instant it really started, so the elapsed clock
   // says how long this workout has been going, not how long the app has been
@@ -1176,13 +1202,27 @@ function WorkoutLive({
             shipped and never rendered it; heart rate is the first figure on it
             worth reading while looking at the sets. One mono line, the same
             string the Train hub prints — this screen is where the owner asks
-            "how hard was that actually", and the answer was one join away. */}
+            "how hard was that actually", and the answer was one join away.
+
+            Since 2026-09-21 the line is also the DOOR OUT of a wrong pair, and
+            this screen is the only place it can be: it is where a session and
+            the watch's claim about it are both on screen at once. The label
+            voice and the neutral ink are the hub's own "Log sets" row — an
+            action that is not the screen's primary one, so it takes no accent —
+            and the 44px is the tap target every row here keeps. */}
         {editing && storedWatch ? (
-          <Text
-            accessibilityLabel={`From your watch: ${storedWatchSpoken ?? storedWatch}`}
-            className="mt-1 font-mono text-[11px] leading-4 text-ink-muted">
-            {storedWatch}
-          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`From your watch: ${storedWatchSpoken ?? storedWatch}. Unpair this record from the session.`}
+            onPress={unpairWatch}
+            className="mt-1 min-h-[44px] flex-row items-center gap-3 active:opacity-60">
+            <Text className="flex-1 font-mono text-[11px] leading-4 text-ink-muted">
+              {storedWatch}
+            </Text>
+            <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink">
+              Unpair
+            </Text>
+          </Pressable>
         ) : null}
 
         {/* What is being filled in, and where it came from. Mono metadata, one

@@ -1212,6 +1212,13 @@ const getTrainingSummary: CoachTool = {
         ...(pair?.avgHr != null && pair.maxHr != null
           ? { hr: { avg: pair.avgHr, max: pair.maxHr } }
           : {}),
+        // HOW the watch's record was matched to this session, and only when the
+        // answer is the weak one (2026-09-21). A span pair shares a clock and
+        // needs no caveat; a DAY pair was made from the date and a close
+        // duration because the log carried no start time, so the model should
+        // hold the calories and heart rate on this row a little more loosely.
+        // Omitted otherwise, the rule this payload applies throughout.
+        ...(pair?.pairedBy === 'day' ? { watchPairedBy: 'same day' } : {}),
       };
     });
 

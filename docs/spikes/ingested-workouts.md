@@ -24,11 +24,29 @@ Where the build differs from this proposal, the build is authoritative:
   bar it describes — same day, overlap ≥ 0.5, a real `started_at` — *is* the
   auto-pair condition, and a hand link from the blank inbox replaces an
   automatic one.
+- ~~**A session with no `started_at` never auto-pairs**~~ (§3.C.3) — **REVERSED
+  by the owner, from the device, on 2026-09-21**: *"the apple health found
+  workouts should be attempted to be linked to workouts i've logged that are
+  around the same time automatically."* That departure was the load-bearing one
+  and it turned out to be wrong in practice: only the LIVE logger writes
+  `started_at`, so the free-form logger, a backdated entry, a photo import and
+  anything the Coach writes — which is how most of his sessions arrive — could
+  never pair, and their watch copies queued in the blank inbox beside sets he
+  had already typed. A second rule now pairs exactly those, on the **same
+  logical day** plus a duration tolerance, and the guard the departure was
+  protecting (a wrong pair no screen would show as wrong) is answered by a
+  **one-tap unpair that is remembered**, not by refusing to pair. No migration:
+  the rule is `pairByDay`, the method is derived from `linked_by` + `overlap`,
+  and the refusals live under a second `health_sync_state` key. Spec:
+  `docs/wearables-subapp.md` §17.7; screens: `docs/exercise-subapp.md` §11.7.
+- **The blank inbox moved to the BOTTOM of the Train hub**, same feedback, same
+  day: *"should be at the bottom not the top of the page."*
 
 Shipped documentation: `docs/wearables-subapp.md` §17 (pairing, the link table,
-the double-count) and `docs/exercise-subapp.md` §11 (inference, provenance, the
-blank). Tests: `db/wearables.test.mjs` §21, `db/training-engine.test.mjs` §9,
-`db/coach-tools.test.mjs` §38.
+the double-count) and §17.7 (the day rule, the refusal), and
+`docs/exercise-subapp.md` §11 (inference, provenance, the blank) and §11.7.
+Tests: `db/wearables.test.mjs` §21 and §23, `db/training-engine.test.mjs` §9,
+`db/coach-tools.test.mjs` §38 and §45.
 
 **Still open** (§3.E, the owner's answer 3a): avg/max HR needs a new HealthKit
 read scope, a `METRIC_COVERAGE` row and a per-session sample query.
@@ -260,6 +278,12 @@ Given a manual `workouts` row **W** and ingested rows **I**:
    Writing it costs one column and one parameter, and it turns pairing from a
    heuristic into arithmetic. Nullable, so every existing row and every backdated
    log is simply "no span", which is the honest reading.
+
+   > **The second half of that — "it can only be paired by hand" — was reversed
+   > by the owner on 2026-09-21** (see the header). "No span" is still the
+   > honest reading of the column; it is no longer a reason to refuse a pair.
+   > Those sessions pair on the logical DAY plus a duration tolerance, and a
+   > wrong pair is undone by one tap that the next sync remembers.
 4. **Ties.** Two ingested rows both overlapping W resolve by `SOURCE_PRIORITY`
    (`wearables.ts:213-224`), then the **longer** span, then `created_at, id` —
    the exact ordering `0042`'s DELETE used (`:89-107`). Deterministic, so

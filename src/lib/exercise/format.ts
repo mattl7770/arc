@@ -166,7 +166,16 @@ export function ingestDetail(
   }
   // The source alone is not a measurement — if the watch gave nothing but its
   // own name there is nothing to put beside what the owner typed.
-  return parts.length > 1 ? parts.join(' · ') : null;
+  if (parts.length <= 1) return null;
+  // A pair the DAY rule made says so, last (2026-09-21). No clock justified it —
+  // only the date and a duration close enough — so the line that carries its
+  // numbers is where that belongs, and it is the one pair worth checking. It is
+  // appended AFTER the emptiness test on purpose: provenance qualifies a
+  // measurement and is not one, so it can never be the whole line.
+  if (ingest.pairedBy === 'day') {
+    parts.push(options.spoken ? 'matched by day, not by clock' : 'same day');
+  }
+  return parts.join(' · ');
 }
 
 /** "8 × 135 lb", "12 reps", "135 lb" — one draft/stored set, in display units. */

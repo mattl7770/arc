@@ -52,7 +52,8 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  * saved workouts (all offline) — with two doors in: start the recommended
  * session, or start empty. Below it: weekly volume vs landmarks, the muscle
  * body-figure (tap → the full per-muscle ledger), this week's totals, saved
- * workouts, manual log (free-form + photo import), and recent sessions.
+ * workouts, manual log (free-form + photo import), recent sessions, and last of
+ * all the watch's unanswered sessions.
  * (Programs were retired 2026-08-11 — owner call: one flat list of saved
  * workouts beats the routines/programs pair. The 0020 tables stay in the
  * schema, dormant.)
@@ -70,6 +71,7 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  *   Saved workouts           plate   a record, ruled
  *   Manual log               plate   rows that navigate, like their neighbours
  *   Recent sessions          plate   a record, ruled
+ *   From your watch          plate   the remainder, ruled — last on the page
  *
  * Each block carries exactly one device and none of them nest; every other
  * `View` here is layout and spacing only. Sections are separated by whitespace,
@@ -279,70 +281,6 @@ export default function ExerciseScreen() {
           onStartEmpty={startEmpty}
         />
       </View>
-
-      {/*
-        From your watch — the BLANK (0054, docs/spikes/ingested-workouts.md §3.G).
-
-        Apple Health recorded a strength session and ARC deliberately does not
-        guess what it worked (owner: strength-coded workouts *"leave a blank for
-        the user"*). So it is a question with a one-tap answer, not a fact.
-
-        A **ruled plate**, because it is a record list, and NO accent: the
-        screen's one accent belongs to Train today, and an inbox arguing with the
-        primary action at the top of a screen is exactly the noise the accent
-        budget exists to prevent. Rows navigate, like every other row in a plate
-        here.
-
-        Rendered only when there is something to ask. Unlike Saved workouts and
-        Recent sessions, this plate is not a record that stands empty — an inbox
-        with nothing in it is not an inbox, and drawing one would put a permanent
-        "nothing to do" panel on the hub of a phone with no watch. A REFUSED type
-        (yoga, HIIT, "Other") never reaches here at all; it stays a plain record
-        on the Data tab and asks nothing, ever.
-      */}
-      {blanks.length > 0 ? (
-        <View className="mt-7">
-          <Block device="plate">
-            <SectionLabel label="From your watch" note={String(blanks.length)} />
-            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-              Apple Health recorded these as strength sessions. ARC won&rsquo;t guess which muscles
-              they worked — add the sets and they join your history.
-            </Text>
-            <View className="mt-1">
-              {blanks.map((blank, index) => (
-                <View key={blank.id}>
-                  <Divider first={index === 0} />
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`${blank.activity ?? 'Strength session'} from Apple Health, ${dayLabel(
-                      blank.date,
-                      today
-                    )}, ${Math.round(blank.durationMin)} minutes, muscles unknown. Log the sets.`}
-                    onPress={() => fillBlank(blank)}
-                    className="min-h-[44px] flex-row items-center gap-3 py-2.5 active:opacity-60">
-                    <Text className="w-16 pt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                      {dayLabel(blank.date, today)}
-                    </Text>
-                    <View className="flex-1">
-                      <Text className="font-serif text-[15px] leading-5 text-ink">
-                        {blank.activity ?? 'Strength session'} from Apple Health
-                      </Text>
-                      <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">
-                        {Math.round(blank.durationMin)} min · {deviceLabel(blank.sourceDevice)} ·
-                        muscles unknown
-                      </Text>
-                    </View>
-                    <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink">
-                      Log sets
-                    </Text>
-                    <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
-                  </Pressable>
-                </View>
-              ))}
-            </View>
-          </Block>
-        </View>
-      ) : null}
 
       {/* Weekly volume vs landmarks — advisory prose, so: margin annotation. */}
       <View className="mt-7">
@@ -581,6 +519,76 @@ export default function ExerciseScreen() {
           )}
         </Block>
       </View>
+
+      {/*
+        From your watch — the BLANK (0054, docs/spikes/ingested-workouts.md §3.G).
+
+        Apple Health recorded a strength session and ARC deliberately does not
+        guess what it worked (owner: strength-coded workouts *"leave a blank for
+        the user"*). So it is a question with a one-tap answer, not a fact.
+
+        **LAST on the hub** (owner, on the device, 2026-09-21: *"should be at the
+        bottom not the top of the page"*). It opened under Train today, where it
+        argued with the one thing this screen exists to answer — and since the
+        same round taught pairing to match a session logged without a start time
+        to the watch's record of the same day, most of what used to queue here
+        never queues at all. What is left is a genuine remainder, and a
+        remainder belongs after the record it did not join.
+
+        A **ruled plate**, because it is a record list, and NO accent: the
+        screen's one accent belongs to Train today. Rows navigate, like every
+        other row in a plate here.
+
+        Rendered only when there is something to ask. Unlike Saved workouts and
+        Recent sessions, this plate is not a record that stands empty — an inbox
+        with nothing in it is not an inbox, and drawing one would put a permanent
+        "nothing to do" panel on the hub of a phone with no watch. A REFUSED type
+        (yoga, HIIT, "Other") never reaches here at all; it stays a plain record
+        on the Data tab and asks nothing, ever.
+      */}
+      {blanks.length > 0 ? (
+        <View className="mt-7">
+          <Block device="plate">
+            <SectionLabel label="From your watch" note={String(blanks.length)} />
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              Apple Health recorded these as strength sessions. ARC won&rsquo;t guess which muscles
+              they worked — add the sets and they join your history.
+            </Text>
+            <View className="mt-1">
+              {blanks.map((blank, index) => (
+                <View key={blank.id}>
+                  <Divider first={index === 0} />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${blank.activity ?? 'Strength session'} from Apple Health, ${dayLabel(
+                      blank.date,
+                      today
+                    )}, ${Math.round(blank.durationMin)} minutes, muscles unknown. Log the sets.`}
+                    onPress={() => fillBlank(blank)}
+                    className="min-h-[44px] flex-row items-center gap-3 py-2.5 active:opacity-60">
+                    <Text className="w-16 pt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                      {dayLabel(blank.date, today)}
+                    </Text>
+                    <View className="flex-1">
+                      <Text className="font-serif text-[15px] leading-5 text-ink">
+                        {blank.activity ?? 'Strength session'} from Apple Health
+                      </Text>
+                      <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">
+                        {Math.round(blank.durationMin)} min · {deviceLabel(blank.sourceDevice)} ·
+                        muscles unknown
+                      </Text>
+                    </View>
+                    <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink">
+                      Log sets
+                    </Text>
+                    <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          </Block>
+        </View>
+      ) : null}
     </Screen>
   );
 }
