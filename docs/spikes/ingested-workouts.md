@@ -39,6 +39,9 @@ Where the build differs from this proposal, the build is authoritative:
   the rule is `pairByDay`, the method is derived from `linked_by` + `overlap`,
   and the refusals live under a second `health_sync_state` key. Spec:
   `docs/wearables-subapp.md` §17.7; screens: `docs/exercise-subapp.md` §11.7.
+- **The blank inbox moved to the BOTTOM of the Train hub**, same feedback, same
+  day: *"should be at the bottom not the top of the page."*
+
 Shipped documentation: `docs/wearables-subapp.md` §17 (pairing, the link table,
 the double-count) and §17.7 (the day rule, the refusal), and
 `docs/exercise-subapp.md` §11 (inference, provenance, the blank) and §11.7.

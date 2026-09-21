@@ -499,6 +499,14 @@ hub** — a training task, not a Data-tab reference row — as a ruled plate hea
 watch*, one row per session: *"Strength session from Apple Health · 47 min · Garmin · muscles
 unknown"*, with **Log sets** opening `workout-live` seeded with the ingested row's id.
 
+**It is the LAST section on the hub** (owner, on the device, 2026-09-21: *"should be at the
+bottom not the top of the page"*). It shipped under Train today, where it argued with the one
+thing the screen exists to answer, and the same round of feedback largely emptied it: pairing
+now reaches a session logged without a start time (§11.7), so most of what used to queue here
+never queues at all. What is left is a genuine remainder, and a remainder belongs after the
+record it did not join. Its empty behaviour is unchanged — it renders nothing rather than
+standing empty, for the reason below.
+
 That seeded session takes its **day, duration and start instant from the watch**, not from the
 elapsed clock: the session happened this morning and is being typed up now, so timing the
 typing would be the wrong number. On Finish it writes the `workouts` row and the link together,
@@ -582,8 +590,8 @@ must be at least half the longer), and never by guessing when there is nothing t
 
 Three consequences that are facts about these screens:
 
-- **The blank inbox mostly empties.** A strength-coded session the owner logged the sets for is
-  now *paired*, so it stops asking.
+- **The blank inbox mostly empties**, which is what moved it to the bottom (§11.4). A
+  strength-coded session the owner logged the sets for is now *paired*, so it stops asking.
 - **The pair says how it was made.** A day pair ends its watch line `· same day` (spoken:
   *"matched by day, not by clock"*) — on the hub's Recent-sessions row and in the session
   editor. A span pair says nothing extra: it shares a clock and needs no caveat.
