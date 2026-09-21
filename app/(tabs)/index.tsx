@@ -11,7 +11,7 @@ import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
 import { MissionEmpty } from '@/components/home/mission-empty';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
-import { StatusControl } from '@/components/home/status-control';
+import { StatusControl } from '@/components/status/status-control';
 import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import { useCoachPassMessage } from '@/hooks/use-coach-pass';
@@ -186,8 +186,9 @@ export default function HomeScreen() {
   const brief = useDailyBrief();
   const readiness = useReadiness();
   // What the user has SAID about today (0061). The line below the folio row
-  // states it; the control on that row opens the same five chips the Coach's
-  // rail draws.
+  // states it; the control on that row opens the five chips in a sheet — the
+  // same control, and the same sheet, the Coach screen opens (2026-09-21, when
+  // its own docked rail went behind a door).
   const statuses = useStatuses();
   const statusNote = statusLine({
     open: statuses.open,

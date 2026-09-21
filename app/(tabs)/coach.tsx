@@ -16,7 +16,7 @@ import { MessageBubble } from '@/components/coach/message-bubble';
 import { PendingWriteCard } from '@/components/coach/pending-write-card';
 import { RemindersCard } from '@/components/coach/reminders-card';
 import { SessionKeyPanel } from '@/components/coach/session-key-panel';
-import { StatusRail } from '@/components/status/status-rail';
+import { StatusControl } from '@/components/status/status-control';
 import { SuggestedPrompts } from '@/components/coach/suggested-prompts';
 import { Divider } from '@/components/ui/block';
 import { PaperGrid } from '@/components/ui/screen';
@@ -187,7 +187,7 @@ export default function CoachScreen() {
   const hasReminders = reminders.length > 0;
   const decisionOpen = chat.pendingWrite !== null;
 
-  // --- The status rail ------------------------------------------------------
+  // --- The status door ------------------------------------------------------
   //
   // A SECOND source of seeded text, beside the deep-linked `prompt` param: the
   // end gesture seeds rather than sends, because ending a status is bookkeeping
@@ -312,14 +312,23 @@ export default function CoachScreen() {
             <PendingWriteCard pending={chat.pendingWrite} onResolve={chat.resolveWrite} />
           ) : null}
 
-          {/* Docked on the composer's own opaque band, directly above the
-              input. Hidden under a pending write for the same reason the
-              activity line is: the loop is suspended waiting on one decision,
-              and a second set of live controls beside it would invite a
-              gesture that cannot happen. Disabled — not hidden — while a turn
-              runs, so the rail does not appear and vanish on every question. */}
-          <StatusRail
+          {/* ONE door, docked on the composer's own opaque band directly above
+              the input — not the five chips, which stood here from 2026-09-19
+              until the owner used the build on 2026-09-21: *"buttons for the
+              status thing on the coach tab need to be moved and put behind
+              another button."* The five now live in the sheet Home was already
+              opening, and `showOpen` is what keeps a RUNNING status visible
+              without opening anything: the door, then the chips that are
+              actually on, which on most days is none.
+
+              Hidden under a pending write for the same reason the activity
+              line is: the loop is suspended waiting on one decision, and a
+              second set of live controls beside it would invite a gesture that
+              cannot happen. Disabled — not hidden — while a turn runs, so the
+              door does not appear and vanish on every question. */}
+          <StatusControl
             open={statuses.open}
+            showOpen
             disabled={chat.isResponding}
             hidden={decisionOpen}
             onToggle={onStatusChip}

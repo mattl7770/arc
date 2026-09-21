@@ -6,9 +6,51 @@ record is `docs/information-architecture.md` §Status. Everything below is the d
 proposed; **what actually shipped departed from it in the ways listed immediately under this
 note, and where the two disagree, this note wins.**
 
+**Amended 2026-09-21 — owner feedback from the device (item 0, below).** The rail this plan
+docks above the Coach's composer is gone from that band; the five chips live behind Home's own
+door. §3's rail design is superseded on WHERE the chips are drawn and on nothing else.
+
 ---
 
 ## What departed from this plan, and why
+
+### 0. THE RAIL LASTED TWO DAYS ON THE DEVICE (2026-09-21)
+
+The owner ran the build on hardware and, as the first item of his feedback: *"buttons for the
+status thing on the coach tab need to be moved and put behind another button."* He is right, and
+the plan had the answer in it already — it just applied it to one screen and not the other. §3's
+own Q5 argument against inlining five chips on Home ("five controls competing with the one action
+the screen is built around") is the same argument on the Coach tab, where the one action is Send.
+
+What changed, on branch `claude/fb-status`, no migration:
+
+- **`src/components/home/status-control.tsx` moved to `src/components/status/status-control.tsx`**
+  and both screens now render it. It was already the door and already owned the sheet; making a
+  second one for the Coach tab would have been two vocabularies of the same five words inside a
+  fortnight, which is the argument `chips.ts` makes about the table itself.
+- **The Coach tab passes `showOpen`.** With nothing set it draws the door alone; with a status
+  running it draws the door and THAT chip, carrying the same × and the same re-ask tap it carried
+  on the rail. Home does not pass it, because its line above the hero already names what is on.
+  The door stays OUTLINED wherever a chip is drawn beside it — the chip is what says *on*.
+- **`StatusRail` lost its `hidden` prop and gained a sibling, `StatusChip`.** `hidden` existed so
+  a pending write could suppress the docked rail; nothing is docked, and the door carries it
+  instead. `StatusChip` is the single chip, so the sheet's rail and the Coach's open-chip row
+  cannot draw the × or the re-ask differently.
+- **Write-first-then-prompt, the re-ask and end-and-seed are untouched.** They were never in the
+  rail — they are in `src/lib/status/store.ts` and the two screens' callbacks, and neither moved.
+- **What the composer got back:** the band above the input went from a wrapping row of five 44pt
+  chips to one 44pt line that cannot wrap. Where the rail took its second row — its own note puts
+  five compact chips at ~320–350pt against ~350pt usable at 390pt, and calls two rows the expected
+  shape — that is **50pt** returned to the thread (44pt row + 6pt gap); where it fitted on one, the
+  height is unchanged and what is freed is the five permanent controls, which is what the feedback
+  was about.
+- **`db/screens-render.test.mjs` §7c-ii** now asserts the door renders with the five NOT inline,
+  an open status renders its one chip with its ×, Home's face never draws a chip at all, a pending
+  write suppresses the whole control, and the sheet's own chips — asserted on `StatusRail`
+  directly, because RN's `Modal` returns null without a DOM — still carry all five.
+- **Gate, as run:** `npx tsc --noEmit` exit 0 · `npm run db:validate` 20 passed · `npm run db:test`
+  **57 suites, 0 failed** · `npm run lint` 0 errors (3 pre-existing warnings) · `npx expo export
+  --platform ios --clear` exit 0. Still not verified on a device.
 
 ### 1. THE OWNER DIVERGED ON TWO OF THE FIVE QUESTIONS (§9)
 
