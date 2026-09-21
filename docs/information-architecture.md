@@ -284,7 +284,9 @@ All eight rows carried a boxed `Set up` tag. By the time all eight were built th
 **Locked and BUILT 2026-09-19** — migration `0061`, design in
 `docs/spikes/coach-status-buttons-modes-retirement.md`. This section replaces
 the Modes model that stood here from 2026-07-25, and answers the open question
-that section closed with.
+that section closed with. **Revised 2026-09-21** on owner feedback from the
+device: the Coach tab's five docked chips went behind the door Home already
+had. Nothing about what a status IS changed — only where the buttons are.
 
 > **A status is a fact the user states about themself. What to do about it is
 > the Coach's call, every time.**
@@ -329,21 +331,51 @@ authors, versioned like a protocol?* — is **answered: no.** A registry with th
 user as author is still a fixed response bound to a fact, and still a rule
 deciding the day. The Coach is the adapter.
 
-### The rail, and Home
+### The five chips, and the door they live behind
 
-**Five chips, docked above the Coach's composer** (the owner's Q1(a)): Sick ·
-Traveling · Injured · Off day · Night out. Anything else he types is a
-first-class status the Coach records with `set_status`; the five are a claim
-about frequency, not a taxonomy. Deload is not among them and is not a status
-at all — a deload is a PLAN change, `update_protocol`.
+**Five chips** (the owner's Q1(a)): Sick · Traveling · Injured · Off day ·
+Night out. Anything else he types is a first-class status the Coach records
+with `set_status`; the five are a claim about frequency, not a taxonomy.
+Deload is not among them and is not a status at all — a deload is a PLAN
+change, `update_protocol`.
 
-Three gestures. **Off → on** writes the row and *then* sends a canned prompt
-("I'm sick right now. Check what's up and adjust accordingly.") — that order is
-load-bearing: on a plane the fact lands and only the turn fails. **Tapping an
-on-chip** is the re-ask, day two of a five-day flu. **The ×** ends it and SEEDS
-the composer rather than sending, because ending is bookkeeping that may not
-warrant a turn. The rail wraps to two rows rather than scrolling, and draws at
-most two statuses beyond the five.
+**They were docked above the Coach's composer from 2026-09-19. They are not any
+more** — owner feedback from the device, **2026-09-21**, first item: *"buttons
+for the status thing on the coach tab need to be moved and put behind another
+button."* All five moved into **the sheet**, behind ONE control in the label
+voice — and it is the same control Home was already opening beside the date
+(`src/components/status/status-control.tsx`), not a second one. One component,
+one sheet, two surfaces, so the five words cannot drift and neither can the
+three gestures.
+
+Three gestures, unchanged by the move and identical wherever a chip is drawn.
+**Off → on** writes the row and *then* sends a canned prompt ("I'm sick right
+now. Check what's up and adjust accordingly.") — that order is load-bearing: on
+a plane the fact lands and only the turn fails. **Tapping an on-chip** is the
+re-ask, day two of a five-day flu. **The ×** ends it and SEEDS the composer
+rather than sending, because ending is bookkeeping that may not warrant a turn.
+Inside the sheet the chips wrap to two rows rather than scrolling, and at most
+two statuses beyond the five are drawn.
+
+**What each surface shows with the door shut**, and why they differ by exactly
+one thing — what else is on the screen:
+
+- **Home:** the door alone, never a chip. The line above the hero already names
+  every open status, its age and what it is doing to the baselines, and the
+  same fact twice is what CLAUDE.md §5 forbids. The state rides the door's
+  FILL instead — filled = something is on, outlined = nothing is, the
+  vocabulary the retired mode chip established.
+- **The Coach tab:** the door, then the chips that are actually ON, each
+  keeping its × and its re-ask tap. There is no line here, so a shut door alone
+  would make a running status invisible. The door therefore stays OUTLINED even
+  when something is on: the chip beside it is what says *on*, and a fill
+  repeating it would be the same fact twice in one row.
+
+The door leads on both, and its position never changes with state — a control
+that moves between taps is not a control, the same rule that fixes the order of
+the five chips. What the composer gets back is the rail's second row: the band
+above the input is one 44pt line that **cannot wrap**, where five chips at
+~320–350pt against ~350pt usable at 390pt wrapped as their expected shape.
 
 **Home has both a line and a control** (his Q5(c)). The line sits above the
 hero in the timezone line's register — mono, muted, zero height on an ordinary
@@ -351,10 +383,13 @@ day — and states what is on, since when, whether skips are excused, and how
 many days have left the baselines, escalating to *"no recovery verdict until it
 ends"* when the exclusion is what stopped Recovery grading. Tapping it carries
 the re-ask to the Coach. The control beside the date is ONE small target in the
-label voice opening the rail's own chips in a sheet: five chips inlined on the
-folio row would be five controls competing with the one action Home exists for
+label voice opening the five chips in a sheet: five chips inlined on the folio
+row would be five controls competing with the one action Home exists for
 (CLAUDE.md §5). Home never sends — it writes the row and carries the prompt to
-the Coach tab, seeded.
+the Coach tab, seeded. **Since 2026-09-21 the Coach tab reaches the chips
+through this same control**, which is the argument above arriving from the
+other end: that screen's one primary action is Send, and five permanent buttons
+on the composer's band were four more than it had asked for.
 
 **"Never silently on"** — the rule the old mode indicator existed for — is kept
 by the LINE rather than by a picker. There is no automatic expiry, because a
