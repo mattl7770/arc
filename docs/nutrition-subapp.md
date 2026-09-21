@@ -732,6 +732,62 @@ Size is **11px**, not the 9.5–10px metadata band: a macro the owner has just a
 - **Whether a 4px bar reads as a rule or as a gauge** at @3x, and whether the 2pt terminator reads as a closing mark or as a nick in the fill.
 - **Whether three 11px mono cells scan as columns** down a twenty-row day, or as clutter under each meal name.
 
+### OVERRULED on the device — the bars are graded, and colourful (FB2, 2026-09-21, no migration)
+
+The owner, from the phone, on the build that shipped the above: *"colors for nutrition bars are hard to see, should be more colourful."* Both halves of C6's restraint lose — the 4px geometry and the single-accent colour. What replaces them is **not** paint: the bars are filled with the **signal palette, keyed to the grade the day already carries**, so "more colourful" reads as *where you stand*.
+
+**The design record for the firewall departure is `docs/project-status.md` §3**, beside the rule it excepts. In one line: *a macro bar graded against a target is a verdict about the day, which is the same class of thing the Home pillar shows.*
+
+**Where the grade comes from — `macroGrade` (`src/lib/nutrition/bar.ts`), which invents no band.** Every level is produced by the functions `nutritionVerdict` is itself built from (`src/lib/home/readiness.ts`), so a bar is a *component* of the Home pillar rather than a second opinion about it:
+
+| bar | graded by | why that one |
+| --- | --- | --- |
+| kcal hero | `kcalLevel(ratio, direction)` | the pillar's calorie half, argument for argument |
+| protein | `proteinLevel(ratio)` | **one-sided.** Over target is not a fault in any direction — the calorie bands would paint 200 g on a 180 g target amber, the exact opposite of what the pillar says about that number |
+| carbs · fat | `kcalLevel(ratio, direction)` | budget components, two-sided like the budget, and the direction applies as it does to calories: cutting, under is the point and over is the fault |
+
+C7's lift is *not* re-drawn here. The kcal and protein bars are the two readings the pillar combines; the combination (`lift` / `worse`) is what Home states in a word. That is why the colours cannot contradict it.
+
+**The ratio is projected; the fill is literal.** Colour grades on `paceRatio` — eaten plus the share still expected today — while the fill inks `eaten ÷ target` flat. It has to: at 10:00 a perfectly-paced day has eaten 15% of its calories, so a colour graded on the raw fraction would read `poor` every morning of every good day. Length answers *how much have I eaten*, colour answers *where is this day going to land*. At the close the two collapse onto the same number.
+
+**`unknown` in exactly the four states the pillar withholds** — timezone-changed day, no target on that metric, nothing logged, and before the pace clock starts (10:00). Cases 3 and 4 still draw the bar at its real length: show the quantity, withhold the judgment, which is the timezone ADR's own rule. A day with no targets keeps four neutral rails rather than losing its bars, so the grid does not change height when a target is first typed in.
+
+#### The cut, and the measurements that chose it
+
+The palette specifies the **swatch** for fills and the **ink cut** for text. On this rail the swatch fails, so the fill takes the ink cut — measured against `paper-deep` `#C6C1B0`, 2026-09-21:
+
+| state | swatch | on the rail | **ink cut (shipped)** | on the rail |
+| --- | --- | --- | --- | --- |
+| optimal | `#2E8B57` | 2.36:1 ✗ | `#185A36` | **4.56:1** ✓ |
+| good | `#2C6C95` | 3.16:1 ✓ | `#24567A` | **4.34:1** ✓ |
+| caution | `#A97B22` | 2.10:1 ✗ | `#6E4F15` | **4.17:1** ✓ |
+| poor | `#AA402C` | 3.35:1 ✓ | `#8F3524` | **4.31:1** ✓ |
+| unknown | — | — | `#5C5340` | **4.21:1** ✓ |
+| terminator, on the bare rail | | | `ink` `#1C1911` | **9.74:1** ✓ |
+| terminator, on a graded fill | | | `ink` on the four cuts | **2.13–2.33:1** — accepted, see below |
+| the rail on the sheet | | | `paper-deep` on `paper` | 1.42:1 — a ground, not a mark |
+
+Two of four swatches are under WCAG 1.4.11's 3:1 on this stock, and a palette where half the states are invisible is C6's defect in new hues. This is the case §3's own guidance names: *reaching for the swatch to colour a value is the most likely way to fail contrast in this system.*
+
+**Geometry: 4px → 6px rail, 2px → 3px terminator.** 18 device pixels tall at @3x, and a terminator of 18×9 — 2.25× C6's nick. The terminator measures 2.13–2.33:1 against the graded fills, under the floor and **accepted**, because it is not what carries the state: `met` is carried by the fill reaching the rail's end and by the label's own word (`PROTEIN LEFT` → `PROTEIN OVER`), while the terminator's real job — marking *where the target is* — happens on the bare rail at 9.74:1. It is better than what shipped besides: C6's terminator sat on `ink-secondary` at 1.66:1.
+
+**What colour does not carry.** The four ink cuts span 4.17–4.56 against one ground, i.e. they are near-isoluminant — to anyone not perceiving hue they are one dark mark, the `readiness-strip.tsx` finding again. Colour here is **reinforcement, never the sole cue**, and nothing was removed to make room for it: the mono figures and their denominators are untouched, the label still flips to OVER, the fill length is still literal, and Home still states the pillar's level in a word.
+
+**Accent budget: the bars now spend none.** Pine leaves this component entirely, which gives the budget back the headroom C6 spent.
+
+#### Verification (FB2)
+
+- `db/nutrition-remaining.test.mjs` §12b — `macroGrade` equals `kcalLevel`/`proteinLevel` on the pillar's own ratio (asserted by *identity*, so retuning `KCAL_BANDS` moves the bars with no edit there); protein over target is `optimal` where the calorie bands say `caution`; +20% carbs reads optimal gaining / good maintaining / caution cutting; all five refusals return `unknown`, with a control case proving they are not vacuous; and the 10:00 case — 15% inked, graded `optimal`, not `poor`.
+- `db/nutrition-remaining.test.mjs` §13 — the table above to 0.005, **plus** the assertion that chose the cut (the swatch fails on this rail), that every graded fill clears 3:1, that the four cuts are near-isoluminant, and the terminator's 2.13–2.33:1.
+- `db/screens-render.test.mjs` §4, §5b, §5c — a fixture in **each band** drawn by a real day (poor/poor/poor/caution at 21:30; caution/optimal/caution/good once the shake lands), the same day ungraded before 10:00, a day with **no targets** drawing four empty neutral rails and no denominators, and the grade → class table asserted from the imported `MACRO_BAR_FILL`. The class cannot be read out of the markup — NativeWind's transform does not run in a server render — so the bar carries its level in a `testID` and the table is asserted beside it; the two together are what "the graded class rendered" means here. Clock frozen by `atClock`, since the grade depends on the hour.
+
+#### What only a device can settle (FB2)
+
+- **Whether four signal-coloured bars answer the complaint** — the whole change is a response to a judgment made at arm's length, and only the same arm can say it worked.
+- **Whether a 6px bar is now a gauge.** C6 argued 6–8px crosses from rule into gauge on a sheet whose layering is borders and the paper triad. The owner overruled the 4px; whether 6px is the landing point or a step toward 8px is a hardware question.
+- **Whether four hues on one grid reads as information or as a dashboard** — CLAUDE.md §5's line. The bars are the same four colours the Home pillars wear, which is the argument for; four of them in one 3-cell row is the argument against.
+- **Whether the terminator still reads at 2.13–2.33:1** against a coloured fill, or whether `met` now rests entirely on the fill's length and the label's word.
+
 ---
 
 ## 12i. AI add food — describe it, and the form fills itself (C2, 2026-09-14, no migration)
