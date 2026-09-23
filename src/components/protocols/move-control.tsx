@@ -12,9 +12,14 @@
  * edits the protocol from a screen about today, and both are worse than not
  * offering it.
  *
- * So this reuses `TIME_PRESETS`, `Chip` and `FormField` — the same six anchors,
- * the same typed field, the same keyboard — and ends in *Move* instead. The
- * reminder stays where it is set, in the per-item editor one tap away.
+ * So this reuses `Chip` and `FormField` — the same typed field, the same
+ * keyboard — and ends in *Move* instead. The reminder stays where it is set, in
+ * the per-item editor one tap away.
+ *
+ * Since 2026-09-21 the six anchor chips are this control's own: `TimeControl`
+ * became an iOS wheel on the owner's note (*"needs a real wheel like a calendar
+ * app"*) and `TIME_PRESETS` moved down here with them. Whether the wheel should
+ * follow into this slot is open, and is argued at the constant below.
  *
  * A form, so **no block** (form (b) of the capture-surface rule): it opens
  * BELOW the verbs plate rather than inside it, because a recessed field on a
@@ -25,8 +30,26 @@ import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { Chip } from '@/components/ui/chip';
-import { FormField, normalizeTime } from './form-controls';
-import { TIME_PRESETS } from './time-control';
+import { normalizeTime } from '@/lib/protocols/clock-time';
+import { FormField } from './form-controls';
+
+/**
+ * Anchor times offered as one tap each.
+ *
+ * Six, three hours apart across the waking day. They are deliberately round and
+ * evenly spaced rather than tuned to any routine: a preset that guessed at the
+ * user's morning would be wrong for most items and would read as advice. They
+ * are a coarse jump to the right part of the day; the field beside them is how
+ * you say 07:45.
+ *
+ * They were `TimeControl`'s until 2026-09-21, when that control became an iOS
+ * wheel and stopped having presets at all. They moved here rather than being
+ * deleted because a MOVE is a different act from an edit: it is one tap from a
+ * mission row, on today only, and a wheel is three gestures where 'push it to
+ * 18:00' is one. Whether this control should take the wheel too is a question
+ * for hardware, not for symmetry.
+ */
+const TIME_PRESETS = ['07:00', '09:00', '12:00', '15:00', '18:00', '21:00'] as const;
 
 export function MoveControl({
   initial,

@@ -127,6 +127,7 @@ import MissionItemScreen from '../app/mission-item.tsx';
 import MissionDayScreen from '../app/mission-day.tsx';
 import ProtocolSettingsScreen from '../app/protocol-settings.tsx';
 import ProtocolItemScreen from '../app/protocol-item.tsx';
+import { ArcTimePicker, isTimeWheelAvailable } from '../src/lib/ui/date-time-picker.ts';
 import { MissionItemRow } from '../src/components/home/mission-item.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
 import HomeScreen from '../app/(tabs)/index.tsx';
@@ -2791,6 +2792,9 @@ const db = getDb();
   ]);
   // …and it gained the one thing the per-item editor cannot express.
   expect('protocol-edit (phased)', editPhased, ['Move phase 2 up', 'Move Creatine down']);
+  // Every item's time control arrives collapsed to the line that states it —
+  // a stack of items must not arrive as a stack of open wheels.
+  refute('protocol-edit (phased)', editPhased, ['aria-label="Item time"', '>At<']);
 
   // The CREATE path keeps identity, because a new protocol has to be named and
   // typed before it can exist.
@@ -3130,8 +3134,32 @@ const db = getDb();
     'Why this is here', // …and the field says whose line it is
   ]);
   // Its two controls open on arrival: this form draws ONE item and has the
-  // room, unlike the full editor where eight would cost thirty-two chips.
-  expect('protocol-item (edit)', itemEdit, ['Every day', 'Reminder', '07:00']);
+  // room, unlike the full editor where eight would cost eight wheels. The
+  // time field only exists while the time control is OPEN, so it is the
+  // proof (the 07:00 preset chip was, until the chips became a wheel).
+  expect('protocol-item (edit)', itemEdit, ['Every day', 'Reminder', 'aria-label="Item time"']);
+
+  // The time control is the iOS wheel since 2026-09-21 — the owner, on the
+  // device checklist: "needs a real wheel like a calendar app". A native view
+  // cannot render under node, and the seam decides that on the PLATFORM
+  // (src/lib/ui/date-time-picker.ts) — so what this screen draws here is the
+  // fallback: C9's typed field inside the field device, holding the STORED
+  // time rather than the wheel's park, with the sentence that says why there
+  // is no wheel. Never a blank. The HH:MM the wheel itself writes is pinned
+  // in db/protocols.test.mjs §14, where no component is needed.
+  isTimeWheelAvailable() === false && ArcTimePicker === null
+    ? ok('the time-wheel seam reports absent off iOS, so the fallback is what renders')
+    : bad('time-wheel seam', 'reported available under node');
+  expect('protocol-item (edit, no wheel)', itemEdit, [
+    '>At<', // the field's caption, label voice
+    'aria-label="Item time"',
+    'value="21:00"', // the stored time, not the 07:00 park
+    'The wheel arrives with the next app build.',
+    'aria-label="Clear the time"', // the clear outlived the chips
+  ]);
+  // The six anchor chips are gone from this control. (They live on in
+  // MoveControl, a mission row's Move to…, which is not on this screen.)
+  refute('protocol-item (edit, no wheel)', itemEdit, ['>09:00<', '>15:00<', '>18:00<']);
 
   const itemAdd = render('protocol-item (add)', ProtocolItemScreen, { id: sheetProtocol });
   expect('protocol-item (add)', itemAdd, ['New item', 'Save as']);
