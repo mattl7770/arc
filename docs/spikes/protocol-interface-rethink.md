@@ -467,7 +467,7 @@ the settings sheet through `reviseProtocol`'s existing branches. Head stays `005
 What is new is computation: the `committing` flag, `projectDays` / `nextOccurrence` / `quotaDoneThisWeek`, `skipCarried` and the widened undo, the snooze store,
 four view-model fields, the hub's today-count. Three things that could tempt a migration and are not proposed: a per-item paused bit (a cadence change or a
 removal, in versioned content a restore brings back); an item order column (order is array order in the version); a stored next occurrence (derived; storing it is
-how it goes stale). No new native module; the date field stays typed for the reason C9's time control is not a wheel (`backlog:45`).
+how it goes stale). No new native module; the date field stays typed for the reason C9's time control is not a wheel (`backlog:45`). *(2026-09-23: that reason was overruled from the device — the time control is now the native iOS wheel; the date field is the obvious next candidate for the same picker.)*
 
 ---
 
