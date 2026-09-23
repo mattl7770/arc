@@ -6,7 +6,6 @@ import { CadenceControl } from '@/components/protocols/cadence-control';
 import { Chip } from '@/components/ui/chip';
 import {
   FormField,
-  normalizeTime,
   ProblemLine,
   SaveButton,
   SaveFootnote,
@@ -21,6 +20,7 @@ import { newId } from '@/lib/db/id';
 import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import { addVersion, getCurrentVersion } from '@/lib/db/repositories/protocols';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
+import { normalizeTime } from '@/lib/protocols/clock-time';
 import { DAILY, parseProtocolContent, validateContent } from '@/lib/protocols/content';
 import { applyItemToContent, itemChangeNote, phaseOfItem } from '@/lib/protocols/item-edit';
 import type { Cadence, ProtocolItem } from '@/lib/protocols/types';

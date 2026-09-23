@@ -31,6 +31,34 @@ permanent skip.
 Tests live where §3.5 said they would: `db/mission-generate.test.mjs` §§15–21
 and `db/data-trends.test.mjs` §14g.
 
+### C9, which shipped in the same batch — and what replaced it (2026-09-21)
+
+The item **time selector** (C9) went out with this migration, as six anchor
+chips (07:00 … 21:00) plus the app's typed `HH:MM` field — *"deliberately not a
+native wheel"* (`docs/backlog-2026-09.md` C9). The owner's first round on
+hardware overruled that, on his device checklist (2026-09-21):
+
+> *"needs a real wheel like a calendar app"*
+
+So the chips and the field are gone from both editors (`/protocol-edit` and
+`/protocol-item`, which share `TimeControl`) and the iOS spinner from
+`@react-native-community/datetimepicker` 9.1.0 draws in their place:
+`mode="time"`, 5-minute steps, 12- or 24-hour as the phone is set. Nothing this
+document designed moves. `scheduled_time` is still `HH:MM` text, the reminder
+scheduler still compares two of them as strings, and *Clear* still turns the
+reminder off. The `Date` the wheel speaks exists for one render and is converted
+on both sides by `src/lib/protocols/clock-time.ts`, whose round trip is pinned in
+`db/protocols.test.mjs` §14.
+
+The picker is a native module behind a guarded seam
+(`src/lib/ui/date-time-picker.ts`). Where it cannot load — the web logic-check
+preview, the headless render suite, a dev client built before it — C9's typed
+field draws instead, with a line saying the wheel needs the next build. ARC has
+no OTA, so the phone keeps its chips until the next **EAS build**, which is the
+only thing that can show the wheel at all. A mission row's *Move to…*
+(`MoveControl`) keeps the six chips for now; whether the wheel should follow it
+there is a question for hardware.
+
 ---
 
 ## 1. Current state

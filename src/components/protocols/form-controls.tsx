@@ -1,6 +1,6 @@
 /**
- * The recessed field the protocol forms are built from, plus the two parsers
- * they share. The neutral Chip moved to src/components/ui/chip.tsx on
+ * The recessed field the protocol forms are built from, plus the day-length
+ * parser they share. The neutral Chip moved to src/components/ui/chip.tsx on
  * 2026-09-19, when the Coach’s status rail became a caller from outside these
  * forms; the three controls here import it back.
  *
@@ -20,15 +20,14 @@ import { Pressable, Text, TextInput, type TextInputProps } from 'react-native';
 import { keypadDoneKey } from '@/components/ui/keyboard';
 import { palette } from '@/constants/theme';
 
-/** "8:05" / "08:05" → "08:05"; null if it isn't a real clock time. */
-export function normalizeTime(text: string): string | null {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
-  if (!m) return null;
-  const hours = Number(m[1]);
-  const minutes = Number(m[2]);
-  if (hours > 23 || minutes > 59) return null;
-  return `${String(hours).padStart(2, '0')}:${m[2]}`;
-}
+/*
+ * `normalizeTime` moved to src/lib/protocols/clock-time.ts on 2026-09-21, when
+ * the time control became an iOS wheel. It is one half of the `HH:MM` write
+ * contract the wheel has to honour, and a parser sitting in a component file
+ * cannot be tested by a suite that never loads a component. Import it from
+ * there; it is NOT re-exported here, because two import paths to one symbol is
+ * how the app grows two ideas of what a clock time is.
+ */
 
 /** A whole number of days ≥ 1, or null for "not a length". */
 export function parseDays(text: string): number | null {

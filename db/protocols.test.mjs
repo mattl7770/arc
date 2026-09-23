@@ -27,11 +27,20 @@ import {
 } from '../src/lib/db/repositories/protocols.ts';
 import { cadenceText, parseCadenceText } from '../src/lib/protocols/cadence.ts';
 import {
+  MINUTE_STEP,
+  NO_TIME,
+  PARKED_TIME,
+  dateToTime,
+  normalizeTime,
+  timeToDate,
+} from '../src/lib/protocols/clock-time.ts';
+import {
   allItems,
   emptyContent,
   legacyItemId,
   normalizeCadence,
   normalizeContent,
+  normalizeItem,
   parseProtocolContent,
   validateContent,
 } from '../src/lib/protocols/content.ts';
@@ -1027,6 +1036,131 @@ console.log('13. listVersions: newest first, item counts, honest nulls');
   listVersions(db, solo).length === 1 && listVersions(db, many).length === 3
     ? ok('each protocol sees only its own versions')
     : bad('scoping');
+}
+
+console.log('14. the time wheel’s write contract — HH:MM in, HH:MM out');
+{
+  // The owner, 2026-09-21: "needs a real wheel like a calendar app". The iOS
+  // wheel speaks Date; scheduled_time is HH:MM text and the reminder scheduler
+  // compares two of them as strings. src/lib/protocols/clock-time.ts converts on
+  // both sides, and THIS is where that conversion is held — the wheel is a
+  // native view and cannot render under node (the render suite asserts the
+  // fallback instead).
+  const hhmm = (t) =>
+    `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+  const at = (h, m, s = 0) => new Date(2000, 0, 1, h, m, s, 0);
+  const clockOf = (d) => hhmm(d.getHours() * 60 + d.getMinutes());
+
+  // The parser moved from form-controls.tsx; its behaviour did not change.
+  normalizeTime('8:05') === '08:05' &&
+  normalizeTime(' 21:30 ') === '21:30' &&
+  normalizeTime('24:00') === null &&
+  normalizeTime('07:60') === null &&
+  normalizeTime('7.30') === null &&
+  normalizeTime('') === null
+    ? ok('normalizeTime is unchanged by the move into clock-time.ts')
+    : bad('normalizeTime');
+
+  // The step is one constant: the picker's minuteInterval and the snap read it.
+  MINUTE_STEP === 5 ? ok('the wheel steps in 5 minutes, spelled once') : bad('MINUTE_STEP');
+
+  // HH:MM -> Date: the stored wall-clock time, exactly.
+  const opened = timeToDate('21:35');
+  opened.getHours() === 21 &&
+  opened.getMinutes() === 35 &&
+  opened.getSeconds() === 0 &&
+  opened.getMilliseconds() === 0
+    ? ok('timeToDate opens the wheel on the stored time, to the minute')
+    : bad('timeToDate', opened.toString());
+  // An off-grid stored value is NOT snapped on read — opening the editor must
+  // never retime an item the owner did not touch.
+  timeToDate('07:37').getMinutes() === 37
+    ? ok('an off-grid stored minute is passed through, not rewritten on open')
+    : bad('read snapped', timeToDate('07:37').toString());
+  // Pure: the same input is the same instant, so the native view is not handed
+  // a fresh value on every render.
+  timeToDate('09:10').getTime() === timeToDate('09:10').getTime()
+    ? ok('timeToDate is pure — same string, same instant')
+    : bad('timeToDate impure');
+  // No time parks the wheel; the park is not a value.
+  clockOf(timeToDate(NO_TIME)) === PARKED_TIME && clockOf(timeToDate('not a time')) === PARKED_TIME
+    ? ok(`an untimed item parks the wheel at ${PARKED_TIME}`)
+    : bad('park', clockOf(timeToDate(NO_TIME)));
+
+  // Date -> HH:MM, snapped to the step, never outside the day.
+  dateToTime(at(7, 35)) === '07:35' &&
+  dateToTime(at(7, 37)) === '07:35' &&
+  dateToTime(at(7, 38)) === '07:40' &&
+  dateToTime(at(0, 0)) === '00:00' &&
+  dateToTime(at(12, 2)) === '12:00' &&
+  dateToTime(at(9, 45, 59)) === '09:45'
+    ? ok('dateToTime snaps to the nearest 5 minutes and ignores seconds')
+    : bad(
+        'snap',
+        [at(7, 37), at(7, 38), at(12, 2), at(9, 45, 59)].map((d) => dateToTime(d)).join(' ')
+      );
+  dateToTime(at(23, 58)) === '00:00' && dateToTime(at(23, 57)) === '23:55'
+    ? ok('23:58 wraps to 00:00 — never the impossible 24:00')
+    : bad('midnight wrap', `${dateToTime(at(23, 58))} ${dateToTime(at(23, 57))}`);
+  dateToTime(at(7, 37), 1) === '07:37'
+    ? ok('a step of 1 is no snap at all')
+    : bad('step 1', dateToTime(at(7, 37), 1));
+  dateToTime(new Date(Number.NaN)) === null
+    ? ok('an invalid Date is null — the caller writes NOTHING, not "NaN:NaN" or a guess')
+    : bad('invalid date', dateToTime(new Date(Number.NaN)));
+
+  // The round trip, over the whole day, in several zones. The Date is pinned to
+  // 2000-01-01 because that day has no DST transition in any zone — a local
+  // time that does not exist would come back an hour off. Every on-grid minute
+  // must survive at MINUTE_STEP, and every minute at all at step 1.
+  const zones = [
+    process.env.TZ, // whatever this machine is
+    'America/New_York',
+    'Europe/London',
+    'Australia/Lord_Howe', // a 30-minute DST shift
+    'America/Sao_Paulo', // southern-hemisphere summer time in 2000
+    'Asia/Kolkata', // a half-hour offset
+    'Pacific/Chatham', // a 45-minute offset
+  ];
+  const tzBefore = process.env.TZ;
+  const broken = [];
+  for (const zone of zones) {
+    if (zone === undefined) delete process.env.TZ;
+    else process.env.TZ = zone;
+    for (let t = 0; t < 24 * 60; t++) {
+      const time = hhmm(t);
+      if (t % MINUTE_STEP === 0 && dateToTime(timeToDate(time)) !== time) {
+        broken.push(`${zone ?? 'local'} ${time}`);
+      }
+      if (dateToTime(timeToDate(time), 1) !== time) broken.push(`${zone ?? 'local'} ${time} (1)`);
+    }
+  }
+  if (tzBefore === undefined) delete process.env.TZ;
+  else process.env.TZ = tzBefore;
+  broken.length === 0
+    ? ok('HH:MM -> Date -> HH:MM is the identity for all 1,440 minutes, in 7 zones')
+    : bad('round trip', broken.slice(0, 5).join(', '));
+
+  // What the wheel writes is what the storage boundary keeps, and what the
+  // scheduler can compare. normalizeItem is where scheduled_time is decided.
+  const everyOutput = [];
+  for (let t = 0; t < 24 * 60; t++) everyOutput.push(dateToTime(at(Math.floor(t / 60), t % 60)));
+  everyOutput.every((out) => {
+    const kept = normalizeItem({ id: 'w', title: 'Wheel', scheduled_time: out, remind: true });
+    return /^\d{2}:\d{2}$/.test(out) && kept.scheduled_time === out && kept.remind === true;
+  })
+    ? ok('every value the wheel can write survives normalizeItem untouched, reminder intact')
+    : bad('storage boundary');
+
+  // The clear. A wheel has no empty state, so "no time" is the Clear chip's to
+  // say — and it must land as no time AND no reminder.
+  const cleared = normalizeItem({ id: 'w', title: 'Wheel', scheduled_time: NO_TIME, remind: true });
+  NO_TIME === '' &&
+  normalizeTime(NO_TIME) === null &&
+  cleared.scheduled_time === null &&
+  cleared.remind === false
+    ? ok('the clear writes no time, and no time forces the reminder off at storage')
+    : bad('clear', JSON.stringify(cleared));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

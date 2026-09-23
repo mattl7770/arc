@@ -7,7 +7,6 @@ import { CadenceControl } from '@/components/protocols/cadence-control';
 import { Chip } from '@/components/ui/chip';
 import {
   FormField,
-  normalizeTime,
   parseDays,
   ProblemLine,
   SaveButton,
@@ -22,6 +21,7 @@ import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { newId } from '@/lib/db/id';
 import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
+import { normalizeTime } from '@/lib/protocols/clock-time';
 import {
   addVersion,
   createProtocolWithVersion,
