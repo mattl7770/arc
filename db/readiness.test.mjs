@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
+import { recentSourceDevices, upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 import { getGoalDirection, setGoalDirection } from '../src/lib/db/repositories/user.ts';
 import {
   deriveReadiness,
@@ -26,6 +26,10 @@ import {
 import {
   appleHealthLogKey,
   blankSyncFailedAt,
+  garminNeverSends,
+  GARMIN_NEVER_SENDS,
+  ledgerEmptyNote,
+  metricCellPress,
   metricSyncCell,
   noneFromAppleHealth,
   NO_READING,
@@ -957,6 +961,7 @@ console.log('\nA blank metric is one tap from an Apple Health sync (2026-09-23)'
       ['sleep', 30],
       ['steps', 14],
     ]),
+    sources: ['apple_health', 'apple_watch'],
     today: TODAY,
     ...over,
   });
@@ -1014,26 +1019,143 @@ console.log('\nA blank metric is one tap from an Apple Health sync (2026-09-23)'
     kind: 'syncing',
   });
 
-  // ── Sync ran and there is still none: say so, stop offering ──
+  // ── Sync ran and there is still none: say so, and keep the tap ──
+  // The brief: say so plainly "instead of offering the same button forever".
+  // The owner: a sync button on exactly this cell. Both hold — the statement is
+  // the note, and the verb changes to "Sync again" (metrics-strip.tsx).
   const noHrv = logWith([
     ['hrv', 0],
     ['rhr', 14],
   ]);
   eq(
-    'Apple Health returned no HRV at all on the last pass: a statement, not a button',
+    'Apple Health returned no HRV at all on the last pass: the statement, not the first offer',
     metricSyncCell(hrvBlank, ctx({ log: noHrv })),
     { kind: 'none', note: 'Apple Health sent none in 14 days' }
   );
   eq(
-    '…which holds while a foreground pass runs, rather than flickering to Syncing',
+    '…and it is still one tap from a sync (a read grant fixed in iOS Settings needs exactly that)',
+    metricCellPress(metricSyncCell(hrvBlank, ctx({ log: noHrv }))),
+    'sync'
+  );
+  eq(
+    '…and a running pass shows Syncing there too — a tap on it must show that it is working',
     metricSyncCell(hrvBlank, ctx({ log: noHrv, running: true })),
-    { kind: 'none', note: 'Apple Health sent none in 14 days' }
+    { kind: 'syncing' }
   );
   eq(
     '…and speaks for its own metric only — RHR in the same log is still offered',
     metricSyncCell({ id: 'rhr', value: NO_READING }, ctx({ log: noHrv })).kind,
     'offer'
   );
+
+  // ── The cause, when it is known: a Garmin never sends HRV ──
+  // coverage.ts pins HRV, blood oxygen, respiratory rate and VO₂max as types a
+  // Garmin never writes to Apple Health. With a Garmin among the recent sources,
+  // that is the reason the cell is blank, and the cell says it.
+  const garmin = ['apple_health', 'garmin'];
+  eq(
+    'a Garmin among the sources and HRV sent none: the cell names the cause',
+    metricSyncCell(hrvBlank, ctx({ log: noHrv, sources: garmin })),
+    { kind: 'none', note: GARMIN_NEVER_SENDS }
+  );
+  eq('…in these words', GARMIN_NEVER_SENDS, 'Garmin never sends this to Apple Health');
+  eq(
+    '…but only for a metric the audit pins as a Garmin "no" — resting HR sent none is not blamed on it',
+    noneFromAppleHealth(logWith([['rhr', 0]]), 'rhr', garmin),
+    'Apple Health sent none in 14 days'
+  );
+  eq(
+    '…and only with a Garmin actually among the sources',
+    noneFromAppleHealth(noHrv, 'hrv', ['apple_health', 'oura']),
+    'Apple Health sent none in 14 days'
+  );
+  eq(
+    '…and never without the log’s evidence: a Garmin does not make an errored read "none"',
+    noneFromAppleHealth(logWith([['hrv', 0, 'predicate not supported']]), 'hrv', garmin),
+    null
+  );
+  eq(
+    'the audit’s Garmin "no" list, through the metric names ARC uses',
+    ['hrv', 'spo2_pct', 'respiratory_rate', 'vo2max', 'rhr', 'steps', 'sleep', 'body_temp_c', 'sleep_deep_min'].map(
+      garminNeverSends
+    ),
+    [true, true, true, true, false, false, false, false, false]
+  );
+
+  // ── Where a tap goes ──
+  eq(
+    'the Connect door opens Settings; the offer and Sync again run a pass; nothing else takes a tap',
+    [
+      metricCellPress({ kind: 'connect' }),
+      metricCellPress({ kind: 'offer', note: 'x' }),
+      metricCellPress({ kind: 'none', note: 'x' }),
+      metricCellPress({ kind: 'syncing' }),
+      metricCellPress({ kind: 'blank' }),
+      metricCellPress({ kind: 'reading' }),
+    ],
+    ['settings', 'sync', 'sync', null, null, null]
+  );
+
+  // ── Data › Wearables takes the statement, and only while sync is on ──
+  const row = (over = {}) => ({
+    supported: true,
+    enabled: true,
+    empty: true,
+    log: noHrv,
+    metric: 'hrv',
+    sources: [],
+    ...over,
+  });
+  eq(
+    'an empty ledger row with sync on and the log saying none: the statement replaces "No data yet"',
+    ledgerEmptyNote(row()),
+    'Apple Health sent none in 14 days'
+  );
+  eq('…with the cause when a Garmin is the source', ledgerEmptyNote(row({ sources: garmin })), GARMIN_NEVER_SENDS);
+  eq(
+    'sync switched off, module absent, or a row with data: no statement (the ledger keeps "No data yet")',
+    [
+      ledgerEmptyNote(row({ enabled: false })),
+      ledgerEmptyNote(row({ supported: false })),
+      ledgerEmptyNote(row({ empty: false })),
+    ],
+    [null, null, null]
+  );
+  eq(
+    'a ledger stage row gets no statement — the one sleep count cannot speak for it',
+    ledgerEmptyNote(row({ metric: 'sleep_deep_min', log: logWith([['sleep', 0]]) })),
+    null
+  );
+
+  // ── The sources the cause is read from ──
+  {
+    const sdb = freshDb();
+    const put = (date, metricType, sourceDevice) =>
+      upsertWearableRows(sdb, [
+        {
+          date,
+          metricType,
+          value: 1,
+          unit: 'x',
+          sourceDevice,
+          sourceRawId: `hk:${metricType}:${date}:${sourceDevice}`,
+          startTime: null,
+          endTime: null,
+          metadata: {},
+        },
+      ]);
+    put(TODAY, 'rhr', 'garmin');
+    put(daysAgo(3), 'steps', 'apple_health');
+    put(daysAgo(3), 'sleep_duration_min', 'garmin');
+    put(daysAgo(20), 'hrv', 'oura'); // outside a 14-day window
+    put('2026-07-30', 'hrv', 'whoop'); // after today — not "recent"
+    eq(
+      'recentSourceDevices: every source in the window, once each, sorted — nothing older or later',
+      recentSourceDevices(sdb, TODAY, 14),
+      ['apple_health', 'garmin']
+    );
+    eq('…and an empty table is an empty list', recentSourceDevices(freshDb(), TODAY, 14), []);
+  }
   eq(
     'the window is the pass’s own (a first sync reads 90)',
     noneFromAppleHealth(logWith([['hrv', 0]], 90), 'hrv'),
@@ -1135,6 +1257,27 @@ console.log('\nA blank metric is one tap from an Apple Health sync (2026-09-23)'
     ? ok('…the failure time is recorded once, and the cell is told')
     : bad('failure not recorded', `${blankSyncFailedAt()} / heard ${heard}`);
   stop();
+
+  // A subscriber that throws while being told must not turn the tap into a throw.
+  const stopThrower = subscribeBlankSyncFailure(() => {
+    throw new Error('database is locked');
+  });
+  let escaped = false;
+  let told = null;
+  try {
+    told = await syncFromBlank(db, {
+      run: async () => {
+        throw new Error('HealthKit query refused');
+      },
+      now: () => at,
+    });
+  } catch {
+    escaped = true;
+  }
+  !escaped && told === 'failed'
+    ? ok('…and a failure listener that throws still leaves the tap resolving "failed"')
+    : bad('a throwing listener escaped the tap', String(told));
+  stopThrower();
 
   // The real default runner, end to end in node: sync is off in a fresh
   // database, so the tracked pass returns `disabled` and the tap is "skipped".

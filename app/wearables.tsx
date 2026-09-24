@@ -72,11 +72,12 @@ function reportingNote(rows: WearableMetricRow[]): string {
 }
 
 function MetricRow({ row, first }: { row: WearableMetricRow; first: boolean }) {
-  // "Apple Health sent none in 14 days" when the last pass says so, rather than
-  // a "No data yet" that implies something is on its way (2026-09-23 — the same
-  // words, from the same function, as Home's metrics strip). The ledger gets the
-  // statement and NOT the sync control: an empty row here means NEVER, and the
-  // pass that could answer that has already run and answered it.
+  // "Garmin never sends this to Apple Health" / "Apple Health sent none in 14
+  // days" when the last pass says so, rather than a "No data yet" that implies
+  // something is on its way (2026-09-23 — the same words, from the same
+  // function, as Home's metrics strip). The ledger gets the statement and NOT
+  // the sync control: an empty row here means NEVER, and the pass that could
+  // answer that has already run and answered it. Home is where the tap lives.
   const emptyText = row.emptyNote ?? 'No data yet';
   return (
     <View>

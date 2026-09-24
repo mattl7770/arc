@@ -6,6 +6,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { useMetricSync } from '@/hooks/use-metric-sync';
 import {
+  metricCellPress,
   metricSyncCell,
   NO_READING,
   type MetricSyncCell,
@@ -88,8 +89,14 @@ import { signalConditionLabel, signalConditionSpoken, signalTextClass } from './
  * becomes the control, decided per cell by src/lib/home/metric-sync.ts (every
  * case, and why, is written there). The control REPLACES the em-dash in the
  * value slot and the detail line beneath it says what the last pass found, so
- * nothing is added around the grid and a cell is the same height in every
- * state — the action row is held to the value line's 28pt.
+ * nothing is added around the grid and the action row is held to the value
+ * line's 28pt, so a pass starting or landing does not move the grid.
+ *
+ * When the last pass found none of a metric, the line beneath says so — and
+ * why, when the cause is known ("Garmin never sends this to Apple Health") —
+ * and the verb reads "Sync again". The cell stays a control because the owner
+ * asked for the button on exactly that cell, and a declined read grant fixed in
+ * iOS Settings is one tap from filling it.
  *
  * **No accent.** Home's accent budget is the hero, the completion stamps and
  * the active tab (app/(tabs)/index.tsx), and 00-design-spec.md allows one
@@ -116,16 +123,11 @@ function gradedLevel(metric: Metric): SignalLevel | null {
  * reading is missing the detail is dropped: every missing metric's detail is
  * "No data yet", and "no data. No data yet." is not worth a listener's time.
  */
-function metricSpoken(metric: Metric, note: string | null): string {
+function metricSpoken(metric: Metric): string {
+  if (metric.value === NO_READING) return `${metric.label}, no data.`;
+
   const level = gradedLevel(metric);
   const condition = level ? `, ${signalConditionSpoken(level)}` : '';
-
-  // A blank that has been explained ("Apple Health sent none in 14 days") says
-  // the explanation; one that has not says only that there is nothing.
-  if (metric.value === NO_READING) {
-    return note ? `${metric.label}, no data. ${note}.` : `${metric.label}, no data.`;
-  }
-
   const detail = metric.detail ? `. ${metric.detail}` : '';
   return `${metric.label}, ${metric.value}${condition}${detail}.`;
 }
@@ -149,13 +151,12 @@ function CellLabel({ label, level }: { label: string; level: SignalLevel | null 
   );
 }
 
-/** A reading, a plain blank, or a blank with its explanation beneath it. */
-function ReadingCell({ metric, note }: { metric: Metric; note: string | null }) {
+/** A reading, or the plain blank. */
+function ReadingCell({ metric }: { metric: Metric }) {
   const level = gradedLevel(metric);
-  const detail = note ?? metric.detail;
 
   return (
-    <View accessible accessibilityRole="text" accessibilityLabel={metricSpoken(metric, note)}>
+    <View accessible accessibilityRole="text" accessibilityLabel={metricSpoken(metric)}>
       <CellLabel label={metric.label} level={level} />
 
       <Text
@@ -165,18 +166,28 @@ function ReadingCell({ metric, note }: { metric: Metric; note: string | null }) 
         {metric.value}
       </Text>
 
-      {detail ? <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{detail}</Text> : null}
+      {metric.detail ? (
+        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{metric.detail}</Text>
+      ) : null}
     </View>
   );
 }
 
-type ActionCell = Extract<MetricSyncCell, { kind: 'offer' | 'syncing' | 'connect' }>;
+type ActionCell = Extract<MetricSyncCell, { kind: 'offer' | 'none' | 'syncing' | 'connect' }>;
+
+function isActionCell(cell: MetricSyncCell): cell is ActionCell {
+  return (
+    cell.kind === 'offer' || cell.kind === 'none' || cell.kind === 'syncing' || cell.kind === 'connect'
+  );
+}
 
 /** What the action row says, and what the line under it says. */
 function actionCopy(cell: ActionCell): { verb: string; note: string } {
   switch (cell.kind) {
     case 'offer':
       return { verb: 'Sync Apple Health', note: cell.note };
+    case 'none':
+      return { verb: 'Sync again', note: cell.note };
     case 'syncing':
       return { verb: 'Syncing', note: 'reading Apple Health' };
     case 'connect':
@@ -192,13 +203,12 @@ function actionCopy(cell: ActionCell): { verb: string; note: string } {
 function ActionCellView({
   metric,
   cell,
-  onSync,
-  onOpenSettings,
+  onPress,
 }: {
   metric: Metric;
   cell: ActionCell;
-  onSync: () => void;
-  onOpenSettings: () => void;
+  /** Undefined while syncing — the cell is disabled and takes no tap. */
+  onPress: (() => void) | undefined;
 }) {
   const { verb, note } = actionCopy(cell);
   const syncing = cell.kind === 'syncing';
@@ -208,15 +218,15 @@ function ActionCellView({
       accessibilityRole="button"
       accessibilityLabel={`${metric.label}, no reading today, ${note}. ${verb}.`}
       accessibilityState={{ disabled: syncing, busy: syncing }}
-      disabled={syncing}
-      onPress={cell.kind === 'connect' ? onOpenSettings : onSync}
+      disabled={syncing || onPress === undefined}
+      onPress={onPress}
       className="active:opacity-60">
       <CellLabel label={metric.label} level={null} />
 
       <View className="mt-1 h-7 flex-row items-center gap-1.5">
         {syncing ? (
           <ActivityIndicator size="small" color={palette.inkMuted} />
-        ) : cell.kind === 'offer' ? (
+        ) : cell.kind === 'offer' || cell.kind === 'none' ? (
           <Ionicons name="sync-outline" size={14} color={palette.ink} />
         ) : null}
         <Text
@@ -272,18 +282,21 @@ export function MetricsGrid({
         <View className="mt-2 flex-row flex-wrap">
           {metrics.map((metric, index) => {
             const cell = metricSyncCell(metric, context);
+            // Where the tap goes is decided in metric-sync.ts and pinned there.
+            const press = metricCellPress(cell);
 
             return (
               <GridCell key={metric.id} index={index} count={metrics.length}>
-                {cell.kind === 'offer' || cell.kind === 'syncing' || cell.kind === 'connect' ? (
+                {isActionCell(cell) ? (
                   <ActionCellView
                     metric={metric}
                     cell={cell}
-                    onSync={onSync}
-                    onOpenSettings={onOpenSettings}
+                    onPress={
+                      press === 'settings' ? onOpenSettings : press === 'sync' ? onSync : undefined
+                    }
                   />
                 ) : (
-                  <ReadingCell metric={metric} note={cell.kind === 'none' ? cell.note : null} />
+                  <ReadingCell metric={metric} />
                 )}
               </GridCell>
             );

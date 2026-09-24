@@ -459,6 +459,24 @@ export function latestMetric(db: Database, metricType: string): DailyMetricPoint
   };
 }
 
+/**
+ * Every source that wrote any row, of any metric, in the trailing `days`
+ * window — sorted, no repeats. The evidence behind naming WHY a metric never
+ * arrives: a Garmin that sent sleep this fortnight is the reason there is no
+ * HRV (src/lib/home/metric-sync.ts). `apple_health` (merged statistics) and
+ * `manual` are sources like any other and come back as such.
+ */
+export function recentSourceDevices(db: Database, today: string, days: number): WearableDevice[] {
+  return db
+    .all<{ source_device: WearableDevice }>(
+      `SELECT DISTINCT source_device FROM wearable_data
+       WHERE date <= ? AND date > date(?, '-' || ? || ' days')
+       ORDER BY source_device`,
+      [today, today, days]
+    )
+    .map((row) => row.source_device);
+}
+
 /** A recent ingested workout, for the Data-tab history list. */
 export type WearableWorkout = {
   date: string;

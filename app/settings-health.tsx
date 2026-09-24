@@ -31,7 +31,7 @@ import {
   HEALTH_READ_IDENTIFIERS,
   unaskedReadScopes,
 } from '@/lib/health/mapping';
-import { FIRST_SYNC_DAYS, startHealthSync, startOrJoinHealthSync } from '@/lib/health/sync';
+import { FIRST_SYNC_DAYS, requestFreshHealthSync, startHealthSync } from '@/lib/health/sync';
 
 /**
  * Settings › Apple Health — the wearables hub toggle (docs/wearables-subapp.md §7).
@@ -276,11 +276,13 @@ export default function SettingsHealthScreen() {
     if (busy) return;
     setBusy('syncing');
     try {
-      // Joins a pass already running (the foreground sync, or a blank cell on
-      // Home) instead of starting a second. The three setup flows above use
-      // `startHealthSync` and never join: their pass has to read AFTER the
-      // permission sheet they have just shown.
-      const result = await startOrJoinHealthSync(getDb());
+      // A pass that reads from THIS tap on: never a second one beside a pass
+      // already running (the foreground sync, or a blank cell on Home), and
+      // never that pass either, which may have started before whatever the user
+      // just pushed into Apple Health — it queues one follow-up behind it. The
+      // three setup flows above use `startHealthSync`: their pass has to read
+      // AFTER the permission sheet they have just shown, some with a wider window.
+      const result = await requestFreshHealthSync(getDb());
       if (result.status === 'synced') {
         setLastRows(result.rowsWritten);
         setLastPublished(result.samplesPublished);

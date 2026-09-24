@@ -65,7 +65,9 @@ import {
 import { publishBodyMetrics, PUBLISH_BATCH_ROWS } from '../src/lib/health/publish.ts';
 import {
   clampRowsToWindow,
+  foregroundTracker,
   isHealthSyncRunning,
+  requestFreshHealthSync,
   startHealthSync,
   startOrJoinHealthSync,
   subscribeHealthSyncRunning,
@@ -2319,17 +2321,20 @@ console.log('\nOne pass at a time — the gate behind Home’s blank-cell sync (
 {
   // In node the pass itself returns `disabled` (sync is off in a fresh
   // database), which is exactly enough: what is under test is the GATE — who
-  // joins, who starts, and when the running flag clears — not the pass.
+  // joins, who waits, who starts, and when the running flag clears — not the
+  // pass. Every running event is one start or one settle, so the count says
+  // how many passes actually ran.
   const { db } = freshDb();
   let events = 0;
   const stop = subscribeHealthSyncRunning(() => events++);
 
   isHealthSyncRunning() === false ? ok('nothing is running at rest') : bad('running at rest');
 
+  // ── Join: the boot pass, and a return that never left the app ──
   const first = startOrJoinHealthSync(db);
   const second = startOrJoinHealthSync(db);
   first === second
-    ? ok('a second caller JOINS the running pass rather than starting another')
+    ? ok('startOrJoin: a second caller JOINS the running pass rather than starting another')
     : bad('two passes were started');
   isHealthSyncRunning() && events === 1
     ? ok('…the pass is visible while it runs, and its start was announced once')
@@ -2349,19 +2354,72 @@ console.log('\nOne pass at a time — the gate behind Home’s blank-cell sync (
     : bad('a settled pass was re-joined');
   await third;
 
-  // The setup flows never join: their pass must read after the permission sheet.
+  // ── Fresh: a tap, Sync now, a return from another app ──
+  // The case the review found: a pass that began BEFORE the user went to Garmin
+  // Connect cannot see what they pushed there. A fresh ask never joins it; it
+  // queues one follow-up behind it, and later fresh asks share that follow-up.
+  events = 0;
+  const running = requestFreshHealthSync(db);
+  isHealthSyncRunning() && events === 1
+    ? ok('fresh, nothing running: a pass starts at once')
+    : bad('fresh did not start', `${isHealthSyncRunning()} / ${events}`);
+  const tapped = requestFreshHealthSync(db);
+  tapped !== running
+    ? ok('fresh, a pass already running: it is NOT joined — it started before the ask')
+    : bad('a fresh ask joined a pass that predates it');
+  requestFreshHealthSync(db) === tapped
+    ? ok('…a second fresh ask shares the queued follow-up — never more than one waits')
+    : bad('a second follow-up was queued');
+  startOrJoinHealthSync(db) === tapped
+    ? ok('…and a joiner joins the newest, which is the follow-up')
+    : bad('a joiner took the stale pass');
+  events === 1
+    ? ok('…queuing started nothing yet')
+    : bad('the follow-up started early', String(events));
+
+  await running;
+  isHealthSyncRunning()
+    ? ok('between the first pass settling and the follow-up starting, the flag stays up (no flicker to the offer)')
+    : bad('the flag dropped in the gap');
+  const followed = await tapped;
+  followed.status === 'disabled' && !isHealthSyncRunning() && events === 4
+    ? ok('the follow-up ran after the first — two passes for three asks, never side by side')
+    : bad('follow-up', `${followed.status} / ${isHealthSyncRunning()} / events ${events}`);
+
+  // ── Setup flows: a pass of their own ──
   const ordinary = startOrJoinHealthSync(db);
   const setup = startHealthSync(db, new Date(), { windowDays: 90 });
   setup !== ordinary
     ? ok('startHealthSync never joins — a setup flow’s pass is its own')
     : bad('setup flow joined a pass that predates its grant');
   startOrJoinHealthSync(db) === setup
-    ? ok('…and a later caller joins the NEWEST running pass')
+    ? ok('…and a later joiner joins the NEWEST running pass')
     : bad('joined the wrong pass');
-  await Promise.all([ordinary, setup]);
+  const afterSetup = requestFreshHealthSync(db);
+  afterSetup !== setup && afterSetup !== ordinary
+    ? ok('…while a fresh ask queues behind it')
+    : bad('a fresh ask joined a running setup pass');
+  await Promise.all([ordinary, setup, afterSetup]);
   !isHealthSyncRunning()
-    ? ok('two overlapping passes both clear when they settle')
+    ? ok('overlapping passes and a follow-up all clear when they settle')
     : bad('a settled pass stayed listed');
+
+  // ── A subscriber that throws cannot jam the gate ──
+  const stopThrower = subscribeHealthSyncRunning(() => {
+    throw new Error('database is locked');
+  });
+  let escaped = false;
+  let jammed = null;
+  try {
+    jammed = startOrJoinHealthSync(db);
+  } catch {
+    escaped = true;
+  }
+  if (jammed) await jammed;
+  !escaped && !isHealthSyncRunning()
+    ? ok('a running-listener that throws neither escapes the start nor strands the pass as running')
+    : bad('the gate jammed', `${escaped} / ${isHealthSyncRunning()}`);
+  stopThrower();
 
   // A pass that THROWS must clear too, or every blank cell would say Syncing
   // until the app restarted.
@@ -2381,7 +2439,7 @@ console.log('\nOne pass at a time — the gate behind Home’s blank-cell sync (
   };
   let rejected = false;
   try {
-    await startOrJoinHealthSync(broken);
+    await requestFreshHealthSync(broken);
   } catch {
     rejected = true;
   }
@@ -2390,23 +2448,55 @@ console.log('\nOne pass at a time — the gate behind Home’s blank-cell sync (
     : bad('a thrown pass left the flag set', `${rejected} / ${isHealthSyncRunning()}`);
   stop();
 
-  // The foreground hook goes through the gate. Under node it returns before
-  // reaching the pass (no HealthKit), so this is asserted on the source — the
-  // same way db/timezone.test.mjs pins the pass's own ordering.
+  // ── The foreground hook: fresh only after a trip to the background ──
+  const walk = (states) => {
+    const next = foregroundTracker();
+    return states.map(next).filter((t) => t !== null);
+  };
+  const eqJ = (name, actual, expected) =>
+    JSON.stringify(actual) === JSON.stringify(expected)
+      ? ok(name)
+      : bad(name, `${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);
+  eqJ(
+    'foreground: Face ID or Control Centre (inactive → active) joins a running pass',
+    walk(['inactive', 'active']),
+    ['join']
+  );
+  eqJ(
+    'foreground: back from another app (background → active) asks for a fresh pass',
+    walk(['inactive', 'background', 'active']),
+    ['fresh']
+  );
+  eqJ(
+    '…and only once — the next inactive → active is a join again',
+    walk(['background', 'inactive', 'active', 'inactive', 'active']),
+    ['fresh', 'join']
+  );
+
+  // The hook's wiring. Under node it returns before reaching the pass (no
+  // HealthKit), so this is asserted on the source — the same way
+  // db/timezone.test.mjs pins the pass's own ordering.
   const src = readFileSync(new URL('../src/lib/health/sync.ts', import.meta.url), 'utf8');
   const hook = src.slice(
     src.indexOf('export async function syncHealthIfEnabled'),
-    src.indexOf('export function registerForegroundHealthSync')
+    src.indexOf('export function foregroundTracker')
   );
-  hook.includes('startOrJoinHealthSync(db, now)') && !hook.includes('syncHealthData(')
-    ? ok('the boot/foreground sync joins a running pass instead of starting a second')
+  hook.includes('requestFreshHealthSync(db, now)') &&
+  hook.includes('startOrJoinHealthSync(db, now)') &&
+  !hook.includes('syncHealthData(')
+    ? ok('the boot/foreground sync goes through the gate: fresh after a trip away, a join otherwise')
     : bad('syncHealthIfEnabled bypasses the gate');
+  const register = src.slice(src.indexOf('export function registerForegroundHealthSync'));
+  register.includes('foregroundTracker()') && register.includes("fresh: trigger === 'fresh'")
+    ? ok('…and the AppState listener feeds it the tracker’s verdict')
+    : bad('the foreground listener ignores the background trip');
 
-  // …and so does every Settings caller: Sync now joins, the setup flows start
-  // tracked passes. A bare `syncHealthData(` there would be invisible to Home.
+  // …and so does every Settings caller: Sync now asks for a fresh pass, the
+  // setup flows start tracked ones. A bare `syncHealthData(` there would be
+  // invisible to Home.
   const settings = readFileSync(new URL('../app/settings-health.tsx', import.meta.url), 'utf8');
-  !/await syncHealthData\(/.test(settings) && settings.includes('startOrJoinHealthSync(getDb())')
-    ? ok('Settings › Apple Health starts no untracked pass')
+  !/await syncHealthData\(/.test(settings) && settings.includes('requestFreshHealthSync(getDb())')
+    ? ok('Settings › Apple Health starts no untracked pass, and Sync now reads from the tap')
     : bad('Settings still starts a pass the gate cannot see');
 }
 

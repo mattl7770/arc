@@ -4397,6 +4397,7 @@ console.log('\n17b. A blank metric is one tap from an Apple Health sync (2026-09
     lastSyncedAt: checkedAt,
     failedAt: null,
     log: logOf(12),
+    sources: [],
     today,
     ...over,
   });
@@ -4447,15 +4448,37 @@ console.log('\n17b. A blank metric is one tap from an Apple Health sync (2026-09
     ? ok('both syncing cells are disabled — a second pass cannot be started from them')
     : bad('a syncing cell is still tappable', String(count(syncing, 'aria-disabled="true"')));
 
-  // SENT NONE — a statement, not the same button forever.
+  // SENT NONE — the statement is the news, and the cell is still the button the
+  // owner asked for: the verb changes to "Sync again" rather than repeating the
+  // first offer forever.
   const none = grid('metrics (Apple Health sends no HRV)', { log: logOf(0) });
   expect('metrics (Apple Health sends no HRV)', none, [
     'Apple Health sent none in 14 days',
-    'aria-label="HRV, no data. Apple Health sent none in 14 days."',
+    '>Sync again<',
+    'aria-label="HRV, no reading today, Apple Health sent none in 14 days. Sync again."',
   ]);
-  count(none, '>Sync Apple Health<') === 1
-    ? ok('HRV stops offering; Resting HR, which Apple Health does send, still offers')
-    : bad('wrong offer count', String(count(none, '>Sync Apple Health<')));
+  count(none, '>Sync Apple Health<') === 1 && count(none, '>Sync again<') === 1
+    ? ok('HRV says what the last pass found and offers Sync again; Resting HR still offers the first sync')
+    : bad(
+        'wrong offer count',
+        `${count(none, '>Sync Apple Health<')} / ${count(none, '>Sync again<')}`
+      );
+  count(none, '>—<') === 0
+    ? ok('…and the sent-none cell replaces the em-dash too — nothing is added around the grid')
+    : bad('a sent-none cell drew the blank and the control');
+
+  // THE CAUSE — a Garmin among the recent sources, and the audit pins HRV as a
+  // type a Garmin never exports. The owner's setup, and the likeliest HRV state
+  // on his phone.
+  const garmin = grid('metrics (a Garmin, which sends no HRV)', {
+    log: logOf(0),
+    sources: ['apple_health', 'garmin'],
+  });
+  expect('metrics (a Garmin, which sends no HRV)', garmin, [
+    'Garmin never sends this to Apple Health',
+    '>Sync again<',
+  ]);
+  refute('metrics (a Garmin, which sends no HRV)', garmin, ['Apple Health sent none in 14 days']);
 
   // FAILED — quiet and honest, and the retry is still there.
   const failedAt = new Date(y, m - 1, d, 9, 14).toISOString();

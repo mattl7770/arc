@@ -3,12 +3,17 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
-import { getHealthSyncLog, getHealthSyncState } from '@/lib/db/repositories/wearables';
+import {
+  getHealthSyncLog,
+  getHealthSyncState,
+  recentSourceDevices,
+} from '@/lib/db/repositories/wearables';
 import { isHealthKitAvailable } from '@/lib/health/healthkit';
 import {
   isHealthSyncRunning,
   subscribeHealthSync,
   subscribeHealthSyncRunning,
+  SYNC_WINDOW_DAYS,
 } from '@/lib/health/sync';
 import {
   blankSyncFailedAt,
@@ -28,12 +33,13 @@ import { healthLink } from './use-readiness';
  *   - a pass STARTS or SETTLES, from anywhere (the foreground hook included),
  *     so every blank cell says "Syncing" while one runs and cannot start a
  *     second;
- *   - a pass LANDS — the cursor and the per-metric log move. The strip's
- *     numbers are re-read by useReadiness on the same event;
+ *   - a pass LANDS — the cursor, the per-metric log and the sources move. The
+ *     strip's numbers are re-read by useReadiness on the same event;
  *   - a tap's pass FAILS, so the cell can say so.
  */
 function read(): MetricSyncContext {
   const db = getDb();
+  const today = todayISODate();
   return {
     link: healthLink(db),
     available: isHealthKitAvailable(),
@@ -41,13 +47,14 @@ function read(): MetricSyncContext {
     lastSyncedAt: getHealthSyncState(db).lastSyncedAt,
     failedAt: blankSyncFailedAt(),
     log: getHealthSyncLog(db),
-    today: todayISODate(),
+    sources: recentSourceDevices(db, today, SYNC_WINDOW_DAYS),
+    today,
   };
 }
 
 export type MetricSyncControl = {
   context: MetricSyncContext;
-  /** Start a pass, or join the one already running. Never throws. */
+  /** Ask for a pass that reads from now. Never throws. */
   sync: () => void;
   /** The door the Connect state leads through. */
   openSettings: () => void;
@@ -57,8 +64,15 @@ export function useMetricSync(): MetricSyncControl {
   const router = useRouter();
   const [context, setContext] = useState(read);
 
+  // Guarded: this runs inside the sync module's listeners, and a read that
+  // throws there would surface as a failed pass after the data had landed. The
+  // last good read stands until the next event.
   const reload = useCallback(() => {
-    setContext(read());
+    try {
+      setContext(read());
+    } catch {
+      // Kept as it was.
+    }
   }, []);
 
   useFocusEffect(reload);

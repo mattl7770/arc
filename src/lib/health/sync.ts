@@ -650,26 +650,46 @@ export async function syncHealthData(
 //
 // A pass can now be started from three places while the app is open: the
 // foreground hook below, Settings' *Sync now*, and a blank cell on Home's
-// metrics strip (docs/wearables-subapp.md §20). Nothing stopped two of them
+// metrics strip (docs/wearables-subapp.md §22). Nothing stopped two of them
 // running at once. That is harmless to the data — every write is an upsert on
 // a deterministic key — but it doubles the HealthKit reads, and a control
 // cannot honestly say "syncing" about a pass it cannot see.
 //
-// So a pass started through either function below is TRACKED: visible to
+// So a pass started through the functions below is TRACKED: visible to
 // `isHealthSyncRunning`, announced to `subscribeHealthSyncRunning` when it
-// starts and when it settles, and joinable. `syncHealthData` is unchanged and
-// is still the pass.
+// starts and when it settles. `syncHealthData` is unchanged and is still the
+// pass. Callers differ in what an already-running pass is worth to them:
+//
+//   - `requestFreshHealthSync` — an explicit ask (a tap on Home, *Sync now*,
+//     a return from another app). It must read Apple Health from NOW on: the
+//     user may have just synced Garmin Connect, and a pass that started before
+//     that read before it too. So it never joins a running pass; it queues ONE
+//     follow-up behind it, and later asks join that follow-up.
+//   - `startOrJoinHealthSync` — the boot pass and a return that never left the
+//     app (the Face ID sheet, Control Centre). The user was not in another app
+//     pushing data, so the pass already running is as good as a new one.
+//   - `startHealthSync` — Settings' three setup flows. A pass of their own.
 
 const runningPasses: Promise<HealthSyncResult>[] = [];
+/** The one follow-up queued behind the running pass, not yet started. */
+let queuedPass: Promise<HealthSyncResult> | null = null;
 const runningListeners = new Set<Listener>();
 
 function emitRunning(): void {
-  for (const listener of runningListeners) listener();
+  for (const listener of runningListeners) {
+    // One subscriber that throws must not jam the gate for the others, nor
+    // escape into `startHealthSync` and strand a pass in the running list.
+    try {
+      listener();
+    } catch {
+      // The subscriber re-reads on the next event.
+    }
+  }
 }
 
-/** Whether a tracked pass is in flight right now. */
+/** Whether a tracked pass is in flight, or queued to start when one settles. */
 export function isHealthSyncRunning(): boolean {
-  return runningPasses.length > 0;
+  return runningPasses.length > 0 || queuedPass !== null;
 }
 
 /** Called when a tracked pass starts and again when it settles; returns the unsubscribe. */
@@ -681,9 +701,9 @@ export function subscribeHealthSyncRunning(listener: Listener): () => void {
 }
 
 /**
- * Start a tracked pass that never joins another. For Settings' three setup
- * flows, whose pass must read AFTER the permission sheet they just showed —
- * joining a pass that began before the grant would read without it.
+ * Start a tracked pass now, beside any other. For Settings' three setup flows,
+ * whose pass must read AFTER the permission sheet they just showed — and the
+ * 90-day heart-rate flow carries a window no ordinary pass would.
  */
 export function startHealthSync(
   db: Database,
@@ -692,41 +712,92 @@ export function startHealthSync(
 ): Promise<HealthSyncResult> {
   const pass = syncHealthData(db, now, options);
   runningPasses.push(pass);
-  emitRunning();
-  // Registered here, before any caller can await `pass`, so the list is already
-  // clear by the time a caller's own continuation runs.
+  // Attached BEFORE the pass is announced, so nothing a subscriber does can
+  // leave it listed; and before any caller can await `pass`, so the list is
+  // already clear by the time a caller's own continuation runs.
   const settle = (): void => {
     const index = runningPasses.indexOf(pass);
     if (index !== -1) runningPasses.splice(index, 1);
     emitRunning();
   };
   pass.then(settle, settle);
+  emitRunning();
   return pass;
 }
 
-/** Join the newest tracked pass if one is running; otherwise start one. */
+/**
+ * A pass that reads Apple Health from `now` on. Starts one if nothing is
+ * running; otherwise queues one follow-up behind the newest running pass, or
+ * joins the follow-up already queued (it has not started, so it will read from
+ * later still). Never more than one pass waits.
+ */
+export function requestFreshHealthSync(
+  db: Database,
+  now: Date = new Date()
+): Promise<HealthSyncResult> {
+  if (queuedPass) return queuedPass;
+  const newest = runningPasses[runningPasses.length - 1];
+  if (!newest) return startHealthSync(db, now);
+  const ignore = (): void => undefined;
+  const queued = newest.then(ignore, ignore).then(() => {
+    queuedPass = null;
+    // Its own clock, read when it actually starts.
+    return startHealthSync(db, new Date());
+  });
+  queuedPass = queued;
+  return queued;
+}
+
+/** Join the newest tracked pass (a queued follow-up counts) if there is one; otherwise start one. */
 export function startOrJoinHealthSync(
   db: Database,
   now: Date = new Date()
 ): Promise<HealthSyncResult> {
-  return runningPasses[runningPasses.length - 1] ?? startHealthSync(db, now);
+  return queuedPass ?? runningPasses[runningPasses.length - 1] ?? startHealthSync(db, now);
 }
 
 /**
  * The boot/foreground hook (app/_layout.tsx): throttled, best-effort, silent.
  * A failed or skipped background sync must never surface — Settings › Apple
  * Health shows the honest last-synced state, and the next foreground retries.
+ *
+ * `fresh` is set for a return from the BACKGROUND — the user was in another
+ * app, possibly Garmin Connect pushing last night — so a pass still running
+ * from before the trip is not good enough. Otherwise a running pass is joined.
  */
-export async function syncHealthIfEnabled(db: Database, now: Date = new Date()): Promise<void> {
+export async function syncHealthIfEnabled(
+  db: Database,
+  now: Date = new Date(),
+  options: { fresh?: boolean } = {}
+): Promise<void> {
   try {
     if (!isHealthSyncEnabled(db) || !isHealthKitAvailable()) return;
     if (!shouldAutoSync(getHealthSyncState(db).lastSyncedAt, now)) return;
-    // Joins a pass already running (a tap on Home, Settings' Sync now) rather
-    // than starting a second one beside it.
-    await startOrJoinHealthSync(db, now);
+    await (options.fresh ? requestFreshHealthSync(db, now) : startOrJoinHealthSync(db, now));
   } catch {
     // Best-effort by design.
   }
+}
+
+/**
+ * What an AppState change asks of the foreground hook: `fresh` when the app is
+ * active again after a trip to the background, `join` when it is active again
+ * without having left (iOS passes through `inactive` for the Face ID sheet,
+ * Control Centre and a notification pulled down), and nothing otherwise. Pure,
+ * one tracker per subscription, so the headless suite can walk it.
+ */
+export function foregroundTracker(): (state: string) => 'fresh' | 'join' | null {
+  let wentBackground = false;
+  return (state) => {
+    if (state === 'background') {
+      wentBackground = true;
+      return null;
+    }
+    if (state !== 'active') return null;
+    const fresh = wentBackground;
+    wentBackground = false;
+    return fresh ? 'fresh' : 'join';
+  };
 }
 
 /**
@@ -744,8 +815,10 @@ export function registerForegroundHealthSync(db: Database): () => void {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { AppState } = require('react-native') as AppStateModule;
+    const next = foregroundTracker();
     subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void syncHealthIfEnabled(db);
+      const trigger = next(state);
+      if (trigger) void syncHealthIfEnabled(db, new Date(), { fresh: trigger === 'fresh' });
     });
   } catch {
     subscription = null;
