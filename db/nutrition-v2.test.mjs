@@ -176,6 +176,7 @@ import {
 import {
   countTotalsOnlyMeals,
   dayKeyMicros,
+  KEY_CAFFEINE_MG,
   KEY_FIBER_G,
   KEY_SODIUM_SHARE,
   keyMicro,
@@ -190,6 +191,7 @@ import {
   EMPTY_DRAFT,
   editDraft,
   removeRowWithUndo,
+  replaceDraft,
   replaceDraftRows,
   undoDraftRemoval,
 } from '../src/lib/nutrition/review-undo.ts';
@@ -5555,7 +5557,7 @@ console.log('65. the estimator asks for the shortlist where a portion is a notab
 // 66. The one notable micro on an item row (owner: "displaying caffeine on a
 // latte"). One pure function, keyMicro (src/lib/nutrition/key-micro.ts).
 // ===========================================================================
-console.log('66. keyMicro: caffeine whenever present, sodium above a fifth, fiber above 5 g');
+console.log('66. keyMicro: caffeine from 20 mg, sodium above a fifth, fiber above 5 g, then any caffeine');
 {
   const row = (micros, fiber_g = null) =>
     keyMicro({ micros: micros ? JSON.stringify(micros) : null, fiber_g });
@@ -5563,9 +5565,21 @@ console.log('66. keyMicro: caffeine whenever present, sodium above a fifth, fibe
   latte && latte.key === 'caffeine_mg' && latte.label === '126 mg caffeine'
     ? ok('a latte shows its caffeine: “126 mg caffeine”')
     : bad('latte', JSON.stringify(latte));
-  row({ caffeine_mg: 12, sodium_mg: 900 }, 8)?.key === 'caffeine_mg'
-    ? ok('caffeine wins the slot at any size — one figure per row')
+  KEY_CAFFEINE_MG === 20 &&
+  row({ caffeine_mg: 20, sodium_mg: 900 }, 8)?.key === 'caffeine_mg' &&
+  row({ caffeine_mg: 28, sodium_mg: 1800 })?.label === '28 mg caffeine'
+    ? ok('caffeine from 20 mg wins the slot over sodium and fiber — one figure per row')
     : bad('caffeine priority');
+  // Review finding on 0063: the seed's chocolate now records caffeine, and a
+  // square of it must not hide a dinner's sodium or a bowl's fiber.
+  row({ caffeine_mg: 8, sodium_mg: 1800 })?.label === '1,800 mg sodium' &&
+  row({ caffeine_mg: 12, sodium_mg: 900 }, 8)?.key === 'sodium_mg' &&
+  row({ caffeine_mg: 19.9 }, 9)?.label === '9 g fiber'
+    ? ok('under 20 mg, caffeine yields to sodium over its line and fiber over its own')
+    : bad('small caffeine priority', JSON.stringify(row({ caffeine_mg: 8, sodium_mg: 1800 })));
+  row({ caffeine_mg: 8, sodium_mg: 300 }, 2)?.label === '8 mg caffeine'
+    ? ok('…and still prints when neither earns the row: a square of chocolate says “8 mg caffeine”')
+    : bad('small caffeine fallback', JSON.stringify(row({ caffeine_mg: 8, sodium_mg: 300 }, 2)));
   row({ caffeine_mg: 0 }) === null && row({ caffeine_mg: 0.4 }) === null
     ? ok('a caffeine that rounds to 0 mg is not printed')
     : bad('zero caffeine printed');
@@ -6231,6 +6245,33 @@ console.log('70. the estimate review’s × has an Undo — exact, in place, and
     ? ok('a fresh estimate replaces the rows and closes any Undo')
     : bad('fresh estimate kept an Undo');
 
+  // THE HOOK'S OWN SETTER. `replace` is `replaceDraft` (screens-render §25 pins
+  // the wiring), driven here the way the question hook calls it: an UPDATER
+  // over the rows as they stand. × the croissant, then answer "3 shots" on the
+  // latte. The answer only SCALES a part, so the top-level keys are exactly the
+  // ones the × left — the case a table edit keeps open. The answer must close it.
+  const h = removeRowWithUndo(draft0, croissant.key);
+  const scaleShots = (rows) => answerQuestion([], rows, 'shots', three).rows;
+  const hScaled = scaleShots(h.rows);
+  hScaled.map((r) => r.key).join('|') === h.rows.map((r) => r.key).join('|') &&
+  near(espressoMg(hScaled), 189)
+    ? ok('(the “3” answer scales the latte and keeps every top-level key)')
+    : bad('expected a keys-only-unchanged answer', json(hScaled.map((r) => r.name)));
+  draftUndoStands(editDraft(h, scaleShots))
+    ? ok('(as a TABLE edit, that change would keep the croissant’s Undo open)')
+    : bad('editDraft closed on unchanged keys');
+  const hAnswered = replaceDraft(h, scaleShots);
+  hAnswered.removed === null &&
+  draftUndoWords(hAnswered) === null &&
+  near(espressoMg(hAnswered.rows), 189) &&
+  json(undoDraftRemoval(hAnswered).rows) === json(hAnswered.rows)
+    ? ok('the hook’s setter, given the answer as an updater, applies it and closes the Undo')
+    : bad('replaceDraft left the Undo open', JSON.stringify(draftUndoWords(hAnswered)));
+  const hValue = replaceDraft(h, hScaled);
+  hValue.removed === null && json(hValue.rows) === json(hScaled)
+    ? ok('…and given the rows as a value, the same')
+    : bad('replaceDraft value form');
+
   // THE SLOT, AFTER ALL OF IT: untouched, the logged offer never settled.
   currentUndo()?.said === 'Removed Logged thing' && settled === 0
     ? ok('none of this touched the logged-food Undo slot, or settled its offer')
@@ -6430,6 +6471,214 @@ console.log('72. an add_item answer carries its own micros — “add a shot” 
   });
   near(dayMicroTotals(db, TODAY).caffeine_mg, 189)
     ? ok('saved, the day reads 189 mg — the Americano’s 126 and the shot’s 63')
+    : bad('day caffeine', JSON.stringify(dayMicroTotals(db, TODAY)));
+}
+
+// ===========================================================================
+// 73. Review finding on 0063: a REPEAT log reaches the catalog's caffeine.
+// "Log again" and a template copied the old snapshot, so a latte logged before
+// 0063 — `{"calcium_mg":272}` — stayed without caffeine through every copy of
+// it. `repeatMicros` fills, at log time, each micro key the linked food records
+// and the snapshot does not, for the snapshot's own amount; it never changes a
+// key the snapshot has, and never writes the meal or template it copies.
+// ===========================================================================
+console.log('73. Log again and a template fill the caffeine an old latte never recorded');
+{
+  const { db } = freshDb();
+  const LATTE = 'bb7b36af-e57e-44fd-9062-37a158612e02';
+  const repeatMicros = nutritionRepoModule.repeatMicros;
+  typeof repeatMicros === 'function'
+    ? ok('repeatMicros exists')
+    : bad('repeatMicros missing', typeof repeatMicros);
+  // The latte as the owner's 0061 build logged it: the seed had no caffeine.
+  const oldLatte = {
+    food_id: LATTE,
+    name: 'Latte, whole milk',
+    amount: 340,
+    unit: 'g',
+    kcal: 149.6,
+    protein_g: 7.82,
+    carbs_g: 11.9,
+    fat_g: 8.16,
+    fiber_g: 0,
+    micros: '{"calcium_mg":272}',
+  };
+  const { mealId: old } = logMealWithItems(db, {
+    date: '2000-01-01',
+    time: '08:00',
+    name: 'Latte',
+    items: [oldLatte],
+  });
+  const oldItemBefore = JSON.stringify(listMealItems(db, old));
+
+  // LOG AGAIN.
+  const again = relogMeal(db, old, TODAY, '08:05');
+  const copied = listMealItems(db, again)[0];
+  const copiedMicros = parseMicros(copied.micros);
+  copiedMicros.calcium_mg === 272 && near(copiedMicros.caffeine_mg, 127.16)
+    ? ok('Log again keeps the logged calcium and fills 127.16 mg of caffeine from the seed latte')
+    : bad('relog micros', copied.micros);
+  keyMicroLabel(copied) === '127 mg caffeine' &&
+  keyMicroModule.mealKeyMicroLabels(nutritionRepoModule.dayMealItemMicros(db, TODAY))[again] ===
+    '127 mg caffeine' &&
+  near(dayMicroTotals(db, TODAY).caffeine_mg, 127.16)
+    ? ok('…so its row, the Eat tab’s meal row and the day’s Caffeine cell all read 127')
+    : bad('relog reach', String(keyMicroLabel(copied)));
+  near(copied.kcal, 149.6) && near(copied.protein_g, 7.82) && copied.amount === 340
+    ? ok('…and the macros and the portion are the snapshot’s, untouched')
+    : bad('relog macros', JSON.stringify(copied));
+  JSON.stringify(listMealItems(db, old)) === oldItemBefore
+    ? ok('the meal it copied keeps its snapshot — history is not rewritten')
+    : bad('source meal rewritten');
+  // A copy of the copy is already whole: nothing to add, the text goes through.
+  const third = listMealItems(db, relogMeal(db, again, TODAY, '15:00'))[0];
+  third.micros === copied.micros
+    ? ok('a Log again of a snapshot that already records it copies the stored text byte for byte')
+    : bad('second relog', `${third.micros} vs ${copied.micros}`);
+
+  // A TEMPLATE saved from the old latte, before 0063.
+  const templateId = saveMealAsTemplate(db, old, 'Morning latte');
+  const templateItemsBefore = JSON.stringify(listTemplateItems(db, templateId));
+  listTemplateItems(db, templateId)[0].micros === '{"calcium_mg":272}'
+    ? ok('(the template holds the old snapshot, as it was saved)')
+    : bad('template snapshot', listTemplateItems(db, templateId)[0].micros);
+  const fromTemplate = listMealItems(db, logMealFromTemplate(db, templateId, TODAY, '09:00'))[0];
+  parseMicros(fromTemplate.micros).calcium_mg === 272 &&
+  near(parseMicros(fromTemplate.micros).caffeine_mg, 127.16) &&
+  keyMicroLabel(fromTemplate) === '127 mg caffeine'
+    ? ok('logging the “Morning latte” template reads “127 mg caffeine” too')
+    : bad('template micros', fromTemplate.micros);
+  JSON.stringify(listTemplateItems(db, templateId)) === templateItemsBefore
+    ? ok('…and the template itself is not written by logging from it')
+    : bad('template rewritten');
+
+  // FILL, NEVER RE-PRICE: a key the snapshot records is the figure it keeps.
+  const relogOne = (item) => {
+    const { mealId } = logMealWithItems(db, {
+      date: '2000-01-02',
+      time: '08:00',
+      name: 'Probe',
+      items: [item],
+    });
+    return listMealItems(db, relogMeal(db, mealId, '2000-01-03', '08:00'))[0];
+  };
+  const single = relogOne({ ...oldLatte, micros: '{"calcium_mg":272,"caffeine_mg":63}' });
+  const decaf = relogOne({ ...oldLatte, micros: '{"caffeine_mg":0}' });
+  near(parseMicros(single.micros).caffeine_mg, 63) &&
+  parseMicros(decaf.micros).caffeine_mg === 0 &&
+  parseMicros(decaf.micros).calcium_mg === 272
+    ? ok('a single-shot 63 mg stays 63, a decaf’s 0 stays 0 (and gains the calcium it lacked)')
+    : bad('re-priced', `${single.micros} / ${decaf.micros}`);
+
+  // ONLY WHERE THE ARITHMETIC IS THE FOOD'S OWN.
+  const inMl = relogOne({ ...oldLatte, unit: 'ml' });
+  const noAmount = relogOne({ ...oldLatte, amount: null });
+  const unlinked = relogOne({ ...oldLatte, food_id: null });
+  inMl.micros === '{"calcium_mg":272}' &&
+  noAmount.micros === '{"calcium_mg":272}' &&
+  unlinked.micros === '{"calcium_mg":272}'
+    ? ok('no fill in ml against a gram food, without an amount, or with no linked food')
+    : bad('guards', JSON.stringify([inMl.micros, noAmount.micros, unlinked.micros]));
+  const bare = parseMicros(repeatMicros(db, { food_id: LATTE, amount: 340, unit: 'g', micros: null }));
+  Object.keys(bare).length === 2 && near(bare.calcium_mg, 272) && near(bare.caffeine_mg, 127.16)
+    ? ok('a snapshot with no micros at all takes every key the food records')
+    : bad('null snapshot', JSON.stringify(bare));
+
+  // A PART of a composite is an item like any other; the header stays empty.
+  const { mealId: brunch } = logMealWithItems(db, {
+    date: '2000-01-04',
+    time: '10:00',
+    name: 'Brunch',
+    items: [
+      {
+        name: 'Café breakfast',
+        unit: 'g',
+        components: [
+          { ...oldLatte },
+          { name: 'Croissant', amount: 60, unit: 'g', kcal: 250, micros: '{"sodium_mg":200}' },
+        ],
+      },
+    ],
+  });
+  const brunchAgain = assembleMealItems(
+    listMealItems(db, relogMeal(db, brunch, '2000-01-05', '10:00'))
+  );
+  const partLatte = brunchAgain[0]?.components?.find((p) => p.name === 'Latte, whole milk');
+  const partCroissant = brunchAgain[0]?.components?.find((p) => p.name === 'Croissant');
+  brunchAgain[0]?.kind === 'composite' &&
+  brunchAgain[0].item.micros === null &&
+  near(parseMicros(partLatte?.micros).caffeine_mg, 127.16) &&
+  partCroissant?.micros === '{"sodium_mg":200}'
+    ? ok('a relogged dish fills its linked part; the header and an unlinked part are as they were')
+    : bad('composite relog', JSON.stringify(brunchAgain[0]?.components?.map((p) => p.micros)));
+
+  // A FOOD DELETED since: its items lost the link (ON DELETE SET NULL), so
+  // there is nothing to fill from — and nothing breaks.
+  const { mealId: mocha } = logMealWithItems(db, {
+    date: '2000-01-06',
+    time: '08:00',
+    name: 'Latte',
+    items: [oldLatte],
+  });
+  deleteFood(db, LATTE);
+  listMealItems(db, relogMeal(db, mocha, '2000-01-07', '08:00'))[0].micros ===
+  '{"calcium_mg":272}'
+    ? ok('once the seed latte is deleted, a Log again copies the snapshot as it was')
+    : bad('deleted food relog');
+}
+
+// ===========================================================================
+// 74. Review finding on 0063: the seed's chocolate now records caffeine, and
+// under the old rule a square of it took the meal row from the sodium that
+// earned it. Caffeine under 20 mg now yields to sodium and fiber over their
+// lines, and still prints when neither is there.
+// ===========================================================================
+console.log('74. a square of seed chocolate does not hide a dinner’s sodium on its meal row');
+{
+  const { db } = freshDb();
+  const DARK = '8ec296da-6053-4ccd-8fbb-a94fedc0ef08';
+  const square = itemForPortion(getFood(db, DARK), { servingQty: 1 });
+  near(parseMicros(square.micros).caffeine_mg, 8)
+    ? ok('(a 10 g square of the seed dark chocolate records 8 mg of caffeine)')
+    : bad('square', square.micros);
+  const { mealId: dinner } = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:00',
+    name: 'Dinner',
+    items: [
+      { name: 'Tonkotsu ramen', amount: 600, unit: 'g', kcal: 900, micros: '{"sodium_mg":1800}' },
+      square,
+    ],
+  });
+  const { mealId: snack } = logMealWithItems(db, {
+    date: TODAY,
+    time: '15:00',
+    name: 'Snack',
+    items: [square],
+  });
+  const { mealId: coffee } = logMealWithItems(db, {
+    date: TODAY,
+    time: '07:00',
+    name: 'Breakfast',
+    items: [
+      itemForPortion(getFood(db, 'a1cef987-d928-48db-a726-e9b98b742263'), { servingQty: 1 }),
+      { name: 'Bacon roll', amount: 150, unit: 'g', kcal: 450, micros: '{"sodium_mg":1100}' },
+    ],
+  });
+  const labels = keyMicroModule.mealKeyMicroLabels(
+    nutritionRepoModule.dayMealItemMicros(db, TODAY)
+  );
+  labels[dinner] === '1,800 mg sodium'
+    ? ok('ramen and a square of chocolate read “1,800 mg sodium”, not “8 mg caffeine”')
+    : bad('dinner', String(labels[dinner]));
+  labels[snack] === '8 mg caffeine'
+    ? ok('the square on its own still reads “8 mg caffeine”')
+    : bad('snack', String(labels[snack]));
+  labels[coffee] === '96 mg caffeine'
+    ? ok('a cup of coffee beside a salty roll still reads “96 mg caffeine”')
+    : bad('breakfast', String(labels[coffee]));
+  near(dayMicroTotals(db, TODAY).caffeine_mg, 112)
+    ? ok('the day’s Caffeine cell counts all of it: 96 + 8 + 8 = 112 mg')
     : bad('day caffeine', JSON.stringify(dayMicroTotals(db, TODAY)));
 }
 

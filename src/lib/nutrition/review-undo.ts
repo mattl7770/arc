@@ -39,7 +39,7 @@
  *   the same parts, the same count, the same whole. A dish halved, re-counted
  *   or re-portioned since would take back a part priced for a different dish.
  * - **Any answered question closes it**, and so does a new estimate — the
- *   screens hand the question hook the CLOSING setter (`replaceDraftRows`).
+ *   screens hand the question hook the CLOSING setter (`replaceDraft`).
  *   This is the question state staying consistent: answers are a trail whose
  *   entries hold the rows as they stood before each answer
  *   (`answerQuestion`, review-rows.ts). An answer given after the × was applied
@@ -236,6 +236,21 @@ export function editDraft(
  *  question. Always closes the removal (see the header, on the question trail). */
 export function replaceDraftRows(rows: ReviewItem[]): ReviewDraft {
   return { rows, removed: null };
+}
+
+/**
+ * The hook's `replace` setter as a pure step, so the suite drives the very
+ * function the screens call. `next` is what a `setRows` receives — the rows, or
+ * an updater over the rows as they stand (the question hook passes updaters).
+ * It closes the removal EVEN when the rows come back with the same keys, as an
+ * answer that only scales a row does: that is the case {@link editDraft} would
+ * keep open, and the one that must not be.
+ */
+export function replaceDraft(
+  draft: ReviewDraft,
+  next: ReviewItem[] | ((rows: ReviewItem[]) => ReviewItem[])
+): ReviewDraft {
+  return replaceDraftRows(typeof next === 'function' ? next(draft.rows) : next);
 }
 
 /** What the Undo row says, or null when there is nothing to put back. */

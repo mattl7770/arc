@@ -1269,7 +1269,10 @@ console.log("11. A device at 44 — the owner's real stamp — upgrades to head 
 // he typed (a 0 included) is never overwritten, a key he added survives beside
 // the new one, a renamed or re-based row is his food now, a deleted row is no
 // error, a user food that happens to be called 'Cola' is not a seed row, and a
-// latte already logged keeps the snapshot it was logged with.
+// latte already logged keeps the snapshot it was logged with. An EDITED one
+// (review finding) proves a row the Coach re-priced, branded or re-fatted is
+// his food even with its name kept, while a star or a write-back of unchanged
+// figures is not an edit.
 // ===========================================================================
 console.log('12. 0063 fills caffeine on five seed foods, and leaves every changed row alone');
 {
@@ -1413,6 +1416,55 @@ console.log('12. 0063 fills caffeine on five seed foods, and leaves every change
     ? ok('a latte logged before 0063 keeps its snapshot — history is not rewritten')
     : bad('logged latte rewritten');
   h.close();
+
+  // --- EDITED THROUGH THE COACH (review finding) ----------------------------
+  // No screen edits a catalog food; the Coach's `edit_record` over
+  // `food_catalog` rewrites name, brand, the four per-100 macros and basis, and
+  // stars. A row whose NAME survived an edit can still be a different food.
+  const e = new DatabaseSync(':memory:');
+  stageAt(e, 62);
+  e.exec(`
+    -- The latte re-priced as his café's single-shot oat latte, name kept.
+    UPDATE foods SET kcal_100g = 38, protein_g_100g = 1.1, carbs_g_100g = 5.2, fat_g_100g = 1.6
+      WHERE id = 'bb7b36af-e57e-44fd-9062-37a158612e02';
+    -- The coffee given his café's name as its brand.
+    UPDATE foods SET brand = 'Blue Bottle' WHERE id = 'a1cef987-d928-48db-a726-e9b98b742263';
+    -- The milk chocolate: one macro nudged, everything else as seeded.
+    UPDATE foods SET fat_g_100g = 30 WHERE id = '0cf7bd11-58bb-4105-a346-f095009e613e';
+    -- The dark chocolate: starred. That stamps updated_at and changes no figure.
+    UPDATE foods SET is_favorite = 1 WHERE id = '8ec296da-6053-4ccd-8fbb-a94fedc0ef08';
+    -- The cola: an edit that wrote back exactly what it read (read-modify-write
+    -- with nothing asked of it). Every figure is still 0016's.
+    UPDATE foods SET name = 'Cola', name_norm = 'cola', brand = NULL, kcal_100g = 42,
+      protein_g_100g = 0, carbs_g_100g = 10.6, fat_g_100g = 0, basis = 'g'
+      WHERE id = 'c458157a-1d0c-42b4-833c-d36cc8ef994c';
+  `);
+  const editedBefore = e.prepare('SELECT * FROM foods ORDER BY id').all();
+  migrate(executor(e), MIGRATIONS);
+  e.prepare('PRAGMA user_version').get().user_version === LATEST
+    ? ok('0063 applies over a catalog the Coach has edited')
+    : bad('0063 on the edited catalog');
+  const editedNow = e.prepare('SELECT * FROM foods ORDER BY id').all();
+  const editedMoved = editedNow
+    .filter((row, i) => JSON.stringify(row) !== JSON.stringify(editedBefore[i]))
+    .map((row) => row.id)
+    .sort();
+  JSON.stringify(editedMoved) ===
+  JSON.stringify(
+    ['8ec296da-6053-4ccd-8fbb-a94fedc0ef08', 'c458157a-1d0c-42b4-833c-d36cc8ef994c'].sort()
+  )
+    ? ok('only the starred chocolate and the written-back cola were filled')
+    : bad('edited rows filled', editedMoved.join(', '));
+  caffeineOf(e, 'bb7b36af-e57e-44fd-9062-37a158612e02') === undefined &&
+  caffeineOf(e, 'a1cef987-d928-48db-a726-e9b98b742263') === undefined &&
+  caffeineOf(e, '0cf7bd11-58bb-4105-a346-f095009e613e') === undefined
+    ? ok('a re-priced latte, a branded coffee and a re-fatted milk chocolate get no seed figure')
+    : bad('edited rows got caffeine');
+  caffeineOf(e, '8ec296da-6053-4ccd-8fbb-a94fedc0ef08') === 80 &&
+  caffeineOf(e, 'c458157a-1d0c-42b4-833c-d36cc8ef994c') === 8
+    ? ok('a star is not an edit (80 mg), and neither is a figure written back unchanged (8 mg)')
+    : bad('starred / written-back rows');
+  e.close();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

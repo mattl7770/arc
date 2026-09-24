@@ -6206,6 +6206,19 @@ console.log('\n25. 2026-09-23 — the estimate review’s × has an Undo');
   !/onRemove:[^\n]*edit\(/.test(hook)
     ? ok('the hook’s × is the one that remembers what it took')
     : bad('hook onRemove');
+  // The setter the screens hand the question hook must be the CLOSING one:
+  // `replaceDraft`, which nutrition-v2 §70 drives with an answer that keeps
+  // every key (the case `editDraft` would leave open). Pinned by its body, so a
+  // `replace` rebuilt on `editDraft` fails here rather than on a lit chip.
+  const replaceBody = hook.slice(
+    hook.indexOf('const replace = useCallback'),
+    hook.indexOf('const undo = useCallback')
+  );
+  replaceBody.includes('setDraft((d) => replaceDraft(d, next))') &&
+  !replaceBody.includes('editDraft') &&
+  !replaceBody.includes('removed:')
+    ? ok('the hook’s replace is replaceDraft — every answer and fresh estimate closes the Undo')
+    : bad('hook replace', replaceBody);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

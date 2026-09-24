@@ -20,7 +20,7 @@ import {
   EMPTY_DRAFT,
   editDraft,
   removeRowWithUndo,
-  replaceDraftRows,
+  replaceDraft,
   type ReviewDraft,
   undoDraftRemoval,
 } from '@/lib/nutrition/review-undo';
@@ -61,8 +61,10 @@ export function useReviewDraft(): ReviewDraftState {
     (change: (rows: ReviewItem[]) => ReviewItem[]) => setDraft((d) => editDraft(d, change)),
     []
   );
+  // Closing, always: `replaceDraft` (pinned by db/screens-render.test.mjs §25
+  // and driven headlessly in db/nutrition-v2.test.mjs §70).
   const replace = useCallback<React.Dispatch<React.SetStateAction<ReviewItem[]>>>(
-    (next) => setDraft((d) => replaceDraftRows(typeof next === 'function' ? next(d.rows) : next)),
+    (next) => setDraft((d) => replaceDraft(d, next)),
     []
   );
   const undo = useCallback(() => setDraft(undoDraftRemoval), []);

@@ -40,6 +40,17 @@ export const KEY_SODIUM_SHARE = 0.2;
  */
 export const KEY_FIBER_G = 5;
 
+/**
+ * Caffeine takes the slot AHEAD of sodium and fiber from 20 mg (review finding
+ * on 0063, 2026-09-23). The line sits between the seed catalog's own figures:
+ * above a serving of its chocolate (8 mg a square of dark, 9 mg a milk bar),
+ * below a can of its cola (28 mg) and far below its coffee (96 mg) or latte
+ * (127 mg). Under 20 mg caffeine still prints, but only when neither of the
+ * others earns the row: a square of chocolate after a bowl of ramen must not
+ * put `8 mg caffeine` where `1,800 mg sodium` was.
+ */
+export const KEY_CAFFEINE_MG = 20;
+
 /** The one figure an item row shows, and the words it is shown in. */
 export type KeyMicro = {
   key: 'caffeine_mg' | 'sodium_mg' | 'fiber_g';
@@ -55,12 +66,13 @@ const SODIUM_LIMIT = MICROS.find((m) => m.key === 'sodium_mg')?.reference ?? 230
  * The one micro worth printing on an item row, or null — **one figure per row
  * at most**, in this order:
  *
- * 1. **Caffeine, whenever the item records it** (and it rounds to at least
- *    1 mg). It is the one the owner named by example — a latte — and the one
- *    that matters at any size: it is a question about the next few hours, not
- *    only about the day's sum.
+ * 1. **Caffeine at {@link KEY_CAFFEINE_MG} or more.** It is the one the owner
+ *    named by example — a latte — and a real dose is a question about the next
+ *    few hours, not only about the day's sum, so it wins over the other two.
  * 2. **Sodium, only at {@link KEY_SODIUM_SHARE} of its limit or more.**
  * 3. **Fiber, only at {@link KEY_FIBER_G} or more.**
+ * 4. **Caffeine under that line** (rounding to at least 1 mg), when neither of
+ *    the others earned the row: a square of chocolate on its own still says so.
  *
  * A figure the item does not record never prints — "not recorded" is not 0 —
  * and nothing from the rest of the shortlist competes for the slot: the three
@@ -78,9 +90,11 @@ export function keyMicro(item: {
       ? item.micros
       : parseMicros(item.micros ?? null);
   const caffeine = micros.caffeine_mg;
-  if (caffeine != null && Math.round(caffeine) >= 1) {
-    return { key: 'caffeine_mg', value: caffeine, label: `${fmtInt(caffeine)} mg caffeine` };
-  }
+  const caffeineFigure =
+    caffeine != null
+      ? { key: 'caffeine_mg' as const, value: caffeine, label: `${fmtInt(caffeine)} mg caffeine` }
+      : null;
+  if (caffeineFigure && caffeineFigure.value >= KEY_CAFFEINE_MG) return caffeineFigure;
   const sodium = micros.sodium_mg;
   if (sodium != null && sodium >= SODIUM_LIMIT * KEY_SODIUM_SHARE) {
     return { key: 'sodium_mg', value: sodium, label: `${fmtInt(sodium)} mg sodium` };
@@ -89,7 +103,7 @@ export function keyMicro(item: {
   if (fiber != null && fiber >= KEY_FIBER_G) {
     return { key: 'fiber_g', value: fiber, label: `${fmtQty(fiber)} g fiber` };
   }
-  return null;
+  return caffeineFigure && Math.round(caffeineFigure.value) >= 1 ? caffeineFigure : null;
 }
 
 /** {@link keyMicro}'s label, or null — what a row's sub-line appends. */
