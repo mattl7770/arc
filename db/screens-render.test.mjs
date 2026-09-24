@@ -91,7 +91,14 @@ import WaterScreen from '../app/water.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import ExerciseDetailScreen from '../app/exercise-detail.tsx';
 import { setExerciseLoadBasis } from '../src/lib/db/repositories/exercise-catalog.ts';
-import RoutineEditScreen from '../app/routine-edit.tsx';
+import RoutineEditScreen, { RoutineLinesSection } from '../app/routine-edit.tsx';
+import { ExerciseOrder, ReorderToggle } from '../src/components/exercise/exercise-order.tsx';
+import { createRoutine, deleteRoutine, getRoutine } from '../src/lib/db/repositories/routines.ts';
+import {
+  openRoutineList,
+  routineListReducer,
+  showsOrder,
+} from '../src/lib/exercise/routine-lines.ts';
 // The two set grids. They joined the walk with the stopwatch clock field
 // (2026-09-23): workout-live needed a Reanimated stub and both needed
 // `useNavigation` from the expo-router stub — see db/render-hook.mjs.
@@ -2340,6 +2347,201 @@ const db = getDb();
       'Add exercise',
     ]);
     refute('routine-edit (new)', newRoutine, ['movements this routine runs', 'routine']);
+
+    // Reorder in the saved-workout editor (owner, 2026-09-23: "be able to
+    // reorder exercises in a workout"). The editor could only append and
+    // remove; it now has the live logger's Order mode. The whole screen proves
+    // the door on its first frame; the mode itself is pressed through below.
+    refute('routine-edit (new)', newRoutine, ['Reorder']);
+    const upperId = createRoutine(db, {
+      name: 'Upper B',
+      notes: null,
+      exercises: [
+        { exerciseId: 'barbell-bench-press', targetSets: 4, repLow: 5, repHigh: 8, restSec: 180 },
+        { exerciseId: 'barbell-row', targetSets: 4, repLow: 6, repHigh: 10, restSec: 150 },
+        { exerciseId: 'plank', targetSets: 3, repLow: null, repHigh: null, restSec: null },
+      ],
+    });
+    const upper = render('routine-edit (editing)', RoutineEditScreen, { id: upperId });
+    expect('routine-edit (editing)', upper, [
+      'Edit saved workout',
+      'aria-label="Reorder exercises"',
+      'Barbell Bench Press',
+      'value="180"',
+      'Save workout',
+    ]);
+    // The fields are what reorder mode folds away; until it is on, no arrows.
+    refute('routine-edit (editing)', upper, ['aria-label="Move Barbell Bench Press up"']);
+
+    const soloId = createRoutine(db, {
+      name: 'One thing',
+      notes: null,
+      exercises: [
+        { exerciseId: 'plank', targetSets: 3, repLow: null, repHigh: null, restSec: null },
+      ],
+    });
+    // One line is nothing to put in order — the door is not drawn.
+    refute(
+      'routine-edit (one line)',
+      render('routine-edit (one line)', RoutineEditScreen, { id: soloId }),
+      ['Reorder']
+    );
+
+    // Reorder mode through the editor's OWN wiring. RoutineLinesSection is the
+    // editor's list section, a hook-free function of the list state the editor
+    // holds, and ExerciseOrder / ReorderToggle are hook-free too. So, as with the
+    // mission row (§ further down), the element tree is walked and the real Reorder button
+    // and the real arrow are pressed: each press runs the section's own
+    // `dispatch` call, and the action goes through routineListReducer, the
+    // reducer the editor passes to useReducer. Drop the Order plate from the
+    // section, flip a direction or unwire the toggle, and this fails.
+    const findEl = (node, match) => {
+      if (node === null || node === undefined || typeof node !== 'object') return null;
+      if (match(node)) return node;
+      for (const child of React.Children.toArray(node.props?.children ?? [])) {
+        const hit = findEl(child, match);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    const labelled = (label) => (el) => el.props?.accessibilityLabel === label;
+    let list = openRoutineList(getRoutine(db, upperId));
+    const section = () =>
+      RoutineLinesSection({
+        state: list,
+        dispatch: (action) => {
+          list = routineListReducer(list, action);
+        },
+        onAddExercise: () => {},
+      });
+    const drawList = (name) =>
+      render(
+        name,
+        RoutineLinesSection,
+        {},
+        {
+          state: list,
+          dispatch: () => {},
+          onAddExercise: () => {},
+        }
+      );
+    const pressToggle = (label) => {
+      const toggle = findEl(section(), (el) => el.type === ReorderToggle);
+      const button = toggle && findEl(ReorderToggle(toggle.props), labelled(label));
+      if (button) button.props.onPress();
+      else bad(`routine-edit list: no "${label}" button to press`);
+    };
+    const pressArrow = (label) => {
+      const plate = findEl(section(), (el) => el.type === ExerciseOrder);
+      const arrow = plate && findEl(ExerciseOrder(plate.props), labelled(label));
+      if (arrow) arrow.props.onPress();
+      else bad(`routine-edit list: no "${label}" arrow to press`);
+    };
+
+    const fieldsHtml = drawList('routine-edit list (fields)');
+    expect('routine-edit list (fields)', fieldsHtml, [
+      'aria-label="Reorder exercises"',
+      'aria-label="Target sets for Barbell Bench Press"',
+      'aria-label="Remove Plank"',
+    ]);
+    refute('routine-edit list (fields)', fieldsHtml, ['aria-label="Move Barbell Bench Press']);
+
+    // Press Reorder: the Order plate takes the Exercises plate's place.
+    pressToggle('Reorder exercises');
+    showsOrder(list)
+      ? ok('routine-edit list: pressing Reorder puts the editor in Order mode')
+      : bad('routine-edit list: Reorder did not switch the mode');
+    const ordered = drawList('routine-edit list (reorder mode)');
+    expect('routine-edit list (reorder mode)', ordered, [
+      'aria-label="Done reordering exercises"',
+      'aria-label="Move Barbell Bench Press, 4 sets of 5 to 8, 180 seconds rest, down"',
+      'aria-label="Move Barbell Row, 4 sets of 6 to 10, 150 seconds rest, up"',
+      'aria-label="Move Plank, 3 sets, up"',
+      // The targets the fields held, drawn in mono under each name.
+      '4 × 5–8 · 180 s rest',
+      '4 × 6–10 · 150 s rest',
+      '>3 sets<',
+      'Add exercise',
+    ]);
+    // The fields fold away: no target inputs, no remove buttons.
+    refute('routine-edit list (reorder mode)', ordered, [
+      'aria-label="Target sets for',
+      'aria-label="Remove ',
+      'A superset moves as one',
+      '>Superset<',
+    ]);
+    // Top's up and bottom's down are drawn off, never hidden.
+    const offArrows = (ordered ?? '').split('aria-disabled="true"').length - 1;
+    offArrows === 2
+      ? ok('routine-edit list (reorder mode): the two end arrows are drawn disabled')
+      : bad('routine-edit list (reorder mode): disabled arrows', String(offArrows));
+
+    // Press the plank's up arrow once: it lands between the bench and the row.
+    pressArrow('Move Plank, 3 sets, up');
+    const order = () => list.lines.map((l) => l.exerciseId).join();
+    order() === 'barbell-bench-press,plank,barbell-row'
+      ? ok('routine-edit list: the plank’s up arrow moves it one place up')
+      : bad('routine-edit list: order after the up arrow', order());
+    const movedHtml = drawList('routine-edit list (reorder mode, moved)') ?? '';
+    const at = (label) => movedHtml.indexOf(`aria-label="Move ${label}, `);
+    at('Barbell Bench Press') < at('Plank') && at('Plank') < at('Barbell Row')
+      ? ok('routine-edit list (reorder mode, moved): Bench, Plank, Row — drawn in the new order')
+      : bad(
+          'routine-edit list (reorder mode, moved): order',
+          [at('Barbell Bench Press'), at('Plank'), at('Barbell Row')].join()
+        );
+
+    // Press Done: the fields come back, in the new order, with every target.
+    pressToggle('Done reordering exercises');
+    !showsOrder(list)
+      ? ok('routine-edit list: pressing Done leaves Order mode')
+      : bad('routine-edit list: Done did not leave Order mode');
+    const backHtml = drawList('routine-edit list (after Done)') ?? '';
+    const field = (name) => backHtml.indexOf(`aria-label="Target sets for ${name}"`);
+    expect('routine-edit list (after Done)', backHtml, ['value="180"', 'value="150"']);
+    field('Barbell Bench Press') < field('Plank') && field('Plank') < field('Barbell Row')
+      ? ok('routine-edit list (after Done): the fields return in the order just set')
+      : bad(
+          'routine-edit list (after Done): order',
+          [field('Barbell Bench Press'), field('Plank'), field('Barbell Row')].join()
+        );
+
+    // One movement twice (a top set and a back-off line): in Order mode the
+    // two rows must read differently, drawn and spoken, or the owner cannot
+    // tell which one he is moving.
+    const bench = { exerciseId: 'barbell-bench-press', exerciseName: 'Barbell Bench Press' };
+    let twice = openRoutineList({
+      id: 'twice',
+      name: 'Push day',
+      notes: null,
+      archived: false,
+      exercises: [
+        { ...bench, primaryMuscles: ['chest'], targetSets: 1, repLow: 3, repHigh: 3, restSec: 240 },
+        { ...bench, primaryMuscles: ['chest'], targetSets: 3, repLow: 8, repHigh: 12, restSec: 90 },
+      ],
+    });
+    twice = routineListReducer(twice, { type: 'toggle-order' });
+    expect(
+      'routine-edit list (one movement twice)',
+      render(
+        'routine-edit list (one movement twice)',
+        RoutineLinesSection,
+        {},
+        {
+          state: twice,
+          dispatch: () => {},
+          onAddExercise: () => {},
+        }
+      ),
+      [
+        '1 × 3 · 240 s rest',
+        '3 × 8–12 · 90 s rest',
+        'aria-label="Move Barbell Bench Press, 1 set of 3, 240 seconds rest, down"',
+        'aria-label="Move Barbell Bench Press, 3 sets of 8 to 12, 90 seconds rest, up"',
+      ]
+    );
+    deleteRoutine(db, upperId);
+    deleteRoutine(db, soloId);
 
     // -----------------------------------------------------------------------
     // The Resume card (0045, owner 2026-09-14). The hub is where the app lands
