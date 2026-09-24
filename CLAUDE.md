@@ -108,7 +108,7 @@ Full data dashboards live elsewhere. Never let the home screen become a data dum
 - **Edit is read-modify-write.** A field the patch omits is preserved. `replaceWorkout` deletes every set and re-inserts its argument, so a literal patch would wipe a session behind a card that did not say so.
 - **The card is drawn before the gate and re-read after it.** A row that moved while the user was deciding refuses rather than minting a receipt for something else.
 
-Deletion is a separate tool over a smaller enum, because a removal must never be a *value* the model can set in passing — and it is only ever **undo**, never history: a record of a day refuses and names its screen.
+Deletion is a separate tool over a smaller enum, because a removal must never be a *value* the model can set in passing — and it follows **the same parity rule as everything else** (owner's call, 2026-09-23, reversing the 2026-09-19 undo-only rule): what a screen can delete, the Coach may delete, through the function that screen calls — a meal or a session the user logged by hand included. **The guardrail is the card, and it is mandatory:** it names the row's date, name and figures before the gate, it is never the brief card and never approved on anyone's behalf, and the re-read after the gate refuses a row that moved. *When* to delete is the model's judgment; there is no rule beyond parity. What no screen deletes (a capture, a protocol version, a lab report) refuses and names where the row lives. Four domains stay below parity by earlier owner calls — memories and knowledge, whose Coach removal is the restorable archive, and progress photos and reports, read-only by Q4(a) — each one entry to open (`docs/coach-domains.md` §10).
 
 ---
 

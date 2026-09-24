@@ -1080,6 +1080,37 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // THE HAIKU PASS'S READ SET IS STILL 3,376 — untouched by three commits,
   // because `query_records` never joined it and no write ever could. Its prefix
   // is 7,028, down from main's 7,076, entirely because the prompt shrank.
+  // ── 2026-09-23: DELETION BY PARITY (the owner reversed Q2(b)'s undo-only
+  // half — docs/decisions.md). **9,067 → 9,039 schema, 3,652 → 3,648 prompt**,
+  // re-measured on main with these same proxies before anything changed. BOTH
+  // SIDES CAME OUT AHEAD while the Coach gained deletion of every row a screen
+  // can delete, a whole protocol included.
+  //
+  // SCHEMA, −28 (`delete_record` 207 → 179):
+  //   · the enum 11 → 12 keys: `protocols` joins it, +4. It refused until now
+  //     on the ground that the screen "shows what it would take with it", and
+  //     the card now shows it.
+  //   · the description −32. It carried the RULE — "ONLY as an undo of
+  //     something you wrote in THIS conversation. Everything else is corrected
+  //     on its own screen." — and a rule about WHEN is exactly what the owner
+  //     removed. What is left says what the tool DOES: the screen's delete,
+  //     a card naming the date and figures, no undo.
+  //
+  // PROMPT, −4:
+  //   · the doctrine clause "delete_record is for an object the user is
+  //     finished with, or to UNDO a row you logged this conversation; a record
+  //     of a day is corrected, never removed" became "delete_record removes ONE
+  //     row for good, as its own screen would. Nothing brings it back, so be
+  //     sure it is the row they mean." — the fact that makes judgment matter
+  //     in place of the rule that replaced it. −7.
+  //   · the CANNOT line gained "or deleting", +3: a logged metric or a capture
+  //     has no screen edit AND no screen delete, and once deletion follows the
+  //     screens the model must not infer that a row it cannot correct is one
+  //     it may still remove.
+  //
+  // The Haiku pass prefix moves with the prompt alone, 7,028 → 7,024 — the
+  // pass carries no write. Every per-domain card line (`RemovePolicy.gone`)
+  // is TypeScript and costs 0 on the wire.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

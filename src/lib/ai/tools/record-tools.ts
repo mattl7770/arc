@@ -1,7 +1,7 @@
 /**
- * The GENERIC tools over the domain registry — `edit_record` today,
- * `query_records` and `delete_record` as the later phases land
- * (docs/coach-domains.md; docs/spikes/coach-whole-app-access.md §3.3).
+ * The GENERIC tools over the domain registry — `query_records`, `edit_record`
+ * and `delete_record` (docs/coach-domains.md;
+ * docs/spikes/coach-whole-app-access.md §3.3).
  *
  * The model never sees SQL and never sees a table here. It sees a DOMAIN with
  * fields, and the code behind each is the repository function the matching
@@ -38,7 +38,6 @@ import {
   domainVocabulary,
   describeDelete,
   EDIT_DOMAIN_KEYS,
-  idsWrittenInConversation,
   QUERY_DOMAIN_KEYS,
   REMOVABLE_DOMAIN_KEYS,
   type CoachDomainEntry,
@@ -308,31 +307,50 @@ const queryRecordsTool: CoachTool = {
  * same one that kept `retire_knowledge_entry` separate from
  * `save_knowledge_entry`: a removal must never be a VALUE the model can set in
  * passing, alongside three other fields, on a card that opens with "Edit". Its
- * own tool means its own enum (so the schema refuses a record of a day at zero
- * round trips), its own chip, its own receipt verb, and a card whose fixed
+ * own tool means its own enum (so the schema refuses what no screen deletes at
+ * zero round trips), its own chip, its own receipt verb, and a card whose fixed
  * consequence line says a row LEAVES the record rather than that one is written
  * to it.
+ *
+ * ## What it may remove: what a screen may remove (the owner, 2026-09-23)
+ *
+ * *"coach should actually be able to delete both. guardrails of needing
+ * approval should be in place but the coach should just be intelligent enough
+ * to only delete the right things when it is supposed to."* So the enum is
+ * the `hard` domains, and each one's `run` is the delete its own screen calls —
+ * a meal or a session the user logged by hand included. (The two exceptions
+ * are declared where they live, in src/lib/ai/domains/: the catalog food,
+ * which no screen deletes and the Coach still may, and the domains an owner
+ * call holds below parity.) There is no rule here about WHICH rows or WHEN:
+ * that is the model's judgment, and the user's Approve. What this file owns is
+ * that the card is TRUE: it names the row's date and figures, it is drawn from
+ * the row as it is now, and the re-read past the gate refuses a row that moved.
  */
 function planDelete(db: Database, input: Record<string, unknown>, context: CoachToolContext) {
   const args = asRecord(input);
   const key = reqString(args, 'domain');
   const entry = domainByKey(key);
   if (!entry || !entry.remove || entry.remove.mode === 'refuse' || !entry.resolve) {
-    // The refusal NAMES the screen when there is one, so the answer is useful
-    // rather than merely a no.
+    // The refusal NAMES where the row lives, so the answer is useful rather
+    // than merely a no.
     if (entry?.remove?.mode === 'refuse') throw new Error(entry.remove.because);
     throw new Error(`"domain" must be one of: ${REMOVABLE_DOMAIN_KEYS.join(', ')}.`);
   }
+  const remove = entry.remove;
   const row = entry.resolve(db, reqString(args, 'id'), context);
-  return { entry, row, remove: entry.remove };
+  // Built from the row as it is NOW, so the same call is the card at card time
+  // and the re-read past the gate.
+  const line = describeDelete(entry.label, row, remove.gone(db, row));
+  return { entry, row, remove, line };
 }
 
 const deleteRecordTool: CoachTool = {
   name: 'delete_record',
   description:
-    'Remove ONE row, permanently. Only where a screen would let the user remove it, and for a ' +
-    'logged meal, workout or water entry ONLY as an undo of something you wrote in THIS ' +
-    'conversation. Everything else is corrected on its own screen.',
+    // What the tool DOES, never when to use it: WHEN is judgment (the owner's
+    // 2026-09-23 call), and the enum already says WHERE.
+    'Remove ONE row permanently, the same delete its own screen offers. The card shows the ' +
+    'user its date, name and figures first. There is no undo.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -345,26 +363,24 @@ const deleteRecordTool: CoachTool = {
   readOnly: false,
   confirmSummary: (input, db, context) => {
     const plan = planDelete(db, input, context);
-    if (plan.remove.mode === 'own') {
-      // THE UNDO CHECK, at CARD time: a refusal the user never has to answer a
-      // gate for. The evidence is `ai_messages.tool_calls` for THIS thread.
-      const own = idsWrittenInConversation(db, context.conversationId);
-      if (!own.has(plan.row.id)) {
-        throw new Error(
-          `That ${plan.entry.label} is not one you logged in this conversation, so deleting it ` +
-            'would be rewriting the record rather than undoing yourself. Correct it with ' +
-            'edit_record, or let the user remove it on its own screen.'
-        );
-      }
-    }
-    context.card = { domain: plan.entry.key, id: plan.row.id, before: { ...plan.row.values } };
-    return describeDelete(plan.entry.label, plan.row);
+    // THE STALENESS SLOT, both halves: every value the row held, and the whole
+    // line the card printed — its date and figures included.
+    context.card = {
+      domain: plan.entry.key,
+      id: plan.row.id,
+      before: { ...plan.row.values },
+      line: plan.line,
+    };
+    return plan.line;
   },
+  // Always the LONG card: a removal is never self-evident, and it is never
+  // approved on anyone's behalf — one call, one row, one gate.
   confirmMeta: () => ({ kind: 'delete', selfEvident: false }),
   execute: (db, input, context) => {
     const plan = planDelete(db, input, context);
-    // The same re-read `edit_record` does. A row that changed between the card
-    // and the approval is not the row the user agreed to remove.
+    // The same re-read `edit_record` does, plus the printed line. A row that
+    // changed between the card and the approval is not the row the user agreed
+    // to remove — least of all when what changed is a figure the card showed.
     const card = context.card;
     if (card && card.domain === plan.entry.key && card.id === plan.row.id) {
       for (const [name, was] of Object.entries(card.before)) {
@@ -376,16 +392,15 @@ const deleteRecordTool: CoachTool = {
           );
         }
       }
-    }
-    if (plan.remove.mode === 'own') {
-      const own = idsWrittenInConversation(db, context.conversationId);
-      if (!own.has(plan.row.id)) {
+      if (card.line !== undefined && card.line !== plan.line) {
         throw new Error(
-          `That ${plan.entry.label} is not one you logged in this conversation. Nothing deleted.`
+          `That ${plan.entry.label} changed while the card was open (the card said ` +
+            `"${card.line}", it now reads "${plan.line}"). Nothing deleted. ` +
+            'Read it again and propose once more.'
         );
       }
     }
-    plan.remove.run(db, plan.row);
+    plan.remove.run(db, plan.row, context);
     return json({ deleted: true, domain: plan.entry.key, id: plan.row.id, title: plan.row.name });
   },
 };

@@ -47,21 +47,13 @@ export type CoachToolContext = {
     id: string;
     /** Field → the value the card printed as "was". */
     before: Record<string, unknown>;
+    /**
+     * `delete_record` only: the whole line the card printed — the row's date
+     * and figures, which are not all fields. Re-rendered past the gate; a line
+     * that no longer matches refuses the removal.
+     */
+    line?: string;
   };
-  /**
-   * The thread this turn belongs to, when there is one.
-   *
-   * Read by exactly one thing: `delete_record`'s `own` mode, which may remove a
-   * logged row only when THIS conversation's Coach wrote it (the owner's Q2
-   * answer, 2026-09-19). The evidence is already on disk — every write tool
-   * returns its new row's id, and `ai_messages.tool_calls` keeps the result —
-   * so the undo set derives with no migration.
-   *
-   * OPTIONAL, and its absence is the fail-closed answer rather than an
-   * inconvenience: with no thread to check, nothing counts as the Coach's own
-   * write and every `own` removal is refused.
-   */
-  conversationId?: string;
 };
 
 /**

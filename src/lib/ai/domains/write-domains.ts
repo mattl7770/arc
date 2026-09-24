@@ -21,13 +21,19 @@
  * (name, type, description) and its POLICY (active, carry-over, check-off mode,
  * the phase-clock anchor) — none of which `update_protocol` can reach.
  *
+ * **A removal is the screen's removal.** Every `remove` here is `hard` over the
+ * function that domain's screen deletes with — a logged session and a whole
+ * protocol included (the owner's 2026-09-23 call) — and its `gone` prints what
+ * the card must show before the gate: the row's date, its figures, and what
+ * goes with it.
+ *
  * **Settings is five calls, not a table.** The owner's Q3 answer (2026-09-19)
  * put profile, units, the day boundary, goal direction and the water target
  * within reach, gated like any write. The API key, the app lock, the Health
  * sync toggle and backups are NOT here and are asserted absent — they are the
  * security boundary, not a preference.
  */
-import { todayISODate } from '@/lib/db/date';
+import { clockFromISO, formatLocalDate, todayISODate } from '@/lib/db/date';
 import { deleteWorkout, getWorkoutDetail, replaceWorkout } from '@/lib/db/repositories/exercise';
 import {
   checkGroceryItem,
@@ -43,16 +49,21 @@ import {
   listMuscleAnchors,
   setMuscleAnchor,
 } from '@/lib/db/repositories/muscle-anchors';
+import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import {
+  deleteProtocol,
+  getCurrentVersion,
   getProtocol,
   getProtocolBySlug,
   listProtocols,
+  listVersions,
   reviseProtocol,
   setActive,
 } from '@/lib/db/repositories/protocols';
 import {
   deleteRecipe,
   getRecipe,
+  listIngredients,
   parseSteps,
   setRecipeFavorite,
   updateRecipe,
@@ -80,6 +91,10 @@ import {
   setWaterTarget,
   updateProfile,
 } from '@/lib/db/repositories/user';
+import type { ProtocolRow } from '@/lib/db/types';
+import type { GroceryItemRow } from '@/lib/grocery/types';
+import { allItems, parseProtocolContent } from '@/lib/protocols/content';
+import type { AppointmentRow, ScreeningRow } from '@/lib/screenings/types';
 import { GOAL_DIRECTIONS } from '@/lib/user/types';
 
 import {
@@ -87,7 +102,9 @@ import {
   dateField,
   describeEdit,
   enumField,
+  listed,
   numberField,
+  plural,
   textField,
   type CoachDomainEntry,
   type DomainField,
@@ -180,10 +197,28 @@ const workoutsDomain: CoachDomainEntry = {
       }))
     );
   },
-  // UNDO only. A session is a record of a day, and `workout_sets` cascades from
-  // it — which is the right cascade (a set has no meaning without its session)
-  // and exactly why this may not be a general delete.
-  remove: { mode: 'own', run: (db, row) => deleteWorkout(db, row.id) },
+  // HARD, through the session screen's own Delete (app/workout-live.tsx). A
+  // record of a day, removable because the user can remove it by hand — the
+  // owner's 2026-09-23 call, reversing the 2026-09-19 undo-only rule. The sets
+  // CASCADE with it, which is the right cascade (a set has no meaning without
+  // its session), so the card counts them and names the movements: that is
+  // exactly what goes.
+  remove: {
+    mode: 'hard',
+    gone: (_db, row) => {
+      const workout = row.raw as NonNullable<ReturnType<typeof getWorkoutDetail>>;
+      const movements = [...new Set(workout.sets.map((s) => s.exercise))];
+      return [
+        workout.durationMin === null ? null : `${Math.round(workout.durationMin)} min`,
+        workout.sets.length === 0
+          ? 'no sets'
+          : `${plural(workout.sets.length, 'set')}: ${listed(movements)}`,
+      ]
+        .filter((p): p is string => p !== null)
+        .join(' · ');
+    },
+    run: (db, row) => deleteWorkout(db, row.id),
+  },
 };
 
 // --- recipes -----------------------------------------------------------------
@@ -252,8 +287,15 @@ const recipesDomain: CoachDomainEntry = {
   // HARD: a recipe is an object, not a day. `meals.recipe_id` (0031) and
   // `grocery_items.recipe_id` (0032) are both ON DELETE SET NULL, so every meal
   // cooked from it keeps its macros and simply stops naming a recipe that is
-  // gone.
-  remove: { mode: 'hard', run: (db, row) => deleteRecipe(db, row.id) },
+  // gone. Its ingredient lines are its own parts, and go with it.
+  remove: {
+    mode: 'hard',
+    gone: (db, row) => {
+      const recipe = row.raw as { servings: number };
+      return `serves ${recipe.servings} · ${plural(listIngredients(db, row.id).length, 'ingredient')}`;
+    },
+    run: (db, row) => deleteRecipe(db, row.id),
+  },
 };
 
 // --- the grocery list --------------------------------------------------------
@@ -302,7 +344,16 @@ const groceryDomain: CoachDomainEntry = {
   },
   // HARD: a shopping line is a working list, not a record of a day, and the
   // user removes one with a swipe on the same screen.
-  remove: { mode: 'hard', run: (db, row) => removeGroceryItem(db, row.id) },
+  remove: {
+    mode: 'hard',
+    gone: (_db, row) => {
+      const item = row.raw as GroceryItemRow;
+      return [item.qty_text, item.checked_at === null ? 'on the list' : 'in the cart']
+        .filter((p): p is string => p !== null)
+        .join(' · ');
+    },
+    run: (db, row) => removeGroceryItem(db, row.id),
+  },
 };
 
 // --- screenings --------------------------------------------------------------
@@ -389,8 +440,25 @@ const screeningsDomain: CoachDomainEntry = {
   },
   // HARD, and it is the UNTRACK the owner asked for: `appointments.screening_id`
   // is ON DELETE SET NULL (0007), so a booked appointment survives and simply
-  // stops naming a screening the user no longer tracks.
-  remove: { mode: 'hard', run: (db, row) => deleteScreening(db, row.id) },
+  // stops naming a screening the user no longer tracks — which the card says,
+  // as the screen's own confirmation does.
+  remove: {
+    mode: 'hard',
+    gone: (_db, row) => {
+      const screening = row.raw as ScreeningRow;
+      return [
+        screening.interval_months === null
+          ? 'no cadence'
+          : `every ${plural(screening.interval_months, 'month')}`,
+        screening.next_due === null ? null : `next due ${screening.next_due}`,
+        screening.last_completed === null ? null : `last done ${screening.last_completed}`,
+        'its appointments stay',
+      ]
+        .filter((p): p is string => p !== null)
+        .join(' · ');
+    },
+    run: (db, row) => deleteScreening(db, row.id),
+  },
   // `update_protocol` has created a protocol since §8.2, so this line was
   // already half false before the screenings half of it landed here.
   retires: ['creating a protocol or a screening from scratch'],
@@ -462,9 +530,23 @@ const appointmentsDomain: CoachDomainEntry = {
       });
     }
   },
-  // HARD: a cancelled booking that never happened is not a record of a day, and
-  // the calendar screen deletes one the same way.
-  remove: { mode: 'hard', run: (db, row) => deleteAppointment(db, row.id) },
+  // HARD: the appointment form deletes one the same way. The card prints the
+  // booking at the user's own clock — the stored instant is UTC.
+  remove: {
+    mode: 'hard',
+    gone: (_db, row) => {
+      const appointment = row.raw as AppointmentRow;
+      const at = appointment.scheduled_at;
+      return [
+        `${formatLocalDate(new Date(at))} ${clockFromISO(at)}`,
+        appointment.provider === null ? null : `with ${appointment.provider}`,
+        appointment.status,
+      ]
+        .filter((p): p is string => p !== null)
+        .join(' · ');
+    },
+    run: (db, row) => deleteAppointment(db, row.id),
+  },
   retires: ['booking, moving or cancelling an appointment (Data, Screenings)'],
 };
 
@@ -504,7 +586,18 @@ const musclesDomain: CoachDomainEntry = {
   },
   // HARD, and it is a CLEAR rather than a destruction: an anchor overrides the
   // engine's own reading, so removing one restores the derived figure.
-  remove: { mode: 'hard', run: (db, row) => clearMuscleAnchor(db, row.id as never) },
+  remove: {
+    mode: 'hard',
+    gone: (_db, row) => {
+      // `resolve` answers for any muscle, anchored or not, so a clear of
+      // nothing is refused here rather than costing an Approve tap.
+      if (row.values.freshness === null) {
+        throw new Error(`There is no anchor on ${row.name}, so there is nothing to clear.`);
+      }
+      return `freshness ${String(row.values.freshness)}; the engine’s own reading returns`;
+    },
+    run: (db, row) => clearMuscleAnchor(db, row.id as never),
+  },
 };
 
 // --- protocol identity and policy (never `content`) --------------------------
@@ -594,15 +687,35 @@ const protocolsDomain: CoachDomainEntry = {
       setActive(db, row.id, true, todayISODate(context.now));
     }
   },
-  // NOT REMOVABLE. Deleting a protocol must never destroy execution history
-  // (CLAUDE.md §9), and its versions are immutable rows a past day was lived
-  // under. Pausing is the affordance — `is_active: false` — and a real deletion
-  // is a decision made on the screen that shows what it would take with it.
+  // HARD, through Protocols › settings' own Delete (app/protocol-settings.tsx),
+  // and the same two steps it runs. This REFUSED until 2026-09-23 on the
+  // ground that a deletion was "a decision made on the screen that shows what
+  // it would take with it" — so the card now shows it, in the screen's own
+  // words: the versions go (they CASCADE, 0001), and logged days keep their
+  // entries, unlinked (`log_entries.protocol_id` is SET NULL, which is what
+  // keeps CLAUDE.md §9's never-destroy-execution-history true). Pausing is
+  // still `is_active: false`; which of the two the user meant is judgment.
   remove: {
-    mode: 'refuse',
-    because:
-      'A protocol carries every version a past day was lived under. Pause it with ' +
-      '`is_active: false`, or delete it on Protocols where the consequence is shown.',
+    mode: 'hard',
+    gone: (db, row) => {
+      const protocol = row.raw as ProtocolRow;
+      const versions = listVersions(db, protocol.id).length;
+      const items = allItems(
+        parseProtocolContent(getCurrentVersion(db, protocol.id)?.content ?? null)
+      ).length;
+      return (
+        `${protocol.is_active === 1 ? 'active' : 'paused'}, ${plural(items, 'item')}; ` +
+        `its ${plural(versions, 'version')} ${versions === 1 ? 'goes' : 'go'} with it, ` +
+        'and logged days keep their entries, unlinked'
+      );
+    },
+    run: (db, row, context) => {
+      deleteProtocol(db, row.id);
+      // The screen's second step: a deleted protocol must stop putting rows on
+      // today. (Its third, the notification resync, is the Coach tab's own
+      // after every turn — app/(tabs)/coach.tsx `onTurnComplete`.)
+      rederiveMissionFromToday(db, todayISODate(context.now));
+    },
   },
 };
 

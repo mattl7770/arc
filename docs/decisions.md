@@ -1,6 +1,102 @@
 # Architecture Decision Records (ADR)
 
+## 2026-09-23 — The Coach may delete what a screen can delete
+
+**Decision:** deletion follows the rule every other Coach act follows — **parity with the screens,
+through the repositories, never past them.** What a screen can delete, the Coach may delete, by
+calling the function that screen calls, behind the approval card. This **supersedes the deletion
+half** of the 2026-09-19 ADR below (*"Deletion is undo, not history"*). Its correction half stands.
+
+The owner, in a device note written against the check *"ask it to delete something it just wrote,
+then something you logged yourself; the first should work, the second must be refused"*:
+
+> *"coach should actually be able to delete both. guardrails of needing approval should be in place
+> but the coach should just be intelligent enough to only delete the right things when it is
+> supposed to"*
+
+It reverses his own answer of four days earlier — Q2(b) of `docs/spikes/coach-whole-app-access.md`
+— and lands where that spike's Q2(c) did: *edit and delete anything the screens allow, behind the
+card.*
+
+**What changed.**
+
+- **A meal and a workout** go from `own` to `hard`, through `deleteMealWithPhotos` and
+  `deleteWorkout` — the functions the meal and session screens call. A row the user logged by hand
+  is removable exactly like one the Coach wrote a moment ago.
+- **A protocol** goes from `refuse` to `hard`, through the settings screen's own two steps,
+  `deleteProtocol` then `rederiveMissionFromToday`. Its refusal said a deletion belonged *"on the
+  screen that shows what it would take with it"*; the card now shows it — the versions go, and
+  logged days keep their entries, unlinked (`log_entries.protocol_id` is SET NULL).
+- **The card is the guardrail, and it was tightened to carry that weight.** Every removal names the
+  row's day, name and figures (`Delete meal "Salmon bowl" — 2026-09-23 12:30 · 700 kcal · P 45g ·
+  C 60g · F 20g · 2 items · 1 photo`). The re-read past the gate checks the values *and* the printed
+  line, so a figure that moved refuses. A deletion is never the brief card and never approved on
+  anyone's behalf; its consequence lane says the row is deleted *for good* and that there is no undo.
+- **`own` mode is deleted, not left dormant** — with `idsWrittenInConversation` and the
+  `conversationId` threaded into every tool's context for it. Nothing reads them now.
+- **`delete_record` says what it does, not when.** Its description lost *"ONLY as an undo of
+  something you wrote in THIS conversation"*; its enum went 11 → 12. The doctrine clause *"a record
+  of a day is corrected, never removed"* became *"delete_record removes ONE row for good, as its
+  own screen would. Nothing brings it back, so be sure it is the row they mean."* The CANNOT line
+  gained *"or deleting"*: a logged metric or capture has no screen delete either.
+
+**What stayed refused, and why.** Each is now a `refuse` whose text names where the row lives and
+what to do instead.
+
+- **No screen deletes it:** a capture (the Log tab's rows carry no action, and `logs.ts` has no
+  delete to call); a protocol version (Versions restores one, never removes it); a lab report
+  (`deleteLabReport` has no caller, and its results would CASCADE); a reminder (dismissal ends
+  one); an experiment (concluded or abandoned); a catalog exercise (archive only —
+  `routine_exercises` CASCADE).
+- **A screen deletes it, and an earlier owner call holds the Coach below parity:** memories and
+  knowledge entries — the Coach's removal is the restorable archive, and a hard delete as well would
+  be two tools for "forget that" (`docs/coach-domains.md` §7) — and progress photos and reports,
+  opened read-only by Q4(a), *"no pixels, no writes"*. The note above is about logged rows; these
+  four were decided on other grounds, so they are recorded as open questions rather than widened in
+  passing. Each is one `remove` entry to open.
+- **Not domains, and unchanged:** mission rows (`adjust_today`'s; the settled past stands), lab
+  results under a report, an item inside a meal, recipe folders, photo readings, workout drafts and
+  the conversation store.
+- **One removal is AHEAD of the screens, flagged and not changed:** the catalog food. No screen
+  calls `deleteFood`; the Coach's removal was set on 2026-09-19 and strands nothing (every reference
+  is SET NULL and every logged item keeps its snapshot). Whether a screen gains the delete or the
+  Coach loses it is the owner's call.
+
+**Reasoning.**
+
+1. **The asymmetry the 2026-09-19 ADR drew is real, and the card is the answer to it, not a rule
+   about which rows.** An edit leaves a row that can be corrected again; a deletion leaves nothing,
+   against the only copy. But the user can delete any of these rows by hand in two taps. A Coach
+   proposal behind a card naming the day and the figures is guarded at least as well.
+2. **"This thread's Coach wrote it" was a proxy for "the user wants it gone", and a poor one.** It
+   refused the most natural request there is — *delete that lunch I logged* — and protected nothing
+   the card did not already protect.
+3. **Judgment lives in the model, not in rules.** A deterministic undo-only boundary was a rule
+   deciding for the owner; the owner asked for the Coach's judgment instead, gated by his Approve.
+
+**Consequences.**
+
+- **Ceilings, re-measured on main with the suite's own proxies: schema 9,067 → 9,039, prompt
+  3,652 → 3,648**; the Haiku pass prefix 7,028 → 7,024, still clear of the 4,096 floor. No ceiling
+  was raised; the rule that left the description paid for `protocols` joining the enum.
+- **No migration.** The own-write undo derived from `ai_messages.tool_calls`, so removing it
+  touches no schema, and reverting this commit restores it whole.
+- **The phone holds the only copy of the data** — no backup snapshot has yet been written or
+  restored on a device. A deletion the owner did not intend is the one failure this change cannot
+  take back, so it is the revert criterion: **one** is enough (`docs/coach-domains.md` §13,
+  (10)) → revert this commit, and deletion returns to undo-only.
+
+**What only the phone can settle:** whether the model's judgment holds — that it proposes a
+deletion when he asks for one, and a correction when he says a row is *wrong*; whether a
+date-and-figures line is legible in the serif voice at phone width; and whether the long card feels
+proportionate on a deletion he obviously meant.
+
+---
+
 ## 2026-09-19 — The Coach may correct a logged row; it may delete only its own
+
+> **Superseded in its deletion half, 2026-09-23** — see the ADR above. *Correction is not
+> rewriting* stands; *deletion is undo, not history* does not.
 
 **Decision:** the rule that **logged history is not the Coach's to rewrite** is **superseded**.
 In its place, two rules:
