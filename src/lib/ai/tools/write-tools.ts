@@ -29,7 +29,7 @@ import type { Database } from '@/lib/db/database';
 import { shiftISODate, todayISODate } from '@/lib/db/date';
 import { logCapture, logMetric, logNote } from '@/lib/db/repositories/logs';
 import { exerciseMeasures, logWorkout } from '@/lib/db/repositories/exercise';
-import { resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
+import { exerciseLoadBases, resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
 import {
   activeNutritionTargets,
   logMeal,
@@ -404,13 +404,20 @@ function parseSets(input: Record<string, unknown>, db: Database): ParsedSet[] {
       distanceM: optNumber(set, 'distance_m') ?? null,
     };
     const fields = measures == null ? raw : maskByMeasures(measures, raw);
+    // What the weight COUNTS (0062), said on the card before he approves it:
+    // "DB bench 3 × 8 with 60s" read as 60 lb PER HAND must not be stored as a
+    // total, or it raises the movement's records for good and every honest
+    // session after it reads as a stall. Payload text, not schema — the §6
+    // ceilings are untouched. A free-text movement has no basis to state.
+    const basis =
+      exerciseId == null ? null : (exerciseLoadBases(db, [exerciseId]).get(exerciseId) ?? null);
     return {
       exercise,
       exerciseId,
       ...fields,
       // A run's whole content is its time and distance — a card reading just
       // "Treadmill Run" would be asking the owner to approve a blank.
-      displayLine: `${exercise} ${measuredSetLine(fields, units)}`,
+      displayLine: `${exercise} ${measuredSetLine(fields, units, basis)}`,
     };
   });
 }

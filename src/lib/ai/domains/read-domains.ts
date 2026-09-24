@@ -85,6 +85,7 @@ import {
   personalRecordsFrom,
   workingSets,
 } from '@/lib/db/repositories/training-stats';
+import { loadRecordsApply } from '@/lib/exercise/load-basis';
 import { repMaxesFrom } from '@/lib/exercise/records';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { deleteWaterEntry, listWaterEntries, updateWaterEntry } from '@/lib/db/repositories/water';
@@ -605,17 +606,22 @@ const exerciseStatsDomain: CoachDomainEntry = {
       const id = resolveExerciseByName(db, args.id) ?? args.id;
       const rows = workingSets(db, id);
       const limit = Math.min(args.limit, 12);
-      const tops = exerciseSessionTopsFrom(rows, limit);
+      const basis = getExercise(db, id)?.loadBasis ?? null;
+      const tops = exerciseSessionTopsFrom(rows, limit, basis);
       if (tops.length === 0) {
         return { exercise: args.id, note: 'No sets logged for this movement.' };
       }
-      const basis = getExercise(db, id)?.loadBasis ?? null;
       return {
         exercise: args.id,
         ...(basis != null ? { loadBasis: basis } : {}),
-        records: personalRecordsFrom(rows),
-        repMaxes: repMaxesFrom(rows),
-        e1rmSeries: e1rmSeriesFrom(rows, limit),
+        // The screen's own gate: an ASSISTED movement's figure is help, so its
+        // "heaviest", "best e1RM" and rep maxes would all crown its easiest
+        // set. Its load records come back null, and the two load tables are
+        // left out rather than sent empty.
+        records: personalRecordsFrom(rows, basis),
+        ...(loadRecordsApply(basis)
+          ? { repMaxes: repMaxesFrom(rows, basis), e1rmSeries: e1rmSeriesFrom(rows, limit) }
+          : {}),
         // The workout id is the screen's join key for its PR mark; to the model
         // it is twelve tokens of UUID per row that answer nothing.
         recentTopSets: tops.map(({ workoutId: _omit, ...top }) => top),

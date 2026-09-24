@@ -40,6 +40,7 @@ import { addScreening } from '../src/lib/db/repositories/screenings.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { setNutritionTargets } from '../src/lib/db/repositories/nutrition.ts';
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import { createCustomExercise } from '../src/lib/db/repositories/exercise-catalog.ts';
 import {
   deleteReport,
   getReport,
@@ -468,10 +469,28 @@ console.log('2d. Training — a movement names what its weight counts; away sets
   // marked, but a report row cannot carry a mark.
   const { db } = freshDb();
   const s = (exerciseId, reps, weightKg) => ({ exercise: exerciseId, exerciseId, reps, weightKg });
+  // A home bench session BEFORE the period, so the in-period 5 × 100 beats an
+  // earlier best — the live stamp's rule, which the report now asks too
+  // (`e1rmRecordOf`): a record needs a previous best.
+  logWorkout(db, { date: '2026-07-20', kind: 'strength' }, [s('barbell-bench-press', 5, 95)]);
   logWorkout(db, { date: '2026-08-02', kind: 'strength' }, [
     s('dumbbell-bench-press', 8, 30),
     s('barbell-bench-press', 5, 100),
   ]);
+  // A movement trained for the first time ever this period: its only session
+  // beat nothing, so it stamped nothing in the gym and is no record here.
+  logWorkout(db, { date: '2026-08-03', kind: 'strength' }, [s('barbell-row', 5, 80)]);
+  // An ASSISTED movement: less help on the second session is progress, which
+  // an e1RM of the assistance would read as a fall — and its first session's
+  // 35 kg of help would be a "record". It gets neither row.
+  const assisted = createCustomExercise(db, {
+    name: 'Assisted Pull-Up',
+    equipment: 'machine',
+    loggingType: 'assisted_bodyweight',
+    primaryMuscles: ['lats'],
+  });
+  logWorkout(db, { date: '2026-08-03', kind: 'strength' }, [s(assisted, 8, 35)]);
+  logWorkout(db, { date: '2026-08-06', kind: 'strength' }, [s(assisted, 8, 20)]);
   logWorkout(db, { date: '2026-08-04', kind: 'strength', away: true }, [
     s('barbell-bench-press', 5, 140),
   ]);
@@ -496,6 +515,17 @@ console.log('2d. Training — a movement names what its weight counts; away sets
       benchPr.includes('257.3') &&
       !benchPr.includes('360'),
     JSON.stringify(training.personalRecords)
+  );
+  yes(
+    'a first-ever movement is no record: the row’s only session beat nothing',
+    !training.personalRecords.some((p) => p.startsWith('Barbell Row')),
+    JSON.stringify(training.personalRecords)
+  );
+  yes(
+    'an assisted movement has no e1RM delta row and no record',
+    !exercises.some((e) => e.startsWith('Assisted Pull-Up')) &&
+      !training.personalRecords.some((p) => p.startsWith('Assisted Pull-Up')),
+    JSON.stringify([exercises, training.personalRecords])
   );
 }
 

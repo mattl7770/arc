@@ -24,10 +24,8 @@ import { e1rmForSet } from '@/lib/exercise/e1rm';
 import type { LoadBasis } from '@/lib/exercise/load-basis';
 import { asMeasures, type Measures } from '@/lib/exercise/measures';
 import {
+  directionOf,
   personalRecordsOf,
-  primaryTrendMetric,
-  sessionSeriesFrom,
-  trendOf,
   type Trend,
   type TrendMetric,
 } from '@/lib/exercise/records';
@@ -102,8 +100,18 @@ export function workingSets(db: Database, exerciseId: string): SetRow[] {
  * are not one scale: a weighted dip of 10 kg × 8 is the top set of a session
  * that also held a bodyweight 15, and comparing 12.7 against 15 would say
  * otherwise.
+ *
+ * An ASSISTED movement (0062) ranks the other way. Its figure is help, so the
+ * e1RM of it crowns the set with the MOST assistance — the easiest one. Its
+ * sets are ranked by reps, and among equal reps the one with less help wins:
+ * reps first because its direction of travel reads reps (records.ts), so the
+ * hub row's top set and its arrow describe the same thing.
  */
-function setStrength(s: SetRow): [number, number] {
+function setStrength(s: SetRow, basis: LoadBasis | null): number[] {
+  if (basis === 'assisted') {
+    const reps = s.reps != null && s.reps > 0 ? s.reps : 0;
+    return [reps > 0 ? 1 : 0, reps, -(s.weight_kg ?? 0)];
+  }
   const e = e1rmForSet(s.weight_kg, s.reps, s.rpe, s.set_type);
   if (e != null) return [1, e];
   if (s.weight_kg != null && s.weight_kg > 0) return [1, s.weight_kg];
@@ -112,15 +120,32 @@ function setStrength(s: SetRow): [number, number] {
   return [0, s.reps ?? 0];
 }
 
-const stronger = (a: [number, number], b: [number, number]): boolean =>
-  a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
+/** Lexicographic: the first place two strengths differ decides it. */
+function stronger(a: number[], b: number[]): boolean {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
 
 /**
  * Best working set per session for an exercise, oldest → newest, capped at
  * `limit` most-recent sessions — the input to progression + the e1RM trend.
  */
-export function exerciseSessionTops(db: Database, exerciseId: string, limit = 12): SessionTopSet[] {
-  return exerciseSessionTopsFrom(workingSets(db, exerciseId), limit);
+export function exerciseSessionTops(
+  db: Database,
+  exerciseId: string,
+  limit = 12,
+  basis: LoadBasis | null = basisOf(db, exerciseId)
+): SessionTopSet[] {
+  return exerciseSessionTopsFrom(workingSets(db, exerciseId), limit, basis);
+}
+
+/** One movement's effective load basis, for the DB forms that were not handed it. */
+function basisOf(db: Database, exerciseId: string): LoadBasis | null {
+  return exerciseLoadBases(db, [exerciseId]).get(exerciseId) ?? null;
 }
 
 /**
@@ -141,12 +166,20 @@ export function exerciseSessionTops(db: Database, exerciseId: string, limit = 12
  * (`suggestProgression` filters on it, src/lib/exercise/progression.ts). The
  * false-deload path closes at the branch itself, the history stays honest, and
  * a future caller cannot feed the engine away numbers by accident.
+ *
+ * `basis` (0062) matters only for an assisted movement, whose ranking is
+ * inverted — see {@link setStrength}. Every caller that knows the movement
+ * passes it.
  */
-export function exerciseSessionTopsFrom(rows: SetRow[], limit = 12): SessionTopSet[] {
+export function exerciseSessionTopsFrom(
+  rows: SetRow[],
+  limit = 12,
+  basis: LoadBasis | null = null
+): SessionTopSet[] {
   const byWorkout = new Map<string, { date: DateString; best: SetRow }>();
   for (const r of rows) {
     const cur = byWorkout.get(r.workout_id);
-    if (!cur || stronger(setStrength(r), setStrength(cur.best))) {
+    if (!cur || stronger(setStrength(r, basis), setStrength(cur.best, basis))) {
       byWorkout.set(r.workout_id, { date: r.date, best: r });
     }
   }
@@ -165,9 +198,13 @@ export function exerciseSessionTopsFrom(rows: SetRow[], limit = 12): SessionTopS
   }));
 }
 
-/** Personal records for one exercise (all canonical kg). Empty-safe (nulls). */
+/**
+ * Personal records for one exercise (all canonical kg). Empty-safe (nulls).
+ * Reads the movement's load basis itself, so an assisted movement's records
+ * are its rep counts only, whoever asks.
+ */
 export function personalRecords(db: Database, exerciseId: string): PersonalRecords {
-  return personalRecordsFrom(workingSets(db, exerciseId));
+  return personalRecordsFrom(workingSets(db, exerciseId), basisOf(db, exerciseId));
 }
 
 /**
@@ -212,8 +249,11 @@ export function personalRecords(db: Database, exerciseId: string): PersonalRecor
  *     reports only the faster. Per-distance bests are a table, not a record,
  *     and they wait until there is history worth tabling.
  */
-export function personalRecordsFrom(rows: SetRow[]): PersonalRecords {
-  return personalRecordsOf(rows);
+export function personalRecordsFrom(
+  rows: SetRow[],
+  basis: LoadBasis | null = null
+): PersonalRecords {
+  return personalRecordsOf(rows, basis);
 }
 
 /** Best e1RM per session date, oldest → newest, capped at `limit` — the trend. */
@@ -289,28 +329,24 @@ export type TrainedExercise = {
  * working sets (newest workout first) — the pure half of
  * {@link trainedExercises}, and the only place the hub's arrow is computed.
  *
- * A lift's direction is its per-session best e1RM; when fewer than two home
- * sessions carry one (sets of fifteen are past the e1RM rep cap), it falls back
- * to the top weight, so a movement trained in high reps still gets an answer.
- * Everything else takes the first metric `trendMetricsFor` offers, and a
- * movement that covers distance takes none (see `primaryTrendMetric`).
+ * The direction is `directionOf` (src/lib/exercise/records.ts) — a lift's
+ * e1RM, else its top weight (sets past the e1RM rep cap), else its most reps (a
+ * pull-up logged at bodyweight); none for anything covering distance. It is
+ * the SAME function exercise detail opens its Trend with, so the arrow on this
+ * row and the chart it opens are always the same series.
  */
 export function trainedExerciseFrom(
   rows: SetRow[],
   measures: Measures,
   basis: LoadBasis | null
 ): Pick<TrainedExercise, 'latest' | 'trend' | 'trendMetric'> | null {
-  const tops = exerciseSessionTopsFrom(rows, 1);
+  const tops = exerciseSessionTopsFrom(rows, 1, basis);
   const latest = tops[tops.length - 1];
   if (!latest) return null;
-  const primary = primaryTrendMetric(measures, basis);
-  const candidates: TrendMetric[] =
-    primary === 'e1rm' ? ['e1rm', 'top_weight'] : primary ? [primary] : [];
-  for (const metric of candidates) {
-    const trend = trendOf(sessionSeriesFrom(rows, metric));
-    if (trend) return { latest, trend, trendMetric: metric };
-  }
-  return { latest, trend: null, trendMetric: null };
+  const direction = directionOf(rows, measures, basis);
+  return direction
+    ? { latest, trend: direction.trend, trendMetric: direction.metric }
+    : { latest, trend: null, trendMetric: null };
 }
 
 /** How many of each movement's latest sessions the hub reads — the trend needs four home ones. */

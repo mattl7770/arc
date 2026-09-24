@@ -63,9 +63,9 @@ import {
 import { weightColumnHeading, type LoadBasis } from '@/lib/exercise/load-basis';
 import { DEFAULT_MEASURES, hasMeasure, type Measures } from '@/lib/exercise/measures';
 import {
-  candidateFromTyped,
-  prSummary,
-  recordsBeaten,
+  phraseText,
+  prSummaryParts,
+  stampFor,
   type RecordKind,
 } from '@/lib/exercise/records';
 import type { PairedIngest, SetType, WorkoutDetail } from '@/lib/exercise/types';
@@ -141,6 +141,16 @@ import type { UnitPreferences } from '@/lib/user/types';
  */
 
 const SET_TYPES: SetType[] = ['normal', 'warmup', 'failure', 'drop'];
+
+/** The fields a PR stamp is a claim about — editing one on a done set asks again. */
+const RESTAMP_FIELDS: readonly (keyof LiveSet)[] = [
+  'weight',
+  'reps',
+  'rpe',
+  'time',
+  'distance',
+  'setType',
+];
 
 /** Recessed stock for an inline entry field: an input well, without the device. */
 const INPUT_WELL = 'justify-center border border-paper-deep bg-paper-dim px-1';
@@ -837,13 +847,60 @@ function WorkoutLive({
     return unsub;
   }, [navigation, unsaved, editing]);
 
+  /**
+   * Which records `set` (as it now reads) beats — `stampFor`
+   * (src/lib/exercise/records.ts) decides all of it: no stamp while editing a
+   * past session, none away (0055), "a record needs a previous best", and the
+   * session bar drawn from EVERY block of the movement. This only reads the
+   * logged history, which cannot contain this session (a draft until Finish).
+   */
+  const stampOf = (all: readonly LiveBlock[], block: LiveBlock, set: LiveSet): RecordKind[] => {
+    if (editing || block.exerciseId == null) return [];
+    try {
+      return stampFor({
+        set,
+        exerciseId: block.exerciseId,
+        measures: block.measures,
+        blocks: all,
+        history: workingSets(getDb(), block.exerciseId),
+        basis: basisOf(block),
+        away,
+        editing,
+        units,
+      });
+    } catch (error) {
+      // A failed read must never block ticking a set off mid-session.
+      console.warn('[exercise] PR check failed', error);
+      return [];
+    }
+  };
+
   const patchSet = (blockKey: number, setKey: number, patch: Partial<Omit<LiveSet, 'key'>>) => {
     setDirty(true);
+    // A DONE set whose numbers change is asked again (`stampOf`): a stamp is a
+    // claim about the figures on the row, and a corrected typo — 1100 back to
+    // 110, 5 reps to 6, a set cycled to warmup — must not keep a record it no
+    // longer holds, or gain one silently. Toggling `done` is toggleDone's.
+    const block = blocks.find((b) => b.key === blockKey);
+    const current = block?.sets.find((s) => s.key === setKey);
+    let restamp: Partial<LiveSet> = {};
+    if (
+      block &&
+      current?.done &&
+      !('done' in patch) &&
+      RESTAMP_FIELDS.some((field) => field in patch)
+    ) {
+      const kinds = stampOf(blocks, block, { ...current, ...patch });
+      restamp = { pr: kinds.length > 0, prKinds: kinds.length > 0 ? kinds : undefined };
+    }
     setBlocks((prev) =>
       prev.map((b) =>
         b.key !== blockKey
           ? b
-          : { ...b, sets: b.sets.map((s) => (s.key === setKey ? { ...s, ...patch } : s)) }
+          : {
+              ...b,
+              sets: b.sets.map((s) => (s.key === setKey ? { ...s, ...patch, ...restamp } : s)),
+            }
       )
     );
   };
@@ -921,30 +978,7 @@ function WorkoutLive({
   /** Toggle a set done; on completion start rest + stamp a PR if it beats a record. */
   const toggleDone = (block: LiveBlock, set: LiveSet) => {
     const done = !set.done;
-    let prKinds: RecordKind[] = [];
-    // Editing a past session awards no PRs and starts no rest timer: both are
-    // claims about right now, and this set happened days ago. Everything else
-    // is `recordsBeaten`'s (src/lib/exercise/records.ts): which records this
-    // movement has, the AWAY rule (an away session stamps nothing, 0055 — the
-    // control's own copy says so), and "a record needs a previous best". It is
-    // asked against the logged history, which cannot contain this session (it
-    // is a draft until Finish), and against the other sets already done in this
-    // block, so a set stamps only if it also clears those.
-    if (done && !editing && block.exerciseId != null) {
-      try {
-        prKinds = recordsBeaten(
-          candidateFromTyped(set, units),
-          workingSets(getDb(), block.exerciseId),
-          block.sets
-            .filter((s) => s.done && s.key !== set.key)
-            .map((s) => candidateFromTyped(s, units)),
-          { away, measures: block.measures, basis: basisOf(block) }
-        );
-      } catch (error) {
-        // A failed read must never block ticking a set off mid-session.
-        console.warn('[exercise] PR check failed', error);
-      }
-    }
+    const prKinds = done ? stampOf(blocks, block, set) : [];
     patchSet(block.key, set.key, {
       done,
       pr: prKinds.length > 0,
@@ -1505,7 +1539,7 @@ function ExerciseBlock({
   // predates the names still carries `pr`, so the label is drawn from `pr` and
   // the line only when there is something to say.
   const anyPr = block.sets.some((s) => s.pr);
-  const prLine = prSummary(
+  const prLine = prSummaryParts(
     block.sets.map((s, i) => {
       const reps = Number(s.reps);
       return {
@@ -1734,7 +1768,8 @@ function ExerciseBlock({
 
         {/* PR marker + add set. The mark is ink, never the accent or a signal
             colour: it is neither a completion nor a verdict about the body. The
-            line beside it says which record, in mono, because it is a fact. */}
+            line beside it says which record — a why-line, so the words are in
+            the serif and only the figures ("3", "5 reps") in mono. */}
         <Divider />
         <View className="flex-row items-center gap-2 pt-1.5">
           {anyPr ? (
@@ -1743,7 +1778,19 @@ function ExerciseBlock({
             </Text>
           ) : null}
           {prLine ? (
-            <Text className="flex-1 font-mono text-[10px] leading-4 text-ink-muted">{prLine}</Text>
+            <Text
+              accessibilityLabel={phraseText(prLine)}
+              className="flex-1 font-serif text-[11px] leading-4 text-ink-muted">
+              {prLine.map((part, i) =>
+                part.measured ? (
+                  <Text key={i} className="font-mono text-[10px]">
+                    {part.text}
+                  </Text>
+                ) : (
+                  part.text
+                )
+              )}
+            </Text>
           ) : (
             <View className="flex-1" />
           )}

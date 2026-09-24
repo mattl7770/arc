@@ -144,7 +144,7 @@ export type DraftBlock = {
   prev: PrevSet[];
   /**
    * Best e1RM before this session. It WAS the bar a set had to beat to tag a
-   * PR; since 2026-09-23 the stamp is `recordsBeaten` (src/lib/exercise/
+   * PR; since 2026-09-23 the stamp is `stampFor` (src/lib/exercise/
    * records.ts), which reads every record from the logged history instead. It
    * is still written and parsed so a draft keeps its shape across builds.
    */

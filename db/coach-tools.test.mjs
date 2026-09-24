@@ -617,6 +617,27 @@ console.log('11. set weights arrive in display lb and store canonical kg');
   summary.includes('Bench 8 × 225 lb')
     ? ok(`confirmation shows the sets in display units ("${summary}")`)
     : bad('set summary', summary);
+  // What the weight COUNTS (0062) is on the card before he approves it: "60s"
+  // on a dumbbell press is 60 lb per hand, and a card that read like a total
+  // would store the wrong claim for good.
+  const dbCard = toolByName('log_workout').confirmSummary(
+    { kind: 'strength', sets: [{ exercise: 'Dumbbell Bench Press', reps: 8, weight: 60 }] },
+    db
+  );
+  const barCard = toolByName('log_workout').confirmSummary(
+    { kind: 'strength', sets: [{ exercise: 'Barbell Bench Press', reps: 5, weight: 225 }] },
+    db
+  );
+  const freeCard = toolByName('log_workout').confirmSummary(
+    { kind: 'strength', sets: [{ exercise: 'Sandbag Toss', reps: 5, weight: 60 }] },
+    db
+  );
+  dbCard.includes('Dumbbell Bench Press 8 × 60 lb per hand') &&
+  barCard.includes('Barbell Bench Press 5 × 225 lb total') &&
+  freeCard.includes('Sandbag Toss 5 × 60 lb') &&
+  !/per hand|total|stack/.test(freeCard.split('Sandbag Toss')[1] ?? '')
+    ? ok(`the card says what the weight counts ("${dbCard}"), and a free-text movement claims nothing`)
+    : bad('card basis', [dbCard, barCard, freeCard].join(' | '));
 }
 
 console.log('12. sub-week training windows refuse to extrapolate a weekly rate');

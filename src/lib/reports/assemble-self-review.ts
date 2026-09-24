@@ -9,7 +9,7 @@
  * ## This layer COMPOSES; it does not re-derive
  *
  * Every number here traces to a seam that already has its own test suite —
- * `trainingDailyTotals` / `muscleSetsInRange` / `e1rmSeries`,
+ * `trainingDailyTotals` / `muscleSetsInRange` / `e1rmSeriesFrom` / `e1rmRecordOf`,
  * `dailyIntakeSeries` / `activeNutritionTargets` / `metricIsComplete`,
  * `wearableArbitratedSeries` + `compareWindows` + `TREND_GATES`,
  * `bodyDailySeries`, `excusedDatesIn`, `listExperiments`. Where a seam could
@@ -50,9 +50,15 @@ import { timezoneChangedDaysIn } from '@/lib/db/repositories/day-meta';
 import { excusedDatesIn } from '@/lib/db/repositories/mission';
 import { clampStatusSpan, statusesIn } from '@/lib/db/repositories/statuses';
 import { getModeDefinition, type ModeKey } from '@/lib/modes/registry';
-import { e1rmSeries, muscleSetsInRange } from '@/lib/db/repositories/training-stats';
+import {
+  e1rmSeriesFrom,
+  muscleSetsInRange,
+  workingSets,
+} from '@/lib/db/repositories/training-stats';
 import { exerciseLoadBases } from '@/lib/db/repositories/exercise-catalog';
-import { LOAD_BASIS_INLINE } from '@/lib/exercise/load-basis';
+import { LOAD_BASIS_INLINE, loadRecordsApply } from '@/lib/exercise/load-basis';
+import { asMeasures } from '@/lib/exercise/measures';
+import { e1rmRecordOf } from '@/lib/exercise/records';
 import {
   activeNutritionTargets,
   dailyIntakeSeries,
@@ -437,7 +443,7 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
       : null;
 
   // Every exercise with at least one non-warmup set in-period, with its distinct
-  // session count. e1rmSeries is an ALL-TIME read per exercise; the period is a
+  // session count. `workingSets` is an ALL-TIME read per exercise; the period is a
   // filter over what it returns, never a second query.
   //
   // The HAVING >= 2 that used to live on this query has been REMOVED, and the
@@ -446,8 +452,8 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
   // sessions; PR detection needs only a single session — a lift trained once can
   // set an all-time best — and inheriting the >= 2 gate silently dropped that
   // record from the report it claims to surface.
-  const trained = db.all<{ exerciseId: string; name: string; sessions: number }>(
-    `SELECT s.exercise_id AS exerciseId, e.name AS name,
+  const trained = db.all<{ exerciseId: string; name: string; measures: string; sessions: number }>(
+    `SELECT s.exercise_id AS exerciseId, e.name AS name, e.measures AS measures,
             count(DISTINCT w.date) AS sessions
      FROM workout_sets s
      JOIN workouts w  ON w.id = s.workout_id
@@ -471,16 +477,22 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
   );
   for (const row of trained) {
     const basis = bases.get(row.exerciseId) ?? null;
+    // An ASSISTED movement's figure is help: its "e1RM" is highest on its
+    // easiest set, and taking assistance off would read as a regression in the
+    // delta. It gets neither row, the same gate the records grid and the PR
+    // stamp keep (`loadRecordsApply`).
+    if (!loadRecordsApply(basis)) continue;
     const label = basis == null ? row.name : `${row.name} (${LOAD_BASIS_INLINE[basis]})`;
-    // A generous limit, then filter: `e1rmSeries` slices the most recent N
+    const rows = workingSets(db, row.exerciseId);
+    // A generous limit, then filter: `e1rmSeriesFrom` slices the most recent N
     // session dates before sorting, so the cap has to comfortably exceed any
     // real training history inside a one-year period.
     //
-    // HOME points only (0055): both readings below COMPARE load — a first-to-
-    // last delta and an all-time best — and an away session's numbers are not
-    // comparable to the home baseline in either direction. The chart on the
-    // exercise screen keeps them, marked; a report has no way to mark a row.
-    const series = e1rmSeries(db, row.exerciseId, 1000).filter((p) => p.away !== true);
+    // HOME points only (0055): the delta below COMPARES load, and an away
+    // session's numbers are not comparable to the home baseline in either
+    // direction. The chart on the exercise screen keeps them, marked; a report
+    // has no way to mark a row.
+    const series = e1rmSeriesFrom(rows, 1000).filter((p) => p.away !== true);
     const inPeriod = series.filter((p) => p.date >= period.start && p.date <= accEnd);
     // The movement-progression row needs two in-period sessions to show a delta.
     if (row.sessions >= 2 && inPeriod.length >= 2) {
@@ -501,15 +513,21 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
     // inside it. "First" matters: repeating your best in August does not make
     // August the month you set it, and reporting it as one would quietly
     // manufacture a PR every time a lift is matched.
-    if (series.length > 0) {
-      const best = series.reduce((a, b) => (b.e1rm > a.e1rm ? b : a));
-      const firstAchieved = series.find((p) => p.e1rm === best.e1rm)!;
-      if (firstAchieved.date >= period.start && firstAchieved.date <= accEnd) {
-        const display = weightSpec ? weightSpec.fromCanonical(best.e1rm) : best.e1rm;
-        personalRecords.push(
-          `${label} — ${num(display, 1)} ${weightSpec?.unit ?? 'kg'} estimated 1RM on ${formatDate(firstAchieved.date)}`
-        );
-      }
+    //
+    // The rule is the live stamp's own (`e1rmRecordOf`, src/lib/exercise/
+    // records.ts): home sessions only, and a record has to BEAT an earlier
+    // best — so a movement's first-ever session is not a personal record here
+    // either, exactly as it stamped nothing in the gym and carries no PR mark
+    // in its history.
+    const record = e1rmRecordOf(rows, { measures: asMeasures(row.measures), basis });
+    if (record != null && record.date >= period.start && record.date <= accEnd) {
+      // Rounded to 0.1 kg BEFORE converting, as `e1rmSeriesFrom` rounds the
+      // movement rows above — so one set prints one number across the report.
+      const kg = Math.round(record.e1rmKg * 10) / 10;
+      const display = weightSpec ? weightSpec.fromCanonical(kg) : kg;
+      personalRecords.push(
+        `${label} — ${num(display, 1)} ${weightSpec?.unit ?? 'kg'} estimated 1RM on ${formatDate(record.date)}`
+      );
     }
   }
 

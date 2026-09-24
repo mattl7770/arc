@@ -18,41 +18,38 @@ import {
   type SetRow,
 } from '@/lib/db/repositories/training-stats';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
-import {
-  dayLabel,
-  formatClock,
-  formatDistance,
-  formatPace,
-  formatWeight,
-  measuredSetLine,
-  weightSpec,
-} from '@/lib/exercise/format';
+import { dayLabel, formatWeight, measuredSetLine, weightSpec } from '@/lib/exercise/format';
 import { resolveExerciseImage } from '@/lib/exercise/images.generated';
 import {
   LOAD_BASES,
   LOAD_BASIS_INLINE,
   LOAD_BASIS_LABEL,
   LOAD_BASIS_MEANING,
-  loadRecordsApply,
   type LoadBasis,
 } from '@/lib/exercise/load-basis';
-import { isLoadedRepsMeasures, measuresLabel } from '@/lib/exercise/measures';
+import { measuresLabel } from '@/lib/exercise/measures';
 import {
+  defaultTrendMetric,
   formatTrendValue,
+  recordCellsOf,
+  recordKindsFor,
   recordSessionIds,
+  repMaxEmptyNote,
   repMaxesFrom,
   sessionSeriesFrom,
   TREND_METRIC_LABEL,
+  trendEmptyNote,
+  trendHeadline,
   trendMetricsFor,
   trendOf,
   trendPhrase,
+  trendPhraseParts,
   type RepMax,
   type TrendMetric,
 } from '@/lib/exercise/records';
 import type { CatalogExercise, PersonalRecords } from '@/lib/exercise/types';
 import type { SessionTopSet } from '@/lib/exercise/progression';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
-import type { UnitPreferences } from '@/lib/user/types';
 
 /**
  * Exercise detail — how the movement looks, what it works, what its weight
@@ -133,13 +130,16 @@ function read(id: string | undefined): Detail {
   const exercise = getExercise(db, id);
   // One scan of workout_sets feeds every stat, instead of a re-query each.
   const rows = workingSets(db, id);
+  // The basis decides whether load records exist at all (none for an assisted
+  // movement) and which set of a session is its top set.
+  const basis = exercise?.loadBasis ?? null;
   return {
     exercise,
     rows,
-    prs: personalRecordsFrom(rows),
-    repMaxes: repMaxesFrom(rows),
+    prs: personalRecordsFrom(rows, basis),
+    repMaxes: repMaxesFrom(rows, basis),
     // newest-first for the history list
-    sessions: exerciseSessionTopsFrom(rows, HISTORY_LIMIT).slice().reverse(),
+    sessions: exerciseSessionTopsFrom(rows, HISTORY_LIMIT, basis).slice().reverse(),
     recordSessions: exercise
       ? recordSessionIds(rows, { measures: exercise.measures, basis: exercise.loadBasis })
       : new Set(),
@@ -147,75 +147,15 @@ function read(id: string | undefined): Detail {
   };
 }
 
-type RecordCell = { label: string; value: string | null };
-
-/**
- * The records this movement actually has, from what it MEASURES — not from
- * which happen to be non-null. That distinction is the whole point: a movement
- * with no history yet must still show the right em-dashes, or the screen
- * teaches the wrong thing about it before the first set is logged.
- *
- *   reps + load      Best e1RM · Top set · Set volume
- *                    Session volume · Most reps · Sessions      (2026-09-23)
- *   reps, no load    Most reps · Session reps · Sessions        (and assisted)
- *   time + distance  Longest · Farthest · Best pace
- *   time only        Longest · Top set · Set volume
- *
- * A push-up's grid was three em-dashes for ever until 2026-09-23, because
- * `reps` alone fell to the generic branch — its records are reps, and now it
- * says so. An ASSISTED movement shows the rep records only: a higher assistance
- * figure is an easier set, so "Top set" would crown the easiest one.
+/*
+ * The Records grid's cells are `recordCellsOf` (src/lib/exercise/records.ts):
+ * the records this movement HAS, from what it measures and what its weight
+ * counts — not from which happen to be non-null, so a movement with no history
+ * still shows the right em-dashes. They are the same list of kinds the live PR
+ * stamp checks, so every record on the grid is one a set can stamp; until
+ * 2026-09-23 the screen chose its own cells, and a plank's grid carried a "Top
+ * set" and a "Set volume" it could never fill.
  */
-function recordsFor(
-  exercise: CatalogExercise,
-  prs: PersonalRecords,
-  sessionCount: number,
-  units: UnitPreferences
-): RecordCell[] {
-  const w = (kg: number | null) => (kg == null ? null : formatWeight(kg, units));
-  const n = (v: number | null) => (v == null ? null : String(Math.round(v)));
-  const e1rm = { label: 'Best e1RM', value: w(prs.bestE1rmKg) };
-  const topSet = { label: 'Top set', value: w(prs.maxWeightKg) };
-  const setVolume = { label: 'Set volume', value: w(prs.bestSetVolumeKg) };
-  const sessionVolume = { label: 'Session volume', value: w(prs.bestSessionVolumeKg) };
-  const mostReps = { label: 'Most reps', value: n(prs.bestReps) };
-  const sessionReps = { label: 'Session reps', value: n(prs.bestSessionReps) };
-  const sessions = { label: 'Sessions', value: sessionCount > 0 ? String(sessionCount) : null };
-  const longest = {
-    label: 'Longest',
-    value: prs.bestDurationSec == null ? null : formatClock(prs.bestDurationSec),
-  };
-  const farthest = {
-    label: 'Farthest',
-    value: prs.bestDistanceM == null ? null : formatDistance(prs.bestDistanceM, units),
-  };
-  const pace = {
-    label: 'Best pace',
-    value: prs.bestPaceSecPerKm == null ? null : formatPace(prs.bestPaceSecPerKm, units),
-  };
-  const { measures } = exercise;
-  if (isLoadedRepsMeasures(measures)) {
-    return loadRecordsApply(exercise.loadBasis)
-      ? [e1rm, topSet, setVolume, sessionVolume, mostReps, sessions]
-      : [mostReps, sessionReps, sessions];
-  }
-  switch (measures) {
-    case 'reps':
-      return [mostReps, sessionReps, sessions];
-    case 'time,distance':
-      return [longest, farthest, pace];
-    case 'time':
-      return [longest, topSet, setVolume];
-    case 'load,time':
-      return [longest, topSet, setVolume];
-    case 'load,distance':
-      return [farthest, topSet, setVolume];
-    case 'distance':
-      return [farthest, longest, pace];
-    default:
-      return [longest, farthest, topSet];
-  }
-}
 
 /** A trend metric is a weight when its figures are in the logged load basis. */
 const WEIGHT_METRICS: ReadonlySet<TrendMetric> = new Set(['e1rm', 'top_weight', 'volume']);
@@ -239,13 +179,21 @@ export default function ExerciseDetailScreen() {
     () => (exercise ? trendMetricsFor(exercise.measures, exercise.loadBasis) : []),
     [exercise]
   );
+  // Opened on the metric the DATA can draw — the direction's own metric when
+  // there is one, so the Train hub's "+10%" opens on the chart it was read
+  // from (`defaultTrendMetric`). Until the owner picks a chip.
+  const defaultMetric = useMemo(
+    () => (exercise ? defaultTrendMetric(rows, exercise.measures, exercise.loadBasis) : null),
+    [exercise, rows]
+  );
   const metric: TrendMetric | null =
-    metricChoice != null && metrics.includes(metricChoice) ? metricChoice : (metrics[0] ?? null);
+    metricChoice != null && metrics.includes(metricChoice) ? metricChoice : defaultMetric;
   const series = useMemo(
     () => (metric == null ? [] : sessionSeriesFrom(rows, metric)),
     [rows, metric]
   );
   const trend = useMemo(() => trendOf(series), [series]);
+  const headline = useMemo(() => trendHeadline(series, trend), [series, trend]);
 
   if (!exercise) {
     return (
@@ -276,8 +224,8 @@ export default function ExerciseDetailScreen() {
   // "kg · per hand" — the one place each section says what its weights count.
   const basisNote =
     basis == null ? undefined : `${weightSpec(units).unit} · ${LOAD_BASIS_INLINE[basis]}`;
-  const records = recordsFor(exercise, prs, sessionCount, units);
-  const showRepMaxes = isLoadedRepsMeasures(exercise.measures) && loadRecordsApply(basis);
+  const records = recordCellsOf(exercise.measures, basis, prs, sessionCount, units);
+  const showRepMaxes = recordKindsFor(exercise.measures, basis).includes('rep_max');
   const photo = resolveExerciseImage(exercise.id);
 
   /**
@@ -425,8 +373,8 @@ export default function ExerciseDetailScreen() {
       {/* Personal records — a metric grid: no outer box, drawn by the rules
           between its cells. `GridCell` carries the width, the padding and both
           rules (src/components/ui/block.tsx); the reference form is
-          src/components/home/metrics-strip.tsx. Six cells wrap into two ruled
-          rows of three. */}
+          src/components/home/metrics-strip.tsx. Rows of three: a lift's six
+          cells are two ruled rows, a plank's two cells one. */}
       <View className="mt-6">
         <Block device="grid">
           <SectionLabel label="Records" note={basisNote} />
@@ -480,15 +428,18 @@ export default function ExerciseDetailScreen() {
                 })}
               </View>
             ) : null}
-            {series.length >= 2 ? (
+            {series.length >= 2 && headline != null ? (
               <>
                 <View className="mt-3 flex-row items-center justify-between">
+                  {/* The figure is the session the direction line is read
+                      from: when the last point is an away session, the home
+                      value, labelled as such (`trendHeadline`). */}
                   <View>
                     <Text className="font-mono text-2xl text-ink">
-                      {formatTrendValue(metric, series[series.length - 1]!.value, units)}
+                      {formatTrendValue(metric, headline.value, units)}
                     </Text>
                     <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                      Latest
+                      {headline.label}
                     </Text>
                   </View>
                   {/* Away sessions are PLOTTED and MARKED, never hidden (0055):
@@ -503,11 +454,21 @@ export default function ExerciseDetailScreen() {
                     height={36}
                   />
                 </View>
+                {/* A why-line: the words in the serif, the figures in mono
+                    ("Serif speaks, mono measures", 00-design-spec.md §3). */}
                 {trend ? (
                   <Text
                     accessibilityLabel={trendPhrase(trend, { spoken: true })}
-                    className="mt-2 font-mono text-[11px] text-ink-secondary">
-                    {trendPhrase(trend)}
+                    className="mt-2 font-serif text-[12px] leading-5 text-ink-secondary">
+                    {trendPhraseParts(trend).map((part, i) =>
+                      part.measured ? (
+                        <Text key={i} className="font-mono text-[11px]">
+                          {part.text}
+                        </Text>
+                      ) : (
+                        part.text
+                      )
+                    )}
                   </Text>
                 ) : null}
                 <Text className="mt-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
@@ -519,9 +480,7 @@ export default function ExerciseDetailScreen() {
               </>
             ) : (
               <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                {metric === 'e1rm'
-                  ? 'An estimated-1RM trend needs two weighted sessions.'
-                  : 'A trend needs two sessions.'}
+                {trendEmptyNote(metric, rows)}
               </Text>
             )}
             {/* The key for the mark above — drawn only when there is something
@@ -545,7 +504,7 @@ export default function ExerciseDetailScreen() {
             <SectionLabel label="Best at each rep count" note={basisNote} />
             {repMaxes.length === 0 ? (
               <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                Nothing logged yet.
+                {repMaxEmptyNote(rows, basis)}
               </Text>
             ) : (
               <View className="mt-1">

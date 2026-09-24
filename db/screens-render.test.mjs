@@ -1847,8 +1847,73 @@ const db = getDb();
       ],
     });
     const resumedPr = render('workout-live (resumed PR)', WorkoutLiveScreen, { resume: '1' });
-    expect('workout-live (resumed PR)', resumedPr, ['PR', 'Set 1: best e1RM, heaviest']);
+    expect('workout-live (resumed PR)', resumedPr, [
+      'PR',
+      // The whole line, for VoiceOver…
+      'aria-label="Set 1: best e1RM, heaviest"',
+      // …drawn as prose with its figure as a nested run (the mono one): the
+      // words are no longer set in the measuring face.
+      '>Set <span',
+    ]);
     clearWorkoutDraft(db, 'live');
+
+    // Review fixes (2026-09-23). A pull-up at bodyweight — how most are done —
+    // had no trend (it opened on an empty e1RM chart), and its rep-max table
+    // said "Nothing logged yet." over three sessions. Dated in the past, with
+    // created_at moved to match, so no freshness reading on this walk moves.
+    const pastSession = (date, sets, away) => {
+      const id = logWorkout(db, { date, kind: 'strength', ...(away ? { away: true } : {}) }, sets);
+      db.run('UPDATE workouts SET created_at = ? WHERE id = ?', [`${date}T12:00:00.000Z`, id]);
+    };
+    const pull = (reps) => ({ exercise: 'Pull-Up', exerciseId: 'pull-up', reps, weightKg: null });
+    pastSession('2025-03-01', [pull(8), pull(7)]);
+    pastSession('2025-03-03', [pull(9), pull(8)]);
+    pastSession('2025-03-05', [pull(11), pull(9)]);
+    const pullUp = render('exercise detail (bodyweight pull-up)', ExerciseDetailScreen, {
+      id: 'pull-up',
+    });
+    expect('exercise detail (bodyweight pull-up)', pullUp, [
+      'Most reps',
+      'Session reps',
+      // The Trend opens on reps, and says which way they are going.
+      'aria-label="up 29 percent on the previous 2 sessions"',
+      '11 reps',
+      'No sets with added weight yet.',
+    ]);
+    refute('exercise detail (bodyweight pull-up)', pullUp, [
+      'An estimated-1RM trend needs two weighted sessions.',
+      'Nothing logged yet.',
+    ]);
+    // A friendlier bar elsewhere, logged last: the large figure is the home
+    // session the "+29%" is about, and says so.
+    pastSession('2025-03-07', [pull(15)], true);
+    expect(
+      'exercise detail (pull-up, away last)',
+      render('exercise detail (pull-up, away last)', ExerciseDetailScreen, { id: 'pull-up' }),
+      ['Latest at home', '11 reps', 'aria-label="up 29 percent on the previous 2 sessions"']
+    );
+
+    // Sets of fifteen carry no e1RM. The hub reads "+10%" from the top weight,
+    // so the screen it opens must open on that chart, not an empty e1RM one.
+    const ext = (weightKg) => ({
+      exercise: 'Leg Extension',
+      exerciseId: 'leg-extension',
+      reps: 15,
+      weightKg,
+    });
+    pastSession('2025-03-02', [ext(50)]);
+    pastSession('2025-03-04', [ext(55)]);
+    const legExt = render('exercise detail (high reps)', ExerciseDetailScreen, {
+      id: 'leg-extension',
+    });
+    expect('exercise detail (high reps)', legExt, [
+      'Latest',
+      'aria-label="up 10 percent on the previous session"',
+    ]);
+    refute('exercise detail (high reps)', legExt, [
+      'An estimated-1RM trend needs two weighted sessions.',
+      'An estimated 1RM needs a set of 12 reps or fewer',
+    ]);
 
     // A9: routine-edit is the one screen-render-covered survivor of the
     // retired "routine" vocabulary — the noun everywhere else is "saved

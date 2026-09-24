@@ -29,6 +29,7 @@ import {
   getExperiment,
 } from '../src/lib/db/repositories/experiments.ts';
 import { createReminder } from '../src/lib/db/repositories/reminders.ts';
+import { createCustomExercise } from '../src/lib/db/repositories/exercise-catalog.ts';
 import { getMeal, logMeal } from '../src/lib/db/repositories/nutrition.ts';
 import { getWorkoutDetail, logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
@@ -525,6 +526,28 @@ console.log('4b. query_records: list, compute, windows and the discovery call');
   dbStats.recentTopSets.every((t) => !('workoutId' in t))
     ? ok('…and leaves the screen’s join key (a UUID per row) out of the payload')
     : bad('workoutId leaked', JSON.stringify(dbStats.recentTopSets));
+  // An ASSISTED movement's figure is help: its heaviest set is its easiest, so
+  // the payload must not crown it the way the records grid refuses to.
+  const assisted = createCustomExercise(db, {
+    name: 'Assisted Pull-Up',
+    equipment: 'machine',
+    loggingType: 'assisted_bodyweight',
+    primaryMuscles: ['lats'],
+  });
+  logWorkout(db, { date: TODAY, kind: 'strength' }, [
+    { exercise: 'Assisted Pull-Up', exerciseId: assisted, reps: 8, weightKg: 35 },
+    { exercise: 'Assisted Pull-Up', exerciseId: assisted, reps: 8, weightKg: 15 },
+  ]);
+  const aStats = query({ domain: 'exercise_stats', id: assisted }).result;
+  aStats.loadBasis === 'assisted' &&
+  aStats.records.maxWeightKg === null &&
+  aStats.records.bestE1rmKg === null &&
+  aStats.records.bestReps === 8 &&
+  !('repMaxes' in aStats) &&
+  !('e1rmSeries' in aStats) &&
+  aStats.recentTopSets[0]?.weightKg === 15
+    ? ok('assisted: no load records, no rep maxes, no e1RM series — and the top set is the LEAST help')
+    : bad('assisted exercise_stats', JSON.stringify(aStats));
   const catalogRows = query({ domain: 'exercise_catalog', query: 'bench', limit: 25 }).rows;
   const byId = new Map(catalogRows.map((r) => [r.id, r]));
   byId.get('dumbbell-bench-press')?.loadBasis === 'per_hand' &&

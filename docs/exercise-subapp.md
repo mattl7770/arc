@@ -796,7 +796,9 @@ ALTER TABLE exercises ADD COLUMN load_basis text CHECK (
 | Coach payloads | as logged | **no** | the figure rides with `loadBasis` beside it; the model does its own arithmetic knowing what the number is |
 | Anything summing load ACROSS movements (tonnage) | — | **only through `loadMovedKg`** | nothing does today. `per_hand` / `per_side` ×2, `total` / `stack` / `bodyweight_plus` ×1 (body excluded — ARC does not know what it weighed that day), `assisted` refuses |
 
-**Assisted movements set no load records**, because a higher figure is an easier set: the heaviest, the best e1RM and the best at each rep count would all crown the easiest work. `loadRecordsApply` is the gate; the records grid shows only the rep counts, as facts, the PR stamp stays silent (reps at different assistance are not comparable either), and `progressionFor` now says *Take assistance off as the reps allow* rather than suggesting more assistance (it used to add the increment to the assistance — a latent bug with no seeded movement to trip it).
+**Assisted movements set no load records**, because a higher figure is an easier set: the heaviest, the best e1RM and the best at each rep count would all crown the easiest work. `loadRecordsApply` is the gate, and it is applied at the SOURCE rather than per screen: `personalRecordsOf` returns null load records and `repMaxesFrom` an empty table for an assisted movement, so the detail screen, the Coach's `exercise_stats` (which also leaves out `repMaxes` and `e1rmSeries` for one) and `personalRecords(db, id)` (which reads the basis itself) all agree. The records grid shows only the rep counts, as facts; the PR stamp stays silent (reps at different assistance are not comparable either); the self-review gives an assisted movement no e1RM delta row and no record; and `progressionFor` says *Take assistance off as the reps allow* rather than suggesting more assistance (it used to add the increment to the assistance — a latent bug with no seeded movement to trip it).
+
+**An assisted session's top set is ranked the other way** (`setStrength` in training-stats.ts). The e1RM of the assistance picked the set with the MOST help, so the history and the hub row showed the easiest set of every session. It now ranks by reps, and among equal reps by less help — reps first because the movement's direction of travel reads reps, so the hub row's top set and its arrow describe the same thing. `exerciseSessionTopsFrom` takes the basis; `exerciseSessionTops(db, id)` reads it itself.
 
 ### 14.4 Where the basis is shown
 
@@ -804,40 +806,61 @@ ALTER TABLE exercises ADD COLUMN load_basis text CHECK (
 - **Exercise detail**: a *Weight* line under the meta (the basis, one sentence of what it means, *Set by you* when it is his, and *Change* opening the six chips), and a `kg · per hand` note on Records, Trend (weight metrics), Best at each rep count and History — once per section, not on every number.
 - **Train hub**: each Exercises row's latest set reads "8 × 30 kg per hand", because that line has no heading above it.
 - **Self-review report**: a movement is named with its basis — "Dumbbell Bench Press (per hand)" — because a report read months later has no column heading.
+- **The Coach's `log_workout` card**: each set line says what the weight counts before he approves it — "Dumbbell Bench Press 8 × 60 lb per hand", "Barbell Bench Press 5 × 225 lb total". This is the write path where a misread basis does lasting harm: 60 lb per hand stored as a total would raise the movement's records for good. The basis is resolved per set from the catalog (`exerciseLoadBases`); a free-text movement states none. Card text, not schema — the §6 ceilings are untouched.
 - **Not changed**: the manual logger (`workout-log.tsx`) and the photo-import review still take a bare weight; their inputs belong to the branch rewriting timed-set entry.
 
 ### 14.5 Fitbod, audited against ARC
 
 | Fitbod gives, per exercise | ARC before 2026-09-23 | ARC now |
 | --- | --- | --- |
-| Estimated 1RM over time | a 120 pt sparkline of the last 12 session-dates, no extent, no direction | **Trend** field: one point per session (24), the latest value, the date extent and session count, and the direction against the previous three home sessions ("+4% on the previous 3 sessions") |
+| Estimated 1RM over time | a 120 pt sparkline of the last 12 session-dates, no extent, no direction | **Trend** field: one point per session (24), the latest value, the date extent and session count, and the direction against the previous three home sessions ("+4% on the previous 3 sessions"). It opens on the metric the data can draw (§14.7), not always e1RM |
 | Max weight history | the single heaviest set | **Top set** trend chip, alongside the record |
 | Max volume history | best single-set volume only | **Session volume** record and a **Volume** trend chip (Σ weight × reps per session) |
-| Max reps history | nothing — and a push-up's whole records grid was three em-dashes | **Most reps** and **Session reps** records, and a **Most reps** trend chip; a push-up's grid is now its reps |
-| Best weight at each rep count | nothing | **Best at each rep count**: exact counts 1–20, the date each was first reached, home sessions only |
-| A PR marked the moment you hit it | an e1RM-only "PR" at the block foot | every record kind stamps, and the foot says which: "Set 3: best e1RM, heaviest · Set 4: best at 5 reps" |
+| Max reps history | nothing — and a push-up's whole records grid was three em-dashes | **Most reps** and **Session reps** records, and a **Most reps** trend chip; a push-up's grid is now its reps, and a pull-up logged at bodyweight gets a reps trend and direction |
+| Best weight at each rep count | nothing | **Best at each rep count**: exact counts 1–20, the date each was first reached, home sessions only; when empty it says why ("No sets with added weight yet.") |
+| A PR marked the moment you hit it | an e1RM-only "PR" at the block foot | **every record on the Records grid stamps** — best e1RM, heaviest, best at N reps, best set volume, best session volume, most reps, most reps in a session, longest, farthest, fastest pace, as the movement has them — and the foot says which: "Set 3: best e1RM, heaviest · Set 4: best session volume". Assisted movements are the one exception (§14.3) |
 | PRs visible in history | nothing | **PR** on each history row whose session set a record at the time — the live stamp's own rule |
+| PRs in the self-review | e1RM only, first-ever session counted, away sessions counted | still e1RM only (the report's line is an estimated 1RM), but through the live stamp's rule: home only, and it must beat an earlier best |
 | A way into any exercise's history | the picker's records button, or a block title mid-session | **Exercises** on the Train hub: every movement trained, most recent first, latest top set and direction; six rows, then *Show all* |
 | Time ranges (1M / 3M / 1Y) on the chart | — | **not built**: 24 sessions with a stated extent covers a year of a twice-weekly lift; a range picker is the next step if the owner wants it |
 
 Not on Home (CLAUDE.md §5).
 
-### 14.6 The PR rule — one function, live and after the fact
+### 14.6 The PR rule — one function, four surfaces
 
-`recordsBeaten` (live) and `recordSessionIds` (history) share `kindsBeating` in `src/lib/exercise/records.ts`:
+The live stamp (`stampFor` → `recordsBeaten`), the history's mark (`recordSessionIds`) and the self-review's record line (`e1rmRecordOf`) all ask `kindsBeating` in `src/lib/exercise/records.ts`. The Records grid is drawn from the same list (`recordKindsFor` → `recordCellsFor` / `recordCellsOf`), so **every record on the grid is one a set can stamp, by construction** — a test walks every measure/basis pair and fails on a grid cell with no kind or a kind with no cell. (Until the review the screen chose its own cells: Set volume, Session volume, Session reps and a loaded lift's Most reps sat on the grid and never stamped, and a plank's grid carried a Top set and a Set volume it could never fill.)
 
-- **Kinds by what the movement measures.** reps + load (not assisted): `e1rm`, `weight`, `rep_max`. A set with no load on a movement whose load is absent or optional (a push-up, an unweighted pull-up): `reps` — never a loaded lift with the weight left blank, which would be a typo scoring a record. Time: `duration`. Distance: `distance`. Both, over at least `PACE_PR_MIN_M`: `pace`.
-- **An away session stamps nothing** (0055). The rule moved out of the screen into `recordsBeaten`, so no caller can award an away PR by forgetting to ask; turning Away on still clears the stamps already earned.
-- **A record needs a previous best.** The first session of a movement sets its bars silently, and a first-ever set of three is not a "best at 3 reps". This changes one old behaviour: the e1RM-only stamp used to tag the first set of a never-done movement as a PR.
-- **Within a session a set must clear the sets already done**, so the second of two record sets stamps only if it beats the first. The bar is read from the logged history (the live session is a draft until Finish, 0045) plus the other done sets in the block; nothing is cached, and `DraftBlock.bestE1rm` is no longer read.
+- **Kinds by what the movement measures and counts** (`recordKindsFor`):
+
+  | Movement | Kinds (each is a grid cell, except `rep_max`, which is the table) |
+  | --- | --- |
+  | reps + load | `e1rm`, `weight`, `rep_max`, `set_volume`, `session_volume`, `reps` |
+  | reps + load, `bodyweight_plus` | `reps`, `session_reps`, `weight`, `e1rm`, `rep_max` — no volume: added-load volume leaves the body out and is not a figure anyone reads |
+  | reps + load, `assisted` | none (§14.3); the grid shows Most reps · Session reps · Sessions as facts |
+  | reps only | `reps`, `session_reps` |
+  | load only | `weight` |
+  | time / distance | `duration` / `distance`, and `pace` (over at least `PACE_PR_MIN_M`) with both |
+
+- **Most reps on a loaded lift needs the load typed.** A blank weight on a bench set is a typo, not a record; where the load is optional (a push-up, an unweighted pull-up) a blank weight is the movement.
+- **A session total stamps the set that carries it over.** Best session volume and most reps in a session belong to the session, so the one set that takes the running total past the old best is stamped — once per session, however many sets follow.
+- **An away session stamps nothing** (0055). The rule lives in `recordsBeaten`, so no caller can award an away PR by forgetting to ask; turning Away on still clears the stamps already earned.
+- **A record needs a previous best.** The first session of a movement sets its bars silently, and a first-ever set of three is not a "best at 3 reps". This changes one old behaviour: the e1RM-only stamp used to tag the first set of a never-done movement as a PR. The self-review follows the same rule — a movement's first-ever session is no longer listed as a personal record there.
+- **Within a session a set must clear the sets already done — in every block of the movement.** bench → row → bench is one session of bench, so the second bench block is measured against the first (`stampFor` gathers done sets from every block with the same `exerciseId`; it used to read only the set's own block, and a repeated movement stamped the same record twice). The bar is read from the logged history (the live session is a draft until Finish, 0045) plus those sets; nothing is cached, and `DraftBlock.bestE1rm` is no longer read.
+- **A done set whose numbers change is asked again.** `patchSet` in the logger re-runs `stampFor` when a done set's weight, reps, RPE, time, distance or set type changes, so a corrected typo (1100 back to 110), a changed rep count ("best at 5 reps" becoming 6) or a set cycled to warmup does not keep a claim about figures it no longer holds.
+- **`stampFor` is the whole of the live question, as a function.** It takes the logger's own state (typed strings, blocks, the away flag, the editing flag) and is tested with block-shaped input in `db/training-engine.test.mjs` §13 — the screen only reads the history and passes it through.
 - **The stamp names its kinds** on the draft (`DraftSet.prKinds`, optional and parsed leniently — no `DRAFT_VERSION` bump, the `ingestId` precedent). A set stamped by an older build resumes with the bare "PR".
 - **`rep_max` is dropped from the line when the set is also the heaviest**: the heaviest set on record is necessarily the best at its own rep count.
+- **The line is prose with its figures in mono.** `prSummaryParts` marks the set number and rep counts as measured; the screen sets the words in the serif and only those runs in mono ("Serif speaks, mono measures"). The same for the Trend's direction line (`trendPhraseParts`: "+4%" and "3 sessions" in mono).
 
 ### 14.7 Trends and the direction of travel
 
 `sessionSeriesFrom` gives one value per session for `e1rm · top_weight · volume · reps · session_reps · duration · distance`; `trendMetricsFor` chooses which a movement offers from what it measures. `trendOf` compares the latest **home** session with the mean of up to three home sessions before it and reads *level* within ±2%. A mean of three, because one bad Tuesday is not a direction; home only, because a stiffer machine is not a regression. Away sessions stay on the chart, hollow.
 
-The hub's direction uses a lift's e1RM, falling back to its top weight when its sets sit past the e1RM rep cap; **anything that covers distance gets no arrow** — whether a run is "better" longer or faster depends on what it was for.
+**The direction and the chart it opens are one function** (`directionOf`). A lift reads its e1RM; when fewer than two home sessions carry one (sets past the e1RM rep cap, or logged below RPE 6) its top weight; and when its sets carry no weight at all — a pull-up or dip at bodyweight, the commonest way to do either — its most reps. Plank-type movements read their longest hold. **Anything that covers distance gets no arrow** — whether a run is "better" longer or faster depends on what it was for.
+
+Exercise detail opens its Trend on `defaultTrendMetric`: the direction's own metric when there is one, so the hub's "+10%" on a leg extension opens on the Top set chart it came from rather than an empty e1RM one; otherwise the first metric with two sessions to draw; otherwise the first the movement offers. When a chosen chip has nothing to draw, `trendEmptyNote` says what is missing ("An estimated 1RM needs a set of 12 reps or fewer that is not logged below RPE 6. Fewer than two sessions have one.") rather than claiming two weighted sessions are needed when five are on record.
+
+**The large figure is the session the direction line describes** (`trendHeadline`). When the last point on the chart is an away session, the figure shows the home value the "+4%" was read from, labelled *Latest at home*; with no direction to explain, the away value, labelled *Latest · away gym*.
 
 **`exerciseSessionTopsFrom` compares a tier, then a value.** A set with no load, time or distance used to score a flat zero, so a push-up session's "top set" was whichever set came first; it now compares reps, in a tier below every loaded set so reps and kilograms never mix (a weighted dip of 10 kg × 8 outranks a bodyweight 15).
 
@@ -845,7 +868,8 @@ The hub's direction uses a lift's e1RM, falling back to its top weight when its 
 
 Payload, never schema — coach-eval §6's ceilings are untouched:
 
-- `query_records { domain: "exercise_stats" }` returns `loadBasis`, the extended `records`, and `repMaxes`, from one scan; the history's workout ids are stripped (a UUID per row answers nothing for the model).
+- `query_records { domain: "exercise_stats" }` returns `loadBasis`, the extended `records`, and `repMaxes`, from one scan; the history's workout ids are stripped (a UUID per row answers nothing for the model). For an assisted movement the load records are null, `repMaxes` and `e1rmSeries` are left out, and the top sets are ranked by reps then less help (§14.3).
+- `log_workout`'s confirmation card states the basis on each set line (§14.4).
 - `query_records { domain: "exercise_catalog" }` rows carry `loadBasis` on loaded movements; the vocabulary sentence is on the domain's discovery call, where field notes live instead of the prompt.
 - `get_training_recommendation` exercises carry `loadBasis`, so a 22.5 kg dumbbell-press target is read as one dumbbell.
 
@@ -853,7 +877,7 @@ The Coach cannot yet **correct** a basis; that would be an editable field on `ex
 
 ### 14.9 Tests
 
-`db/exercise-catalog.test.mjs` §10–11 (every seeded row's basis, the name rules, correction storage and reset, relabel-not-rescale, the CHECK, the heading, the doubling table) · `db/training-engine.test.mjs` §10–12 (the three new records, rep maxes, every PR kind and its refusals, the history mark, trends and direction, the hub list, the per-hand decision, a correction moving no freshness or volume) · `db/coach-domains.test.mjs` §4b and `db/coach-tools.test.mjs` §26 (the payloads) · `db/reports.test.mjs` §2d (the named basis, and an away session setting no record in the report — it used to) · `db/screens-render.test.mjs` §9 (the detail screen, a corrected basis, a push-up's records, the hub list, and — new to the walk, through a Reanimated stub — the live logger's headings, the session editor and a resumed PR line).
+`db/exercise-catalog.test.mjs` §10–11 (every seeded row's basis, the name rules, correction storage and reset, relabel-not-rescale, the CHECK, the heading, the doubling table) · `db/training-engine.test.mjs` §10–12 (the three new records, rep maxes, every PR kind and its refusals, session totals stamping the set that carries them over, the grid and the stamp reading one list, the history mark, trends and direction, the hub list, the per-hand decision, a correction moving no freshness or volume) and §13 (the review fixes: the hub's metric and detail's default agreeing, a bodyweight pull-up's reps direction, the empty notes, assisted ranking and records, `stampFor` over block-shaped input — two blocks of one movement, away, editing, a corrected set — `e1rmRecordOf`, the Trend headline, the phrase parts) · `db/coach-domains.test.mjs` §4b (the payloads, an assisted movement's included) and `db/coach-tools.test.mjs` §11 and §26 (the basis on the `log_workout` card; the recommendation payload) · `db/reports.test.mjs` §2d (the named basis, an away session setting no record, a first-ever movement listed as no record, an assisted movement getting neither row) · `db/screens-render.test.mjs` §9 (the detail screen, a corrected basis, a push-up's records, a bodyweight pull-up's reps trend and rep-max note, an away last session's headline, a high-rep lift opening on Top set, the hub list, and — through a Reanimated stub — the live logger's headings, the session editor and a resumed PR line drawn as prose with a nested figure).
 
 ### 14.10 What only a device can settle
 
@@ -861,4 +885,5 @@ The Coach cannot yet **correct** a basis; that would be an editable field on `ex
 - **Whether the derivation is right for his gym** — the seeded Leg Press, Hack Squat and calf raises read `stack`, and in many gyms they are plate-loaded.
 - **The six-cell records grid**: "Session volume" wraps to two lines in a third of 311 pt.
 - **Whether "a record needs a previous best" feels right** on the first session of a new movement, where nothing stamps.
+- **Whether the fuller stamp is signal or noise.** Every grid record now stamps, so a strong set can read "Set 3: best e1RM, heaviest, best set volume, best session volume" in the block foot at 375 pt. If the volume stamps prove to be noise, the fix is to drop them from `recordKindsFor` — which takes their cells off the grid too, by construction.
 - **The Exercises plate's length and place** on an already long hub, and whether six rows before *Show all* is the right number.
