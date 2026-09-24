@@ -14,17 +14,25 @@ import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { timezoneNotesIn } from '@/lib/db/repositories/day-meta';
 import { getPreferences, getWaterTarget, setWaterTarget } from '@/lib/db/repositories/user';
 import {
-  deleteWaterEntry,
   listWaterEntries,
   logWater,
-  updateWaterEntry,
   waterDaySeries,
   waterRecordStart,
   type WaterDay,
   type WaterEntry,
 } from '@/lib/db/repositories/water';
 import { shortDate, windowLabel } from '@/lib/experiments/format';
-import { metricByKey, resolveDisplay, roundToSpec, type DisplaySpec } from '@/lib/log/metrics';
+// Correcting or removing a capture reaches Apple Health too, since water went
+// two-way (2026-09-21). A plain module over the guarded HealthKit seam, so
+// nothing native is imported statically here.
+import { editWaterCapture, removeWaterCapture } from '@/lib/health/publish';
+import {
+  formatFigure,
+  metricByKey,
+  resolveDisplay,
+  roundForDisplay,
+  type DisplaySpec,
+} from '@/lib/log/metrics';
 import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
 import { daysBetween } from '@/lib/screenings/format';
 
@@ -220,12 +228,6 @@ function entryCount(n: number): string {
   return `${n} ${n === 1 ? 'entry' : 'entries'}`;
 }
 
-/** 1840 -> "1,840", hand-rolled so the thousands comma doesn't lean on Intl. */
-function fmtInt(n: number): string {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-}
 
 function read(): WaterView {
   const db = getDb();
@@ -255,14 +257,25 @@ function read(): WaterView {
   };
 }
 
-/** Canonical ml -> a rounded display number in the user's unit. */
+/**
+ * Canonical ml -> the number an edit field is prefilled with: the value the row
+ * PRINTS, so opening the editor never shows a different figure from the one the
+ * user tapped. Before 2026-09-21 both rounded to whole ounces, so a 250 mL
+ * capture read "8" and, saved untouched, became 236.6 mL (13.4 mL gone). At a
+ * tenth it reads "8.5" and would become 251.4 mL: still a drift, now 1.4 mL.
+ */
 function toDisplay(spec: DisplaySpec, ml: number): number {
-  return roundToSpec(spec, spec.fromCanonical(ml));
+  return roundForDisplay(spec, ml);
 }
 
-/** "51 oz" — a canonical value in the user's unit, with the thousands comma. */
+/**
+ * "51 oz" · "16.9 oz" · "1,893 ml" — the shared figure (`formatFigure`) with its
+ * unit. Until 2026-09-21 this screen rounded for itself, and ran a second
+ * `Math.round` over a figure already rounded to whole ounces, so no spec could
+ * have given it a decimal. See OZ_TENTHS_BELOW in metrics.ts for the finding.
+ */
 function fmtVolume(spec: DisplaySpec, ml: number): string {
-  return `${fmtInt(toDisplay(spec, ml))} ${spec.unit}`;
+  return `${formatFigure(spec, ml)} ${spec.unit}`;
 }
 
 export default function WaterScreen() {
@@ -338,7 +351,7 @@ export default function WaterScreen() {
     const typed = Number(editText);
     if (!Number.isFinite(typed) || typed <= 0 || typed > MAX_DISPLAY) return;
     try {
-      updateWaterEntry(getDb(), id, spec.toCanonical(typed));
+      editWaterCapture(getDb(), id, spec.toCanonical(typed));
       setEditing(null);
       refresh(day);
     } catch (error) {
@@ -354,7 +367,7 @@ export default function WaterScreen() {
       return;
     }
     try {
-      deleteWaterEntry(getDb(), id);
+      removeWaterCapture(getDb(), id);
       setEditing(null);
       setDeleteArmed(false);
       refresh(day);
@@ -427,7 +440,7 @@ export default function WaterScreen() {
               className={
                 logged ? 'font-mono text-4xl text-ink' : 'font-mono text-4xl text-ink-muted'
               }>
-              {logged ? fmtInt(toDisplay(spec, selected.ml)) : '—'}
+              {logged ? formatFigure(spec, selected.ml) : '—'}
             </Text>
             {logged ? <Text className="font-mono text-sm text-ink-muted">{spec.unit}</Text> : null}
             {/* The denominator appears ONLY when the user set one. */}

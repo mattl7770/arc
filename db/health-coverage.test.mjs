@@ -167,10 +167,14 @@ console.log('6. the notes are written to the reader of Settings, not to a code r
   const water = METRIC_COVERAGE.find(
     (m) => m.hkIdentifier === 'HKQuantityTypeIdentifierDietaryWater'
   );
-  water?.garminNote.startsWith('Unconfirmed whether Garmin writes hydration') &&
-  water.garminNote.includes('The test is one evening') &&
+  // Settled on the owner's phone (checklist 2026-09-21, confirmed 2026-09-23),
+  // so the note states the verdict and the one-total-per-day shape; the
+  // other-apps fact survives from the unconfirmed version.
+  water?.garmin === 'yes' &&
+  water.garminNote.startsWith('Confirmed on your phone') &&
+  water.garminNote.includes('one total per day') &&
   water.garminNote.includes('Any other hydration app on the phone also fills this')
-    ? ok('water: unconfirmed, the one-evening test, and the other-apps fact all survive')
+    ? ok('water: confirmed, one total per day, and the other-apps fact survives')
     : bad('water note', water?.garminNote);
 
   const steps = METRIC_COVERAGE.find((m) => m.hkIdentifier === 'HKQuantityTypeIdentifierStepCount');

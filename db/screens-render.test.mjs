@@ -2713,7 +2713,8 @@ const db = getDb();
     '2 entries', // today's two captures, counted
     'today, still open',
   ]);
-  // 750 ml is 25 oz and the default unit is oz, so the day rows read in oz.
+  // 750 ml is 25.4 oz (it printed "25 oz" until 2026-09-21) and the default
+  // unit is oz, so the day rows read in oz.
   // Nothing may print a stand-in zero for the eleven days with no capture, and
   // with no goal set there is still no denominator anywhere.
   refute('water (3-day record)', young, [
@@ -2790,14 +2791,14 @@ const db = getDb();
   const ozLog = render('log tab (oz, learned amount)', LogScreen);
   // THE INVARIANT, rendered: every cell's caption and its accessibility label
   // carry the SAME number, and it is the number that tap will log. The note
-  // converts with them — 500 ml read under an ounce preference is 17 oz, so the
-  // habit is stated as 17 oz rather than as a stored 500 nobody typed.
+  // converts with them — 500 ml read under an ounce preference is 16.9 oz, so
+  // the habit is stated as 16.9 oz rather than as a stored 500 nobody typed.
   expect('log tab (oz, learned amount)', ozLog, [
     '+8 oz',
     '+16 oz',
     '+24 oz',
     'Log 16 oz of water, Bottle',
-    'usually 17 oz',
+    'usually 16.9 oz',
   ]);
   refute('log tab (oz, learned amount)', ozLog, [
     '+240 ml',
@@ -2805,7 +2806,28 @@ const db = getDb();
     '+750 ml',
     'usually 500 ml',
     'Log water, 17 oz',
+    // It read "usually 17 oz" until 2026-09-21: the whole-ounce rounding the
+    // owner reported on Garmin water ("units are heavily rounded").
+    'usually 17 oz',
   ]);
+
+  // ONE ROW, ONE FIGURE, EVERYWHERE (2026-09-21). The same 500 ml capture that
+  // the Log tab's note calls "usually 16.9 oz" is a row on the water screen, and
+  // the same day's 750 ml (500 + 250) is both the water screen's Today figure
+  // and the Data tab's Intake today. Each surface used to round for itself, to
+  // whole ounces; all three now print through formatFigure.
+  const ozWater = render('water (oz, one figure per row)', WaterScreen);
+  expect('water (oz, one figure per row)', ozWater, [
+    '16.9 oz at', // the 500 ml entry's own row label: the note's figure
+    '8.5 oz at', // the 250 ml entry, a metric cup, where the defect was loudest
+    '25.4', // Today, the day's total, the same figure the Data tab prints
+  ]);
+  refute('water (oz, one figure per row)', ozWater, [
+    '17 oz at', // the 500 ml row as it printed before the fix
+    '8 oz at', // the 250 ml row as it printed before the fix
+  ]);
+  const ozData = render('data tab (oz, water figure)', DataScreen);
+  expect('data tab (oz, water figure)', ozData, ['25.4']);
 }
 
 // ---------------------------------------------------------------------------
@@ -3554,19 +3576,38 @@ const db = getDb();
   // counts, and must not name a step as having succeeded or failed.
   refute('settings-health (no sync yet)', never, ['rows changed', 'Published out']);
 
-  // Hydration (2026-09-14). Three things have to be on this screen and all
-  // three are assertions rather than intentions: the scope row with its
-  // direction, the audit row with its honest verdict, and the sentence that
-  // makes the no-dedupe rule the user's to act on. "Pick one door" is the whole
-  // mitigation for double counting, so it cannot live only in a docblock.
+  // Hydration — two-way since 2026-09-21 (it was read-only from 2026-09-14).
+  // Three things have to be on this screen and all three are assertions rather
+  // than intentions: the scope row with its direction, the audit row with its
+  // verdict, and the sentence that makes the no-dedupe rule the user's to act
+  // on. "Pick one door" survives the change: ARC's own glasses are kept out of
+  // what comes back, but the same glass typed here AND tapped on the watch is
+  // still two entries, and only the user can know that.
   expect('settings-health (no sync yet)', never, [
     'Water (hydration)',
-    'Water is read, never written.',
+    'Water goes both ways.',
+    'undoing or correcting it here changes it there too',
     'log a glass in one place or the other, not both',
-    // The audit row. `unverified` is the honest verdict — nothing in the repo
-    // establishes that a Garmin writes hydration to Apple Health.
-    'Unverified',
+    // The audit row: the owner's device settled it (2026-09-21 checklist,
+    // confirmed 2026-09-23), so the verdict is no longer `unverified`.
+    'Confirmed on your phone: hydration logged in Garmin Connect arrives',
   ]);
+  // The one-way sentence and the old unverified note must not survive anywhere.
+  refute('settings-health (no sync yet)', never, [
+    'Water is read, never written.',
+    'Nothing in this repository establishes that Garmin writes hydration',
+  ]);
+  // The scope row's own direction tag. `Both` alone proves nothing (the body
+  // rows carry it too), so the check is scoped to the markup between the water
+  // row's label and the next row's.
+  {
+    const from = never?.indexOf('Water (hydration)') ?? -1;
+    const to = never?.indexOf('Sleep (duration and stages)') ?? -1;
+    const between = from >= 0 && to > from ? never.slice(from, to) : '';
+    between.includes('>Both<') && !between.includes('>In<')
+      ? ok('settings-health: the water scope row is tagged Both, not In')
+      : bad('settings-health: water scope direction', between.slice(0, 200));
+  }
 
   setHealthSyncLog(db, {
     at: '2026-08-26T09:00:00.000Z',

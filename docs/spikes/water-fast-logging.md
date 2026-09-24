@@ -1,7 +1,7 @@
 # Faster water logging — a design spike
 
 **Backlog item:** D2, *"Faster water logging"* (`docs/backlog-2026-09.md:55`)
-**Status:** **BUILT — Rank 1 and Rank 2, 2026-09-14. Rank 1's long-press REVERSED on device, 2026-09-21.** Ranks 3–6 remain refused or deferred exactly as argued below. Where the build departed from this document it is noted inline; the shipped behaviour is recorded in `docs/information-architecture.md` (the Log tab's water row) and `docs/wearables-subapp.md` §15 (the Apple Health read).
+**Status:** **BUILT — Rank 1 and Rank 2, 2026-09-14. Rank 1's long-press REVERSED on device, 2026-09-21. Rank 2 made TWO-WAY, 2026-09-21.** Ranks 3–6 remain refused or deferred exactly as argued below. Where the build departed from this document it is noted inline; the shipped behaviour is recorded in `docs/information-architecture.md` (the Log tab's water row) and `docs/wearables-subapp.md` §15 (the Apple Health read) and §20 (the write, and why the echo argument below no longer holds).
 
 > **What the phone said (owner, 2026-09-21 build):**
 >
@@ -14,6 +14,16 @@
 > **The shipped shape since 2026-09-21:** Glass / Bottle / Large / Other… are a full-width ruled row of the Quick add plate, all four on the sheet at all times, one tap each; the long-press handler is deleted, not kept as an alias; the remembered amount survives as a *note* (`usually 8 oz`) that nothing taps. The tap count is unchanged at two (tab bar → an amount) and it is now two for **every** amount, not just for whichever one the derivation picked. Rank 2 is untouched. Layout arithmetic and the "marked, not reordered" decision: `docs/information-architecture.md`, and the docblock on `src/components/log/quick-add-grid.tsx`.
 >
 > **The lesson worth keeping, for the next spike that ranks options by taps:** a gesture with no affordance is not a cheaper path, it is an *absent* path for anyone who has not been told about it — so a tap count that includes one is measuring a route the user may never take. Count only what the sheet shows.
+
+> **What the phone said about Rank 2 (owner, device checklist 2026-09-21; confirmed 2026-09-23):**
+>
+> > *"water should get 2 way health sync"* — and, on the Garmin item, *"works, units are heavily rounded"*.
+>
+> **The gate this document called the only thing that could kill Rank 2 has passed.** Hydration logged in Garmin Connect arrives in ARC through Apple Health, so `coverage.ts` now records `garmin: 'yes'`, citing the owner's phone.
+>
+> **And Rank 2 is now two-way.** The argument below that ARC must never write water ("a `cumulativeSum` query **cannot** filter out ARC's own samples") was wrong about the library. A statistics query takes the same sample predicate every reader builds, so ARC's own glasses can be kept out of the day's total. They are kept out by the metadata rung alone, fail-closed, because the source rung can fail open on a sum. Manual captures publish as one `DietaryWater` sample each, and an Undo takes a published glass back out of Health by its own id. The full account, including what only the phone can settle, is `docs/wearables-subapp.md` §20. **What survives unchanged:** no dedupe, and *pick one door*. ARC's own glasses are never counted twice now, but the same glass typed here *and* tapped on the watch is still two entries.
+>
+> **And the rounding was ARC's.** Nothing between the watch and the screen lost precision except ARC's display, which printed whole ounces twice over. A Garmin bucket arrives in millilitres, so a 250 mL cup read `8 oz` (it is 8.45 oz, 5.4 % low) and 100 mL read `3 oz` (11.3 % low), while a capture typed in ounces round-trips exactly and never showed it. Water now prints to the tenth below 32 oz and whole above, through one formatter on every surface, so the water screen, the Log tab's note and the Data tab print the same figure for the same row. Numbers and the device check: `docs/wearables-subapp.md` §21.
 **Date:** 2026-09-14
 
 ---
@@ -170,6 +180,8 @@ A hydration tap on the wrist, or in the Health app, or in any hydration app alre
 - **A read scope needs no new Info.plist key.** `NSHealthShareUsageDescription` is already supplied by the `@kingstinct/react-native-healthkit` plugin entry in `app.json`. The key that would force a rebuild is `NSHealthUpdateUsageDescription`, and that one is only required for `toShare` (`healthkit.ts:160–171`). This is a read.
 - `sync.ts:240–242` already loops `STATISTIC_METRICS` through `statisticDailyRows`. A new entry rides the existing pass.
 
+> ⚠️ *Superseded 2026-09-21 — the next five bullets argue water can never be written, and the fourth is the premise that failed: a statistics query DOES accept a sample predicate (`docs/wearables-subapp.md` §20.1). Kept as the record of what was believed.*
+
 **The echo-loop claim, verified.** The brief says ARC does not publish water outward, with the documented reason that HealthKit sums re-published totals. Both halves check out, and the second is stated in the code more sharply than the brief put it:
 
 - `mapping.ts` contains **no water channel in either direction** — no `water`, no `dietary`, anywhere in the file. The water repository's own docblock already asserts this (`src/lib/db/repositories/water.ts:26–30`).
@@ -185,6 +197,7 @@ A hydration tap on the wrist, or in the Health app, or in any hydration app alre
 2. **A cumulative statistic is a day bucket, not a capture.** It arrives as one row per day, `source_device='apple_health'`, `source_raw_id='hk:water_ml:<date>'` (`mapping.ts:327–343`). `waterDaySeries` sums by `metric_type` regardless of source, so the Water screen's total stays correct and the ledger reconciles (§5). `listWaterEntries` will draw it as a single non-editable row reading *"From apple_health — edit it there"* — a state `app/water.tsx:550–557` already authors, which is a rare case of the seam being built before the feature. But its `created_at` is the **sync** time, so it sorts into the day at sync o'clock rather than drink o'clock. Accept it; a merged day total has no drink time to report.
 3. **It will not appear on the Log tab.** The feed filters `source_device = 'manual'` (`logs.ts:245`). **Recommendation: leave the filter alone, and say so in the docblock so the next reader does not "fix" it.** The Log tab is a record of what you *captured*; a merged Apple Health total is a *reading*. `/water` is where the whole record lives, and it is honest there.
 4. **Two doors, one total.** Log the same glass in ARC and on the watch and the day double-counts. This is not an echo loop — ARC publishes nothing — it is two independent records of one event, and the fix is behavioural: once this lands, pick one door. Settings › Apple Health should say it in a sentence.
+   *(2026-09-21: ARC now publishes, and still this is not an echo, because ARC's own glasses are excluded from what it reads back. The double here is two hand-entered records of one drink, and it still needs the behavioural fix.)*
 
 Also worth stating plainly: the sync is a throttled boot/foreground pass (`shouldAutoSync`, `sync.ts:155–161`), so the number is not live. For *"am I on track today"* that is fine. For *"I just drank it, confirm it landed"* it is not — which is the other reason Rank 1 ships alongside it rather than instead of it.
 
@@ -326,7 +339,7 @@ They are recommended **together** because they cover the two genuinely different
 1. `STATISTIC_METRICS` gains `{ metricType: 'water_ml', hkIdentifier: 'HKQuantityTypeIdentifierDietaryWater', hkUnit: <verified>, unit: 'ml', decimals: 0 }`.
    ⚠️ **The HKUnit string is the load-bearing detail and must be checked against the library's generated `QuantityUnitByIdentifierMap` before shipping**, exactly as every other unit in this file was (`mapping.ts:616–620`). Litres where millilitres were meant is a factor of a thousand into a health record, silently — the same class of bug as the body-fat percent trap documented at `mapping.ts:635–643`, which is why that note exists.
 2. `METRIC_COVERAGE` gains a `dietaryWater` row: `use: "The Water record's day total"`, `garmin: 'unverified'` with a note saying what was and was not checked, `verdictDays: null`.
-3. One sentence in Settings › Apple Health: ARC **reads** hydration and does not write it.
+3. One sentence in Settings › Apple Health: ARC **reads** hydration and does not write it. *(Rewritten 2026-09-21: "Water goes both ways." — `app/settings-health.tsx`.)*
 
 **Voice.** Nothing new anywhere. The Entries row reads in mono (`16 oz`) with a serif provenance line — both already authored.
 
@@ -341,7 +354,7 @@ They are recommended **together** because they cover the two genuinely different
 - `db/water.test.mjs` (extend) — a manual 500 ml row plus an `apple_health` 1200 ml day bucket on one day: `waterDaySeries` reports **1700 with `entries: 2`** (the ledger reconciles); `listWaterEntries` marks the HK row `editable: false`; **`updateWaterEntry` and `deleteWaterEntry` both return `false`** against it. That last pair proves the screen cannot offer an edit the next sync would silently revert — the guard the water repository already carries (`water.ts:118`, `:141`) but which nothing has yet exercised against a real device row.
 - Re-sync idempotency — the same day synced twice UPDATEs the one row rather than inserting a second. Likely already covered by the existing `upsertWearableRows` conflict tests; check before duplicating.
 
-**The gate, restated because it is the only thing that can kill this proposal:** log a hydration entry on the watch, run a sync, confirm a row lands. Until that happens the coverage verdict stays `unverified` and Settings says so.
+**The gate, restated because it is the only thing that can kill this proposal:** log a hydration entry on the watch, run a sync, confirm a row lands. Until that happens the coverage verdict stays `unverified` and Settings says so. **Passed on the owner's phone (2026-09-21, confirmed 2026-09-23); the verdict is `yes`.**
 
 ---
 

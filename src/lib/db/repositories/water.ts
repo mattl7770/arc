@@ -25,18 +25,31 @@
  * fortnight — those ARE mutable daily totals, which is why republishing one to
  * Health would make Health sum the versions.
  *
- * ## Water now has an INBOUND HealthKit channel — and only inbound (2026-09-14)
+ * ## Water is TWO-WAY with Apple Health (inbound 2026-09-14, outbound 2026-09-21)
  *
  * `HKQuantityTypeIdentifierDietaryWater` is a read scope as of D2, landing as a
  * merged daily statistic: one `apple_health` row per day under
  * `hk:water_ml:<date>` (`src/lib/health/mapping.ts` → `STATISTIC_METRICS`).
- * **ARC does not publish water and must never start.** `publish.ts` walks
- * `body_metrics` only and `HEALTH_WRITE_IDENTIFIERS` is derived from
- * `BODY_PUBLISH_METRICS`, so water cannot become a write scope without editing
- * the body channel — and it must not, because a `cumulativeSum` statistics query
- * carries no own-write exclusion (Apple merges before the predicate), so a
- * published total would be read straight back and doubled with no suppression
- * available. `unsuppressedEchoIdentifiers()` is the CI tripwire.
+ *
+ * Since 2026-09-21 it is a write scope too — the owner's device note, *"water
+ * should get 2 way health sync"*. Every MANUAL capture is published as one
+ * `DietaryWater` sample (`publish.ts` → `publishWaterCaptures`, walking
+ * {@link publishableWaterAfter}), tagged with this row's id. Three facts keep
+ * that from doubling the day, and they are docs/wearables-subapp.md §20 in
+ * short:
+ *
+ *   - **Only captures go out** — the walk takes `source_device = 'manual' AND
+ *     source_raw_id IS NULL`, so an `hk:` bucket is never republished. That is
+ *     the structural guard: it bounds any echo at one double, never a loop.
+ *   - **ARC's own samples never come back in** — the cumulative read excludes
+ *     them by that tag (`readDailyCumulative`, metadata rung, `failClosed`).
+ *   - **An undone capture takes its sample with it** — the tag IS this row's
+ *     id, so `removeWaterCapture` finds the sample by the id the Undo holds.
+ *     This is the one thing the body channel cannot do (nothing can find a
+ *     published weight again).
+ *
+ * This module stays free of all of that: it answers "which rows?", and
+ * `publish.ts` does the native half.
  *
  * ## Two sources, one total, and NO dedupe — the rule, argued
  *
@@ -48,8 +61,10 @@
  *     — no per-drink identity, no times, no amounts — so a manual 16 oz has no
  *     counterpart in it to cancel against.
  *   - Subtracting ARC's manual total from the bucket would assume the bucket
- *     CONTAINS it. It does not: ARC publishes nothing, so the two records
- *     describe different acts of logging, not the same one twice.
+ *     CONTAINS it. It does not — and since 2026-09-21 that is true because the
+ *     read EXCLUDES ARC's published captures rather than because ARC publishes
+ *     nothing — so the two records describe different acts of logging, not the
+ *     same one twice.
  *   - Any other dedupe (nearest amount, nearest minute) would be a guess that
  *     silently deletes real intake. Inventing a reconciliation is worse than
  *     summing honestly.
@@ -180,6 +195,109 @@ export function deleteWaterEntry(db: Database, id: string): boolean {
     WATER_METRIC,
   ]);
   return true;
+}
+
+// --- The outbound walk (2026-09-21) ------------------------------------------
+//
+// The water twin of `body.ts` → `publishableBodyAfter` / `newestBodyCursor`, and
+// deliberately the same shape: a keyset walk over (created_at, rowid), the
+// cursor carried as the row's `id` (that is what `HealthPublishState` persists)
+// and resolved to its rowid for the tie-break. Every reason body.ts gives for
+// `rowid` over `id` applies here with more force — same-millisecond taps are
+// the NORMAL case for water (see listWaterEntries).
+//
+// One deliberate difference: both the walk and the arming position cover
+// MANUAL captures only. The body walk parks on the newest row of its own table;
+// this table holds every wearable metric, and water's inbound `hk:` buckets are
+// rewritten and even deleted by the re-window pass (docs §16), so parking on
+// one would be parking on a row that can vanish.
+
+/** The filter that makes a water row publishable — and the structural guard. */
+const PUBLISHABLE_WATER = `metric_type = '${WATER_METRIC}'
+       AND source_device = 'manual' AND source_raw_id IS NULL`;
+
+/** One manual capture, as the publisher sees it. */
+export type PublishableWater = {
+  id: string;
+  /** The local day it counts toward — backdated captures sit on a past day. */
+  date: string;
+  /** Canonical ml. */
+  ml: number;
+  /** ISO instant the row was written — drink o'clock for a same-day capture. */
+  createdAt: string;
+};
+
+/** A position in the (created_at, rowid) walk; see the section note. */
+export type WaterCursor = { createdAt: string; id: string };
+
+type PublishableWaterRow = { id: string; date: string; value: number; created_at: string };
+
+function toPublishable(r: PublishableWaterRow): PublishableWater {
+  return { id: r.id, date: r.date, ml: r.value, createdAt: r.created_at };
+}
+
+/**
+ * Manual captures created strictly after `cursor`, oldest first. A null cursor
+ * means "from the very beginning" — reachable only when there was no manual
+ * capture at all when the walk armed, so the beginning is empty of history.
+ *
+ * `source_device = 'manual' AND source_raw_id IS NULL` is ECHO SUPPRESSION,
+ * and the structural kind — water's equivalent of body's
+ * `source <> 'apple_health'`. Whatever the read-side exclusion does, a row that
+ * came FROM Apple Health (an `hk:` bucket) is never sent back TO it, so an echo
+ * can at worst double one day; it can never feed itself.
+ *
+ * If the cursor's own row has since been deleted (an Undo right after a pass),
+ * its rowid resolves to NULL and only the same-millisecond tie branch goes
+ * dark — later captures still satisfy `created_at > ?`. That errs toward
+ * skipping a same-millisecond sibling rather than re-posting one, which is the
+ * direction body.ts's walk already takes.
+ */
+export function publishableWaterAfter(
+  db: Database,
+  cursor: WaterCursor | null,
+  limit: number
+): PublishableWater[] {
+  const rows = cursor
+    ? db.all<PublishableWaterRow>(
+        `SELECT id, date, value, created_at FROM wearable_data
+         WHERE ${PUBLISHABLE_WATER}
+           AND (created_at > ?
+                OR (created_at = ? AND rowid > (SELECT rowid FROM wearable_data WHERE id = ?)))
+         ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+        [cursor.createdAt, cursor.createdAt, cursor.id, limit]
+      )
+    : db.all<PublishableWaterRow>(
+        `SELECT id, date, value, created_at FROM wearable_data
+         WHERE ${PUBLISHABLE_WATER}
+         ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+        [limit]
+      );
+  return rows.map(toPublishable);
+}
+
+/**
+ * The newest manual capture — where arming parks the cursor, so that the water
+ * already on record is never published (docs §10 rule 1, and here for a second
+ * reason: that history was logged under the one-way rule, when a glass typed
+ * here and tapped on the watch was the user's to reconcile, so sending it now
+ * could double Health's own past days).
+ */
+export function newestWaterCursor(db: Database): WaterCursor | null {
+  const row = db.get<{ id: string; created_at: string }>(
+    `SELECT id, created_at FROM wearable_data WHERE ${PUBLISHABLE_WATER}
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`
+  );
+  return row ? { createdAt: row.created_at, id: row.id } : null;
+}
+
+/** One manual capture by id, or null — a device row, another metric, or gone. */
+export function getPublishableWater(db: Database, id: string): PublishableWater | null {
+  const row = db.get<PublishableWaterRow>(
+    `SELECT id, date, value, created_at FROM wearable_data WHERE id = ? AND ${PUBLISHABLE_WATER}`,
+    [id]
+  );
+  return row ? toPublishable(row) : null;
 }
 
 /**

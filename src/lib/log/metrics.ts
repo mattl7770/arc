@@ -237,12 +237,45 @@ export function isLoggableCanonical(metric: MetricDescriptor, canonical: number)
  */
 export type DisplaySpec = {
   unit: string;
+  /**
+   * The precision a value is ENTERED and computed at (the keypad, the Coach's
+   * card, `roundToSpec`). What is PRINTED can be finer, see `tenthsBelow`.
+   */
   decimals: number;
+  /**
+   * Print to the tenth below this display value and to `decimals` at or above
+   * it. Only the ounce branch of water sets it ({@link OZ_TENTHS_BELOW}); every
+   * other spec prints at its own fixed precision, exactly as before. Read by
+   * {@link roundForDisplay} / {@link formatFigure} / {@link formatMeasured} and
+   * by nothing that computes.
+   */
+  tenthsBelow?: number;
   /** Canonical (stored) value → display value. */
   fromCanonical: (canonical: number) => number;
   /** Display value → canonical (stored) value. */
   toCanonical: (display: number) => number;
 };
+
+/**
+ * **Ounces print to the tenth below 32 oz, whole at 32 and above** — the fix for
+ * the owner's device note on Garmin water, *"units are heavily rounded"*
+ * (2026-09-21; the numbers are docs/wearables-subapp.md §21).
+ *
+ * The rounding was ARC's, not Garmin's and not HealthKit's. The water spec
+ * printed WHOLE ounces, and did so twice over (`decimals: 0` here, then
+ * `Math.round` again in the water screen's own formatter). A capture typed in
+ * ounces round-trips exactly, so nobody saw it on those. A Garmin bucket
+ * arrives in millilitres and lands between ounces: 250 mL, a metric cup, printed
+ * as "8 oz" (8.45, so 5.4 % low), and 100 mL as "3 oz" (11.3 % low). Three
+ * such rows then summed to 24 under a printed total of 25. Nutrition's `fmtQty`
+ * has printed the same 250 mL as "8.5 oz" since 0047, so the app gave two
+ * answers for one quantity under one preference.
+ *
+ * Why 32. A half-ounce, the most a whole-ounce figure can be off, is 14.8 mL:
+ * 25 % of a 2 oz sip, 6.25 % of a glass, and under 1.6 % from 32 oz upward,
+ * where a day total or a goal lives and a decimal is noise.
+ */
+export const OZ_TENTHS_BELOW = 32;
 
 /**
  * Resolve how a metric should render for the user's chosen units. Only the three
@@ -270,6 +303,7 @@ export function resolveDisplay(metric: MetricDescriptor, units: UnitPreferences)
         : {
             unit: 'oz',
             decimals: 0,
+            tenthsBelow: OZ_TENTHS_BELOW,
             fromCanonical: (ml) => ml / ML_PER_OZ,
             toCanonical: (oz) => oz * ML_PER_OZ,
           };
@@ -298,7 +332,43 @@ export function roundToSpec(spec: DisplaySpec, display: number): number {
   return Math.round(display * factor) / factor;
 }
 
-/** "178.2 lb", "1,893 ml" without the comma — a canonical value rendered per spec. */
+/**
+ * A canonical value rounded the way it is PRINTED: {@link roundToSpec}, except
+ * that a spec with `tenthsBelow` keeps a tenth under that value. The number an
+ * edit field is prefilled with, so the field shows what the row printed.
+ */
+export function roundForDisplay(spec: DisplaySpec, canonical: number): number {
+  const display = spec.fromCanonical(canonical);
+  if (spec.tenthsBelow === undefined) return roundToSpec(spec, display);
+  // Decided on the value AS PRINTED, so 31.96 oz, which rounds to 32.0, prints
+  // "32" beside its neighbours rather than "32.0".
+  const tenths = Math.round(display * 10) / 10;
+  return Math.abs(tenths) < spec.tenthsBelow ? tenths : roundToSpec(spec, display);
+}
+
+/** The printed digits: fixed at `decimals`, or trimmed (no trailing ".0") for tenths. */
+function figureText(spec: DisplaySpec, n: number): string {
+  return spec.tenthsBelow === undefined ? n.toFixed(spec.decimals) : String(n);
+}
+
+/**
+ * The figure ONE water row prints, number only, with the thousands comma:
+ * "1,893" · "16.9" · "16". **Every surface that prints a volume calls this**:
+ * the water screen, the Log tab's `usually` note and the Data tab's *Intake
+ * today*. That is what makes them agree about the same row; before 2026-09-21
+ * each rounded for itself.
+ *
+ * A spec with `tenthsBelow` drops a trailing ".0", following nutrition's
+ * `fmtQty`: a typed 16 oz reads "16", exactly as typed, and a metric 500 mL
+ * reads "16.9". The grouping is hand-rolled because Hermes has no `Intl`.
+ */
+export function formatFigure(spec: DisplaySpec, canonical: number): string {
+  const [whole, frac] = figureText(spec, roundForDisplay(spec, canonical)).split('.');
+  const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return frac === undefined ? grouped : `${grouped}.${frac}`;
+}
+
+/** "178.2 lb", "1893 ml" without the comma, "16.9 oz": a canonical value rendered per spec. */
 export function formatMeasured(spec: DisplaySpec, canonical: number): string {
-  return `${roundToSpec(spec, spec.fromCanonical(canonical)).toFixed(spec.decimals)} ${spec.unit}`;
+  return `${figureText(spec, roundForDisplay(spec, canonical))} ${spec.unit}`;
 }

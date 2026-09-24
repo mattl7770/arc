@@ -759,6 +759,16 @@ export type HealthPublishState = {
 
 export const HEALTH_PUBLISH_KEY = 'apple_health_publish';
 
+/**
+ * The WATER walk's cursor (2026-09-21) — a fourth key in the same KV, the same
+ * {@link HealthPublishState} shape, and no migration for the same reason the
+ * first three needed none: `key` carries no CHECK and `value` is free JSON.
+ * Its own key rather than a field on the body cursor because the two walks
+ * cover different tables and arm at different times: the body cursor armed in
+ * August, and water's arms on the first pass after the build that carries it.
+ */
+export const HEALTH_WATER_PUBLISH_KEY = 'apple_health_publish_water';
+
 export function getHealthPublishState(
   db: Database,
   key: string = HEALTH_PUBLISH_KEY

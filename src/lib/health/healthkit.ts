@@ -21,6 +21,10 @@
  * As of 2026-08-12 the seam is no longer read-only: {@link saveHealthQuantity}
  * publishes ARC-owned body measurements outward, and the same three types are
  * read back in, making the link two-way (docs/wearables-subapp.md §10–11).
+ * Since 2026-09-21 water is the fourth two-way type (§20): manual captures go
+ * out, the merged daily total comes back with ARC's own samples excluded, and
+ * {@link deleteHealthQuantityByTag} takes a capture's sample back out when the
+ * capture is undone — the one delete in this file.
  * Writes get the opposite failure posture to reads — a refused save reports
  * false so the caller can decline to advance its cursor, because a silently
  * dropped write means a number missing from a medical record.
@@ -63,7 +67,10 @@ import {
  * `FilterForSamples` combines them with OR/NOT/AND
  * (`lib/typescript/types/QueryOptions.d.ts`).
  */
-type SampleExclusion = { sources?: unknown[]; metadata?: { withMetadataKey: string } };
+export type SampleExclusion = {
+  sources?: unknown[];
+  metadata?: { withMetadataKey: string; operatorType?: number; value?: string };
+};
 
 /**
  * The date-plus-exclusions filter every reader here passes.
@@ -115,6 +122,12 @@ type HealthKitModule = {
       filter?: SampleFilter;
     }
   ): Promise<unknown[]>;
+  /**
+   * `filter` is a full `FilterForSamples` in the library's own types
+   * (`types/QuantityType.d.ts` → `StatisticsQueryOptions`), which is what makes
+   * the own-write exclusion reachable on a cumulative read at all — see
+   * {@link readDailyCumulative}. Only the members ARC passes are typed here.
+   */
   queryStatisticsForQuantity(
     identifier: string,
     statistics: string[],
@@ -122,9 +135,17 @@ type HealthKitModule = {
       unit?: string;
       filter?: {
         date: { startDate: Date; endDate: Date; strictStartDate?: boolean };
+        NOT?: SampleExclusion[];
       };
     }
   ): Promise<{ sumQuantity?: { unit: string; quantity: number } } | null | undefined>;
+  /**
+   * Delete samples matching a filter, returning how many went. Optional, and
+   * probed before use: a build predating it must degrade to "the sample stays
+   * in Health", never throw. `SampleTypeIdentifierWriteable` on the library
+   * side, so only types ARC also publishes can be passed.
+   */
+  deleteObjects?(identifier: string, filter: SampleExclusion): Promise<number>;
   /**
    * Door 2 of the heart-rate probe (docs §15): one `HKStatisticsQuery` with
    * `.separateBySource`, so HealthKit does the arithmetic and ARC only picks the
@@ -223,36 +244,73 @@ export async function requestHealthPermissions(): Promise<boolean> {
  *                     state an already-connected user lands in after this update
  *                     ships: their read grants predate the write scopes);
  *   - `granted` / `denied` — every published type is authorised / refused;
- *   - `partial`     — a mix; some types will publish and some won't.
+ *   - `incomplete`  — everything answered so far is authorised, and at least one
+ *                     type has never been ASKED (2026-09-21). This is the state
+ *                     every install that connected before water went two-way
+ *                     lands in: weight, body fat and waist granted in August,
+ *                     water never put to the user. It is not a refusal, and the
+ *                     fix is not in iOS Settings — a type ARC has never
+ *                     requested is not even listed there. The fix is to ask, and
+ *                     iOS presents the sheet for the unanswered type alone;
+ *   - `partial`     — a mix that includes a refusal; some types will publish
+ *                     and some won't until the user changes it in iOS Settings.
  */
 export type HealthWriteAccess =
-  'unsupported' | 'unknown' | 'undetermined' | 'granted' | 'denied' | 'partial';
+  'unsupported' | 'unknown' | 'undetermined' | 'incomplete' | 'granted' | 'denied' | 'partial';
 
 /** HKAuthorizationStatus raw values (types/Auth.d.ts). */
+const SHARING_NOT_DETERMINED = 0;
 const SHARING_DENIED = 1;
 const SHARING_AUTHORIZED = 2;
 
-export function healthWriteAccess(): HealthWriteAccess {
-  const mod = hk;
-  if (!mod) return 'unsupported';
-  const statusFor = mod.authorizationStatusFor;
-  if (typeof statusFor !== 'function') return 'unknown';
-  let authorized = 0;
-  let denied = 0;
-  try {
-    for (const identifier of HEALTH_WRITE_IDENTIFIERS) {
-      const status = statusFor.call(mod, identifier);
-      if (status === SHARING_AUTHORIZED) authorized++;
-      else if (status === SHARING_DENIED) denied++;
-    }
-  } catch {
-    return 'unknown';
-  }
-  const total = HEALTH_WRITE_IDENTIFIERS.length;
+/**
+ * The classification, PURE — one HKAuthorizationStatus per write identifier in,
+ * one state out — so the case that matters most is pinned headlessly: a late
+ * write scope must read as `incomplete` (ask again) and never as `partial` (go
+ * to iOS Settings), or the new type is never requested and every save of it is
+ * refused forever.
+ */
+export function classifyWriteAccess(statuses: readonly number[]): HealthWriteAccess {
+  const total = statuses.length;
+  const authorized = statuses.filter((s) => s === SHARING_AUTHORIZED).length;
+  const denied = statuses.filter((s) => s === SHARING_DENIED).length;
+  if (total === 0) return 'unknown';
   if (authorized === total) return 'granted';
   if (denied === total) return 'denied';
   if (authorized === 0 && denied === 0) return 'undetermined';
+  if (denied === 0) return 'incomplete';
   return 'partial';
+}
+
+/** Each write identifier's raw sharing status, or null when it is unknowable. */
+function writeStatuses(): number[] | null {
+  const mod = hk;
+  if (!mod) return null;
+  const statusFor = mod.authorizationStatusFor;
+  if (typeof statusFor !== 'function') return null;
+  try {
+    return HEALTH_WRITE_IDENTIFIERS.map((identifier) => statusFor.call(mod, identifier));
+  } catch {
+    return null;
+  }
+}
+
+export function healthWriteAccess(): HealthWriteAccess {
+  if (!hk) return 'unsupported';
+  const statuses = writeStatuses();
+  return statuses === null ? 'unknown' : classifyWriteAccess(statuses);
+}
+
+/**
+ * The write identifiers iOS reports as never asked — what a share sheet would
+ * still present. The late-WRITE-scope twin of `unaskedReadScopes` (§18.7), and
+ * it needs no stamp: read grants are unknowable so asking had to be recorded,
+ * but sharing is answered truthfully, and `notDetermined` IS "never asked".
+ */
+export function unaskedWriteIdentifiers(): string[] {
+  const statuses = writeStatuses();
+  if (statuses === null) return [];
+  return HEALTH_WRITE_IDENTIFIERS.filter((_, i) => statuses[i] === SHARING_NOT_DETERMINED);
 }
 
 /**
@@ -274,10 +332,12 @@ export function healthWriteAccess(): HealthWriteAccess {
  *
  * One wrinkle worth knowing: `serializeQuantitySample` THROWS on an identifier
  * outside the library's generated `QuantityTypeIdentifier` union, which would
- * report a genuinely-saved sample as refused. Not reachable for the three types
- * ARC writes — BodyMass, BodyFatPercentage and WaistCircumference are all
- * members of `QuantityTypeIdentifierWriteable` — but it is why a new published
- * type must be checked against that union rather than against Apple's docs.
+ * report a genuinely-saved sample as refused. Not reachable for the four types
+ * ARC writes — BodyMass, BodyFatPercentage, WaistCircumference and (since
+ * 2026-09-21) DietaryWater are all members of `QuantityTypeIdentifierWriteable`
+ * in `lib/typescript/generated/healthkit.generated.d.ts`, checked there for water
+ * as this note asks — but it is why a new published type must be checked
+ * against that union rather than against Apple's docs.
  */
 export async function saveHealthQuantity(
   identifier: string,
@@ -331,9 +391,11 @@ export type ExclusionRung = { kind: 'source' | 'metadata'; NOT: SampleExclusion[
  * Nothing is weakened by laddering: a published type still never falls through
  * to an unfiltered read.
  *
- * Statistics queries deliberately get no exclusion: they return HealthKit's own
- * MERGED cumulative totals (steps, energy), which ARC neither writes nor could
- * meaningfully filter — the merge is Apple's, computed before the predicate.
+ * Statistics queries get the SAME rungs, but only for an identifier ARC also
+ * publishes (2026-09-21, water). For steps and energy — types ARC neither
+ * writes nor could meaningfully filter — the reader passes no rungs at all and
+ * the query goes out exactly as it always has. See {@link readDailyCumulative}
+ * for why a cumulative read has no third rung to fall back on.
  *
  * Takes the `currentAppSource` FUNCTION rather than the module, so the ladder's
  * shape is pinnable with no native module present — the same reasoning that
@@ -786,50 +848,191 @@ export async function readSleepSamples(
   return { samples, ...outcome };
 }
 
+/** One day of the cumulative window. */
+export type CumulativeDay = { date: string; start: Date; end: Date };
+
+/**
+ * The one native call {@link readDailyCumulative} makes — injectable for exactly
+ * the reason `PublishDeps` is: every branch that has gone wrong in this file
+ * went wrong somewhere node could not reach, and an echo on a published type is
+ * not a branch worth discovering on a device.
+ */
+export type CumulativeDeps = {
+  queryStatistics: (
+    identifier: string,
+    options: {
+      unit?: string;
+      filter: {
+        date: { startDate: Date; endDate: Date; strictStartDate?: boolean };
+        NOT?: SampleExclusion[];
+      };
+    }
+  ) => Promise<unknown>;
+};
+
+/** The live module bound as {@link CumulativeDeps}, or null when it is absent. */
+function nativeCumulativeDeps(): CumulativeDeps | null {
+  const mod = hk;
+  if (!mod) return null;
+  return {
+    queryStatistics: (identifier, options) =>
+      mod.queryStatisticsForQuantity(identifier, ['cumulativeSum'], options),
+  };
+}
+
 /**
  * HealthKit-MERGED daily total for one cumulative identifier, one statistics
  * query per local day. Never sums samples manually: iPhone + Watch samples
  * overlap and Apple's cross-source merge is private (spec §3). Sequential on
  * purpose — HK statistics ride XPC; a burst of parallel queries buys nothing.
+ *
+ * ## `failClosed`, and why a statistic gets the METADATA rung only (2026-09-21)
+ *
+ * Until water became a published type this reader ran with no exclusion at
+ * all, and the docs said it could not have one ("Apple merges before the
+ * predicate"). The library says otherwise: `queryStatisticsForQuantityInternal`
+ * (`ios/QuantityTypeModule.swift`) builds its predicate with the SAME
+ * `createPredicateForSamples(options?.filter)` the sample readers use and hands
+ * it to `HKStatisticsQuery(quantitySamplePredicate:)` — the predicate that
+ * selects which samples the sum is taken over. So an exclusion is reachable.
+ *
+ * But a statistic arrives **pre-summed**. There is no per-sample provenance to
+ * inspect, so guard 3 (`isIngestableSample`) has nothing to refuse, and the
+ * query predicate is the ONLY place ARC's own contribution can be removed. That
+ * changes which rung is safe:
+ *
+ *   - The SOURCE rung can fail OPEN. `createSourcePredicate` returns nil when
+ *     the `SourceProxy` cast fails, the whole `NOT` chain collapses, and the
+ *     query runs date-only — succeeding, and so reporting `exclusion: 'source'`
+ *     over an unfiltered total (§14's own table records this). On a sample read
+ *     guard 3 catches every ARC sample that leaks through; on a sum nothing
+ *     can, and the leak IS the double. So it is withheld here, deliberately.
+ *   - The METADATA rung cannot collapse. Given only a key,
+ *     `createMetadataPredicate` always returns
+ *     `HKQuery.predicateForObjects(withMetadataKey:)`, so the `NOT` either
+ *     filters or HealthKit refuses it — and a refusal throws.
+ *
+ * `ownWriteExclusions()` called WITHOUT a source accessor is exactly the
+ * metadata rung ("the metadata rung stands alone"), so this is the same ladder
+ * and the same walker with one rung withheld, not a second mechanism. It works
+ * because ARC stamps {@link ARC_WRITE_METADATA_KEY} on every sample it writes.
+ *
+ * `failClosed` then does what it does for weight: a refused predicate yields no
+ * rows and `exclusion: 'refused'` rather than an unfiltered total, because for
+ * a published cumulative type the unfiltered total is not a risk of the double
+ * — it is the double.
+ *
+ * **A rung is judged on the WINDOW, not on a day.** One day that throws is still
+ * tolerated (it must not sink a fortnight), but a clause under which not ONE day
+ * was accepted is the clause's fault, not the data's — so the rung is rejected
+ * and the ladder steps. Otherwise a refusal on day one would leave the rest of
+ * the window running under a predicate already known to be refused.
+ *
+ * With `failClosed` unset (steps, energy — every identifier ARC does not write)
+ * there are no rungs, the filter object is byte-identical to the one this
+ * reader always sent (`NOT` is spread in only when present), and
+ * `withOwnWritesExcluded` goes straight to its unfiltered rung, reporting
+ * `exclusion: 'none'` exactly as before.
  */
 export async function readDailyCumulative(
   identifier: string,
   unit: string,
-  days: { date: string; start: Date; end: Date }[]
+  days: CumulativeDay[],
+  options: QuantityReadOptions = {},
+  deps: CumulativeDeps | null = nativeCumulativeDeps()
 ): Promise<HealthReadResult<HealthDailyStatistic>> {
-  const mod = hk;
-  if (!mod) return absentRead();
-  const stats: HealthDailyStatistic[] = [];
-  let error: string | null = null;
-  for (const day of days) {
-    try {
-      const result = await mod.queryStatisticsForQuantity(identifier, ['cumulativeSum'], {
-        unit,
-        filter: {
-          date: {
-            startDate: day.start,
-            endDate: day.end,
-            // strictStartDate makes each sample belong to exactly ONE day — the
-            // day its start falls in, which is how the Health app attributes.
-            // Without it the predicate is overlap-based and a sample straddling
-            // local midnight is summed whole into BOTH adjacent days (statistics
-            // queries don't prorate), inflating each side.
-            strictStartDate: true,
+  if (!deps) return absentRead();
+  const failClosed = options.failClosed === true;
+  // No source accessor passed, on purpose — see "the SOURCE rung can fail OPEN".
+  const rungs = failClosed ? ownWriteExclusions() : [];
+
+  let dayError: string | null = null;
+  const { value, outcome } = await withOwnWritesExcluded(rungs, failClosed, async (NOT) => {
+    const stats: HealthDailyStatistic[] = [];
+    let error: string | null = null;
+    let accepted = 0;
+    for (const day of days) {
+      try {
+        const result = await deps.queryStatistics(identifier, {
+          unit,
+          filter: {
+            date: {
+              startDate: day.start,
+              endDate: day.end,
+              // strictStartDate makes each sample belong to exactly ONE day —
+              // the day its start falls in, which is how the Health app
+              // attributes. Without it the predicate is overlap-based and a
+              // sample straddling local midnight is summed whole into BOTH
+              // adjacent days (statistics queries don't prorate), inflating
+              // each side.
+              strictStartDate: true,
+            },
+            ...(NOT ? { NOT } : {}),
           },
-        },
-      });
-      const sum = parseStatisticSum(result);
-      if (sum !== null) stats.push({ date: day.date, value: sum });
-    } catch (e) {
-      // One bad day never sinks the rest of the window — but the first day's
-      // error is kept, because "every day threw" and "nothing was recorded"
-      // are the two readings of an empty result and they are not the same.
-      error = error ?? errorText(e);
+        });
+        accepted++;
+        const sum = parseStatisticSum(result);
+        if (sum !== null) stats.push({ date: day.date, value: sum });
+      } catch (e) {
+        // One bad day never sinks the rest of the window — but the first day's
+        // error is kept, because "every day threw" and "nothing was recorded"
+        // are the two readings of an empty result and they are not the same.
+        error = error ?? errorText(e);
+      }
     }
+    // Not one day accepted this clause: blame the clause, not the fortnight.
+    if (accepted === 0 && days.length > 0) throw new Error(error ?? 'statistics query refused');
+    dayError = error;
+    return stats;
+  });
+
+  return { samples: value ?? [], exclusion: outcome.exclusion, error: outcome.error ?? dayError };
+}
+
+/**
+ * `ComparisonPredicateOperator.equalTo` (`types/QueryOptions.d.ts`). A literal
+ * rather than the library's enum because importing a VALUE from the library
+ * would load the Nitro module outside the guarded require at the top of this
+ * file.
+ */
+const PREDICATE_EQUAL_TO = 4;
+
+/**
+ * Delete every sample of `identifier` ARC wrote for one originating row — the
+ * {@link ARC_WRITE_METADATA_KEY} tag EQUAL to `sourceRowId`
+ * (`createMetadataPredicate` → `predicateForObjects(withMetadataKey:operatorType:value:)`).
+ * Returns how many went; 0 when the module, the API or the delete itself was
+ * unavailable, and 0 when nothing carried the tag (the capture was never
+ * published), which is what lets a caller use the count as "was it out there?".
+ *
+ * **This is what the body channel cannot do, and the difference is where the
+ * row lives, not a policy.** A weight is irreversible from inside ARC because
+ * nothing could ever find its sample again. A water capture's own id IS the
+ * tag on its sample, so the sample is findable by the id the Undo already
+ * holds. No UUID is stored, and none needs to be.
+ *
+ * Best-effort on purpose. A failure leaves a glass in the Health app that ARC no
+ * longer holds — visible and correctable there — and costs ARC's own numbers
+ * nothing, because the cumulative read excludes ARC's samples either way.
+ */
+export async function deleteHealthQuantityByTag(
+  identifier: string,
+  sourceRowId: string
+): Promise<number> {
+  const mod = hk;
+  if (!mod || typeof mod.deleteObjects !== 'function') return 0;
+  try {
+    const removed = await mod.deleteObjects(identifier, {
+      metadata: {
+        withMetadataKey: ARC_WRITE_METADATA_KEY,
+        operatorType: PREDICATE_EQUAL_TO,
+        value: sourceRowId,
+      },
+    });
+    return typeof removed === 'number' && Number.isFinite(removed) ? removed : 0;
+  } catch {
+    return 0;
   }
-  // Statistics carry no own-write exclusion by design (Apple merges before the
-  // predicate), so the honest report is `none`, never `refused`.
-  return { samples: stats, exclusion: 'none', error };
 }
 
 /**

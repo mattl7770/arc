@@ -48,7 +48,7 @@ const nowISO = () => new Date().toISOString();
  * reading to the wrong calendar day at those extremes. Bucket backdated body
  * readings through a local window, not the raw UTC date. (See logMetric.)
  */
-function dayInstant(date: string): string {
+export function dayInstant(date: string): string {
   const [y, m, d] = date.split('-').map(Number);
   return new Date(y!, m! - 1, d!, 12, 0, 0, 0).toISOString();
 }

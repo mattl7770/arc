@@ -22,6 +22,7 @@ import {
   getHealthSyncState,
   HEALTH_LOG_KEY,
   HEALTH_PUBLISH_KEY,
+  HEALTH_WATER_PUBLISH_KEY,
   latestMetric,
   pickDailyMetric,
   recentWearableWorkouts,
@@ -39,6 +40,12 @@ import {
   upsertHealthBodyRows,
 } from '../src/lib/db/repositories/body.ts';
 import { isHealthSyncEnabled, setHealthSyncEnabled } from '../src/lib/db/repositories/user.ts';
+import {
+  getPublishableWater,
+  logWater,
+  publishableWaterAfter,
+  waterDaySeries,
+} from '../src/lib/db/repositories/water.ts';
 import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import {
   linkIngestedWorkout,
@@ -58,10 +65,21 @@ import {
   BODY_INGEST_METRICS,
   bodyIngestRows,
   quantityDailyRows,
+  isPublishedIdentifier,
   SAMPLE_METRICS,
   sleepDailyRows,
+  STATISTIC_METRICS,
+  statisticDailyRows,
+  WATER_PUBLISH_METRIC,
 } from '../src/lib/health/mapping.ts';
-import { publishBodyMetrics, PUBLISH_BATCH_ROWS } from '../src/lib/health/publish.ts';
+import {
+  editWaterCapture,
+  publishBodyMetrics,
+  PUBLISH_BATCH_ROWS,
+  publishWaterCaptures,
+  removeWaterCapture,
+} from '../src/lib/health/publish.ts';
+import { readDailyCumulative } from '../src/lib/health/healthkit.ts';
 import { clampRowsToWindow, syncDayWindows } from '../src/lib/health/sync.ts';
 
 let pass = 0;
@@ -2305,6 +2323,265 @@ console.log('23. the DAY rule — a session logged with no start time (2026-09-2
       ? ok('…and a pass whose window no longer reaches that day prunes it')
       : bad('refusal not pruned', JSON.stringify(pairingRefusals(db)));
   }
+}
+
+console.log('24. water is two-way — the walk, the echo, the undo (2026-09-21, docs §20)');
+{
+  const WATER = WATER_PUBLISH_METRIC.hkIdentifier;
+  const waterSpec = STATISTIC_METRICS.find((m) => m.hkIdentifier === WATER);
+  const localAt = (date, hour) => {
+    const [y, m, d] = date.split('-').map(Number);
+    return new Date(y, m - 1, d, hour, 0, 0, 0);
+  };
+  const dayWindow = (date) => ({
+    date,
+    start: localAt(date, 0),
+    end: localAt(shiftISODate(date, 1), 0),
+  });
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  /**
+   * ONE fake HealthKit behind every native call: the publish pass saves into
+   * it, the tagged delete removes from it, and the statistics read sums it —
+   * honouring a metadata NOT the way HKStatisticsQuery honours a sample
+   * predicate. So the glass the read must leave out is the one ARC's own
+   * publish code wrote, carrying the tag ARC's own code stamped.
+   */
+  const fakeHealthKit = (initial) => {
+    const samples = [...initial];
+    const saves = [];
+    const deletes = [];
+    let refusing = false;
+    return {
+      samples,
+      saves,
+      deletes,
+      refuse: (on) => {
+        refusing = on;
+      },
+      deps: {
+        isAvailable: () => true,
+        save: async (identifier, unit, value, start, end, metadata) => {
+          saves.push({ identifier, unit, value, at: start.toISOString(), metadata });
+          if (refusing) return false;
+          samples.push({ identifier, ml: value, start, metadata });
+          return true;
+        },
+        deleteByTag: async (identifier, rowId) => {
+          deletes.push({ identifier, rowId });
+          const before = samples.length;
+          for (let i = samples.length - 1; i >= 0; i--) {
+            const s = samples[i];
+            if (s.identifier === identifier && s.metadata?.[ARC_WRITE_METADATA_KEY] === rowId) {
+              samples.splice(i, 1);
+            }
+          }
+          return before - samples.length;
+        },
+      },
+      statistics: {
+        queryStatistics: async (identifier, options) => {
+          const { date, NOT } = options.filter;
+          const hidden = (s) =>
+            (NOT ?? []).some(
+              (c) =>
+                c.metadata !== undefined && s.metadata?.[c.metadata.withMetadataKey] !== undefined
+            );
+          const sum = samples
+            .filter(
+              (s) =>
+                s.identifier === identifier &&
+                s.start >= date.startDate &&
+                s.start < date.endDate &&
+                !hidden(s)
+            )
+            .reduce((a, s) => a + s.ml, 0);
+          return { sumQuantity: { unit: options.unit, quantity: sum } };
+        },
+      },
+    };
+  };
+
+  const { db } = freshDb();
+  setHealthSyncEnabled(db, true);
+  const today = todayISODate();
+  const win = dayWindow(today);
+  // Garmin's own glass, already in Apple Health: 473 mL at 08:00.
+  const hk = fakeHealthKit([
+    { identifier: WATER, ml: 473, start: localAt(today, 8), metadata: {} },
+  ]);
+
+  // --- Arming: what was logged before this build stays in ARC ---------------
+  const before = logWater(db, today, 250);
+  const armed = await publishWaterCaptures(db, new Date(), hk.deps);
+  armed.armed && armed.samplesWritten === 0 && hk.saves.length === 0
+    ? ok('the first water pass ARMS: a capture already on record is never published')
+    : bad('water arming', JSON.stringify(armed));
+  const waterState = getHealthPublishState(db, HEALTH_WATER_PUBLISH_KEY);
+  waterState.armedAt !== null &&
+  waterState.cursorId === before &&
+  getHealthPublishState(db).armedAt === null
+    ? ok('its cursor is its OWN key — the body cursor is untouched by it')
+    : bad('cursor keys', JSON.stringify({ waterState, body: getHealthPublishState(db) }));
+
+  // --- A new capture goes out, once, tagged with its own id ------------------
+  const glass = logWater(db, today, 473.176473); // a 16 oz bottle, as the Log tab writes it
+  const first = await publishWaterCaptures(db, new Date(), hk.deps);
+  first.samplesWritten === 1 &&
+  hk.saves.length === 1 &&
+  hk.saves[0].identifier === WATER &&
+  hk.saves[0].unit === 'mL' &&
+  hk.saves[0].value === 473.176473 &&
+  hk.saves[0].metadata[ARC_WRITE_METADATA_KEY] === glass
+    ? ok('a manual capture publishes as ONE DietaryWater sample in mL, tagged with its row id')
+    : bad('water publish', JSON.stringify(hk.saves));
+  first.byType.length === 1 && first.byType[0].label === 'Water' && first.byType[0].succeeded === 1
+    ? ok('the log reports it per type, as "Water"')
+    : bad('water byType', JSON.stringify(first.byType));
+
+  // --- THE ECHO: read the day back through the real read path --------------
+  // Health now holds Garmin's 473 AND ARC's own 473.18. The control shows what
+  // an unfiltered read would bucket; the real read is sync.ts's, failClosed.
+  const control = await readDailyCumulative(WATER, 'mL', [win], {}, hk.statistics);
+  const read = await readDailyCumulative(
+    WATER,
+    'mL',
+    [win],
+    { failClosed: isPublishedIdentifier(WATER) },
+    hk.statistics
+  );
+  Math.abs(control.samples[0].value - 946.176473) < 1e-9 && read.samples[0].value === 473
+    ? ok(
+        'Health holds both glasses (946.18 mL); the published-water read buckets Garmin’s 473 alone'
+      )
+    : bad('echo read', JSON.stringify({ control, read }));
+  upsertWearableRows(db, statisticDailyRows(waterSpec, read.samples));
+  const dayTotal = waterDaySeries(db, 1, today)[0];
+  const expected = 250 + 473.176473 + 473;
+  Math.abs(dayTotal.ml - expected) < 1e-6 && dayTotal.entries === 3
+    ? ok(
+        `the day counts ARC’s glass ONCE: 250 + 473.18 + Garmin 473 = ${dayTotal.ml.toFixed(2)} mL (the echo would read ${(expected + 473.176473).toFixed(2)})`
+      )
+    : bad('DOUBLE COUNT', JSON.stringify(dayTotal));
+
+  // --- The structural guard: an hk: bucket is never sent back ---------------
+  const walkable = publishableWaterAfter(db, null, 50).map((r) => r.id);
+  walkable.length === 2 && walkable.includes(before) && walkable.includes(glass)
+    ? ok('the walk sees only manual captures — the hk:water_ml bucket is not publishable')
+    : bad('walkable', JSON.stringify(walkable));
+  const again = await publishWaterCaptures(db, new Date(), hk.deps);
+  again.samplesAttempted === 0 && hk.saves.length === 1
+    ? ok('a pass after the read-back publishes nothing: no re-post, no echo of the bucket')
+    : bad('republished', JSON.stringify(again));
+
+  // --- The Undo takes the glass back out of Health ---------------------------
+  removeWaterCapture(db, glass, hk.deps) &&
+  hk.deletes.length === 1 &&
+  hk.deletes[0].rowId === glass &&
+  hk.deletes[0].identifier === WATER
+    ? ok('removeWaterCapture deletes the row and asks Health to delete by THAT row’s tag')
+    : bad('undo', JSON.stringify(hk.deletes));
+  await flush();
+  hk.samples.length === 1 && hk.samples[0].ml === 473
+    ? ok('...and Health is left holding Garmin’s glass alone')
+    : bad('undo left', JSON.stringify(hk.samples));
+  const reread = await readDailyCumulative(WATER, 'mL', [win], { failClosed: true }, hk.statistics);
+  upsertWearableRows(db, statisticDailyRows(waterSpec, reread.samples));
+  Math.abs(waterDaySeries(db, 1, today)[0].ml - (250 + 473)) < 1e-9
+    ? ok('the day after the Undo: 250 + Garmin 473 — nothing left behind on either side')
+    : bad('after undo', JSON.stringify(waterDaySeries(db, 1, today)));
+
+  // --- An edit replaces what was published, and only that --------------------
+  const bottle = logWater(db, today, 500);
+  await publishWaterCaptures(db, new Date(), hk.deps);
+  const savesBefore = hk.saves.length;
+  editWaterCapture(db, bottle, 750, hk.deps);
+  await flush();
+  const replaced = hk.samples.filter((s) => s.metadata?.[ARC_WRITE_METADATA_KEY] === bottle);
+  replaced.length === 1 &&
+  replaced[0].ml === 750 &&
+  hk.saves.length === savesBefore + 1 &&
+  hk.saves[hk.saves.length - 1].at === hk.saves[savesBefore - 1].at
+    ? ok('editing a published capture re-saves it at 750 mL, same tag, same instant — one glass')
+    : bad('edit resync', JSON.stringify(replaced));
+  const unwalked = logWater(db, today, 200);
+  const savesMid = hk.saves.length;
+  editWaterCapture(db, unwalked, 300, hk.deps);
+  await flush();
+  hk.saves.length === savesMid
+    ? ok('editing a capture the walk has not reached saves nothing — the tagged delete found none')
+    : bad('edit of unpublished saved', JSON.stringify(hk.saves.slice(savesMid)));
+  await publishWaterCaptures(db, new Date(), hk.deps);
+  hk.saves[hk.saves.length - 1].value === 300 &&
+  hk.saves[hk.saves.length - 1].metadata[ARC_WRITE_METADATA_KEY] === unwalked
+    ? ok('...and the walk then publishes the CORRECTED amount when it gets there')
+    : bad('corrected publish', JSON.stringify(hk.saves[hk.saves.length - 1]));
+
+  // --- Rule 2: a refusal stalls and loses nothing ----------------------------
+  hk.refuse(true);
+  const refusedCapture = logWater(db, today, 240);
+  const cursorBefore = getHealthPublishState(db, HEALTH_WATER_PUBLISH_KEY).cursorId;
+  const stalled = await publishWaterCaptures(db, new Date(), hk.deps);
+  stalled.stalled &&
+  stalled.samplesWritten === 0 &&
+  getHealthPublishState(db, HEALTH_WATER_PUBLISH_KEY).cursorId === cursorBefore
+    ? ok('a refused save stalls the water walk and leaves its cursor where it was')
+    : bad('water stall', JSON.stringify(stalled));
+  hk.refuse(false);
+  const retried = await publishWaterCaptures(db, new Date(), hk.deps);
+  retried.samplesWritten === 1 &&
+  hk.saves[hk.saves.length - 1].metadata[ARC_WRITE_METADATA_KEY] === refusedCapture
+    ? ok('the next pass publishes the capture it stalled on')
+    : bad('water retry', JSON.stringify(retried));
+
+  // --- The race: an Undo that lands while the save is in flight --------------
+  // The one ordering the Undo cannot cover by itself: the walk has read the row
+  // and called save; the Undo lands BEFORE the sample exists, so its tagged
+  // delete finds nothing; then the save lands — an orphan with no capture.
+  const racing = logWater(db, today, 120);
+  const raceDeps = {
+    ...hk.deps,
+    save: async (...args) => {
+      removeWaterCapture(db, racing, hk.deps); // the Undo, first
+      await flush(); // its delete runs now, and finds 0
+      return hk.deps.save(...args); // then the save lands
+    },
+  };
+  await publishWaterCaptures(db, new Date(), raceDeps);
+  await flush();
+  const raceDeletes = hk.deletes.filter((d) => d.rowId === racing).length;
+  getPublishableWater(db, racing) === null &&
+  raceDeletes === 2 &&
+  hk.samples.every((s) => s.metadata?.[ARC_WRITE_METADATA_KEY] !== racing)
+    ? ok(
+        'undone mid-save: the Undo’s delete finds nothing, then the walk sees the row gone and takes the orphan out'
+      )
+    : bad('race orphan', JSON.stringify({ raceDeletes, samples: hk.samples }));
+
+  // --- A backdated capture lands on its own day ------------------------------
+  const yesterday = shiftISODate(today, -1);
+  logWater(db, yesterday, 200);
+  await publishWaterCaptures(db, new Date(), hk.deps);
+  hk.saves[hk.saves.length - 1].at === localAt(yesterday, 12).toISOString()
+    ? ok('a capture backdated to yesterday is published at yesterday’s local noon')
+    : bad('backdated instant', hk.saves[hk.saves.length - 1].at);
+
+  // --- One switch, both directions --------------------------------------------
+  setHealthSyncEnabled(db, false);
+  const deletesOff = hk.deletes.length;
+  const offRemoved = removeWaterCapture(db, bottle, hk.deps);
+  const offPass = await publishWaterCaptures(db, new Date(), hk.deps);
+  offRemoved && hk.deletes.length === deletesOff && offPass.status === 'disabled'
+    ? ok('with sync off the row still goes, but ARC neither deletes from nor writes to Health')
+    : bad('switch off', JSON.stringify({ offRemoved, deletes: hk.deletes.length, offPass }));
+  setHealthSyncEnabled(db, true);
+  const absent = await publishWaterCaptures(db, new Date(), {
+    ...hk.deps,
+    isAvailable: () => false,
+  });
+  absent.status === 'unavailable' && absent.samplesWritten === 0
+    ? ok('no HealthKit module: the water pass is a silent no-op')
+    : bad('absent water pass', JSON.stringify(absent));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

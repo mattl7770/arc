@@ -48,7 +48,7 @@
  *     This now covers **`water_ml`** too, and covering it by derivation rather
  *     than by hand is the point. Water used to be the one hand-written entry
  *     here — "one row per sip logged by hand, no HealthKit ingest spec to derive
- *     from" — and as of 2026-09-14 it HAS one (`DietaryWater`, read-only), so
+ *     from" — and as of 2026-09-14 it HAS one (`DietaryWater`; two-way since 2026-09-21), so
  *     the literal was deleted rather than left beside the derived entry. Left
  *     in, it would have made `ACCUMULATING_METRIC_TYPES` contain `water_ml`
  *     twice; more to the point, a duplicate is the first step back toward two

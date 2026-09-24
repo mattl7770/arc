@@ -106,7 +106,8 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     label: 'Steps',
     use: "Home's metrics strip and the Wearables ledger",
     garmin: 'yes',
-    garminNote: "Syncs. Garmin's own FAQ says the step counts in the two apps can differ.",
+    garminNote:
+      'Syncs — Garmin publishes a dedicated FAQ about step counts DIFFERING between the two apps, which presupposes it.',
     verdictDays: null,
   },
   {
@@ -124,7 +125,7 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     use: "The paired session's line and the Coach's training summary; never a daily figure",
     garmin: 'unverified',
     garminNote:
-      'Unconfirmed whether Garmin Connect writes in-workout heart rate to Apple Health at all, at what cadence, or tied to the session. A blank can also mean the read grant was declined — iOS never tells ARC. Check Settings → Privacy & Security → Health → ARC → Heart Rate before reading a zero as a Garmin fact.',
+      'Nothing in this repository establishes that Garmin Connect writes in-workout heart-rate samples to Apple Health at all, at what cadence, or whether it associates them with the session — none of the three was checked. A blank can also mean the read grant was declined — iOS never tells ARC. Check Settings → Privacy & Security → Health → ARC → Heart Rate before reading a zero as a Garmin fact.',
     verdictDays: null,
   },
   {
@@ -166,10 +167,10 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
   {
     hkIdentifier: 'HKQuantityTypeIdentifierDietaryWater',
     label: 'Water',
-    use: "The Water record's day total, beside manual captures — read only, never published",
-    garmin: 'unverified',
+    use: "The Water record's day total, beside manual captures — and since 2026-09-21 ARC publishes its own captures outward too, keeping them out of what it reads back",
+    garmin: 'yes',
     garminNote:
-      'Unconfirmed whether Garmin writes hydration to Apple Health. The test is one evening: log a hydration entry on the watch, sync, and see whether a row lands. Any other hydration app on the phone also fills this.',
+      'Confirmed on your phone: hydration logged in Garmin Connect arrives through Apple Health as one total per day, not one entry per drink. Any other hydration app on the phone also fills this.',
     verdictDays: null,
   },
   {
