@@ -135,6 +135,18 @@ export function planCombine<M extends CombinableMeal>(
 }
 
 /**
+ * A combine refused before anything was written. Its message is a sentence the
+ * Eat tab shows as it stands — the plan's own reason, or why the plan could not
+ * be made — so the screen never has to show an exception's text.
+ */
+export class CombineRefused extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'CombineRefused';
+  }
+}
+
+/**
  * The name a combine writes: what was typed, trimmed — or, when the field is
  * untouched or emptied, the kept meal's own name. Never empty, because
  * `meals.name` is `NOT NULL` and nothing derives one.

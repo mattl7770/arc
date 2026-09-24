@@ -9,7 +9,7 @@
  * cannot reach another screen's component state. This is the listener-set
  * idiom `snooze-store.ts` uses for the same reason. Pure state and listeners —
  * no database, no native, no UI; what an Undo DOES arrives as closures, built
- * by the screen that made the removal over the repository's own functions.
+ * over the repository's own functions (src/lib/nutrition/undo-offers.ts).
  *
  * ## The window — the precedent, and where this differs from it
  *
@@ -31,13 +31,23 @@
  *
  * Only one offer exists at a time, which is what makes "Undo" unambiguous: it
  * always means the last thing removed.
+ *
+ * ## An Undo that cannot be done says so
+ *
+ * The repository refuses a put-back when the record moved in the meantime (a
+ * revision drained on return to the foreground, a combined meal edited since).
+ * A row that simply vanished on the tap would leave the owner unable to tell
+ * whether it did anything, so the offer stays in its slot, REFUSED: the row
+ * reads its `refusal` sentence and has no button, until the screen is left or
+ * the next removal replaces it.
  */
 
 /** Where an offer is drawn. */
 export type UndoScope =
-  /** The day list — the Eat tab, or a past day in history. A deleted meal and
-   *  a combine are offered here. */
-  | { on: 'list' }
+  /** A day's meal list — the Eat tab (today), or that day in history. A
+   *  deleted meal and a combine are offered here, under the day they belong
+   *  to and no other. */
+  | { on: 'list'; date: string }
   /** One meal's own screen — an item removed from it. */
   | { on: 'meal'; mealId: string };
 
@@ -52,16 +62,23 @@ export type UndoOffer = {
   figure: string | null;
   /** The whole instruction VoiceOver reads for the button. */
   spoken: string;
+  /** What the row says instead once the Undo was tried and could not be done:
+   *  "Could not put Greek yogurt back — the meal has changed since." */
+  refusal: string;
   /** Put it back. Throwing means it could not be — the offer is settled. */
   undo: () => void;
   /** The window closed without an Undo: finish the removal (a meal's files). */
   settle: () => void;
+  /** Set once the Undo was tried and refused; the row then reads `refusal`
+   *  and offers nothing. Never set by a caller. */
+  refused?: true;
 };
 
 type Listener = () => void;
 
 let current: UndoOffer | null = null;
 const listeners = new Set<Listener>();
+const nothing = (): void => {};
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -110,23 +127,43 @@ export function closeUndo(match?: (scope: UndoScope) => boolean): void {
 
 /**
  * Take the Undo. True when it was put back; false when there was nothing to
- * undo, or it could not be done — in which case the removal is finished
- * (settled), so nothing is left held for a restore that will never happen.
+ * undo, or it could not be done. A refused Undo is finished (settled), so
+ * nothing is left held for a restore that will never happen — and it stays in
+ * the slot, refused, so the row can say it could not.
  */
 export function runUndo(): boolean {
   const offer = current;
-  if (!offer) return false;
-  current = null;
+  if (!offer || offer.refused) return false;
   try {
     offer.undo();
+    current = null;
     emit();
     return true;
   } catch (error) {
     console.warn('[undo] could not put it back', error);
     settleQuietly(offer);
+    current = { ...offer, refused: true, undo: nothing, settle: nothing };
     emit();
     return false;
   }
+}
+
+/**
+ * The offer a screen draws, or null: a list draws the offers for ITS day, a
+ * meal screen the offers for ITS meal. `key` is the day (`YYYY-MM-DD`) for a
+ * list, the meal's id for a meal screen. History keeps one screen across its
+ * days, so without the day a meal deleted from Tuesday would be offered under
+ * Wednesday, and its Undo would appear to do nothing.
+ */
+export function offerDrawnOn(
+  offer: UndoOffer | null,
+  on: UndoScope['on'],
+  key: string
+): UndoOffer | null {
+  if (!offer) return null;
+  const { scope } = offer;
+  if (scope.on === 'list') return on === 'list' && scope.date === key ? offer : null;
+  return on === 'meal' && scope.mealId === key ? offer : null;
 }
 
 /** Scope matchers, so a screen asks one question the same way everywhere. */

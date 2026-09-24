@@ -43,6 +43,7 @@ import {
   expiredMealPhotos,
   insertMealPhoto,
   latestMealPhoto,
+  listMealPhotos,
   restoreMeal,
   takeMeal,
   takenPendingFileNames,
@@ -55,7 +56,7 @@ import {
   removePendingEstimatePhoto,
 } from '@/lib/media/pending-estimate-store';
 import { nativeStoreIn, photoFileName, type PhotoFileStore } from '@/lib/media/photo-file-store';
-import type { MealPhotoSource } from '@/lib/nutrition/types';
+import type { MealPhotoRow, MealPhotoSource } from '@/lib/nutrition/types';
 
 export type { PhotoFileStore };
 
@@ -142,6 +143,8 @@ export function attachMealPhoto(
 
 /** What the meal screen needs to draw a photo. */
 export type MealPhotoView = {
+  /** The `meal_photos` row id — a stable key when a meal draws several. */
+  id: string;
   uri: string;
   /** True pixel dimensions, so the frame is the photo's own aspect and nothing
    *  is cropped. Null when the source could not report them. */
@@ -168,11 +171,38 @@ export function mealPhotoView(
 ): MealPhotoView | null {
   if (!store) return null;
   const row = latestMealPhoto(db, mealId);
-  if (!row) return null;
+  return row ? viewOf(row, now, store) : null;
+}
+
+/**
+ * Every photo the meal carries, newest first, ready to render — what the meal
+ * screen draws (2026-09-23). Empty is the common case and draws nothing, for
+ * {@link mealPhotoView}'s reasons; a row whose file has gone is left out, not
+ * drawn broken.
+ *
+ * Before a combine a meal holds one photo, so this reads exactly what
+ * {@link mealPhotoView} did. After one, a meal holds the photo of each
+ * photographed meal it absorbed, and the consequence line promised they move
+ * into it — so every one is drawn, rather than the newest standing in for all.
+ */
+export function mealPhotoViews(
+  db: Database,
+  mealId: string,
+  now: Date = new Date(),
+  store: PhotoFileStore | null = nativePhotoStore()
+): MealPhotoView[] {
+  if (!store) return [];
+  return listMealPhotos(db, mealId)
+    .map((row) => viewOf(row, now, store))
+    .filter((view): view is MealPhotoView => view !== null);
+}
+
+function viewOf(row: MealPhotoRow, now: Date, store: PhotoFileStore): MealPhotoView | null {
   if (!store.exists(row.file_name)) return null;
   const uri = store.uri(row.file_name);
   if (!uri) return null;
   return {
+    id: row.id,
     uri,
     width: row.width,
     height: row.height,

@@ -15,7 +15,7 @@ import type { Database, Scalar } from '../database';
 import { localDaysList, todayISODate } from '../date';
 import { newId } from '../id';
 import type { DateString, TimeString } from '../types';
-import { combinedName, planCombine } from '@/lib/nutrition/combine';
+import { CombineRefused, combinedName, planCombine } from '@/lib/nutrition/combine';
 import { assembleMealItems } from '@/lib/nutrition/composite';
 import { isValidClock } from '@/lib/nutrition/meal-time';
 import {
@@ -987,6 +987,40 @@ function marks(values: readonly unknown[]): string {
   return values.map(() => '?').join(', ');
 }
 
+/**
+ * Whether two readings of the same rows say the same thing: every column but
+ * `updated_at`, and the `rowid`, row by row in `rowid` order. It is how an Undo
+ * knows the record is still the one it was offered against. The write stamp is
+ * left out because it is not the record — a no-op UPDATE moves it and changes
+ * nothing anyone logged.
+ */
+function sameRecord(a: readonly TakenRow[], b: readonly TakenRow[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((row, index) => {
+    const other = b[index]!;
+    const keys = new Set([...Object.keys(row), ...Object.keys(other)]);
+    keys.delete('updated_at');
+    for (const key of keys) {
+      if ((row[key] ?? null) !== (other[key] ?? null)) return false;
+    }
+    return true;
+  });
+}
+
+/** Every item a meal holds, every column, as {@link sameRecord} compares them. */
+function itemRecord(db: Database, mealId: string): TakenRow[] {
+  return takeRows(db, 'meal_items', 'meal_id = ?', [mealId]);
+}
+
+/**
+ * Items read earlier, as they should read NOW if nothing touched them: a
+ * catalog food deleted in between was cleared by `ON DELETE SET NULL`, which
+ * is the database keeping its own rule, not anyone changing the meal.
+ */
+function itemsAsExpected(db: Database, rows: readonly TakenRow[]): TakenRow[] {
+  return rows.map((row) => clearedIfGone(db, row, 'food_id', 'foods'));
+}
+
 /** What one item's removal took — everything {@link removeMealItem} deleted. */
 export type TakenMealItems = {
   mealId: string;
@@ -995,6 +1029,9 @@ export type TakenMealItems = {
   /** Its energy over the rows that carry numbers; null when none was priced. */
   kcal: number | null;
   rows: TakenRow[];
+  /** The items the removal LEFT, every column — the meal the Undo expects to
+   *  find. Anything else there refuses it (see {@link restoreMealItems}). */
+  left: TakenRow[];
   /** The meal's four totals before the removal, and after it. */
   totalsBefore: MealTotals;
   totalsAfter: MealTotals;
@@ -1052,26 +1089,38 @@ export function takeMealItem(db: Database, itemId: string): TakenMealItems | nul
       rows.filter((row) => row.is_composite === 0).map((row) => row.kcal as number | null)
     ),
     rows,
+    left: itemRecord(db, item.meal_id),
     totalsBefore,
     totalsAfter: mealTotals(db, item.meal_id)!,
   };
 }
 
 /**
- * Put back what {@link takeMealItem} took. Throws when the meal itself has gone
- * since.
+ * Put back what {@link takeMealItem} took.
  *
- * **The totals go back to the exact figures they had** when the meal is as the
- * removal left it — which, inside the Undo window, it always is. Re-deriving
- * them instead would be right in arithmetic and wrong in the last bit: a meal
+ * **Refuses, writing nothing, unless the meal is exactly as the removal left
+ * it** — the same items, every column (bar the write stamp) the same. The meal
+ * screen closes the Undo on its own next write, but not every write is the
+ * screen's: a queued revision drained on return to the foreground runs
+ * `replaceMealItems` under a screen that is still showing the offer. Putting a
+ * row back beside what replaced it would build a meal nobody logged and count
+ * the removed item twice; putting a part back under a header that was replaced
+ * would fail its foreign key. So it throws, as {@link uncombineMeals} does, and
+ * the Undo row says it could not.
+ *
+ * **The totals go back to the exact figures they had.** Re-deriving them
+ * instead would be right in arithmetic and wrong in the last bit: a meal
  * written by `logMealWithItems` carries totals summed in JS, while
  * `recomputeMealTotals` sums in SQLite, and the two can differ by one ulp — a
- * "189.4" that is not the 189.4 it was. If the meal has changed since, the
- * figures it had no longer describe it, and they are re-derived from its items.
+ * "189.4" that is not the 189.4 it was. Only when the totals themselves were
+ * written since (the items being unchanged) are they re-derived from the items.
  */
 export function restoreMealItems(db: Database, taken: TakenMealItems): void {
   if (!getMeal(db, taken.mealId)) {
     throw new Error('restoreMealItems: the meal these belonged to is gone.');
+  }
+  if (!sameRecord(itemRecord(db, taken.mealId), itemsAsExpected(db, taken.left))) {
+    throw new Error('restoreMealItems: the meal has changed since, so it stays as it is.');
   }
   db.transaction(() => {
     const untouched = sameTotals(mealTotals(db, taken.mealId), taken.totalsAfter);
@@ -1158,12 +1207,14 @@ export type CombinedMeals = {
   keptId: string;
   /** Its row as it stood before, restored verbatim by the Undo. */
   kept: TakenRow;
-  /** The items it held before — with the moved and stand-in ones, the exact
-   *  set the Undo expects to find, or it refuses. */
+  /** The items it held before — they stay with it when the combine is undone. */
   keptItemIds: string[];
   absorbed: { meal: TakenRow; itemIds: string[]; photoIds: string[] }[];
   /** The "(as logged)" items written for free-form meals — deleted by the Undo. */
   standInIds: string[];
+  /** The combined meal as the combine LEFT it — its row and every item, every
+   *  column. The Undo runs only while the meal still reads exactly this. */
+  result: { meal: TakenRow; items: TakenRow[] };
   /** The name the result took. */
   name: string;
   count: number;
@@ -1203,7 +1254,8 @@ export type CombinedMeals = {
  * ids it was handed as history (`ai_messages` is append-only), and a later read
  * by an absorbed id says the meal is gone.
  *
- * Throws, writing nothing, when the plan refuses.
+ * Throws {@link CombineRefused}, writing nothing, when the plan refuses or a
+ * meal is no longer there; its message is the sentence the Eat tab shows.
  */
 export function combineMeals(
   db: Database,
@@ -1212,12 +1264,12 @@ export function combineMeals(
 ): CombinedMeals {
   const found = [...new Set(mealIds)].map((id) => getMeal(db, id));
   if (found.some((meal) => meal === undefined)) {
-    throw new Error('combineMeals: one of those meals no longer exists.');
+    throw new CombineRefused('One of those meals is no longer logged, so nothing was combined.');
   }
   const meals = found as MealRow[];
   const plan = planCombine(meals, pendingAmong(db, meals));
-  if (plan.kind === 'too-few') throw new Error('combineMeals: it takes two meals to combine.');
-  if (plan.kind === 'refused') throw new Error(plan.reason);
+  if (plan.kind === 'too-few') throw new CombineRefused('It takes two meals to combine.');
+  if (plan.kind === 'refused') throw new CombineRefused(plan.reason);
 
   const { keep, absorb } = plan;
   const all = [keep, ...absorb];
@@ -1281,6 +1333,10 @@ export function combineMeals(
     keptItemIds,
     absorbed,
     standInIds,
+    result: {
+      meal: takeRows(db, 'meals', 'id = ?', [keep.id])[0]!,
+      items: itemRecord(db, keep.id),
+    },
     name,
     count: all.length,
   };
@@ -1288,7 +1344,7 @@ export function combineMeals(
 
 /** Which of these meals are waiting on a queued estimate (0057) — tolerant of a
  *  database that predates the queue, where the answer is none. */
-function pendingAmong(db: Database, meals: readonly MealRow[]): Set<string> {
+function pendingAmong(db: Database, meals: readonly Pick<MealRow, 'id'>[]): Set<string> {
   try {
     return new Set(
       db
@@ -1310,27 +1366,27 @@ function pendingAmong(db: Database, meals: readonly MealRow[]): Set<string> {
  * meal's own columns are restored as they stood. Every meal row is then what it
  * was, so every day total is what it was.
  *
- * **Refuses when the combined meal has moved on.** If its items are not exactly
- * the set the combine left — an item added, removed or revised since — putting
- * rows back around the change would build a meal nobody logged, so it throws
- * and writes nothing, the way the Coach's staleness guard refuses a card whose
- * row moved (docs/coach-domains.md).
+ * **Refuses when the combined meal has moved on** — unless its row and every
+ * item read exactly what the combine left (`combined.result`: every column bar
+ * the write stamp). An item added, removed, re-portioned, halved or re-counted;
+ * a rename, a new time, a changed note; a revision queued against it: any of
+ * these, and the old rows and old totals this function restores would be
+ * written over the change — a meal nobody logged, and a day total that no
+ * longer adds up. So it throws and writes nothing, the way the Coach's
+ * staleness guard refuses a card whose row moved (docs/coach-domains.md). The
+ * one change it forgives is the database's own: a catalog food or recipe
+ * deleted meanwhile, whose reference `ON DELETE SET NULL` cleared.
  *
  * One cost, stated: the moved rows' `updated_at` records the two moves, because
  * the 0014 trigger stamps every UPDATE. It is a write stamp, not the record.
  */
 export function uncombineMeals(db: Database, combined: CombinedMeals): void {
-  const expected = new Set([
-    ...combined.keptItemIds,
-    ...combined.absorbed.flatMap((a) => a.itemIds),
-    ...combined.standInIds,
-  ]);
-  const now = getMeal(db, combined.keptId)
-    ? db
-        .all<{ id: string }>('SELECT id FROM meal_items WHERE meal_id = ?', [combined.keptId])
-        .map((row) => row.id)
-    : null;
-  if (now === null || now.length !== expected.size || now.some((id) => !expected.has(id))) {
+  const meal = takeRows(db, 'meals', 'id = ?', [combined.keptId]);
+  const unchanged =
+    sameRecord(meal, [clearedIfGone(db, combined.result.meal, 'recipe_id', 'recipes')]) &&
+    sameRecord(itemRecord(db, combined.keptId), itemsAsExpected(db, combined.result.items)) &&
+    pendingAmong(db, [{ id: combined.keptId }]).size === 0;
+  if (!unchanged) {
     throw new Error('uncombineMeals: the combined meal has changed since, so it stays as it is.');
   }
   db.transaction(() => {
@@ -1514,6 +1570,19 @@ export function insertMealPhoto(db: Database, photo: NewMealPhoto): string {
 export function latestMealPhoto(db: Database, mealId: string): MealPhotoRow | undefined {
   return db.get<MealPhotoRow>(
     'SELECT * FROM meal_photos WHERE meal_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+    [mealId]
+  );
+}
+
+/**
+ * Every photo a meal carries, newest first — what the meal screen draws
+ * (2026-09-23). A meal is photographed once, when it is estimated; a meal that
+ * holds two is one COMBINED from two photographed meals, and each photo is the
+ * evidence for its own part of it, so none is hidden behind the newest.
+ */
+export function listMealPhotos(db: Database, mealId: string): MealPhotoRow[] {
+  return db.all<MealPhotoRow>(
+    'SELECT * FROM meal_photos WHERE meal_id = ? ORDER BY created_at DESC, rowid DESC',
     [mealId]
   );
 }

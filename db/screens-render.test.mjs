@@ -116,7 +116,7 @@ import { QuestionsPlate, ReviewItemsPlate } from '../src/components/nutrition/es
 import BarcodeScanScreen, { ScanMealName } from '../app/barcode-scan.tsx';
 import { CombineFooter } from '../src/components/nutrition/combine-meals.tsx';
 import { planCombine } from '../src/lib/nutrition/combine.ts';
-import { closeUndo, offerUndo } from '../src/lib/nutrition/undo-store.ts';
+import { closeUndo, currentUndo, offerUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
 import MealEstimateScreen from '../app/meal-estimate.tsx';
 import FoodNewScreen from '../app/food-new.tsx';
 import FoodSearchScreen from '../app/food-search.tsx';
@@ -5140,6 +5140,7 @@ console.log('\n23. 2026-09-23 — Undo, Combine, and a multi-scan meal’s name'
     said,
     figure,
     spoken,
+    refusal: `Could not put ${said.replace(/^\w+ /, '')} back — the meal has changed since.`,
     undo: noop,
     settle: noop,
   });
@@ -5157,7 +5158,7 @@ console.log('\n23. 2026-09-23 — Undo, Combine, and a multi-scan meal’s name'
   ]);
 
   // A MEAL DELETED on its own screen comes back from the list it returns to.
-  offerUndo(offer({ on: 'list' }, 'Deleted Lunch', 'Undo deleting Lunch', '640 kcal'));
+  offerUndo(offer({ on: 'list', date: today }, 'Deleted Lunch', 'Undo deleting Lunch', '640 kcal'));
   const deleted = render('nutrition hub (a deleted meal)', NutritionScreen);
   expect('nutrition hub (a deleted meal)', deleted, [
     'Deleted Lunch',
@@ -5170,6 +5171,47 @@ console.log('\n23. 2026-09-23 — Undo, Combine, and a multi-scan meal’s name'
     render('nutrition-history (a deleted meal)', NutritionHistoryScreen, {}),
     ['Deleted Lunch', 'Undo deleting Lunch']
   );
+  closeUndo();
+
+  // A meal deleted from a PAST day is offered under that day only — history
+  // drawing another day, and the Eat tab, draw nothing for it.
+  const dayBefore = shiftISODate(today, -1);
+  offerUndo(
+    offer({ on: 'list', date: dayBefore }, 'Deleted Tapas', 'Undo deleting Tapas', '480 kcal')
+  );
+  expect(
+    'nutrition-history (its own day)',
+    render('nutrition-history (its own day)', NutritionHistoryScreen, { date: dayBefore }),
+    ['Deleted Tapas', 'Undo deleting Tapas']
+  );
+  refute(
+    'nutrition-history (another day)',
+    render('nutrition-history (another day)', NutritionHistoryScreen, {}),
+    ['Deleted Tapas']
+  );
+  refute(
+    'nutrition hub (a past day’s deletion)',
+    render('nutrition hub (a past day’s deletion)', NutritionScreen),
+    ['Deleted Tapas']
+  );
+  closeUndo();
+
+  // An Undo that was REFUSED keeps its row and loses its button: the tap is
+  // answered in a sentence.
+  offerUndo(offer({ on: 'list', date: today }, 'Deleted Lunch', 'Undo deleting Lunch', '640 kcal'));
+  const slot = currentUndo();
+  offerUndo({
+    ...slot,
+    undo: () => {
+      throw new Error('changed');
+    },
+  });
+  runUndo();
+  const refusedRow = render('nutrition hub (a refused Undo)', NutritionScreen);
+  expect('nutrition hub (a refused Undo)', refusedRow, [
+    'Could not put Lunch back — the meal has changed since.',
+  ]);
+  refute('nutrition hub (a refused Undo)', refusedRow, ['Undo deleting Lunch', '>Undo<']);
   closeUndo();
 
   // AN ITEM REMOVED on the meal screen — drawn there, on that meal only.
@@ -5260,6 +5302,57 @@ console.log('\n23. 2026-09-23 — Undo, Combine, and a multi-scan meal’s name'
     '“Coffee” is still waiting on its estimate.',
     'aria-disabled="true"',
   ]);
+  // A TAP the repository refused (the screen's copy of the day was stale): the
+  // foot stays, and says why above the button.
+  const tapRefused = render(
+    'combine foot (a tap refused)',
+    CombineFooter,
+    {},
+    {
+      plan: planCombine([coffee, porridge]),
+      name: null,
+      refused: 'One of those meals is no longer logged, so nothing was combined.',
+      onName: noop,
+      onCombine: noop,
+    }
+  );
+  expect('combine foot (a tap refused)', tapRefused, [
+    'One of those meals is no longer logged, so nothing was combined.',
+    'Combine 2 meals',
+  ]);
+  const reason = planCombine([coffee, porridge], new Set([otherId])).reason;
+  const echoed = render(
+    'combine foot (a refusal the plan already says)',
+    CombineFooter,
+    {},
+    {
+      plan: planCombine([coffee, porridge], new Set([otherId])),
+      name: null,
+      refused: reason,
+      onName: noop,
+      onCombine: noop,
+    }
+  );
+  echoed !== null && echoed.split('is still waiting on its estimate').length === 2
+    ? ok('combine foot: a refusal the re-read plan already states is said once, not twice')
+    : bad('combine foot: refusal repeated');
+
+  // An item's Undo refused on the meal screen (a revision drained under it):
+  // the row stays on the Items plate and says so, with no button.
+  offerUndo(offer({ on: 'meal', mealId }, 'Removed Banana', 'Undo removing Banana', '107 kcal'));
+  offerUndo({
+    ...currentUndo(),
+    undo: () => {
+      throw new Error('changed');
+    },
+  });
+  runUndo();
+  const itemRefused = render('meal-detail (a refused Undo)', MealDetailScreen, { id: mealId });
+  expect('meal-detail (a refused Undo)', itemRefused, [
+    'Could not put Banana back — the meal has changed since.',
+  ]);
+  refute('meal-detail (a refused Undo)', itemRefused, ['Undo removing Banana']);
+  closeUndo();
 
   // THE MULTI-SCAN NAME — prefilled, a count in the note, no button of its own.
   const named = render(

@@ -31,6 +31,12 @@ import { combineConsequence, combinedName, type CombinePlan } from '@/lib/nutrit
  *   taps and never waits on typing — then the consequence in future tense
  *   (00-design-spec.md §5: a pending write says what it will do before it does
  *   it), then the button.
+ * - **A tap the repository refused** (`refused`): the plan was drawn from the
+ *   screen's copy of the day, and `combineMeals` re-checks the database — an
+ *   estimate queued meanwhile, a meal deleted. Its sentence sits above the
+ *   button in ink, so the tap is answered rather than silently undone; it goes
+ *   when the choice or the name changes. Not repeated when the re-read plan is
+ *   already saying the same thing.
  *
  * ## Conformed Set
  *
@@ -44,17 +50,21 @@ import { combineConsequence, combinedName, type CombinePlan } from '@/lib/nutrit
 export function CombineFooter({
   plan,
   name,
+  refused = null,
   onName,
   onCombine,
 }: {
   plan: CombinePlan;
   /** The typed name, or null while the field is untouched. */
   name: string | null;
+  /** Why the last Combine tap was refused, or null. */
+  refused?: string | null;
   onName: (text: string) => void;
   onCombine: () => void;
 }) {
   const ok = plan.kind === 'ok';
   const resolved = ok ? combinedName(name, plan.keep) : '';
+  const answer = refused !== null && !(plan.kind === 'refused' && plan.reason === refused);
   return (
     <View className="mt-1">
       <Divider />
@@ -87,6 +97,10 @@ export function CombineFooter({
             </Text>
           </>
         )}
+
+        {answer ? (
+          <Text className="mt-3 font-serif text-[13px] leading-5 text-ink">{refused}</Text>
+        ) : null}
 
         <Pressable
           accessibilityRole="button"

@@ -58,6 +58,7 @@ import {
   todayTotals,
   uncombineMeals,
   updateMealItemPortion,
+  updateMealName,
   updateMealTime,
 } from '../src/lib/db/repositories/nutrition.ts';
 import {
@@ -82,6 +83,7 @@ import {
   deleteMealWithPhotos,
   MEAL_PHOTO_RETENTION_DAYS,
   mealPhotoView,
+  mealPhotoViews,
   restoreMealWithPhotos,
   settleMealRemoval,
   sweepMealPhotos,
@@ -89,14 +91,21 @@ import {
 } from '../src/lib/media/meal-photo-store.ts';
 import { heldFiles, releaseFiles } from '../src/lib/media/held-files.ts';
 import {
+  CombineRefused,
   combineConsequence,
   combinedName,
   mealListOrder,
   planCombine,
 } from '../src/lib/nutrition/combine.ts';
 import {
+  combineWithUndo,
+  deleteMealWithUndo,
+  removeItemWithUndo,
+} from '../src/lib/nutrition/undo-offers.ts';
+import {
   closeUndo,
   currentUndo,
+  offerDrawnOn,
   offerUndo,
   onList,
   onMeal,
@@ -4036,16 +4045,27 @@ console.log('56. undo: a removed item comes back as the same rows, in the same p
     ? ok('a food deleted inside the window: the item returns, its link cleared as SET NULL would')
     : bad('food-less restore', JSON.stringify(back));
 
-  // The meal changed while the item was out (outside the screen's window, but
-  // a future caller may): the old figures no longer describe it, so they are
-  // re-derived from the items it now holds.
+  // The meal changed while the item was out — the screen closes its Undo on
+  // its own writes, but not on one it did not make. Refused, writing nothing:
+  // the item is not put back beside what changed.
   const changed = takeMealItem(db, order[1]);
   addMealItem(db, mealId, { name: 'Honey', kcal: 64, protein_g: 0, carbs_g: 17, fat_g: 0 });
-  restoreMealItems(db, changed);
+  const withHoney = everything(raw);
+  throws(() => restoreMealItems(db, changed)) && sameRows(everything(raw), withHoney)
+    ? ok('put back into a meal that gained an item since: refused, and nothing written')
+    : bad('changed-meal restore', JSON.stringify(listMealItems(db, mealId).map((i) => i.name)));
+  // The totals alone written since (the items as the removal left them): the
+  // item goes back, and the figures are re-derived rather than trusted. (The
+  // banana stayed out — its Undo was refused.)
+  const honey = listMealItems(db, mealId).find((i) => i.name === 'Honey');
+  removeMealItem(db, honey.id);
+  const retotalled = takeMealItem(db, order[2]);
+  raw.prepare('UPDATE meals SET kcal = 1 WHERE id = ?').run(mealId);
+  restoreMealItems(db, retotalled);
   const summed = listMealItems(db, mealId).reduce((sum, i) => sum + (i.kcal ?? 0), 0);
-  near(getMeal(db, mealId).kcal, summed) && listMealItems(db, mealId).length === 4
-    ? ok('put back into a meal that changed since, the totals are re-derived from its items')
-    : bad('changed-meal restore', `${getMeal(db, mealId).kcal} vs ${summed}`);
+  near(getMeal(db, mealId).kcal, summed) && listMealItems(db, mealId).length === 2
+    ? ok('…but totals written over since, with the items untouched, are re-derived from them')
+    : bad('retotalled restore', `${getMeal(db, mealId).kcal} vs ${summed}`);
 
   // The meal itself gone: there is nothing to put the item back into.
   const orphan = takeMealItem(db, order[2]);
@@ -4087,6 +4107,91 @@ console.log('56. undo: a removed item comes back as the same rows, in the same p
   takeMealItem(db, 'no-such-item') === null
     ? ok('taking an item that is not there takes nothing')
     : bad('phantom take');
+}
+{
+  // THE DRAIN (review, 2026-09-23). A revision queued offline lands when the
+  // app returns to the foreground — no focus event, so the meal screen keeps
+  // showing an item's Undo. The drain's write is `replaceMealItems`.
+  const { db, raw } = freshDb();
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:00',
+    name: 'Toast',
+    items: [
+      { name: 'Butter', amount: 14, kcal: 100, protein_g: 0, carbs_g: 0, fat_g: 11.4 },
+      { name: 'Toast', amount: 60, kcal: 160, protein_g: 5, carbs_g: 30, fat_g: 2 },
+    ],
+  });
+  const butter = listMealItems(db, mealId).find((i) => i.name === 'Butter');
+  const taken = takeMealItem(db, butter.id);
+  replaceMealItems(db, mealId, [
+    { name: 'Olive oil', amount: 14, kcal: 124, protein_g: 0, carbs_g: 0, fat_g: 14 },
+    { name: 'Toast', amount: 60, kcal: 160, protein_g: 5, carbs_g: 30, fat_g: 2 },
+  ]);
+  const drained = everything(raw);
+  throws(() => restoreMealItems(db, taken)) &&
+  sameRows(everything(raw), drained) &&
+  getMeal(db, mealId).kcal === 284
+    ? ok(
+        'a revision drained under an open Undo: the butter is refused, not put back beside the oil'
+      )
+    : bad('drained restore', JSON.stringify(listMealItems(db, mealId).map((i) => i.name)));
+
+  // A dish PART taken, then its dish replaced: refused by the check, before a
+  // foreign key could fail on the header that is gone.
+  const { mealId: pizza } = pizzaMeal(db);
+  const header = listMealItems(db, pizza).find((i) => i.is_composite === 1);
+  const part = listMealItems(db, pizza).find((i) => i.parent_item_id === header.id);
+  const heldPart = takeMealItem(db, part.id);
+  replaceMealItems(db, pizza, [{ name: 'Salad', kcal: 150 }]);
+  const replaced = everything(raw);
+  let message = null;
+  try {
+    restoreMealItems(db, heldPart);
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  message !== null && message.includes('changed since') && sameRows(everything(raw), replaced)
+    ? ok('…and a part whose dish was replaced is refused as a changed meal, writing nothing')
+    : bad('replaced-dish restore', String(message));
+
+  // A portion edited on an item the removal left: the meal moved on.
+  const toast = listMealItems(db, mealId).find((i) => i.name === 'Toast');
+  const oil = listMealItems(db, mealId).find((i) => i.name === 'Olive oil');
+  const heldOil = takeMealItem(db, oil.id);
+  updateMealItemPortion(db, toast.id, {
+    amount: 120,
+    kcal: 320,
+    protein_g: 10,
+    carbs_g: 60,
+    fat_g: 4,
+  });
+  throws(() => restoreMealItems(db, heldOil)) && listMealItems(db, mealId).length === 1
+    ? ok('…and so is one put back into a meal whose other item was re-portioned since')
+    : bad('re-portioned restore');
+
+  // A catalog food deleted meanwhile that the REST of the meal names: SET NULL
+  // cleared it — the database keeping its own rule, not the meal changing.
+  const food = microFood(db);
+  const { mealId: snack } = logMealWithItems(db, {
+    date: TODAY,
+    time: '10:00',
+    name: 'Snack',
+    items: [
+      itemForPortion(getFood(db, food), { amount: 30 }),
+      itemForPortion(getFood(db, food), { amount: 40 }),
+    ],
+  });
+  const snackBefore = rowsOf(raw, 'meal_items', 'meal_id = ?', snack);
+  const one = takeMealItem(db, snackBefore[0].id);
+  deleteFood(db, food);
+  restoreMealItems(db, one);
+  const snackAfter = listMealItems(db, snack);
+  snackAfter.length === 2 && snackAfter.every((i) => i.food_id === null)
+    ? ok(
+        'a food deleted meanwhile that the rest of the meal names is forgiven: both come back unlinked'
+      )
+    : bad('food-cleared remainder', JSON.stringify(snackAfter.map((i) => i.food_id)));
 }
 
 console.log('57. undo: a deleted meal comes back whole, and its files wait for the window');
@@ -4213,13 +4318,6 @@ console.log('57. undo: a deleted meal comes back whole, and its files wait for t
   getMeal(db, mealId) === undefined && store.files.size === 0 && heldFiles().size === 0
     ? ok('deleteMealWithPhotos (the Coach) is take-then-settle: nothing held, nothing left')
     : bad('coach delete');
-  const screen = readFileSync(new URL('../app/meal-detail.tsx', import.meta.url), 'utf8');
-  screen.includes('takeMealItem(db, itemId)') &&
-  screen.includes('takeMealWithPhotos(db, meal.id)') &&
-  !screen.includes('deleteMealWithPhotos(') &&
-  !screen.includes('removeMealItem(')
-    ? ok('meal-detail removes only through the taking functions — every removal there has an Undo')
-    : bad('meal-detail removes without an Undo');
 }
 
 console.log('58. combine: four meals become one — nothing lost, nothing doubled, nothing dangling');
@@ -4395,6 +4493,110 @@ console.log('59. combine: composites stay whole, a stale Undo is refused, refusa
     : bad('stale uncombine');
 }
 {
+  // EDITS IN PLACE (review, 2026-09-23). The same item ids, different figures:
+  // an Undo that only counted ids restored the old totals over halved items.
+  // Each case combines a pizza with a glass of milk, edits the result the way
+  // a screen can, and asks for the Undo.
+  const fixture = () => {
+    const { db, raw } = freshDb();
+    const { mealId: pizza } = pizzaMeal(db);
+    const milk = logMealWithItems(db, {
+      date: TODAY,
+      time: '20:30',
+      name: 'Milk',
+      items: [
+        { name: 'Milk', amount: 200, unit: 'ml', kcal: 100, protein_g: 7, carbs_g: 10, fat_g: 4 },
+      ],
+    }).mealId;
+    const combined = combineMeals(db, [pizza, milk]);
+    return { db, raw, pizza, milk, combined };
+  };
+  /** The meal's totals still say what its items add up to. */
+  const consistent = (db, mealId) =>
+    near(
+      getMeal(db, mealId).kcal,
+      listMealItems(db, mealId)
+        .filter((i) => i.is_composite === 0)
+        .reduce((sum, i) => sum + (i.kcal ?? 0), 0)
+    );
+  const edits = [
+    [
+      'the pizza halved',
+      ({ db, pizza }) => {
+        const header = listMealItems(db, pizza).find((i) => i.is_composite === 1);
+        scaleCompositeItem(db, header.id, 0.5);
+      },
+    ],
+    [
+      'the milk re-portioned',
+      ({ db, pizza }) => {
+        const milkItem = listMealItems(db, pizza).find((i) => i.name === 'Milk');
+        updateMealItemPortion(db, milkItem.id, {
+          amount: 400,
+          kcal: 200,
+          protein_g: 14,
+          carbs_g: 20,
+          fat_g: 8,
+        });
+      },
+    ],
+    ['the result renamed', ({ db, pizza }) => updateMealName(db, pizza, 'Brunch')],
+    [
+      'its time moved',
+      ({ db, pizza }) => updateMealTime(db, pizza, { date: TODAY, time: '21:00' }),
+    ],
+    [
+      'a revision queued against it',
+      ({ db, pizza }) => queueMealRevision(db, pizza, 'the milk was oat milk'),
+    ],
+  ];
+  for (const [what, edit] of edits) {
+    const f = fixture();
+    edit(f);
+    const edited = everything(f.raw);
+    const totals = totalsOf(f.db);
+    throws(() => uncombineMeals(f.db, f.combined)) &&
+    sameRows(everything(f.raw), edited) &&
+    totalsOf(f.db) === totals &&
+    getMeal(f.db, f.milk) === undefined &&
+    consistent(f.db, f.pizza)
+      ? ok(`Undo after ${what}: refused, nothing written, and the meal still adds up`)
+      : bad(`uncombine after ${what}`, JSON.stringify(getMeal(f.db, f.pizza)));
+  }
+  {
+    // What is NOT a change: the same name written again (a stamp, not a
+    // record), and a recipe deleted meanwhile (the database's own SET NULL).
+    const f = fixture();
+    const before = f.combined.kept;
+    updateMealName(f.db, f.pizza, getMeal(f.db, f.pizza).name);
+    uncombineMeals(f.db, f.combined);
+    getMeal(f.db, f.milk)?.kcal === 100 && getMeal(f.db, f.pizza).name === before.name
+      ? ok('the same name written again is not a change: the Undo still splits them exactly')
+      : bad('no-op rename blocked the Undo');
+  }
+  {
+    const { db, raw } = freshDb();
+    const recipeId = createRecipe(db, { title: 'Chili', servings: 4, ingredients: [] });
+    const chili = logMealWithItems(db, {
+      date: TODAY,
+      time: '19:00',
+      name: 'Chili',
+      recipe_id: recipeId,
+      items: [{ name: 'Chili', kcal: 420 }],
+    }).mealId;
+    const bread = logMeal(db, { date: TODAY, time: '19:05', name: 'Bread', kcal: 90 });
+    const snapshot = everything(raw);
+    const combined = combineMeals(db, [chili, bread]);
+    deleteRecipe(db, recipeId);
+    uncombineMeals(db, combined);
+    getMeal(db, chili)?.recipe_id === null &&
+    getMeal(db, bread)?.kcal === 90 &&
+    rowsOf(raw, 'meal_items', 'meal_id = ?', chili).length === snapshot[1].length
+      ? ok('a recipe deleted meanwhile is forgiven: the Undo splits them, the link cleared')
+      : bad('recipe-cleared uncombine', JSON.stringify(getMeal(db, chili)));
+  }
+}
+{
   const { db, raw } = freshDb();
   const soup = logMeal(db, { date: TODAY, time: '12:00', name: 'Soup', kcal: 300 });
   const { mealId: waiting } = queueNewMealEstimate(
@@ -4513,12 +4715,13 @@ console.log('60. the combine plan (pure), and the one Undo slot');
 
   // THE SLOT — the water receipt's timing: one offer, replaced by the next, no timer.
   const log = [];
-  const offer = (tag, scope = { on: 'list' }, fails = false) => ({
+  const offer = (tag, scope = { on: 'list', date: TODAY }, fails = false) => ({
     scope,
     icon: 'restaurant-outline',
     said: tag,
     figure: null,
     spoken: tag,
+    refusal: `Could not put ${tag} back.`,
     undo: () => {
       if (fails) throw new Error('gone');
       log.push(`undo ${tag}`);
@@ -4542,12 +4745,244 @@ console.log('60. the combine plan (pure), and the one Undo slot');
     ? ok('Undo puts it back and clears the slot — and is never settled as well')
     : bad('run', JSON.stringify(log));
   runUndo() === false ? ok('with nothing open, Undo does nothing') : bad('empty run');
-  offerUndo(offer('d', { on: 'list' }, true));
-  runUndo() === false && log.at(-1) === 'settle d' && currentUndo() === null
-    ? ok('an Undo that cannot be done is settled — nothing is left held for it')
-    : bad('failed run', JSON.stringify(log));
+  offerUndo(offer('d', { on: 'list', date: TODAY }, true));
+  const failed = runUndo();
+  const refused = currentUndo();
+  failed === false &&
+  log.at(-1) === 'settle d' &&
+  refused?.refused === true &&
+  refused.refusal === 'Could not put d back.'
+    ? ok('an Undo that cannot be done is settled — nothing held — and stays in the slot, refused')
+    : bad('failed run', JSON.stringify({ log, refused }));
+  const logged = log.length;
+  runUndo() === false && log.length === logged && currentUndo() === refused
+    ? ok('…where a second tap does nothing: the row has no button, and the slot no second try')
+    : bad('refused run twice', JSON.stringify(log));
+  closeUndo(onList);
+  currentUndo() === null && log.length === logged
+    ? ok('…until the screen is left, which clears it without settling twice')
+    : bad('refused close', JSON.stringify(log));
   unsubscribe();
-  emits === 7 ? ok('every change told its listeners, once each') : bad('emits', String(emits));
+  emits === 8 ? ok('every change told its listeners, once each') : bad('emits', String(emits));
+
+  // WHERE AN OFFER IS DRAWN — its day, or its meal, and nowhere else.
+  const tuesday = offer('tuesday', { on: 'list', date: '2026-09-22' });
+  const item = offer('item', { on: 'meal', mealId: 'm1' });
+  offerDrawnOn(tuesday, 'list', '2026-09-22') === tuesday &&
+  offerDrawnOn(tuesday, 'list', '2026-09-23') === null &&
+  offerDrawnOn(tuesday, 'meal', '2026-09-22') === null
+    ? ok('a meal deleted from Tuesday is offered under Tuesday — not under the day stepped to next')
+    : bad('list scope by day');
+  offerDrawnOn(item, 'meal', 'm1') === item &&
+  offerDrawnOn(item, 'meal', 'm2') === null &&
+  offerDrawnOn(item, 'list', TODAY) === null &&
+  offerDrawnOn(null, 'list', TODAY) === null
+    ? ok('an item’s Undo is drawn on its own meal only')
+    : bad('meal scope');
+}
+
+console.log(
+  '61. the screens’ own paths: each removal and combine WITH its Undo, over a real database'
+);
+{
+  // src/lib/nutrition/undo-offers.ts is what the taps call — so these drive
+  // the path the owner's finger drives, not an offer rebuilt by hand.
+  const { db, raw } = freshDb();
+  const store = fakeStore();
+  const pendingStore = fakeStore();
+  const stores = { photos: store, pending: pendingStore };
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:00',
+    name: 'Breakfast',
+    items: [
+      { name: 'Oats', amount: 60, kcal: 228, protein_g: 8, carbs_g: 40, fat_g: 4 },
+      { name: 'Banana', amount: 120, kcal: 107, protein_g: 1.3, carbs_g: 27.4, fat_g: 0.4 },
+    ],
+  });
+  const before = everything(raw);
+  const totals = totalsOf(db);
+
+  // An item's ×.
+  const banana = listMealItems(db, mealId).find((i) => i.name === 'Banana');
+  removeItemWithUndo(db, banana.id);
+  const itemOffer = currentUndo();
+  itemOffer?.scope.on === 'meal' &&
+  itemOffer.scope.mealId === mealId &&
+  itemOffer.said === 'Removed Banana' &&
+  itemOffer.figure === '107 kcal' &&
+  itemOffer.spoken === 'Undo removing Banana' &&
+  listMealItems(db, mealId).length === 1
+    ? ok('an item’s ×: removed, and offered back on its own meal as “Removed Banana · 107 kcal”')
+    : bad('item offer', JSON.stringify(itemOffer));
+  // Blind to `updated_at` only: removing and restoring an item each rewrite the
+  // meal's totals, and the 0002 trigger stamps both writes.
+  runUndo() === true &&
+  sameRows(withoutStamp(everything(raw)), withoutStamp(before)) &&
+  totalsOf(db) === totals
+    ? ok('…and its Undo is restoreMealItems: every row back, the day’s totals exact')
+    : bad('item undo');
+
+  // Delete this meal — with a photo, whose file waits for the window.
+  attachMealPhoto(db, mealId, JPEG, store);
+  const withPhoto = everything(raw);
+  const withPhotoTotals = totalsOf(db);
+  deleteMealWithUndo(db, mealId, stores);
+  const mealOffer = currentUndo();
+  mealOffer?.scope.on === 'list' &&
+  mealOffer.scope.date === TODAY &&
+  mealOffer.said === 'Deleted Breakfast' &&
+  mealOffer.figure === '335 kcal' &&
+  getMeal(db, mealId) === undefined &&
+  store.files.size === 1
+    ? ok('Delete this meal: gone, its file kept, and offered back on the list of its own day')
+    : bad('meal offer', JSON.stringify(mealOffer));
+  runUndo() === true && sameRows(everything(raw), withPhoto) && totalsOf(db) === withPhotoTotals
+    ? ok('…and its Undo is restoreMealWithPhotos: the meal, its items and its photo row, exact')
+    : bad('meal undo');
+  deleteMealWithUndo(db, mealId, stores);
+  closeUndo(onList);
+  store.files.size === 0 && heldFiles().size === 0 && getMeal(db, mealId) === undefined
+    ? ok('…and leaving the list without it settles: the file goes, nothing is held')
+    : bad('meal settle', `${store.files.size} file(s)`);
+
+  // A meal deleted from a PAST day is offered under that day, not today's.
+  const past = logMeal(db, { date: '2026-09-01', time: '12:00', name: 'Old lunch', kcal: 500 });
+  deleteMealWithUndo(db, past, stores);
+  const pastOffer = currentUndo();
+  offerDrawnOn(pastOffer, 'list', '2026-09-01') === pastOffer &&
+  offerDrawnOn(pastOffer, 'list', TODAY) === null
+    ? ok('a meal deleted from a past day: offered on that day’s history, never on today’s list')
+    : bad('past-day scope', JSON.stringify(pastOffer?.scope));
+  runUndo();
+
+  // Combine — offered back, exactly, on the day it was made.
+  const coffee = logMeal(db, { date: TODAY, time: '09:00', name: 'Coffee', kcal: 15 });
+  const croissant = logMealWithItems(db, {
+    date: TODAY,
+    time: '09:05',
+    name: 'Croissant',
+    items: [{ name: 'Croissant', amount: 60, kcal: 250, protein_g: 5, carbs_g: 26, fat_g: 14 }],
+  }).mealId;
+  const beforeCombine = everything(raw);
+  combineWithUndo(db, [croissant, coffee], '  Second breakfast ');
+  const combineOffer = currentUndo();
+  combineOffer?.icon === 'git-merge-outline' &&
+  combineOffer.said === 'Combined 2 meals into Second breakfast' &&
+  combineOffer.scope.on === 'list' &&
+  combineOffer.scope.date === TODAY &&
+  getMeal(db, croissant) === undefined &&
+  getMeal(db, coffee)?.name === 'Second breakfast'
+    ? ok('Combine: one meal, the typed name, offered back on today’s list')
+    : bad('combine offer', JSON.stringify(combineOffer));
+  runUndo() === true && sameRows(withoutStamp(everything(raw)), withoutStamp(beforeCombine))
+    ? ok('…and its Undo is uncombineMeals: every row as it was')
+    : bad('combine undo');
+
+  // Combine, then an edit, then Undo: the row says it could not, and nothing moves.
+  combineWithUndo(db, [coffee, croissant], null);
+  updateMealName(db, coffee, 'Brunch');
+  const edited = everything(raw);
+  runUndo() === false &&
+  currentUndo()?.refused === true &&
+  currentUndo().refusal ===
+    'Could not split Coffee back into 2 meals — it has changed since they were combined.' &&
+  sameRows(everything(raw), edited)
+    ? ok('a combine edited since: the Undo is refused, the row says so, nothing is written')
+    : bad('stale combine offer', JSON.stringify(currentUndo()));
+  closeUndo();
+
+  // An item's Undo after the drain rewrote the meal: refused, said, nothing written.
+  const brunchItems = listMealItems(db, coffee);
+  removeItemWithUndo(db, brunchItems[0].id);
+  replaceMealItems(db, coffee, [{ name: 'Oat flat white', kcal: 130 }]);
+  const drained = everything(raw);
+  runUndo() === false &&
+  currentUndo()?.refusal ===
+    `Could not put ${brunchItems[0].name} back — the meal has changed since.` &&
+  sameRows(everything(raw), drained)
+    ? ok('an item’s Undo after a drained revision: refused, said on the row, nothing written')
+    : bad('drained item offer', JSON.stringify(currentUndo()));
+  closeUndo();
+
+  // A refused combine throws CombineRefused, writes nothing and offers nothing.
+  const { mealId: waiting } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '13:00', name: 'a sandwich' },
+    { kind: 'text', description: 'a sandwich' }
+  );
+  const quiet = everything(raw);
+  let refusal = null;
+  try {
+    combineWithUndo(db, [coffee, waiting], null);
+  } catch (error) {
+    refusal = error;
+  }
+  refusal instanceof CombineRefused &&
+  refusal.message.includes('still waiting on its estimate') &&
+  currentUndo() === null &&
+  sameRows(everything(raw), quiet)
+    ? ok(
+        'a refused combine: CombineRefused, the sentence the foot shows, nothing written or offered'
+      )
+    : bad('refused combine', String(refusal));
+  let gone = null;
+  try {
+    combineWithUndo(db, [coffee, 'no-such-meal'], null);
+  } catch (error) {
+    gone = error;
+  }
+  gone instanceof CombineRefused && !gone.message.includes('combineMeals')
+    ? ok('…and a meal deleted under a stale screen is refused in a sentence, not a stack trace')
+    : bad('gone refusal', String(gone));
+
+  // PHOTOS after a combine: every one the result holds is drawn, newest first.
+  const lunch = logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 600 });
+  const dessert = logMeal(db, { date: TODAY, time: '12:50', name: 'Dessert', kcal: 300 });
+  const lunchPhoto = attachMealPhoto(db, lunch, JPEG, store);
+  raw
+    .prepare('UPDATE meal_photos SET created_at = ? WHERE id = ?')
+    .run(new Date(Date.now() - 60_000).toISOString(), lunchPhoto);
+  const dessertPhoto = attachMealPhoto(db, dessert, JPEG, store);
+  combineWithUndo(db, [lunch, dessert], null);
+  const views = mealPhotoViews(db, lunch, new Date(), store);
+  views.length === 2 &&
+  views[0].id === dessertPhoto &&
+  views[1].id === lunchPhoto &&
+  mealPhotoViews(db, lunch, new Date(), null).length === 0
+    ? ok('a combined meal draws both photos it holds, newest first — none hidden behind the other')
+    : bad('combined photos', JSON.stringify(views.map((v) => v.id)));
+  closeUndo();
+
+  // THE WIRING — the screens reach these paths and nothing lower, so a removal
+  // cannot lose its Undo without failing here.
+  const src = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+  const detail = src('app/meal-detail.tsx');
+  detail.includes('removeItemWithUndo(getDb(), itemId);\n    reread();') &&
+  detail.includes('deleteMealWithUndo(getDb(), meal.id);\n    router.back();') &&
+  detail.includes("useUndoOffer('meal', mealId)") &&
+  detail.includes('photos.map(') &&
+  [
+    'removeMealItem(',
+    'takeMealItem(',
+    'takeMealWithPhotos(',
+    'deleteMealWithPhotos(',
+    'deleteMeal(',
+  ].every((call) => !detail.includes(call))
+    ? ok(
+        'meal-detail: the × and Delete this meal go through the Undo paths, and remove nothing directly'
+      )
+    : bad('meal-detail wiring');
+  const eat = src('app/nutrition.tsx');
+  eat.includes('combineWithUndo(') &&
+  !eat.includes('combineMeals(') &&
+  eat.includes("useUndoOffer('list', todayISODate())") &&
+  eat.includes('error instanceof CombineRefused')
+    ? ok('the Eat tab combines through combineWithUndo, draws today’s offers, and shows a refusal')
+    : bad('Eat tab wiring');
+  src('app/nutrition-history.tsx').includes("useUndoOffer('list', view.date)")
+    ? ok('history draws the offers of the day in view')
+    : bad('history wiring');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

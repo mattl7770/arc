@@ -295,7 +295,10 @@ export default function NutritionHistoryScreen() {
   useFocusEffect(reload);
   // A meal deleted from a past day's list comes back to that list (2026-09-23):
   // the same receipt row the Eat tab draws, closed when this screen is left.
-  const undo = useUndoOffer('list');
+  // Keyed by the day DRAWN (`view.date`), so stepping the picker to another
+  // day hides it there and stepping back shows it again — never an Undo under
+  // a day it would not put anything back on.
+  const undo = useUndoOffer('list', view.date);
   const undoLast = () => {
     runUndo();
     reload();

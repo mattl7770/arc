@@ -20,10 +20,10 @@ import {
 } from '@/hooks/use-nutrition';
 import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { getDb } from '@/lib/db/client';
-import { combineMeals, uncombineMeals } from '@/lib/db/repositories/nutrition';
+import { todayISODate } from '@/lib/db/date';
 import { expectedDayFraction } from '@/lib/home/readiness';
 import { barFigure, macroGrade, OVERFLOW_CAP } from '@/lib/nutrition/bar';
-import { combinedName, planCombine } from '@/lib/nutrition/combine';
+import { CombineRefused, planCombine } from '@/lib/nutrition/combine';
 import { fmtInt, macroCells } from '@/lib/nutrition/format';
 import {
   dayFigure,
@@ -32,7 +32,8 @@ import {
   type DayMetric,
 } from '@/lib/nutrition/remaining';
 import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
-import { offerUndo, runUndo } from '@/lib/nutrition/undo-store';
+import { combineWithUndo } from '@/lib/nutrition/undo-offers';
+import { runUndo } from '@/lib/nutrition/undo-store';
 import type { SignalLevel } from '@/types/home';
 
 /**
@@ -796,14 +797,18 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     reload,
   } = useNutrition();
   const [logOpen, setLogOpen] = useState(false);
-  // A deleted meal or a combine, while it can still be put back — drawn at the
-  // foot of Eaten today, closed when this screen is left.
-  const undo = useUndoOffer('list');
-  // The meals being chosen to combine, and the name typed for the result (null
-  // while untouched); null when not combining.
+  // A meal deleted from today, or a combine made on it, while it can still be
+  // put back — drawn at the foot of Eaten today, closed when this screen is
+  // left. Keyed by today: a meal deleted from a past day is offered on that
+  // day's history view, not here.
+  const undo = useUndoOffer('list', todayISODate());
+  // The meals being chosen to combine, the name typed for the result (null
+  // while untouched), and why the last Combine tap was refused (null when it
+  // was not); null when not combining.
   const [combine, setCombine] = useState<{
     chosen: ReadonlySet<string>;
     name: string | null;
+    refused: string | null;
   } | null>(null);
   // A choice made and walked away from is not resumed on the way back: the
   // day may have changed under it.
@@ -862,36 +867,35 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     pendingEstimates
   );
   const toggleCombine = () =>
-    setCombine((prev) => (prev ? null : { chosen: new Set(), name: null }));
+    setCombine((prev) => (prev ? null : { chosen: new Set(), name: null, refused: null }));
+  // A change to the choice or the name is a new attempt: the last refusal no
+  // longer describes it.
   const toggleChosen = (id: string) =>
     setCombine((prev) => {
       if (!prev) return prev;
       const chosen = new Set(prev.chosen);
       if (chosen.has(id)) chosen.delete(id);
       else chosen.add(id);
-      return { ...prev, chosen };
+      return { ...prev, chosen, refused: null };
     });
   const combineChosen = () => {
     if (!combine || plan.kind !== 'ok') return;
-    const db = getDb();
     try {
-      const combined = combineMeals(db, [plan.keep.id, ...plan.absorb.map((meal) => meal.id)], {
-        name: combinedName(combine.name, plan.keep),
-      });
-      offerUndo({
-        scope: { on: 'list' },
-        icon: 'git-merge-outline',
-        said: `Combined ${combined.count} meals into ${combined.name}`,
-        figure: null,
-        spoken: `Undo combining ${combined.count} meals into ${combined.name}`,
-        undo: () => uncombineMeals(db, combined),
-        // A combine deletes no file — its photos moved, and move back.
-        settle: () => {},
-      });
+      // `combineWithUndo` combines through the repository and offers the Undo
+      // (src/lib/nutrition/undo-offers.ts); the plan it runs is this one.
+      combineWithUndo(getDb(), [plan.keep.id, ...plan.absorb.map((meal) => meal.id)], combine.name);
+      setCombine(null);
     } catch (error) {
+      // Refused, writing nothing — most likely the day moved under a stale
+      // screen (an estimate queued, a meal deleted). Stay in combine mode and
+      // say why at the foot, over the fresh day the reload reads.
       console.warn('[nutrition] combine refused', error);
+      const refused =
+        error instanceof CombineRefused
+          ? error.message
+          : 'These meals could not be combined. Nothing was changed.';
+      setCombine((prev) => (prev ? { ...prev, refused } : prev));
     }
-    setCombine(null);
     reload();
   };
   /** Put back the last deletion or combine, then re-read the day. */
@@ -1150,7 +1154,10 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
               <CombineFooter
                 plan={plan}
                 name={combine.name}
-                onName={(name) => setCombine((prev) => (prev ? { ...prev, name } : prev))}
+                refused={combine.refused}
+                onName={(name) =>
+                  setCombine((prev) => (prev ? { ...prev, name, refused: null } : prev))
+                }
                 onCombine={combineChosen}
               />
             ) : null}

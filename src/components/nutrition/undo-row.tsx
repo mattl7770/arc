@@ -22,6 +22,12 @@ import type { UndoOffer } from '@/lib/nutrition/undo-store';
  * a food's name in it, so the sentence is serif and only its figure — `150
  * kcal` — is mono (00-design-spec.md §3: serif speaks, mono measures).
  *
+ * **A refused Undo keeps the row and loses the button.** When the record moved
+ * before the tap (src/lib/nutrition/undo-store.ts), the same row reads the
+ * offer's `refusal` — *Could not put Greek yogurt back — the meal has changed
+ * since.* — so the tap visibly did something: it was answered. No signal
+ * colour: nothing biological went wrong.
+ *
  * `first` drops the rule when the row opens a list of its own — the Eat tab's
  * empty day, where the meal just deleted was the only one.
  */
@@ -39,19 +45,27 @@ export function UndoRow({
       <Divider first={first} />
       <View className="mt-2 min-h-[44px] flex-row items-center gap-3">
         <Ionicons name={offer.icon} size={15} color={palette.inkSecondary} />
-        <Text className="flex-1 font-serif text-[13px] leading-5 text-ink-secondary">
-          {offer.said}
-          {offer.figure ? (
-            <Text className="font-mono text-[11px] text-ink-secondary">{` · ${offer.figure}`}</Text>
-          ) : null}
-        </Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={offer.spoken}
-          onPress={onUndo}
-          className="min-h-[44px] items-center justify-center px-2 active:opacity-60">
-          <Text className="font-label text-[12px] font-semibold text-ink">Undo</Text>
-        </Pressable>
+        {offer.refused ? (
+          <Text className="flex-1 py-2 font-serif text-[13px] leading-5 text-ink-secondary">
+            {offer.refusal}
+          </Text>
+        ) : (
+          <>
+            <Text className="flex-1 font-serif text-[13px] leading-5 text-ink-secondary">
+              {offer.said}
+              {offer.figure ? (
+                <Text className="font-mono text-[11px] text-ink-secondary">{` · ${offer.figure}`}</Text>
+              ) : null}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={offer.spoken}
+              onPress={onUndo}
+              className="min-h-[44px] items-center justify-center px-2 active:opacity-60">
+              <Text className="font-label text-[12px] font-semibold text-ink">Undo</Text>
+            </Pressable>
+          </>
+        )}
       </View>
     </View>
   );

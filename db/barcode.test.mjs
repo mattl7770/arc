@@ -4,6 +4,7 @@
  * SQLite via node:sqlite. The network is a mock fetch; op-sqlite is never
  * loaded. Mirrors db/foods.test.mjs. Run: npm run db:test.
  */
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
@@ -17,6 +18,7 @@ import {
   updateMealName,
 } from '../src/lib/db/repositories/nutrition.ts';
 import { mealNameForProduct, mealNameToSave } from '../src/lib/nutrition/format.ts';
+import { commitScanMealName, offersScanMealName } from '../src/lib/nutrition/scan-meal-name.ts';
 import { itemForPortion } from '../src/lib/nutrition/servings.ts';
 import {
   lookupOffProduct,
@@ -419,9 +421,16 @@ console.log('10. 2026-09-23 — a meal of several scans can be named before it i
     ? ok('a typed name is trimmed and written')
     : bad('typed name', String(mealNameToSave('  Breakfast ', 'Greek Yogurt · Fage')));
 
+  // WHEN the field is offered — the screen's own gate.
+  !offersScanMealName(null, 5) &&
+  !offersScanMealName('Greek Yogurt · Fage', 1) &&
+  offersScanMealName('Greek Yogurt · Fage', 2)
+    ? ok('the field appears at the second food, and never for a meal passed in by id')
+    : bad('offersScanMealName');
+
   // The session as app/barcode-scan.tsx runs it: the first add creates the
   // meal named after its product, the second add joins it, and the name field
-  // commits through the meal screen's own rename.
+  // commits through commitScanMealName — the function the screen calls.
   const { db } = freshDb();
   const yogurt = cacheBarcodeFood(db, parseOffProduct(GREEK_YOGURT, '0123456789012'));
   const created = mealNameForProduct(yogurt, 'Breakfast');
@@ -432,17 +441,53 @@ console.log('10. 2026-09-23 — a meal of several scans can be named before it i
     items: [itemForPortion(yogurt, { amount: 170 })],
   });
   addMealItem(db, mealId, itemForPortion(yogurt, { amount: 50 }));
-  const untouched = mealNameToSave(null, created);
-  if (untouched !== null) updateMealName(db, mealId, untouched);
-  getMeal(db, mealId)?.name === 'Greek Yogurt · Fage' && listMealItems(db, mealId).length === 2
-    ? ok('two scans, Done untouched: one meal, two items, still named after the first product')
+  const nameRow = () => JSON.stringify(getMeal(db, mealId));
+  const untouched = nameRow();
+  commitScanMealName(db, mealId, null) === null &&
+  nameRow() === untouched &&
+  getMeal(db, mealId)?.name === 'Greek Yogurt · Fage' &&
+  listMealItems(db, mealId).length === 2
+    ? ok(
+        'two scans, Done untouched: one meal, two items, still named after the first product — no write'
+      )
     : bad('untouched session', getMeal(db, mealId)?.name);
-  const typed = mealNameToSave('Breakfast', created);
-  if (typed !== null) updateMealName(db, mealId, typed);
+  const written = commitScanMealName(db, mealId, ' Breakfast ');
   const meal = getMeal(db, mealId);
-  meal?.name === 'Breakfast' && meal.time === '08:05' && listMealItems(db, mealId).length === 2
+  written === 'Breakfast' &&
+  meal?.name === 'Breakfast' &&
+  meal.time === '08:05' &&
+  listMealItems(db, mealId).length === 2
     ? ok('named at Done: the meal is “Breakfast”, its time and items untouched')
     : bad('typed session', JSON.stringify(meal));
+  // Done commits, then the unmount right after it commits again from a render
+  // that still holds the typed draft: compared with the STORED name, the second
+  // writes nothing.
+  const afterDone = nameRow();
+  commitScanMealName(db, mealId, 'Breakfast') === null && nameRow() === afterDone
+    ? ok('the unmount after Done writes nothing a second time — the stored name already reads it')
+    : bad('double commit');
+  commitScanMealName(db, 'no-such-meal', 'Lunch') === null
+    ? ok('a meal gone by then is left alone, not an error')
+    : bad('missing meal');
+
+  // THE WIRING — the screen decides nothing itself: it shows the field behind
+  // offersScanMealName and commits through commitScanMealName, on Done, when
+  // the field is left, and on unmount.
+  const screen = readFileSync(new URL('../app/barcode-scan.tsx', import.meta.url), 'utf8');
+  const doneAt = screen.indexOf('const done = () => {');
+  const doneBody = screen.slice(doneAt, screen.indexOf('};', doneAt));
+  screen.includes('offersScanMealName(createdName, added)') &&
+  screen.includes('commitScanMealName(getDb(), targetMealId, nameDraft)') &&
+  doneBody.indexOf('commitName()') > -1 &&
+  doneBody.indexOf('commitName()') < doneBody.indexOf('router.back()') &&
+  screen.includes('useEffect(() => () => commitNameRef.current(), [])') &&
+  screen.includes('onPress={done}') &&
+  screen.includes('onCommit={commitName}') &&
+  !screen.includes('updateMealName(')
+    ? ok(
+        'barcode-scan: the field is gated and committed by these functions — Done, leaving the field, leaving the screen'
+      )
+    : bad('barcode-scan wiring');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

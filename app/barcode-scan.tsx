@@ -18,21 +18,16 @@ import {
   findFoodByBarcode,
   listRecentBarcodeFoods,
 } from '@/lib/db/repositories/foods';
-import { addMealItem, logMealWithItems, updateMealName } from '@/lib/db/repositories/nutrition';
+import { addMealItem, logMealWithItems } from '@/lib/db/repositories/nutrition';
 import {
   ArcCameraView,
   FOOD_BARCODE_TYPES,
   isCameraAvailable,
   useCameraPermission,
 } from '@/lib/media/camera';
-import {
-  fmtAmount,
-  fmtInt,
-  fmtQty,
-  mealNameForProduct,
-  mealNameToSave,
-} from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt, fmtQty, mealNameForProduct } from '@/lib/nutrition/format';
 import { lookupOffProduct, normalizeBarcode, OffLookupError } from '@/lib/nutrition/openfoodfacts';
+import { commitScanMealName, offersScanMealName } from '@/lib/nutrition/scan-meal-name';
 import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
 import type { VolumeUnit } from '@/lib/user/types';
@@ -471,18 +466,19 @@ export default function BarcodeScanScreen() {
   };
 
   /**
-   * Write the typed name when it changes anything (`mealNameToSave`), through
-   * the meal screen's own `updateMealName`. Runs on Done, when the field stops
-   * being edited, and when the screen goes — so a name typed and then left by
-   * the back chevron is kept too.
+   * Write the typed name when it changes anything, through the meal screen's
+   * own `updateMealName` (`commitScanMealName`, src/lib/nutrition/
+   * scan-meal-name.ts). Runs on Done, when the field stops being edited, and
+   * when the screen goes — so a name typed and then left by the back chevron is
+   * kept too. The helper compares with the name the DATABASE holds, so Done
+   * and the unmount right after it write once, not twice.
    */
   const commitName = () => {
     if (targetMealId === null || createdName === null) return;
-    const next = mealNameToSave(nameDraft, createdName);
-    if (next === null) return;
     try {
-      updateMealName(getDb(), targetMealId, next);
-      setCreatedName(next);
+      const written = commitScanMealName(getDb(), targetMealId, nameDraft);
+      if (written === null) return;
+      setCreatedName(written);
       setNameDraft(null);
     } catch (error) {
       console.warn('[barcode] rename failed', error);
@@ -499,6 +495,9 @@ export default function BarcodeScanScreen() {
     commitName();
     router.back();
   };
+  // The name the field holds when it is offered — two foods in a meal this
+  // session made (`offersScanMealName`) — else null, and no field.
+  const nameable = offersScanMealName(createdName, added) ? createdName : null;
 
   const amountPreview =
     phase.kind === 'portion'
@@ -773,10 +772,10 @@ export default function BarcodeScanScreen() {
 
       {/* Two foods in a meal this session made: it can be named before it is
           left. Prefilled with the name it has; nothing waits on it. */}
-      {createdName !== null && added >= 2 ? (
+      {nameable !== null ? (
         <ScanMealName
-          value={nameDraft ?? createdName}
-          current={createdName}
+          value={nameDraft ?? nameable}
+          current={nameable}
           count={added}
           onChange={setNameDraft}
           onCommit={commitName}
