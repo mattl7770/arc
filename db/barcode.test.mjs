@@ -12,11 +12,13 @@ import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { cacheBarcodeFood, findFoodByBarcode } from '../src/lib/db/repositories/foods.ts';
 import {
   addMealItem,
+  dayMicroTotals,
   getMeal,
   listMealItems,
   logMealWithItems,
   updateMealName,
 } from '../src/lib/db/repositories/nutrition.ts';
+import { keyMicroLabel } from '../src/lib/nutrition/key-micro.ts';
 import { mealNameForProduct, mealNameToSave } from '../src/lib/nutrition/format.ts';
 import { commitScanMealName, offersScanMealName } from '../src/lib/nutrition/scan-meal-name.ts';
 import { itemForPortion } from '../src/lib/nutrition/servings.ts';
@@ -488,6 +490,99 @@ console.log('10. 2026-09-23 — a meal of several scans can be named before it i
         'barcode-scan: the field is gated and committed by these functions — Done, leaving the field, leaving the screen'
       )
     : bad('barcode-scan wiring');
+}
+
+console.log('11. 2026-09-23 — a scanned product keeps its caffeine');
+{
+  // The owner's example was a latte; a scanned energy drink or cold brew is the
+  // same fact, and the mapping used to drop it. OFF normalises every mass
+  // nutrient's `_100g` into GRAMS — a label's 32 mg per 100 ml arrives as
+  // 0.032 — so it converts to milligrams exactly as sodium does.
+  const energy = parseOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Energy drink',
+        nutrition_data_per: '100ml',
+        serving_size: '250 ml',
+        serving_quantity: 250,
+        nutriments: {
+          'energy-kcal_100g': 45,
+          carbohydrates_100g: 11,
+          sodium_100g: 0.08,
+          caffeine_100g: 0.032,
+          caffeine_unit: 'mg',
+          caffeine_value: 32,
+        },
+      },
+    },
+    '9002490100070'
+  );
+  const m = parseMicros(energy.micros);
+  near(m.caffeine_mg, 32) && near(m.sodium_mg, 80) && energy.basis === 'ml'
+    ? ok('caffeine_100g 0.032 g → 32 mg per 100 ml, beside the sodium, on a ml product')
+    : bad('caffeine mapping', JSON.stringify(energy));
+
+  // Through the catalog to the day: cached, logged at its 250 ml serving, and
+  // read by the Eat tab's Caffeine cell and the item row.
+  const { db } = freshDb();
+  const cached = cacheBarcodeFood(db, energy);
+  const item = itemForPortion(cached, { servingQty: 1 });
+  near(parseMicros(item.micros).caffeine_mg, 80)
+    ? ok('one 250 ml can carries 80 mg')
+    : bad('portion caffeine', item.micros);
+  const { mealId } = logMealWithItems(db, {
+    date: '2026-09-23',
+    time: '15:00',
+    name: 'Energy drink',
+    items: [item],
+  });
+  const logged = listMealItems(db, mealId)[0];
+  near(dayMicroTotals(db, '2026-09-23').caffeine_mg, 80) &&
+  keyMicroLabel(logged) === '80 mg caffeine'
+    ? ok('…the day reads 80 mg of caffeine, and the row says “80 mg caffeine”')
+    : bad(
+        'day / row',
+        `${JSON.stringify(dayMicroTotals(db, '2026-09-23'))} / ${keyMicroLabel(logged)}`
+      );
+
+  // The unit error the ceiling exists for: the milligram figure typed into the
+  // grams field. 32 g of caffeine per 100 ml is 32,000 mg — under the generic
+  // 50,000 ceiling, and a can of it would read 80,000 mg on the day.
+  const typo = parseOffProduct(
+    { status: 1, product: { product_name: 'Typo', nutriments: { caffeine_100g: 32 } } },
+    '1'
+  );
+  parseMicros(typo.micros).caffeine_mg === undefined
+    ? ok('a milligram figure in the grams field (32 → 32,000 mg) is dropped, not cached')
+    : bad('caffeine ceiling', typo.micros);
+  // The densest real food stays: instant coffee powder, ~3,142 mg per 100 g.
+  const instant = parseOffProduct(
+    { status: 1, product: { product_name: 'Instant', nutriments: { caffeine_100g: 3.142 } } },
+    '1'
+  );
+  near(parseMicros(instant.micros).caffeine_mg, 3142)
+    ? ok('instant coffee’s 3,142 mg per 100 g is kept — the ceiling is a tenth, not a guess')
+    : bad('instant coffee', instant.micros);
+  // Absent, negative or text is not recorded — never a 0.
+  const none = [undefined, -0.01, '0.03'].map(
+    (v) =>
+      parseMicros(
+        parseOffProduct(
+          {
+            status: 1,
+            product: {
+              product_name: 'X',
+              nutriments: v === undefined ? {} : { caffeine_100g: v },
+            },
+          },
+          '1'
+        ).micros
+      ).caffeine_mg
+  );
+  none.every((v) => v === undefined)
+    ? ok('no caffeine_100g, a negative one, or a string records nothing — not 0')
+    : bad('absent caffeine', JSON.stringify(none));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

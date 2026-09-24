@@ -4,25 +4,11 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
 import {
-  beginCompositeScale,
-  beginCountEdit,
-  endCompositeScale,
-  endCountEdit,
-  removeRow,
   reviewKcal,
-  type ReviewHandlers,
-  type ReviewItem,
   QuestionsPlate,
   ReviewItemsPlate,
   rowsFromEstimate,
   rowsToMealItems,
-  scaleComposite,
-  scaleCompositeTo,
-  setCompositeCount,
-  setCompositeWhole,
-  setPiecesName,
-  setRowAmount,
-  toggleExpanded,
 } from '@/components/nutrition/estimate-review';
 import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
@@ -44,6 +30,7 @@ import {
 } from '@/lib/nutrition/estimate';
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
 import { useEstimateQuestions } from '@/hooks/use-estimate-questions';
+import { useReviewDraft } from '@/hooks/use-review-draft';
 import { fmtAmount, fmtInt, piecesLabel } from '@/lib/nutrition/format';
 import type { MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
 import type { VolumeUnit } from '@/lib/user/types';
@@ -126,14 +113,18 @@ export default function MealReviseScreen() {
   const available = isMealEstimationAvailable();
   const [phase, setPhase] = useState<Phase>({ kind: 'input' });
   const [instruction, setInstruction] = useState('');
-  const [rows, setRows] = useState<ReviewItem[]>([]);
+  // The review's rows, every edit the table can make, and the Undo for its ×
+  // (src/hooks/use-review-draft.ts) — shared with app/meal-estimate.tsx.
+  const draft = useReviewDraft();
+  const rows = draft.rows;
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
   // A revision may ask too (owner decision, C5): a correction can be as
-  // ambiguous as a first description, and it is the same one-call shape.
+  // ambiguous as a first description, and it is the same one-call shape. An
+  // answer closes an open Undo (the CLOSING setter), as on the estimator.
   const asking = useEstimateQuestions({
     rows,
-    setRows,
+    setRows: draft.replace,
     mealName: () => meal?.name ?? 'Meal',
     onError: (message) => setPhase({ kind: 'error', message }),
     countIsEaten: true,
@@ -147,7 +138,7 @@ export default function MealReviseScreen() {
     // keep it — so the rows carry no whole, and read `ATE [3] SLICES` exactly
     // as the meal screen does. An `of [3]` here would invite typing the
     // pizza's eight over three logged slices.
-    setRows(rowsFromEstimate(getDb(), estimate, { countIsEaten: true }));
+    draft.replace(rowsFromEstimate(getDb(), estimate, { countIsEaten: true }));
     asking.begin(estimate.questions);
     setPhase({ kind: 'review', notes: estimate.notes });
   };
@@ -196,22 +187,6 @@ export default function MealReviseScreen() {
             : 'Couldn’t revise that meal. Check your connection and try again, or edit the items by hand.',
       });
     }
-  };
-
-  /** Every edit the review table can make — the shared plate's whole contract. */
-  const handlers: ReviewHandlers = {
-    onAmountChange: (key, text) => setRows((prev) => setRowAmount(prev, key, text)),
-    onRemove: (key) => setRows((prev) => removeRow(prev, key)),
-    onToggle: (key) => setRows((prev) => toggleExpanded(prev, key)),
-    onScale: (key, factor) => setRows((prev) => scaleComposite(prev, key, factor)),
-    onScaleTo: (key, text) => setRows((prev) => scaleCompositeTo(prev, key, text)),
-    onScaleBegin: (key) => setRows((prev) => beginCompositeScale(prev, key)),
-    onScaleEnd: (key) => setRows((prev) => endCompositeScale(prev, key)),
-    onCountChange: (key, text) => setRows((prev) => setCompositeCount(prev, key, text)),
-    onWholeChange: (key, text) => setRows((prev) => setCompositeWhole(prev, key, text)),
-    onCountBegin: (key) => setRows((prev) => beginCountEdit(prev, key)),
-    onCountEnd: (key) => setRows((prev) => endCountEdit(prev, key)),
-    onPiecesName: (key, name) => setRows((prev) => setPiecesName(prev, key, name)),
   };
 
   const save = () => {
@@ -437,7 +412,8 @@ export default function MealReviseScreen() {
             rows={rows}
             label="Revised"
             emptyNote="No items left. Go back and try a different correction — a meal cannot be saved empty."
-            handlers={handlers}
+            handlers={draft.handlers}
+            undo={draft.offer ? { offer: draft.offer, onUndo: draft.undo } : null}
           />
 
           {/* The decision, in future tense, immediately above the control that

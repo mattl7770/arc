@@ -4,24 +4,10 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
 import {
-  beginCompositeScale,
-  beginCountEdit,
-  endCompositeScale,
-  endCountEdit,
-  removeRow,
-  type ReviewHandlers,
-  type ReviewItem,
   QuestionsPlate,
   ReviewItemsPlate,
   rowsFromEstimate,
   rowsToMealItems,
-  scaleComposite,
-  scaleCompositeTo,
-  setCompositeCount,
-  setCompositeWhole,
-  setPiecesName,
-  setRowAmount,
-  toggleExpanded,
 } from '@/components/nutrition/estimate-review';
 import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
@@ -36,6 +22,7 @@ import { placeholderMealName, queueNewMealEstimate } from '@/lib/db/repositories
 import { writePendingEstimatePhoto } from '@/lib/media/pending-estimate-store';
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
 import { useEstimateQuestions } from '@/hooks/use-estimate-questions';
+import { useReviewDraft } from '@/hooks/use-review-draft';
 import {
   ArcCameraView,
   type CameraHandle,
@@ -172,7 +159,10 @@ export default function MealEstimateScreen() {
   );
   const [seen, setSeen] = useState<SeenCode | null>(null);
   const [description, setDescription] = useState('');
-  const [rows, setRows] = useState<ReviewItem[]>([]);
+  // The review's rows, every edit the table can make, and the Undo for its ×
+  // (src/hooks/use-review-draft.ts) — shared with app/meal-revise.tsx.
+  const draft = useReviewDraft();
+  const rows = draft.rows;
   // The image behind the current estimate, held until Save writes it to disk.
   // Nothing is on the file system until then: a discarded review must leave no
   // trace, and the same shot re-estimated must not leave two.
@@ -183,10 +173,12 @@ export default function MealEstimateScreen() {
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
   // The clarifying questions this estimate came back with (backlog C5). Shared
-  // with app/meal-revise.tsx, so the two screens answer identically.
+  // with app/meal-revise.tsx, so the two screens answer identically. Its rows
+  // go through the CLOSING setter: an answer closes an open Undo, so a lit
+  // chip always has its effect on the rows (src/lib/nutrition/review-undo.ts).
   const asking = useEstimateQuestions({
     rows,
-    setRows,
+    setRows: draft.replace,
     mealName: () => (phase.kind === 'review' ? phase.title : 'Meal'),
     onError: (message) => setPhase({ kind: 'error', message }),
   });
@@ -195,7 +187,7 @@ export default function MealEstimateScreen() {
    * so this screen and app/meal-revise.tsx price and nest identically
    * (src/components/nutrition/estimate-review.tsx). */
   const toReview = (estimate: MealEstimate) => {
-    setRows(rowsFromEstimate(getDb(), estimate));
+    draft.replace(rowsFromEstimate(getDb(), estimate));
     asking.begin(estimate.questions);
     setPhase({ kind: 'review', title: estimate.title, notes: estimate.notes });
   };
@@ -356,23 +348,6 @@ export default function MealEstimateScreen() {
         message: 'Couldn’t take the photo. Try describing the meal instead.',
       });
     }
-  };
-
-  /** Every edit the review table can make, in one object — the shared plate's
-   *  whole contract (src/components/nutrition/estimate-review.tsx). */
-  const handlers: ReviewHandlers = {
-    onAmountChange: (key, text) => setRows((prev) => setRowAmount(prev, key, text)),
-    onRemove: (key) => setRows((prev) => removeRow(prev, key)),
-    onToggle: (key) => setRows((prev) => toggleExpanded(prev, key)),
-    onScale: (key, factor) => setRows((prev) => scaleComposite(prev, key, factor)),
-    onScaleTo: (key, text) => setRows((prev) => scaleCompositeTo(prev, key, text)),
-    onScaleBegin: (key) => setRows((prev) => beginCompositeScale(prev, key)),
-    onScaleEnd: (key) => setRows((prev) => endCompositeScale(prev, key)),
-    onCountChange: (key, text) => setRows((prev) => setCompositeCount(prev, key, text)),
-    onWholeChange: (key, text) => setRows((prev) => setCompositeWhole(prev, key, text)),
-    onCountBegin: (key) => setRows((prev) => beginCountEdit(prev, key)),
-    onCountEnd: (key) => setRows((prev) => endCountEdit(prev, key)),
-    onPiecesName: (key, name) => setRows((prev) => setPiecesName(prev, key, name)),
   };
 
   const save = () => {
@@ -733,7 +708,8 @@ export default function MealEstimateScreen() {
               rows={rows}
               label="Items"
               emptyNote="No items left. Discard, or go back and re-estimate."
-              handlers={handlers}
+              handlers={draft.handlers}
+              undo={draft.offer ? { offer: draft.offer, onUndo: draft.undo } : null}
             />
           </View>
 

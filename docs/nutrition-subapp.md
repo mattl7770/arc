@@ -203,6 +203,8 @@ Adaptive targets are deliberately **not** an automatic loop: the versioned table
 
 ~150–200 curated staples (`source='seed'`, fixed UUIDs), per-100 g values authored from USDA lab-analyzed knowledge (FDC is public domain), each with a household serving where one is natural, fiber where meaningful, micros only where confidently known. Coverage per the research convention: proteins (chicken/beef/fish/eggs/dairy/tofu/legumes), staple carbs (rice/oats/potato/bread/pasta), produce, fats/nuts/oils, common beverages, condiments, and a handful of composite restaurant archetypes (pizza slice, burger, burrito, sushi roll…) to absorb eating-out logging before the AI path exists. Values are approximate by nature; every row is editable in-app, and future catalog updates are **new append-only migrations** (a shipped migration is never edited). The catalog grows organically afterwards: customs (`user`), AI-synthesized entries (`ai`), scanned barcodes (`openfoodfacts`).
 
+The first such catalog update is **`0063_seed_caffeine.sql`** (2026-09-23, §15): 0016 predates the `caffeine_mg` key, and 0063 adds it to the five seed rows that carry caffeine, by id, only where the user has not changed the row.
+
 Migration-number note (resolved): the branch is now rebased onto the Coach-inclusive `main` (which has migrations through 0009), and the nutrition set is numbered **0014–0018** — strictly above `main`'s max and above Exercise's reserved 0011–0013, so `pendingMigrations` applies them cleanly on any device already past 9. The earlier "integrator finalizes numbers" caveat is discharged: the collision with the Coach's 0008/0009 was real (they renumbered from 0005/0006 to slot above Screenings' 0007), and this branch renumbered above them. The runner still tolerates the 0010–0013 gap; `migrate.test.mjs` asserts `user_version === max(version)` (now 18).
 
 ---
@@ -1153,7 +1155,7 @@ The question: *when the answer that sets caffeine is unknown, does the estimator
 
 **The prompts do not settle it.** The estimation prompt gives sodium and caffeine *"for any item that plausibly carries them"* (coffee is a listed example) and says *"OMIT the key when you would be guessing"*. The revision prompt takes both *"on the same terms as an estimate"*: *"only where the item plausibly carries them, omitted where you would be guessing"*. Neither said which rule wins when the unknown is the very thing that sets the caffeine: the shot count. On the prompt alone it is the model's call, and it can go either way.
 
-**The code does settle it.** Every answer is arithmetic over the figure the item already carries. `scale_item` multiplies through `scaleMicros`. `set_amount` re-prices through `rescaleLoggedItem`'s proportional branch. Both **skip an absent key**, and `add_item` carries no micros at all. So if the estimator had omitted the espresso's caffeine, tapping "3" would move the espresso from 5 to 7.5 kcal and record **no caffeine, whatever was tapped** (§54 pins exactly this). In that case the question is not "the only path to a caffeine figure". It is **no path at all**.
+**The code does settle it.** Every answer is arithmetic over the figure the item already carries. `scale_item` multiplies through `scaleMicros`. `set_amount` re-prices through `rescaleLoggedItem`'s proportional branch. Both **skip an absent key**, and `add_item` carried no micros at all (it carries its own since §15). So if the estimator had omitted the espresso's caffeine, tapping "3" would move the espresso from 5 to 7.5 kcal and record **no caffeine, whatever was tapped** (§54 pins exactly this). In that case the question is not "the only path to a caffeine figure". It is **no path at all**.
 
 That is why the third clause exists. The question block's own rule (the items already assume the most likely answer) now says **micros included**. An item that a question is about carries its caffeine *for the answer the items assume*. That is an estimate with a stated basis, not a guess, and the omit-a-guess rule still governs everything else. The question is then the path from an **assumed** caffeine figure to a **stated** one. Skipping it keeps the assumed figure (two shots, 126 mg). That loses accuracy but never coherence, the same trade C5 already made for portions.
 
@@ -1644,7 +1646,7 @@ The grep, and what each site does now:
 | `app/meal-detail.tsx`, **Delete this meal** | `deleteMealWithUndo` → `takeMealWithPhotos` → `takeMeal` → `deleteMeal` | receipt row at the foot of the list of the day the meal was logged on (the Eat tab for today; that day's view in `app/nutrition-history.tsx` for a past one) |
 | `app/nutrition.tsx`, the Log tab | no removal exists on either list (checked) | — |
 | the Coach's `delete_record` on `meals` | `deleteMealWithPhotos` = take + settle at once | none — it has its own confirmation card, whose copy says there is no undo |
-| the estimate review's × (`meal-estimate`, `meal-revise`) | removes a **draft** row before anything is saved | **not in this change** — nothing is logged yet, and the review component is shared with estimator work on another branch |
+| the estimate review's × (`meal-estimate`, `meal-revise`) | removes a **draft** row before anything is saved | receipt row at the foot of the review plate — **added in §15** (it was not in this change) |
 
 **An Undo puts back the rows, not a copy of them.** Before removing, the repository reads every row the removal will delete — every column, plus the `rowid` — and the Undo re-inserts those rows verbatim: the same ids, the same snapshot figures (macros, micros, amount, unit, count, `piece_name`), the same `created_at`, and the same `rowid` when nothing has taken it since. The `rowid` matters because item reads order by `created_at, rowid`, and a batch logged in one millisecond ties on the first: the middle of three is put back in the middle, not at the end. A meal's place in the list is `(time IS NULL), time, created_at, id`, all restored.
 
@@ -1721,3 +1723,79 @@ A4 (§13) named a scan's meal after its first product. Once the scanner has put 
 - **A combined meal's photos stacked** — whether two full-width photos, each with its own caption, read as one meal's evidence or push Totals too far down.
 - **A refused Undo on the device** — the drain path (a revision queued offline, then the app foregrounded under an open item Undo) is proven headless; whether the refusal sentence reads as an answer to the tap is the phone's call.
 - **Focus across the tab and the stack.** The window closes on `useFocusEffect` blur, and a tab root blurring when a stack screen is pushed over the tab navigator is React Navigation's behaviour; only the device shows it.
+
+## 15. Round 9 — the two notes round 8 left half-done (2026-09-23, migration `0063`)
+
+An independent check of the owner's round-2 notes found two that held on some paths and not others. *"Undo for removing a food"* had an Undo for every LOGGED food, and none on the estimate review, which is where Photo and Describe land. *"Displaying caffeine on a latte"* held for an AI-estimated latte, and not for the app's own catalog latte. Head moves to `0063`.
+
+### Undo on the estimate review
+
+A mis-tapped × on the review sheet (`app/meal-estimate.tsx`, and the Adjust screen `app/meal-revise.tsx`) dropped the model's item, a composite's parts with it. The only way back was estimating the meal again: a second model call, and a different answer.
+
+**What it looks like.** The meal screen's receipt, drawn again (`UndoRow`, `src/components/nutrition/undo-row.tsx`) as a ruled row at the foot of the review plate: `Removed Almond croissant · 380 kcal`, **Undo** in the label voice, spoken *"Undo removing Almond croissant"*. The words come from one function, `removalWords` (`undo-store.ts`), which the meal screen's item × now uses too, so the two cannot drift. When the last row was removed, the row sits under the plate's empty note. No accent: in the review phase the accent belongs to Save.
+
+**Where the state lives.** In the screen, not in the module slot. Nothing is saved yet, so there is nothing to write back and nothing held on disk. Putting a draft removal in `undo-store.ts`' single slot would let a draft × settle, and so finish, a logged removal it has nothing to do with. `src/hooks/use-review-draft.ts` holds the rows and the one open removal as **one** piece of state, so a × computes its removal from the rows as they stand at that update. The hook also owns every edit handler, so neither screen can wire a × without its Undo. The logic is pure and headless-tested: `src/lib/nutrition/review-undo.ts`.
+
+**Exact, or not offered.** The Undo puts back the very row object that was removed, at the index it left. A dish comes back with its parts, its count and its open or closed disclosure. A part comes back at its place among its siblings. A dish whose last part took it (0058 invariant 4) comes back whole. Only a field's focus baselines are dropped, because a field that unmounted mid-edit has no focus left to snapshot from; no figure moves. The offer stands only while that is still true:
+
+| after the × | the Undo |
+| --- | --- |
+| an edit to another row | stays: a row's figures are its own |
+| a field on the removed part's dish loses focus, no figure moved | stays |
+| the removed part's dish is halved, re-counted, or a sibling re-portioned | closes: a full-size part beside half a dish is a meal nobody ate |
+| a question is answered (a chip, Undo on a chip, or a typed answer landing) | closes |
+| a fresh estimate | closes |
+| another × | replaced by the new one |
+
+**Why an answer closes it.** Answers are a trail whose entries hold the rows as they stood before each answer (`answerQuestion`, §12n). An answer given after the × was applied to rows without the removed row. Put the row back then, and it returns without that answer's effect while the chip stays lit, and the next change to the answer, rebuilt from the entry's base, drops the row again. So the question hook is handed the hook's **closing** setter (`replace`), and every answer closes the offer. That includes an answer that moved nothing, which is why the rule could not be "close when the rows change". The other order is exact without help: an answer given *before* the × is on the row that comes back, and its trail entry's base never lost the row.
+
+Pre-existing and unchanged: a × on a row an answer created or scaled leaves that answer's chip lit with its row gone. That was true before this round and is not something the Undo introduced. With the Undo it can now be put right in one tap.
+
+### Caffeine on the catalog foods — `0063_seed_caffeine.sql`
+
+0 of the 187 seed foods recorded caffeine: 0016 predates the key (A8). So a latte logged from search, recents or favorites showed no caffeine on its row, and the day's Caffeine cell undercounted it. 0063 adds `caffeine_mg` per 100 g to the five seed rows that carry it, from USDA FoodData Central SR Legacy (cited by NDB number in the file):
+
+| seed row | per 100 g | source | a serving |
+| --- | --- | --- | --- |
+| Coffee, black | 40 mg | NDB 14209, brewed coffee | 96 mg a 240 g cup |
+| Latte, whole milk | 37.4 mg | derived: two shots of NDB 14210 espresso (212 mg per 100 g) in the row's 340 g | 127 mg a 12 oz |
+| Cola | 8 mg | NDB 14400, cola with caffeine | 28 mg a 355 g can |
+| Dark chocolate, 70-85% | 80 mg | NDB 19904, the record the row's iron and magnesium came from | 8 mg a 10 g square |
+| Milk chocolate | 20 mg | NDB 19120 | 9 mg a 44 g bar |
+
+**The latte is a derivation, and the file says so.** FDC's latte is a survey recipe, not an SR Legacy measurement; the espresso is measured. Two shots is the latte this doc already reasons with (§12l's 126 mg). A one-shot latte is half the figure, and the row is editable.
+
+**Left out on purpose** (absent beats guessed, §3): Kombucha (its caffeine varies with the brew, and SR Legacy has no figure), Chocolate chip cookie (a few milligrams, no figure to cite), Trail mix. The catalog has no tea, espresso, cappuccino or energy drink row. Adding rows is a separate change from recording a figure on the rows that exist.
+
+**Matched by id, never by name.** 'cola' is a substring of 'chocolate', and 'coffee' would be a substring of a user's 'Decaf coffee'. And **a row the user changed is his**: each UPDATE writes only where the row is still `source = 'seed'`, still has its seeded `name_norm`, still has `basis = 'g'` (the figure is per 100 g, and 0047 converts nothing), and has no `caffeine_mg` yet (a typed figure, 0 included, is never overwritten). `json_set` adds the one key and keeps the rest, so a sodium he added to his coffee stays. A deleted seed row matches nothing.
+
+**Not touched:** `meal_items` and `meal_template_items` are snapshots. A latte logged before 0063 keeps the micros it was logged with, and so does a saved template: rewriting them from a catalog figure would rewrite what the record says was eaten. One consequence to know: an old catalog latte **re-portioned** on the meal screen gains caffeine, because `rescaleLoggedItem` re-derives every figure the food records. **Grounding changes the same way.** An AI item that grounds to one of these five (a model's `Dark chocolate` matches the seed's leading phrase) now takes the USDA caffeine rather than the model's, key by key under `mergeMicros` (§12n). Drinks do not ground here: the model logs them in ml and these rows are in grams.
+
+### Caffeine from a barcode
+
+`parseOffProduct` (`openfoodfacts.ts`) now maps `caffeine_100g`. Open Food Facts normalises every mass nutrient's `_100g` into **grams** (a label's 32 mg per 100 ml arrives as `0.032`), so it converts to milligrams the way sodium does, per 100 of the product's basis.
+
+It gets its **own ceiling**, 10,000 mg per 100 (a tenth of the product), because the generic 50,000 lets through the one error that matters: a contributor typing an energy drink's milligram figure into the grams field reads 32,000 mg per 100 ml, and one can would put 80,000 mg on the day. Instant coffee powder, the densest food in FDC at about 3,142 mg per 100 g (NDB 14214), stays well inside.
+
+A product scanned **before** this change is already in the local cache, and a cache hit never re-fetches, so it keeps no caffeine. It fills in if the food is edited, or deleted and scanned again.
+
+### The two smaller questions the brief raised
+
+**(a) A countable plain item read in grams: assessed, not built.** When the model returns `pieces` on a plain item (toast, eggs, wings), `rowsFromEstimate` drops it, and the item reads `100 g` where a counted dish reads `3 slices`. Building `2 eggs` is not small. 0059 put the piece pair on composite headers only and says so in the schema (*"NULL … on every part and plain item forever"*). `portionLabel` reads `piece_name ?? food_serving_name`, which keeps a piece noun and a catalog serving phrase apart; a plain item with both needs a rule for which one wins. And a plain row would need a count control on the review and on meal-detail, with its own scale-from-count arithmetic. There is a cheaper route that may be enough: a plain item that grounds to a catalog food with a serving (`Egg, whole` is `1 large egg`, 50 g) could save `serving_qty` = amount ÷ serving, which the meal screen already prints as `2 × 1 large egg`. That is an owner call between "a plain item can be counted" (reverses a 0059 line) and "only catalog-grounded items read in servings".
+
+**(b) An added item's micros: built.** An `add_item` answer carried `micros: null`, so *"add a shot"* put 30 ml on the review and no caffeine on the day. An answer scales a figure an item already carries (§12l), and an added item has no figure to scale. The effect now carries `micros` (`QuestionEffect`, `parseEffect` through `coerceMicros`), `applyAnswer` puts them on the new row, and both prompts name `micros` on `add_item`. That costs +3 tokens: the estimation prompt goes 995 → **998** of the unmoved 1,000, and the revision prompt 925 → 928. Nothing was trimmed because it fits. The ceiling note now says the next addition takes one of its named cuts first.
+
+### Verification
+
+- `db/nutrition-v2.test.mjs` **§70** (the draft Undo, through the hook's own pure functions): a plain row back in the middle with the identical save; the words equal `removalWords`; an edit to another row keeps the offer; a part back first among its siblings, the dish still open, `126 mg caffeine` again; the dish halved or a sibling re-portioned closes it, a blur does not; the last part's dish back whole; a header × back with both parts; a second × replaces the first; answered "3", ×, Undo returns 189 mg under the lit chip, and changing to "1" rebuilds onto it (63 mg); ×, then an answer (a no-op on the rows) closes the offer; a fresh estimate closes it; the logged-food slot is never touched or settled; Save with an offer open writes the rows on screen. **§71**: the seeded latte found by search records 37.4 per 100 g; one serving snapshots 127.16 mg; the meal row, the Eat tab's meal row and the Caffeine cell read 127; recents and favorites re-log it with caffeine; coffee 96, cola 28.4, dark chocolate 8, milk chocolate 8.8 at their servings. **§72**: both prompts carry `micros` on `add_item` inside the ceiling; an added shot keeps its 63 mg (an off-list key dropped, none is NULL), reads `63 mg caffeine`, scales to 126 at 60 ml, and the saved day reads 189. §62 was updated: its dark chocolate now records caffeine, so the per-key merge is proven on zinc (the model's) beside the food's caffeine, iron and magnesium.
+- `db/migrate.test.mjs` **§12**: staged at 62 with the seed, 0063 changes exactly the five rows, only `micros` (and `updated_at`), with the table's values; the lookalikes stay empty; a second launch applies nothing. On a hostile catalog: the coffee keeps the sodium he added beside its caffeine; a latte he set to 0 keeps 0; a renamed cola, a millilitre chocolate and his own food called 'Cola' are untouched; a deleted row stays deleted; a latte logged before 0063 keeps its snapshot. §11 (a device at 44) now allows `micros`/`updated_at` on those five ids only and asserts each gained exactly its caffeine.
+- `db/barcode.test.mjs` **§11**: `caffeine_100g` 0.032 → 32 mg per 100 ml beside sodium; a 250 ml can caches, logs and reads 80 mg on the day and on its row; the milligram-in-grams typo is dropped; instant coffee's 3,142 is kept; absent, negative or text records nothing.
+- `db/screens-render.test.mjs` **§25**: the review plate draws the receipt under its rows, with the button's spoken label; under the empty note when the last row went; nothing without an offer. By source: both screens hold their rows in `useReviewDraft`, pass the offer to the plate, give the question hook the closing setter, and never call `removeRow`.
+
+No model was called.
+
+### What only the phone can settle
+
+- **Whether the receipt is seen.** It sits at the foot of the review plate. On a long review with questions above it, a × near the top can put the receipt below the fold.
+- **Whether 127 mg matches his latte.** Two shots is an assumption about his café. If his is a single, the row wants editing once, to 18.7 per 100 g.
+- **The keyboard and the receipt.** Tapping × with a grams field focused keeps the keyboard up (`keyboardShouldPersistTaps="handled"`), and the offer survives the keyboard going down, since a blur that moves no figure keeps it. The hand decides whether that reads right.

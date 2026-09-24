@@ -904,7 +904,9 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
           carbs_g: effect.carbs_g,
           fat_g: effect.fat_g,
           fiber_g: null,
-          micros: null,
+          // The answer's own micros for the portion it adds (2026-09-23) — a
+          // shot's caffeine. They scale with an amount edit like any row's.
+          micros: effect.micros ?? null,
         },
         amountText: effect.amount == null ? '' : amountLabel(effect.amount),
         components: [],

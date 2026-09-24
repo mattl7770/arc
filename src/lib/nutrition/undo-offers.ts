@@ -32,7 +32,7 @@ import {
   type PhotoFileStore,
 } from '@/lib/media/meal-photo-store';
 import { fmtInt } from './format';
-import { offerUndo } from './undo-store';
+import { offerUndo, removalWords } from './undo-store';
 
 const kcalFigure = (kcal: unknown): string | null =>
   typeof kcal === 'number' ? `${fmtInt(kcal)} kcal` : null;
@@ -48,10 +48,8 @@ export function removeItemWithUndo(db: Database, itemId: string): TakenMealItems
   if (!taken) return null;
   offerUndo({
     scope: { on: 'meal', mealId: taken.mealId },
-    icon: 'restaurant-outline',
-    said: `Removed ${taken.name}`,
-    figure: kcalFigure(taken.kcal),
-    spoken: `Undo removing ${taken.name}`,
+    // The same words as a draft row's × on the estimate review (review-undo.ts).
+    ...removalWords(taken.name, taken.kcal),
     refusal: `Could not put ${taken.name} back — the meal has changed since.`,
     undo: () => restoreMealItems(db, taken),
     // Items own no files: closing the window has nothing left to finish.
