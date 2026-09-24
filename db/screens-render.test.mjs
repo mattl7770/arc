@@ -74,7 +74,7 @@ import {
   generateMissionForDay,
   rederiveMissionForDay,
 } from '../src/lib/db/repositories/mission-generate.ts';
-import { setMissionStatus, skipCarried } from '../src/lib/db/repositories/mission.ts';
+import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
 import { clearMuscleAnchor, setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 
@@ -3341,11 +3341,22 @@ const db = getDb();
     'comes back tomorrow',
   ]);
   // Skipping a carried row settles the debt too, and *Put back* is then the
-  // only verb — the row's own tap on Home cannot reach the original.
-  skipCarried(db, carriedId);
+  // sheet's verb. The skip is made the way the HERO card makes it — a plain
+  // setMissionStatus — because since 2026-09-23 that is the one definition
+  // every surface shares, the sheet's own *Skip today* included.
+  setMissionStatus(db, carriedId, 'skipped');
   const settled = render('mission-item (carried, skipped)', MissionItemScreen, { id: carriedId });
   expect('mission-item (carried, skipped)', settled, ['Put back']);
   refute('mission-item (carried, skipped)', settled, ['Tap the row on Home to put it back.']);
+  const owedFrom = db.get(
+    `SELECT e.status, json_extract(e.value, '$.skipped_via') AS via
+       FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND e.title = 'Owed session'`,
+    [yesterday]
+  );
+  owedFrom?.status === 'skipped' && owedFrom.via === carriedId
+    ? ok('mission-item (carried, skipped): the debt behind the copy is settled too')
+    : bad('mission-item (carried, skipped): the original is still owed', JSON.stringify(owedFrom));
 
   // A row with no protocol behind it — a mode item, an experiment's
   // intervention, or (as here) a row whose protocol has since been deleted,

@@ -39,6 +39,13 @@ one outright, because a card cannot say what arbitrary SQL will do. That is what
 boundary (`src/lib/db/date.ts`), unit conversion, tombstones, provenance columns and every `CHECK`
 *inherited* rather than re-implemented. Whatever the repository refuses, the tool refuses.
 
+Parity covers what the screen does **after** the repository call, too. The protocol Settings sheet
+saves through `reviseProtocol` and then re-derives today; the `protocols` domain's `edit` did only
+the first half until 2026-09-23, so a pause or a carry-over change made through the Coach reached
+today's mission the next morning. It now calls `rederiveMissionFromToday` after the write, exactly
+as the sheet does: a pause takes the protocol's untouched rows off today, and anything already done
+or skipped stays. That added no schema or description, so no tokens (`db/coach-levers.test.mjs` R7).
+
 ## 3. The shape of a domain
 
 `src/lib/ai/domains/types.ts` is the contract. A `CoachDomainEntry` carries:

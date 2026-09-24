@@ -15,7 +15,6 @@ import {
   moveMissionItem,
   removeMissionItem,
   setMissionStatus,
-  skipCarried,
 } from '@/lib/db/repositories/mission';
 import { unsnoozeItem } from '@/lib/home/snooze-store';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
@@ -182,11 +181,10 @@ function MissionItemSheet({ view }: { view: MissionItemView }) {
                   icon="remove-circle-outline"
                   label="Skip today"
                   onPress={() => {
-                    // A carried row IS the debt, so skipping it has to reach
-                    // the original — leaving that row `pending` would re-levy
-                    // the same miss tomorrow and make the skip meaningless.
-                    if (item.carriedFrom) skipCarried(getDb(), item.id);
-                    else setMissionStatus(getDb(), item.id, 'skipped');
+                    // A carried row IS the debt, so skipping it reaches the
+                    // original too — inside setMissionStatus, the same path
+                    // the hero card's Skip and the Coach's skip take.
+                    setMissionStatus(getDb(), item.id, 'skipped');
                     after();
                   }}
                 />

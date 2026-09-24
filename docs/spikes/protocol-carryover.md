@@ -59,6 +59,100 @@ only thing that can show the wheel at all. A mission row's *Move to…*
 (`MoveControl`) keeps the six chips for now; whether the wheel should follow it
 there is a question for hardware.
 
+### Three defects in the mission layer, fixed 2026-09-23
+
+Found while planning the protocol-menus compaction (Phase 0 of that plan). None
+needed a migration. Each was reproduced by a failing test before it was fixed.
+
+**1. A row moved by hand snapped back to its planned time.** `moveMissionItem`
+wrote `scheduled_time` and nothing else. `rederiveMissionForDay` re-syncs every
+pending machine-made row's time from the plan, and a same-day re-derive runs
+after any protocol save, a restore, a Settings save, `update_protocol`, or an
+experiment starting or ending. So *Move to …* on the item sheet, and the Coach's
+`adjust_today` move, lasted until the next unrelated edit that day.
+
+- The move now marks the row: `value.moved = true`, one key beside `removed`,
+  `skipped_via`, `done_on` and `ahead`.
+- The kept-row re-sync keeps a marked row's `scheduled_time` and writes the mark
+  forward. The dose and why-line still follow the item. A row that was not moved
+  still follows a time edit to its item.
+- A **retitle** rebuilds the row, because the diff matches on the title. A moved
+  row's time now goes across to the entry replacing it (same protocol, same item
+  id, same carried-ness), so the move survives that too.
+- The move says when, not whether. A pause, or an item edited out, still takes
+  the row off today.
+- The mark is about one row on one day. If a moved day goes untouched, the debt
+  is carried to the next day at the **item's own time**, with no mark. A carried
+  copy can be moved in its turn and keeps that time.
+- A row on a day committed ahead keeps its move through the re-derives every
+  save runs on those days, and through the arrival re-derive, which strips
+  `ahead` and leaves `moved`.
+- Today's reminders are read from the committed rows (`remindableEntries`), so
+  the notification fires at the moved time.
+- **Two doses under one title.** The re-derive's diff keys on (title, protocol,
+  carried), so two items with one title share a queue, and a row used to take
+  whichever entry was at its head. A moved evening row could then re-sync onto a
+  morning dose added ahead of it, keeping the evening time. A completed evening
+  row could also claim the morning slot, so the pending morning row re-synced
+  onto the evening dose. That second case was already on main before the mark;
+  the mark made it visible. Each row now claims the entry of its own `value.item`
+  first. Only a row the plan no longer names by item falls back to the head of
+  the queue, as every row did before.
+- The mark belongs to the item it was made on. A moved row that can only pair
+  with a different item of the same title (its own was deleted) follows that
+  item's time, unmarked. If its own item survives under a new title, the moved
+  time goes there.
+
+Tests: `db/mission-generate.test.mjs` §29–30 and §32, `db/coach-levers.test.mjs` R5.
+
+**2. A protocol paused through the Coach stayed on today.** `edit_record` on the
+`protocols` domain called `reviseProtocol` (and `setActive` on a resume) and never
+re-derived today, so a pause, a carry-over change or a check-off-mode change took
+effect the next morning. This is the defect the rethink fixed for the Settings
+sheet. The domain's `edit` now calls `rederiveMissionFromToday` after the write,
+as the sheet does. The tool's schema and description are unchanged, so it costs
+no tokens. Tests: `db/coach-levers.test.mjs` R7.
+
+**3. Skipping a carried row settled the debt only from the item sheet.** The
+sheet called `skipCarried`. The hero card's *Skip* (`useTodayMission().setStatus`)
+and the Coach's `adjust_today` skip called `setMissionStatus(…, 'skipped')`, which
+settled the copy and left the original `pending`, so the same debt was carried
+again the next morning. The rule now lives in `setMissionStatus` itself:
+
+- `'skipped'` on a carried copy first re-opens whatever that copy had settled,
+  then settles the original `skipped` with `value.skipped_via = <copy id>`. A copy
+  marked done late and then changed to skipped therefore moves the original from
+  `late_on` to `skipped_via` instead of wearing both.
+- **Every miss the copy stood for, not only its anchor.** One carried row stands
+  for every outstanding miss of its item, and `carried_from` names only the most
+  recent. With the item missed Monday and Friday, a Saturday skip used to settle
+  Friday alone, and on Sunday the carry re-anchored on Monday: *owed from Mon, 6
+  days late*, the skip undone overnight. The skip now settles every row that
+  `carryDebtRows` (`src/lib/db/repositories/mission.ts`) counts as a debt of the
+  same item on the copy's day, each stamped `skipped_via`. That is the same
+  query `outstandingCarries` builds the carry from, moved there so the two
+  cannot disagree. An excused day, a miss older than the seven-day window and
+  every other item are untouched. The undo re-opens every row stamped with the
+  copy's id.
+- **Completing** a copy still settles only the anchor (`late_on`). Doing the item
+  once pays one debt; declining it declines the debt the row stands for. So with
+  two misses outstanding, a completed copy is followed by a carry of the older
+  miss the next morning. That was the behaviour before this change, and is left
+  for the owner to confirm.
+- `skipCarried` is gone. The item sheet calls `setMissionStatus` like every other
+  surface.
+- Un-skipping re-opens both rows, whether through the row's own tap on Home
+  (`toggleMission`) or the sheet's *Put back*.
+- Every caller that asks `setMissionStatus` for `'skipped'` was checked, and each
+  one is a decision the user made: the hero card's Skip, the item sheet's *Skip
+  today*, and `adjust_today`'s skip on a card the user approved. The two skips
+  the app makes on its own write SQL directly and still settle nothing:
+  `removeMissionItem`'s tombstone (removing a carried copy clears it from today
+  only, and the debt comes back tomorrow) and the settle of the original itself.
+
+Tests: `db/mission-generate.test.mjs` §17b, §31 and §33, `db/coach-levers.test.mjs`
+R6, and the carried-row case in `db/screens-render.test.mjs`.
+
 ---
 
 ## 1. Current state
