@@ -8,6 +8,7 @@
  * future Settings unit toggle stays a display concern.
  */
 import { BAR_KG, WARMUP_MIN_WORK_MULTIPLE, WARMUP_RAMP } from './constants';
+import { withLoadBasis, type LoadBasis } from './load-basis';
 import type { PairedIngest, RecentSession, SetType, WorkoutKind } from './types';
 // `deviceLabel` is a pure name map; the module it lives in takes a `Database` as
 // a parameter and holds no connection, so importing it keeps this file DB-free
@@ -343,6 +344,10 @@ export function formatPace(secPerKm: number, units: UnitPreferences): string {
  * same order the logger draws its columns in — with reps × load kept as the one
  * compound form, because "8 × 135 lb" is how a lift is read aloud and splitting
  * it would be worse.
+ *
+ * `basis` (0062) says what the weight counts, straight after it: "8 × 30 kg
+ * per hand". Omitted, the line reads as it always did — for the screens that
+ * already state the basis once, above the column.
  */
 export function measuredSetLine(
   set: {
@@ -351,11 +356,12 @@ export function measuredSetLine(
     durationSec: number | null;
     distanceM: number | null;
   },
-  units: UnitPreferences
+  units: UnitPreferences,
+  basis?: LoadBasis | null
 ): string {
   const parts: string[] = [];
   const lift = setLineKg(set.reps, set.weightKg, units);
-  if (lift !== '—') parts.push(lift);
+  if (lift !== '—') parts.push(set.weightKg != null ? withLoadBasis(lift, basis) : lift);
   if (set.durationSec != null) parts.push(formatClock(set.durationSec));
   if (set.distanceM != null) parts.push(formatDistance(set.distanceM, units));
   return parts.length > 0 ? parts.join(' · ') : '—';

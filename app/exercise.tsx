@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter, useSegments } from 'expo-router';
+import { useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
 import {
@@ -26,7 +27,14 @@ import {
   liveDraftSetsDone,
   type ManualDraft,
 } from '@/lib/exercise/draft';
-import { dayLabel, ingestDetail, sessionDetail, sessionTitle } from '@/lib/exercise/format';
+import {
+  dayLabel,
+  ingestDetail,
+  measuredSetLine,
+  sessionDetail,
+  sessionTitle,
+} from '@/lib/exercise/format';
+import { trendPhrase, trendToken } from '@/lib/exercise/records';
 import { volumeAttention } from '@/lib/exercise/volume';
 import type { MuscleVolume, Recommendation, RoutineListItem } from '@/lib/exercise/types';
 import type { IngestedWorkout } from '@/lib/db/repositories/workout-ingest';
@@ -52,7 +60,8 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  * saved workouts (all offline) — with two doors in: start the recommended
  * session, or start empty. Below it: weekly volume vs landmarks, the muscle
  * body-figure (tap → the full per-muscle ledger), this week's totals, saved
- * workouts, manual log (free-form + photo import), recent sessions, and last of
+ * workouts, manual log (free-form + photo import), recent sessions, every
+ * exercise trained (each opening its records, trend and history), and last of
  * all the watch's unanswered sessions.
  * (Programs were retired 2026-08-11 — owner call: one flat list of saved
  * workouts beats the routines/programs pair. The 0020 tables stay in the
@@ -71,6 +80,7 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  *   Saved workouts           plate   a record, ruled
  *   Manual log               plate   rows that navigate, like their neighbours
  *   Recent sessions          plate   a record, ruled
+ *   Exercises                plate   every movement trained, ruled; rows open its detail
  *   From your watch          plate   the remainder, ruled — last on the page
  *
  * Each block carries exactly one device and none of them nest; every other
@@ -98,8 +108,10 @@ export default function ExerciseScreen() {
   // `(tabs)` leads the segments only when this file is rendering AS the Train
   // tab root; the pushed route is plain `/exercise`. See the header note above.
   const isTabRoot = useSegments()[0] === '(tabs)';
-  const { week, sessions, routines, ledger, volume, recommendation, blanks } = useTrainingHub();
+  const { week, sessions, routines, ledger, volume, recommendation, blanks, exercises } =
+    useTrainingHub();
   const drafts = useWorkoutDrafts();
+  const [showAllExercises, setShowAllExercises] = useState(false);
   const { units } = useUnitPreferences();
   const today = todayISODate();
 
@@ -521,6 +533,114 @@ export default function ExerciseScreen() {
       </View>
 
       {/*
+        Exercises — every movement trained, most recently trained first, each
+        with the best set of its latest session and its direction of travel
+        (owner, 2026-09-23: "trends, prs, etc for exercises (i.e. fitbod)").
+        Each row opens that movement's records, trend and history, which until
+        now were reachable only from the picker's records button or a block
+        title in the middle of a session.
+
+        A **ruled plate**, in both states, like its neighbour: it is a record
+        list. No accent — the screen's one accent is Train today — and no
+        signal colour on the direction: it is a fact about a lift, not a verdict
+        about the body. The latest set says what its weight counts ("per hand",
+        0062), because this is the one line where it appears with no heading
+        above it. Six rows, then the rest on request; the tally is the whole
+        count, so it is honest to print.
+      */}
+      <View className="mt-7">
+        <Block device="plate">
+          <SectionLabel
+            label="Exercises"
+            note={exercises.length > 0 ? String(exercises.length) : undefined}
+          />
+          {exercises.length === 0 ? (
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              Nothing logged yet.
+            </Text>
+          ) : (
+            <View className="mt-1">
+              {(showAllExercises ? exercises : exercises.slice(0, HUB_EXERCISES)).map(
+                (x, index) => {
+                  const line = [
+                    measuredSetLine(
+                      {
+                        reps: x.latest.reps,
+                        weightKg: x.latest.weightKg,
+                        durationSec: x.latest.durationSec ?? null,
+                        distanceM: x.latest.distanceM ?? null,
+                      },
+                      units,
+                      x.loadBasis
+                    ),
+                    x.latest.away ? 'Away gym' : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ');
+                  return (
+                    <View key={x.exerciseId}>
+                      <Divider first={index === 0} />
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`${x.name}. Last trained ${dayLabel(
+                          x.lastDate,
+                          today
+                        )}: ${line}.${
+                          x.trend ? ` ${trendPhrase(x.trend, { spoken: true })}.` : ''
+                        } Open records and history.`}
+                        onPress={() =>
+                          router.push({
+                            pathname: '/exercise-detail',
+                            params: { id: x.exerciseId },
+                          })
+                        }
+                        className="min-h-[44px] flex-row items-center gap-3 py-2.5 active:opacity-60">
+                        <Text className="w-16 pt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                          {dayLabel(x.lastDate, today)}
+                        </Text>
+                        <View className="flex-1">
+                          <Text className="font-serif text-[15px] leading-5 text-ink">
+                            {x.name}
+                          </Text>
+                          <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">
+                            {line}
+                          </Text>
+                        </View>
+                        {x.trend ? (
+                          <Text className="font-mono text-[11px] text-ink-secondary">
+                            {trendToken(x.trend)}
+                          </Text>
+                        ) : null}
+                        <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+                      </Pressable>
+                    </View>
+                  );
+                }
+              )}
+              {exercises.length > HUB_EXERCISES ? (
+                <>
+                  <Divider />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      showAllExercises
+                        ? 'Show fewer exercises'
+                        : `Show all ${exercises.length} exercises`
+                    }
+                    onPress={() => setShowAllExercises((v) => !v)}
+                    className="min-h-[44px] items-center justify-center active:opacity-60">
+                    <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
+                      {showAllExercises ? 'Show fewer' : `Show all ${exercises.length}`}
+                    </Text>
+                  </Pressable>
+                </>
+              ) : null}
+            </View>
+          )}
+        </Block>
+      </View>
+
+      {/*
         From your watch — the BLANK (0054, docs/spikes/ingested-workouts.md §3.G).
 
         Apple Health recorded a strength session and ARC deliberately does not
@@ -592,6 +712,9 @@ export default function ExerciseScreen() {
     </Screen>
   );
 }
+
+/** Rows the Exercises plate shows before "Show all". */
+const HUB_EXERCISES = 6;
 
 /** "3 sets logged" / "nothing logged yet" — the draft's one line of evidence. */
 function draftDetail(count: number): string {

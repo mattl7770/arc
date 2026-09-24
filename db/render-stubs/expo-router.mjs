@@ -49,6 +49,15 @@ export function useRouter() {
 export function useFocusEffect() {}
 
 /**
+ * The navigation handle app/workout-live.tsx takes for its "discard this
+ * workout?" guard. A server render runs no effects, so the listener is never
+ * attached; the shape only has to exist.
+ */
+export function useNavigation() {
+  return { addListener: () => () => {}, dispatch: () => {} };
+}
+
+/**
  * The static singleton some components import for imperative navigation
  * outside the render tree (e.g. src/components/exercise/exercise-picker.tsx,
  * which the routine-edit walk pulled in — A9). Records the same way

@@ -51,6 +51,8 @@ import { excusedDatesIn } from '@/lib/db/repositories/mission';
 import { clampStatusSpan, statusesIn } from '@/lib/db/repositories/statuses';
 import { getModeDefinition, type ModeKey } from '@/lib/modes/registry';
 import { e1rmSeries, muscleSetsInRange } from '@/lib/db/repositories/training-stats';
+import { exerciseLoadBases } from '@/lib/db/repositories/exercise-catalog';
+import { LOAD_BASIS_INLINE } from '@/lib/exercise/load-basis';
 import {
   activeNutritionTargets,
   dailyIntakeSeries,
@@ -460,11 +462,25 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
   const weightSpec = displayFor('weight', getPreferences(db).units);
   const movements: MovementRow[] = [];
   const personalRecords: string[] = [];
+  // What each movement's figure counts (0062), named beside it: an estimated 1RM
+  // of 38 kg on a dumbbell press is one dumbbell, and a report read months
+  // later — possibly by someone else — has no column heading to say so.
+  const bases = exerciseLoadBases(
+    db,
+    trained.map((r) => r.exerciseId)
+  );
   for (const row of trained) {
+    const basis = bases.get(row.exerciseId) ?? null;
+    const label = basis == null ? row.name : `${row.name} (${LOAD_BASIS_INLINE[basis]})`;
     // A generous limit, then filter: `e1rmSeries` slices the most recent N
     // session dates before sorting, so the cap has to comfortably exceed any
     // real training history inside a one-year period.
-    const series = e1rmSeries(db, row.exerciseId, 1000);
+    //
+    // HOME points only (0055): both readings below COMPARE load — a first-to-
+    // last delta and an all-time best — and an away session's numbers are not
+    // comparable to the home baseline in either direction. The chart on the
+    // exercise screen keeps them, marked; a report has no way to mark a row.
+    const series = e1rmSeries(db, row.exerciseId, 1000).filter((p) => p.away !== true);
     const inPeriod = series.filter((p) => p.date >= period.start && p.date <= accEnd);
     // The movement-progression row needs two in-period sessions to show a delta.
     if (row.sessions >= 2 && inPeriod.length >= 2) {
@@ -473,7 +489,7 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
       const firstDisplay = weightSpec ? weightSpec.fromCanonical(first.e1rm) : first.e1rm;
       const lastDisplay = weightSpec ? weightSpec.fromCanonical(last.e1rm) : last.e1rm;
       movements.push({
-        exercise: row.name,
+        exercise: label,
         sessions: row.sessions,
         first: num(firstDisplay, 1),
         last: num(lastDisplay, 1),
@@ -491,7 +507,7 @@ function assembleTraining(db: Database, period: Period, accEnd: string): Trainin
       if (firstAchieved.date >= period.start && firstAchieved.date <= accEnd) {
         const display = weightSpec ? weightSpec.fromCanonical(best.e1rm) : best.e1rm;
         personalRecords.push(
-          `${row.name} — ${num(display, 1)} ${weightSpec?.unit ?? 'kg'} estimated 1RM on ${formatDate(firstAchieved.date)}`
+          `${label} — ${num(display, 1)} ${weightSpec?.unit ?? 'kg'} estimated 1RM on ${formatDate(firstAchieved.date)}`
         );
       }
     }

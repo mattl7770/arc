@@ -5,6 +5,7 @@ import { getDb } from '@/lib/db/client';
 import { listRecentSessions, weekSummary } from '@/lib/db/repositories/exercise';
 import { getRoutine, listRoutines } from '@/lib/db/repositories/routines';
 import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
+import { trainedExercises, type TrainedExercise } from '@/lib/db/repositories/training-stats';
 import { readWorkoutDraft } from '@/lib/db/repositories/workout-drafts';
 import {
   pendingIngestedStrength,
@@ -41,6 +42,12 @@ export type TrainingHub = {
    * watch, and on every device where the sessions are already paired.
    */
   blanks: IngestedWorkout[];
+  /**
+   * Every movement ever trained, most recent first, with its latest top set and
+   * direction of travel (2026-09-23) — the hub's way into any exercise's
+   * history.
+   */
+  exercises: TrainedExercise[];
   /** Re-read after a save/finish. */
   reload: () => void;
 };
@@ -56,6 +63,7 @@ const read = () => {
     volume,
     recommendation,
     blanks: pendingIngestedStrength(db),
+    exercises: trainedExercises(db),
   };
 };
 

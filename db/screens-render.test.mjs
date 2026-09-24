@@ -87,6 +87,8 @@ import MissionHistoryScreen from '../app/mission-history.tsx';
 import WaterScreen from '../app/water.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import ExerciseDetailScreen from '../app/exercise-detail.tsx';
+import WorkoutLiveScreen from '../app/workout-live.tsx';
+import { setExerciseLoadBasis } from '../src/lib/db/repositories/exercise-catalog.ts';
 import RoutineEditScreen from '../app/routine-edit.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
@@ -1747,6 +1749,106 @@ const db = getDb();
       '#185a36',
       'the estimated-1RM trend appears here',
     ]);
+
+    // -----------------------------------------------------------------------
+    // 2026-09-23 — what a weight counts (0062), and trends and PRs per
+    // exercise. Owner: "indicate whether weight is per arm, total, etc." and
+    // "trends, prs, etc for exercises (i.e. fitbod)".
+    expect('exercise detail (load basis + records)', detail, [
+      // The basis, stated and correctable, with what it means in words.
+      'Weight',
+      'Total',
+      'The whole load. A barbell counts the bar.',
+      'Change',
+      // The fuller records grid, and the sections Fitbod has that ARC lacked.
+      'Session volume',
+      'Most reps',
+      'Sessions',
+      'Trend',
+      'Best at each rep count',
+      '8 reps',
+      'History',
+    ]);
+    // ARC's reading, so nothing claims the owner set it.
+    refute('exercise detail (load basis + records)', detail, ['Set by you']);
+    setExerciseLoadBasis(db, 'barbell-bench-press', 'per_side');
+    const corrected = render('exercise detail (corrected basis)', ExerciseDetailScreen, {
+      id: 'barbell-bench-press',
+    });
+    expect('exercise detail (corrected basis)', corrected, ['Per side', 'Set by you']);
+    setExerciseLoadBasis(db, 'barbell-bench-press', null);
+
+    // A push-up's grid was three em-dashes for ever; its records are reps.
+    const pushUp = render('exercise detail (push-up)', ExerciseDetailScreen, { id: 'push-up' });
+    expect('exercise detail (push-up)', pushUp, ['Most reps', 'Session reps']);
+    // No weight figure to describe, no rep-max table for a load it never carries.
+    refute('exercise detail (push-up)', pushUp, ['Best at each rep count', 'Set by you']);
+
+    // The hub's way into any exercise's history: every movement trained, with
+    // its latest top set saying what its weight counts.
+    const hubWithExercises = render('exercise hub (exercises list)', ExerciseScreen);
+    expect('exercise hub (exercises list)', hubWithExercises, [
+      'Exercises',
+      'Barbell Bench Press',
+      'lb total',
+      'Open records and history.',
+    ]);
+
+    // The live logger (and the session editor, the same screen): the load
+    // column's heading says what the number counts. Two lines — unit over basis.
+    const live = render('workout-live (headings)', WorkoutLiveScreen, {
+      exerciseIds: 'dumbbell-bench-press,barbell-bench-press,lat-pulldown',
+    });
+    expect('workout-live (headings)', live, ['lb\nPer hand', 'lb\nTotal', 'lb\nStack']);
+    const benchSession = db.get(
+      `SELECT w.id FROM workouts w JOIN workout_sets s ON s.workout_id = w.id
+        WHERE s.exercise_id = 'barbell-bench-press' ORDER BY w.created_at DESC LIMIT 1`
+    );
+    expect(
+      'workout-live (session editor)',
+      render('workout-live (session editor)', WorkoutLiveScreen, { workoutId: benchSession.id }),
+      ['Session', 'lb\nTotal']
+    );
+    // A resumed session keeps its PR stamps AND says which record each beat.
+    saveWorkoutDraft(db, 'live', {
+      version: DRAFT_VERSION,
+      startedAt: Date.now() - 20 * 60_000,
+      routineId: null,
+      ingestId: null,
+      restEndsAt: null,
+      away: false,
+      blocks: [
+        {
+          key: 1,
+          exerciseId: 'barbell-bench-press',
+          name: 'Barbell Bench Press',
+          loggingType: 'weight_reps',
+          measures: 'reps,load',
+          mechanic: 'compound',
+          restSec: 180,
+          prev: [],
+          bestE1rm: null,
+          linkedToNext: false,
+          sets: [
+            {
+              key: 1,
+              weight: '225',
+              reps: '5',
+              rpe: '',
+              time: '',
+              distance: '',
+              setType: 'normal',
+              done: true,
+              pr: true,
+              prKinds: ['e1rm', 'weight', 'rep_max'],
+            },
+          ],
+        },
+      ],
+    });
+    const resumedPr = render('workout-live (resumed PR)', WorkoutLiveScreen, { resume: '1' });
+    expect('workout-live (resumed PR)', resumedPr, ['PR', 'Set 1: best e1RM, heaviest']);
+    clearWorkoutDraft(db, 'live');
 
     // A9: routine-edit is the one screen-render-covered survivor of the
     // retired "routine" vocabulary — the noun everywhere else is "saved

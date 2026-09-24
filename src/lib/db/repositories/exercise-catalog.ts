@@ -9,6 +9,12 @@
  */
 import type { Database } from '../database';
 import { newId } from '../id';
+import {
+  asLoadBasis,
+  deriveLoadBasis,
+  effectiveLoadBasis,
+  type LoadBasis,
+} from '@/lib/exercise/load-basis';
 import { resolveUniqueMatch, type NameSource } from '@/lib/exercise/match';
 import { asMeasures, MEASURES_FOR_LOGGING_TYPE } from '@/lib/exercise/measures';
 import type {
@@ -38,8 +44,50 @@ function parseAliases(raw: string | null): string[] {
   }
 }
 
+/**
+ * The columns {@link effectiveLoadBasis} reads, from any row that carries them.
+ * Shared by the catalog decode and {@link exerciseLoadBases}, so the two can
+ * never resolve the same movement differently.
+ */
+type LoadBasisColumns = Pick<
+  ExerciseRow,
+  | 'name'
+  | 'aliases'
+  | 'equipment'
+  | 'logging_type'
+  | 'measures'
+  | 'unilateral'
+  | 'movement_pattern'
+  | 'load_basis'
+>;
+
+function loadBasisOf(row: LoadBasisColumns): {
+  effective: LoadBasis | null;
+  derived: LoadBasis | null;
+  stored: LoadBasis | null;
+} {
+  const input = {
+    name: row.name,
+    aliases: parseAliases(row.aliases),
+    equipment: row.equipment,
+    loggingType: row.logging_type,
+    measures: asMeasures(row.measures),
+    unilateral: row.unilateral === 1,
+    movementPattern: row.movement_pattern,
+  };
+  // Total read, like `asMeasures`: a value this build does not know reads as
+  // "no correction", so ARC's own reading shows rather than nothing.
+  const stored = asLoadBasis(row.load_basis);
+  return {
+    effective: effectiveLoadBasis(input, stored),
+    derived: deriveLoadBasis(input),
+    stored,
+  };
+}
+
 function toCatalogExercise(row: CatalogRow): CatalogExercise {
   const muscles: MuscleJson[] = row.muscles_json ? JSON.parse(row.muscles_json) : [];
+  const basis = loadBasisOf(row);
   return {
     id: row.id,
     name: row.name,
@@ -60,6 +108,12 @@ function toCatalogExercise(row: CatalogRow): CatalogExercise {
     // know" is one.
     source:
       row.source === 'seed' || row.source === 'user' || row.source === 'ai' ? row.source : null,
+    // 0062. A stored correction on a movement that records no load is not
+    // "set by the owner" in any sense a screen could show, so the flag follows
+    // the effective value, not the column.
+    loadBasis: basis.effective,
+    loadBasisDerived: basis.derived,
+    loadBasisSetByOwner: basis.stored != null && basis.effective != null,
     primaryMuscles: muscles.filter((m) => m.role === 'primary').map((m) => m.muscle),
     secondaryMuscles: muscles.filter((m) => m.role === 'secondary').map((m) => m.muscle),
   };
@@ -273,4 +327,56 @@ export function createCustomExercise(db: Database, input: NewExercise): string {
 /** Hide an exercise from pickers without destroying history that points at it. */
 export function archiveExercise(db: Database, id: string): void {
   db.run('UPDATE exercises SET archived = 1 WHERE id = ?', [id]);
+}
+
+/**
+ * The owner's correction of what a movement's weight figure counts (0062), or
+ * `null` to go back to ARC's own reading.
+ *
+ * Picking the basis ARC would have derived anyway is stored as NULL, not as
+ * that value: the column's one meaning is "the owner disagreed with the
+ * derivation", and a stored copy of the derivation would also stop following
+ * it if the derivation is ever improved.
+ *
+ * It RELABELS and never rescales: no `workout_sets` row is read or written, and
+ * nothing derived from the figures is cached anywhere. The owner typed what was
+ * on the dumbbell all along; only what the number is called changes.
+ */
+export function setExerciseLoadBasis(db: Database, id: string, basis: LoadBasis | null): void {
+  if (basis !== null && asLoadBasis(basis) === null) {
+    throw new Error(`Unknown load basis "${String(basis)}".`);
+  }
+  const row = db.get<LoadBasisColumns>(
+    `SELECT name, aliases, equipment, logging_type, measures, unilateral, movement_pattern, load_basis
+     FROM exercises WHERE id = ?`,
+    [id]
+  );
+  if (!row) throw new Error(`No exercise ${id}.`);
+  const derived = loadBasisOf({ ...row, load_basis: null }).derived;
+  db.run('UPDATE exercises SET load_basis = ? WHERE id = ?', [
+    basis === derived ? null : basis,
+    id,
+  ]);
+}
+
+/**
+ * The effective load basis for several movements in one statement — for the
+ * live logger's column headings, which need one per block and none of the
+ * muscles {@link getExercise} would also decode. Ids that name nothing are
+ * simply absent from the map.
+ */
+export function exerciseLoadBases(
+  db: Database,
+  exerciseIds: readonly string[]
+): Map<string, LoadBasis | null> {
+  const out = new Map<string, LoadBasis | null>();
+  const ids = [...new Set(exerciseIds)];
+  if (ids.length === 0) return out;
+  const rows = db.all<LoadBasisColumns & { id: string }>(
+    `SELECT id, name, aliases, equipment, logging_type, measures, unilateral, movement_pattern, load_basis
+     FROM exercises WHERE id IN (${ids.map(() => '?').join(', ')})`,
+    ids
+  );
+  for (const row of rows) out.set(row.id, loadBasisOf(row).effective);
+  return out;
 }

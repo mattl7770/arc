@@ -39,6 +39,7 @@ import { updateProfile } from '../src/lib/db/repositories/user.ts';
 import { addScreening } from '../src/lib/db/repositories/screenings.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { setNutritionTargets } from '../src/lib/db/repositories/nutrition.ts';
+import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import {
   deleteReport,
   getReport,
@@ -453,6 +454,48 @@ console.log('2c. one excusal definition, three reasons — and the report reads 
     '…beside the frozen Mode run, because a past month may span both systems',
     changed.some((r) => r.kind === 'Mode' && r.what.includes('Sick')),
     JSON.stringify(changed)
+  );
+}
+
+// ============================================================================
+console.log('2d. Training — a movement names what its weight counts; away sets no record');
+{
+  // 2026-09-23 (migration 0062, and 0055's rule applied to the report). An
+  // estimated 1RM of 32 kg on a dumbbell press is one dumbbell, and a report
+  // read months later has no column heading to say so. And an away session's
+  // numbers are not comparable to the home baseline, so they set no record and
+  // anchor no delta here either — the chart on the exercise screen keeps them
+  // marked, but a report row cannot carry a mark.
+  const { db } = freshDb();
+  const s = (exerciseId, reps, weightKg) => ({ exercise: exerciseId, exerciseId, reps, weightKg });
+  logWorkout(db, { date: '2026-08-02', kind: 'strength' }, [
+    s('dumbbell-bench-press', 8, 30),
+    s('barbell-bench-press', 5, 100),
+  ]);
+  logWorkout(db, { date: '2026-08-04', kind: 'strength', away: true }, [
+    s('barbell-bench-press', 5, 140),
+  ]);
+  logWorkout(db, { date: '2026-08-05', kind: 'strength' }, [s('dumbbell-bench-press', 8, 32)]);
+  const training = assembleSelfReview(db, PERIOD, { now: NOW }).training;
+  const exercises = training.movements.map((m) => m.exercise);
+  yes(
+    'the dumbbell press is named with its basis — "(per hand)"',
+    exercises.includes('Dumbbell Bench Press (per hand)'),
+    JSON.stringify(exercises)
+  );
+  yes(
+    'one home bench session is not a trend: the away 140 anchors no delta row',
+    !exercises.some((e) => e.startsWith('Barbell Bench Press')),
+    JSON.stringify(training.movements)
+  );
+  const benchPr = training.personalRecords.find((p) => p.startsWith('Barbell Bench Press'));
+  yes(
+    'the bench record is the HOME 5 × 100 (257.3 lb e1RM), named "(total)" — not the away 140',
+    benchPr != null &&
+      benchPr.includes('(total)') &&
+      benchPr.includes('257.3') &&
+      !benchPr.includes('360'),
+    JSON.stringify(training.personalRecords)
   );
 }
 

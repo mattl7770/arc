@@ -1,9 +1,13 @@
 # Exercise Sub-App — Design Spec
 
-**Status:** Phase 6 — **an exercise declares what it measures** (backlog B1, migration **0046**): reps · load · time · distance per movement, so a plank is logged as a hold and a run as a time and a distance. Phase 5 before it: the live session survives the app being killed (**0045**) and exercise search tolerates how people actually type. Phase 4: body-figure freshness diagram, photo workout import (AI), saved workouts (programs retired), in-session exercise detail with bundled photos, the superset "bind" animation, and AI exercise search. AI features run through the Coach's model client and always land in an editable review; everything else stays offline.
-**Last updated:** 2026-09-14
-**Window:** parallel build, migrations **0011–0013** + **0020** + **0045** + **0046**
+**Status:** Phase 10 (2026-09-23) — **what a weight counts, and how a lift is trending** (§14, migration **0062**): every loaded movement says whether its figure is total, per hand, per side, the stack, or load added to bodyweight, and the owner can correct it; records, best at each rep count, a switchable per-session trend, a direction of travel, PR stamps for every record kind, and a Train-hub list of every exercise trained. Earlier: Phase 6 — **an exercise declares what it measures** (backlog B1, migration **0046**): reps · load · time · distance per movement, so a plank is logged as a hold and a run as a time and a distance. Phase 5 before it: the live session survives the app being killed (**0045**) and exercise search tolerates how people actually type. Phase 4: body-figure freshness diagram, photo workout import (AI), saved workouts (programs retired), in-session exercise detail with bundled photos, the superset "bind" animation, and AI exercise search. AI features run through the Coach's model client and always land in an editable review; everything else stays offline.
+**Last updated:** 2026-09-23
+**Window:** parallel build, migrations **0011–0013** + **0020** + **0045** + **0046** + **0054–0056** + **0062**
 **Reads:** CLAUDE.md §4/§9 · `docs/information-architecture.md` · `docs/project-status.md` ("exercise as measured data") · `db/migrations/0003_exercise.sql` · `docs/backlog-2026-09.md` (A1, A7, B1)
+
+> **Phase 10 shipped (2026-09-23) — two owner notes from the device.**
+>
+> *"indicate whether weight is per arm, total, etc. for different exercises"* — every loaded movement now says what its figure counts (total · per hand · per side · stack · added to bodyweight · assisted), derived from the catalog by one pure function and correctable per exercise; only the owner's correction is stored (`exercises.load_basis`, **0062**). Records, trends and the PR stamp stay in the logged basis — nothing is doubled — and the Coach reads the basis in its payloads. *"trends, prs, etc for exercises (i.e. fitbod)"* — best at each rep count, session volume and rep records, a switchable per-session trend with a direction of travel, a PR stamp for every record kind that names what it beat, PR marks in history, and an **Exercises** list on the Train hub. **§14** is the whole decision, including the Fitbod audit.
 
 > **Phase 6 shipped (2026-09-14) — backlog B1, the last Phase B foundation.**
 >
@@ -740,3 +744,121 @@ Search, nothing confident, **Add with AI** (in the results plate, under whatever
 - **Whether the door is findable where it now sits.** It moved from a standing button at the top of the picker into the results plate; the gain is that it only appears when it is the right answer, and the risk is that it appears below the fold on a long list of weak guesses.
 - **How often the gate is right.** `hack squat` is the known false negative; the real question is how many of the movements the owner actually reaches for land on the wrong side of tier 4.
 - **Whether a one-shot entry is good enough**, or whether the review card needs to be editable before Save. It is deliberately read-only for now: the manual form is one tap away and re-running the model is cheaper than building a second editor.
+
+---
+
+## 14. Phase 10 — what a weight counts, and how a lift is trending (2026-09-23, migration 0062)
+
+Two owner notes from the device, 2026-09-23:
+
+1. *"indicate whether weight is per arm, total, etc. for different exercises"*
+2. *"trends, prs, etc for exercises (i.e. fitbod)"*
+
+### 14.1 The load basis — six answers to one question
+
+Every movement that records a load says what its figure counts. `src/lib/exercise/load-basis.ts` is the one place that decides it; the logger heading, the detail screen, the Train hub, the self-review and the Coach's payloads all read it from there.
+
+| Basis | Heading | What the figure is | Derived for |
+| --- | --- | --- | --- |
+| `total` | TOTAL | the whole load; a barbell counts the bar | barbell, EZ bar, trap bar, Smith, plate, medicine ball, band, other; a dumbbell or bell held in both hands (goblet, swing, pullover, French press / overhead triceps extension) |
+| `per_hand` | PER HAND | one dumbbell, bell or handle; the other side carries the same | dumbbell and kettlebell by default; any cable movement named single-arm / one-arm / alternating, or unilateral with an upper-body pattern |
+| `per_side` | PER SIDE | one side of a two-sided load: the plates on one side, or one of two cable stacks | a cable fly or crossover (two stacks, one handle each); a machine named iso-lateral or plate-loaded |
+| `stack` | STACK | the number on a selectorised machine or cable stack | `machine` and `cable` otherwise |
+| `bodyweight_plus` | ADDED | load added to bodyweight (belt, vest); blank is bodyweight alone | `weighted_bodyweight`, and any loaded movement on bodyweight / pull-up bar / suspension / bench equipment |
+| `assisted` | ASSIST | the help a machine gives; a lower number is harder | `assisted_bodyweight` |
+
+The order of the rules is the argument (`deriveLoadBasis`): the logging type first (weighted and assisted bodyweight say it outright), then equipment, with the name and aliases refining it where one piece of equipment is used two ways. A movement that records no load — a plank, a push-up, a run — has no basis at all (null), because there is no figure to describe. All 69 seeded rows are pinned in `db/exercise-catalog.test.mjs` §10, with fifteen rows the seed does not carry for the name rules.
+
+**Plate-loaded machines: decided as "per side is the owner's correction, never a derivation from `machine`".** The catalog's `machine` covers a selectorised stack and a plate-loaded sled alike, so the seeded Leg Press and Hack Squat read `stack` until the owner says his are plate-loaded. Deriving `per_side` from the name "leg press" would be right in one gym and wrong in the next; the correction is one tap.
+
+### 14.2 Migration 0062 — only the owner's correction is stored
+
+```sql
+ALTER TABLE exercises ADD COLUMN load_basis text CHECK (
+  load_basis IS NULL
+  OR load_basis IN ('total', 'per_hand', 'per_side', 'stack', 'bodyweight_plus', 'assisted')
+);
+```
+
+- **NULL is ARC's reading; a value is the owner's.** The derivation is never written into the table: a stored copy of a derived value is a second definition that stops improving the day it is written. No backfill.
+- **Choosing ARC's own reading writes NULL**, so a non-NULL can only ever mean "the owner disagreed" (`setExerciseLoadBasis`). The detail screen says *Set by you* when it is his — 0034's rule that an asserted value and a derived one must not wear the same face.
+- **A correction relabels; it never rescales.** No `workout_sets` row is read or written. The owner typed the number on the dumbbell all along; only what the number is called changes.
+- **Vocabulary-only CHECK, closed at six.** `exercises` parents three foreign keys, so widening this CHECK is the twelve-step rebuild; the question "what does this figure count" has no seventh answer (a band's tension is not a weight, a sled is `total`).
+
+### 14.3 Is a per-hand figure doubled? No — and where that was checked
+
+| Computation | Reads weight? | Per-hand figure doubled? | Why |
+| --- | --- | --- | --- |
+| Records, best at each rep count, live PR stamp, history PR mark | yes, within one movement | **no** | one movement's basis is the same on every set, so doubling changes no comparison and makes every number disagree with the dumbbell in his hand |
+| e1RM / top-set / volume trends, direction of travel | yes, within one movement | **no** | same |
+| Progression target, stall/deload, prefill | yes, within one movement | **no** | the target is the next dumbbell, and the increment is per dumbbell |
+| Freshness, weekly volume, the strain pillar, `weekSummary` | **never** | n/a | 0055's header; a basis correction is pinned to move none of them (`db/training-engine.test.mjs` §12) |
+| Coach payloads | as logged | **no** | the figure rides with `loadBasis` beside it; the model does its own arithmetic knowing what the number is |
+| Anything summing load ACROSS movements (tonnage) | — | **only through `loadMovedKg`** | nothing does today. `per_hand` / `per_side` ×2, `total` / `stack` / `bodyweight_plus` ×1 (body excluded — ARC does not know what it weighed that day), `assisted` refuses |
+
+**Assisted movements set no load records**, because a higher figure is an easier set: the heaviest, the best e1RM and the best at each rep count would all crown the easiest work. `loadRecordsApply` is the gate; the records grid shows only the rep counts, as facts, the PR stamp stays silent (reps at different assistance are not comparable either), and `progressionFor` now says *Take assistance off as the reps allow* rather than suggesting more assistance (it used to add the increment to the assistance — a latent bug with no seeded movement to trip it).
+
+### 14.4 Where the basis is shown
+
+- **Live logger and the session editor** (one screen): the load column heading is two lines, unit over basis — `LB` / `PER HAND`. Two lines because the column is about 63 pt at 375 pt and "KG · PER HAND" in tracked 10 pt capitals needs about 90 pt; one line would break wherever the text ran out. Label voice, no accent. The basis is read from the catalog, not the draft, and re-read on focus: the block title opens exercise detail, which is where it is corrected.
+- **Exercise detail**: a *Weight* line under the meta (the basis, one sentence of what it means, *Set by you* when it is his, and *Change* opening the six chips), and a `kg · per hand` note on Records, Trend (weight metrics), Best at each rep count and History — once per section, not on every number.
+- **Train hub**: each Exercises row's latest set reads "8 × 30 kg per hand", because that line has no heading above it.
+- **Self-review report**: a movement is named with its basis — "Dumbbell Bench Press (per hand)" — because a report read months later has no column heading.
+- **Not changed**: the manual logger (`workout-log.tsx`) and the photo-import review still take a bare weight; their inputs belong to the branch rewriting timed-set entry.
+
+### 14.5 Fitbod, audited against ARC
+
+| Fitbod gives, per exercise | ARC before 2026-09-23 | ARC now |
+| --- | --- | --- |
+| Estimated 1RM over time | a 120 pt sparkline of the last 12 session-dates, no extent, no direction | **Trend** field: one point per session (24), the latest value, the date extent and session count, and the direction against the previous three home sessions ("+4% on the previous 3 sessions") |
+| Max weight history | the single heaviest set | **Top set** trend chip, alongside the record |
+| Max volume history | best single-set volume only | **Session volume** record and a **Volume** trend chip (Σ weight × reps per session) |
+| Max reps history | nothing — and a push-up's whole records grid was three em-dashes | **Most reps** and **Session reps** records, and a **Most reps** trend chip; a push-up's grid is now its reps |
+| Best weight at each rep count | nothing | **Best at each rep count**: exact counts 1–20, the date each was first reached, home sessions only |
+| A PR marked the moment you hit it | an e1RM-only "PR" at the block foot | every record kind stamps, and the foot says which: "Set 3: best e1RM, heaviest · Set 4: best at 5 reps" |
+| PRs visible in history | nothing | **PR** on each history row whose session set a record at the time — the live stamp's own rule |
+| A way into any exercise's history | the picker's records button, or a block title mid-session | **Exercises** on the Train hub: every movement trained, most recent first, latest top set and direction; six rows, then *Show all* |
+| Time ranges (1M / 3M / 1Y) on the chart | — | **not built**: 24 sessions with a stated extent covers a year of a twice-weekly lift; a range picker is the next step if the owner wants it |
+
+Not on Home (CLAUDE.md §5).
+
+### 14.6 The PR rule — one function, live and after the fact
+
+`recordsBeaten` (live) and `recordSessionIds` (history) share `kindsBeating` in `src/lib/exercise/records.ts`:
+
+- **Kinds by what the movement measures.** reps + load (not assisted): `e1rm`, `weight`, `rep_max`. A set with no load on a movement whose load is absent or optional (a push-up, an unweighted pull-up): `reps` — never a loaded lift with the weight left blank, which would be a typo scoring a record. Time: `duration`. Distance: `distance`. Both, over at least `PACE_PR_MIN_M`: `pace`.
+- **An away session stamps nothing** (0055). The rule moved out of the screen into `recordsBeaten`, so no caller can award an away PR by forgetting to ask; turning Away on still clears the stamps already earned.
+- **A record needs a previous best.** The first session of a movement sets its bars silently, and a first-ever set of three is not a "best at 3 reps". This changes one old behaviour: the e1RM-only stamp used to tag the first set of a never-done movement as a PR.
+- **Within a session a set must clear the sets already done**, so the second of two record sets stamps only if it beats the first. The bar is read from the logged history (the live session is a draft until Finish, 0045) plus the other done sets in the block; nothing is cached, and `DraftBlock.bestE1rm` is no longer read.
+- **The stamp names its kinds** on the draft (`DraftSet.prKinds`, optional and parsed leniently — no `DRAFT_VERSION` bump, the `ingestId` precedent). A set stamped by an older build resumes with the bare "PR".
+- **`rep_max` is dropped from the line when the set is also the heaviest**: the heaviest set on record is necessarily the best at its own rep count.
+
+### 14.7 Trends and the direction of travel
+
+`sessionSeriesFrom` gives one value per session for `e1rm · top_weight · volume · reps · session_reps · duration · distance`; `trendMetricsFor` chooses which a movement offers from what it measures. `trendOf` compares the latest **home** session with the mean of up to three home sessions before it and reads *level* within ±2%. A mean of three, because one bad Tuesday is not a direction; home only, because a stiffer machine is not a regression. Away sessions stay on the chart, hollow.
+
+The hub's direction uses a lift's e1RM, falling back to its top weight when its sets sit past the e1RM rep cap; **anything that covers distance gets no arrow** — whether a run is "better" longer or faster depends on what it was for.
+
+**`exerciseSessionTopsFrom` compares a tier, then a value.** A set with no load, time or distance used to score a flat zero, so a push-up session's "top set" was whichever set came first; it now compares reps, in a tier below every loaded set so reps and kilograms never mix (a weighted dip of 10 kg × 8 outranks a bodyweight 15).
+
+### 14.8 The Coach
+
+Payload, never schema — coach-eval §6's ceilings are untouched:
+
+- `query_records { domain: "exercise_stats" }` returns `loadBasis`, the extended `records`, and `repMaxes`, from one scan; the history's workout ids are stripped (a UUID per row answers nothing for the model).
+- `query_records { domain: "exercise_catalog" }` rows carry `loadBasis` on loaded movements; the vocabulary sentence is on the domain's discovery call, where field notes live instead of the prompt.
+- `get_training_recommendation` exercises carry `loadBasis`, so a 22.5 kg dumbbell-press target is read as one dumbbell.
+
+The Coach cannot yet **correct** a basis; that would be an editable field on `exercise_catalog`, the parity rule's next step.
+
+### 14.9 Tests
+
+`db/exercise-catalog.test.mjs` §10–11 (every seeded row's basis, the name rules, correction storage and reset, relabel-not-rescale, the CHECK, the heading, the doubling table) · `db/training-engine.test.mjs` §10–12 (the three new records, rep maxes, every PR kind and its refusals, the history mark, trends and direction, the hub list, the per-hand decision, a correction moving no freshness or volume) · `db/coach-domains.test.mjs` §4b and `db/coach-tools.test.mjs` §26 (the payloads) · `db/reports.test.mjs` §2d (the named basis, and an away session setting no record in the report — it used to) · `db/screens-render.test.mjs` §9 (the detail screen, a corrected basis, a push-up's records, the hub list, and — new to the walk, through a Reanimated stub — the live logger's headings, the session editor and a resumed PR line).
+
+### 14.10 What only a device can settle
+
+- **The two-line heading** at 375 pt, and whether "STACK" reads as a machine's number or needs to be "MACHINE".
+- **Whether the derivation is right for his gym** — the seeded Leg Press, Hack Squat and calf raises read `stack`, and in many gyms they are plate-loaded.
+- **The six-cell records grid**: "Session volume" wraps to two lines in a third of 311 pt.
+- **Whether "a record needs a previous best" feels right** on the first session of a new movement, where nothing stamps.
+- **The Exercises plate's length and place** on an already long hub, and whether six rows before *Show all* is the right number.

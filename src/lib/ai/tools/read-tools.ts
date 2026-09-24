@@ -13,6 +13,7 @@ import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-m
 import { biomarkerSeries } from '@/lib/db/repositories/labs';
 import { latestBody } from '@/lib/db/repositories/body';
 import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
+import { exerciseLoadBases } from '@/lib/db/repositories/exercise-catalog';
 import { openStatuses } from '@/lib/db/repositories/statuses';
 import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/experiments';
 import { weekSummary } from '@/lib/db/repositories/exercise';
@@ -1778,12 +1779,20 @@ const getTrainingRecommendation: CoachTool = {
     const fmtTarget = (kg: number | null) =>
       kg == null ? null : `${round1(weightSpec.fromCanonical(kg))} ${weightSpec.unit}`;
 
+    // What each target weight COUNTS (0062) — a 22.5 kg dumbbell-press target
+    // is one dumbbell. Payload, not schema, so it costs the §6 ceilings nothing;
+    // omitted on a movement that records no load.
+    const bases = exerciseLoadBases(
+      db,
+      'exercises' in recommendation ? recommendation.exercises.map((e) => e.exerciseId) : []
+    );
     const exercises =
       'exercises' in recommendation
         ? recommendation.exercises.map((e) => ({
             name: e.name,
             freshness: e.freshness,
             sets: e.targetSets ?? null,
+            ...(bases.get(e.exerciseId) != null ? { loadBasis: bases.get(e.exerciseId) } : {}),
             target: {
               kind: e.suggestion.kind,
               weight: fmtTarget(e.suggestion.targetWeightKg),

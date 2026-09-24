@@ -2083,6 +2083,16 @@ console.log('26. get_training_recommendation reports engine state (never decides
     rec.recommendation.exercises.every((e) => e.target && typeof e.target.kind === 'string')
       ? ok('every recommended exercise carries a progression target')
       : bad('targets', JSON.stringify(rec.recommendation.exercises[0]));
+    // 0062: what a target weight COUNTS rides beside it — payload, not schema.
+    const LEGAL = ['total', 'per_hand', 'per_side', 'stack', 'bodyweight_plus', 'assisted'];
+    const withBasis = rec.recommendation.exercises.filter((e) => 'loadBasis' in e);
+    withBasis.length > 0 && withBasis.every((e) => LEGAL.includes(e.loadBasis))
+      ? ok(
+          `loaded movements say what their weight counts (${withBasis
+            .map((e) => `${e.name}: ${e.loadBasis}`)
+            .join(', ')})`
+        )
+      : bad('loadBasis on recommendation', JSON.stringify(rec.recommendation.exercises));
   } else {
     ok('no exercises on this recommendation kind (nothing to target)');
   }

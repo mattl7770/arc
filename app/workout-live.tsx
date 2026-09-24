@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition, ZoomIn } from 'react-native-reanimated';
 
@@ -12,7 +12,7 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
-import { getExercise } from '@/lib/db/repositories/exercise-catalog';
+import { exerciseLoadBases, getExercise } from '@/lib/db/repositories/exercise-catalog';
 import {
   deleteWorkout,
   getWorkoutDetail,
@@ -28,6 +28,7 @@ import {
 import {
   lastSessionSets,
   personalRecords,
+  workingSets,
   type PrevSet,
 } from '@/lib/db/repositories/training-stats';
 import { deviceLabel } from '@/lib/db/repositories/wearables';
@@ -47,7 +48,6 @@ import {
   type DraftSet as LiveSet,
   type LiveDraft,
 } from '@/lib/exercise/draft';
-import { e1rmForSet } from '@/lib/exercise/e1rm';
 import {
   dayLabel,
   displayDistance,
@@ -60,12 +60,14 @@ import {
   toCanonicalMetres,
   weightSpec,
 } from '@/lib/exercise/format';
+import { weightColumnHeading, type LoadBasis } from '@/lib/exercise/load-basis';
+import { DEFAULT_MEASURES, hasMeasure, type Measures } from '@/lib/exercise/measures';
 import {
-  DEFAULT_MEASURES,
-  hasMeasure,
-  isLoadedRepsMeasures,
-  type Measures,
-} from '@/lib/exercise/measures';
+  candidateFromTyped,
+  prSummary,
+  recordsBeaten,
+  type RecordKind,
+} from '@/lib/exercise/records';
 import type { PairedIngest, SetType, WorkoutDetail } from '@/lib/exercise/types';
 import { cancelRestAlert, scheduleRestAlert } from '@/lib/notifications/rest-timer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
@@ -76,8 +78,8 @@ import type { UnitPreferences } from '@/lib/user/types';
  * the Exercise hub — the FitBod/Hevy-style set grid. Exercise blocks; each set
  * row shows the previous session's numbers as placeholders, a mono
  * weight/reps/RPE entry, and a completion stamp that starts the rest timer and
- * marks a PR when the set beats the best e1RM to date. Weight is entered in the
- * user's unit and stored canonical kg. The free-form quick logger
+ * marks a PR when the set beats a record (src/lib/exercise/records.ts). Weight
+ * is entered in the user's unit and stored canonical kg. The free-form quick logger
  * (app/workout-log.tsx) stays for cardio / mobility / past sessions.
  *
  * ## The surface system (00-design-spec.md §1)
@@ -622,6 +624,24 @@ function WorkoutLive({
   const [blocks, setBlocks] = useState<LiveBlock[]>(() =>
     initialBlocks(draft, stored, routineId, exerciseIds, units)
   );
+  /**
+   * What each block's weight figure counts (0062), for its column heading and
+   * the PR rule. Read from the catalog rather than carried on the draft, and
+   * re-read on focus and whenever the set of movements changes: the block title
+   * opens exercise-detail, which is where the owner corrects a wrong basis, and
+   * coming back has to show the correction on the heading he was looking at.
+   */
+  const blockIdsKey = blocks.map((b) => b.exerciseId ?? '').join(',');
+  const [loadBases, setLoadBases] = useState<Map<string, LoadBasis | null>>(() =>
+    exerciseLoadBases(getDb(), blockIdsKey.split(',').filter(Boolean))
+  );
+  useFocusEffect(
+    useCallback(() => {
+      setLoadBases(exerciseLoadBases(getDb(), blockIdsKey.split(',').filter(Boolean)));
+    }, [blockIdsKey])
+  );
+  const basisOf = (block: LiveBlock): LoadBasis | null =>
+    block.exerciseId == null ? null : (loadBases.get(block.exerciseId) ?? null);
   // Editing starts CLEAN. A past session is already full of data, so the live
   // logger's "anything typed means unsaved" test would prompt to discard on the
   // way out of a screen that was only ever read.
@@ -880,7 +900,10 @@ function WorkoutLive({
       const next = !prev;
       if (next) {
         setBlocks((bs) =>
-          bs.map((b) => ({ ...b, sets: b.sets.map((s) => ({ ...s, pr: false })) }))
+          bs.map((b) => ({
+            ...b,
+            sets: b.sets.map((s) => ({ ...s, pr: false, prKinds: undefined })),
+          }))
         );
       }
       return next;
@@ -895,32 +918,38 @@ function WorkoutLive({
     );
   };
 
-  /** Toggle a set done; on completion start rest + tag a PR if it beats best e1RM. */
+  /** Toggle a set done; on completion start rest + stamp a PR if it beats a record. */
   const toggleDone = (block: LiveBlock, set: LiveSet) => {
     const done = !set.done;
-    let pr = set.pr;
+    let prKinds: RecordKind[] = [];
     // Editing a past session awards no PRs and starts no rest timer: both are
-    // claims about right now, and this set happened days ago.
-    // A PR here is an e1RM record, which only a set carrying BOTH a load and
-    // its reps can hold (0046) — a plank can never set one, and asking is
-    // cheaper than computing an e1RM that `countsForE1rm` would reject anyway.
-    // An AWAY session tags none at all (0055), even when the numbers are the
-    // best on record: `bestE1rm` is a bar every future session must clear, and
-    // a friendlier machine raising it permanently is the false stall this whole
-    // feature exists to prevent. The control's own copy says so, so it is never
-    // a surprise. The stored side is `personalRecordsFrom`'s `baselineSets`.
-    if (done && !editing && !away && isLoadedRepsMeasures(block.measures)) {
-      const weightKg = set.weight.trim() === '' ? null : toCanonicalKg(Number(set.weight), units);
-      const reps = set.reps.trim() === '' ? null : Number(set.reps);
-      const rpe = set.rpe.trim() === '' ? null : Number(set.rpe);
-      const e = e1rmForSet(weightKg, reps, rpe, set.setType);
-      if (e != null && (block.bestE1rm == null || e > block.bestE1rm + 1e-6)) {
-        pr = true;
-        // Raise the bar so only the first record-crossing set this session tags.
-        setBlocks((prev) => prev.map((b) => (b.key === block.key ? { ...b, bestE1rm: e } : b)));
+    // claims about right now, and this set happened days ago. Everything else
+    // is `recordsBeaten`'s (src/lib/exercise/records.ts): which records this
+    // movement has, the AWAY rule (an away session stamps nothing, 0055 — the
+    // control's own copy says so), and "a record needs a previous best". It is
+    // asked against the logged history, which cannot contain this session (it
+    // is a draft until Finish), and against the other sets already done in this
+    // block, so a set stamps only if it also clears those.
+    if (done && !editing && block.exerciseId != null) {
+      try {
+        prKinds = recordsBeaten(
+          candidateFromTyped(set, units),
+          workingSets(getDb(), block.exerciseId),
+          block.sets
+            .filter((s) => s.done && s.key !== set.key)
+            .map((s) => candidateFromTyped(s, units)),
+          { away, measures: block.measures, basis: basisOf(block) }
+        );
+      } catch (error) {
+        // A failed read must never block ticking a set off mid-session.
+        console.warn('[exercise] PR check failed', error);
       }
     }
-    patchSet(block.key, set.key, { done, pr: done ? pr : false });
+    patchSet(block.key, set.key, {
+      done,
+      pr: prKinds.length > 0,
+      prKinds: prKinds.length > 0 ? prKinds : undefined,
+    });
     if (done && !editing && block.restSec && block.restSec > 0) {
       setRestEndsAt(Date.now() + block.restSec * 1000);
       armRestAlert(block.restSec);
@@ -1286,6 +1315,7 @@ function WorkoutLive({
                   ) : null}
                   <ExerciseBlock
                     block={block}
+                    loadBasis={basisOf(block)}
                     units={units}
                     spec={spec}
                     onPatch={patchSet}
@@ -1446,6 +1476,7 @@ function WorkoutLive({
  */
 function ExerciseBlock({
   block,
+  loadBasis,
   units,
   spec,
   onPatch,
@@ -1457,6 +1488,8 @@ function ExerciseBlock({
   onOpenDetail,
 }: {
   block: LiveBlock;
+  /** What the weight figure counts (0062) — the load column's second heading line. */
+  loadBasis: LoadBasis | null;
   units: UnitPreferences;
   spec: ReturnType<typeof weightSpec>;
   onPatch: (bk: number, sk: number, patch: Partial<Omit<LiveSet, 'key'>>) => void;
@@ -1468,6 +1501,20 @@ function ExerciseBlock({
   onOpenDetail: () => void;
 }) {
   const cols = blockColumns(block.measures);
+  // The PR line names what each stamped set beat. A set stamped by a build that
+  // predates the names still carries `pr`, so the label is drawn from `pr` and
+  // the line only when there is something to say.
+  const anyPr = block.sets.some((s) => s.pr);
+  const prLine = prSummary(
+    block.sets.map((s, i) => {
+      const reps = Number(s.reps);
+      return {
+        index: i + 1,
+        reps: s.reps.trim() !== '' && Number.isFinite(reps) ? reps : null,
+        kinds: s.pr ? (s.prKinds ?? []) : [],
+      };
+    })
+  );
   return (
     // Superset grouping is drawn by THE BIND at the call site (fused plates +
     // the seam chip), not by anything on the block itself. The old left rule
@@ -1505,7 +1552,13 @@ function ExerciseBlock({
             value columns are whatever the movement measures (0046), in the
             canonical order reps · load · time · distance, so a plank offers one
             clock and a run a clock and a distance. The unit is in the HEADER,
-            never in the field, so every cell below stays a bare mono number. */}
+            never in the field, so every cell below stays a bare mono number.
+
+            The load heading carries what the number COUNTS as a second line
+            (0062): "KG" over "PER HAND", "TOTAL", "STACK", "ADDED". Two lines
+            because the column is ~63pt at 375pt and one line would break
+            wherever the text ran out; `weightColumnHeading` says why. Same
+            label voice as its neighbours, no accent — it is a heading. */}
         <View className="mt-1.5 flex-row items-center gap-1.5 pb-1.5">
           <Text className="w-7 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
             Set
@@ -1517,7 +1570,7 @@ function ExerciseBlock({
           ) : null}
           {cols.load ? (
             <Text className="flex-1 text-center font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-              {spec.unit}
+              {weightColumnHeading(spec.unit, loadBasis).join('\n')}
             </Text>
           ) : null}
           {cols.reps ? (
@@ -1679,15 +1732,21 @@ function ExerciseBlock({
           );
         })}
 
-        {/* PR marker + add set */}
+        {/* PR marker + add set. The mark is ink, never the accent or a signal
+            colour: it is neither a completion nor a verdict about the body. The
+            line beside it says which record, in mono, because it is a fact. */}
         <Divider />
         <View className="flex-row items-center gap-2 pt-1.5">
-          {block.sets.some((s) => s.pr) ? (
+          {anyPr ? (
             <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
               PR
             </Text>
           ) : null}
-          <View className="flex-1" />
+          {prLine ? (
+            <Text className="flex-1 font-mono text-[10px] leading-4 text-ink-muted">{prLine}</Text>
+          ) : (
+            <View className="flex-1" />
+          )}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Add a set to ${block.name}`}

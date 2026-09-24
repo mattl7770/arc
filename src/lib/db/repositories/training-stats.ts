@@ -19,9 +19,18 @@ import type { Database } from '../database';
 // regardless.
 import { formatLocalDate, localWeekRange, logicalDate } from '../date';
 import type { DateString } from '../types';
-import { PACE_PR_MIN_M } from '@/lib/exercise/constants';
+import { exerciseLoadBases } from './exercise-catalog';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
+import type { LoadBasis } from '@/lib/exercise/load-basis';
 import { asMeasures, type Measures } from '@/lib/exercise/measures';
+import {
+  personalRecordsOf,
+  primaryTrendMetric,
+  sessionSeriesFrom,
+  trendOf,
+  type Trend,
+  type TrendMetric,
+} from '@/lib/exercise/records';
 import type {
   E1rmPoint,
   Muscle,
@@ -45,7 +54,7 @@ export type SetRow = {
   /** Seconds (0013) and metres (0046) — null on a movement that measures neither. */
   duration_sec: number | null;
   distance_m: number | null;
-  /** The session's away flag (0055) — see {@link baselineSets}. */
+  /** The session's away flag (0055) — see `baselineRows` in src/lib/exercise/records.ts. */
   away: 0 | 1;
 };
 
@@ -72,43 +81,39 @@ export function workingSets(db: Database, exerciseId: string): SetRow[] {
   );
 }
 
-/**
- * The sets a record may be set from and a progression may be steered by — home
- * sessions only (0055).
- *
- * ONE definition, because two would drift: `personalRecordsFrom` and
- * `exerciseSessionTopsFrom` have to agree exactly about which sets are
- * comparable to the home baseline, or a movement could show a personal record
- * the progression engine has never seen.
- *
- * The asymmetry is the whole argument (docs/spikes/gym-away-note.md §3.3a):
- * `bestE1rmKg` is a bar every future session must clear, so a false PR from a
- * friendlier machine raises it PERMANENTLY and the next four home sessions then
- * read as a stall — which is the exact complaint this feature exists to
- * prevent, arriving a month later and much harder to diagnose. A *missed* real
- * PR is recoverable next session. So an away session sets no record even when
- * its numbers are the best on record, and the control's own copy says so.
+/*
+ * "Which sets may set a record" — home sessions only (0055) — is defined ONCE,
+ * as `baselineRows` in src/lib/exercise/records.ts, where every record, the
+ * live PR stamp and the direction of travel read it. It lived here as
+ * `baselineSets` until 2026-09-23; the argument for it moved with it.
  */
-function baselineSets(rows: SetRow[]): SetRow[] {
-  return rows.filter((r) => r.away === 0);
-}
 
 /**
- * The "best" of a session's sets, as one comparable number: e1RM, else load.
+ * The "best" of a session's sets, as one comparable pair: a tier, then a value.
  *
- * A set that measures neither (0046) falls back to its distance, then its
- * duration — so the session row for a run reports the longest piece rather than
- * whichever set the query happened to return first, which is what a flat zero
- * produced. The scales never mix: a movement's sets all measure the same
- * things, so only one branch is ever live for a given exercise.
+ * Tier 1 is the old single number — e1RM, else load, else distance, else
+ * duration — and among tier-1 sets nothing changed: a session of loaded sets
+ * still picks its best e1RM, and a run still reports its longest piece.
+ *
+ * Tier 0 is a set that carries none of those, compared by REPS. Until
+ * 2026-09-23 such a set scored a flat zero, so every push-up session's "top
+ * set" was whichever set the query returned first rather than the most reps.
+ * It is a separate tier, never mixed into tier 1, because reps and kilograms
+ * are not one scale: a weighted dip of 10 kg × 8 is the top set of a session
+ * that also held a bodyweight 15, and comparing 12.7 against 15 would say
+ * otherwise.
  */
-function setStrength(s: SetRow): number {
+function setStrength(s: SetRow): [number, number] {
   const e = e1rmForSet(s.weight_kg, s.reps, s.rpe, s.set_type);
-  if (e != null) return e;
-  if (s.weight_kg != null) return s.weight_kg;
-  if (s.distance_m != null) return s.distance_m;
-  return s.duration_sec ?? 0;
+  if (e != null) return [1, e];
+  if (s.weight_kg != null && s.weight_kg > 0) return [1, s.weight_kg];
+  if (s.distance_m != null && s.distance_m > 0) return [1, s.distance_m];
+  if (s.duration_sec != null && s.duration_sec > 0) return [1, s.duration_sec];
+  return [0, s.reps ?? 0];
 }
+
+const stronger = (a: [number, number], b: [number, number]): boolean =>
+  a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
 
 /**
  * Best working set per session for an exercise, oldest → newest, capped at
@@ -141,7 +146,7 @@ export function exerciseSessionTopsFrom(rows: SetRow[], limit = 12): SessionTopS
   const byWorkout = new Map<string, { date: DateString; best: SetRow }>();
   for (const r of rows) {
     const cur = byWorkout.get(r.workout_id);
-    if (!cur || setStrength(r) > setStrength(cur.best)) {
+    if (!cur || stronger(setStrength(r), setStrength(cur.best))) {
       byWorkout.set(r.workout_id, { date: r.date, best: r });
     }
   }
@@ -149,6 +154,7 @@ export function exerciseSessionTopsFrom(rows: SetRow[], limit = 12): SessionTopS
   // recent `limit` and flip to oldest-first for the progression walk.
   const sessions = [...byWorkout.values()].slice(0, limit).reverse();
   return sessions.map(({ date, best }) => ({
+    workoutId: best.workout_id,
     date,
     weightKg: best.weight_kg,
     reps: best.reps,
@@ -169,12 +175,21 @@ export function personalRecords(db: Database, exerciseId: string): PersonalRecor
  * {@link workingSets} rows so a screen can derive several stats from one scan.
  * Same result as the DB form. Empty-safe (nulls).
  *
+ * The reduction itself is `personalRecordsOf` in src/lib/exercise/records.ts
+ * (2026-09-23), so the live PR stamp and the history's PR mark read the same
+ * bars this grid prints. This name stays because every caller knows it.
+ *
  * ## Away sessions are invisible here (0055)
  *
- * Every one of the six records below is scanned over {@link baselineSets}, so a
- * session logged away from the usual gym sets none of them — not the heaviest
- * set, not the best e1RM, not the longest hold — even when its numbers are the
- * highest on record. That is the feature, not a rounding of it.
+ * Every record is scanned over `baselineRows`, so a session logged away from
+ * the usual gym sets none of them — not the heaviest set, not the best e1RM,
+ * not the longest hold — even when its numbers are the highest on record. That
+ * is the feature, not a rounding of it.
+ *
+ * ## Three records added 2026-09-23
+ *
+ * Best session volume, most reps in a set and most reps in a session — see
+ * `personalRecordsOf`. The last two are the first records a push-up has had.
  *
  * ## Six records, and each one only exists where the column does (0046)
  *
@@ -191,49 +206,14 @@ export function personalRecords(db: Database, exerciseId: string): PersonalRecor
  *   * **Best pace** — seconds per kilometre, and the only one that needed a
  *     rule. Pace is meaningless without a distance to hold it over (a 20 m
  *     sprint would own the record for every distance forever), so only pieces
- *     of at least {@link PACE_PR_MIN_M} are eligible. It is still a single
+ *     of at least `PACE_PR_MIN_M` are eligible. It is still a single
  *     number across every distance, which is a real simplification — a 5 km PR
  *     pace and a half-marathon PR pace are different achievements and this
  *     reports only the faster. Per-distance bests are a table, not a record,
  *     and they wait until there is history worth tabling.
  */
 export function personalRecordsFrom(rows: SetRow[]): PersonalRecords {
-  let maxWeightKg: number | null = null;
-  let bestE1rmKg: number | null = null;
-  let bestSetVolumeKg: number | null = null;
-  let bestDurationSec: number | null = null;
-  let bestDistanceM: number | null = null;
-  let bestPaceSecPerKm: number | null = null;
-  // Away sessions never set a record — not even when their numbers are the best
-  // on record. See {@link baselineSets} for the asymmetry that decides it.
-  for (const r of baselineSets(rows)) {
-    if (r.weight_kg != null) {
-      if (maxWeightKg == null || r.weight_kg > maxWeightKg) maxWeightKg = r.weight_kg;
-      if (r.reps != null) {
-        const vol = r.weight_kg * r.reps;
-        if (bestSetVolumeKg == null || vol > bestSetVolumeKg) bestSetVolumeKg = vol;
-      }
-    }
-    const e = e1rmForSet(r.weight_kg, r.reps, r.rpe, r.set_type);
-    if (e != null && (bestE1rmKg == null || e > bestE1rmKg)) bestE1rmKg = e;
-
-    const dur = r.duration_sec != null && r.duration_sec > 0 ? r.duration_sec : null;
-    const dist = r.distance_m != null && r.distance_m > 0 ? r.distance_m : null;
-    if (dur != null && (bestDurationSec == null || dur > bestDurationSec)) bestDurationSec = dur;
-    if (dist != null && (bestDistanceM == null || dist > bestDistanceM)) bestDistanceM = dist;
-    if (dur != null && dist != null && dist >= PACE_PR_MIN_M) {
-      const pace = dur / (dist / 1000);
-      if (bestPaceSecPerKm == null || pace < bestPaceSecPerKm) bestPaceSecPerKm = pace;
-    }
-  }
-  return {
-    maxWeightKg,
-    bestE1rmKg,
-    bestSetVolumeKg,
-    bestDurationSec,
-    bestDistanceM,
-    bestPaceSecPerKm,
-  };
+  return personalRecordsOf(rows);
 }
 
 /** Best e1RM per session date, oldest → newest, capped at `limit` — the trend. */
@@ -279,6 +259,133 @@ export function e1rmSeriesFrom(rows: SetRow[], limit = 12): E1rmPoint[] {
       ...(best.away ? { away: true as const } : {}),
     }))
     .sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+// ---------------------------------------------------------------------------
+// The Train hub's Exercises list (2026-09-23)
+// ---------------------------------------------------------------------------
+
+/** One movement the owner has trained — a row of the Train hub's Exercises list. */
+export type TrainedExercise = {
+  exerciseId: string;
+  name: string;
+  measures: Measures;
+  /** What its weight figure counts (0062), or null when it records no load. */
+  loadBasis: LoadBasis | null;
+  /** The day it was last trained. */
+  lastDate: DateString;
+  /** Distinct sessions it has been trained in, all time. */
+  sessions: number;
+  /** The best set of the most recent session — marked `away` when it was one. */
+  latest: SessionTopSet;
+  /** Direction of travel over HOME sessions; null with one session or no honest single value. */
+  trend: Trend | null;
+  /** Which per-session value {@link trend} was read from. */
+  trendMetric: TrendMetric | null;
+};
+
+/**
+ * The latest top set and the direction of travel for one movement, from its
+ * working sets (newest workout first) — the pure half of
+ * {@link trainedExercises}, and the only place the hub's arrow is computed.
+ *
+ * A lift's direction is its per-session best e1RM; when fewer than two home
+ * sessions carry one (sets of fifteen are past the e1RM rep cap), it falls back
+ * to the top weight, so a movement trained in high reps still gets an answer.
+ * Everything else takes the first metric `trendMetricsFor` offers, and a
+ * movement that covers distance takes none (see `primaryTrendMetric`).
+ */
+export function trainedExerciseFrom(
+  rows: SetRow[],
+  measures: Measures,
+  basis: LoadBasis | null
+): Pick<TrainedExercise, 'latest' | 'trend' | 'trendMetric'> | null {
+  const tops = exerciseSessionTopsFrom(rows, 1);
+  const latest = tops[tops.length - 1];
+  if (!latest) return null;
+  const primary = primaryTrendMetric(measures, basis);
+  const candidates: TrendMetric[] =
+    primary === 'e1rm' ? ['e1rm', 'top_weight'] : primary ? [primary] : [];
+  for (const metric of candidates) {
+    const trend = trendOf(sessionSeriesFrom(rows, metric));
+    if (trend) return { latest, trend, trendMetric: metric };
+  }
+  return { latest, trend: null, trendMetric: null };
+}
+
+/** How many of each movement's latest sessions the hub reads — the trend needs four home ones. */
+const TRAINED_SESSIONS_READ = 8;
+
+/**
+ * Every movement with at least one working set, most recently trained first,
+ * each with its latest top set and direction of travel — the Train hub's way
+ * into any exercise's history (owner, 2026-09-23: *"trends, prs, etc for
+ * exercises"*; until now the only doors were the picker's records button and a
+ * block title mid-session).
+ *
+ * One windowed statement rather than a `workingSets` per movement: it reads the
+ * latest {@link TRAINED_SESSIONS_READ} sessions of every movement at once, which
+ * keeps a hub focus cheap after years of history. Archived movements are
+ * included — history outlives the catalog, and exercise-detail opens them.
+ */
+export function trainedExercises(db: Database): TrainedExercise[] {
+  const rows = db.all<SetRow & { exercise_id: string; name: string; measures: string }>(
+    `WITH ranked AS (
+       SELECT s.exercise_id, s.workout_id, w.date, w.created_at AS when_iso, w.away,
+              s.reps, s.weight_kg, s.rpe, s.set_type, s.duration_sec, s.distance_m, s.set_index,
+              dense_rank() OVER (
+                PARTITION BY s.exercise_id
+                ORDER BY w.date DESC, w.created_at DESC, w.id DESC
+              ) AS session_rank
+       FROM workout_sets s
+       JOIN workouts w ON w.id = s.workout_id
+       WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup'
+     )
+     SELECT r.*, e.name, e.measures
+     FROM ranked r
+     JOIN exercises e ON e.id = r.exercise_id
+     WHERE r.session_rank <= ?
+     ORDER BY r.date DESC, r.when_iso DESC, r.workout_id DESC, r.set_index`,
+    [TRAINED_SESSIONS_READ]
+  );
+  if (rows.length === 0) return [];
+  const counts = new Map(
+    db
+      .all<{ id: string; n: number }>(
+        `SELECT exercise_id AS id, count(DISTINCT workout_id) AS n FROM workout_sets
+         WHERE exercise_id IS NOT NULL AND set_type != 'warmup'
+         GROUP BY exercise_id`
+      )
+      .map((r) => [r.id, r.n])
+  );
+  const grouped = new Map<string, { name: string; measures: Measures; rows: SetRow[] }>();
+  for (const r of rows) {
+    let g = grouped.get(r.exercise_id);
+    if (!g) {
+      g = { name: r.name, measures: asMeasures(r.measures), rows: [] };
+      grouped.set(r.exercise_id, g);
+    }
+    g.rows.push(r);
+  }
+  const bases = exerciseLoadBases(db, [...grouped.keys()]);
+  const out: TrainedExercise[] = [];
+  // Map insertion order is first appearance in a newest-first scan: most
+  // recently trained first.
+  for (const [exerciseId, g] of grouped) {
+    const basis = bases.get(exerciseId) ?? null;
+    const summary = trainedExerciseFrom(g.rows, g.measures, basis);
+    if (!summary) continue;
+    out.push({
+      exerciseId,
+      name: g.name,
+      measures: g.measures,
+      loadBasis: basis,
+      lastDate: g.rows[0]!.date,
+      sessions: counts.get(exerciseId) ?? 1,
+      ...summary,
+    });
+  }
+  return out;
 }
 
 /** One prior set for the previous-values prefill in the logger. */

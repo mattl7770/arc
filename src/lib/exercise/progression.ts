@@ -23,6 +23,12 @@ import type { ProgressionSuggestion } from './types';
  * `progressionFor` in training-recommend.ts, which does not even ask.
  */
 export type SessionTopSet = {
+  /**
+   * The session this was the best of — how the detail screen's history joins
+   * a row to the PR mark (`recordSessionIds`). Optional: the engine below never
+   * reads it, and a hand-built fixture has no workout to name.
+   */
+  workoutId?: string;
   date: string;
   weightKg: number | null;
   reps: number | null;

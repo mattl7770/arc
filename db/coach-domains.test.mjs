@@ -508,6 +508,39 @@ console.log('4b. query_records: list, compute, windows and the discovery call');
     ? ok('a from/to window reads a PAST day back — which no tool could do before')
     : bad('window');
 
+  // WHAT A WEIGHT COUNTS (0062). The Coach reads a dumbbell's 30 kg as 30 kg —
+  // one dumbbell — only if the payload says so; nothing in the number does.
+  // Payload, never schema: coach-eval §6's ceilings are untouched by this.
+  logWorkout(db, { date: TODAY, kind: 'strength' }, [
+    { exercise: 'DB Bench', exerciseId: 'dumbbell-bench-press', reps: 8, weightKg: 30 },
+    { exercise: 'DB Bench', exerciseId: 'dumbbell-bench-press', reps: 6, weightKg: 32 },
+  ]);
+  const dbStats = query({ domain: 'exercise_stats', id: 'dumbbell-bench-press' }).result;
+  dbStats.loadBasis === 'per_hand' &&
+  dbStats.records.maxWeightKg === 32 &&
+  Array.isArray(dbStats.repMaxes) &&
+  dbStats.repMaxes.length === 2
+    ? ok('exercise_stats says per_hand beside UNDOUBLED records, with the rep-max table')
+    : bad('exercise_stats basis', JSON.stringify(dbStats));
+  dbStats.recentTopSets.every((t) => !('workoutId' in t))
+    ? ok('…and leaves the screen’s join key (a UUID per row) out of the payload')
+    : bad('workoutId leaked', JSON.stringify(dbStats.recentTopSets));
+  const catalogRows = query({ domain: 'exercise_catalog', query: 'bench', limit: 25 }).rows;
+  const byId = new Map(catalogRows.map((r) => [r.id, r]));
+  byId.get('dumbbell-bench-press')?.loadBasis === 'per_hand' &&
+  byId.get('barbell-bench-press')?.loadBasis === 'total'
+    ? ok('exercise_catalog rows carry loadBasis: per_hand for the dumbbell, total for the bar')
+    : bad('catalog basis', JSON.stringify(catalogRows));
+  const plankRow = query({ domain: 'exercise_catalog', query: 'plank' }).rows.find(
+    (r) => r.id === 'plank'
+  );
+  plankRow && !('loadBasis' in plankRow)
+    ? ok('…and a plank carries none: no weight figure, nothing to describe')
+    : bad('plank basis', JSON.stringify(plankRow));
+  /per_hand/.test(query({ domain: 'exercise_catalog' }).fields.loadBasis ?? '')
+    ? ok('the vocabulary is on the discovery call, where field notes live instead of the prompt')
+    : bad('basis vocabulary');
+
   // THE PASS. query_records is held back from the unattended Haiku pass, and
   // no write has ever been in it.
   PASS_READ_TOOLS.every((t) => t.readOnly && t.name !== 'query_records') &&
