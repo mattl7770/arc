@@ -19,10 +19,15 @@ import {
 } from '../src/lib/db/repositories/routines.ts';
 import { blockSegments, moveBlockSegment } from '../src/lib/exercise/block-order.ts';
 import {
+  canReorderLines,
   moveRoutineLine,
   newRoutineLine,
+  openRoutineList,
   routineExerciseInputs,
   routineLines,
+  routineLineTargets,
+  routineListReducer,
+  showsOrder,
 } from '../src/lib/exercise/routine-lines.ts';
 
 let pass = 0;
@@ -387,6 +392,147 @@ console.log('8. saved-workout reorder: a line moves whole, and Save keeps the ne
   'exerciseId,targetSets,repLow,repHigh,restSec'
     ? ok('Save writes no bind: routine_exercises has no superset column to receive one')
     : bad('input keys', Object.keys(routineExerciseInputs(lines)[0]).join());
+}
+
+// ---------------------------------------------------------------------------
+// The editor's list state (routine-lines.ts `routineListReducer`). The screen
+// holds it with useReducer and only dispatches, so the toggle, the move and
+// Save below are the editor's own — a broken dispatch shape or a flipped
+// direction fails here, not only on the phone.
+console.log('9. the editor list: toggle, move, add, edit, Save — the reducer the screen holds');
+{
+  const { db } = freshDb();
+  const id = createRoutine(db, {
+    name: 'Push day',
+    notes: null,
+    exercises: [
+      // The same movement twice — a heavy top set and a back-off line.
+      { exerciseId: 'barbell-bench-press', targetSets: 1, repLow: 3, repHigh: 3, restSec: 240 },
+      { exerciseId: 'barbell-row', targetSets: 4, repLow: 6, repHigh: 10, restSec: 150 },
+      { exerciseId: 'barbell-bench-press', targetSets: 3, repLow: 8, repHigh: 12, restSec: 90 },
+    ],
+  });
+  const detail = getRoutine(db, id);
+  const opened = openRoutineList(detail);
+  const ids = (s) => s.lines.map((l) => `${l.exerciseId}:${l.sets}`).join();
+  JSON.stringify(opened.lines) === JSON.stringify(routineLines(detail)) &&
+  opened.reordering === false &&
+  opened.nextKey === 3
+    ? ok('the editor opens on the stored lines, Order mode off, the next key after the last')
+    : bad('opened', JSON.stringify(opened));
+  const empty = openRoutineList(null);
+  empty.lines.length === 0 && empty.nextKey === 0 && !showsOrder(empty)
+    ? ok('a new saved workout opens empty, with no Order plate')
+    : bad('empty open', JSON.stringify(empty));
+
+  // Toggle: Reorder turns the Order plate on, Done turns it off.
+  const ordering = routineListReducer(opened, { type: 'toggle-order' });
+  showsOrder(ordering) && !showsOrder(opened)
+    ? ok('Reorder switches the list to the Order plate')
+    : bad('toggle on', JSON.stringify(ordering.reordering));
+  !showsOrder(routineListReducer(ordering, { type: 'toggle-order' }))
+    ? ok('Done switches it back to the Exercises plate')
+    : bad('toggle off');
+
+  // Move: the top bench line down past the row, then down again to the end.
+  let s = routineListReducer(ordering, { type: 'move', key: 0, direction: 1 });
+  ids(s) === 'barbell-row:4,barbell-bench-press:1,barbell-bench-press:3'
+    ? ok('a down press moves the line one place down, not up')
+    : bad('move down', ids(s));
+  s = routineListReducer(s, { type: 'move', key: 0, direction: 1 });
+  ids(s) === 'barbell-row:4,barbell-bench-press:3,barbell-bench-press:1'
+    ? ok('…and again: the heavy line is now last, the back-off line above it')
+    : bad('move down twice', ids(s));
+  routineListReducer(s, { type: 'move', key: 0, direction: 1 }) === s
+    ? ok('a press at the end changes nothing (the same state back)')
+    : bad('end move');
+  JSON.stringify(routineListReducer(s, { type: 'move', key: 2, direction: -1 }).lines) ===
+  JSON.stringify(moveRoutineLine(s.lines, 2, -1))
+    ? ok('the reducer’s move is moveRoutineLine, which is moveBlockSegment')
+    : bad('reducer move differs');
+  showsOrder(s) ? ok('moving stays in Order mode') : bad('mode lost on move');
+
+  // Add in Order mode: a fresh key, never a reused one, even after a removal.
+  s = routineListReducer(s, {
+    type: 'add',
+    exerciseId: 'lateral-raise',
+    name: 'Lateral Raise',
+    primaryMuscles: 'Side delts',
+  });
+  const added = s.lines[s.lines.length - 1];
+  added.key === 3 && s.nextKey === 4 && added.sets === '3' && showsOrder(s)
+    ? ok('an added line takes the next key, three sets, at the bottom of the Order plate')
+    : bad('add', JSON.stringify(added));
+  s = routineListReducer(s, { type: 'toggle-order' });
+  s = routineListReducer(s, { type: 'remove', key: 3 });
+  s = routineListReducer(s, {
+    type: 'add',
+    exerciseId: 'plank',
+    name: 'Plank',
+    primaryMuscles: '',
+  });
+  s.lines[s.lines.length - 1].key === 4
+    ? ok('a key is not reused after its line is removed')
+    : bad('reused key', JSON.stringify(s.lines.map((l) => l.key)));
+  s = routineListReducer(s, { type: 'remove', key: 4 });
+
+  // Edit a field after the move: only that line's target changes.
+  s = routineListReducer(s, { type: 'update', key: 2, patch: { rest: '120' } });
+  s.lines.find((l) => l.key === 2).rest === '120' && s.lines.find((l) => l.key === 0).rest === '240'
+    ? ok('a field edit reaches its own line, wherever the line now sits')
+    : bad('update', JSON.stringify(s.lines));
+
+  // Save what the editor holds, and reopen it.
+  updateRoutine(db, id, {
+    name: detail.name,
+    notes: detail.notes,
+    exercises: routineExerciseInputs(s.lines),
+  });
+  const after = getRoutine(db, id);
+  after.exercises
+    .map((e) => `${e.exerciseId}:${e.targetSets}/${e.repLow}/${e.repHigh}/${e.restSec}`)
+    .join() ===
+  'barbell-row:4/6/10/150,barbell-bench-press:3/8/12/120,barbell-bench-press:1/3/3/240'
+    ? ok('Save writes the editor’s order, each line with its own targets, the edit included')
+    : bad('saved', JSON.stringify(after.exercises));
+
+  // One line is nothing to put in order: the Order plate never shows for it.
+  const solo = { lines: [opened.lines[0]], reordering: true, nextKey: 1 };
+  !canReorderLines(solo.lines) && !showsOrder(solo)
+    ? ok('one line: no Order plate, even with the mode asked for')
+    : bad('solo order');
+  !showsOrder(routineListReducer(solo, { type: 'toggle-order' })) &&
+  routineListReducer(solo, { type: 'toggle-order' }).reordering === true
+    ? ok('…and a toggle there changes nothing drawn')
+    : bad('solo toggle');
+}
+
+console.log('10. an Order row names its targets, so two lines of one movement differ');
+{
+  const t = (sets, repLow, repHigh, rest) =>
+    routineLineTargets({ ...newRoutineLine(0, 'x', 'X', ''), sets, repLow, repHigh, rest });
+  const heavy = t('1', '3', '3', '240');
+  const backOff = t('3', '8', '12', '90');
+  heavy.text === '1 × 3 · 240 s rest' && heavy.spoken === '1 set of 3, 240 seconds rest'
+    ? ok('a top set: "1 × 3 · 240 s rest", spoken without the symbol')
+    : bad('heavy', JSON.stringify(heavy));
+  backOff.text === '3 × 8–12 · 90 s rest' && backOff.spoken === '3 sets of 8 to 12, 90 seconds rest'
+    ? ok('a rep range reads "8–12" and is spoken "8 to 12"')
+    : bad('back-off', JSON.stringify(backOff));
+  heavy.text !== backOff.text && heavy.spoken !== backOff.spoken
+    ? ok('the two bench lines read differently, drawn and spoken')
+    : bad('lines not told apart');
+  const hold = t('3', '', '', '');
+  hold.text === '3 sets' && hold.spoken === '3 sets'
+    ? ok('a hold with no range or rest reads "3 sets"')
+    : bad('hold', JSON.stringify(hold));
+  const blank = t('', '5', '', '60');
+  blank.text === '3 × 5 · 60 s rest'
+    ? ok('blank sets reads 3 (the placeholder, and what Save writes); one rep bound reads alone')
+    : bad('blank', JSON.stringify(blank));
+  t('4', '', '10', '').text === '4 × 10' && t(' 2 ', ' 6 ', ' 6 ', ' ').text === '2 × 6'
+    ? ok('a high bound alone, and a range whose ends match, each read as one figure')
+    : bad('one-figure reps', [t('4', '', '10', '').text, t(' 2 ', ' 6 ', ' 6 ', ' ').text].join());
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -31,7 +31,7 @@
  * neighbour. If a saved workout ever stores a superset, this becomes a real
  * flag and the session's rule — a superset moves as one — already applies.
  */
-import { moveBlockSegment } from './block-order';
+import { blockSegments, moveBlockSegment } from './block-order';
 import { MUSCLE_LABEL } from './constants';
 import type { RoutineDetail, RoutineExerciseInput } from './types';
 
@@ -99,6 +99,113 @@ export function moveRoutineLine(
   direction: -1 | 1
 ): RoutineLine[] | null {
   return moveBlockSegment(lines, key, direction);
+}
+
+/**
+ * A line's targets on one row, for the Order plate. Reorder mode folds the
+ * target fields away, and the picker allows one exercise twice (a heavy top
+ * set and a back-off line), so without this two lines of one movement are two
+ * identical rows and the owner cannot tell which one he is moving.
+ *
+ * `text` is drawn in mono: `4 × 5–8 · 180 s rest`, or `3 sets · 60 s rest` for
+ * a line with no rep range. `spoken` says the same for VoiceOver, with no
+ * symbol for it to read out. The figures are the fields as typed, so a row
+ * says what the fields say; blank sets reads 3, the figure the field shows as
+ * its placeholder and Save writes.
+ */
+export type RoutineLineTargets = { text: string; spoken: string };
+
+export function routineLineTargets(line: RoutineLine): RoutineLineTargets {
+  const sets = line.sets.trim() || '3';
+  const setWord = sets === '1' ? 'set' : 'sets';
+  const low = line.repLow.trim();
+  const high = line.repHigh.trim();
+  const rest = line.rest.trim();
+  const range = low !== '' && high !== '' && low !== high;
+  const reps = range ? `${low}–${high}` : low || high;
+  const text = [reps ? `${sets} × ${reps}` : `${sets} ${setWord}`];
+  const spoken = [
+    reps ? `${sets} ${setWord} of ${range ? `${low} to ${high}` : reps}` : `${sets} ${setWord}`,
+  ];
+  if (rest !== '') {
+    text.push(`${rest} s rest`);
+    spoken.push(`${rest} seconds rest`);
+  }
+  return { text: text.join(' · '), spoken: spoken.join(', ') };
+}
+
+// ---------------------------------------------------------------------------
+// The editor's list as one pure state: its lines, whether Order mode is on,
+// and the next key to mint. The screen holds it with `useReducer` and only
+// dispatches, so the toggle and the move it wires are the ones
+// db/routines.test.mjs and db/screens-render.test.mjs drive.
+
+export type RoutineListState = {
+  lines: RoutineLine[];
+  /** Order mode asked for. It shows only while {@link canReorderLines} holds. */
+  reordering: boolean;
+  /** The key the next added line takes. Keys are never reused on one mount. */
+  nextKey: number;
+};
+
+/** The four targets: the only part of a line a field edits. */
+export type RoutineLinePatch = Partial<Pick<RoutineLine, 'sets' | 'repLow' | 'repHigh' | 'rest'>>;
+
+export type RoutineListAction =
+  | { type: 'add'; exerciseId: string; name: string; primaryMuscles: string }
+  | { type: 'update'; key: number; patch: RoutineLinePatch }
+  | { type: 'remove'; key: number }
+  | { type: 'move'; key: number; direction: -1 | 1 }
+  | { type: 'toggle-order' };
+
+/** The list as the editor opens it: the stored lines, Order mode off. */
+export function openRoutineList(detail: RoutineDetail | null): RoutineListState {
+  const lines = routineLines(detail);
+  return { lines, reordering: false, nextKey: lines.length };
+}
+
+/**
+ * Two things to put in order. A saved workout stores no superset, so that is
+ * two lines, counted in segments as the logger counts it.
+ */
+export function canReorderLines(lines: readonly RoutineLine[]): boolean {
+  return blockSegments(lines).length > 1;
+}
+
+/** Whether the Order plate is the one drawn. */
+export function showsOrder(state: RoutineListState): boolean {
+  return state.reordering && canReorderLines(state.lines);
+}
+
+export function routineListReducer(
+  state: RoutineListState,
+  action: RoutineListAction
+): RoutineListState {
+  switch (action.type) {
+    case 'add':
+      return {
+        ...state,
+        lines: [
+          ...state.lines,
+          newRoutineLine(state.nextKey, action.exerciseId, action.name, action.primaryMuscles),
+        ],
+        nextKey: state.nextKey + 1,
+      };
+    case 'update':
+      return {
+        ...state,
+        lines: state.lines.map((l) => (l.key === action.key ? { ...l, ...action.patch } : l)),
+      };
+    case 'remove':
+      return { ...state, lines: state.lines.filter((l) => l.key !== action.key) };
+    case 'move': {
+      const moved = moveRoutineLine(state.lines, action.key, action.direction);
+      return moved ? { ...state, lines: moved } : state;
+    }
+    case 'toggle-order':
+      // From what is drawn, not what was asked: Done always leaves the mode.
+      return { ...state, reordering: !showsOrder(state) };
+  }
 }
 
 /** A typed field as a number, or null when blank or not a number. */

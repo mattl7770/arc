@@ -6,8 +6,17 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
 import { blockSegments, type Bindable } from '@/lib/exercise/block-order';
 
-/** What the Order plate needs from a line or a block: a key, its bind, a name. */
-export type OrderItem = Bindable & { name: string };
+/**
+ * What the Order plate needs from a line or a block: a key, its bind, a name,
+ * and optionally what tells two rows of one movement apart. `detail.text` is
+ * drawn in mono under the name; `detail.spoken` joins the arrows' labels. The
+ * saved-workout editor passes each line's targets; the logger passes none, so
+ * its rows are unchanged.
+ */
+export type OrderItem = Bindable & {
+  name: string;
+  detail?: { text: string; spoken: string } | null;
+};
 
 /**
  * Reorder mode: a list of exercises as ONE ruled plate, a row per movable unit,
@@ -54,8 +63,10 @@ export function ExerciseOrder({
         {segments.map((segment, i) => {
           const members = items.slice(segment.start, segment.end + 1);
           const lead = members[0]!;
-          const names = members.map((b) => b.name);
-          const spoken = members.length > 1 ? `the superset ${names.join(' and ')}` : lead.name;
+          // "Move Plank up"; with a detail, "Move Plank, 3 sets, 60 seconds rest, up".
+          const said = (b: OrderItem) => (b.detail ? `${b.name}, ${b.detail.spoken},` : b.name);
+          const spoken =
+            members.length > 1 ? `the superset ${members.map(said).join(' and ')}` : said(lead);
           const moves: {
             direction: -1 | 1;
             icon: 'chevron-up' | 'chevron-down';
@@ -71,12 +82,18 @@ export function ExerciseOrder({
                 <Text className="w-5 font-mono text-[11px] text-ink-muted">{i + 1}</Text>
                 <View className="flex-1">
                   {members.map((b) => (
-                    <Text
-                      key={b.key}
-                      className="font-serif text-[15px] leading-5 text-ink"
-                      numberOfLines={1}>
-                      {b.name}
-                    </Text>
+                    <View key={b.key}>
+                      <Text className="font-serif text-[15px] leading-5 text-ink" numberOfLines={1}>
+                        {b.name}
+                      </Text>
+                      {b.detail ? (
+                        <Text
+                          className="mt-0.5 font-mono text-[11px] text-ink-muted"
+                          numberOfLines={1}>
+                          {b.detail.text}
+                        </Text>
+                      ) : null}
+                    </View>
                   ))}
                   {members.length > 1 ? (
                     <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
