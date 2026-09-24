@@ -81,17 +81,24 @@ import {
   applyAnswer,
   beginCompositeScale,
   beginCountEdit,
+  carryWholes,
   currentPortion,
+  endCountEdit,
+  planLoggedCount,
   reviewKcal,
   rowsFromEstimate,
   rowsToMealItems,
+  rowsToRevisionSubject,
   scaleComposite,
   scaleCompositeTo,
-  // The PURE count writer, aliased so it cannot be confused with the
+  // The PURE count writers, aliased so they cannot be confused with the
   // repository's `setCompositeCount` — same name, same rule, different half.
+  // ATE is `setRowsCount` (it scales); OF is `setRowsWhole` (it declares).
   setCompositeCount as setRowsCount,
+  setCompositeWhole as setRowsWhole,
   setPiecesName,
   setRowAmount,
+  toggleExpanded,
 } from '../src/lib/nutrition/review-rows.ts';
 import { dayFigure } from '../src/lib/nutrition/remaining.ts';
 import {
@@ -2831,8 +2838,12 @@ console.log('45. 0059: removing a part leaves the count; the last part takes it'
     : bad('header survived its last part');
 }
 
-console.log('46. 0059: the review rows — declaring, scaling, and clearing, all pure');
+console.log('46. 0059: ate [3] of [8] — the review rows declare, scale and clear, all pure');
 {
+  // RE-CUT 2026-09-23 on the owner's device note: *"the whole interaction when
+  // slices comes up is funky"*. One field that said `THIS IS` until its first
+  // keystroke and `I ATE` after it became a sentence with two fields —
+  // `ATE [3] OF [8] SLICES` — where OF declares (nothing scales) and ATE scales.
   const { db } = freshDb();
   const estimate = {
     title: 'Pizza',
@@ -2886,18 +2897,34 @@ console.log('46. 0059: the review rows — declaring, scaling, and clearing, all
   const base = rowsFromEstimate(db, estimate);
   const key = base[0].key;
   const amounts = (rows) => rows[0].components.map((c) => currentPortion(c).amount);
+  const same = (rows, expected) => JSON.stringify(amounts(rows)) === JSON.stringify(expected);
+  // One focus, one blur — what a tap into a field and a tap away do on screen.
+  const typeOf = (rows, text) => setRowsWhole(beginCountEdit(rows, key), key, text);
+  const typeAte = (rows, text) => setRowsCount(beginCountEdit(rows, key), key, text);
+  const leave = (rows) => endCountEdit(rows, key);
 
-  base[0].pieces === null && base[0].countText === ''
-    ? ok('a composite arrives uncounted, with an empty field')
-    : bad('seeded count');
+  base[0].pieces === null &&
+  base[0].wholeCount === null &&
+  base[0].countText === null &&
+  base[0].wholeText === null
+    ? ok('a composite arrives uncounted, with both fields untouched')
+    : bad('seeded count', JSON.stringify([base[0].pieces, base[0].wholeCount]));
 
-  // THE DECLARATION, pure side.
-  const declared = setRowsCount(beginCountEdit(base, key), key, '8');
+  // ATE with no OF: nothing to take a share of, and a number there could only
+  // mean "this dish is N pieces" — OF's question. The screen does not draw it.
+  const ateFirst = typeAte(base, '3');
+  ateFirst[0].pieces === null && same(ateFirst, [400, 320])
+    ? ok('ATE on an uncounted dish holds and moves nothing — it cannot conjure a count')
+    : bad('ATE declared', JSON.stringify(ateFirst[0].pieces));
+
+  // THE DECLARATION, now OF's alone.
+  const declared = leave(typeOf(base, '8'));
   declared[0].pieces.count === 8 &&
   declared[0].pieces.name === 'piece' &&
-  JSON.stringify(amounts(declared)) === JSON.stringify(amounts(base))
-    ? ok('typing 8 into an uncounted composite declares it and moves not one gram')
-    : bad('declaration scaled', JSON.stringify(amounts(declared)));
+  declared[0].wholeCount === 8 &&
+  same(declared, [400, 320])
+    ? ok('typing 8 into OF declares the dish — ate 8 of 8 — and moves not one gram')
+    : bad('declaration', JSON.stringify([declared[0].pieces, amounts(declared)]));
   setPiecesName(declared, key, 'slice')[0].pieces.name === 'slice'
     ? ok('…and tapping the noun makes it a slice')
     : bad('rename failed');
@@ -2910,20 +2937,153 @@ console.log('46. 0059: the review rows — declaring, scaling, and clearing, all
 
   // THE SCALE, and non-compounding within one focus.
   const counted = setPiecesName(declared, key, 'slice');
-  const eaten = setRowsCount(beginCountEdit(counted, key), key, '3');
-  JSON.stringify(amounts(eaten)) === JSON.stringify([150, 120])
-    ? ok('8 → 3 is × 3/8 of the frozen parts — 400 g and 320 g become 150 and 120')
+  const eaten = leave(typeAte(counted, '3'));
+  same(eaten, [150, 120]) && eaten[0].pieces.count === 3 && eaten[0].wholeCount === 8
+    ? ok('ATE 3 of 8 is × 3/8 of the frozen parts — 400 g and 320 g become 150 and 120')
     : bad('3/8', JSON.stringify(amounts(eaten)));
-  const typed = setRowsCount(setRowsCount(beginCountEdit(counted, key), key, '3'), key, '30');
-  JSON.stringify(amounts(typed)) === JSON.stringify([1500, 1200])
+  const typed = setRowsCount(typeAte(counted, '3'), key, '30');
+  same(typed, [1500, 1200])
     ? ok('…and 3 then 30 from ONE focus lands on × 30/8, never on × 3/8 × 30/8')
-    : bad('compounded', JSON.stringify(typed[0].pieces && amounts(typed)));
+    : bad('compounded', JSON.stringify(amounts(typed)));
+
+  // THE OWNER'S TWO ENTRIES, end to end, as they reach the save.
+  const saved = rowsToMealItems(eaten)[0];
+  saved.serving_qty === 3 &&
+  saved.piece_name === 'slice' &&
+  JSON.stringify(saved.components.map((c) => c.amount)) === '[150,120]'
+    ? ok('8 then 3 saves three slices over 3/8 of the parts — the count EATEN, never the 8')
+    : bad('saved', JSON.stringify(saved));
+
+  // A RE-DECLARATION, in the field that declares — no clearing first. The model
+  // said eight and the pizza was six, and all of it is still on the plate.
+  const redeclared = leave(typeOf(counted, '6'));
+  redeclared[0].pieces.count === 6 && redeclared[0].wholeCount === 6 && same(redeclared, [400, 320])
+    ? ok('typing 6 over OF’s 8 re-declares — ate 6 of 6 — and nothing scales')
+    : bad('re-declaration', JSON.stringify([redeclared[0].pieces, amounts(redeclared)]));
+
+  // …and once part of it is eaten, OF says what the sentence then reads.
+  const recounted = leave(typeOf(eaten, '6'));
+  recounted[0].pieces.count === 3 && recounted[0].wholeCount === 6 && same(recounted, [200, 160])
+    ? ok('after ate 3 of 8, typing 6 into OF reads ate 3 of 6: every part is 3/6 of the dish')
+    : bad('ate 3 of 6', JSON.stringify([recounted[0].pieces, amounts(recounted)]));
+
+  // BACKSPACE-THEN-TYPE IS ONE EDIT. The single field this replaced cleared
+  // the count on the empty keystroke, so the 6 that followed re-declared over
+  // parts already scaled to three slices — the trap the spike's device list named.
+  const emptied = setRowsWhole(beginCountEdit(eaten, key), key, '');
+  emptied[0].pieces.count === 3 && emptied[0].wholeCount === 8 && same(emptied, [150, 120])
+    ? ok('an emptied OF mid-edit holds: the dish is still ate 3 of 8')
+    : bad('empty OF moved', JSON.stringify(emptied[0].pieces));
+  const retyped = leave(setRowsWhole(emptied, key, '6'));
+  retyped[0].pieces.count === 3 && same(retyped, [200, 160])
+    ? ok('…and the 6 typed after it lands on ate 3 of 6 — the same as typing over the 8')
+    : bad('backspace then type', JSON.stringify([retyped[0].pieces, amounts(retyped)]));
+
+  // CLEARING still un-declares without scaling — decided on the blur.
+  const cleared = leave(setRowsWhole(beginCountEdit(eaten, key), key, ''));
+  cleared[0].pieces === null && cleared[0].wholeCount === null && same(cleared, [150, 120])
+    ? ok('an OF left EMPTY on blur un-counts the dish, and every part stays where it stands')
+    : bad('clear', JSON.stringify([cleared[0].pieces, amounts(cleared)]));
+  const afresh = leave(typeOf(cleared, '6'));
+  afresh[0].pieces.count === 6 && same(afresh, [150, 120])
+    ? ok('…so the next OF declares afresh over the parts as they stand: nothing scales')
+    : bad('re-declaration after clear', JSON.stringify(amounts(afresh)));
+  // Save tapped with the emptied OF still focused never blurs it (the keyboard's
+  // "handled" taps), so the save path resolves the empty exactly as blur would.
+  const savedEmpty = rowsToMealItems(setRowsWhole(beginCountEdit(eaten, key), key, ''))[0];
+  savedEmpty.serving_qty === null &&
+  savedEmpty.piece_name === null &&
+  JSON.stringify(savedEmpty.components.map((c) => c.amount)) === '[150,120]'
+    ? ok('…and an OF emptied then SAVED before it is left saves no count, parts where they stand')
+    : bad('save with an emptied OF', JSON.stringify(savedEmpty));
+  const ateBlank = leave(setRowsCount(beginCountEdit(eaten, key), key, ''));
+  ateBlank[0].pieces.count === 3 && ateBlank[0].countText === null && same(ateBlank, [150, 120])
+    ? ok('an ATE left empty just shows the count again — emptying what you ate un-counts nothing')
+    : bad('empty ATE', JSON.stringify(ateBlank[0].pieces));
+
+  // Bounds, and half-typed text, in both fields — the parts checked, not just
+  // the counts.
+  ['abc', '101', '0'].every((t) => {
+    const ate = setRowsCount(counted, key, t);
+    const of = setRowsWhole(counted, key, t);
+    return (
+      ate[0].pieces.count === 8 &&
+      same(ate, [400, 320]) &&
+      of[0].wholeCount === 8 &&
+      of[0].pieces.count === 8 &&
+      same(of, [400, 320])
+    );
+  })
+    ? ok('“abc”, 101 and 0 hold the text and move nothing, in either field')
+    : bad('bad count applied');
+
+  // ONE RULE FOR TEXT THAT IS NOT A COUNT: the dish shows as it stood at focus —
+  // never at a scale some number typed a moment earlier produced. This is the
+  // case that made it a rule: a `1` on the way to `12`, then backed out.
+  const passedThrough = setRowsWhole(beginCountEdit(eaten, key), key, '1');
+  same(passedThrough, [1200, 960])
+    ? ok('typing 1 into OF on ate 3 of 8 really is × 8 for that keystroke (ate 3 of 1)')
+    : bad('ate 3 of 1', JSON.stringify(amounts(passedThrough)));
+  const backedOut = setRowsWhole(passedThrough, key, '');
+  backedOut[0].pieces.count === 3 && backedOut[0].wholeCount === 8 && same(backedOut, [150, 120])
+    ? ok('…and emptied after it, the dish shows exactly as it stood at focus: ate 3 of 8')
+    : bad('empty after a valid OF', JSON.stringify(amounts(backedOut)));
+  const leftEmpty = leave(backedOut);
+  leftEmpty[0].pieces === null && same(leftEmpty, [150, 120])
+    ? ok('…so leaving it empty un-counts WITHOUT scaling — not at 2,160 g, three whole pizzas')
+    : bad('un-count after a valid OF', JSON.stringify(amounts(leftEmpty)));
+  const ateBackedOut = leave(
+    setRowsCount(setRowsCount(beginCountEdit(counted, key), key, '3'), key, '')
+  );
+  ateBackedOut[0].pieces.count === 8 && same(ateBackedOut, [400, 320])
+    ? ok('an ATE typed then emptied and left is the dish as it stood: ate 8 of 8')
+    : bad('ATE backed out', JSON.stringify(amounts(ateBackedOut)));
+  // The rule's one exception is SHAPE: a declaration still being typed keeps its
+  // counted shape through an empty keystroke (it never moved a gram), so "8",
+  // backspace, "6" does not mount and unmount ATE, the grams field and the
+  // chips around the field being typed into.
+  const midDeclare = setRowsWhole(setRowsWhole(beginCountEdit(base, key), key, '8'), key, '');
+  midDeclare[0].pieces?.count === 8 &&
+  midDeclare[0].wholeCount === 8 &&
+  same(midDeclare, [400, 320])
+    ? ok('a declaration emptied mid-edit keeps its shape, and not a gram has moved')
+    : bad('declaration flickered', JSON.stringify(midDeclare[0].pieces));
+  const redeclaring = setRowsWhole(midDeclare, key, '6');
+  redeclaring[0].pieces.count === 6 && same(redeclaring, [400, 320])
+    ? ok('…so the 6 typed after it simply declares six')
+    : bad('declare after empty', JSON.stringify(redeclaring[0].pieces));
+  leave(midDeclare)[0].pieces === null && same(leave(midDeclare), [400, 320])
+    ? ok('…and left empty, it un-counts on blur like any other')
+    : bad('declaration left empty stayed counted');
+
+  // A float the C5 arithmetic left a hair off the whole still reads as "all of
+  // it", so OF re-declares rather than re-scaling by 8 / 8.000000000001.
+  const noisy = [{ ...counted[0], pieces: { name: 'slice', count: 8 + 1e-12 } }];
+  const noisyOf = leave(typeOf(noisy, '6'));
+  noisyOf[0].pieces.count === 6 && same(noisyOf, [400, 320])
+    ? ok('a count a hair off its whole still re-declares — float noise does not pick the branch')
+    : bad('float noise', JSON.stringify([noisyOf[0].pieces, amounts(noisyOf)]));
+
+  // CLOSING the dish ends the edit too: a focused field that unmounts with the
+  // disclosure is not promised a blur, and the header must not go on showing a
+  // count the emptied field already gave up.
+  const collapsed = toggleExpanded(
+    setRowsWhole(beginCountEdit(toggleExpanded(eaten, key), key), key, ''),
+    key
+  );
+  collapsed[0].expanded === false &&
+  collapsed[0].pieces === null &&
+  collapsed[0].wholeText === null &&
+  collapsed[0].countFrom === null &&
+  same(collapsed, [150, 120])
+    ? ok('collapsing the dish with OF emptied un-counts it exactly as a blur would')
+    : bad('collapse did not settle', JSON.stringify(collapsed[0].pieces));
 
   // A CHIP MID-FOCUS still cannot compound: the chip drops both baselines, and
   // the next number re-snapshots against what is now on screen.
   const chipped = scaleComposite(counted, key, 1 / 3);
-  near(chipped[0].pieces.count, 8 / 3)
-    ? ok('a ⅓ chip moves the count to the honest 2.7, not a rounded 3')
+  near(chipped[0].pieces.count, 8 / 3) && chipped[0].wholeCount === 8
+    ? ok('a ⅓ chip moves the count eaten to the honest 2.7 and leaves the dish at 8')
     : bad('chip count', String(chipped[0].pieces.count));
   const afterChip = setRowsCount(chipped, key, '3');
   near(amounts(afterChip)[0], 150) && near(amounts(afterChip)[1], 120)
@@ -2933,35 +3093,53 @@ console.log('46. 0059: the review rows — declaring, scaling, and clearing, all
   // The whole-dish grams field multiplies the count too — same snapshot, so
   // neither half can compound against the other.
   const halvedByGrams = scaleCompositeTo(beginCompositeScale(counted, key), key, '360');
-  near(halvedByGrams[0].pieces.count, 4) && near(amounts(halvedByGrams)[0], 200)
-    ? ok('typing 360 g into a 720 g eight-slice pizza leaves four slices')
+  near(halvedByGrams[0].pieces.count, 4) &&
+  near(amounts(halvedByGrams)[0], 200) &&
+  halvedByGrams[0].wholeCount === 8
+    ? ok('typing 360 g into a 720 g eight-slice pizza leaves ate 4 of 8')
     : bad('grams field count', String(halvedByGrams[0].pieces.count));
 
-  // CLEARING, and the declaration that follows it.
-  const wiped = setRowsCount(beginCountEdit(counted, key), key, '');
-  wiped[0].pieces === null && JSON.stringify(amounts(wiped)) === JSON.stringify([400, 320])
-    ? ok('an emptied field clears the count and leaves every part where it stands')
-    : bad('clear scaled');
-  const redeclared = setRowsCount(wiped, key, '6');
-  redeclared[0].pieces.count === 6 &&
-  JSON.stringify(amounts(redeclared)) === JSON.stringify([400, 320])
-    ? ok('…and the next number declares afresh: six slices, nothing scaled')
-    : bad('re-declaration scaled', JSON.stringify(amounts(redeclared)));
-
-  // Bounds, and half-typed text.
-  setRowsCount(counted, key, 'abc')[0].pieces.count === 8 &&
-  setRowsCount(counted, key, '101')[0].pieces.count === 8
-    ? ok('“abc” and 101 hold the text and move nothing')
-    : bad('bad count applied');
-
   // A PART edit leaves the count: you still ate three slices, they were lighter.
-  const partEdited = setRowAmount(counted, counted[0].components[0].key, '200');
-  partEdited[0].pieces.count === 8 && partEdited[0].countFrom === null
-    ? ok('a part hand-edit keeps the count and drops only the stale baseline')
+  const partEdited = setRowAmount(eaten, eaten[0].components[0].key, '200');
+  partEdited[0].pieces.count === 3 &&
+  partEdited[0].wholeCount === 8 &&
+  partEdited[0].countFrom === null
+    ? ok('a part hand-edit keeps the count and the dish, and drops only the stale baseline')
     : bad('part edit moved the count');
 
+  // A RECORD'S COUNT (the Adjust screen): rows built from a logged meal carry
+  // what was EATEN and no whole. `of [3]` there would invite typing the pizza's
+  // eight over three logged slices, so there is no OF to type into.
+  const logged = rowsFromEstimate(
+    db,
+    {
+      ...estimate,
+      items: [{ ...estimate.items[0], pieces: { name: 'slice', count: 3 } }],
+    },
+    { countIsEaten: true }
+  );
+  logged[0].pieces.count === 3 && logged[0].wholeCount === null
+    ? ok('rows from a logged meal carry the count eaten and no whole — ate [3] slices')
+    : bad('record shape', JSON.stringify([logged[0].pieces, logged[0].wholeCount]));
+  const fourth = leave(typeAte(logged, '4'));
+  fourth[0].pieces.count === 4 &&
+  fourth[0].wholeCount === null &&
+  // A field shows one decimal and the row reads its field: 1,600 / 3 reads 533.3.
+  amounts(fourth).every((a, i) => Math.abs(a - (4 * [400, 320][i]) / 3) < 0.05)
+    ? ok('…where ATE scales from the count eaten: a fourth slice is every part × 4/3')
+    : bad('record ATE', JSON.stringify(amounts(fourth)));
+  const unlogged = leave(setRowsCount(beginCountEdit(logged, key), key, ''));
+  unlogged[0].pieces === null && same(unlogged, [400, 320])
+    ? ok('…and ATE emptied and left un-counts it — the only field saying what the dish is')
+    : bad('record un-count', JSON.stringify(unlogged[0].pieces));
+  rowsToMealItems(setRowsCount(beginCountEdit(logged, key), key, ''))[0].serving_qty === null
+    ? ok('…at Save too, if Save comes before the blur')
+    : bad('record un-count at save');
+
   // And nothing anywhere here puts a piece noun on a part.
-  rowsToMealItems(eaten)[0].components.every((c) => c.piece_name === null)
+  [eaten, recounted, retyped, afresh].every((rows) =>
+    rowsToMealItems(rows)[0].components.every((c) => c.piece_name === null)
+  )
     ? ok('after all of that, no part carries a piece noun')
     : bad('a part carries a noun');
 }
@@ -3027,15 +3205,83 @@ console.log('47. 0059: a C5 answer of “three of the eight” moves the count w
     factor: 0.375,
   });
   near(answered[0].pieces.count, 3) && near(currentPortion(answered[0].components[0]).amount, 150)
-    ? ok('scale_item 0.375 on the dish leaves 3 × slice, and the parts to match')
+    ? ok('scale_item 0.375 on the dish leaves 3 slices eaten, and the parts to match')
     : bad('answer count', JSON.stringify(answered[0].pieces));
+  answered[0].wholeCount === 8
+    ? ok('…of a dish that is still eight: the review reads ate [3] of [8] slices')
+    : bad('answer moved the whole', String(answered[0].wholeCount));
+
+  // THE TYPED ANSWER ("Other") sends each dish's count EATEN and rebuilds what
+  // comes back as if priced whole — so without `carryWholes` `ate 3 of 8` would
+  // return as `ate 3 of 3`, the 8 gone and an OF inviting it back over three
+  // slices of parts.
+  const sent = rowsToRevisionSubject('Pizza', answered).items[0];
+  sent.pieces && sent.pieces.count === 3
+    ? ok('the typed answer sends the count eaten, 3 — not the dish’s 8')
+    : bad('sent count', JSON.stringify(sent.pieces));
+  // The reply as the model would return it: the dish, its parts as sent, and
+  // whatever count it chose to keep.
+  const reply = (pieces) =>
+    rowsFromEstimate(db, {
+      title: 'Pizza',
+      notes: null,
+      questions: [],
+      items: [
+        {
+          name: 'Pepperoni pizza',
+          amount: null,
+          unit: 'g',
+          kcal: null,
+          protein_g: null,
+          carbs_g: null,
+          fat_g: null,
+          fiber_g: null,
+          confidence: 'medium',
+          foodId: null,
+          micros: null,
+          pieces,
+          components: answered[0].components.map((c) => ({
+            name: c.name,
+            amount: currentPortion(c).amount,
+            unit: 'g',
+            kcal: currentPortion(c).kcal,
+            protein_g: null,
+            carbs_g: null,
+            fat_g: null,
+            fiber_g: null,
+            confidence: 'medium',
+            foodId: null,
+            micros: null,
+          })),
+        },
+      ],
+    });
+  const kept = reply({ name: 'slice', count: 3 });
+  kept[0].wholeCount === 3
+    ? ok('rebuilt alone, the reply reads ate [3] of [3] — the loss this guards against')
+    : bad('rebuild', String(kept[0].wholeCount));
+  carryWholes(answered, kept)[0].wholeCount === 8
+    ? ok('carryWholes: the count came back unchanged, so the dish’s 8 comes back with it')
+    : bad('unchanged count lost its whole');
+  carryWholes(answered, reply({ name: 'slice', count: 2 }))[0].wholeCount === null
+    ? ok('…a count the answer changed is still a count eaten: no whole, ate [2] slices')
+    : bad('changed count kept a whole');
+  carryWholes(reply(null), kept)[0].wholeCount === 3
+    ? ok('…and a dish that was never counted keeps the model’s count as its whole')
+    : bad('uncounted dish lost the model whole');
+  readFileSync(new URL('../src/hooks/use-estimate-questions.ts', import.meta.url), 'utf8').includes(
+    'carryWholes(base,'
+  )
+    ? ok('the typed-answer path runs the reply through carryWholes against the rows it sent')
+    : bad('the question hook does not carry wholes');
 }
 
 console.log('48. 0059: the count survives the save, the re-log, and is dropped by a template');
 {
   const { db } = freshDb();
+  // The declaration is OF's since the 2026-09-23 re-cut (§46): `setRowsWhole`.
   const rows = setPiecesName(
-    setRowsCount(
+    setRowsWhole(
       beginCountEdit(
         rowsFromEstimate(db, {
           title: 'Pizza',
@@ -3096,7 +3342,7 @@ console.log('48. 0059: the count survives the save, the re-log, and is dropped b
   );
   const key = rows[0].key;
   const items = rowsToMealItems(
-    setPiecesName(setRowsCount(beginCountEdit(rows, key), key, '8'), key, 'slice')
+    setPiecesName(setRowsWhole(beginCountEdit(rows, key), key, '8'), key, 'slice')
   );
   items[0].serving_qty === 8 &&
   items[0].piece_name === 'slice' &&
@@ -3320,6 +3566,144 @@ console.log('52. 0059: both prompts carry the rule, and it is a criterion not a 
   ) && !MEAL_ESTIMATION_SYSTEM_PROMPT.includes('- Prefer underestimating')
     ? ok('the two overlapping restraint bullets were folded into one — the trim that paid')
     : bad('the fold was reverted');
+}
+
+console.log('53. 2026-09-23: a LOGGED composite — ate [3] slices, and the Save plan it runs');
+{
+  // A record has no "of 8": its parts are what was eaten, and the whole was
+  // history of the estimate that 0059 never stored. So app/meal-detail.tsx reads
+  // a counted record as `ate [3] slices`, an uncounted one as the review's own
+  // `ate — of [ ] pieces`, and stages a draft that `planLoggedCount` turns into
+  // calls on the repository's two writers. Mirrored here exactly as the screen's
+  // `saveCount` runs it, and pinned at the source below so the two cannot drift.
+  const save = (db, mealId, draft) => {
+    const header = headerOf(db, mealId);
+    const plan = planLoggedCount(
+      { eatenText: null, wholeText: null, nounText: header.piece_name ?? '', ...draft },
+      header
+    );
+    if (plan.kind === 'clear') clearCompositeCount(db, header.id);
+    if (plan.kind === 'set') {
+      if (plan.declare != null) setCompositeCount(db, header.id, plan.declare, plan.noun);
+      if (plan.eaten != null) setCompositeCount(db, header.id, plan.eaten, plan.noun);
+    }
+    return plan;
+  };
+  const partsNow = (db, mealId) =>
+    JSON.stringify(partsOf(db, mealId).map((p) => [p.name, p.amount, p.kcal]));
+
+  // COUNTED: one number, what was eaten. The Lager (140) is not a part.
+  {
+    const { db } = freshDb();
+    const { mealId } = countedPizza(db);
+    save(db, mealId, { eatenText: '3' }).kind === 'set' &&
+    headerOf(db, mealId).serving_qty === 3 &&
+    near(getMeal(db, mealId).kcal, (1550 * 3) / 8 + 140)
+      ? ok('ate [3] slices over the 8 logged scales every part by 3/8')
+      : bad('logged 3 of 8', String(getMeal(db, mealId).kcal));
+  }
+  {
+    const { db } = freshDb();
+    const { mealId } = countedPizza(db);
+    const before = partsNow(db, mealId);
+    const plan = save(db, mealId, { eatenText: '' });
+    const header = headerOf(db, mealId);
+    plan.kind === 'clear' &&
+    header.serving_qty === null &&
+    header.piece_name === null &&
+    partsNow(db, mealId) === before
+      ? ok('a counted record’s ATE saved EMPTY un-declares the dish and scales nothing')
+      : bad('logged clear', JSON.stringify([plan, header.serving_qty]));
+  }
+  {
+    const { db } = freshDb();
+    const { mealId } = countedPizza(db);
+    const before = partsNow(db, mealId);
+    save(db, mealId, { nounText: 'wedge' });
+    const header = headerOf(db, mealId);
+    header.piece_name === 'wedge' && header.serving_qty === 8 && partsNow(db, mealId) === before
+      ? ok('a rename alone is a count of the same size: × exactly 1, and a new noun')
+      : bad('logged rename', JSON.stringify(header));
+    save(db, mealId, {}).kind === 'none'
+      ? ok('…and a draft opened and left untouched writes nothing')
+      : bad('untouched draft wrote');
+  }
+  {
+    // The drift this closes: a field DISPLAYS 2.7, and the old draft seeded
+    // its text from that display — so Save on an untouched 2.6667 re-wrote it.
+    const { db } = freshDb();
+    const { mealId, headerId } = countedPizza(db);
+    scaleCompositeItem(db, headerId, 1 / 3);
+    const before = headerOf(db, mealId).serving_qty;
+    save(db, mealId, {}).kind === 'none' && headerOf(db, mealId).serving_qty === before
+      ? ok('an untouched 2.6667 saves as no change — never re-written as the 2.7 it shows')
+      : bad('display drift', String(headerOf(db, mealId).serving_qty));
+  }
+
+  // UNCOUNTED: the parts, as logged, are the whole dish — OF declares.
+  {
+    const { db } = freshDb();
+    const { mealId } = pizzaMeal(db);
+    const before = partsNow(db, mealId);
+    const kcal = getMeal(db, mealId).kcal;
+    save(db, mealId, { wholeText: '8', nounText: 'slice' });
+    const header = headerOf(db, mealId);
+    header.serving_qty === 8 &&
+    header.piece_name === 'slice' &&
+    partsNow(db, mealId) === before &&
+    getMeal(db, mealId).kcal === kcal
+      ? ok('on an uncounted record, OF declares what the logged parts are; not one gram moves')
+      : bad('logged declaration', JSON.stringify(header));
+  }
+  {
+    const { db } = freshDb();
+    const { mealId } = pizzaMeal(db);
+    const plan = save(db, mealId, { wholeText: '8', eatenText: '3', nounText: 'slice' });
+    plan.kind === 'set' &&
+    plan.declare === 8 &&
+    plan.eaten === 3 &&
+    headerOf(db, mealId).serving_qty === 3 &&
+    near(getMeal(db, mealId).kcal, (1550 * 3) / 8 + 140)
+      ? ok('…and ATE in the same Save then takes 3 of the 8 — one Save, the review’s sentence')
+      : bad('logged declare then eat', JSON.stringify(plan));
+  }
+
+  // Refusals.
+  planLoggedCount(
+    { eatenText: 'abc', wholeText: null, nounText: '' },
+    { serving_qty: 8, piece_name: 'slice' }
+  ).kind === 'invalid' &&
+  planLoggedCount(
+    { eatenText: null, wholeText: '0', nounText: '' },
+    { serving_qty: null, piece_name: null }
+  ).kind === 'invalid' &&
+  planLoggedCount(
+    { eatenText: '3', wholeText: '', nounText: '' },
+    { serving_qty: null, piece_name: null }
+  ).kind === 'none'
+    ? ok('text that is not a count is refused, and ATE with no OF on a record writes nothing')
+    : bad('logged refusals');
+
+  // THE SOURCE PIN: the screen runs exactly this plan, through exactly these writers.
+  const screen = readFileSync(new URL('../app/meal-detail.tsx', import.meta.url), 'utf8');
+  [
+    'planLoggedCount(countEdit, item)',
+    'clearCompositeCount(db, item.id)',
+    'setCompositeCount(db, item.id, plan.declare, plan.noun)',
+    'setCompositeCount(db, item.id, plan.eaten, plan.noun)',
+  ].every((s) => screen.includes(s)) && !screen.includes('cleared:')
+    ? ok('meal-detail’s Save runs this plan and nothing else — the `cleared` gesture is gone')
+    : bad('meal-detail save drifted from the mirrored plan');
+  // …and the editor OPENS untouched — a null, never the 2.7 a field displays —
+  // the half of the 2.6667 case the plan alone cannot pin. Read out of
+  // `openCountEdit` itself, since the row's fallback draft says the same thing.
+  const opener = screen.slice(
+    screen.indexOf('const openCountEdit'),
+    screen.indexOf('const saveCount')
+  );
+  opener.length > 0 && opener.includes('eatenText: null,') && opener.includes('wholeText: null,')
+    ? ok('openCountEdit seeds both fields untouched, so an untouched count saves as no change')
+    : bad('openCountEdit seeds a display value');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

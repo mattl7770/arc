@@ -8,7 +8,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { palette } from '@/constants/theme';
 import type { EstimateQuestion } from '@/lib/nutrition/estimate';
-import { countLabel, fmtInt } from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt, pieceNounFor, piecesLabel, pluralNoun } from '@/lib/nutrition/format';
 import {
   amountLabel,
   currentPortion,
@@ -100,64 +100,141 @@ function AmountField({
 }
 
 /**
- * The count of pieces, and the noun for one of them (0059).
+ * A composite's count, as ONE sentence: `ATE [3] OF [8] SLICES` (0059, re-cut
+ * on the owner's device note of 2026-09-23 — the arithmetic is in
+ * src/lib/nutrition/review-rows.ts, above `setCompositeCount`).
  *
- * The same anatomy as {@link AmountField} — a `w-14` mono field with the same
- * live, snapshot-from-focus semantics — because it IS the whole-dish grams
- * field's sibling: one scaling mechanism, two ways to say the same size. A
- * field rather than the catalog stepper because 8 → 3 is one keypad entry and
- * ten taps at the stepper's 0.5 step.
+ * **Two fields, and neither ever moves.** OF is how many pieces the dish as
+ * priced is: while all of it is eaten, typing it declares and scales nothing.
+ * ATE is how many of them were eaten: typing it scales every part by ate / of.
+ * Each field answers ONE question, so no label has to switch to say which
+ * question is being asked — the field this replaced was labelled `THIS IS`
+ * until its first keystroke and `I ATE` after it, and moved up a row as it
+ * switched, which remounted it and dropped the keyboard mid-number.
  *
- * **What the empty field asks depends on whether there is a count**, and the
- * label beside it says which: `THIS IS` declares what the parts already are and
- * moves nothing; `I ATE` scales them. The noun is a label-voice control that
- * swaps to a one-line field on tap and commits on blur; with no count it is a
- * muted readout, because a noun with no count names nothing.
+ * Three shapes, one row:
+ *
+ * - **uncounted** — `ATE — OF [ ] PIECES`. ATE is an em-dash, not a field:
+ *   there is nothing yet to take a share of. The dash holds the field's slot, so
+ *   OF is in the same place in every shape — and keyed, so React keeps the field
+ *   being typed into mounted while the dish becomes counted.
+ * - **counted** — `ATE [3] OF [8] SLICES`.
+ * - **a record's count** — `ATE [3] SLICES`: rows built from a logged meal
+ *   carry what was eaten and no whole, and an `of [3]` there would invite
+ *   typing the pizza's eight over three logged slices. Emptied and left, ATE
+ *   un-counts such a dish, since it is the only field saying what the dish is.
+ *
+ * Both fields are the parts' `AmountField` anatomy — a `w-14` mono field with the
+ * same live, snapshot-from-focus, non-compounding semantics — because they are
+ * the whole-dish grams field's siblings. The labels are the label voice. The
+ * noun is a label-voice control that becomes a one-line field on tap (its word
+ * selected, so typing replaces it) and commits as it is typed; it agrees in
+ * number with the figure it follows — `of 1 slice`, `of 8 slices`, `ate 3
+ * slices` — and with no count it is a muted readout, because a noun with no
+ * count names nothing.
  */
-function CountField({ row, handlers }: { row: ReviewItem; handlers: ReviewHandlers }) {
-  const [nounDraft, setNounDraft] = useState<string | null>(null);
+function CountRow({ row, handlers }: { row: ReviewItem; handlers: ReviewHandlers }) {
+  // The noun's field: what is typed, and the noun it opened on — restored if the
+  // field is left empty, so a noun backspaced away letter by letter (each letter
+  // committing as it goes) is not saved as the one letter left.
+  const [nounDraft, setNounDraft] = useState<{ text: string; was: string } | null>(null);
   const counted = row.pieces != null;
+  // A record's count has no whole: one number, what was eaten.
+  const record = counted && row.wholeCount == null;
   const noun = row.pieces?.name ?? 'piece';
-  const value =
-    row.countText === '' ? (row.pieces ? amountLabel(row.pieces.count) : '') : row.countText;
+  const eaten = row.countText ?? (row.pieces ? amountLabel(row.pieces.count) : '');
+  const whole = row.wholeText ?? (row.wholeCount != null ? amountLabel(row.wholeCount) : '');
   return (
-    <View className="flex-row items-center gap-1">
-      <TextInput
-        value={value}
-        onChangeText={(text) => handlers.onCountChange(row.key, text)}
-        onBlur={() => handlers.onCountEnd(row.key)}
-        keyboardType="decimal-pad"
-        returnKeyType={KEYPAD_DONE}
-        {...selectAllOnFocus(value, () => handlers.onCountBegin(row.key))}
-        accessibilityLabel={counted ? `${row.name}, pieces eaten` : `Pieces in ${row.name}`}
-        className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
-      />
-      <Text className="font-mono text-[11px] text-ink-secondary">×</Text>
+    <View className="flex-row flex-wrap items-center gap-2 pb-3 pl-6">
+      <Text
+        key="ate"
+        className="w-8 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+        Ate
+      </Text>
+      {counted ? (
+        <TextInput
+          key="eaten"
+          value={eaten}
+          onChangeText={(text) => handlers.onCountChange(row.key, text)}
+          onBlur={() => handlers.onCountEnd(row.key)}
+          keyboardType="decimal-pad"
+          returnKeyType={KEYPAD_DONE}
+          // The focus handler goes THROUGH selectAllOnFocus, which owns
+          // `onFocus` — the snapshot it takes is what keeps typing from compounding.
+          {...selectAllOnFocus(eaten, () => handlers.onCountBegin(row.key))}
+          accessibilityLabel={`${row.name}, pieces eaten`}
+          className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+        />
+      ) : (
+        <View
+          key="eaten-none"
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          className="w-14 items-end px-2">
+          <Text className="font-mono text-[13px] text-ink-muted">—</Text>
+        </View>
+      )}
+      {record ? null : (
+        <Text key="of" className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+          of
+        </Text>
+      )}
+      {record ? null : (
+        <TextInput
+          key="whole"
+          value={whole}
+          onChangeText={(text) => handlers.onWholeChange(row.key, text)}
+          onBlur={() => handlers.onCountEnd(row.key)}
+          keyboardType="decimal-pad"
+          returnKeyType={KEYPAD_DONE}
+          {...selectAllOnFocus(whole, () => handlers.onCountBegin(row.key))}
+          accessibilityLabel={`Pieces in ${row.name}`}
+          className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+        />
+      )}
       {nounDraft !== null ? (
         <TextInput
-          value={nounDraft}
-          onChangeText={setNounDraft}
+          key="noun"
+          value={nounDraft.text}
+          // Live, like every other field on this sheet — so a Save tapped with
+          // the keyboard still up keeps the name (an empty one is refused).
+          onChangeText={(text) => {
+            setNounDraft({ ...nounDraft, text });
+            handlers.onPiecesName(row.key, text);
+          }}
           autoFocus
+          // A one-word name replaced wholesale, so its word arrives selected.
+          // `autoFocus` goes through the imperative focus path, which is the one
+          // place iOS honours this prop (src/components/ui/select-on-focus.ts).
+          selectTextOnFocus
           returnKeyType={KEYPAD_DONE}
           autoCapitalize="none"
           accessibilityLabel={`Name one piece of ${row.name}`}
           onBlur={() => {
-            handlers.onPiecesName(row.key, nounDraft);
+            handlers.onPiecesName(
+              row.key,
+              nounDraft.text.trim() === '' ? nounDraft.was : nounDraft.text
+            );
             setNounDraft(null);
           }}
-          className="w-20 border border-paper-deep bg-paper-dim px-2 py-1.5 font-mono text-[13px] text-ink"
+          className="w-24 border border-paper-deep bg-paper-dim px-2 py-1.5 font-mono text-[13px] text-ink"
         />
       ) : counted ? (
         <Pressable
+          key="noun"
           accessibilityRole="button"
           accessibilityLabel={`Name one piece of ${row.name}`}
-          onPress={() => setNounDraft(noun)}
+          onPress={() => setNounDraft({ text: noun, was: noun })}
           className="min-h-[44px] justify-center px-1 active:opacity-60">
-          <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink">{noun}</Text>
+          <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink">
+            {pieceNounFor(record ? (row.pieces?.count ?? null) : row.wholeCount, noun)}
+          </Text>
         </Pressable>
       ) : (
-        <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted">
-          {noun}
+        <Text
+          key="noun"
+          className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted">
+          {pluralNoun(noun)}
         </Text>
       )}
     </View>
@@ -185,9 +262,12 @@ export type ReviewHandlers = {
   onScaleTo: (key: string, text: string) => void;
   onScaleBegin: (key: string) => void;
   onScaleEnd: (key: string) => void;
-  /** The count of pieces (0059) — the same three-handler shape as the
-   *  whole-dish field, because it is the same mechanism. */
+  /** The count of pieces (0059) — the same begin/change/end shape as the
+   *  whole-dish field, because it is the same mechanism. `onCountChange` is
+   *  the ATE field (scales), `onWholeChange` the OF field (declares); both
+   *  share one focus snapshot, so they share begin and end. */
   onCountChange: (key: string, text: string) => void;
+  onWholeChange: (key: string, text: string) => void;
   onCountBegin: (key: string) => void;
   onCountEnd: (key: string) => void;
   onPiecesName: (key: string, name: string) => void;
@@ -237,8 +317,9 @@ function PricedRow({
   );
 }
 
-/** A composite: a disclosure row, and — when open — its parts and the two ways
- *  to say "I ate half". All inside the SAME plate; a nested device is forbidden. */
+/** A composite: a disclosure row, and — when open — its parts and the ways to
+ *  say how much of it was eaten. All inside the SAME plate; a nested device is
+ *  forbidden. */
 function CompositeRow({
   row,
   first,
@@ -250,6 +331,11 @@ function CompositeRow({
 }) {
   const total = rolled(row);
   const parts = `${row.components.length} parts`;
+  // Once a dish is counted its amount IS the count (owner, on the device,
+  // 2026-09-23: "grams are still being used as the unit of measurement, when it
+  // should've changed to slices"). The grams it replaces are not lost — they
+  // lead the sub-line below instead, as the secondary figure they now are.
+  const count = row.pieces ? piecesLabel(row.pieces.count, row.pieces.name) : null;
   return (
     <View>
       <Divider first={first} />
@@ -257,7 +343,7 @@ function CompositeRow({
         <View className="min-h-[44px] flex-row items-center gap-3">
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`${row.name}, ${parts}${
+            accessibilityLabel={`${row.name}, ${parts}${count ? `, ${count}` : ''}${
               total.kcal != null ? `, ${fmtInt(total.kcal)} kcal` : ''
             }`}
             accessibilityState={{ expanded: row.expanded }}
@@ -278,11 +364,17 @@ function CompositeRow({
                 </Text>
               </Text>
             </View>
+            {/* The counted dish's amount, in the column every other row's amount
+                field stands in. A readout, not a second field: the count is
+                edited in ONE place, the sentence below, and tapping here opens
+                and closes it, as the rest of the header does. */}
+            {count ? <Text className="font-mono text-[13px] text-ink">{count}</Text> : null}
           </Pressable>
-          {/* The whole-dish handle. Absent when the parts do not all carry an
-              amount (or do not share a unit) — there is no honest total to
-              type into, and the fractions below still work. */}
-          {total.amount != null ? (
+          {/* The whole-dish handle of an UNCOUNTED dish, whose amount is still
+              its grams. Absent when the parts do not all carry an amount (or do
+              not share a unit) — there is no honest total to type into, and the
+              fractions below still work. */}
+          {count == null && total.amount != null ? (
             <AmountField
               row={{ ...row, unit: total.unit }}
               value={row.amountText === '' ? amountLabel(total.amount) : row.amountText}
@@ -297,11 +389,14 @@ function CompositeRow({
           </Text>
           <RemoveButton name={row.name} onPress={() => handlers.onRemove(row.key)} />
         </View>
-        {/* The count leads the sub-line when there is one (0059) — it is the
-            coarsest true thing about the dish, and after a ⅓ chip it reads the
-            honest `2.7 × slice` rather than a 3 the parts do not add up to. */}
+        {/* A counted dish's grams lead its sub-line — the secondary figure, and
+            still the one that makes "is 90 g a slice?" checkable. Never
+            converted for the oz preference, like every figure on this plate. */}
         <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-          {[row.pieces ? countLabel(row.pieces.count, row.pieces.name) : '', MACRO_LINE(total)]
+          {[
+            count && total.amount != null ? fmtAmount(total.amount, total.unit) : '',
+            MACRO_LINE(total),
+          ]
             .filter(Boolean)
             .join(' · ')}
         </Text>
@@ -312,42 +407,30 @@ function CompositeRow({
           {row.components.map((part) => (
             <PricedRow key={part.key} row={part} first={false} indented handlers={handlers} />
           ))}
-          {/* "I ate half", as the sentence people actually say. Outlined chips,
-              ≥44pt, in the label voice — the accent in this phase belongs to
-              Save and stays there. The count sits BESIDE them (owner decision):
-              a chip is the fast handle, a count the precise one, the same
-              pairing the whole-dish field already has. */}
-          <View
-            className={
-              row.pieces
-                ? 'flex-row items-center gap-2 pb-3 pl-6'
-                : 'flex-row items-center gap-2 pl-6'
-            }>
-            <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
-              I ate
-            </Text>
-            {FRACTIONS.map((fraction) => (
-              <Pressable
-                key={fraction.label}
-                accessibilityRole="button"
-                accessibilityLabel={`I ate ${fraction.spoken} of the ${row.name}`}
-                onPress={() => handlers.onScale(row.key, fraction.factor)}
-                className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn border border-hairline px-3 active:bg-paper-dim">
-                <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
-                  {fraction.label}
-                </Text>
-              </Pressable>
-            ))}
-            {row.pieces ? <CountField row={row} handlers={handlers} /> : null}
-          </View>
-          {/* Uncounted: the field asks what the dish IS, on its own row, and
-              typing into it scales nothing. */}
+          {/* How much of it was eaten, as one sentence. FIRST, and in the same
+              place whether or not the dish is counted, so nothing above the
+              field being typed into ever moves. */}
+          <CountRow row={row} handlers={handlers} />
+          {/* "I ate half", for a dish with no count — the fast handle on a
+              burrito, as the owner chose (C4). Outlined, ≥44pt, in the label
+              voice: the accent in this phase belongs to Save and stays there.
+              Drawn UNDER the dash they stand in for, and gone once the dish is
+              counted: a count says any share exactly (½ of eight is `ate 4`),
+              where a chip on a counted dish could only print `2.7 slices`. */}
           {row.pieces ? null : (
-            <View className="flex-row items-center gap-2 pb-3 pl-6">
-              <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
-                This is
-              </Text>
-              <CountField row={row} handlers={handlers} />
+            <View className="flex-row items-center gap-2 pb-3 pl-16">
+              {FRACTIONS.map((fraction) => (
+                <Pressable
+                  key={fraction.label}
+                  accessibilityRole="button"
+                  accessibilityLabel={`I ate ${fraction.spoken} of the ${row.name}`}
+                  onPress={() => handlers.onScale(row.key, fraction.factor)}
+                  className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn border border-hairline px-3 active:bg-paper-dim">
+                  <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+                    {fraction.label}
+                  </Text>
+                </Pressable>
+              ))}
             </View>
           )}
         </View>

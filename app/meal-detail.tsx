@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { type Dispatch, type SetStateAction, useCallback, useState } from 'react';
 import { Alert, Image, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider, GridCell } from '@/components/ui/block';
@@ -29,13 +29,26 @@ import {
   updateMealTime,
 } from '@/lib/db/repositories/nutrition';
 import { assembleMealItems, type MealItemNode } from '@/lib/nutrition/composite';
-import { parseCount } from '@/lib/nutrition/review-rows';
+import {
+  type LoggedCountDraft,
+  type LoggedCountPlan,
+  parseCount,
+  planLoggedCount,
+} from '@/lib/nutrition/review-rows';
 import {
   deleteMealWithPhotos,
   mealPhotoView,
   type MealPhotoView,
 } from '@/lib/media/meal-photo-store';
-import { fmtInt, fmtQty, macroLine, portionLabel } from '@/lib/nutrition/format';
+import {
+  fmtInt,
+  fmtQty,
+  macroLine,
+  pieceNounFor,
+  piecesLabel,
+  pluralNoun,
+  portionLabel,
+} from '@/lib/nutrition/format';
 import { mealDayLabel, parseClockParts, partsFromClock, shiftDay } from '@/lib/nutrition/meal-time';
 import { amountForQty, rescaleLoggedItem } from '@/lib/nutrition/servings';
 import type { AmountUnit, FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/types';
@@ -187,18 +200,25 @@ type TimeEdit = { date: string; hour: string; minute: string };
 type NameEdit = string | null;
 
 /**
- * The count-of-pieces editor's draft for ONE composite (0059), or null when
- * closed.
+ * The count-of-pieces editor's draft for ONE composite (0059, re-cut
+ * 2026-09-23), or null when closed. What Save does with it is
+ * `planLoggedCount`'s call (src/lib/nutrition/review-rows.ts), so the sentence
+ * above Save and the write read the same plan.
  *
- * `cleared` is the load-bearing field, and it is what makes the owner's answer
- * to "the model said 8, the pizza was 6" one gesture instead of two Saves.
- * Emptying the field at any point during the edit means *"forget the count"*,
- * so whatever number is typed afterwards DECLARES a fresh one and scales
- * nothing — rather than scaling the parts by 6/8 on a dish that was never eight
- * slices. Typing straight over a count that was right still scales, which is
- * what "I ate 3 of the 8" means.
+ * A null text is an UNTOUCHED field, never an empty one — which is what lets an
+ * untouched count Save as no change at all, instead of re-writing a 2.6667 as
+ * the 2.7 its field displays.
+ *
+ * It replaced a draft with a `cleared` flag, under which backspacing an 8 and
+ * typing a 6 declared afresh while typing straight over the 8 scaled — two
+ * gestures for "change 8 to 6" with opposite effects, the trap the spike's own
+ * device list named. Now typing means one thing per field.
  */
-type CountEdit = { parentId: string; countText: string; nounText: string; cleared: boolean };
+type CountEdit = LoggedCountDraft & {
+  parentId: string;
+  /** The noun's own field is open. */
+  naming: boolean;
+};
 
 function readMeal(id: string): MealState {
   const db = getDb();
@@ -457,47 +477,60 @@ export default function MealDetailScreen() {
     reload();
   };
 
-  /** Open the count editor on one composite, seeded from what it holds. */
-  const beginCountEdit = (item: MealItemWithServing) => {
+  /** Open the count editor on one composite — or, when it is already open,
+   *  open its noun field too. */
+  const openCountEdit = (item: MealItemWithServing, naming: boolean) => {
     // One editor at a time (see the accent-budget note in the header).
     setEditing(null);
     setTimeEdit(null);
     setNameEdit(null);
-    setCountEdit({
-      parentId: item.id,
-      countText: item.serving_qty != null ? fmtQty(item.serving_qty) : '',
-      nounText: item.piece_name ?? '',
-      cleared: false,
-    });
+    setCountEdit((prev) =>
+      prev?.parentId === item.id
+        ? { ...prev, naming: prev.naming || naming }
+        : {
+            parentId: item.id,
+            eatenText: null,
+            wholeText: null,
+            nounText: item.piece_name ?? '',
+            naming,
+          }
+    );
   };
 
   /**
-   * Write the count. Three outcomes, and the draft's `cleared` flag is what
-   * tells them apart (0059):
+   * Write the count, through the repository's own two writers and nothing else
+   * (0059). `planLoggedCount` decides, and the sentence above Save read it first:
    *
-   * - **emptied and left empty** → the count goes, the parts stand. Forgetting
-   *   how many pieces a dish was is not eating any of it.
-   * - **emptied, then a number** → that number DECLARES afresh: the parts are
-   *   now said to be N pieces and not one gram moves.
-   * - **typed over a count that stands** → "I ate N of them", so every part
-   *   scales by `N / current` and the two keep describing the same food.
+   * - **clear** — a counted record's ATE saved empty: the count goes, the parts
+   *   stand. Forgetting how many pieces a dish was is not eating any of it.
+   * - **declare** — an uncounted record's OF: the parts, as logged, are now said
+   *   to be N pieces, and not one gram moves.
+   * - **eaten** — "I ate N of them": every part scales by N / the count the
+   *   record holds (just declared, or already there), so the two keep
+   *   describing one food.
    */
   const saveCount = () => {
     if (!countEdit) return;
+    const item = items.find((i) => i.id === countEdit.parentId);
+    if (!item) return setCountEdit(null);
+    const plan = planLoggedCount(countEdit, item);
+    if (plan.kind === 'invalid') return;
+    // Opened and closed again, or nothing typed that changes the record.
+    if (plan.kind === 'none') return setCountEdit(null);
     const db = getDb();
-    const typed = countEdit.countText.trim();
-    if (countEdit.cleared) clearCompositeCount(db, countEdit.parentId);
-    if (typed !== '') {
-      const count = parseCount(typed);
-      if (count == null) return;
-      setCompositeCount(db, countEdit.parentId, count, countEdit.nounText.trim() || undefined);
-    } else if (!countEdit.cleared) {
-      // Nothing typed and nothing cleared: an editor opened and closed again.
-      return setCountEdit(null);
+    if (plan.kind === 'clear') {
+      clearCompositeCount(db, item.id);
+    } else {
+      if (plan.declare != null) setCompositeCount(db, item.id, plan.declare, plan.noun);
+      if (plan.eaten != null) setCompositeCount(db, item.id, plan.eaten, plan.noun);
     }
     setCountEdit(null);
     reload();
   };
+
+  /** The count draft on one composite, when it is the one being edited. */
+  const countDraftFor = (id: string): CountEdit | null =>
+    countEdit?.parentId === id ? countEdit : null;
 
   /** One priced row — a plain item, or a part indented inside its composite.
    *  A function rather than a nested component, so React does not remount the
@@ -867,7 +900,7 @@ export default function MealDetailScreen() {
                                   // units has no honest amount, and the count is
                                   // then the only whole-dish figure the row has
                                   // — portionLabel already prints the bare
-                                  // `3 × slice` for exactly that case.
+                                  // `3 slices` for exactly that case.
                                   amount: node.rolled.amount,
                                   unit: node.rolled.unit,
                                   // A composite has no catalog SERVING of its
@@ -906,56 +939,40 @@ export default function MealDetailScreen() {
                             {renderItemRow(part, false)}
                           </View>
                         ))}
-                        {/* "I ate half", the sentence people actually say. Every
-                            part scales proportionally, from what it reads NOW —
-                            so a part corrected by hand first is halved from the
-                            corrected number. The count of pieces (0059) sits
-                            BESIDE the chips, not instead of them: a chip is the
-                            fast handle, a count the precise one. */}
-                        <View
-                          className={
-                            node.item.serving_qty != null
-                              ? 'flex-row flex-wrap items-center gap-2 pb-3 pl-6'
-                              : 'flex-row flex-wrap items-center gap-2 pl-6'
-                          }>
-                          <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
-                            I ate
-                          </Text>
-                          {PART_FRACTIONS.map((fraction) => (
-                            <Pressable
-                              key={fraction.label}
-                              accessibilityRole="button"
-                              accessibilityLabel={`I ate ${fraction.spoken} of the ${node.item.name}`}
-                              onPress={() => scaleParts(node.item.id, fraction.factor)}
-                              className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn border border-hairline px-3 active:bg-paper-dim">
-                              <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
-                                {fraction.label}
-                              </Text>
-                            </Pressable>
-                          ))}
-                          {node.item.serving_qty != null ? (
-                            <CountField
-                              node={node}
-                              edit={countEdit?.parentId === node.item.id ? countEdit : null}
-                              onOpen={() => beginCountEdit(node.item)}
-                              onEdit={setCountEdit}
-                            />
-                          ) : null}
-                        </View>
-                        {/* Uncounted: the field asks what the dish IS, on its
-                            own row, and the number typed into it scales
-                            nothing. */}
-                        {node.item.serving_qty == null ? (
-                          <View className="flex-row flex-wrap items-center gap-2 pb-3 pl-6">
-                            <Text className="font-mono text-[10px] uppercase tracking-[1px] text-ink-muted">
-                              This is
-                            </Text>
-                            <CountField
-                              node={node}
-                              edit={countEdit?.parentId === node.item.id ? countEdit : null}
-                              onOpen={() => beginCountEdit(node.item)}
-                              onEdit={setCountEdit}
-                            />
+                        {/* How much of it was eaten, as one sentence — FIRST,
+                            and in the same place whether or not the dish is
+                            counted, so nothing above the field being typed into
+                            ever moves (0059, re-cut 2026-09-23). */}
+                        <LoggedCountRow
+                          node={node}
+                          edit={countDraftFor(node.item.id)}
+                          onOpen={(naming) => openCountEdit(node.item, naming)}
+                          onEdit={setCountEdit}
+                        />
+                        {/* "I ate half", for a dish with no count — the fast
+                            handle the owner chose (C4). Every part scales from
+                            what it reads NOW, so a part corrected by hand first
+                            is halved from the corrected number, and a chip
+                            writes at once, as it always has. Drawn UNDER the
+                            dash it stands in for, and gone once the dish is
+                            counted or a count is being typed: a count says any
+                            share exactly, where a chip could only print
+                            `2.7 slices`. */}
+                        {node.item.serving_qty == null &&
+                        parseCount(countDraftFor(node.item.id)?.wholeText ?? '') == null ? (
+                          <View className="flex-row items-center gap-2 pb-3 pl-16">
+                            {PART_FRACTIONS.map((fraction) => (
+                              <Pressable
+                                key={fraction.label}
+                                accessibilityRole="button"
+                                accessibilityLabel={`I ate ${fraction.spoken} of the ${node.item.name}`}
+                                onPress={() => scaleParts(node.item.id, fraction.factor)}
+                                className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn border border-hairline px-3 active:bg-paper-dim">
+                                <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
+                                  {fraction.label}
+                                </Text>
+                              </Pressable>
+                            ))}
                           </View>
                         ) : null}
                         {countEdit?.parentId === node.item.id ? (
@@ -1396,6 +1413,237 @@ function MealTimeEditor({
 }
 
 /**
+ * A LOGGED composite's count (0059, re-cut on the owner's device note of
+ * 2026-09-23) — the review sheet's sentence, less the half a record cannot hold.
+ *
+ * The review counts a dish AS PRICED, so it reads `ate [3] of [8] slices`. A
+ * record's parts are what was eaten, and the "of 8" was history of the estimate
+ * that 0059 deliberately never stored — so a COUNTED record reads `ate [3]
+ * slices`, and a new number scales every part by new / current. An UNCOUNTED
+ * record's parts are the whole dish as logged, so it reads the review's own
+ * sentence: OF declares what they are, and ATE — an em-dash until there is an
+ * OF — then takes a share. The rules are `planLoggedCount`'s
+ * (src/lib/nutrition/review-rows.ts); this only draws them.
+ *
+ * Everything here stages a draft and writes on Save — this screen's rule for
+ * anything already in the day's totals — and touching a field or the noun opens
+ * the editor, which closes the others. Nothing moves under the thumb: ATE's slot
+ * holds its place as a dash until it becomes a field, and OF is keyed so React
+ * keeps it mounted while the dish turns countable beside it.
+ */
+function LoggedCountRow({
+  node,
+  edit,
+  onOpen,
+  onEdit,
+}: {
+  node: Extract<MealItemNode, { kind: 'composite' }>;
+  edit: CountEdit | null;
+  /** Open the editor; `naming` opens the noun's own field too. */
+  onOpen: (naming: boolean) => void;
+  /** The screen's own state setter, so every write is a functional update. */
+  onEdit: Dispatch<SetStateAction<CountEdit | null>>;
+}) {
+  const stored = node.item.serving_qty;
+  const draft: CountEdit = edit ?? {
+    parentId: node.item.id,
+    eatenText: null,
+    wholeText: null,
+    nounText: node.item.piece_name ?? '',
+    naming: false,
+  };
+  const noun = draft.nounText.trim() || node.item.piece_name || 'piece';
+  const open = () => {
+    if (!edit) onOpen(false);
+  };
+  // Functional, and addressed to THIS dish's draft: a keystroke lands on the
+  // draft as it now is, and a blur that arrives after Save (or after another
+  // editor took over) finds no draft of this dish and changes nothing — it never
+  // writes back a copy captured a render ago.
+  // A keystroke into a field whose draft another editor closed (the field kept
+  // focus: a "handled" tap does not blur it) re-opens the count editor the one
+  // way that closes the others, so two editors are never open at once.
+  const patch = (next: Partial<CountEdit>) => {
+    if (!edit) onOpen(false);
+    onEdit((prev) => ({ ...(prev?.parentId === draft.parentId ? prev : draft), ...next }));
+  };
+  // An uncounted record's whole, once the draft holds one — ATE opens with it.
+  const whole = stored == null ? parseCount(draft.wholeText ?? '') : null;
+  const counting = stored != null || whole != null;
+  const eaten =
+    draft.eatenText ?? (stored != null ? fmtQty(stored) : whole != null ? fmtQty(whole) : '');
+  // The noun agrees with the number it follows: OF when there is one, else ATE.
+  const agreesWith = stored != null ? (parseCount(eaten) ?? stored) : whole;
+  return (
+    <View className="flex-row flex-wrap items-center gap-2 pb-3 pl-6">
+      <Text
+        key="ate"
+        className="w-8 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+        Ate
+      </Text>
+      {counting ? (
+        <TextInput
+          key="eaten"
+          value={eaten}
+          onChangeText={(text) => patch({ eatenText: text })}
+          keyboardType="decimal-pad"
+          returnKeyType={KEYPAD_DONE}
+          // Opening the editor goes THROUGH selectAllOnFocus, which owns
+          // `onFocus`: writing both would silently drop one of them.
+          {...selectAllOnFocus(eaten, open)}
+          accessibilityLabel={`${node.item.name}, pieces eaten`}
+          className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+        />
+      ) : (
+        <View
+          key="eaten-none"
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          className="w-14 items-end px-2">
+          <Text className="font-mono text-[13px] text-ink-muted">—</Text>
+        </View>
+      )}
+      {stored == null ? (
+        <Text key="of" className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+          of
+        </Text>
+      ) : null}
+      {stored == null ? (
+        <TextInput
+          key="whole"
+          value={draft.wholeText ?? ''}
+          onChangeText={(text) => patch({ wholeText: text })}
+          keyboardType="decimal-pad"
+          returnKeyType={KEYPAD_DONE}
+          {...selectAllOnFocus(draft.wholeText ?? '', open)}
+          accessibilityLabel={`Pieces in ${node.item.name}`}
+          className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+        />
+      ) : null}
+      {draft.naming ? (
+        <TextInput
+          key="noun"
+          value={draft.nounText}
+          onChangeText={(text) => patch({ nounText: text })}
+          autoFocus
+          // A one-word name replaced wholesale, so its word arrives selected —
+          // `autoFocus` is the imperative focus path, the one place iOS honours
+          // this prop (src/components/ui/select-on-focus.ts).
+          selectTextOnFocus
+          autoCapitalize="none"
+          returnKeyType={KEYPAD_DONE}
+          placeholder="piece"
+          placeholderTextColor={palette.inkMuted}
+          accessibilityLabel={`Name one piece of ${node.item.name}`}
+          onBlur={() =>
+            onEdit((prev) =>
+              prev?.parentId === draft.parentId ? { ...prev, naming: false } : prev
+            )
+          }
+          className="w-24 border border-paper-deep bg-paper-dim px-2 py-1.5 font-mono text-[13px] text-ink"
+        />
+      ) : counting ? (
+        <Pressable
+          key="noun"
+          accessibilityRole="button"
+          accessibilityLabel={`Name one piece of ${node.item.name}`}
+          onPress={() => onOpen(true)}
+          className="min-h-[44px] justify-center px-1 active:opacity-60">
+          <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink">
+            {pieceNounFor(agreesWith, noun)}
+          </Text>
+        </Pressable>
+      ) : (
+        // A noun with no count names nothing, so it is a readout until there is one.
+        <Text
+          key="noun"
+          className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted">
+          {pluralNoun(noun)}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+/** "3/8" — or, when the two print alike (a 2.6667 retyped as 2.7), the factor
+ *  itself, so the note never claims "2.7/2.7" of a scale that is not 1. */
+function scaleWords(to: number, from: number): string {
+  const a = fmtQty(to);
+  const b = fmtQty(from);
+  return a === b ? `× ${(to / from).toFixed(2)}` : `${a}/${b}`;
+}
+
+/** What Save will do to the count, in words, from the SAME plan the write runs. */
+function countNote(plan: LoggedCountPlan, noun: string, current: number | null): string {
+  if (plan.kind === 'invalid') return 'A count is more than 0 and at most 100.';
+  if (plan.kind === 'clear') return 'On save: the count goes, and the parts stay as they are.';
+  if (plan.kind === 'none') {
+    return current != null ? 'Type how many were eaten.' : 'Type how many pieces this dish is.';
+  }
+  if (plan.declare != null) {
+    return plan.eaten != null
+      ? `On save: this dish is ${piecesLabel(plan.declare, noun)}, and you ate ${fmtQty(plan.eaten)} — every part scales by ${scaleWords(plan.eaten, plan.declare)}.`
+      : `On save: this dish is ${piecesLabel(plan.declare, noun)}, all eaten. Nothing scales.`;
+  }
+  return plan.eaten != null && current != null && plan.eaten !== current
+    ? `On save: ${piecesLabel(plan.eaten, noun)} — every part scales by ${scaleWords(plan.eaten, current)}.`
+    : `On save: the pieces are ${pluralNoun(noun)}. Nothing scales.`;
+}
+
+/** The consequence, stated BEFORE the write the way every other pending write
+ *  on this screen states it (00-design-spec.md §5), and the button that does it.
+ *  With nothing typed that would change the record the button CLOSES the editor
+ *  instead — outlined, never the accent — so an editor opened by a stray tap is
+ *  never stuck open beside a Save that cannot be pressed. */
+function CountSaveRow({
+  node,
+  edit,
+  onSave,
+}: {
+  node: Extract<MealItemNode, { kind: 'composite' }>;
+  edit: CountEdit;
+  onSave: () => void;
+}) {
+  const plan = planLoggedCount(edit, node.item);
+  const noun = edit.nounText.trim() || node.item.piece_name || 'piece';
+  const writes = plan.kind === 'set' || plan.kind === 'clear';
+  const closes = plan.kind === 'none';
+  return (
+    <View className="flex-row items-center justify-between gap-3 pb-3 pl-6">
+      <Text className="flex-1 font-serif text-[13px] leading-5 text-ink-secondary">
+        {countNote(plan, noun, node.item.serving_qty)}
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={
+          closes ? `Close the count for ${node.item.name}` : `Save the count for ${node.item.name}`
+        }
+        accessibilityState={{ disabled: !writes && !closes }}
+        disabled={!writes && !closes}
+        onPress={onSave}
+        className={
+          writes
+            ? 'min-h-[44px] justify-center rounded-btn bg-pine px-5 active:opacity-70'
+            : closes
+              ? 'min-h-[44px] justify-center rounded-btn border border-hairline px-5 active:bg-paper-dim'
+              : 'min-h-[44px] justify-center rounded-btn border border-paper-deep px-5'
+        }>
+        <Text
+          className={
+            writes
+              ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine-on'
+              : closes
+                ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink'
+                : 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+          }>
+          {closes ? 'Close' : 'Save'}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+/**
  * The inline portion editor under a tapped item. Serving stepper when the
  * catalog food names a serving; an amount field always, suffixed with the
  * item's own unit (0047). The live "≈ kcal" preview and the Save both go
@@ -1408,141 +1656,6 @@ function MealTimeEditor({
  * Save is this screen's one accent (only one editor is ever open at a time —
  * opening the when-editor above closes this one, and vice versa).
  */
-/**
- * A logged composite's count of pieces, and the noun for one of them (0059).
- *
- * The same anatomy as the review sheet's control — a `w-14` mono field, a `×`,
- * and a label-voice noun — but on a LOGGED record, so it stages a draft and
- * writes on Save rather than live. That is this screen's rule for everything
- * that already counts into the day's totals (the portion editor, the time, the
- * name); only the fraction chips write immediately, and they always have.
- *
- * Touching the field or the noun opens the editor, which closes the others.
- */
-function CountField({
-  node,
-  edit,
-  onOpen,
-  onEdit,
-}: {
-  node: Extract<MealItemNode, { kind: 'composite' }>;
-  edit: CountEdit | null;
-  onOpen: () => void;
-  onEdit: (next: CountEdit) => void;
-}) {
-  const counted = node.item.serving_qty != null;
-  const stored = counted ? fmtQty(node.item.serving_qty ?? 0) : '';
-  const value = edit ? edit.countText : stored;
-  const noun = (edit ? edit.nounText : (node.item.piece_name ?? '')) || 'piece';
-  return (
-    <View className="flex-row items-center gap-1">
-      <TextInput
-        value={value}
-        onChangeText={(text) =>
-          onEdit({
-            parentId: node.item.id,
-            countText: text,
-            nounText: edit ? edit.nounText : (node.item.piece_name ?? ''),
-            // Emptied at any point in this edit means "forget the count", so
-            // the next number declares afresh instead of scaling the parts.
-            cleared: (edit?.cleared ?? false) || text.trim() === '',
-          })
-        }
-        keyboardType="decimal-pad"
-        returnKeyType={KEYPAD_DONE}
-        // Opening the editor goes THROUGH selectAllOnFocus, which owns
-        // `onFocus`: writing both would silently drop one of them.
-        {...selectAllOnFocus(value, () => {
-          if (!edit) onOpen();
-        })}
-        accessibilityLabel={
-          counted ? `${node.item.name}, pieces eaten` : `Pieces in ${node.item.name}`
-        }
-        className="w-14 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
-      />
-      <Text className="font-mono text-[11px] text-ink-secondary">×</Text>
-      {edit ? (
-        <TextInput
-          value={edit.nounText}
-          onChangeText={(text) => onEdit({ ...edit, nounText: text })}
-          autoCapitalize="none"
-          returnKeyType={KEYPAD_DONE}
-          placeholder="piece"
-          placeholderTextColor={palette.inkMuted}
-          accessibilityLabel={`Name one piece of ${node.item.name}`}
-          className="w-20 border border-paper-deep bg-paper-dim px-2 py-1.5 font-mono text-[13px] text-ink"
-        />
-      ) : (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Name one piece of ${node.item.name}`}
-          onPress={onOpen}
-          className="min-h-[44px] justify-center px-1 active:opacity-60">
-          <Text
-            className={
-              counted
-                ? 'font-label text-[12px] uppercase tracking-[1.2px] text-ink'
-                : 'font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted'
-            }>
-            {noun}
-          </Text>
-        </Pressable>
-      )}
-    </View>
-  );
-}
-
-/** What the open count editor will do, said in words, and the Save that does
- *  it. The consequence is stated BEFORE the write, the way every other pending
- *  write on this screen states it (00-design-spec.md §5). */
-function CountSaveRow({
-  node,
-  edit,
-  onSave,
-}: {
-  node: Extract<MealItemNode, { kind: 'composite' }>;
-  edit: CountEdit;
-  onSave: () => void;
-}) {
-  const typed = edit.countText.trim();
-  const count = typed === '' ? null : parseCount(typed);
-  const current = node.item.serving_qty;
-  const valid = typed === '' ? edit.cleared : count != null;
-  const note =
-    typed === ''
-      ? 'the count goes; the parts stand'
-      : count == null
-        ? 'a count is a number from 1 to 100'
-        : edit.cleared || current == null
-          ? 'declares what this dish is; nothing scales'
-          : `scales every part to ${fmtQty(count / current)}× of what it reads now`;
-  return (
-    <View className="flex-row items-center justify-between pb-3 pl-6">
-      <Text className="flex-1 pr-3 font-mono text-[10px] leading-4 text-ink-muted">{note}</Text>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Save the count for ${node.item.name}`}
-        accessibilityState={{ disabled: !valid }}
-        disabled={!valid}
-        onPress={onSave}
-        className={
-          valid
-            ? 'min-h-[44px] justify-center rounded-btn bg-pine px-5 active:opacity-70'
-            : 'min-h-[44px] justify-center rounded-btn border border-paper-deep px-5'
-        }>
-        <Text
-          className={
-            valid
-              ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine-on'
-              : 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
-          }>
-          Save
-        </Text>
-      </Pressable>
-    </View>
-  );
-}
-
 function PortionEditRow({
   edit,
   item,

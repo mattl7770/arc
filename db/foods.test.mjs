@@ -42,7 +42,13 @@ import {
   updateMealItemPortion,
 } from '../src/lib/db/repositories/nutrition.ts';
 import { itemForPortion, macrosForAmount } from '../src/lib/nutrition/servings.ts';
-import { countLabel, fmtAmount, portionLabel } from '../src/lib/nutrition/format.ts';
+import {
+  countLabel,
+  fmtAmount,
+  piecesLabel,
+  pluralNoun,
+  portionLabel,
+} from '../src/lib/nutrition/format.ts';
 
 let pass = 0;
 let fail = 0;
@@ -861,17 +867,57 @@ console.log('15. the suffix a portion prints, and the oz preference over ml');
 
 console.log('16. the count of pieces, and the two vocabularies that name one (0059)');
 {
-  // `countLabel` is the two tokens portionLabel has always built, lifted out so
-  // the review sheet's sub-line, a logged row's sub-line and the revision
-  // request's tail cannot drift from each other.
+  // `countLabel` is a count of a catalog SERVING and the serving's own phrase —
+  // `2 × 3 slices` is six slices — and the revision request's header tail,
+  // which the model reads. Unchanged by the 2026-09-23 re-cut.
   countLabel(3, 'slice') === '3 × slice'
     ? ok('countLabel is a count and the thing it counts, in one place')
     : bad('countLabel', countLabel(3, 'slice'));
+  countLabel(8 / 3, 'slice') === '2.7 × slice'
+    ? ok('…and keeps its decimal rather than lying')
+    : bad('countLabel fraction', countLabel(8 / 3, 'slice'));
+
+  // THE OWNER'S NOTE, 2026-09-23: "grams are still being used as the unit of
+  // measurement, when it should've changed to slices". A composite's count of
+  // its own pieces reads as a quantity of pieces — `3 slices` — not as the
+  // `3 × slice` that read on the phone as "three times slice".
+  piecesLabel(3, 'slice') === '3 slices'
+    ? ok('piecesLabel reads a counted dish as a person says it: 3 slices')
+    : bad('piecesLabel', piecesLabel(3, 'slice'));
+  piecesLabel(1, 'slice') === '1 slice'
+    ? ok('…one slice in the singular')
+    : bad('piecesLabel singular', piecesLabel(1, 'slice'));
   // A third of eight slices, honestly. Rounding to 3 would print a count the
   // parts do not add up to, which is the one thing this design exists to avoid.
-  countLabel(8 / 3, 'slice') === '2.7 × slice'
-    ? ok('…and a fraction of a counted dish keeps its decimal rather than lying')
-    : bad('countLabel fraction', countLabel(8 / 3, 'slice'));
+  piecesLabel(8 / 3, 'slice') === '2.7 slices'
+    ? ok('…a fraction of a counted dish keeps its decimal, in the plural')
+    : bad('piecesLabel fraction', piecesLabel(8 / 3, 'slice'));
+  // The noun agrees with the number PRINTED, so a 0.95 that prints as 1 does
+  // not read "1 slices".
+  piecesLabel(0.95, 'slice') === '1 slice'
+    ? ok('…and agrees with the number it prints, not the one it stores')
+    : bad('piecesLabel agreement', piecesLabel(0.95, 'slice'));
+  const plurals = [
+    ['slice', 'slices'],
+    ['wing', 'wings'],
+    ['roll', 'rolls'],
+    ['patty', 'patties'],
+    ['sandwich', 'sandwiches'],
+    ['glass', 'glasses'],
+    ['half', 'halves'],
+    ['Half', 'Halves'],
+    ['potato', 'potatoes'],
+    ['chicken wing', 'chicken wings'],
+    ['piece of sushi', 'pieces of sushi'],
+    // Already plural, or a word no rule this size reaches: left alone, because
+    // `3 slicess` is worse than `3 fries`.
+    ['slices', 'slices'],
+    ['fries', 'fries'],
+  ];
+  const wrong = plurals.filter(([one, many]) => pluralNoun(one) !== many);
+  wrong.length === 0
+    ? ok(`pluralNoun reaches the pieces people count (${plurals.length} nouns, capitals kept)`)
+    : bad('pluralNoun', wrong.map(([one]) => `${one} → ${pluralNoun(one)}`).join(', '));
 
   portionLabel({
     amount: 270,
@@ -879,8 +925,8 @@ console.log('16. the count of pieces, and the two vocabularies that name one (00
     serving_qty: 3,
     food_serving_name: null,
     piece_name: 'slice',
-  }) === '3 × slice (270 g)'
-    ? ok('a counted composite prints its own piece noun and what it comes to')
+  }) === '3 slices (270 g)'
+    ? ok('a counted composite leads with its pieces; the grams follow, secondary')
     : bad('portionLabel piece');
   // A header has no food_id, so food_serving_name is NULL on it by
   // construction — but state the precedence anyway, because the alternative is
@@ -891,7 +937,7 @@ console.log('16. the count of pieces, and the two vocabularies that name one (00
     serving_qty: 3,
     food_serving_name: '1 egg',
     piece_name: 'slice',
-  }) === '3 × slice (270 g)'
+  }) === '3 slices (270 g)'
     ? ok('…and the piece noun wins over a joined serving name, never mixes with it')
     : bad('portionLabel precedence');
   portionLabel({ amount: 100, unit: 'g', serving_qty: 2, food_serving_name: '1 egg' }) ===
@@ -906,7 +952,7 @@ console.log('16. the count of pieces, and the two vocabularies that name one (00
     serving_qty: 3,
     food_serving_name: null,
     piece_name: 'slice',
-  }) === '3 × slice'
+  }) === '3 slices'
     ? ok('a counted dish whose parts do not share a unit prints the bare count')
     : bad('portionLabel mixed units');
   portionLabel({

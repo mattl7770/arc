@@ -62,14 +62,37 @@ import type {
  * Typing `3`, `36`, `360` into a 720 g pizza therefore lands on ×0.5, not on
  * ×0.5 ×0.5 ×0.5.
  *
- * ## "Three slices of the eight" (0059)
+ * ## "Ate 3 of 8 slices" (0059, re-cut 2026-09-23)
  *
  * A third handle on the same dish: a COUNT of pieces and the noun for one of
- * them. It is the grams field's sibling in every mechanical respect — same
+ * them, drawn as one sentence with two numbers — `ATE [3] OF [8] SLICES`.
+ *
+ * - **OF** is how many pieces the dish AS PRICED is ({@link ReviewItem.wholeCount}).
+ *   While all of it is eaten, typing it declares (or re-declares) and nothing
+ *   scales; once part of it is eaten, the parts follow so the sentence stays
+ *   true — `ate 3 of 8` retyped as `of 6` is every part × 8/6.
+ * - **ATE** is how many of them were eaten ({@link ReviewPieces.count}, the
+ *   number that is saved). Typing it scales every part by `ate / of`.
+ *
+ * It replaced a single field whose label switched from `THIS IS` (declare) to
+ * `I ATE` (scale) and which moved up a row on its first keystroke — the owner
+ * found it "funky" on the device, and the field that moved was the one being
+ * typed into. Now each number has its own field, neither ever moves, and which
+ * one you type into says which question you are answering. The spike's
+ * principle is unchanged: the count says how many pieces the parts, AS THEY
+ * STAND, add up to; the first count declares, every later one preserves.
+ *
+ * **A RECORD's count has no OF.** Rows built from a logged meal (the Adjust
+ * screen) come with a count of what was EATEN and no whole — the whole was
+ * history of the estimate the record never stored — so they read
+ * `ATE [3] SLICES`, as the meal screen does ({@link rowsFromEstimate}'s
+ * `countIsEaten`). Offering `of [3]` there would invite typing the pizza's
+ * eight, which re-declares three logged slices as eight.
+ *
+ * Both fields are the grams field's siblings in every mechanical respect — same
  * focus snapshot, same non-compounding scale, same "the current state is the
- * record" — with one rule of its own, stated in full above
- * {@link setCompositeCount}: the FIRST count declares what the parts already
- * are and moves nothing; every later one scales them.
+ * record" — so the arithmetic lives in {@link setCompositeCount} and
+ * {@link setCompositeWhole}.
  *
  * **The invariant that keeps that honest:** `countFrom` is never consumed
  * against parts it did not describe. Every writer that drops `scaleFrom` drops
@@ -101,8 +124,13 @@ export type ReviewRow = {
   unit: AmountUnit;
 };
 
-/** How many pieces a composite is, and what one piece is called (0059). */
+/** How many pieces the parts, as they stand, add up to — the count that is
+ *  SAVED as `serving_qty` — and what one piece is called (0059). */
 export type ReviewPieces = { name: string; count: number };
+
+/** The count state a count or whole-dish field was focused on — see
+ *  {@link ReviewItem.countFrom}. */
+export type ReviewCountFrom = { count: number | null; whole: number | null };
 
 /** A top-level review row. `components` is empty for a plain item and holds the
  *  parts for a composite (0058); one level only. */
@@ -112,22 +140,41 @@ export type ReviewItem = ReviewRow & {
   /** The parts as they stood when a whole-dish field was focused — the
    *  baseline that keeps live scaling from compounding. Null when not editing. */
   scaleFrom: ReviewRow[] | null;
-  /** The count of pieces this composite is, and the noun for one of them
-   *  (0059). Null on a plain item and on an uncounted composite. */
+  /** How many pieces were EATEN — the count the parts, as they stand, add up
+   *  to — and the noun for one of them (0059). The `ATE` number. Null on a
+   *  plain item and on an uncounted composite. */
   pieces: ReviewPieces | null;
-  /** The count field's text, the sibling of {@link ReviewRow.amountText}. Empty
-   *  means "show what {@link ReviewItem.pieces} says". */
-  countText: string;
   /**
-   * The count as it stood when {@link ReviewItem.scaleFrom} was taken — the
-   * other half of the same snapshot, so neither live field can compound.
+   * How many pieces the dish AS PRICED is — the `OF` number in `ate 3 of 8`
+   * (2026-09-23). Never non-null without {@link ReviewItem.pieces}; equal to
+   * its count until an `ATE` edit says less (or more) of the dish was eaten.
    *
-   * An INNER null is the load-bearing case: the row had no count when the field
-   * was focused, so whatever number arrives DECLARES one ("this dish is 8
-   * pieces") and moves nothing. An outer null means no baseline has been taken;
-   * the writers then read the count off the row as it stands.
+   * **Null beside a count is a RECORD's count** — a count of what was eaten,
+   * with no whole known (rows built from a logged meal: `countIsEaten`). Such a
+   * row reads `ATE [3] SLICES`, with no OF to mistake for the pizza's size.
+   *
+   * **View state only, never saved.** It is the spike's rejected denominator:
+   * once the parts are scaled to three slices, "8" is history of the estimate,
+   * so it lives exactly as long as the review and `rowsToMealItems` drops it.
    */
-  countFrom: { count: number | null } | null;
+  wholeCount: number | null;
+  /** The ATE field's text while it is being typed into; null shows
+   *  {@link ReviewItem.pieces}' count. Null rather than `''` as the sentinel, so
+   *  a field emptied mid-edit shows empty instead of refilling under the thumb. */
+  countText: string | null;
+  /** The OF field's text while it is being typed into; null shows
+   *  {@link ReviewItem.wholeCount}. */
+  wholeText: string | null;
+  /**
+   * The count and the whole as they stood when {@link ReviewItem.scaleFrom} was
+   * taken — the other half of the same snapshot, so no live field can compound.
+   *
+   * A null `whole` is the load-bearing case: the row had no count when the field
+   * was focused, so the number typed into OF DECLARES one ("this dish is 8
+   * pieces") and moves nothing. An outer null means no baseline has been taken;
+   * the writers then read both off the row as it stands.
+   */
+  countFrom: ReviewCountFrom | null;
 };
 
 export function isComposite(row: ReviewItem): boolean {
@@ -273,22 +320,41 @@ function toRow(
   };
 }
 
-/** A grounded estimate as editable review rows — the tree included. */
-export function rowsFromEstimate(db: Database, estimate: MealEstimate): ReviewItem[] {
-  return estimate.items.map((item, i) => ({
-    ...toRow(db, { ...item, micros: item.micros ?? null }, `${i}-${item.name}`),
-    components: (item.components ?? []).map((part, j) =>
-      toRow(db, { ...part, micros: part.micros ?? null }, `${i}-${j}-${part.name}`)
-    ),
-    expanded: false,
-    scaleFrom: null,
+/**
+ * A grounded estimate as editable review rows — the tree included.
+ *
+ * `countIsEaten` is for rows built from a LOGGED meal (app/meal-revise.tsx):
+ * the model is handed the record's count — what was eaten — and told to keep
+ * it, so what comes back is a count of the portion, not of a dish priced whole.
+ * Those rows carry no whole (`wholeCount` null) and read `ATE [3] SLICES`.
+ */
+export function rowsFromEstimate(
+  db: Database,
+  estimate: MealEstimate,
+  { countIsEaten = false }: { countIsEaten?: boolean } = {}
+): ReviewItem[] {
+  return estimate.items.map((item, i) => {
     // The model's own count of what it priced (0059), read only on a composite:
     // a count of pieces is a fact about a dish with parts, and on a plain item
     // it would land in three places built for a catalog SERVING count.
-    pieces: item.components && item.components.length > 0 ? (item.pieces ?? null) : null,
-    countText: '',
-    countFrom: null,
-  }));
+    const pieces = item.components && item.components.length > 0 ? (item.pieces ?? null) : null;
+    return {
+      ...toRow(db, { ...item, micros: item.micros ?? null }, `${i}-${item.name}`),
+      components: (item.components ?? []).map((part, j) =>
+        toRow(db, { ...part, micros: part.micros ?? null }, `${i}-${j}-${part.name}`)
+      ),
+      expanded: false,
+      scaleFrom: null,
+      pieces,
+      // The count is of what was PRICED, so the dish as priced is that many
+      // pieces and all of them are on the plate: `ate [8] of [8] slices`. A
+      // record's count is of what was eaten, and has no whole to offer.
+      wholeCount: countIsEaten ? null : (pieces?.count ?? null),
+      countText: null,
+      wholeText: null,
+      countFrom: null,
+    };
+  });
 }
 
 /** The rows as `meal_items` input — a composite becomes a header with parts. */
@@ -313,21 +379,27 @@ export function rowsToMealItems(rows: ReviewItem[]): NewMealItem[] {
       micros: p.micros,
     };
   };
-  return rows.map((row) =>
-    isComposite(row)
-      ? // The header's own numbers are never sent — the repository would drop
-        // them anyway (invariant 2), and sending them would suggest they mean
-        // something. Its COUNT is not one of them (0059): a count is a fact
-        // about the whole dish, and nothing sums it.
-        {
-          name: row.name,
-          unit: row.unit,
-          serving_qty: row.pieces?.count ?? null,
-          piece_name: row.pieces?.name ?? null,
-          components: row.components.map(priced),
-        }
-      : priced(row)
-  );
+  return rows.map((row) => {
+    if (!isComposite(row)) return priced(row);
+    // The header's own numbers are never sent — the repository would drop them
+    // anyway (invariant 2), and sending them would suggest they mean something.
+    // Its COUNT is not one of them (0059): a count is a fact about the whole
+    // dish, and nothing sums it. The count saved is the one EATEN — what the
+    // parts, as saved, add up to; the dish as priced (`wholeCount`, the "of 8")
+    // is history of the estimate and is dropped.
+    //
+    // A count field emptied but not yet left — Save tapped with it still
+    // focused, which the keyboard's "handled" taps allow — is resolved here
+    // exactly as its blur would resolve it ({@link settleCount}).
+    const settled = settleCount(row);
+    return {
+      name: row.name,
+      unit: row.unit,
+      serving_qty: settled.pieces?.count ?? null,
+      piece_name: settled.pieces?.name ?? null,
+      components: row.components.map(priced),
+    };
+  });
 }
 
 // --- Edits ------------------------------------------------------------------
@@ -374,8 +446,14 @@ export function removeRow(rows: ReviewItem[], key: string): ReviewItem[] {
   return out;
 }
 
+/** Open or close one composite. Closing it ENDS any count edit inside it
+ *  ({@link settleCount}): the fields unmount with the disclosure, and a focused
+ *  field that unmounts is not promised a blur — so the header would otherwise go
+ *  on showing a count that an emptied field had already given up. */
 export function toggleExpanded(rows: ReviewItem[], key: string): ReviewItem[] {
-  return rows.map((row) => (row.key === key ? { ...row, expanded: !row.expanded } : row));
+  return rows.map((row) =>
+    row.key === key ? { ...(row.expanded ? settleCount(row) : row), expanded: !row.expanded } : row
+  );
 }
 
 /** One part, scaled by `factor` from its CURRENT values. */
@@ -414,14 +492,16 @@ export function scaleComposite(rows: ReviewItem[], key: string, factor: number):
       ? {
           ...row,
           components: row.components.map((c) => scaleRow(c, factor)),
-          // A chip moves the WHOLE dish, so it moves the count: a third of
-          // eight slices is the honest 2.7, never a rounded 3 the parts do not
-          // add up to.
+          // A chip moves the WHOLE dish, so it moves the count eaten: a third
+          // of eight slices is the honest 2.7, never a rounded 3 the parts do
+          // not add up to. The dish as priced (`wholeCount`) does not move — a
+          // C5 answer of "three of the eight" reads `ate 3 of 8`.
           pieces: scalePieces(row.pieces, row.pieces?.count ?? null, factor),
-          // The whole-dish field and the count field re-derive from the parts
+          // The whole-dish field and the count fields re-derive from the parts
           // again, and the next edit starts from what is now on screen.
           amountText: '',
-          countText: '',
+          countText: null,
+          wholeText: null,
           scaleFrom: null,
           countFrom: null,
         }
@@ -433,10 +513,14 @@ export function scaleComposite(rows: ReviewItem[], key: string, factor: number):
  *  scaling baseline — one snapshot, so neither can compound against the other. */
 export function beginCompositeScale(rows: ReviewItem[], key: string): ReviewItem[] {
   return rows.map((row) =>
-    row.key === key
-      ? { ...row, scaleFrom: row.components, countFrom: { count: row.pieces?.count ?? null } }
-      : row
+    row.key === key ? { ...row, scaleFrom: row.components, countFrom: countNow(row) } : row
   );
+}
+
+/** The count state as the row holds it now — what a snapshot freezes. A null
+ *  whole beside a count is a record's count, and stays null. */
+function countNow(row: ReviewItem): ReviewCountFrom {
+  return { count: row.pieces?.count ?? null, whole: row.wholeCount };
 }
 
 /** Blur: drop the baseline, so the next edit takes a fresh one. */
@@ -456,7 +540,7 @@ export function scaleCompositeTo(rows: ReviewItem[], key: string, text: string):
     // The count half of the same snapshot. Taken here when the focus handler
     // never ran (a headless caller, or react-native's own focus ordering), so
     // the count cannot compound either.
-    const fromCount = row.countFrom ?? { count: row.pieces?.count ?? null };
+    const fromCount = row.countFrom ?? countNow(row);
     const target = parseAmount(text);
     const total = from.reduce<number | null>((sum, c) => {
       const amount = currentPortion(c).amount;
@@ -479,71 +563,194 @@ export function scaleCompositeTo(rows: ReviewItem[], key: string, text: string):
   });
 }
 
-// --- The count of pieces (0059) ---------------------------------------------
+// --- The count of pieces (0059, re-cut 2026-09-23) --------------------------
 //
 // THE PRINCIPLE, in one sentence: the unit says what the number is measured in;
 // the count says how many of a named piece the parts, AS THEY STAND, add up to.
 // The first count DECLARES that correspondence; every later change PRESERVES it
 // by scaling the parts.
 //
-// That is why the empty field asks one question and its label says which. A
-// composite's parts are the whole dish as it was priced, so a number typed onto
-// an UNCOUNTED composite can only mean "what is priced here is N pieces" — take
-// it as "I ate N" and a photographed whole pizza reads `3 × slice` over eight
-// slices of macros, the headline disagreeing with the parts.
+// Two numbers say it now, each in its own field, so no field ever has to change
+// what it means: OF says what the dish is, ATE how much of it was eaten. A
+// composite's parts are the whole dish as it was priced, so until the dish has
+// an OF a number can only mean "this dish is N pieces" — which is why the screen
+// draws ATE only once there is an OF, and why this file will not let a number
+// typed into ATE conjure one.
+//
+// ONE RULE FOR TEXT THAT IS NOT A COUNT, in either field (`""`, `0`, `101`,
+// `1.2.`): the parts show exactly as they stood when the field was focused, and
+// a count the dish already had returns to its value then. Only a valid number
+// moves anything. That is what makes leaving a field EMPTY safe to act on at
+// blur — it un-counts the dish as it stood, never at a scale that some number
+// typed a moment earlier produced (a `1` on the way to `12` is × 8). The one
+// exception is shape, not grams: a declaration still being typed keeps the
+// counted shape its last number gave it, since a declaration never moved a gram.
 
-/** Focus of the count field: freeze the parts and the count together. An inner
- *  null count is what makes this focus a DECLARATION. */
+/** Two counts that are the same count — `===` would let the float noise of a
+ *  C5 multiplication decide whether an OF edit re-declares or re-scales. */
+function sameCount(a: number, b: number): boolean {
+  return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
+}
+
+/**
+ * The edit now open will UN-COUNT the dish when it ends: the field that says
+ * what the dish IS was emptied. That is OF — or, on a record's count, which has
+ * no OF (`wholeCount` null beside a count), ATE. Resolved on blur
+ * ({@link endCountEdit}), on collapse ({@link toggleExpanded}) and at Save
+ * ({@link rowsToMealItems}), and never on the keystroke, so backspacing an 8 to
+ * type a 6 is one edit.
+ */
+function pendingUncount(row: ReviewItem): boolean {
+  const emptied = (text: string | null) => text !== null && text.trim() === '';
+  return (
+    emptied(row.wholeText) ||
+    (row.pieces !== null && row.wholeCount === null && emptied(row.countText))
+  );
+}
+
+/** A count edit, ended: baselines dropped, both fields re-derived from what they
+ *  produced, and the dish un-counted if {@link pendingUncount} says so — the
+ *  parts left exactly where they stand ("forgetting how many pieces a dish was
+ *  is not eating any of it"). */
+function settleCount(row: ReviewItem): ReviewItem {
+  return {
+    ...row,
+    scaleFrom: null,
+    countFrom: null,
+    countText: null,
+    wholeText: null,
+    ...(pendingUncount(row) ? { pieces: null, wholeCount: null } : {}),
+  };
+}
+
+/** Focus of either count field: freeze the parts, the count and the whole
+ *  together. A null count is what makes an OF focus a DECLARATION. */
 export function beginCountEdit(rows: ReviewItem[], key: string): ReviewItem[] {
   return beginCompositeScale(rows, key);
 }
 
-/** Blur: drop both baselines, and let the field re-derive from the count it
- *  actually produced (so half-typed text never outlives the edit). */
+/**
+ * Blur of either count field — {@link settleCount}.
+ *
+ * **Emptied and left, the field that says what the dish is un-counts it**: OF,
+ * or ATE on a record's count. The single field this replaced cleared the count
+ * on the empty KEYSTROKE, so the 6 typed after backspacing an 8 re-declared over
+ * parts already scaled — two gestures for "change 8 to 6" with opposite effects.
+ * An ATE emptied beside an OF simply shows the count again: emptying what you
+ * ate is not a statement about the dish.
+ */
 export function endCountEdit(rows: ReviewItem[], key: string): ReviewItem[] {
-  return rows.map((row) =>
-    row.key === key ? { ...row, scaleFrom: null, countFrom: null, countText: '' } : row
-  );
+  return rows.map((row) => (row.key === key ? settleCount(row) : row));
 }
 
 /**
- * The count field changed.
+ * The ATE field changed — how many of the dish's pieces were eaten.
  *
- * - **Empty on a counted row CLEARS the count** — `pieces` null, parts
- *   untouched. That is the route back from a count the model got wrong: empty
- *   means "no count", so the next number declares afresh and moves nothing.
- * - **Not yet a number** ("abc", "") holds the text and moves nothing.
- * - **With no count at focus** the number DECLARES: the parts stand exactly as
- *   they are and are now said to be N pieces.
- * - **With one** the parts scale by `count / baseline` from the frozen
- *   snapshot, non-compounding exactly as {@link scaleCompositeTo} is.
+ * - **No count at focus** holds, moving nothing: there is nothing to take a
+ *   share of, and a number on an uncounted dish can only mean "this dish is N
+ *   pieces", which is OF's question. The screen does not draw this field there.
+ * - **Not a count** shows the dish as it stood at focus (the rule above).
+ * - **Otherwise** every part scales by `count / baseline` from the frozen
+ *   snapshot, non-compounding exactly as {@link scaleCompositeTo} is, and the
+ *   count eaten becomes the number typed. The dish as priced does not move.
  */
 export function setCompositeCount(rows: ReviewItem[], key: string, text: string): ReviewItem[] {
   return rows.map((row) => {
     if (row.key !== key || !isComposite(row)) return row;
-    if (text.trim() === '') {
-      // Clearing is a declaration of ignorance, not of eating: nothing scales.
-      return { ...row, countText: text, pieces: null, countFrom: { count: null } };
-    }
-    const from = row.countFrom ?? { count: row.pieces?.count ?? null };
-    const count = parseCount(text);
-    if (count == null) return { ...row, countText: text, countFrom: from };
-    const noun = row.pieces?.name ?? 'piece';
+    const from = row.countFrom ?? countNow(row);
+    const base = row.scaleFrom ?? row.components;
     // Read out of the snapshot before the closure below, so the narrowing holds.
     const baseline = from.count;
     if (baseline == null || baseline <= 0) {
-      // THE DECLARATION. Every part and the meal's energy come out
-      // byte-identical; all that changes is what the dish is now said to be.
-      return { ...row, countText: text, countFrom: from, pieces: { name: noun, count } };
+      return { ...row, countText: text, countFrom: from, scaleFrom: base };
     }
-    const base = row.scaleFrom ?? row.components;
+    const name = row.pieces?.name ?? 'piece';
+    const count = parseCount(text);
     return {
       ...row,
       countText: text,
       countFrom: from,
       scaleFrom: base,
-      components: base.map((c) => scaleRow(c, count / baseline)),
-      pieces: { name: noun, count },
+      components: count == null ? base : base.map((c) => scaleRow(c, count / baseline)),
+      pieces: { name, count: count ?? baseline },
+      // The whole-dish grams field re-derives from the parts it now reads.
+      amountText: '',
+    };
+  });
+}
+
+/**
+ * The OF field changed — how many pieces the dish AS PRICED is.
+ *
+ * - **Not a count** — EMPTY included — shows the dish as it stood at focus (the
+ *   rule above, and its one exception); an empty OF then un-counts it on blur.
+ * - **No count at focus → THE DECLARATION.** The parts stand exactly as they
+ *   are and are now said to be N pieces, every one of them eaten:
+ *   `ate [8] of [8]`. Every part and the meal's energy come out byte-identical.
+ * - **All of it eaten at focus (ate = of) → a RE-DECLARATION.** The model said
+ *   eight and the pizza was six: the count eaten follows the whole and nothing
+ *   scales. No clearing first — the gesture the old single field needed, and the
+ *   one the spike warned was a trap in the hand.
+ * - **Part of it eaten (ate ≠ of) → what the sentence now says.** The count
+ *   eaten stands and the parts become `ate / of` of the dish as priced: after
+ *   `ate 3 of 8`, typing 6 reads `ate 3 of 6`, and every part scales by 8/6.
+ *
+ * So OF moves grams only in the last case — and, like any re-declaration, it
+ * re-fixes what one piece weighs, which ATE never does.
+ */
+export function setCompositeWhole(rows: ReviewItem[], key: string, text: string): ReviewItem[] {
+  return rows.map((row) => {
+    if (row.key !== key || !isComposite(row)) return row;
+    const from = row.countFrom ?? countNow(row);
+    const base = row.scaleFrom ?? row.components;
+    const name = row.pieces?.name ?? 'piece';
+    const eaten = from.count;
+    const was = from.whole;
+    const whole = parseCount(text);
+    if (whole == null) {
+      // A DECLARATION in progress (no count at focus) keeps the shape its last
+      // number gave it: its parts never moved, so there is nothing to restore,
+      // and flipping back to uncounted on the empty keystroke would mount and
+      // unmount ATE, the header's grams field and the chips around the field
+      // being typed into — "8", backspace, "6" is one edit. Left empty, it
+      // un-counts on blur like any other.
+      if (eaten == null) {
+        return { ...row, wholeText: text, countFrom: from, scaleFrom: base, components: base };
+      }
+      return {
+        ...row,
+        wholeText: text,
+        countFrom: from,
+        scaleFrom: base,
+        components: base,
+        pieces: { name, count: eaten },
+        wholeCount: was,
+        amountText: '',
+      };
+    }
+    if (was == null || eaten == null || sameCount(eaten, was)) {
+      // Declared or re-declared: the parts at focus are the whole dish, now
+      // said to be `whole` pieces — all of them eaten. Nothing scales.
+      return {
+        ...row,
+        wholeText: text,
+        countFrom: from,
+        scaleFrom: base,
+        components: base,
+        pieces: { name, count: whole },
+        wholeCount: whole,
+        amountText: '',
+      };
+    }
+    return {
+      ...row,
+      wholeText: text,
+      countFrom: from,
+      scaleFrom: base,
+      components: base.map((c) => scaleRow(c, was / whole)),
+      pieces: { name, count: eaten },
+      wholeCount: whole,
+      amountText: '',
     };
   });
 }
@@ -562,6 +769,84 @@ export function setPiecesName(rows: ReviewItem[], key: string, name: string): Re
   return rows.map((row) =>
     row.key === key && row.pieces ? { ...row, pieces: { ...row.pieces, name: trimmed } } : row
   );
+}
+
+// --- A LOGGED composite's count (app/meal-detail.tsx) -----------------------
+//
+// The review sheet counts a dish AS PRICED, so it has two numbers — ate [3] of
+// [8]. A logged record has one: the parts are what was eaten, and the "of 8"
+// was history of the estimate that the record never stored (the spike's
+// rejected denominator; no migration). So on the record:
+//
+// - a COUNTED composite reads `ate [3] slices` — the count is what you ate, and
+//   typing a new one scales every part by new / current;
+// - an UNCOUNTED one reads the review's own sentence — its parts, as logged, are
+//   the whole dish, so OF declares what they are and ATE then takes a share.
+//
+// meal-detail stages a draft and writes on Save (its rule for anything already
+// in the day's totals), so what Save will do is decided HERE, purely, and the
+// sentence stated above the Save button reads the same plan it executes.
+
+/** A count draft on a logged composite. A null text is an untouched field. */
+export type LoggedCountDraft = {
+  eatenText: string | null;
+  wholeText: string | null;
+  nounText: string;
+};
+
+/**
+ * What Save does to a logged composite's count — through the repository's own
+ * `setCompositeCount` / `clearCompositeCount`, nothing else.
+ *
+ * - `clear` — the count goes and the parts stand (a counted record's ATE saved
+ *   EMPTY: forgetting how many pieces a dish was is not eating any of it).
+ * - `set` — `declare` (uncounted only) says what the parts ARE and scales
+ *   nothing; then `eaten`, when it differs, scales every part by
+ *   eaten / (the count just declared, or the one the record holds).
+ * - `none` — nothing typed that would change the record.
+ * - `invalid` — a field holds text that is not a count.
+ */
+export type LoggedCountPlan =
+  | { kind: 'none' }
+  | { kind: 'invalid' }
+  | { kind: 'clear' }
+  | { kind: 'set'; declare: number | null; eaten: number | null; noun: string | undefined };
+
+export function planLoggedCount(
+  draft: LoggedCountDraft,
+  stored: { serving_qty: number | null; piece_name: string | null }
+): LoggedCountPlan {
+  const typedNoun = draft.nounText.trim();
+  const noun = typedNoun === '' ? undefined : typedNoun;
+  const renamed = noun !== undefined && noun !== stored.piece_name;
+  const current = stored.serving_qty;
+
+  if (current != null) {
+    // COUNTED: one number, what was eaten.
+    if (draft.eatenText === null) {
+      // Untouched — a rename alone is a count of the same size, which scales by
+      // exactly 1 and writes the new noun.
+      return renamed ? { kind: 'set', declare: null, eaten: current, noun } : { kind: 'none' };
+    }
+    if (draft.eatenText.trim() === '') return { kind: 'clear' };
+    const eaten = parseCount(draft.eatenText);
+    if (eaten == null) return { kind: 'invalid' };
+    return eaten === current && !renamed
+      ? { kind: 'none' }
+      : { kind: 'set', declare: null, eaten, noun };
+  }
+
+  // UNCOUNTED: OF declares; there is nothing to take a share of until it does.
+  if (draft.wholeText === null || draft.wholeText.trim() === '') return { kind: 'none' };
+  const whole = parseCount(draft.wholeText);
+  if (whole == null) return { kind: 'invalid' };
+  // An untouched or emptied ATE is all of it — the state every count starts in.
+  if (draft.eatenText === null || draft.eatenText.trim() === '') {
+    return { kind: 'set', declare: whole, eaten: null, noun };
+  }
+  const eaten = parseCount(draft.eatenText);
+  if (eaten == null) return { kind: 'invalid' };
+  return { kind: 'set', declare: whole, eaten: eaten === whole ? null : eaten, noun };
 }
 
 // --- Answering a clarifying question (backlog C5) ---------------------------
@@ -624,7 +909,9 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
         // An answer adds a PLAIN item, and a plain item is never counted in
         // pieces (0059) — the count lives on a dish with parts.
         pieces: null,
-        countText: '',
+        wholeCount: null,
+        countText: null,
+        wholeText: null,
         countFrom: null,
       },
     ];
@@ -640,7 +927,7 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
 
   // scale_item. Scaling a COMPOSITE header scales every part — the header has
   // no numbers of its own, so there is nothing else it could mean — and its
-  // count with them, so a C5 answer of "3 of the 8" leaves `3 × slice` (0059).
+  // count with them, so a C5 answer of "3 of the 8" reads `ate 3 of 8` (0059).
   if (!found.part && isComposite(found.top)) {
     return scaleComposite(rows, found.top.key, effect.factor);
   }
@@ -655,7 +942,9 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
         // A plain row has no count of pieces; carried rather than re-derived so
         // this stays exhaustive over ReviewItem.
         pieces: row.pieces,
+        wholeCount: row.wholeCount,
         countText: row.countText,
+        wholeText: row.wholeText,
       };
     if (!row.components.some((c) => c.key === targetKey)) return row;
     return {
@@ -703,4 +992,35 @@ export function rowsToRevisionSubject(name: string, rows: ReviewItem[]): MealRev
         : line(row)
     ),
   };
+}
+
+/**
+ * The rows a typed answer came back as, given back the dish counts they were
+ * sent without.
+ *
+ * The typed-answer call sends each dish's count EATEN (`pieces`) and tells the
+ * model to keep it; what returns is rebuilt by {@link rowsFromEstimate}, which
+ * reads any count as the dish priced whole. Before a dish is eaten from those
+ * are the same number; after `ate 3 of 8` they are not, and the rebuilt row
+ * would read `ate [3] of [3]` — the 8 gone, and an OF inviting the pizza's
+ * eight over three slices of parts. So, matching by name:
+ *
+ * - the count came back **unchanged** → the dish's own whole comes back with it
+ *   (`ate 3 of 8` stays `ate 3 of 8`; a record's count stays wholeless);
+ * - it came back **changed** → it is still a count of what was eaten, and
+ *   nothing says what the dish was: no whole, `ate [n] slices`;
+ * - the dish was **not counted** before → the model counted what it priced,
+ *   which is the whole, as on a fresh estimate.
+ */
+export function carryWholes(sent: ReviewItem[], back: ReviewItem[]): ReviewItem[] {
+  return back.map((row) => {
+    if (!row.pieces) return row;
+    const name = row.name.trim().toLowerCase();
+    const before = sent.find((s) => isComposite(s) && s.name.trim().toLowerCase() === name);
+    if (!before?.pieces) return row;
+    return {
+      ...row,
+      wholeCount: sameCount(row.pieces.count, before.pieces.count) ? before.wholeCount : null,
+    };
+  });
 }
