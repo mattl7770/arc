@@ -29,6 +29,7 @@
  */
 import { todayISODate } from '@/lib/db/date';
 import { deleteWorkout, getWorkoutDetail, replaceWorkout } from '@/lib/db/repositories/exercise';
+import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import {
   checkGroceryItem,
   getGroceryItem,
@@ -593,6 +594,14 @@ const protocolsDomain: CoachDomainEntry = {
     if (patch.is_active === true && row.values.is_active !== true) {
       setActive(db, row.id, true, todayISODate(context.now));
     }
+    // The write reaches TODAY, exactly as the Settings sheet's save does
+    // (app/protocol-settings.tsx): a pause takes this protocol's untouched rows
+    // off today, a resume puts them back, a carry-over or check-off-mode change
+    // re-plans the day, and anything already done or skipped is preserved by
+    // the same diff. Without it a Coach pause took effect tomorrow, silently —
+    // the exact defect the rethink fixed for the sheet. The reminder re-sync
+    // follows every Coach write already (app/(tabs)/coach.tsx).
+    rederiveMissionFromToday(db, todayISODate(context.now));
   },
   // NOT REMOVABLE. Deleting a protocol must never destroy execution history
   // (CLAUDE.md §9), and its versions are immutable rows a past day was lived

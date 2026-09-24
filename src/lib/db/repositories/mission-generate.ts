@@ -137,6 +137,13 @@ type GeneratedExtras = {
    * arrival re-derive strips it from every row still pending.
    */
   ahead?: true;
+  /**
+   * ── The hand-move mark (2026-09-23) ─────────────────────────────────────
+   * Never computed by {@link planForDay}: it reaches `log_entries.value` only
+   * through `moveMissionItem` (./mission.ts), and {@link rederiveMissionForDay}
+   * carries it forward. A marked row keeps the time the user gave it.
+   */
+  moved?: true;
 };
 
 /**
@@ -1064,7 +1071,8 @@ export type RederiveResult = {
   /** Untouched pending generated/seed rows the new plan no longer wants. */
   removed: number;
   /** Replaceable rows that still match the new plan, kept in place (same id) —
-   *  re-synced to the live plan's dose/why/scheduled_time when it changed. */
+   *  re-synced to the live plan's dose/why/scheduled_time when it changed. A
+   *  row MOVED by hand keeps its own time; everything else still follows. */
   kept: number;
   /** Rows protected because the user acted on them, or they weren't machine-made. */
   preserved: number;
@@ -1185,17 +1193,31 @@ export function rederiveMissionForDay(
   // the same protocol are two different obligations that happen to share a
   // title, and letting either claim the other's slot in the multiset would
   // either duplicate the item or silently delete today's own occurrence.
-  type Classified = Row & { carried: boolean };
+  // `moved` and `item` ride along for the same reason: a row moved by hand
+  // keeps its time through the re-sync, and — when a retitle breaks the title
+  // match — hands it to the entry that replaces it (below).
+  type Classified = Row & { carried: boolean; moved: boolean; item: string | null };
   const replaceable: Classified[] = [];
   const preservedRows: Classified[] = [];
   for (const row of rows) {
-    let extras: { generated?: boolean; seed?: boolean; carried?: boolean } = {};
+    let extras: {
+      generated?: boolean;
+      seed?: boolean;
+      carried?: boolean;
+      moved?: boolean;
+      item?: string;
+    } = {};
     try {
       extras = row.value ? (JSON.parse(row.value) as typeof extras) : {};
     } catch {
       extras = {}; // unparseable value → treat as hand-made, i.e. preserve it
     }
-    const classified: Classified = { ...row, carried: extras.carried === true };
+    const classified: Classified = {
+      ...row,
+      carried: extras.carried === true,
+      moved: extras.moved === true,
+      item: typeof extras.item === 'string' ? extras.item : null,
+    };
     if (row.status !== 'pending') {
       preservedRows.push(classified); // acted on: completed / skipped / partial
     } else if (extras.generated === true) {
@@ -1243,26 +1265,67 @@ export function rederiveMissionForDay(
   // time (Home's hero would still read the pre-edit dose for the rest of today).
   // Only rows whose stored payload actually moved are updated, so a re-derive
   // with no change stays a no-op and doesn't churn updated_at.
+  //
+  // ## A row MOVED BY HAND keeps its time (2026-09-23)
+  //
+  // `moveMissionItem` marks the row (`value.moved`), and here the mark wins
+  // over the plan for exactly one field: `scheduled_time`. The dose and the
+  // why-line still follow the item — a re-dose made after a move must reach
+  // the row — and the mark is carried forward so the NEXT re-derive keeps the
+  // time too. A row that was not moved follows a time edit to its item exactly
+  // as before. The mark is appended LAST, which is also where the move's own
+  // json_set put it, so an unchanged day still compares equal and writes
+  // nothing.
   const toRemove: string[] = [];
   const toUpdate: { id: string; value: string; scheduledTime: string | null }[] = [];
+  const unmatchedMoved: Classified[] = [];
   for (const row of replaceable) {
     const entry = planByKey.get(planKey(row.title, row.protocol_id, row.carried))?.shift();
     if (!entry) {
       toRemove.push(row.id);
+      if (row.moved) unmatchedMoved.push(row);
       continue;
     }
     // Both the stored value and the plan entry's extras are built by the same
     // planForDay shape, so JSON.stringify key order matches and a string compare
     // detects a real dose/why change.
-    const value = JSON.stringify(entry.extras);
-    if (value !== row.value || entry.scheduledTime !== row.scheduled_time) {
-      toUpdate.push({ id: row.id, value, scheduledTime: entry.scheduledTime });
+    const value = JSON.stringify(row.moved ? { ...entry.extras, moved: true } : entry.extras);
+    const scheduledTime = row.moved ? row.scheduled_time : entry.scheduledTime;
+    if (value !== row.value || scheduledTime !== row.scheduled_time) {
+      toUpdate.push({ id: row.id, value, scheduledTime });
     }
   }
 
   // Whatever plan entries no row claimed are genuinely new.
   const toAdd: PlannedEntry[] = [];
   for (const queue of planByKey.values()) for (const entry of queue) toAdd.push(entry);
+
+  // A moved row the title match could not pair is, in the one case that
+  // matters, an item RETITLED since the move: the diff keys on the title, so
+  // the old row goes and a new one comes in. That is how every retitle has
+  // always landed, and for an ordinary row nothing is lost by it — but a moved
+  // row would lose its time through this door just as it used to through the
+  // re-sync. So the entry replacing it — same protocol, same ITEM id, same
+  // carried-ness — is inserted at the moved time, wearing the mark. An item
+  // that is simply gone (edited out, paused, deleted) has no such entry, and
+  // its row is removed like any other: the move said when, not whether.
+  for (const row of unmatchedMoved) {
+    const at = toAdd.findIndex(
+      (entry) =>
+        entry.protocolId === row.protocol_id &&
+        row.item !== null &&
+        entry.extras.item === row.item &&
+        (entry.extras.carried === true) === row.carried &&
+        entry.extras.moved !== true
+    );
+    if (at === -1) continue;
+    const entry = toAdd[at]!;
+    toAdd[at] = {
+      ...entry,
+      scheduledTime: row.scheduled_time,
+      extras: { ...entry.extras, moved: true },
+    };
+  }
 
   const kept = replaceable.length - toRemove.length;
   if (toRemove.length === 0 && toAdd.length === 0 && toUpdate.length === 0) {

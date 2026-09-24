@@ -17,14 +17,20 @@ import { todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { openStatuses } from '../src/lib/db/repositories/statuses.ts';
-import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+import { generateMissionForDay, planForDay } from '../src/lib/db/repositories/mission-generate.ts';
 import { logNote } from '../src/lib/db/repositories/logs.ts';
 import {
   getOrCreateDailyLog,
   insertMissionItem,
   listMission,
+  setMissionStatus,
 } from '../src/lib/db/repositories/mission.ts';
-import { createProtocolWithVersion, listProtocols } from '../src/lib/db/repositories/protocols.ts';
+import {
+  addVersion,
+  createProtocolWithVersion,
+  listProtocols,
+} from '../src/lib/db/repositories/protocols.ts';
+import { isoWeekday } from '../src/lib/protocols/cadence.ts';
 import { buildRecommendation } from '../src/lib/db/repositories/training-recommend.ts';
 import { createRoutine } from '../src/lib/db/repositories/routines.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
@@ -92,6 +98,28 @@ const CTX = { now: NOW };
 const TODAY = todayISODate(NOW);
 const run = (name, db, input = {}) => JSON.parse(toolByName(name).execute(db, input, CTX));
 const card = (name, db, input = {}) => toolByName(name).confirmSummary(input, db, CTX);
+/** `edit_record`, with a FRESH context — it writes its staleness slot into the one it gets. */
+const edit = (db, domain, id, fields) =>
+  JSON.parse(toolByName('edit_record').execute(db, { domain, id, fields }, { now: NOW }));
+/** A one-phase schema-2 document. */
+const doc = (items) => ({
+  schema: 2,
+  phases: [
+    {
+      id: 'p',
+      title: null,
+      duration_days: null,
+      items: items.map((it) => ({
+        id: it.id,
+        title: it.title,
+        scheduled_time: it.time ?? null,
+        dose: null,
+        notes: null,
+        cadence: it.cadence ?? { kind: 'daily' },
+      })),
+    },
+  ],
+});
 
 /** Seed a mission of three planned items; returns them by title. */
 function seedMission(db) {
@@ -590,6 +618,168 @@ console.log('R4. an experiment only occupies the days it actually runs');
   listMission(db3, TODAY).some((m) => m.title.includes('Creatine'))
     ? ok('…and a live experiment still lands on the mission (adherence stays visible)')
     : bad('live experiment missing');
+}
+
+// R5–R7 are Phase 0 of the protocol-menus compaction (2026-09-23): the Coach's
+// half of three mission-layer defects. The repository half of R5 and R6 is
+// §29–31 of db/mission-generate.test.mjs.
+
+console.log('R5. an approved move survives a later re-derive');
+{
+  const { db } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Daily', type: 'daily_routine' },
+    {
+      items: [
+        { title: 'Zone 2 — 45m', scheduled_time: '06:30' },
+        { title: 'Evening walk', scheduled_time: '20:00' },
+      ],
+    }
+  );
+  generateMissionForDay(db, TODAY);
+  const walk = listMission(db, TODAY).find((m) => m.title === 'Evening walk');
+  run('adjust_today', db, { ops: [{ action: 'move', id: walk.id, scheduled_time: '18:00' }] });
+  listMission(db, TODAY).find((m) => m.id === walk.id)?.scheduledTime === '18:00'
+    ? ok('the move takes effect immediately')
+    : bad('move did nothing');
+
+  // An unrelated edit later the same day re-derives today — and used to put
+  // the walk straight back at 20:00.
+  run('update_protocol', db, {
+    protocol_slug: 'daily',
+    phases: [
+      {
+        items: [
+          { title: 'Zone 2 — 45m', scheduled_time: '06:30' },
+          { title: 'Evening walk', scheduled_time: '20:00', dose: '30 min' },
+        ],
+      },
+    ],
+    change_notes: 'the walk is 30 minutes',
+  });
+  const after = listMission(db, TODAY).find((m) => m.id === walk.id);
+  after?.scheduledTime === '18:00'
+    ? ok('the approved move stays where it was put through the re-derive')
+    : bad('the re-derive snapped the move back', JSON.stringify(after));
+  after?.dose === '30 min'
+    ? ok('…while the edit still reaches the moved row')
+    : bad('the moved row stopped following the edit', JSON.stringify(after));
+}
+
+console.log('R6. an approved skip of a carried row settles the debt it carries');
+{
+  const { db } = freshDb();
+  const yesterday = isoDaysAgo(NOW, 1);
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: yesterday, carryOver: true },
+    doc([
+      {
+        id: 'lower',
+        title: 'Lower body',
+        cadence: { kind: 'weekdays', days: [isoWeekday(yesterday)] },
+      },
+    ])
+  );
+  generateMissionForDay(db, yesterday); // planned, and left untouched
+  generateMissionForDay(db, TODAY); // …so today carries it
+  const copy = listMission(db, TODAY).find((m) => m.carriedFrom);
+  copy ? ok('today holds the carried copy') : bad('precondition: no carried row');
+
+  run('adjust_today', db, { ops: [{ action: 'skip', id: copy.id }] });
+  const origin = db.get('SELECT status, value FROM log_entries WHERE id = ?', [
+    copy.carriedFrom.entry,
+  ]);
+  origin.status === 'skipped' && JSON.parse(origin.value).skipped_via === copy.id
+    ? ok('the skip reaches the original, exactly as the item sheet’s does')
+    : bad('the original was left owed', JSON.stringify(origin));
+  !planForDay(db, isoDaysAgo(NOW, -1)).some((e) => e.extras.carried === true)
+    ? ok('…so tomorrow carries nothing')
+    : bad('the skipped debt is carried again tomorrow');
+}
+
+console.log('R7. a protocol edited through edit_record reaches TODAY, as the Settings sheet does');
+{
+  // Pausing: the untouched rows leave today; anything acted on stays.
+  const { db } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack', startedOn: TODAY },
+    doc([
+      { id: 'mag', title: 'Magnesium', time: '21:00' },
+      { id: 'zinc', title: 'Zinc', time: '21:00' },
+    ])
+  );
+  generateMissionForDay(db, TODAY);
+  const zinc = listMission(db, TODAY).find((m) => m.title === 'Zinc');
+  run('adjust_today', db, { ops: [{ action: 'complete', id: zinc.id }] });
+
+  edit(db, 'protocols', 'evening_stack', { is_active: false });
+  const paused = listMission(db, TODAY);
+  !paused.some((m) => m.title === 'Magnesium')
+    ? ok('a pause through the Coach takes the untouched row off today')
+    : bad('the paused protocol is still on today', JSON.stringify(paused.map((m) => m.title)));
+  paused.find((m) => m.id === zinc.id)?.status === 'completed'
+    ? ok('…and keeps the row already done')
+    : bad('the pause took a completed row with it', JSON.stringify(paused));
+
+  edit(db, 'protocols', 'evening_stack', { is_active: true });
+  listMission(db, TODAY).filter((m) => m.title === 'Magnesium').length === 1
+    ? ok('resuming puts it back, once')
+    : bad('resume', JSON.stringify(listMission(db, TODAY).map((m) => m.title)));
+
+  // Carry-over switched on: yesterday's untouched session is owed today.
+  const carry = freshDb();
+  const yesterday = isoDaysAgo(NOW, 1);
+  createProtocolWithVersion(
+    carry.db,
+    { name: 'Training', type: 'training_block', startedOn: yesterday },
+    doc([
+      {
+        id: 'lower',
+        title: 'Lower body',
+        cadence: { kind: 'weekdays', days: [isoWeekday(yesterday)] },
+      },
+    ])
+  );
+  generateMissionForDay(carry.db, yesterday);
+  generateMissionForDay(carry.db, TODAY);
+  listMission(carry.db, TODAY).length === 0
+    ? ok('with carry-over off, today holds nothing')
+    : bad('precondition: today was not empty');
+  edit(carry.db, 'protocols', 'training', { carry_over: true });
+  listMission(carry.db, TODAY).some((m) => m.title === 'Lower body' && m.carriedDays === 1)
+    ? ok('switching carry-over on through the Coach carries yesterday’s miss onto today')
+    : bad('carry-over change never reached today', JSON.stringify(listMission(carry.db, TODAY)));
+
+  // Check-off mode switched to adjusting: an every-other-day item re-bases on
+  // the day it was last done, which makes it due today.
+  const adjusting = freshDb();
+  const threeAgo = isoDaysAgo(NOW, 3);
+  const twoAgo = isoDaysAgo(NOW, 2);
+  const sauna = createProtocolWithVersion(
+    adjusting.db,
+    { name: 'Sauna', type: 'therapy_protocol', startedOn: threeAgo },
+    doc([{ id: 'sauna', title: 'Sauna' }])
+  );
+  generateMissionForDay(adjusting.db, twoAgo);
+  const done = listMission(adjusting.db, twoAgo).find((m) => m.title === 'Sauna');
+  setMissionStatus(adjusting.db, done.id, 'completed', twoAgo);
+  addVersion(
+    adjusting.db,
+    sauna,
+    doc([{ id: 'sauna', title: 'Sauna', cadence: { kind: 'every_n_days', n: 2 } }]),
+    'every other day'
+  );
+  generateMissionForDay(adjusting.db, TODAY); // strict: day 3 of the phase, not due
+  listMission(adjusting.db, TODAY).length === 0
+    ? ok('under strict the every-other-day sauna is not due today')
+    : bad('precondition: sauna already on today');
+  edit(adjusting.db, 'protocols', 'sauna', { checkoff_mode: 'adjusting' });
+  listMission(adjusting.db, TODAY).some((m) => m.title === 'Sauna')
+    ? ok('switching to adjusting through the Coach re-bases it on the last session: due today')
+    : bad('check-off mode change never reached today');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

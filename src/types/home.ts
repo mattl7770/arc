@@ -89,7 +89,8 @@ export type MissionItem = {
   /**
    * `value.carried_from` — the day and row id this debt is owed from. Present
    * on a carried copy only, and it is what lets the sheet say *owed from Mon
-   * 14 Sep* and what {@link skipCarried} reaches through.
+   * 14 Sep*. A skip of the copy reaches the original through the stored row,
+   * inside `setMissionStatus`, whichever surface made it.
    */
   carriedFrom?: { date: string; entry: string };
   /**
