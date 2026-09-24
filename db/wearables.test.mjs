@@ -39,7 +39,7 @@ import {
   upsertHealthBodyRows,
 } from '../src/lib/db/repositories/body.ts';
 import { isHealthSyncEnabled, setHealthSyncEnabled } from '../src/lib/db/repositories/user.ts';
-import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import { logWorkout, replaceWorkout } from '../src/lib/db/repositories/exercise.ts';
 import {
   linkIngestedWorkout,
   pairedIngestFor,
@@ -2304,6 +2304,94 @@ console.log('23. the DAY rule — a session logged with no start time (2026-09-2
     pairingRefusals(db).length === 0
       ? ok('…and a pass whose window no longer reaches that day prunes it')
       : bad('refusal not pruned', JSON.stringify(pairingRefusals(db)));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Owner, 2026-09-23: "workout duration should be editable" and "be able to
+// reorder exercises in a workout". The session screen writes both through
+// replaceWorkout, and runs a pairing pass when the minutes changed.
+console.log('24. pairing reads a corrected duration, and survives a reorder (2026-09-23)');
+{
+  const NOW = new Date('2026-07-26T20:00:00.000Z');
+  const DAY = todayISODate(NOW);
+  // LOCAL wall-clock instants on DAY, for the reason §23 gives.
+  const at = (hour, minute = 0) => {
+    const [y, m, d] = DAY.split('-').map(Number);
+    return new Date(y, m - 1, d, hour, minute, 0, 0).toISOString();
+  };
+  const ingestAt = (db, { uuid, hour, minute = 0, minutes }) => {
+    const start = at(hour, minute);
+    upsertWearableRows(db, [
+      {
+        date: DAY,
+        metricType: 'workout',
+        value: minutes,
+        unit: 'min',
+        sourceDevice: 'garmin',
+        sourceRawId: uuid,
+        startTime: start,
+        endTime: new Date(Date.parse(start) + minutes * 60_000).toISOString(),
+        metadata: { activity: 'Strength training', activity_type_raw: 50, kcal: 300 },
+      },
+    ]);
+    return db.get('SELECT id FROM wearable_data WHERE source_raw_id = ?', [uuid]).id;
+  };
+  const linkCount = (db) => db.all('SELECT id FROM workout_ingest_links').length;
+  const row = { exercise: 'Barbell Row', exerciseId: 'barbell-row', reps: 8, weightKg: 70 };
+  const bench = { exercise: 'Bench', exerciseId: 'barbell-bench-press', reps: 5, weightKg: 100 };
+
+  // --- the DAY rule compares the corrected figure ---------------------------
+  {
+    const { db } = freshDb();
+    // Typed 10 for 60. Two watch records on the day, so the rule has to choose
+    // on duration — and 10 is nowhere near either of them.
+    const id = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 10 }, [row]);
+    const lift = ingestAt(db, { uuid: 'lift', hour: 17, minutes: 58 });
+    ingestAt(db, { uuid: 'walk', hour: 7, minutes: 90 });
+    pairIngestedWorkouts(db, NOW) === 0
+      ? ok('a mistyped 10 min is refused against a 58-min record — two sessions, not one')
+      : bad('mistyped duration paired', linkCount(db));
+    replaceWorkout(db, id, { kind: 'strength', durationMin: 60 }, [row]);
+    pairIngestedWorkouts(db, NOW) === 1 &&
+    db.get('SELECT wearable_id FROM workout_ingest_links').wearable_id === lift
+      ? ok('corrected to 60, the same pass pairs it with the 58-min lift, not the walk')
+      : bad('corrected duration did not pair', linkCount(db));
+  }
+
+  // --- the SPAN rule reads started_at + the corrected minutes ----------------
+  {
+    const { db } = freshDb();
+    // Started at 16:00 and saved as 20 minutes; the watch recorded 16:30–17:30.
+    const id = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 20, startedAt: at(16) }, [
+      row,
+    ]);
+    const watch = ingestAt(db, { uuid: 'lift-span', hour: 16, minute: 30, minutes: 60 });
+    pairIngestedWorkouts(db, NOW) === 0
+      ? ok('16:00 for 20 min shares no clock with 16:30–17:30 — no pair')
+      : bad('short span paired', linkCount(db));
+    replaceWorkout(db, id, { kind: 'strength', durationMin: 70 }, [row]);
+    pairIngestedWorkouts(db, NOW) === 1 &&
+    db.get('SELECT wearable_id, overlap FROM workout_ingest_links').wearable_id === watch
+      ? ok('corrected to 70, the span reaches 17:10 and the overlap pairs them')
+      : bad('corrected span did not pair', linkCount(db));
+  }
+
+  // --- a reorder is a set rewrite; the link is to the SESSION ---------------
+  {
+    const { db } = freshDb();
+    const id = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 60 }, [bench, row]);
+    ingestAt(db, { uuid: 'lift', hour: 17, minutes: 58 });
+    pairIngestedWorkouts(db, NOW);
+    const before = db.get('SELECT * FROM workout_ingest_links WHERE workout_id = ?', [id]);
+    replaceWorkout(db, id, { kind: 'strength', durationMin: 60 }, [row, bench]);
+    const after = db.get('SELECT * FROM workout_ingest_links WHERE workout_id = ?', [id]);
+    before && after && after.id === before.id && after.wearable_id === before.wearable_id
+      ? ok('reordering the exercises keeps the watch pair — the same link row, untouched')
+      : bad('reorder dropped the pair', JSON.stringify({ before, after }));
+    pairedIngestFor(db, id)?.durationMin === 58
+      ? ok('…and the session still reads the watch’s own record through it')
+      : bad('pair read-back after reorder');
   }
 }
 

@@ -10,8 +10,9 @@
  *    expo-router (params/router/focus-effect), expo-keep-awake, Ionicons,
  *    react-native-safe-area-context, expo-constants, '@/lib/db/client'
  *    (swapped for a node:sqlite-backed database running the REAL migrations),
- *    and react-native-svg (the body figure's `<Path>` elements, mapped to real
- *    DOM SVG tags — see the stub for why not the package's own web build).
+ *    react-native-svg (the body figure's `<Path>` elements, mapped to real
+ *    DOM SVG tags — see the stub for why not the package's own web build),
+ *    and react-native-reanimated (motion props dropped; see its stub).
  *
  * Test-harness only — app source is untouched.
  */
@@ -48,6 +49,11 @@ const STUBS = {
   '@/lib/exercise/images.generated': pathToFileURL(
     path.join(HERE, 'render-stubs', 'exercise-images.mjs')
   ).href,
+  // The live logger's bind springs. The package resolves into
+  // react-native-worklets, which cannot load under node; the stub renders the
+  // react-native-web components with the motion props dropped. It is what put
+  // app/workout-live.tsx on the render walk (2026-09-23).
+  'react-native-reanimated': pathToFileURL(path.join(HERE, 'render-stubs', 'reanimated.mjs')).href,
 };
 
 async function resolveWithExtensions(base, context, nextResolve) {

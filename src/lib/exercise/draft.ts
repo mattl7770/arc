@@ -35,6 +35,7 @@
  * This runs in a `useState` initialiser on the logger's mount path, and a
  * corrupt row must not be able to make the screen un-openable.
  */
+import { clockFromISO, formatLocalDate } from '@/lib/db/date';
 import type { PrevSet } from '@/lib/db/repositories/training-stats';
 import { asMeasures, type Measures } from '@/lib/exercise/measures';
 import type { LoggingType, Mechanic, SetType, WorkoutKind } from '@/lib/exercise/types';
@@ -171,6 +172,23 @@ export type DraftBlock = {
  */
 export type LiveDraft = {
   version: number;
+  /**
+   * Which session this is (2026-09-23) — minted once when a session starts and
+   * carried unchanged through every write, resume and start adjustment.
+   *
+   * It exists because the slot is ONE row and a logger screen can outlive its
+   * claim on it: leaving the logger now keeps the session, so the logger can be
+   * left mounted under another screen (a notification tap pushes the tabs over
+   * it) while the same session is resumed, finished or discarded somewhere
+   * else. See {@link liveSlotState} for how a screen uses it to stop writing a
+   * session that is no longer the one in the slot.
+   *
+   * Optional, and NOT a version bump: a draft written before it existed is
+   * identified by its `startedAt` instead ({@link liveDraftSessionId}), which
+   * is unique per session in practice and is what the next write replaces with
+   * a real id. The same reasoning let `ingestId` land without one.
+   */
+  sessionId?: string;
   startedAt: number;
   routineId: string | null;
   /** `wearable_data.id` of the ingested session being filled in (0054), or null. */
@@ -314,6 +332,12 @@ export function parseLiveDraft(raw: unknown): LiveDraft | null {
   if (blocks.length === 0) return null;
   return {
     version: DRAFT_VERSION,
+    // Only when present, so a draft written before the field existed parses to
+    // exactly the object it was written as (db/exercise.test.mjs §10 compares
+    // the round trip byte for byte).
+    ...(typeof raw.sessionId === 'string' && raw.sessionId !== ''
+      ? { sessionId: raw.sessionId }
+      : {}),
     startedAt,
     routineId: typeof raw.routineId === 'string' ? raw.routineId : null,
     ingestId: typeof raw.ingestId === 'string' ? raw.ingestId : null,
@@ -420,6 +444,62 @@ export function liveDraftMovements(draft: LiveDraft): string[] {
 /** Sets actually completed in this draft — the other half of the Resume card. */
 export function liveDraftSetsDone(draft: LiveDraft): number {
   return draft.blocks.reduce((n, b) => n + b.sets.filter((s) => s.done).length, 0);
+}
+
+/**
+ * The session a draft belongs to. A draft written before `sessionId` existed
+ * is identified by the instant it started — the logger resuming it adopts that
+ * as its id and writes it out explicitly on its next write.
+ */
+export function liveDraftSessionId(draft: LiveDraft): string {
+  return draft.sessionId ?? String(draft.startedAt);
+}
+
+/**
+ * Whose session the live slot holds, from one logger screen's point of view.
+ *
+ *   - `free`  — nothing worth protecting: no row, a row from another build, or
+ *               a draft with nothing typed in it (the same test the hub's card
+ *               and the logger's own write-through use, so the three agree).
+ *   - `mine`  — the slot holds this screen's session.
+ *   - `other` — it holds a DIFFERENT session with data in it.
+ *
+ * The logger reads this when it regains focus and before Finish and Discard —
+ * the only moments another screen can have touched the slot, since nothing
+ * writes a draft except the focused logger. A screen whose session is no longer
+ * in the slot must not write, finish or clear again: writing would clobber the
+ * session that is there, and finishing would save a workout a second time.
+ */
+export function liveSlotState(stored: unknown, sessionId: string): 'free' | 'mine' | 'other' {
+  const draft = parseLiveDraft(stored);
+  if (!draft || !liveDraftHasData(draft)) return 'free';
+  return liveDraftSessionId(draft) === sessionId ? 'mine' : 'other';
+}
+
+/**
+ * Home's one line about an open session (2026-09-23): "Workout in progress ·
+ * 3 sets done · started 14:02".
+ *
+ * The start is stated as a CLOCK TIME, not as an elapsed count, because Home
+ * does not tick: a "24 min" read on focus is wrong a minute later, while
+ * "started 14:02" stays true for as long as the line is on screen. A session
+ * from before today says how long ago it was started instead — the owner is
+ * being offered something he may have forgotten, and has to be told which.
+ */
+export function openSessionLine(draft: LiveDraft, now: Date = new Date()): string {
+  const parts = ['Workout in progress'];
+  const done = liveDraftSetsDone(draft);
+  if (done > 0) parts.push(`${done} ${done === 1 ? 'set' : 'sets'} done`);
+  const started = new Date(draft.startedAt);
+  if (Number.isFinite(started.getTime())) {
+    const iso = started.toISOString();
+    parts.push(
+      formatLocalDate(started) === formatLocalDate(now)
+        ? `started ${clockFromISO(iso)}`
+        : `started ${draftAgeLabel(iso, now)}`
+    );
+  }
+  return parts.join(' · ');
 }
 
 /**

@@ -49,6 +49,18 @@ export function useRouter() {
 export function useFocusEffect() {}
 
 /**
+ * The navigation object the two workout loggers take their `beforeRemove`
+ * guard from. A server render runs no effects, so no listener is ever added —
+ * this only has to exist for the component body to run.
+ */
+export function useNavigation() {
+  return {
+    addListener: () => () => {},
+    dispatch: () => {},
+  };
+}
+
+/**
  * The static singleton some components import for imperative navigation
  * outside the render tree (e.g. src/components/exercise/exercise-picker.tsx,
  * which the routine-edit walk pulled in — A9). Records the same way

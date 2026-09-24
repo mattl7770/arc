@@ -135,6 +135,9 @@ import { StatusControl } from '../src/components/status/status-control.tsx';
 import { StatusRail } from '../src/components/status/status-rail.tsx';
 import { startStatus } from '../src/lib/db/repositories/statuses.ts';
 import LogScreen from '../app/(tabs)/log.tsx';
+// On the walk since 2026-09-23, when react-native-reanimated got a render stub
+// (db/render-stubs/reanimated.mjs) — the package cannot load under node.
+import WorkoutLiveScreen from '../app/workout-live.tsx';
 
 import { deleteWaterEntry, logWater } from '../src/lib/db/repositories/water.ts';
 import { metricByKey, resolveDisplay } from '../src/lib/log/metrics.ts';
@@ -4370,6 +4373,110 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
 
   db.run(`DELETE FROM timezone_changes WHERE id = 'render-tz'`);
   refute('home (the row removed again)', render('home', HomeScreen), ['Timezone changed']);
+}
+
+// -------------------------------------------------------------------------
+// Owner, on the device, 2026-09-23: "confirm in progress workouts not getting
+// cleared, should be same for going to rest of the app" · "workout duration
+// should be editable" · "be able to reorder exercises in a workout". What a
+// server render can prove is the first frame of each: the way back in from
+// Home, the controls each mode draws, and the ones it must not. The taps, the
+// focus check and the back gesture are device facts.
+console.log('\n22. the live logger — the way back in, reorder, and a session’s minutes');
+{
+  refute('home (no session open)', render('home (no session open)', HomeScreen), [
+    'Workout in progress',
+  ]);
+
+  const set = (key, over) => ({
+    key,
+    weight: '',
+    reps: '',
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: false,
+    pr: false,
+    ...over,
+  });
+  const block = (key, exerciseId, name, linkedToNext, sets) => ({
+    key,
+    exerciseId,
+    name,
+    loggingType: 'weight_reps',
+    measures: 'reps,load',
+    mechanic: 'compound',
+    restSec: 180,
+    prev: [],
+    bestE1rm: null,
+    linkedToNext,
+    sets,
+  });
+  saveWorkoutDraft(db, 'live', {
+    version: DRAFT_VERSION,
+    sessionId: 'render-session',
+    startedAt: Date.now() - 12 * 60_000,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [
+      block(1, 'barbell-bench-press', 'Barbell Bench Press', true, [
+        set(1, { weight: '80', reps: '8', done: true }),
+      ]),
+      block(2, 'barbell-row', 'Barbell Row', false, [set(2, { weight: '70', reps: '10' })]),
+      block(3, 'lat-pulldown', 'Lat Pulldown', false, [set(3)]),
+    ],
+  });
+
+  // Leaving the logger keeps the session, so Home has to be a way back to it —
+  // one quiet line, not a card.
+  const home = render('home (a session open)', HomeScreen);
+  expect('home (a session open)', home, ['Workout in progress · 1 set done · started ', 'Resume']);
+
+  // The resumed logger: the start and its correction, the reorder door (two
+  // units — the superset and the pulldown), and Discard as its own control now
+  // that leaving no longer discards.
+  const resumed = render('workout-live (resumed)', WorkoutLiveScreen, { resume: '1' });
+  expect('workout-live (resumed)', resumed, [
+    'elapsed',
+    'started ',
+    '−5 min',
+    '+5 min',
+    'Reorder',
+    'Barbell Bench Press',
+    'Finish workout',
+    'Discard workout',
+  ]);
+  refute('workout-live (resumed)', resumed, [
+    'Save changes',
+    'Delete session',
+    'Duration in minutes',
+  ]);
+  clearWorkoutDraft(db, 'live');
+
+  // A blank session: nothing typed, so nothing to discard and nothing to order.
+  const blank = render('workout-live (new, blank)', WorkoutLiveScreen);
+  expect('workout-live (new, blank)', blank, ['elapsed', 'started ', 'Nothing logged yet.']);
+  refute('workout-live (new, blank)', blank, ['Discard workout', 'Reorder']);
+
+  // A logged session: its minutes are a field (a number pad, so the Done-key
+  // check above sees it too), and the live-only controls are gone.
+  const edited = logWorkout(db, { date: todayISODate(), kind: 'strength', durationMin: 47 }, [
+    { exercise: 'Barbell Row', exerciseId: 'barbell-row', reps: 8, weightKg: 70 },
+    { exercise: 'Barbell Bench Press', exerciseId: 'barbell-bench-press', reps: 5, weightKg: 90 },
+  ]);
+  const session = render('workout-live (editing)', WorkoutLiveScreen, { workoutId: edited });
+  expect('workout-live (editing)', session, [
+    'Duration in minutes',
+    'value="47"',
+    'Reorder',
+    'Save changes',
+    'Delete session',
+  ]);
+  refute('workout-live (editing)', session, ['elapsed', '−5 min', 'Discard workout']);
+  db.run('DELETE FROM workouts WHERE id = ?', [edited]);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

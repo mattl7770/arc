@@ -20,7 +20,7 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
-import { logWorkout, weekSummary } from '../src/lib/db/repositories/exercise.ts';
+import { logWorkout, replaceWorkout, weekSummary } from '../src/lib/db/repositories/exercise.ts';
 import { pairIngestedWorkouts } from '../src/lib/db/repositories/workout-ingest.ts';
 
 import {
@@ -3689,6 +3689,20 @@ console.log('45. a DAY-paired session is counted once too, and the payload says 
   spanned && 'watchPairedBy' in spanned === false
     ? ok('a span pair carries no field at all — only the weaker match pays for one')
     : bad('span pair grew a field', JSON.stringify(spanned));
+}
+
+// Owner, 2026-09-23: "workout duration should be editable." The session screen
+// writes the figure through replaceWorkout, and the Coach reads the column at
+// query time — so the corrected minutes are what its next training read carries.
+console.log('46. a duration corrected on the session screen is what the Coach reads');
+{
+  const { db } = freshDb();
+  const id = logWorkout(db, { date: TODAY, kind: 'cardio', durationMin: 20 });
+  replaceWorkout(db, id, { kind: 'cardio', durationMin: 45 }, []);
+  const training = run('get_training_summary', db, { days: 7 });
+  training.recentSessions[0]?.duration_min === 45 && near(training.totals.cardioMinutes, 45)
+    ? ok('get_training_summary carries the corrected 45 min, in the list and in the totals')
+    : bad('coach duration', JSON.stringify(training));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

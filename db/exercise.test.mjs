@@ -30,9 +30,24 @@ import {
   DRAFT_VERSION,
   liveDraftHasData,
   liveDraftMovements,
+  liveDraftSessionId,
   liveDraftSetsDone,
+  liveSlotState,
+  openSessionLine,
   parseLiveDraft,
 } from '../src/lib/exercise/draft.ts';
+import {
+  blockSegments,
+  moveBlockSegment,
+  removeBlockKeepingBinds,
+  supersetGroups,
+} from '../src/lib/exercise/block-order.ts';
+import {
+  MAX_SESSION_MIN,
+  parseDurationField,
+  shiftSessionStart,
+} from '../src/lib/exercise/session-time.ts';
+import { trainingDailyTotals } from '../src/lib/ai/series.ts';
 import {
   lastSessionSets,
   personalRecords,
@@ -919,6 +934,278 @@ console.log('11. an exercise declares what it measures, and a set carries only t
     ? ok('distance_m is metres and cannot be negative')
     : bad('distance CHECK missing');
   raw.close();
+}
+
+// ---------------------------------------------------------------------------
+// Owner, on the device, 2026-09-23 — three notes about the live logger:
+//   "confirm in progress workouts not getting cleared, should be same for going
+//    to rest of the app" · "workout duration should be editable" · "be able to
+//    reorder exercises in a workout".
+console.log('12. leaving keeps a session; its order and its minutes are editable');
+{
+  // --- reorder: the order is the array's, and a superset moves as one --------
+  const b = (key, linkedToNext = false) => ({ key, linkedToNext });
+  const keys = (bs) => bs.map((x) => `${x.key}${x.linkedToNext ? '+' : ''}`).join(' ');
+  // 1 | 2+3 | 4 — a single block, a superset, a single block.
+  const session = [b(1), b(2, true), b(3), b(4)];
+
+  JSON.stringify(blockSegments(session)) ===
+  JSON.stringify([
+    { start: 0, end: 0 },
+    { start: 1, end: 2 },
+    { start: 3, end: 3 },
+  ])
+    ? ok('a session cuts into movable units: a superset is ONE unit')
+    : bad('segments', JSON.stringify(blockSegments(session)));
+  keys(moveBlockSegment(session, 1, 1)) === '2+ 3 1 4'
+    ? ok('a single exercise steps past a whole superset, never into the middle of it')
+    : bad('single past superset', keys(moveBlockSegment(session, 1, 1)));
+  keys(moveBlockSegment(session, 3, -1)) === '2+ 3 1 4'
+    ? ok('pressing the LOWER member of a superset moves the pair — the bind survives')
+    : bad('pair as unit', keys(moveBlockSegment(session, 3, -1)));
+  keys(moveBlockSegment(session, 2, 1)) === '1 4 2+ 3'
+    ? ok('…in either direction')
+    : bad('pair down', keys(moveBlockSegment(session, 2, 1)));
+  moveBlockSegment(session, 1, -1) === null &&
+  moveBlockSegment(session, 4, 1) === null &&
+  moveBlockSegment(session, 99, 1) === null
+    ? ok('a move off either end (or of a key that names nothing) is null — the arrow is drawn off')
+    : bad('edge moves');
+  keys(session) === '1 2+ 3 4'
+    ? ok('moving returns a new order and leaves the one it was given untouched')
+    : bad('input mutated', keys(session));
+  supersetGroups(moveBlockSegment(session, 1, 1)).join() === '1,1,,'
+    ? ok('the group numbers Finish writes follow the moved pair')
+    : bad('groups after move', supersetGroups(moveBlockSegment(session, 1, 1)).join());
+
+  // A bind left dangling on the last block (its partner removed earlier) binds
+  // to nothing — and must not bind to whatever is moved in beneath it.
+  const dangling = [b(1), b(2, true)];
+  const lifted = moveBlockSegment(dangling, 2, -1);
+  keys(lifted) === '2 1' && supersetGroups(lifted).every((g) => g === null)
+    ? ok('a dangling bind is cleared by a move, so no superset appears that nobody made')
+    : bad('dangling bind', keys(lifted));
+
+  // Removing the lower half of a superset used to leave the upper half bound
+  // to whatever came next.
+  keys(removeBlockKeepingBinds([b(1, true), b(2), b(3)], 2)) === '1 3'
+    ? ok('removing half of a pair does not bind the other half to the next exercise')
+    : bad('remove invents superset', keys(removeBlockKeepingBinds([b(1, true), b(2), b(3)], 2)));
+  keys(removeBlockKeepingBinds([b(1, true), b(2, true), b(3)], 2)) === '1+ 3'
+    ? ok('…while a three-way superset minus its middle is still one superset')
+    : bad('three-way remove', keys(removeBlockKeepingBinds([b(1, true), b(2, true), b(3)], 2)));
+
+  // --- the order persists through the row's own set_index ---------------------
+  {
+    const { db } = freshDb();
+    const s = (exerciseId, exercise, supersetGroup = null) => ({
+      exercise,
+      exerciseId,
+      reps: 8,
+      weightKg: 60,
+      supersetGroup,
+    });
+    const id = logWorkout(db, { date: '2026-09-23', kind: 'strength', durationMin: 50 }, [
+      s('barbell-bench-press', 'Barbell Bench Press', 1),
+      s('barbell-bench-press', 'Barbell Bench Press', 1),
+      s('barbell-row', 'Barbell Row', 1),
+      s('barbell-row', 'Barbell Row', 1),
+      { exercise: 'Plank', exerciseId: 'plank', durationSec: 60 },
+    ]);
+    // The editor moved the plank to the front: the superset's two blocks moved
+    // down together, and Save rewrites the sets in the new block order with the
+    // groups recomputed from it — the same call shape app/workout-live.tsx uses.
+    const [bench, row, plank] = [
+      { key: 1, linkedToNext: true },
+      { key: 2, linkedToNext: false },
+      { key: 3, linkedToNext: false },
+    ];
+    const moved = moveBlockSegment([bench, row, plank], 3, -1);
+    const groups = supersetGroups(moved);
+    const byKey = {
+      1: [
+        s('barbell-bench-press', 'Barbell Bench Press'),
+        s('barbell-bench-press', 'Barbell Bench Press'),
+      ],
+      2: [s('barbell-row', 'Barbell Row'), s('barbell-row', 'Barbell Row')],
+      3: [{ exercise: 'Plank', exerciseId: 'plank', durationSec: 60 }],
+    };
+    replaceWorkout(
+      db,
+      id,
+      { kind: 'strength', durationMin: 50 },
+      moved.flatMap((blk, i) => byKey[blk.key].map((set) => ({ ...set, supersetGroup: groups[i] })))
+    );
+    const after = getWorkoutDetail(db, id);
+    after.sets.map((x) => x.exerciseId).join() ===
+    'plank,barbell-bench-press,barbell-bench-press,barbell-row,barbell-row'
+      ? ok('a reordered session reopens in its new order — set_index is the order, no new column')
+      : bad('persisted order', after.sets.map((x) => x.exerciseId).join());
+    after.sets.map((x) => x.supersetGroup ?? '-').join() === '-,1,1,1,1'
+      ? ok('…and the superset it carried is still one superset')
+      : bad('persisted groups', after.sets.map((x) => x.supersetGroup ?? '-').join());
+  }
+
+  // --- the live start: a nudge, bounded ---------------------------------------
+  const T = Date.parse('2026-09-23T10:00:00.000Z');
+  const MIN = 60_000;
+  shiftSessionStart(T - 12 * MIN, -5, T) === T - 17 * MIN
+    ? ok('"I forgot to press start": −5 moves the start five minutes earlier')
+    : bad('earlier', shiftSessionStart(T - 12 * MIN, -5, T));
+  shiftSessionStart(T - 2 * MIN, 5, T) === T && shiftSessionStart(T, 5, T) === null
+    ? ok('a start never moves into the future — it stops at now, then the control is off')
+    : bad('future clamp');
+  shiftSessionStart(T - (MAX_SESSION_MIN - 2) * MIN, -5, T) === T - MAX_SESSION_MIN * MIN &&
+  shiftSessionStart(T - MAX_SESSION_MIN * MIN, -5, T) === null
+    ? ok('…nor further back than the six hours Finish would record at all')
+    : bad('past clamp');
+  shiftSessionStart(T - 2 * 24 * 60 * MIN, 5, T) === T - 2 * 24 * 60 * MIN + 5 * MIN &&
+  shiftSessionStart(T - 2 * 24 * 60 * MIN, -5, T) === null
+    ? ok('a draft resumed days later can move toward the range, never further from it')
+    : bad('stale start');
+
+  // --- a logged session's minutes ---------------------------------------------
+  const field = (text) => JSON.stringify(parseDurationField(text));
+  field('') === '{"ok":true,"minutes":null}' && field(' 45 ') === '{"ok":true,"minutes":45}'
+    ? ok('the minutes field: blank is "no duration", a number is whole minutes')
+    : bad('duration parse', `${field('')} ${field(' 45 ')}`);
+  ['0', '45.5', '1000', 'abc', '-5'].every((t) => !parseDurationField(t).ok) &&
+  parseDurationField('999').ok
+    ? ok('…and 0, fractions, 1000+ and junk are refused rather than stored')
+    : bad('duration bounds');
+
+  // --- every reader sees the edited figure ------------------------------------
+  {
+    const { db, raw } = freshDb();
+    const cardio = logWorkout(db, { date: '2026-07-21', kind: 'cardio', durationMin: 20 });
+    const lift = logWorkout(
+      db,
+      {
+        date: '2026-07-21',
+        kind: 'strength',
+        durationMin: 12,
+        startedAt: '2026-07-21T16:00:00.000Z',
+      },
+      [{ exercise: 'Barbell Row', exerciseId: 'barbell-row', reps: 8, weightKg: 70 }]
+    );
+    // The editor's Save — the sets re-sent, only the minutes changed.
+    replaceWorkout(db, cardio, { kind: 'cardio', durationMin: 45 }, []);
+    replaceWorkout(db, lift, { kind: 'strength', durationMin: 58 }, [
+      { exercise: 'Barbell Row', exerciseId: 'barbell-row', reps: 8, weightKg: 70 },
+    ]);
+    getWorkoutDetail(db, lift).durationMin === 58
+      ? ok('the row carries the corrected figure')
+      : bad('row', getWorkoutDetail(db, lift).durationMin);
+    raw.prepare('SELECT started_at FROM workouts WHERE id = ?').get(lift).started_at ===
+    '2026-07-21T16:00:00.000Z'
+      ? ok('…and keeps its start: a corrected duration moves the END, the fact that was wrong')
+      : bad('started_at moved');
+    weekSummary(db, NOW).zone2Min === 45
+      ? ok("the week's cardio minutes read it (weekSummary)")
+      : bad('week', weekSummary(db, NOW).zone2Min);
+    const rows = listRecentSessions(db).map(sessionDetail);
+    rows.includes('45 min') && rows.includes('1 set · 58 min')
+      ? ok('the hub rows read it (listRecentSessions → sessionDetail)')
+      : bad('hub rows', rows.join(' | '));
+    const day = trainingDailyTotals(db, '2026-07-21')[0];
+    day.minutes === 103 && day.cardio_min === 45
+      ? ok("the Coach's daily training series reads it (trainingDailyTotals)")
+      : bad('series', JSON.stringify(day));
+    replaceWorkout(db, cardio, { kind: 'cardio', durationMin: null }, []);
+    weekSummary(db, NOW).zone2Min === 0 &&
+    listRecentSessions(db).map(sessionDetail).includes('Cardio')
+      ? ok('clearing the field stores NO duration, and every reader says so — not "0 min"')
+      : bad('cleared duration');
+  }
+
+  // --- the slot: whose session is it -----------------------------------------
+  const set = (key, over) => ({
+    key,
+    weight: '',
+    reps: '',
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: false,
+    pr: false,
+    ...over,
+  });
+  const live = (over, sets = [set(1, { weight: '80', reps: '8', done: true })]) => ({
+    version: DRAFT_VERSION,
+    startedAt: new Date(2026, 8, 23, 14, 2).getTime(),
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [
+      {
+        key: 1,
+        exerciseId: 'barbell-bench-press',
+        name: 'Barbell Bench Press',
+        loggingType: 'weight_reps',
+        measures: 'reps,load',
+        mechanic: 'compound',
+        restSec: 180,
+        prev: [],
+        bestE1rm: null,
+        linkedToNext: false,
+        sets,
+      },
+    ],
+    ...over,
+  });
+  liveSlotState(null, 'a') === 'free' &&
+  liveSlotState(live({ sessionId: 'a' }), 'a') === 'mine' &&
+  liveSlotState(live({ sessionId: 'b' }), 'a') === 'other'
+    ? ok('the slot reads free / mine / other from one screen’s point of view')
+    : bad('slot states');
+  liveSlotState(live({ sessionId: 'b' }, [set(1)]), 'a') === 'free' &&
+  liveSlotState({ ...live({ sessionId: 'b' }), version: 1 }, 'a') === 'free'
+    ? ok('a draft with nothing typed, or from another build, is nothing to protect')
+    : bad('empty / foreign draft protected');
+  const legacy = live({});
+  liveDraftSessionId(legacy) === String(legacy.startedAt) &&
+  liveSlotState(legacy, String(legacy.startedAt)) === 'mine'
+    ? ok('a draft written before sessionId existed is identified by its start instant')
+    : bad('legacy identity');
+  JSON.stringify(parseLiveDraft(legacy)) === JSON.stringify(legacy) &&
+  parseLiveDraft(live({ sessionId: 'a' })).sessionId === 'a'
+    ? ok('sessionId round-trips when present and is not invented when absent — no version bump')
+    : bad('sessionId parse');
+
+  // The two things the focus check guards against, played through the store:
+  // screen A holds session "a"; the hub then throws it away, or starts "b".
+  {
+    const { db } = freshDb();
+    saveWorkoutDraft(db, 'live', live({ sessionId: 'a' }));
+    clearWorkoutDraft(db, 'live'); // the hub's trash, or another copy's Finish
+    liveSlotState(readWorkoutDraft(db, 'live')?.value ?? null, 'a') === 'free'
+      ? ok('ended elsewhere: the slot is free, and A — which had written — knows it is stale')
+      : bad('ended');
+    saveWorkoutDraft(db, 'live', live({ sessionId: 'b' })); // "Start new", and a set typed
+    liveSlotState(readWorkoutDraft(db, 'live').value, 'a') === 'other'
+      ? ok('replaced elsewhere: A sees another session and must not write over it')
+      : bad('replaced');
+  }
+
+  // --- Home's one line ---------------------------------------------------------
+  const at1530 = new Date(2026, 8, 23, 15, 30);
+  openSessionLine(live({}), at1530) === 'Workout in progress · 1 set done · started 14:02'
+    ? ok('Home: "Workout in progress · 1 set done · started 14:02"')
+    : bad('home line', openSessionLine(live({}), at1530));
+  openSessionLine(live({}, [set(1, { weight: '80' })]), at1530) ===
+  'Workout in progress · started 14:02'
+    ? ok('…nothing stamped yet, so no count — the start is still a fact')
+    : bad('home line, nothing done', openSessionLine(live({}, [set(1, { weight: '80' })]), at1530));
+  openSessionLine(live({ startedAt: new Date(2026, 8, 20, 18, 0).getTime() }), at1530).endsWith(
+    'started 2 days ago'
+  )
+    ? ok('…and a session from an earlier day says how long ago, not a bare clock time')
+    : bad(
+        'home line, old',
+        openSessionLine(live({ startedAt: new Date(2026, 8, 20, 18, 0).getTime() }), at1530)
+      );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

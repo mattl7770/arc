@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition, ZoomIn } from 'react-native-reanimated';
 
@@ -8,10 +8,12 @@ import { ExercisePicker } from '@/components/exercise/exercise-picker';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
+import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
-import { todayISODate } from '@/lib/db/date';
+import { clockFromISO, todayISODate } from '@/lib/db/date';
+import { newId } from '@/lib/db/id';
 import { getExercise } from '@/lib/db/repositories/exercise-catalog';
 import {
   deleteWorkout,
@@ -37,11 +39,19 @@ import {
   pairIngestedWorkouts,
   unlinkIngestedWorkout,
 } from '@/lib/db/repositories/workout-ingest';
+import {
+  blockSegments,
+  moveBlockSegment,
+  removeBlockKeepingBinds,
+  supersetGroups,
+} from '@/lib/exercise/block-order';
 import { restSecFor } from '@/lib/exercise/constants';
 import {
   DRAFT_VERSION,
   draftBlocksHaveData,
   liveDraftHasData,
+  liveDraftSessionId,
+  liveSlotState,
   parseLiveDraft,
   type DraftBlock as LiveBlock,
   type DraftSet as LiveSet,
@@ -66,6 +76,12 @@ import {
   isLoadedRepsMeasures,
   type Measures,
 } from '@/lib/exercise/measures';
+import {
+  MAX_SESSION_MIN,
+  START_STEP_MIN,
+  parseDurationField,
+  shiftSessionStart,
+} from '@/lib/exercise/session-time';
 import type { PairedIngest, SetType, WorkoutDetail } from '@/lib/exercise/types';
 import { cancelRestAlert, scheduleRestAlert } from '@/lib/notifications/rest-timer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
@@ -123,6 +139,26 @@ import type { UnitPreferences } from '@/lib/user/types';
  * training reads or the export — there is no flag for a future query to forget.
  * It becomes a workout at one moment, `finish()`, and is deleted in the same
  * breath. Discarding deletes it and leaves nothing behind. See 0045's header.
+ *
+ * ## Leaving is not discarding (owner, 2026-09-23)
+ *
+ * *"confirm in progress workouts not getting cleared, should be same for going
+ * to rest of the app."* Until then the back chevron and the swipe asked
+ * "Discard this workout?", so the only way out of an open session was to throw
+ * it away or stay. Now leaving the logger — by any route — is what an iOS kill
+ * already was: nothing is asked, nothing is cleared, and the session waits in
+ * the slot. The ways back are the Train hub's **Session in progress** card and
+ * one line on Home. Throwing a session away is its own control, **Discard
+ * workout** under Finish, plus the hub's trash — never a side effect of
+ * navigating.
+ *
+ * The slot is one row and this screen can now outlive its claim on it (a
+ * notification tap pushes the tabs over a mounted logger, and the session can
+ * be resumed, finished or discarded from there), so every draft carries a
+ * `sessionId`. On regaining focus, and before Finish or Discard, the screen
+ * checks the slot still holds its session (`liveSlotState`); if not it closes
+ * to a one-line notice instead of writing, finishing or clearing again. If the
+ * same session was carried on elsewhere, it adopts that newer copy.
  *
  * Two things deliberately do not survive: an EDIT of a stored session (it
  * already has a saved copy, so nothing unrecorded is at risk — `editing` writes
@@ -186,33 +222,12 @@ function SupersetSeam({ onPress }: { onPress: () => void }) {
  * cannot drift apart. The field-level docs live with the types.
  */
 
-/**
- * Superset group numbers derived from the linked-to-next flags: a maximal run of
- * blocks chained by `linkedToNext` shares one 1-based group id; ungrouped blocks
- * map to null. Pure function of block order + flags (recomputed on save/render),
- * so unlinking is just toggling one boolean.
+/*
+ * `supersetGroups` (the group numbers Finish writes) and `MAX_SESSION_MIN` (the
+ * clamp in `finish()`) moved to src/lib/exercise/block-order.ts and
+ * session-time.ts on 2026-09-23, beside the reorder and start-adjust helpers
+ * that share their contracts — pure modules the headless suites can pin.
  */
-function supersetGroups(blocks: LiveBlock[]): (number | null)[] {
-  const groups: (number | null)[] = blocks.map(() => null);
-  let next = 1;
-  let i = 0;
-  while (i < blocks.length) {
-    if (blocks[i]!.linkedToNext && i + 1 < blocks.length) {
-      const start = i;
-      while (i + 1 < blocks.length && blocks[i]!.linkedToNext) i++;
-      for (let j = start; j <= i; j++) groups[j] = next;
-      next++;
-    }
-    i++;
-  }
-  return groups;
-}
-
-/**
- * The longest elapsed time still recorded as a session duration. Past it,
- * Finish stores no duration at all — see the clamp in `finish()`.
- */
-const MAX_SESSION_MIN = 6 * 60;
 
 /**
  * The columns one exercise block draws, from what its movement MEASURES (0046).
@@ -616,8 +631,20 @@ function WorkoutLive({
   // A resumed session keeps the instant it really started, so the elapsed clock
   // says how long this workout has been going, not how long the app has been
   // open again. Same for the routine it came from: Finish still stamps it used.
-  const [startedAt] = useState(() => draft?.startedAt ?? Date.now());
-  const draftRoutineId = draft?.routineId ?? routineId;
+  //
+  // The start is STATE, not a constant, since 2026-09-23: "I forgot to press
+  // start ten minutes ago" moves it (`shiftStart`), and Finish derives both the
+  // duration and `started_at` from it, so the correction reaches both.
+  const [startedAt, setStartedAt] = useState(() => draft?.startedAt ?? Date.now());
+  // Frozen at mount rather than re-read from the route on every render: a
+  // session's saved workout is decided when it starts, and a later navigation
+  // that returns to this screen with different params must not re-point it.
+  const [draftRoutineId] = useState<string | null>(() => draft?.routineId ?? routineId ?? null);
+  // Which session this screen holds (see `LiveDraft.sessionId`). An edit holds
+  // no draft, so it needs no identity.
+  const [sessionId] = useState(() =>
+    draft ? liveDraftSessionId(draft) : workoutId ? '' : newId(getDb())
+  );
   const [now, setNow] = useState(startedAt);
   const [blocks, setBlocks] = useState<LiveBlock[]>(() =>
     initialBlocks(draft, stored, routineId, exerciseIds, units)
@@ -656,6 +683,33 @@ function WorkoutLive({
   // expo-notifications ships.
   const restSeq = useRef(0);
   const savedRef = useRef(false);
+  /**
+   * Set when this screen's session is no longer the one in the draft slot —
+   * finished, discarded or replaced from another screen while this one sat
+   * mounted underneath (see the focus check below). The screen then stops
+   * writing, finishing and clearing, and draws one line saying why.
+   */
+  const [stale, setStale] = useState<null | 'ended' | 'other'>(null);
+  // Does the slot hold THIS session, as far as this screen last knew? True once
+  // it has written (or resumed) the draft; false again once it clears its own.
+  // It is what tells "another screen ended my session" apart from "I have not
+  // written anything yet" when the slot turns out to be empty.
+  const ownedRef = useRef(draft != null);
+  // The last draft write threw. Leaving would then lose the session, which is
+  // the one case the way out still asks about.
+  const writeFailedRef = useRef(false);
+  // Leaving with a live session kept leaves its OS rest alert queued, exactly
+  // as an iOS kill does (see the unmount cleanup). Mirrored into a ref so the
+  // cleanup reads the value at unmount, not at mount.
+  const sessionKeptRef = useRef(false);
+  // Reorder mode (2026-09-23): the set tables fold away to one ruled list of
+  // the session's exercises, each with an up and a down control.
+  const [reordering, setReordering] = useState(false);
+  // A logged session's minutes, as typed (editing only). An untouched field
+  // writes back the stored figure exactly — see `finish()`.
+  const initialDurationText =
+    stored?.durationMin == null ? '' : String(Math.round(stored.durationMin));
+  const [durationText, setDurationText] = useState(initialDurationText);
 
   /** Arm a fresh OS rest alert `seconds` out, cancelling any pending one. */
   const armRestAlert = (seconds: number) => {
@@ -721,17 +775,53 @@ function WorkoutLive({
   const weightProblem = overLimitBlock
     ? `A value on ${overLimitBlock.name} won’t save — it’s past the logger’s limit.`
     : null;
+  // The editor's minutes field (2026-09-23). Blank is "no duration"; anything
+  // else must be whole minutes, or Save is held and the margin says why.
+  const durationField = parseDurationField(durationText);
+  const durationProblem =
+    editing && !durationField.ok
+      ? 'The duration won’t save — enter whole minutes from 1 to 999, or clear it.'
+      : null;
   // A session no longer needs a name to be finishable — workouts have no names
   // (owner, 2026-08-14). Sets are the whole requirement. When editing, an empty
   // session is still savable: deleting every set is how you correct a workout
   // that never happened, and the confirm below asks before it lands.
-  const canFinish = (editing || hasData) && weightProblem == null;
-  const unsaved = editing ? dirty : hasData;
+  const canFinish = (editing || hasData) && weightProblem == null && durationProblem == null;
+  // Reordering needs two things to put in order; one superset is one thing.
+  const canReorder = blockSegments(blocks).length > 1;
+  const showOrder = reordering && canReorder;
 
-  /** Drop the stored draft — on Finish, and on an explicit Discard. */
-  const discardDraft = () => {
+  /**
+   * Is this screen's session still the one in the slot? `'ended'` when the slot
+   * was emptied under it (finished or discarded elsewhere), `'other'` when it
+   * now holds a different session, null when it is still this one's.
+   *
+   * Read, not remembered, and only at the moments another screen can have
+   * touched the slot: nothing writes a draft except the FOCUSED logger, so this
+   * runs when the screen regains focus and before Finish — never per keystroke.
+   * A failed read answers null: it must not strand a session on screen.
+   */
+  const lostSlot = (): 'ended' | 'other' | null => {
     try {
-      clearWorkoutDraft(getDb(), 'live');
+      const slot = liveSlotState(readWorkoutDraft(getDb(), 'live')?.value ?? null, sessionId);
+      if (slot === 'other') return 'other';
+      return slot === 'free' && ownedRef.current ? 'ended' : null;
+    } catch (error) {
+      console.warn('[exercise] draft read failed', error);
+      return null;
+    }
+  };
+
+  /**
+   * Drop the stored draft — on Finish, and on an explicit Discard — but only if
+   * it is still this session's. A different session in the slot belongs to
+   * whoever started it.
+   */
+  const clearOwnDraft = () => {
+    try {
+      const slot = liveSlotState(readWorkoutDraft(getDb(), 'live')?.value ?? null, sessionId);
+      if (slot !== 'other') clearWorkoutDraft(getDb(), 'live');
+      ownedRef.current = false;
     } catch (error) {
       // Never let losing the draft lose the navigation with it.
       console.warn('[exercise] draft clear failed', error);
@@ -754,6 +844,11 @@ function WorkoutLive({
    * is typed and DISAPPEARS when the last of it is deleted, so an emptied
    * session leaves no Resume card pointing at nothing. Editing writes no draft
    * at all.
+   *
+   * `lastWrittenRef` is recorded only AFTER the write lands, because the focus
+   * check below compares the slot against it: a write that threw must not be
+   * remembered as made, or the older copy in the slot would read as someone
+   * else's newer one.
    */
   const lastWrittenRef = useRef<string | null>(null);
   useEffect(() => {
@@ -762,14 +857,15 @@ function WorkoutLive({
       if (!hasData) {
         if (lastWrittenRef.current !== null) {
           lastWrittenRef.current = null;
-          clearWorkoutDraft(getDb(), 'live');
+          clearOwnDraft();
         }
         return;
       }
       const payload: LiveDraft = {
         version: DRAFT_VERSION,
+        sessionId,
         startedAt,
-        routineId: draftRoutineId ?? null,
+        routineId: draftRoutineId,
         ingestId: ingest?.id ?? null,
         restEndsAt,
         away,
@@ -777,45 +873,143 @@ function WorkoutLive({
       };
       const serialised = JSON.stringify(payload);
       if (serialised === lastWrittenRef.current) return;
-      lastWrittenRef.current = serialised;
       saveWorkoutDraft(getDb(), 'live', payload);
+      lastWrittenRef.current = serialised;
+      ownedRef.current = true;
+      writeFailedRef.current = false;
     } catch (error) {
       // A failed draft write must never break the logger the user is standing
-      // in — the session is still on screen and Finish still saves it.
+      // in — the session is still on screen and Finish still saves it. It does
+      // change what leaving costs, which is why it is remembered.
+      writeFailedRef.current = true;
       console.warn('[exercise] draft write failed', error);
     }
-  }, [blocks, restEndsAt, away, hasData, editing, startedAt, draftRoutineId, ingest]);
+    // `clearOwnDraft` is a render-scoped closure over `sessionId` and refs only,
+    // both of which are already here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocks, restEndsAt, away, hasData, editing, sessionId, startedAt, draftRoutineId, ingest]);
 
-  // Guard an accidental back from vaporising unsaved work.
+  useEffect(() => {
+    sessionKeptRef.current = !editing && hasData;
+  }, [editing, hasData]);
+
+  /**
+   * **The focus check.** Leaving keeps the session, so this screen can sit
+   * mounted under another one while the SAME slot is used elsewhere — iOS
+   * pushes the tabs over it when a reminder is tapped, and from there the
+   * session can be resumed (a second copy of this screen), finished, discarded,
+   * or replaced by a new one. Coming back, the slot decides:
+   *
+   *   - still this session, byte-identical to the last write → nothing to do;
+   *   - still this session but written by the other copy → adopt that copy,
+   *     or this screen's next keystroke would overwrite what was done there;
+   *   - emptied, or holding another session → this screen closes to a notice.
+   *     Writing would clobber the other session; Finish would log this one a
+   *     second time.
+   */
+  useFocusEffect(
+    useCallback(() => {
+      if (editing || savedRef.current) return;
+      let row: ReturnType<typeof readWorkoutDraft>;
+      try {
+        row = readWorkoutDraft(getDb(), 'live');
+      } catch (error) {
+        console.warn('[exercise] draft read failed', error);
+        return;
+      }
+      const slot = liveSlotState(row?.value ?? null, sessionId);
+      if (slot === 'other' || (slot === 'free' && ownedRef.current)) {
+        savedRef.current = true;
+        restSeq.current++;
+        void cancelRestAlert(restNotifId.current);
+        restNotifId.current = null;
+        setStale(slot === 'other' ? 'other' : 'ended');
+        return;
+      }
+      if (slot !== 'mine' || !row || lastWrittenRef.current === null) return;
+      const serialised = JSON.stringify(row.value);
+      const newer = parseLiveDraft(row.value);
+      if (serialised === lastWrittenRef.current || !newer) return;
+      adoptKeys(newer.blocks);
+      lastWrittenRef.current = serialised;
+      setBlocks(newer.blocks);
+      setStartedAt(newer.startedAt);
+      setAway(newer.away);
+      setRestEndsAt(
+        newer.restEndsAt != null && newer.restEndsAt > Date.now() ? newer.restEndsAt : null
+      );
+    }, [editing, sessionId])
+  );
+
+  /**
+   * The way out.
+   *
+   * An EDIT still asks before dropping changes: it has a saved copy, and
+   * leaving it means "put it back as it was".
+   *
+   * A LIVE session does not ask (owner, 2026-09-23): leaving keeps it, exactly
+   * as an iOS kill does, because every change is already in the slot. The one
+   * exception is a draft write that failed — then leaving really would lose the
+   * sets, and the screen says so rather than letting them go quietly.
+   */
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', (e) => {
-      if (savedRef.current || !unsaved) return;
-      e.preventDefault();
-      Alert.alert(
-        editing ? 'Discard these changes?' : 'Discard this workout?',
-        editing
-          ? 'The session stays as it was.'
-          : 'It has not been saved to your training history. Discarding deletes the sets you have typed.',
-        [
-          { text: editing ? 'Keep editing' : 'Keep logging', style: 'cancel' },
-          {
-            text: 'Discard',
-            style: 'destructive',
-            onPress: () => {
-              // Discard means discard: the stored draft goes too, or the hub
-              // would offer to resume a session the user just threw away.
-              if (!editing) {
-                savedRef.current = true; // stop the write-through re-creating it
-                discardDraft();
-              }
-              navigation.dispatch(e.data.action);
+      if (savedRef.current) return;
+      if (!editing) {
+        if (!hasData || !writeFailedRef.current) return;
+        e.preventDefault();
+        Alert.alert(
+          'Leave without a saved copy?',
+          'ARC could not store this workout for later, so leaving now loses the sets typed here.',
+          [
+            { text: 'Stay', style: 'cancel' },
+            {
+              text: 'Leave',
+              style: 'destructive',
+              onPress: () => navigation.dispatch(e.data.action),
             },
-          },
-        ]
-      );
+          ]
+        );
+        return;
+      }
+      if (!dirty) return;
+      e.preventDefault();
+      Alert.alert('Discard these changes?', 'The session stays as it was.', [
+        { text: 'Keep editing', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => navigation.dispatch(e.data.action),
+        },
+      ]);
     });
     return unsub;
-  }, [navigation, unsaved, editing]);
+  }, [navigation, hasData, dirty, editing]);
+
+  /**
+   * Throw the unfinished session away — the control that took over from the
+   * back button's old "Discard this workout?" (2026-09-23). Same words and the
+   * same two taps, because the draft is the only copy of these sets.
+   */
+  const discardWorkout = () => {
+    Alert.alert(
+      'Discard this workout?',
+      'It has not been saved to your training history. Discarding deletes the sets you have typed.',
+      [
+        { text: 'Keep logging', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => {
+            savedRef.current = true; // stop the write-through re-creating it
+            disarmRestAlert();
+            clearOwnDraft();
+            router.back();
+          },
+        },
+      ]
+    );
+  };
 
   const patchSet = (blockKey: number, setKey: number, patch: Partial<Omit<LiveSet, 'key'>>) => {
     setDirty(true);
@@ -859,9 +1053,39 @@ function WorkoutLive({
     }
   };
 
+  // Through `removeBlockKeepingBinds`, not a plain filter: removing the lower
+  // half of a superset used to leave the upper half bound to whatever came next.
   const removeBlock = (blockKey: number) => {
     setDirty(true);
-    setBlocks((prev) => prev.filter((b) => b.key !== blockKey));
+    setBlocks((prev) => removeBlockKeepingBinds(prev, blockKey));
+  };
+
+  /**
+   * Move an exercise — or the whole superset it is bound into — one place up or
+   * down (2026-09-23). A superset moves as one: see src/lib/exercise/block-order.ts.
+   * The order is simply the array's, so the draft and Finish / Save carry it
+   * with no further bookkeeping.
+   */
+  const moveBlock = (blockKey: number, direction: -1 | 1) => {
+    const next = moveBlockSegment(blocks, blockKey, direction);
+    if (!next) return;
+    setDirty(true);
+    setBlocks(next);
+  };
+
+  /**
+   * Move the session's start (2026-09-23) — "I forgot to press start ten
+   * minutes ago". The start is the one fact the elapsed clock, the stored
+   * duration and `started_at` are all derived from, so correcting it corrects
+   * all three. Bounded by `shiftSessionStart`: never into the future, never
+   * past the six-hour clamp Finish applies anyway.
+   */
+  const shiftStart = (deltaMin: number) => {
+    const at = Date.now();
+    const next = shiftSessionStart(startedAt, deltaMin, at);
+    if (next == null) return;
+    setStartedAt(next);
+    setNow(at);
   };
 
   /**
@@ -941,6 +1165,18 @@ function WorkoutLive({
 
   const finish = () => {
     if (savedRef.current || !canFinish) return;
+    // A live session first confirms it is still the one in the slot. Finished
+    // or discarded from another screen while this one sat underneath, saving
+    // here would log the same workout twice.
+    if (!editing) {
+      const lost = lostSlot();
+      if (lost) {
+        savedRef.current = true;
+        disarmRestAlert();
+        setStale(lost);
+        return;
+      }
+    }
     const groups = supersetGroups(blocks);
     const sets = blocks.flatMap((b, bi) =>
       b.sets
@@ -997,19 +1233,29 @@ function WorkoutLive({
     // that one is not.
     const elapsedMin = Math.max(0, Math.round((Date.now() - startedAt) / 60_000));
     const durationMin = elapsedMin <= MAX_SESSION_MIN ? elapsedMin : 0;
+    // The editor's minutes. An untouched field writes back the stored figure
+    // exactly — it may carry a fraction the field rounds away (an import, the
+    // Coach), and a Save that only moved a set must not rewrite it.
+    const editedDurationMin = !stored
+      ? null
+      : durationText === initialDurationText || !durationField.ok
+        ? stored.durationMin
+        : durationField.minutes;
+    let savedId: string | null = null;
     try {
       const db = getDb();
       if (stored) {
-        // Correcting a past session: its date, kind and duration are facts
-        // about that day and are left exactly as they were. Only the sets — the
-        // thing the editor edits — and the away flag are rewritten. The flag is
-        // free to change afterwards precisely because nothing derived from it
-        // is stored: PRs are awarded live and never written, and every other
-        // affected read is computed from the sets on demand.
+        // Correcting a past session: its date and kind are facts about that day
+        // and are left exactly as they were. The sets — in the order the editor
+        // left them — the away flag and, since 2026-09-23, the duration are
+        // rewritten. None of them has anything derived stored beside it: PRs
+        // are awarded live and never written, and every other read (freshness,
+        // volume, the week's minutes, the Coach's summary) is computed from the
+        // row on demand.
         replaceWorkout(
           db,
           stored.id,
-          { kind: stored.kind, durationMin: stored.durationMin, notes: stored.notes, away },
+          { kind: stored.kind, durationMin: editedDurationMin, notes: stored.notes, away },
           sets
         );
       } else {
@@ -1021,7 +1267,7 @@ function WorkoutLive({
         // so the elapsed timer would record however long the typing took. The
         // day, the duration and the start instant are all facts the watch
         // already measured; the sets are the only thing the owner is adding.
-        const newId = logWorkout(
+        savedId = logWorkout(
           db,
           {
             date: ingest ? ingest.date : todayISODate(),
@@ -1030,7 +1276,7 @@ function WorkoutLive({
             // A resumed session still belongs to the saved workout it started
             // from, so Finish stamps that workout used exactly as it would have
             // before the app closed.
-            routineId: draftRoutineId ?? null,
+            routineId: draftRoutineId,
             // 0054 — the span pairing matches on. A live session knows when it
             // began; a filled-in one takes the watch's own start. Null when the
             // duration was discarded as implausible, because a start with no
@@ -1044,28 +1290,47 @@ function WorkoutLive({
           },
           sets
         );
+      }
+    } catch (error) {
+      console.warn('[exercise] workout save failed', error);
+      Alert.alert('Save failed', 'Nothing was changed. Please try again.');
+      return;
+    }
+    // The session is committed. What follows is bookkeeping AROUND it, in its
+    // own try (2026-09-23): these used to share the save's try, so a throw here
+    // reached "Save failed — Nothing was changed" about a workout that had been
+    // saved, and left its draft on screen one tap from being saved twice. The
+    // split app/workout-log.tsx already made for its pair-on-save.
+    try {
+      const db = getDb();
+      if (stored) {
+        // A corrected duration can settle a pairing that failed on the old
+        // figure — the span rule's end moved, and the day rule's closest-
+        // duration test compares this number. An EXISTING link is not
+        // re-judged: the Unpair line above is the owner's door out of one.
+        if (editedDurationMin !== stored.durationMin) pairIngestedWorkouts(db);
+      } else if (savedId) {
         if (draftRoutineId) touchRoutineStarted(db, draftRoutineId, new Date().toISOString());
         if (ingest) {
           // An assertion, not an inference: the owner said these sets are that
           // session. `linked_by = 'user'`, and it replaces any automatic link.
-          linkIngestedWorkout(db, newId, ingest.id);
+          linkIngestedWorkout(db, savedId, ingest.id);
         } else {
           // Pair-on-save — the other half of pair-on-sync. The watch's copy of
           // the session just finished is usually already in `wearable_data`.
           pairIngestedWorkouts(db);
         }
       }
-      disarmRestAlert();
-      savedRef.current = true;
-      // The draft has become a workout. Clear it AFTER the write succeeds —
-      // if the save throws, the draft is the only copy of the session and the
-      // screen stays open holding it.
-      if (!editing) discardDraft();
-      router.back();
     } catch (error) {
-      console.warn('[exercise] workout save failed', error);
-      Alert.alert('Save failed', 'Nothing was changed. Please try again.');
+      console.warn('[exercise] post-save bookkeeping failed', error);
     }
+    disarmRestAlert();
+    savedRef.current = true;
+    // The draft has become a workout. Clear it AFTER the write succeeds —
+    // if the save throws, the draft is the only copy of the session and the
+    // screen stays open holding it.
+    if (!editing) clearOwnDraft();
+    router.back();
   };
 
   /**
@@ -1098,17 +1363,42 @@ function WorkoutLive({
     );
   };
 
-  // Cancel any pending OS rest alert if the screen is left without finishing.
-  // Bump the token first so an in-flight schedule that resolves after teardown
-  // sees a stale seq and cancels its own id, rather than leaking an alert whose
-  // id landed too late for this cleanup to have seen it.
+  // Cancel any pending OS rest alert when the screen goes and its session goes
+  // with it (finished, discarded, emptied, an edit). Bump the token first so an
+  // in-flight schedule that resolves after teardown sees a stale seq and
+  // cancels its own id, rather than leaking an alert whose id landed too late
+  // for this cleanup to have seen it.
+  //
+  // A live session LEFT WITH ITS DRAFT KEPT keeps its alert (2026-09-23): the
+  // owner who steps out of the logger mid-rest still wants the buzz, and it is
+  // what an iOS kill already does. The resumed screen restores the countdown
+  // and does not re-arm it, so the one queued alert is the only one.
   useEffect(
     () => () => {
+      if (sessionKeptRef.current && !savedRef.current) return;
       restSeq.current++;
       void cancelRestAlert(restNotifId.current);
     },
     []
   );
+
+  // This screen's session was finished, discarded or replaced from another
+  // screen while it sat underneath (the focus check). One line, no controls:
+  // there is nothing here left to act on, and the back chevron is the way out.
+  if (stale) {
+    return (
+      <Screen>
+        <View className="pt-2">
+          <StackHeader title="Workout" />
+        </View>
+        <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
+          {stale === 'other'
+            ? 'A different workout is in progress now. Resume it from the Train tab.'
+            : 'This workout was finished or discarded on another screen.'}
+        </Text>
+      </Screen>
+    );
+  }
 
   // Superset group per block, derived from the linked-to-next flags.
   const groups = supersetGroups(blocks);
@@ -1142,17 +1432,36 @@ function WorkoutLive({
           protocol editor's selected treatment (border-ink + the recessed fill).
         */}
         <View className="mt-2 flex-row items-center justify-between gap-3">
-          <View className="flex-row items-baseline gap-2">
+          <View
+            className={editing ? 'flex-row items-center gap-2' : 'flex-row items-baseline gap-2'}>
             {editing ? (
+              /* The duration is a FIELD on a logged session (owner, 2026-09-23:
+                 "workout duration should be editable"). The row stores a figure,
+                 so the figure is what is edited — see src/lib/exercise/
+                 session-time.ts. Recessed stock, like every entry field here;
+                 blank means "no duration". */
               <>
                 <Text className="font-mono text-2xl text-ink">
                   {dayLabel(stored.date, todayISODate())}
                 </Text>
-                {stored.durationMin != null ? (
-                  <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                    {Math.round(stored.durationMin)} min
-                  </Text>
-                ) : null}
+                <View className={`min-h-[36px] w-14 ${INPUT_WELL}`}>
+                  <TextInput
+                    value={durationText}
+                    onChangeText={(text) => {
+                      setDirty(true);
+                      setDurationText(text);
+                    }}
+                    placeholder="—"
+                    placeholderTextColor={palette.inkMuted}
+                    keyboardType="number-pad"
+                    returnKeyType={KEYPAD_DONE}
+                    className="py-1.5 text-center font-mono text-[15px] text-ink"
+                    accessibilityLabel="Duration in minutes"
+                  />
+                </View>
+                <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                  min
+                </Text>
               </>
             ) : filling ? (
               /* The watch's span, stated rather than timed — this session already
@@ -1196,6 +1505,16 @@ function WorkoutLive({
             </Text>
           </Pressable>
         </View>
+
+        {/* When the session started, and the correction for starting the clock
+            late (2026-09-23). The start is the fact; the elapsed clock above,
+            the stored duration and `started_at` are all read off it, so moving
+            it moves every one of them together. Mono, like every figure here;
+            the steppers are the rest bar's own −15 / +15 chips, and no accent —
+            that budget is Finish and the stamps. */}
+        {!editing && !filling ? (
+          <StartLine startedAt={startedAt} now={now} onShift={shiftStart} />
+        ) : null}
 
         {/* What the WATCH measured about the session being corrected (0054,
             docs §15). The editor has loaded `stored.ingested` since pairing
@@ -1265,15 +1584,45 @@ function WorkoutLive({
 
           When a block is NOT linked to the one below, the quiet link affordance
           sits in the gap, as before.
+
+          REORDER (owner, 2026-09-23: "be able to reorder exercises in a
+          workout") is a mode, not a handle on every plate: the set tables fold
+          away to one ruled list of the session's exercises, each with an up and
+          a down control — no drag library, by design. The control sits on the
+          thing it changes, right above the list, in the label voice and off the
+          accent budget. Shown only when there are two things to put in order.
         */}
+        {canReorder ? (
+          <View className="mt-4 flex-row justify-end">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: showOrder }}
+              accessibilityLabel={showOrder ? 'Done reordering exercises' : 'Reorder exercises'}
+              onPress={() => setReordering(!showOrder)}
+              className="min-h-[44px] flex-row items-center gap-1.5 px-1 active:opacity-60">
+              <Ionicons
+                name={showOrder ? 'checkmark' : 'swap-vertical'}
+                size={14}
+                color={palette.inkSecondary}
+              />
+              <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
+                {showOrder ? 'Done' : 'Reorder'}
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
         {blocks.length === 0 ? (
           <Text className="mt-8 font-serif text-[14px] leading-6 text-ink-secondary">
             {editing
               ? 'This session has no sets left. Save to keep it empty, or delete it.'
               : 'Nothing logged yet.'}
           </Text>
+        ) : showOrder ? (
+          <View className="mt-2">
+            <ExerciseOrder blocks={blocks} onMove={moveBlock} />
+          </View>
         ) : (
-          <View className="mt-6">
+          <View className={canReorder ? 'mt-2' : 'mt-6'}>
             {blocks.map((block, bi) => {
               const linkedAbove = bi > 0 && groups[bi] != null && groups[bi] === groups[bi - 1];
               return (
@@ -1337,11 +1686,11 @@ function WorkoutLive({
 
         {/* Why Finish is off — an annotation, so: margin. A single over-limit
             weight would otherwise roll the whole session back on the CHECK. */}
-        {weightProblem ? (
+        {(weightProblem ?? durationProblem) ? (
           <View className="mt-5">
             <Block device="margin">
               <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
-                {weightProblem}
+                {weightProblem ?? durationProblem}
               </Text>
             </Block>
           </View>
@@ -1382,6 +1731,20 @@ function WorkoutLive({
             onPress={removeWorkout}
             className="mt-3 min-h-[44px] items-center justify-center active:opacity-60">
             <Text className="font-label text-[13px] text-ink-muted">Delete session</Text>
+          </Pressable>
+        ) : null}
+
+        {/* Throwing an unfinished session away — its own control since leaving
+            stopped doing it (2026-09-23). The same muted treatment as Delete
+            session above, for the same reasons; shown only once there is
+            something typed to throw away. */}
+        {!editing && hasData ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Discard this workout"
+            onPress={discardWorkout}
+            className="mt-3 min-h-[44px] items-center justify-center active:opacity-60">
+            <Text className="font-label text-[13px] text-ink-muted">Discard workout</Text>
           </Pressable>
         ) : null}
       </ScrollView>
@@ -1702,5 +2065,158 @@ function ExerciseBlock({
         </View>
       </Block>
     </View>
+  );
+}
+
+/**
+ * The live session's start, and the two steppers that correct it (2026-09-23).
+ *
+ * "started 14:02" is the fact the elapsed clock above is counted from; the
+ * steppers move it by {@link START_STEP_MIN} minutes at a time. That is the
+ * smallest honest version of "I forgot to press start": a relative nudge, in
+ * the unit people actually misremember by, rather than a time picker that asks
+ * for an absolute the owner does not know to the minute either. A stepper that
+ * cannot move (the start is already now, or already six hours back) is drawn
+ * off rather than taking a press that does nothing.
+ */
+function StartLine({
+  startedAt,
+  now,
+  onShift,
+}: {
+  startedAt: number;
+  now: number;
+  onShift: (deltaMin: number) => void;
+}) {
+  const clock = clockFromISO(new Date(startedAt).toISOString());
+  const canEarlier = shiftSessionStart(startedAt, -START_STEP_MIN, now) != null;
+  const canLater = shiftSessionStart(startedAt, START_STEP_MIN, now) != null;
+  const steppers: { delta: number; label: string; spoken: string; enabled: boolean }[] = [
+    {
+      delta: -START_STEP_MIN,
+      label: `−${START_STEP_MIN} min`,
+      spoken: `Started at ${clock}. Move the start ${START_STEP_MIN} minutes earlier.`,
+      enabled: canEarlier,
+    },
+    {
+      delta: START_STEP_MIN,
+      label: `+${START_STEP_MIN} min`,
+      spoken: `Started at ${clock}. Move the start ${START_STEP_MIN} minutes later.`,
+      enabled: canLater,
+    },
+  ];
+  return (
+    <View className="mt-1 flex-row items-center gap-2">
+      <Text className="flex-1 font-mono text-[11px] leading-4 text-ink-muted">started {clock}</Text>
+      {steppers.map((s) => (
+        <Pressable
+          key={s.delta}
+          accessibilityRole="button"
+          accessibilityLabel={s.spoken}
+          accessibilityState={{ disabled: !s.enabled }}
+          disabled={!s.enabled}
+          onPress={() => onShift(s.delta)}
+          hitSlop={8}
+          className="min-h-[32px] justify-center rounded-btn border border-hairline px-2.5 active:bg-paper-dim">
+          <Text
+            className={`font-mono text-[12px] ${s.enabled ? 'text-ink-secondary' : 'text-ink-muted'}`}>
+            {s.label}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+/**
+ * Reorder mode: the session's exercises as ONE ruled plate, a row per movable
+ * unit, each with an up and a down control (2026-09-23).
+ *
+ * One plate, because it is one record — the session's order — and a plate per
+ * row would nest devices the way the set tables it replaces never do. A
+ * superset is one row that names both movements and says what it is, and it
+ * moves as one: a single member cannot step past its partner, because that
+ * would silently re-bind it to a stranger or split the pair
+ * (src/lib/exercise/block-order.ts). The line under the label says so and says
+ * how to move one exercise out — split it at the seam — but only when there is
+ * a superset for it to be about.
+ *
+ * The arrows are chrome and take no accent; an arrow that cannot move is drawn
+ * in hairline and announced disabled, never hidden, so the rows keep one shape.
+ */
+function ExerciseOrder({
+  blocks,
+  onMove,
+}: {
+  blocks: LiveBlock[];
+  onMove: (blockKey: number, direction: -1 | 1) => void;
+}) {
+  const segments = blockSegments(blocks);
+  const hasSuperset = segments.some((s) => s.end > s.start);
+  return (
+    <Block device="plate">
+      <SectionLabel label="Order" />
+      {hasSuperset ? (
+        <Text className="mt-1.5 font-serif text-[13px] leading-5 text-ink-secondary">
+          A superset moves as one. To move one of its exercises on its own, split it at the seam
+          first.
+        </Text>
+      ) : null}
+      <View className="mt-1">
+        {segments.map((segment, i) => {
+          const members = blocks.slice(segment.start, segment.end + 1);
+          const lead = members[0]!;
+          const names = members.map((b) => b.name);
+          const spoken = members.length > 1 ? `the superset ${names.join(' and ')}` : lead.name;
+          const moves: {
+            direction: -1 | 1;
+            icon: 'chevron-up' | 'chevron-down';
+            enabled: boolean;
+          }[] = [
+            { direction: -1, icon: 'chevron-up', enabled: i > 0 },
+            { direction: 1, icon: 'chevron-down', enabled: i < segments.length - 1 },
+          ];
+          return (
+            <View key={lead.key}>
+              <Divider first={i === 0} />
+              <View className="min-h-[52px] flex-row items-center gap-2 py-1.5">
+                <Text className="w-5 font-mono text-[11px] text-ink-muted">{i + 1}</Text>
+                <View className="flex-1">
+                  {members.map((b) => (
+                    <Text
+                      key={b.key}
+                      className="font-serif text-[15px] leading-5 text-ink"
+                      numberOfLines={1}>
+                      {b.name}
+                    </Text>
+                  ))}
+                  {members.length > 1 ? (
+                    <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                      Superset
+                    </Text>
+                  ) : null}
+                </View>
+                {moves.map((m) => (
+                  <Pressable
+                    key={m.direction}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Move ${spoken} ${m.direction < 0 ? 'up' : 'down'}`}
+                    accessibilityState={{ disabled: !m.enabled }}
+                    disabled={!m.enabled}
+                    onPress={() => onMove(lead.key, m.direction)}
+                    className="h-11 w-11 items-center justify-center rounded-btn border border-hairline active:bg-paper-dim">
+                    <Ionicons
+                      name={m.icon}
+                      size={18}
+                      color={m.enabled ? palette.inkSecondary : palette.hairline}
+                    />
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </Block>
   );
 }

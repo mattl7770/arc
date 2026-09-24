@@ -20,7 +20,9 @@ import { useReadiness } from '@/hooks/use-readiness';
 import { useStatuses } from '@/hooks/use-statuses';
 import { useTimezoneNote } from '@/hooks/use-timezone-note';
 import { useTodayMission } from '@/hooks/use-today-mission';
+import { useWorkoutDrafts } from '@/hooks/use-training';
 import { todayISODate } from '@/lib/db/date';
+import { openSessionLine } from '@/lib/exercise/draft';
 import { reaskFor, type RailChip } from '@/lib/status/chips';
 import { statusLine } from '@/lib/status/line';
 import { endOpenStatus, toggleStatus } from '@/lib/status/store';
@@ -217,6 +219,10 @@ export default function HomeScreen() {
   );
   // D4: one line, on the day the device's timezone changed, and never again.
   const timezoneNote = useTimezoneNote();
+  // An unfinished live workout (0045) — re-read on focus like every Home read,
+  // so finishing or discarding it elsewhere takes the line away on return.
+  const drafts = useWorkoutDrafts();
+  const sessionLine = drafts.live ? openSessionLine(drafts.live) : null;
   const planned = mission.total > 0;
   // The one thing here the user did not ask for: the Coach's own daily pass,
   // shown only when it judged the day worth a word (it usually says nothing).
@@ -279,6 +285,38 @@ export default function HomeScreen() {
           onPress={() => carryToCoach({ prompt: reaskFor(statuses.open[0]!.label) })}
           className="mt-3 active:opacity-60">
           <Text className="font-mono text-[11px] leading-4 text-ink-muted">{statusNote}</Text>
+        </Pressable>
+      ) : null}
+
+      {/*
+          A workout left open (2026-09-23). Leaving the logger no longer
+          discards the session, so the question "what should I do right now"
+          sometimes has a plain answer — finish what you started — and Home is
+          where the owner lands after iOS has killed the app mid-session.
+
+          It takes the register of the two lines above, not a device: an open
+          session is a FACT about now, the same kind of thing as the day's
+          status, and CLAUDE.md §5 keeps Home to one hero. Mono, muted, zero
+          height on every day without one. The row is 44pt because it is a door
+          straight back into the logger; `Resume` in the label voice says so,
+          and neither takes the accent — Home's budget is the hero, the
+          completion stamps and the active tab. The Train hub's Session in
+          progress card stays the full surface (resume or discard, both
+          loggers); this is the shortcut.
+      */}
+      {sessionLine ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${sessionLine}. Resume the workout`}
+          onPress={() => router.push({ pathname: '/workout-live', params: { resume: '1' } })}
+          className="mt-1 min-h-[44px] flex-row items-center gap-2 active:opacity-60">
+          <Text className="flex-1 font-mono text-[11px] leading-4 text-ink-muted" numberOfLines={1}>
+            {sessionLine}
+          </Text>
+          <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+            Resume
+          </Text>
+          <Ionicons name="chevron-forward" size={12} color={palette.inkMuted} />
         </Pressable>
       ) : null}
 
