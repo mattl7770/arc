@@ -17,9 +17,12 @@
  * means.
  *
  * The listener set is the same idiom the retired modes store used, for the
- * same reason and with one more caller: a status set from a sheet presented
- * OVER Home never costs Home its focus, so `useFocusEffect` alone would leave
- * the line above the hero stale.
+ * same reason: a status set from a sheet presented OVER Home never costs Home
+ * its focus, so `useFocusEffect` alone would leave the door beside the date —
+ * which names the running status since 2026-09-23 — reading what was on before
+ * the tap. It covers the door's own gestures only; a status the Coach records
+ * in a turn is written by its tool, never through here, which is why the Coach
+ * tab re-reads after every turn as well.
  */
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';

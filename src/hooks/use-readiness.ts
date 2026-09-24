@@ -6,7 +6,6 @@ import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { isHealthKitSupported } from '@/lib/health/healthkit';
 import { subscribeHealthSync } from '@/lib/health/sync';
 import { deriveReadiness, type HealthLink, type ReadinessView } from '@/lib/home/readiness';
-import { subscribeStatusChange } from '@/lib/status/store';
 
 /**
  * Home's readiness view model — real `wearable_data` through the pure
@@ -41,11 +40,12 @@ export function useReadiness(): ReadinessView {
 
   useFocusEffect(reload);
   useEffect(() => subscribeHealthSync(reload), [reload]);
-  // A status set from the sheet presented OVER Home changes two of this view's
-  // fields — `excludedStatusDays` and `recoveryPausedByStatus`, both of which
-  // Home's status line prints — and Home never loses focus to a modal, so
-  // useFocusEffect alone would leave the line a day behind.
-  useEffect(() => subscribeStatusChange(reload), [reload]);
+  // No status-change subscription since 2026-09-23. It existed for the two
+  // status fields Home's mono line printed; that line is now the status sheet's
+  // header, which derives its own on the tap that opens it. Nothing Home still
+  // draws from this view moves when a status starts or ends today — the day
+  // joins the exclusion set, but a baseline only reads the days before the one
+  // it grades.
 
   return state;
 }

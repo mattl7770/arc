@@ -677,8 +677,48 @@ console.log('\n6. the readiness baselines: excluded, counted, and honest about i
     plantHistory(db);
     const view = deriveReadiness(db, TODAY);
     view.excludedStatusDays === 0 && view.recoveryPausedByStatus === false
-      ? ok('on an ordinary day the count is zero and Home prints no clause')
+      ? ok('on an ordinary day the count is zero and the status sheet prints no clause')
       : bad('ordinary day');
+  }
+
+  // (e) WHAT HOME STILL DRAWS DOES NOT MOVE when a status starts or ends TODAY
+  // (2026-09-23). useReadiness stopped re-deriving on a status change when
+  // Home's line went: the day joins the exclusion set, but a baseline only
+  // reads the days before the one it grades. Only the COUNT moves, and Home no
+  // longer prints it — the status sheet derives its own when it opens. `now` is
+  // pinned, so a minute boundary between derivations cannot move the clock.
+  {
+    const { db } = freshDb();
+    // Yesterday dips, so a baseline that lost it would read differently.
+    plantHistory(db, { dip: [1] });
+    const now = new Date('2026-09-19T12:00:00');
+    const drawn = (view) => JSON.stringify([view.readiness, view.pillars, view.metrics]);
+    const before = deriveReadiness(db, TODAY, { now });
+    const row = startStatus(db, { label: 'sick', startDate: TODAY, source: 'user' });
+    const started = deriveReadiness(db, TODAY, { now });
+    endStatus(db, row.id, TODAY);
+    const ended = deriveReadiness(db, TODAY, { now });
+    drawn(started) === drawn(before) && drawn(ended) === drawn(before)
+      ? ok('starting or ending a status TODAY moves nothing Home draws from readiness')
+      : bad('a status moved the readiness view Home draws', drawn(started));
+    started.excludedStatusDays === before.excludedStatusDays + 1 &&
+    ended.excludedStatusDays === started.excludedStatusDays
+      ? ok('…only the count moves (+1, today), and ending leaves today covered')
+      : bad(
+          'count',
+          `${before.excludedStatusDays}/${started.excludedStatusDays}/${ended.excludedStatusDays}`
+        );
+
+    // The control: the same comparison DOES see a status that reaches back one
+    // day, because yesterday's dip leaves the baseline — so the equality above
+    // is not the check going blind.
+    const { db: control } = freshDb();
+    plantHistory(control, { dip: [1] });
+    const controlBefore = deriveReadiness(control, TODAY, { now });
+    startStatus(control, { label: 'sick', startDate: daysAgo(1), source: 'user' });
+    drawn(deriveReadiness(control, TODAY, { now })) !== drawn(controlBefore)
+      ? ok('…while a status covering YESTERDAY does move it (the control)')
+      : bad('the comparison cannot see a baseline change');
   }
 
   // (d) THE LIE THE COUNTERFACTUAL PREVENTS. A phone with no watch has no

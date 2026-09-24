@@ -131,12 +131,23 @@ export default function CoachScreen() {
   const params = useLocalSearchParams<{ prompt?: string | string[] }>();
   const seededPrompt = Array.isArray(params.prompt) ? params.prompt[0] : params.prompt;
 
+  // Read above the turn callback, because a turn can change it.
+  const statuses = useStatuses();
+  const reloadStatuses = statuses.reload;
+
   const onTurnComplete = useCallback(() => {
     reloadReminders();
     // A turn may have set/completed/dismissed a reminder — re-mirror the OS
     // notification schedule so a while-closed nudge tracks the change.
     void syncReminderNotifications(getDb());
-  }, [reloadReminders]);
+    // …or recorded or ended a status (`set_status`). Since 2026-09-23 the door
+    // is the one thing on this screen that says a status is running, and it
+    // NAMES it, so it re-reads here — a status the owner just approved on a
+    // card must not read `STATUS` until the tab next regains focus. (The
+    // store's broadcast covers the door's own gestures; a tool write never
+    // passes through the store.)
+    reloadStatuses();
+  }, [reloadReminders, reloadStatuses]);
 
   // Completing/dismissing from the card also changes what should fire.
   const onCompleteReminder = useCallback(
@@ -194,7 +205,6 @@ export default function CoachScreen() {
   // that may not warrant a turn. The counter is what makes reseeding the SAME
   // sentence twice remount the composer — ChatInput owns its draft, so the key
   // is how a reseed reaches it, and `text` alone would be the same key.
-  const statuses = useStatuses();
   const [railSeed, setRailSeed] = useState<{ text: string; n: number } | null>(null);
   const seedText = railSeed?.text ?? seededPrompt;
   const seedKey = railSeed ? `rail-${railSeed.n}` : (seededPrompt ?? 'composer');
@@ -317,9 +327,14 @@ export default function CoachScreen() {
               until the owner used the build on 2026-09-21: *"buttons for the
               status thing on the coach tab need to be moved and put behind
               another button."* The five now live in the sheet Home was already
-              opening, and `showOpen` is what keeps a RUNNING status visible
-              without opening anything: the door, then the chips that are
-              actually on, which on most days is none.
+              opening.
+
+              What keeps a RUNNING status visible without opening anything is
+              the door itself: it reads `STATUS` on most days and the status's
+              own name — `SICK` — while one is on (2026-09-23, the owner's note
+              on Home, applied to the same component here). Until then the open
+              chip was drawn beside it; the re-ask and the × it carried are in
+              the sheet, one tap further in.
 
               Hidden under a pending write for the same reason the activity
               line is: the loop is suspended waiting on one decision, and a
@@ -328,7 +343,7 @@ export default function CoachScreen() {
               door does not appear and vanish on every question. */}
           <StatusControl
             open={statuses.open}
-            showOpen
+            docked
             disabled={chat.isResponding}
             hidden={decisionOpen}
             onToggle={onStatusChip}

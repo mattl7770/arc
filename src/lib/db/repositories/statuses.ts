@@ -57,7 +57,7 @@ export type DayStatusRow = {
    * and the migration header argues why one column cannot answer both: a Night
    * out born bounded at today and a Sick just ended today have the same span
    * and must draw differently. Accounting never reads this; only the rail,
-   * Home's line and the Coach's state block do.
+   * the status door and its sheet, and the Coach's state block do.
    */
   ended: number;
   /** 0 or 1 — SQLite's boolean, the owner's Q2(b). `=== 1` at every reader. */
@@ -81,8 +81,8 @@ export function normalizeStatusLabel(label: string): string {
 
 /**
  * The statuses RUNNING on `date` — newest started first. What the rail draws
- * as on-chips, what Home's line states, and what the Coach's state block
- * prints.
+ * as on-chips, what the status door names and its sheet's header states, and
+ * what the Coach's state block prints.
  *
  * "Running" is `ended = 0` AND the span covers the day: a status closed this
  * morning still COVERS today (its skips stay excused, which is the point of
@@ -324,7 +324,7 @@ export function endAllStatuses(db: Database, date: string): number {
   return open.length;
 }
 
-/** 1-based day number of `date` within a status — "day 4" on Home's line. */
+/** 1-based day number of `date` within a status — "day 4" in the Coach's state block. */
 export function statusDayNumber(row: DayStatusRow, date: string): number {
   const [sy, sm, sd] = row.start_date.split('-').map(Number);
   const [dy, dm, dd] = date.split('-').map(Number);

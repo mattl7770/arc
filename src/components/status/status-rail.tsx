@@ -10,10 +10,10 @@ import { displayStatus, railChips, type RailChip } from '@/lib/status/chips';
  *
  * Extracted from the rail on 2026-09-21, when the Coach screen stopped drawing
  * the rail inline and started drawing **only the open chips** beside a door
- * (src/components/status/status-control.tsx). Two containers now hold chips —
- * the rail inside the sheet, and the door's row — and they have to be the SAME
- * chip, or the × and the re-ask start behaving differently depending on which
- * surface you tapped from. Nothing about the control changed in the move.
+ * (src/components/status/status-control.tsx), so that the two containers could
+ * not draw the × or the re-ask differently. Since 2026-09-23 the door names the
+ * running status itself and that row is gone: the rail inside the sheet is the
+ * only container again, and the one place the re-ask and the × are drawn.
  *
  * ## Three gestures
  *
@@ -93,8 +93,9 @@ export function StatusChip({
  * behind another button."* All five now live **inside the sheet** — the one
  * Home was already opening beside the date — so this component has exactly one
  * caller (src/components/status/status-control.tsx) and both surfaces reach the
- * five words through the same door. The Coach screen draws only the OPEN chips
- * beside that door, with {@link StatusChip}.
+ * five words through the same door. Since 2026-09-23 nothing is drawn beside
+ * that door on either screen — it names the running status itself — so the
+ * chips here are the only status chips anywhere.
  *
  * That is also why there is no `hidden` prop any more. It existed so a pending
  * write could suppress the docked rail; nothing is docked now, and the door

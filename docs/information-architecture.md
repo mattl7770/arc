@@ -295,7 +295,10 @@ All eight rows carried a boxed `Set up` tag. By the time all eight were built th
 the Modes model that stood here from 2026-07-25, and answers the open question
 that section closed with. **Revised 2026-09-21** on owner feedback from the
 device: the Coach tab's five docked chips went behind the door Home already
-had. Nothing about what a status IS changed — only where the buttons are.
+had. **Revised again 2026-09-23**, two more device notes: the door now names the
+running status, which retired Home's mono line and the Coach tab's open chip;
+and the sentence the × seeds is now in his own voice. Nothing about what a
+status IS changed — only where it is shown, and what one sentence says.
 
 > **A status is a fact the user states about themself. What to do about it is
 > the Coach's call, every time.**
@@ -366,51 +369,98 @@ rather than sending, because ending is bookkeeping that may not warrant a turn.
 Inside the sheet the chips wrap to two rows rather than scrolling, and at most
 two statuses beyond the five are drawn.
 
-**What each surface shows with the door shut**, and why they differ by exactly
-one thing — what else is on the screen:
+**The sentence the × seeds was rewritten on 2026-09-23.** The owner, on the
+device: *"the message for unchecking a status feels weird but otherwise this is
+ok."* For Sick it read *"Over the bug — back to normal. Re-check today and put
+back what you took out."* — a phrase he would not type, then the mechanism
+narrated back at the Coach. Each is now what he would actually say, ending in
+the same sentence of his the other two gestures end in: *"I'm feeling better.
+Check what's up and adjust accordingly."* · *"I'm back home. …"* · *"My injury's
+better. …"*, and *"X is over. …"* for a status the Coach recorded, whose free
+text cannot be conjugated. The ask stays on the end because on the day a status
+ends that sentence is the Coach's only cue — the state block drops the status at
+once, and its *"ended yesterday"* revert cue prints tomorrow, and never while
+another status is still running.
+(`src/lib/status/chips.ts`; Off day and Night out carry lines too, but end
+tonight and draw no ×.)
 
-- **Home:** the door alone, never a chip. The line above the hero already names
-  every open status, its age and what it is doing to the baselines, and the
-  same fact twice is what CLAUDE.md §5 forbids. The state rides the door's
-  FILL instead — filled = something is on, outlined = nothing is, the
-  vocabulary the retired mode chip established.
-- **The Coach tab:** the door, then the chips that are actually ON, each
-  keeping its × and its re-ask tap. There is no line here, so a shut door alone
-  would make a running status invisible. The door therefore stays OUTLINED even
-  when something is on: the chip beside it is what says *on*, and a fill
-  repeating it would be the same fact twice in one row.
+**What the door shows — one face, on both surfaces (2026-09-23).** Until then
+the two faces differed by what else was on the screen: Home's door read
+`STATUS` whatever was on, carried *on* in its fill, and left the naming to a
+mono line above the hero; the Coach tab's door stayed outlined, with the open
+chip drawn beside it. The owner, on the device, of Home: *"the message is there,
+but i think it would be better if the status button just changed to say 'Sick'
+or whatever the currently active status is."* So:
 
-The door leads on both, and its position never changes with state — a control
-that moves between taps is not a control, the same rule that fixes the order of
-the five chips. What the composer gets back is the rail's second row: the band
-above the input is one 44pt line that **cannot wrap**, where five chips at
-~320–350pt against ~350pt usable at 390pt wrapped as their expected shape.
+- **Nothing on:** `STATUS ⌄`, outlined.
+- **One on:** the status itself — `SICK ⌄`, `TRAVELING ⌄` — in the same label
+  voice, filled. The word says WHICH, the fill says THAT, and they are one
+  object rather than two.
+- **Several on:** the newest by name and the rest as a mono count — `SICK +1 ⌄`
+  — because a door that grows a word per status is the rail again. The spoken
+  label names every one ("Status: Sick, Traveling. Re-check or change"). A long
+  typed label truncates rather than pushing the date off Home's folio row.
 
-**Home has both a line and a control** (his Q5(c)). The line sits above the
-hero in the timezone line's register — mono, muted, zero height on an ordinary
-day — and states what is on, since when, whether skips are excused, and how
-many days have left the baselines, escalating to *"no recovery verdict until it
-ends"* when the exclusion is what stopped Recovery grading. Tapping it carries
-the re-ask to the Coach. The control beside the date is ONE small target in the
-label voice opening the five chips in a sheet: five chips inlined on the folio
-row would be five controls competing with the one action Home exists for
-(CLAUDE.md §5). Home never sends — it writes the row and carries the prompt to
-the Coach tab, seeded. **Since 2026-09-21 the Coach tab reaches the chips
-through this same control**, which is the argument above arriving from the
-other end: that screen's one primary action is Send, and five permanent buttons
-on the composer's band were four more than it had asked for.
+Nothing is drawn beside it on either screen: a door naming the status next to a
+line or a chip naming it again is the same fact twice. **The re-ask and the ×
+live in the sheet**, on the rail's own chips, and not on the door — with two
+statuses on, a × on `SICK +1` could not say which one it ends, and the same
+component on Home would put a permanent end target beside the date. The price, on
+the Coach tab, is one tap: the door, then the chip or its ×.
+
+The door's anchored edge never moves with state — trailing on Home's folio row,
+leading on the Coach's band, with only its width following the word — because a
+control that moves between taps is not a control, the same rule that fixes the
+order of the five chips. What the composer gets back is the rail's second row:
+the band above the input is one 44pt line that **cannot wrap**, where five chips
+at ~320–350pt against ~350pt usable at 390pt wrapped as their expected shape, and
+since 2026-09-23 it holds the door and nothing else.
+
+**Home had both a line and a control** (his Q5(c)) from 2026-09-19 to
+2026-09-23. The line sat above the hero in the timezone line's register and
+stated what was on, since when, whether skips were excused, and how many days
+had left the baselines. **Once the door named the status, the line went**, and
+what only it said moved into **the sheet's header, in mono**, directly under the
+sheet's title — `Traveling since Sep 20 — skips excused · readiness baselines
+exclude 4 status days` — in the line's own wording, escalation intact (*"no
+recovery verdict until it ends"* replaces the count once the exclusion is what
+stopped Recovery grading). The header derives the readiness view on the tap
+that opens the sheet, so it is on the Coach tab too, which the line never was.
+Tapping the line carried the re-ask to the Coach; that is now the door, then
+the on-chip — one tap longer.
+
+The control beside the date is ONE small target in the label voice opening the
+five chips in a sheet: five chips inlined on the folio row would be five
+controls competing with the one action Home exists for (CLAUDE.md §5). Home
+never sends — it writes the row and carries the prompt to the Coach tab,
+seeded. **Since 2026-09-21 the Coach tab reaches the chips through this same
+control**, which is the argument above arriving from the other end: that
+screen's one primary action is Send, and five permanent buttons on the
+composer's band were four more than it had asked for. The Coach tab re-reads the
+open statuses after every turn, so a status the Coach records with `set_status`
+reaches the door without the tab having to lose focus first.
 
 **"Never silently on"** — the rule the old mode indicator existed for — is kept
-by the LINE rather than by a picker. There is no automatic expiry, because a
-timeout is a rule with a number about biology; what replaces it is visibility
-gated on the consequence.
+by the DOOR (by the line, until 2026-09-23) rather than by a picker. There is no
+automatic expiry, because a timeout is a rule with a number about biology; what
+replaces it is visibility gated on the consequence: the name on the door, on
+both screens, every time either is open, and the consequence — the age, the
+excusal, the excluded baseline days — in the header of the sheet it opens.
+
+Neither the age nor the count stayed on Home. The forgotten status is caught by
+the NAME: `SICK` beside the date on a morning he is well is the prompt to end
+it, and it needs no number to be one. The count is the consequence, one tap
+away — the owner's Q3(a) (*"Home and the Coach say how many days are
+excluded"*) is now met through Home's door rather than on its face. That is a
+reading of his note — it names the button, not the count — and worth
+confirming with him on the device.
 
 ### Excusal is per status, not uniform
 
 The owner's **Q2(b)**: the Coach decides, through an `excuses` flag on
 `set_status`. A status it judged to be context without absolution is still a
-status — it just does not forgive the skips, and the state block and Home's line
-both say so.
+status — it just does not forgive the skips, and the state block and the status
+sheet's header both say so.
 
 Two rules keep that honest:
 
@@ -434,9 +484,10 @@ A status never touches generation, so **the only thing that reshapes a day is a
 Coach turn on that day**. Day two of a flu regenerates whole: the workout is on
 the mission, in the hero if the protocol schedules it first, and its reminder
 fires. That is strictly less than Modes did on that axis, and it is the price of
-judgment over rules. It is paid down by the re-ask gesture, by Home's line
-seeding the same re-ask, and by the doctrine telling the Coach to bound a known
-length with `update_protocol` and revert it on the "ended" cue.
+judgment over rules. It is paid down by the re-ask gesture — the door, then the
+on-chip, on either screen (Home's line seeded it in one tap until 2026-09-23) —
+and by the doctrine telling the Coach to bound a known length with
+`update_protocol` and revert it on the "ended" cue.
 
 ### What the data does
 
