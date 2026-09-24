@@ -170,7 +170,7 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     use: "The Water record's day total, beside manual captures — and since 2026-09-21 ARC publishes its own captures outward too, keeping them out of what it reads back",
     garmin: 'yes',
     garminNote:
-      'Verified on the owner’s phone, not inferred: hydration logged in Garmin Connect arrives through Apple Health (device checklist 2026-09-21, confirmed 2026-09-23). It lands as one merged total per day, so a Garmin day reads as a single entry rather than one per drink.',
+      'Verified on the owner’s phone, not inferred: hydration logged in Garmin Connect arrives through Apple Health (device checklist 2026-09-21, confirmed 2026-09-23). It lands as one merged total per day, so a Garmin day reads as a single entry rather than one per drink. It looked "heavily rounded" because ARC printed whole ounces (a 250 mL cup showed as 8 oz), not because Garmin rounds; it prints a tenth below 32 oz now.',
     verdictDays: null,
   },
   {

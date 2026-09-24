@@ -14,7 +14,8 @@ per-run **sync log** so the next failure names itself instead of being reported 
 now keeps ARC's own glasses out (metadata rung, fail-closed), manual captures publish under their
 own cursor, and the Undo takes a published glass back out of Health, which the body channel
 cannot do. §10's and §15's "water can never be published" is superseded; both keep their text,
-marked.
+marked. **§21** answers the same checklist's *"units are heavily rounded"*: the rounding was
+ARC's own whole-ounce display, now a tenth below 32 oz, printed through one formatter everywhere.
 **Read first:** CLAUDE.md §8 (wearables strategy) and §9 (DB conventions), `docs/project-status.md`.
 
 Apple Health is the decided ingestion hub (2026-07-24 ADR): it is on-device, every vendor's
@@ -1835,3 +1836,85 @@ correction or removal made through the Coach does not reach Apple Health. ARC's 
 unaffected, because the read excludes ARC's glasses either way, but the Health app keeps the old
 one. That registry belongs to the Coach, and this change was scoped not to touch it (both prompt
 ceilings re-measured unchanged).
+
+---
+
+## 21. "Units are heavily rounded" — the rounding was ARC's (2026-09-21, **no migration**)
+
+The owner's note on the Garmin item of the same checklist: *"works, units are heavily rounded"*.
+Before changing anything, the question was **where** the rounding happens. There are four
+candidates between Garmin's watch and the figure on the screen, and each was measured.
+
+### 21.1 Where it happens, with numbers
+
+| Stage | What it does to a Garmin bucket | Worst case |
+| --- | --- | --- |
+| Garmin → Apple Health | not observable from here (§21.3) | — |
+| HealthKit's `cumulativeSum` | a double-precision sum in `mL` | none |
+| `statisticDailyRows` → `wearable_data` | rounds to the whole mL (`decimals: 0`) | 0.5 mL = **0.017 oz** |
+| **The display** (`resolveDisplay` → the water screen) | **whole ounces, applied twice**: `decimals: 0` on the ounce spec, then `Math.round` again in the water screen's own `fmtInt` | half an ounce = **14.8 mL** |
+
+The display is the only stage that loses anything a person could see, and on its own it produces
+exactly the reported symptom:
+
+| Garmin bucket | Exact | Printed before | Error | Printed now |
+| --- | --- | --- | --- | --- |
+| 250 mL (a metric cup) | 8.4535 oz | `8 oz` | **−5.36 %** | `8.5 oz` |
+| 100 mL | 3.3814 oz | `3 oz` | **−11.28 %** | `3.4 oz` |
+| 200 mL | 6.7628 oz | `7 oz` | +3.51 % | `6.8 oz` |
+| 500 mL | 16.9070 oz | `17 oz` | +0.55 % | `16.9 oz` |
+| 473 mL | 15.9940 oz | `16 oz` | −0.04 % | `16 oz` |
+| a typed 16 oz (473.18 mL) | 16.0000 oz | `16 oz` | 0 | `16 oz` |
+
+Manual captures round-trip exactly (they are typed in ounces and converted back by the same
+factor), so the rounding never showed on them. That is why the note was on the **Garmin** item:
+Garmin writes millilitres, and millilitres land between ounces. `db/units.test.mjs` §6 reproduces this
+table row by row, and fails if the rule is removed (checked by deleting it: 7 unit and 8 render
+assertions fail, each showing the old figure).
+
+Two more symptoms came from the same cause:
+
+- **The ledger stopped summing.** Three 250 mL rows printed `8 + 8 + 8 = 24` under a printed day
+  total of `25`. Now they print `8.5 + 8.5 + 8.5` under `25.4`, off by 0.1 instead of 1.
+- **One quantity had two answers.** Nutrition's `fmtQty` (0047) has printed 250 mL as `8.5 oz`
+  all along, pinned by `db/foods.test.mjs`, and the render suite's own comment said it converted
+  "exactly as water already does". Water printed `8 oz`.
+
+### 21.2 What changed, and what did not
+
+**Ounces now print to the tenth below 32 oz and whole from 32 up** (`OZ_TENTHS_BELOW`,
+`src/lib/log/metrics.ts`). A half-ounce is 25 % of a 2 oz sip and 6.25 % of a glass, but under
+1.6 % from 32 oz upward, where day totals and goals live and a decimal is noise. The switch is
+decided on the value as printed, so 31.96 oz, which rounds to 32.0, prints `32` rather than
+`32.0`. A trailing `.0` is dropped, following `fmtQty`, so a typed 16 oz still reads `16 oz`
+exactly as typed.
+
+**One formatter, every surface.** `formatFigure` / `formatMeasured` / `roundForDisplay` are the
+only way a water figure is printed now: the water screen's rows, day list, Today figure, average
+and goal; the Log tab's `usually` note; the Data tab's *Intake today*; the keypad's recent line;
+and the Log feed. Before, each rounded for itself. The render suite pins the result as one row,
+one figure: the 500 mL capture reads `16.9 oz` on the water screen **and** in the Log tab's note,
+and the day's 750 mL reads `25.4` on the water screen **and** on the Data tab.
+
+**Not changed:**
+- **Storage.** Canonical mL, as ever.
+- **Entry precision.** `DisplaySpec.decimals` is still 0 for ounces, so the keypad, `roundToSpec`
+  and the Coach's confirmation card keep whole ounces. The printed precision is a separate,
+  optional field (`tenthsBelow`) that only the print path reads.
+- **Millilitres.** Whole mL, with the thousands comma, as before.
+- **The Coach.** Its read tools copy `decimals` and round for themselves, so what the model sees
+  is unchanged, and both prompt ceilings measure the same as on main.
+- **The edit field.** It is now prefilled with the printed figure, so the editor never shows a
+  different number from the row that was tapped. It still converts back through ounces, so saving
+  a 250 mL capture untouched stores 251.4 mL (1.4 mL of drift, where the old prefill of `8`
+  lost 13.4 mL).
+
+### 21.3 What only the phone can settle
+
+Whether Garmin writes coarse values itself: for example, whether Garmin Connect logs a cup as a
+fixed 250 mL whatever the watch face showed. Nothing here can see that, and it no longer matters
+for honesty, because ARC now prints what Health holds to a tenth of an ounce. **The check:** after
+the next build, compare one Garmin day's figure on the water screen with the same day in the Health
+app (Browse → Nutrition → Water) and in Garmin Connect. If ARC and Health agree to the tenth and
+Garmin Connect differs, the rounding is Garmin's and ARC should leave it alone. If all three agree,
+it was ARC's all along, which is what the numbers above predict.

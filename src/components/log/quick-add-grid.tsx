@@ -11,7 +11,13 @@ import { todayISODate } from '@/lib/db/date';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { logWater, usualWaterAmount } from '@/lib/db/repositories/water';
 import { removeWaterCapture } from '@/lib/health/publish';
-import { metricByKey, resolveDisplay, roundToSpec, type DisplaySpec } from '@/lib/log/metrics';
+import {
+  formatFigure,
+  metricByKey,
+  resolveDisplay,
+  roundForDisplay,
+  type DisplaySpec,
+} from '@/lib/log/metrics';
 import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
 
 /**
@@ -243,11 +249,11 @@ type WaterView = {
   spec: DisplaySpec;
   volumeUnit: 'oz' | 'ml';
   /**
-   * The most-used amount in DISPLAY units, or null when there is nothing to
-   * learn from. It is a NOTE beside the label, never a control — no tap in this
-   * block depends on it.
+   * The most-used amount as PRINTED (`formatFigure`), or null when there is
+   * nothing to learn from. It is a NOTE beside the label, never a control — no
+   * tap in this block depends on it.
    */
-  usual: number | null;
+  usual: string | null;
 };
 
 /**
@@ -261,10 +267,12 @@ type WaterView = {
  * the stronger version of the same property.
  *
  * The remembered amount is resolved the same way, so the note reads in the unit
- * he reads in: a stored 500 ml under an oz preference says `usually 17 oz`. It
- * is rounded to the display spec, and a record of tiny amounts that rounds to
- * zero yields no note rather than `usually 0 oz` — an absent note is the honest
- * rendering of "nothing here is worth calling a habit".
+ * he reads in: a stored 500 ml under an oz preference says `usually 16.9 oz`
+ * (`usually 17 oz` until 2026-09-21, when every water figure moved to the one
+ * shared formatter, so this note and the water screen's row for the same
+ * capture now print the same number). It is rounded as printed, and a record of
+ * tiny amounts that rounds to zero yields no note rather than `usually 0 oz`; an
+ * absent note is the honest rendering of "nothing here is worth calling a habit".
  */
 function readWater(): WaterView {
   const db = getDb();
@@ -272,8 +280,9 @@ function readWater(): WaterView {
   const spec = resolveDisplay(metricByKey('water')!, units);
   const volumeUnit = units.volume === 'ml' ? 'ml' : 'oz';
   const learned = usualWaterAmount(db, todayISODate());
-  const usual = learned === null ? null : roundToSpec(spec, spec.fromCanonical(learned));
-  return { spec, volumeUnit, usual: usual !== null && usual > 0 ? usual : null };
+  const usual =
+    learned !== null && roundForDisplay(spec, learned) > 0 ? formatFigure(spec, learned) : null;
+  return { spec, volumeUnit, usual };
 }
 
 /** "+16 oz" — the caption under every vessel. */

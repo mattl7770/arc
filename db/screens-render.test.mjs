@@ -2572,7 +2572,8 @@ const db = getDb();
     '2 entries', // today's two captures, counted
     'today, still open',
   ]);
-  // 750 ml is 25 oz and the default unit is oz, so the day rows read in oz.
+  // 750 ml is 25.4 oz (it printed "25 oz" until 2026-09-21) and the default
+  // unit is oz, so the day rows read in oz.
   // Nothing may print a stand-in zero for the eleven days with no capture, and
   // with no goal set there is still no denominator anywhere.
   refute('water (3-day record)', young, [
@@ -2649,14 +2650,14 @@ const db = getDb();
   const ozLog = render('log tab (oz, learned amount)', LogScreen);
   // THE INVARIANT, rendered: every cell's caption and its accessibility label
   // carry the SAME number, and it is the number that tap will log. The note
-  // converts with them — 500 ml read under an ounce preference is 17 oz, so the
-  // habit is stated as 17 oz rather than as a stored 500 nobody typed.
+  // converts with them — 500 ml read under an ounce preference is 16.9 oz, so
+  // the habit is stated as 16.9 oz rather than as a stored 500 nobody typed.
   expect('log tab (oz, learned amount)', ozLog, [
     '+8 oz',
     '+16 oz',
     '+24 oz',
     'Log 16 oz of water, Bottle',
-    'usually 17 oz',
+    'usually 16.9 oz',
   ]);
   refute('log tab (oz, learned amount)', ozLog, [
     '+240 ml',
@@ -2664,7 +2665,28 @@ const db = getDb();
     '+750 ml',
     'usually 500 ml',
     'Log water, 17 oz',
+    // It read "usually 17 oz" until 2026-09-21: the whole-ounce rounding the
+    // owner reported on Garmin water ("units are heavily rounded").
+    'usually 17 oz',
   ]);
+
+  // ONE ROW, ONE FIGURE, EVERYWHERE (2026-09-21). The same 500 ml capture that
+  // the Log tab's note calls "usually 16.9 oz" is a row on the water screen, and
+  // the same day's 750 ml (500 + 250) is both the water screen's Today figure
+  // and the Data tab's Intake today. Each surface used to round for itself, to
+  // whole ounces; all three now print through formatFigure.
+  const ozWater = render('water (oz, one figure per row)', WaterScreen);
+  expect('water (oz, one figure per row)', ozWater, [
+    '16.9 oz at', // the 500 ml entry's own row label: the note's figure
+    '8.5 oz at', // the 250 ml entry, a metric cup, where the defect was loudest
+    '25.4', // Today, the day's total, the same figure the Data tab prints
+  ]);
+  refute('water (oz, one figure per row)', ozWater, [
+    '17 oz at', // the 500 ml row as it printed before the fix
+    '8 oz at', // the 250 ml row as it printed before the fix
+  ]);
+  const ozData = render('data tab (oz, water figure)', DataScreen);
+  expect('data tab (oz, water figure)', ozData, ['25.4']);
 }
 
 // ---------------------------------------------------------------------------

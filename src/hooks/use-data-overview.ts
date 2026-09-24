@@ -14,7 +14,13 @@ import { dailyIntakeSeries, todayTotals } from '@/lib/db/repositories/nutrition'
 import { listTodaySymptoms, symptomDailySeries } from '@/lib/db/repositories/symptoms';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { waterDaySeries } from '@/lib/db/repositories/water';
-import { metricByBodyColumn, metricByKey, resolveDisplay, roundToSpec } from '@/lib/log/metrics';
+import {
+  formatFigure,
+  metricByBodyColumn,
+  metricByKey,
+  resolveDisplay,
+  roundToSpec,
+} from '@/lib/log/metrics';
 
 /**
  * The Data tab's "Standing Ledger" view model, backed by the on-device database.
@@ -214,7 +220,9 @@ function read(): DataOverviewState {
     // started. So the headline goes to an em-dash and the qualifier says why.
     value:
       waterToday.entries > 0 && waterSpec
-        ? fmtInt(roundToSpec(waterSpec, waterSpec.fromCanonical(waterToday.ml)))
+        ? // The same figure the water screen prints for this day (formatFigure,
+          // 2026-09-21) — before, this rounded for itself to whole ounces.
+          formatFigure(waterSpec, waterToday.ml)
         : '—',
     unit: waterToday.entries > 0 && waterSpec ? waterSpec.unit : '',
     qualifier: waterToday.entries === 0 ? 'none logged today' : null,

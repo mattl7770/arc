@@ -22,6 +22,8 @@
 > **The gate this document called the only thing that could kill Rank 2 has passed.** Hydration logged in Garmin Connect arrives in ARC through Apple Health, so `coverage.ts` now records `garmin: 'yes'`, citing the owner's phone.
 >
 > **And Rank 2 is now two-way.** The argument below that ARC must never write water ("a `cumulativeSum` query **cannot** filter out ARC's own samples") was wrong about the library. A statistics query takes the same sample predicate every reader builds, so ARC's own glasses can be kept out of the day's total. They are kept out by the metadata rung alone, fail-closed, because the source rung can fail open on a sum. Manual captures publish as one `DietaryWater` sample each, and an Undo takes a published glass back out of Health by its own id. The full account, including what only the phone can settle, is `docs/wearables-subapp.md` §20. **What survives unchanged:** no dedupe, and *pick one door*. ARC's own glasses are never counted twice now, but the same glass typed here *and* tapped on the watch is still two entries.
+>
+> **And the rounding was ARC's.** Nothing between the watch and the screen lost precision except ARC's display, which printed whole ounces twice over. A Garmin bucket arrives in millilitres, so a 250 mL cup read `8 oz` (it is 8.45 oz, 5.4 % low) and 100 mL read `3 oz` (11.3 % low), while a capture typed in ounces round-trips exactly and never showed it. Water now prints to the tenth below 32 oz and whole above, through one formatter on every surface, so the water screen, the Log tab's note and the Data tab print the same figure for the same row. Numbers and the device check: `docs/wearables-subapp.md` §21.
 **Date:** 2026-09-14
 
 ---
