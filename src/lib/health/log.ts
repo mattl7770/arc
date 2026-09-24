@@ -23,7 +23,7 @@
  * of syncs would be a different feature and would need a table.
  */
 import type { HealthExclusion } from './types';
-import type { BodyIngestRejections } from './mapping';
+import { WATER_PUBLISH_METRIC, type BodyIngestRejections } from './mapping';
 
 /** What one metric did on the last pass, inbound. */
 export type HealthMetricLog = {
@@ -231,6 +231,12 @@ export function metricNote(entry: HealthMetricLog): string | null {
     if (note !== null) return note;
   }
   if (entry.error !== null && entry.returned === 0) {
+    if (entry.exclusion === 'refused' && entry.metric === WATER_PUBLISH_METRIC.metricType) {
+      // Water's statistic is offered ONE filter, not two (the source rung is
+      // withheld from sums — healthkit.ts, readDailyCumulative), so "both"
+      // would be false here. The refusal is the safe outcome and says so.
+      return `Apple Health refused the filter that keeps ARC's own water out of the day's total, so no water was read rather than risk counting it twice. ${entry.error}`;
+    }
     return entry.exclusion === 'refused'
       ? `Apple Health refused both echo-suppression filters, so nothing was read. ${entry.error}`
       : `Apple Health returned an error. ${entry.error}`;
@@ -259,7 +265,10 @@ export function metricNote(entry: HealthMetricLog): string | null {
  */
 export function publishNote(publish: HealthPublishLog): string {
   if (publish.armed) {
-    return 'Armed — your next weight, body fat or waist entry will publish. Measurements recorded before you connected stay in ARC.';
+    // Two walks share this flag since 2026-09-21, and they arm at different
+    // times — weight's in August, water's on the first pass after the build
+    // that carries it — so the sentence names neither moment, only the rule.
+    return 'Armed — what you record from now on will publish. Anything recorded before this stays in ARC.';
   }
   if (publish.stalled) {
     return 'Apple Health refused a write, so the pass stopped and will retry from the same place. Check Settings → Privacy & Security → Health → ARC.';

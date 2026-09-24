@@ -352,9 +352,15 @@ export function quantityDailyRows(
  * **`water_ml` is the one entry here that shares a table with manual captures**,
  * and the two are deliberately NOT reconciled: an inbound bucket is Apple's
  * merged day total with no per-drink identity, so there is nothing for a manual
- * 16 oz to cancel against, and ARC publishes no water for the bucket to contain.
- * The day total sums both rows; the rule is behavioural (pick one door) and the
- * full argument is at the head of src/lib/db/repositories/water.ts.
+ * 16 oz to cancel against. The day total sums both rows; the rule is
+ * behavioural (pick one door) and the full argument is at the head of
+ * src/lib/db/repositories/water.ts.
+ *
+ * ⚠️ **Since 2026-09-21 ARC publishes water too** ({@link WATER_PUBLISH_METRIC}),
+ * so "the bucket cannot contain ARC's own captures" is no longer true by
+ * construction — it is true because the READ excludes them. `sync.ts` passes
+ * `failClosed` for any statistic whose identifier {@link isPublishedIdentifier}
+ * names, and a refused predicate yields no rows rather than an unfiltered total.
  */
 export type StatisticMetricSpec = {
   metricType: string;
@@ -765,6 +771,69 @@ export const BODY_PUBLISH_METRICS: readonly BodyPublishSpec[] = [
   },
 ];
 
+// --- Outbound: water, the fourth published type (2026-09-21) -------------------------
+
+/**
+ * **Water goes OUT as well as in, as of 2026-09-21** — the owner's device note
+ * was *"water should get 2 way health sync"*, and until that day this file said
+ * in four places that it never could. Those paragraphs were right about the
+ * mechanism and wrong about the conclusion; the correction is
+ * docs/wearables-subapp.md §20.
+ *
+ * It is deliberately NOT a {@link BodyPublishSpec}: water has no `body_metrics`
+ * column and must not be given one. It is its own spec, published by its own
+ * walk over `wearable_data` (`publish.ts` → `publishWaterCaptures`), and
+ * {@link HEALTH_WRITE_IDENTIFIERS} names it explicitly rather than deriving it
+ * from the body list — so "is water published?" stays a question with one
+ * written answer instead of a side effect of a table shape.
+ *
+ * **The echo has a different SHAPE from weight's, and that is the whole design.**
+ * Weight's echo is a duplicate ROW and it amplifies: publish → read → new row →
+ * publish again. Water's echo is a SUMMAND inside somebody else's number —
+ * Apple hands back one merged `cumulativeSum` per day — and it cannot amplify,
+ * because the bucket it lands in carries `source_raw_id = 'hk:water_ml:<date>'`
+ * and the publish walk takes `source_raw_id IS NULL` only. So the structural
+ * guard is the `hk:` prefix, exactly as `source <> 'apple_health'` is weight's,
+ * and the worst case is a day that reads double rather than a record that grows
+ * every pass.
+ *
+ * What water loses is the per-sample rung: a statistic arrives pre-summed, so
+ * `isIngestableSample` has nothing to inspect. The exclusion therefore has to
+ * happen inside the QUERY, which is why `readDailyCumulative` now runs the same
+ * {@link ARC_WRITE_METADATA_KEY} ladder every sample reader runs, and why it
+ * runs it `failClosed` for this identifier: an unfiltered cumulative total IS
+ * the double.
+ */
+export type WaterPublishSpec = {
+  /** The `wearable_data.metric_type` this publishes. */
+  metricType: string;
+  hkIdentifier: string;
+  /**
+   * `'mL'`, capital L — the SAME string the read spec carries, and checked the
+   * same way (the library's generated `QUANTITY_IDENTIFIER_CANONICAL_UNITS`, not
+   * its hand-written `VolumeUnit` union). Asserted equal to the read spec's by
+   * db/health-mapping.test.mjs, because a publish and a read that disagree about
+   * the unit is a factor of a thousand in a medical record.
+   */
+  hkUnit: string;
+  /** ARC's canonical ml → the number HealthKit expects in `hkUnit`. */
+  toHealthKit: (value: number) => number;
+  /** Human label for Settings. */
+  label: string;
+};
+
+export const WATER_PUBLISH_METRIC: WaterPublishSpec = {
+  metricType: 'water_ml',
+  hkIdentifier: 'HKQuantityTypeIdentifierDietaryWater',
+  hkUnit: 'mL',
+  // Canonical already: `wearable_data.value` for water IS millilitres
+  // (metrics.ts's water descriptor), and HKUnit 'mL' is millilitres. The
+  // identity is stated rather than omitted so the round-trip test can assert it
+  // against the read spec instead of assuming it.
+  toHealthKit: (v) => v,
+  label: 'Water',
+};
+
 // --- Inbound: the same three columns, coming back ------------------------------------
 
 /** How one HealthKit quantity type becomes a `body_metrics` column. */
@@ -1053,34 +1122,68 @@ export function unaskedReadScopes(
 }
 
 /**
- * Every HealthKit type ARC asks to WRITE (`toShare`; docs §10).
+ * Every HealthKit type ARC asks to WRITE (`toShare`; docs §10, §20).
  *
- * **Derived from {@link BODY_PUBLISH_METRICS}, and that is the structural reason
- * water can never echo.** `DietaryWater` is a read scope (above) and the publish
- * walk reads `body_metrics` only (`publish.ts`), so adding water to this list
- * would take deliberately giving it a `body_metrics` column. It must never
- * happen: a `cumulativeSum` statistics query cannot exclude ARC's own samples
- * (Apple merges before the predicate — see `readDailyCumulative`), so a
- * published water total would be read straight back and doubled with no
- * suppression available. {@link unsuppressedEchoIdentifiers} is the tripwire and
- * db/health-mapping.test.mjs §8 asserts water's absence here by name.
+ * **Four types since 2026-09-21**, and the list is still structurally closed:
+ * three come from {@link BODY_PUBLISH_METRICS} (keyed to `body_metrics`
+ * columns) and the fourth is {@link WATER_PUBLISH_METRIC}, named once, here.
+ * Nothing else can join without an edit to this line — which is the property
+ * the old derivation was really protecting, kept now that the answer for water
+ * has changed from *never* to *yes, with the ladder behind it*.
+ *
+ * > **What this replaced, and why it was wrong.** Until 2026-09-21 this
+ * > docblock said water *"must never happen"*, because a `cumulativeSum`
+ * > statistics query "cannot exclude ARC's own samples (Apple merges before the
+ * > predicate)". The second half is the part that did not survive reading the
+ * > library: `StatisticsQueryOptions.filter` is a full `FilterForSamples` —
+ * > `NOT`, `sources`, `metadata` and all (`types/QuantityType.d.ts`) — and
+ * > Apple's own merge is over SOURCES (`separateBySource`), not a claim that
+ * > the sample predicate is ignored. What IS true is that a statistic offers no
+ * > per-sample rung to fall back on, so the query predicate is the ONLY place a
+ * > cumulative echo can be removed — which is why water reads `failClosed` and
+ * > never retries unfiltered.
+ *
+ * {@link unsuppressedEchoIdentifiers} remains the tripwire, and
+ * db/health-mapping.test.mjs §8 now asserts water's PRESENCE here together with
+ * the suppression that earns it.
  */
-export const HEALTH_WRITE_IDENTIFIERS: readonly string[] = BODY_PUBLISH_METRICS.map(
-  (m) => m.hkIdentifier
-);
+export const HEALTH_WRITE_IDENTIFIERS: readonly string[] = [
+  ...BODY_PUBLISH_METRICS.map((m) => m.hkIdentifier),
+  WATER_PUBLISH_METRIC.hkIdentifier,
+];
 
 /**
- * Identifiers ARC reads through the ECHO-SUPPRESSED path — the body channel.
- * Every reader of one of these passes `failClosed` (no unfiltered retry) and
- * every sample is screened by {@link isIngestableSample}, and the rows they
- * produce are excluded from the publish walk by source (`publishableBodyAfter`).
- *
- * Derived from {@link BODY_INGEST_METRICS} rather than written out, so the list
- * cannot claim coverage that the ingest path does not actually implement.
+ * Does ARC publish this identifier? One predicate behind two facts that must
+ * never disagree: which statistics reads run the exclusion ladder `failClosed`
+ * (`sync.ts`), and which identifiers {@link ECHO_SUPPRESSED_IDENTIFIERS} may
+ * claim coverage for.
  */
-export const ECHO_SUPPRESSED_IDENTIFIERS: readonly string[] = BODY_INGEST_METRICS.map(
-  (m) => m.hkIdentifier
-);
+export function isPublishedIdentifier(hkIdentifier: string): boolean {
+  return HEALTH_WRITE_IDENTIFIERS.includes(hkIdentifier);
+}
+
+/**
+ * Identifiers ARC reads through the ECHO-SUPPRESSED path — the body channel,
+ * and since 2026-09-21 water.
+ *
+ * Every reader of one of these passes `failClosed` (no unfiltered retry). The
+ * body types get two further rungs a statistic cannot have: each sample is
+ * screened by {@link isIngestableSample}, and the rows they produce are
+ * excluded from the publish walk by source (`publishableBodyAfter`). Water's
+ * structural equivalent of that last one is the `hk:` prefix — its walk takes
+ * `source_raw_id IS NULL` only, so an inbound bucket can never be republished
+ * and the echo is bounded at one double rather than growing each pass.
+ *
+ * Derived rather than written out, so the list cannot claim coverage the ingest
+ * path does not implement: the body half from {@link BODY_INGEST_METRICS}, the
+ * statistics half from the specs `sync.ts` actually reads `failClosed` — the
+ * same {@link isPublishedIdentifier} predicate, so the claim and the behaviour
+ * are one expression.
+ */
+export const ECHO_SUPPRESSED_IDENTIFIERS: readonly string[] = [
+  ...BODY_INGEST_METRICS.map((m) => m.hkIdentifier),
+  ...STATISTIC_METRICS.map((m) => m.hkIdentifier).filter(isPublishedIdentifier),
+];
 
 /**
  * Identifiers that appear in BOTH scope lists. Since 2026-08-12 this is no

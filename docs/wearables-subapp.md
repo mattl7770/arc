@@ -10,6 +10,11 @@ opinion (**§6**).
 **Amended:** 2026-08-26 — weight did not arrive on hardware. **§14** reads the answers off the
 installed library's own iOS source, fixes the two defects it found (both in ARC), and adds a
 per-run **sync log** so the next failure names itself instead of being reported as "not working".
+**Amended:** 2026-09-21 — **water is two-way** (**§20**, owner device note). The cumulative read
+now keeps ARC's own glasses out (metadata rung, fail-closed), manual captures publish under their
+own cursor, and the Undo takes a published glass back out of Health, which the body channel
+cannot do. §10's and §15's "water can never be published" is superseded; both keep their text,
+marked.
 **Read first:** CLAUDE.md §8 (wearables strategy) and §9 (DB conventions), `docs/project-status.md`.
 
 Apple Health is the decided ingestion hub (2026-07-24 ADR): it is on-device, every vendor's
@@ -372,7 +377,10 @@ instead of wiring HealthKit straight into screens.
   the wire, stop-on-refusal, and the toggle governing both directions. Plus the inbound body
   ingest (§11): the natural-key upsert (idempotent re-sync, in-place correction, late column
   merging in, a manual row at the same instant left alone), the real CHECK still refusing
-  weight ≤ 0, and the end-to-end proof that an ingested row is never published back.
+  weight ≤ 0, and the end-to-end proof that an ingested row is never published back. And
+  two-way water (§20, 2026-09-21): the water walk's arming, publish and stall, the `hk:` guard,
+  the Undo and edit reaching Health by tag, the in-flight race, and the end-to-end proof that
+  ARC's own published glass is counted once.
 - `db/readiness.test.mjs` — baselines, all four pillar gradings, RHR degradation, the
   ≥5-day evidence gate, honest unknowns, metrics-strip formatting.
 
@@ -399,6 +407,13 @@ published water total would be read straight back and doubled with nothing in th
 to stop it. `db/health-mapping.test.mjs` §8 asserts water's absence from the write list by
 name, and proves it behaviourally: a `body_metrics` row carrying all three columns emits
 exactly three samples, none of them dietary.
+
+> ⚠️ **Superseded 2026-09-21 (§20).** Four types now, and still closed: the three body columns
+> plus `WATER_PUBLISH_METRIC`, named once in `HEALTH_WRITE_IDENTIFIERS`, and never given a body
+> column. The premise above did not survive the library's own Swift: a statistics query takes
+> the same sample predicate every reader builds (§20.1). What *is* true is that a sum has no
+> per-sample rung, so water's read runs the metadata rung alone, fail-closed (§20.3). The §8
+> tripwire was rewritten to assert those terms, not deleted.
 
 **No single VALUE is ever owned in two places** — that is what makes the two-way link (§11)
 safe. Each `body_metrics` row records where it came from, and this pass publishes only rows
@@ -545,6 +560,10 @@ link went two-way:
   updates all day. Publishing an update appends another sample (there is no delete), and
   HealthKit would sum them — 500 ml logged three times would read as 3 000 ml. Wrong in a way
   the user cannot see, so: no.
+  > ⚠️ **Superseded 2026-09-21 (§20).** Both premises were already false by then: water is
+  > stored **one row per capture**, never a running total (verified against SQLite on 2026-08-14,
+  > `repositories/water.ts`), so each capture publishes exactly one sample. And a capture's
+  > sample *can* be deleted, by its own id as the metadata tag (§20.5).
 - **Muscle mass** → `LeanBodyMass`. Not the same quantity: lean body mass includes bone,
   organs and water; a BIA muscle-mass estimate does not. Publishing one as the other puts a
   wrong number in a medical record under a correct-looking label.
@@ -887,6 +906,11 @@ different exclusion mechanism — not more retries.
 
 ## 15. Hydration comes in, and never goes out (D2, 2026-09-14)
 
+> ⚠️ **Superseded in part, 2026-09-21: water goes out too (§20).** The read, the `'mL'` unit and
+> the no-dedupe rule below all stand. *"Why it must never be published"* does not: its premise,
+> that a statistics query cannot exclude ARC's own samples, was wrong about the library. The
+> rest of it stays because it names the right hazard, which §20.2 closes.
+
 `HKQuantityTypeIdentifierDietaryWater` is a read scope. A hydration tap on a watch, in the
 Health app, or in any hydration app already installed becomes an ARC row on the next sync —
 which is the only path in the whole water feature that works when the phone is in another
@@ -925,6 +949,8 @@ and the union is not, and `QuantityUnitByIdentifierMap` types this identifier as
 gate rather than shipping a factor of a thousand into a health record.
 
 ### Why it must never be published — the echo argument, pinned
+
+> *Superseded 2026-09-21 — see §20.1 for what this got wrong and §20.3 for how the echo is closed.*
 
 A statistics query **cannot** filter out ARC's own samples: Apple merges across sources
 before the predicate runs, which is why `readDailyCumulative` reports `exclusion: 'none'`
@@ -1614,3 +1640,198 @@ still holds every sample, and "undo" is: revert the code, clear `firstSyncedAt` 
 `health_sync_state`, and let one pass re-read 90 days under whichever rule the code carries.
 The ARCB1 snapshot is the other way back, and §8 item 1 of the spike puts a **verified restore
 before the first flight** on the build that carries this.
+
+---
+
+## 20. Water goes both ways (2026-09-21, owner device note — **no migration**)
+
+The owner, on the device checklist for the 0061 build: *"water should get 2 way health sync"*.
+§10 and §15 had said, in four places, that it never could. They were right about the mechanism
+they described and wrong about the conclusion, and the correction is the substance of this
+section.
+
+### 20.1 What the old argument got wrong
+
+§15 said a `cumulativeSum` statistics query *"carries no own-write exclusion — Apple merges
+before the predicate"*, so a published glass would be read straight back into the day's total
+with nothing able to stop it. Read off the installed library (`@kingstinct/react-native-healthkit`
+14.0.2, the same method as §14):
+
+| Question | Answer | Evidence |
+| --- | --- | --- |
+| Does a statistics query accept a sample predicate? | **Yes.** `StatisticsQueryOptions.filter` is a full `FilterForSamples`: `NOT`, `sources`, `metadata` and all. | `lib/typescript/types/QuantityType.d.ts` |
+| Is it the same predicate the sample readers build? | **Yes.** `queryStatisticsForQuantityInternal` calls `createPredicateForSamples(options?.filter)` and hands the result to `HKStatisticsQuery(quantitySamplePredicate:)`, which is the predicate that selects the samples the sum is taken over. | `ios/QuantityTypeModule.swift` |
+| So what does "Apple merges" mean? | The merge is across **sources**: one number, or one per source with `separateBySource`. It does not skip the predicate. | Apple's `HKStatisticsQuery` / `HKStatisticsOptions` |
+
+So the exclusion is reachable. What is true, and what the rest of this section is built on, is
+narrower: **a statistic has no per-sample rung to fall back on.**
+
+### 20.2 The echo has a different shape from weight's
+
+|  | Weight (§10–11) | Water |
+| --- | --- | --- |
+| What ARC writes | one sample per `body_metrics` column | one `DietaryWater` sample per **manual capture** |
+| What comes back | the same sample, **as a sample** | a **summand** inside one merged day total |
+| If it were not excluded | a new `body_metrics` row, which the walk publishes again: **a loop**, one duplicate per pass | the `hk:water_ml:<date>` bucket holds ARC's glasses, so the day counts its manual total **twice**. The bucket is never republished, so it stops there |
+| Amplifies? | yes | **no**, bounded at one double |
+| Guard 1, query exclusion | source rung, then metadata rung; `failClosed` | **metadata rung only**; `failClosed` (§20.3) |
+| Guard 3, per-sample rejection | `isIngestableSample` on every sample | **unavailable**: the total arrives pre-summed, with no samples to inspect |
+| Guard 4, the structural one | the walk takes `source <> 'apple_health'` | the walk takes `source_device = 'manual' AND source_raw_id IS NULL` (the `hk:` prefix) |
+| Guard 5, source bucketing | ARC's bundle → `manual` | the same mapping (the statistic has no per-sample source to bucket) |
+
+Two consequences. The structural guard still makes a loop impossible: an inbound bucket is never
+publishable, whatever it contains. And because guard 3 cannot exist for a sum, **guard 1 is the
+only thing between ARC's glass and a doubled day.** It therefore has to be a rung that cannot
+fail silently.
+
+### 20.3 Why a sum gets the metadata rung and never the source rung
+
+§14's table already recorded it: a malformed `sources` array **fails OPEN**. `createSourcePredicate`
+returns `nil` when the `SourceProxy` cast fails, the whole `NOT` chain collapses, and the query
+runs date-only. It succeeds, so the ladder reports `exclusion: 'source'` over an **unfiltered**
+total. On a sample read that costs nothing: guard 3 refuses every ARC-tagged sample that leaks
+through. On a sum, nothing can see the leak, and the leak *is* the double.
+
+The metadata rung cannot collapse like that. Given a key alone, `createMetadataPredicate` always
+returns `HKQuery.predicateForObjects(withMetadataKey:)`, so the `NOT` either filters or HealthKit
+refuses it, and a refusal throws. ARC stamps `ARCPublishedFrom` on every sample it writes, so
+`NOT(ARCPublishedFrom)` removes exactly ARC's glasses and nothing of Garmin's.
+
+This is the same mechanism with one rung withheld, not a second one: `readDailyCumulative` calls
+`ownWriteExclusions()` without a source accessor (which yields the metadata rung alone, as it
+always could) and walks it with the same `withOwnWritesExcluded` every sample reader uses.
+`failClosed` then does what it does for weight. If HealthKit refuses the rung, water reads
+**nothing** for that pass and the log says so, instead of reading the unfiltered total. For a
+published cumulative type that total is the double itself.
+
+Two smaller rules come with it:
+
+- **A rung is judged on the window.** A day that throws is still tolerated (one bad day must not
+  sink a fortnight), but a clause that *no* day accepted is the clause's fault, so the rung is
+  rejected and the ladder steps.
+- **Nothing else changes.** Steps and energy get no rungs, their filter object is byte-identical to
+  the one they always sent (`NOT` is spread in only when present), and they still report
+  `exclusion: 'none'`. `sync.ts` passes `failClosed: isPublishedIdentifier(spec.hkIdentifier)`.
+  The suppressed set (`ECHO_SUPPRESSED_IDENTIFIERS`) derives water through that same predicate,
+  so the claim that water is suppressed and the behaviour that suppresses it are one expression.
+
+### 20.4 What goes out, and when
+
+- **Only manual captures.** `publishableWaterAfter` walks `wearable_data` rows with
+  `source_device = 'manual' AND source_raw_id IS NULL`, one sample each: `DietaryWater`, `'mL'`
+  (the read spec's unit to the letter, asserted), tagged `ARCPublishedFrom = <wearable_data.id>`.
+  `DietaryWater` is a member of the library's generated `QuantityTypeIdentifierWriteable`, which
+  `saveHealthQuantity`'s own note requires of any new published type.
+- **The instant.** A capture typed on the day it counts toward goes out at the moment it was
+  typed. A backdated one goes out at local noon of its own day, through the same `dayInstant`
+  that `logMetric` uses for a backdated weight.
+- **Its own cursor**, `apple_health_publish_water`: a fourth key in the 0021 KV, the same
+  `HealthPublishState` shape, no migration. **It arms on its first pass.** Water logged before
+  this build is never published. That is rule 1, and it holds here for a second reason: the history
+  was logged under the one-way rule, when a glass typed here and tapped on the watch was the
+  user's to reconcile, so sending it now could double Health's own past days.
+- **Rule 2 holds.** A refused save stalls the walk on its cursor, and the next pass retries.
+- **When.** Inside the same pass as ingestion: boot, foreground (throttled to 15 min), and
+  *Sync now*. A glass reaches Apple Health on the next pass, not the instant it is tapped. The
+  same one switch governs both directions.
+
+### 20.5 The undo — what the body channel cannot have
+
+The brief asked whether the body metrics delete what they published, and asked me to match them.
+**They do not, and cannot:** nothing stores a published weight's HealthKit UUID, so a weight is
+irreversible from inside ARC (§10, rule 1). Matching that for water would leave a phantom glass
+in the Health app on every Undo, which is the opposite of the agreement the owner asked for. So
+water does the thing weight cannot, and the difference is where the row lives, not a policy.
+A capture's own id **is** the tag on its sample, so the sample can be found again by the id the
+Undo already holds. No UUID is stored, and none needs to be.
+
+- `deleteHealthQuantityByTag` calls `deleteObjects(DietaryWater, metadata ARCPublishedFrom == id)`.
+  Two backstops come from outside ARC. The library **throws** on a nil predicate ("Unable to
+  create predicate for deleting objects"), so a malformed tag can never widen into delete-all.
+  And HealthKit only lets an app delete samples it wrote itself.
+- `removeWaterCapture` is the path for the Log tab's Undo and the water screen's delete. ARC's row
+  goes first, synchronously, then the Health delete runs fire-and-forget. For an Undo made seconds
+  after the tap the delete finds nothing, which is the ordinary case, because the walk has not run
+  yet.
+- `editWaterCapture` is the water screen's edit. The tagged delete doubles as the question
+  "was it published?". If it removed a sample, the corrected amount is re-saved at the same
+  instant with the same tag, so it is the same glass with a new amount. If it removed nothing, the
+  walk will carry the corrected amount when it gets there.
+- **The race.** If the Undo lands while the walk's save is in flight, the Undo's delete finds
+  nothing, and then the save lands as an orphan. The walk checks after each save that its row still
+  exists, and takes the orphan straight back out.
+- **One switch.** With sync off the row is still deleted, but ARC writes nothing to Health in
+  either direction.
+
+### 20.6 The late write scope — the reason this could have shipped dead
+
+`healthWriteAccess()` loops over every write identifier. For the owner, whose weight, body-fat and
+waist grants date from August, adding water gives `[granted, granted, granted, notDetermined]`.
+That used to classify as **`partial`**, and `partial` meant two things. Settings pointed him at
+iOS Settings, which does not even list a type the app has never requested. And the *Allow
+publishing* control, rendered only for `undetermined`, stayed hidden. Water would never have been
+asked for, and every water save would have been refused for good.
+
+That state is now **`incomplete`** (`classifyWriteAccess`, pure and pinned). The ask control now
+keys on `unaskedWriteIdentifiers()` instead of on a single access value, and its sentence names
+exactly what is unasked. A late write scope needs no stamp, unlike §18.7's late read scope, because
+iOS answers sharing truthfully and `notDetermined` *is* "never asked". Tapping *Allow publishing*
+presents the sheet for Water alone.
+
+`NSHealthUpdateUsageDescription` names water:
+*"ARC writes the weight, body-fat percentage, waist and water you record in ARC to Apple Health,
+so other apps on your iPhone can see them. Nothing else is written."* This is an Info.plist
+string, so it reaches the phone only with a native build, and §10's warning applies unchanged:
+this JS must not run on a binary that lacks the updated key.
+
+### 20.7 The tripwire, rewritten rather than deleted
+
+`db/health-mapping.test.mjs` §8 used to assert *water is READ and NEVER PUBLISHED*. That was the
+right guard for a one-way scope, and it had to change for the same reason the disjoint-lists
+tripwire changed in §10. What it protected is now stated as the terms on which water may be
+two-way at all, and each is asserted: water is in READ, WRITE **and** the suppressed set, or in
+none of them; it reaches WRITE only through `WATER_PUBLISH_METRIC`, never a body column; the
+publish and read specs agree on `'mL'` and `water_ml`; the body walk still cannot emit a dietary
+sample; a statistic is published **if and only if** it is read echo-suppressed; `sync.ts` derives
+`failClosed` from `isPublishedIdentifier` (pinned by source, since node cannot drive
+`syncHealthData` past its availability check); and the statistics ladder is the metadata rung
+alone. `unsuppressedEchoIdentifiers()` stays empty, and it stays empty *because* water joined the
+suppressed set in the same change.
+
+§8b proves the echo behaviourally against a fake store that sums whatever matches the predicate.
+The control (no exclusion) sums Garmin's 473 mL and ARC's 473.18 mL to 946.18. The
+published-water read returns 473 under `exclusion: 'metadata'`, sends no `sources` clause, and
+under a refused predicate returns nothing, having never issued an unfiltered query.
+`db/wearables.test.mjs` §24 does it end to end against real SQLite: ARC's own publish walk writes
+the glass, the real read, `statisticDailyRows` and upsert bucket the day, and `waterDaySeries`
+reads **1,196.18 mL** (250 + 473.18 + Garmin's 473), where the echo would read 1,669.35. The same
+section covers arming, the `hk:` guard, the Undo, the edit, the stall, the race, a backdated
+instant and the switch.
+
+### 20.8 What only the phone can settle
+
+1. **Whether iOS accepts `NOT` over `predicateForObjects(withMetadataKey:)` in a statistics
+   query.** This was §14's open question, and it is now load-bearing for water. That weight reads
+   in on his phone proves some rung works for *sample* reads, not which one. If this rung is
+   refused, Settings' log shows the water row as `0 → 0` with *"Apple Health refused the filter
+   that keeps ARC's own water out…"*, and the Garmin figure disappears rather than doubling. That
+   is the safe failure, and the fix would then be a different mechanism, not a retry.
+2. **The write itself.** Tap *Allow publishing* (the sheet should list Water alone), log a glass,
+   tap *Sync now*, then open the Health app → Browse → Nutrition → Water. The glass should be
+   there with ARC as its source, and the next sync's log should report `Water 1/1`.
+3. **Whether Garmin Connect then shows ARC's water, and the echo that would come with it.**
+   Garmin Connect's Apple Health link is mainly Garmin → Health. Whether it *imports* hydration is
+   not established here. If it does, look for a laundered echo: Garmin re-exporting ARC's glass
+   under Garmin's own source, without ARC's tag. No source- or tag-based exclusion can catch that,
+   and the day would double. The symptom: after one glass logged in ARC, the Health app lists it
+   twice, once from ARC and once from Garmin Connect. The fix: turn off Garmin Connect's permission
+   to read Water under Settings → Health → Data Access & Devices → Garmin Connect.
+4. **That the Undo removes it.** Log a glass, sync, confirm it in Health, undo it on the Log tab,
+   and check that the Health app no longer lists it.
+
+**Known gap, left alone on purpose.** The Coach's `edit_record` / `delete_record` for water call
+`updateWaterEntry` / `deleteWaterEntry` directly (`src/lib/ai/domains/read-domains.ts`), so a
+correction or removal made through the Coach does not reach Apple Health. ARC's own numbers are
+unaffected, because the read excludes ARC's glasses either way, but the Health app keeps the old
+one. That registry belongs to the Coach, and this change was scoped not to touch it (both prompt
+ceilings re-measured unchanged).

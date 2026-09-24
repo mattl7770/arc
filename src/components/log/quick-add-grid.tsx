@@ -9,7 +9,8 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { getPreferences } from '@/lib/db/repositories/user';
-import { deleteWaterEntry, logWater, usualWaterAmount } from '@/lib/db/repositories/water';
+import { logWater, usualWaterAmount } from '@/lib/db/repositories/water';
+import { removeWaterCapture } from '@/lib/health/publish';
 import { metricByKey, resolveDisplay, roundToSpec, type DisplaySpec } from '@/lib/log/metrics';
 import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
 
@@ -315,7 +316,9 @@ export function QuickAddGrid({ onLogged }: { onLogged?: () => void }) {
   const undoLast = () => {
     if (!undo) return;
     try {
-      deleteWaterEntry(getDb(), undo.id);
+      // Removes the glass from Apple Health too, when it had already gone out
+      // (water is two-way since 2026-09-21; the Undo is the case that matters).
+      removeWaterCapture(getDb(), undo.id);
       setUndo(null);
       setView(readWater());
       onLogged?.();

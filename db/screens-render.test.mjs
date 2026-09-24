@@ -3386,19 +3386,38 @@ const db = getDb();
   // counts, and must not name a step as having succeeded or failed.
   refute('settings-health (no sync yet)', never, ['rows changed', 'Published out']);
 
-  // Hydration (2026-09-14). Three things have to be on this screen and all
-  // three are assertions rather than intentions: the scope row with its
-  // direction, the audit row with its honest verdict, and the sentence that
-  // makes the no-dedupe rule the user's to act on. "Pick one door" is the whole
-  // mitigation for double counting, so it cannot live only in a docblock.
+  // Hydration — two-way since 2026-09-21 (it was read-only from 2026-09-14).
+  // Three things have to be on this screen and all three are assertions rather
+  // than intentions: the scope row with its direction, the audit row with its
+  // verdict, and the sentence that makes the no-dedupe rule the user's to act
+  // on. "Pick one door" survives the change: ARC's own glasses are kept out of
+  // what comes back, but the same glass typed here AND tapped on the watch is
+  // still two entries, and only the user can know that.
   expect('settings-health (no sync yet)', never, [
     'Water (hydration)',
-    'Water is read, never written.',
+    'Water goes both ways.',
+    'undoing or correcting it here changes it there too',
     'log a glass in one place or the other, not both',
-    // The audit row. `unverified` is the honest verdict — nothing in the repo
-    // establishes that a Garmin writes hydration to Apple Health.
-    'Unverified',
+    // The audit row: the owner's device settled it (2026-09-21 checklist,
+    // confirmed 2026-09-23), so the verdict is no longer `unverified`.
+    'Verified on the owner’s phone, not inferred',
   ]);
+  // The one-way sentence and the old unverified note must not survive anywhere.
+  refute('settings-health (no sync yet)', never, [
+    'Water is read, never written.',
+    'Nothing in this repository establishes that Garmin writes hydration',
+  ]);
+  // The scope row's own direction tag. `Both` alone proves nothing (the body
+  // rows carry it too), so the check is scoped to the markup between the water
+  // row's label and the next row's.
+  {
+    const from = never?.indexOf('Water (hydration)') ?? -1;
+    const to = never?.indexOf('Sleep (duration and stages)') ?? -1;
+    const between = from >= 0 && to > from ? never.slice(from, to) : '';
+    between.includes('>Both<') && !between.includes('>In<')
+      ? ok('settings-health: the water scope row is tagged Both, not In')
+      : bad('settings-health: water scope direction', between.slice(0, 200));
+  }
 
   setHealthSyncLog(db, {
     at: '2026-08-26T09:00:00.000Z',

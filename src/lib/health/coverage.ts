@@ -167,10 +167,10 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
   {
     hkIdentifier: 'HKQuantityTypeIdentifierDietaryWater',
     label: 'Water',
-    use: "The Water record's day total, beside manual captures — read only, never published",
-    garmin: 'unverified',
+    use: "The Water record's day total, beside manual captures — and since 2026-09-21 ARC publishes its own captures outward too, keeping them out of what it reads back",
+    garmin: 'yes',
     garminNote:
-      'Nothing in this repository establishes that Garmin writes hydration to Apple Health, and no source was checked when the scope was added — the premise is plausible and unconfirmed. The test is one evening: log a hydration entry on the watch, sync, and see whether a row lands. Any other hydration app on the phone will also fill this, which is the point of reading it.',
+      'Verified on the owner’s phone, not inferred: hydration logged in Garmin Connect arrives through Apple Health (device checklist 2026-09-21, confirmed 2026-09-23). It lands as one merged total per day, so a Garmin day reads as a single entry rather than one per drink.',
     verdictDays: null,
   },
   {

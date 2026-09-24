@@ -79,6 +79,7 @@ import { upsertHealthBodyRows } from '@/lib/db/repositories/body';
 import {
   BODY_INGEST_METRICS,
   bodyIngestRows,
+  isPublishedIdentifier,
   noBodyRejections,
   quantityDailyRows,
   SAMPLE_METRICS,
@@ -101,7 +102,7 @@ import {
   readSleepSamples,
   readWorkouts,
 } from './healthkit';
-import { publishBodyMetrics } from './publish';
+import { publishBodyMetrics, publishWaterCaptures } from './publish';
 
 /** Steady-state re-aggregation window (self-healing horizon). */
 export const SYNC_WINDOW_DAYS = 14;
@@ -429,7 +430,13 @@ export async function syncHealthData(
     });
   }
   for (const spec of STATISTIC_METRICS) {
-    const read = await readDailyCumulative(spec.hkIdentifier, spec.hkUnit, days);
+    // A statistic ARC also PUBLISHES (water, since 2026-09-21) reads through the
+    // exclusion ladder and fails closed: its merged total would otherwise hold
+    // ARC's own captures, and the day would count them twice (docs §20). Every
+    // other statistic reads exactly as it always has.
+    const read = await readDailyCumulative(spec.hkIdentifier, spec.hkUnit, days, {
+      failClosed: isPublishedIdentifier(spec.hkIdentifier),
+    });
     const mapped = statisticDailyRows(spec, read.samples);
     rows.push(...mapped);
     allowReconcile(mapped, read.error);
@@ -613,16 +620,21 @@ export async function syncHealthData(
   // and the next pass retries from an unmoved cursor.
   let samplesPublished = 0;
   const publish = emptyPublishLog();
-  try {
-    const result = await publishBodyMetrics(db, now);
-    samplesPublished = result.samplesWritten;
-    publish.armed = result.armed;
-    publish.stalled = result.stalled;
-    publish.attempted = result.samplesAttempted;
-    publish.succeeded = result.samplesWritten;
-    publish.types = result.byType;
-  } catch {
-    samplesPublished = 0;
+  // Two walks, one log: the body walk and (since 2026-09-21) the water walk,
+  // each with its own cursor and each allowed to fail without costing the other
+  // its pass. `types` keeps them apart for the reader; the totals add.
+  for (const walk of [publishBodyMetrics, publishWaterCaptures]) {
+    try {
+      const result = await walk(db, now);
+      samplesPublished += result.samplesWritten;
+      publish.armed = publish.armed || result.armed;
+      publish.stalled = publish.stalled || result.stalled;
+      publish.attempted += result.samplesAttempted;
+      publish.succeeded += result.samplesWritten;
+      publish.types = [...publish.types, ...result.byType];
+    } catch {
+      // Degrades to zero for this walk; the next pass retries from its cursor.
+    }
   }
 
   // Written LAST and outside the ingest cursor's write, so a log failure can

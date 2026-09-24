@@ -23,13 +23,16 @@ import {
   isHealthKitAvailable,
   isHealthKitSupported,
   requestHealthPermissions,
+  unaskedWriteIdentifiers,
   type HealthWriteAccess,
 } from '@/lib/health/healthkit';
 import { GARMIN_ONLY_METRICS, METRIC_COVERAGE, type SourceVerdict } from '@/lib/health/coverage';
 import {
   BODY_INGEST_METRICS,
+  BODY_PUBLISH_METRICS,
   HEALTH_READ_IDENTIFIERS,
   unaskedReadScopes,
+  WATER_PUBLISH_METRIC,
 } from '@/lib/health/mapping';
 import { FIRST_SYNC_DAYS, syncHealthData } from '@/lib/health/sync';
 
@@ -57,6 +60,12 @@ import { FIRST_SYNC_DAYS, syncHealthData } from '@/lib/health/sync';
  * said plainly that corrections don't follow and that ingested measurements are
  * never sent back.
  *
+ * Water joined them on 2026-09-21 (§20) and is the exception to "corrections
+ * don't follow": a capture's own id is the tag on its sample, so the Undo and
+ * the water screen's edit and delete reach Apple Health too — and the screen
+ * says that about water specifically rather than letting the body sentence
+ * speak for it.
+ *
  * Conformed Set treatment: the connection state is a **ruled plate** carrying
  * its own action, the scope list is a **ruled plate** (a list of things is a
  * record), and the explanatory passages are **margin annotations**.
@@ -79,7 +88,8 @@ function fmtSyncedAt(iso: string): string {
  * integration is not "what does it touch" but "who is writing my record", so the
  * two old lists (What ARC reads / What ARC writes) are one record with a
  * direction per row — the three body measurements are now genuinely both ways,
- * and a two-list layout could only have shown that by printing them twice.
+ * and a two-list layout could only have shown that by printing them twice. Water
+ * is the fourth two-way row since 2026-09-21.
  */
 type SyncDirection = 'both' | 'in' | 'out';
 
@@ -106,6 +116,11 @@ const DIRECTION_ICON: Record<
  */
 const SYNC_SCOPES: readonly { label: string; direction: SyncDirection }[] = [
   ...BODY_INGEST_METRICS.map((m) => ({ label: m.label, direction: 'both' as const })),
+  // Both ways since 2026-09-21, so it moved up among the two-way rows. It was
+  // "In only, and it must stay that way" until then; the argument for that was
+  // right about the mechanism and wrong about the conclusion — the cumulative
+  // read now excludes ARC's own samples (docs/wearables-subapp.md §20).
+  { label: 'Water (hydration)', direction: 'both' },
   { label: 'Sleep (duration and stages)', direction: 'in' },
   { label: 'Heart-rate variability and resting heart rate', direction: 'in' },
   // Its own row rather than folded into the line above: this one is read for
@@ -116,11 +131,22 @@ const SYNC_SCOPES: readonly { label: string; direction: SyncDirection }[] = [
   { label: 'Respiratory rate and blood oxygen', direction: 'in' },
   { label: 'Body and sleeping-wrist temperature', direction: 'in' },
   { label: 'VO₂max and workouts', direction: 'in' },
-  // In only, and it must stay that way: a cumulative statistics query cannot
-  // exclude ARC's own samples, so a published water total would be read back
-  // and doubled (src/lib/health/mapping.ts → HEALTH_WRITE_IDENTIFIERS).
-  { label: 'Water (hydration)', direction: 'in' },
 ];
+
+/** What each published type is called in a sentence — "weight", "water". */
+const WRITE_WORDS: ReadonlyMap<string, string> = new Map(
+  [...BODY_PUBLISH_METRICS, WATER_PUBLISH_METRIC].map((m) => [
+    m.hkIdentifier,
+    m.label.toLowerCase(),
+  ])
+);
+
+/** ["weight", "body fat", "water"] → "weight, body fat and water". */
+function spokenList(words: readonly string[]): string {
+  return words.length < 2
+    ? (words[0] ?? '')
+    : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+}
 
 /**
  * The coverage tag. Deliberately three words with no colour: a source that does
@@ -148,9 +174,12 @@ const VERDICT_SPOKEN: Record<SourceVerdict, string> = {
 function writeAccessNote(access: HealthWriteAccess): string | null {
   switch (access) {
     case 'denied':
-      return 'Apple Health is refusing writes from ARC, so nothing is being published. Turn Weight, Body Fat Percentage and Waist Circumference on under Settings → Privacy & Security → Health → ARC.';
+      return 'Apple Health is refusing writes from ARC, so nothing is being published. Turn Weight, Body Fat Percentage, Waist Circumference and Water on under Settings → Privacy & Security → Health → ARC.';
     case 'partial':
-      return 'Apple Health is accepting only some of what ARC publishes. Check Weight, Body Fat Percentage and Waist Circumference under Settings → Privacy & Security → Health → ARC.';
+      return 'Apple Health is accepting only some of what ARC publishes. Check Weight, Body Fat Percentage, Waist Circumference and Water under Settings → Privacy & Security → Health → ARC.';
+    // `incomplete` (a type never asked) and `undetermined` get the ask control
+    // below instead of a sentence pointing at iOS Settings, where a type ARC has
+    // never requested is not even listed.
     default:
       return null;
   }
@@ -166,6 +195,7 @@ export default function SettingsHealthScreen() {
   const [lastRows, setLastRows] = useState<number | null>(null);
   const [lastPublished, setLastPublished] = useState<number | null>(null);
   const [writeAccess, setWriteAccess] = useState<HealthWriteAccess>(() => healthWriteAccess());
+  const [unaskedWrites, setUnaskedWrites] = useState<string[]>(() => unaskedWriteIdentifiers());
   const [log, setLog] = useState<HealthSyncLog | null>(() => getHealthSyncLog(getDb()));
   const [unasked, setUnasked] = useState<string[]>(() =>
     unaskedReadScopes(getHealthScopeStamp(getDb()))
@@ -176,6 +206,7 @@ export default function SettingsHealthScreen() {
     setEnabled(isHealthSyncEnabled(db));
     setLastSyncedAt(getHealthSyncState(db).lastSyncedAt);
     setWriteAccess(healthWriteAccess());
+    setUnaskedWrites(unaskedWriteIdentifiers());
     setLog(getHealthSyncLog(db));
     setUnasked(unaskedReadScopes(getHealthScopeStamp(db)));
   }, []);
@@ -221,6 +252,12 @@ export default function SettingsHealthScreen() {
    * leaving sharing permanently undetermined and every publish refused. Only
    * rendered while that is actually the state, so it can't be a no-op control —
    * iOS won't re-present a sheet the user has already answered.
+   *
+   * Since 2026-09-21 "that state" is keyed on {@link unaskedWriteIdentifiers},
+   * not on one access value: water became a write type after the owner had
+   * granted the other three, which reads as `incomplete` — and under the old
+   * condition (`undetermined` only) this control never appeared, water was
+   * never requested, and every water save would have been refused for good.
    */
   const allowPublishing = useCallback(async () => {
     if (busy) return;
@@ -417,11 +454,12 @@ export default function SettingsHealthScreen() {
                 </Text>
               ) : null}
 
-              {writeAccess === 'undetermined' ? (
+              {unaskedWrites.length > 0 ? (
                 <>
                   <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
-                    ARC hasn&rsquo;t been given permission to publish your weight, body fat and
-                    waist to Apple Health yet.
+                    {`ARC hasn’t been given permission to publish your ${spokenList(
+                      unaskedWrites.map((id) => WRITE_WORDS.get(id) ?? id)
+                    )} to Apple Health yet.`}
                   </Text>
                   <Pressable
                     accessibilityRole="button"
@@ -665,22 +703,26 @@ export default function SettingsHealthScreen() {
             </Text>
             <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
               Nothing else is written — no workouts, no meals, no sleep. ARC publishes weight, body
-              fat and waist from the moment you connect; measurements recorded before that stay in
-              ARC only. Editing or deleting one here does not change the copy already in Apple
-              Health — remove that in the Health app. A measurement that arrived from Apple Health
-              is marked as such and is never sent back.
+              fat and waist from the moment you connect, and water from the first sync after it was
+              added; anything recorded before that stays in ARC only. Editing or deleting a weight,
+              body-fat or waist entry here does not change the copy already in Apple Health — remove
+              that in the Health app. A measurement that arrived from Apple Health is marked as such
+              and is never sent back.
             </Text>
-            {/* The double-count sentence. Water is the one metric with two live
-                doors — the Log tab's tile and anything writing hydration to
-                Apple Health — and ARC deliberately does not reconcile them (the
-                argument is at the head of repositories/water.ts). So the rule is
-                behavioural, and it belongs where the user turns the second door
-                on. */}
+            {/* The double-count sentence. Water has two live doors — the Log
+                tab's vessels and anything writing hydration to Apple Health —
+                and since 2026-09-21 ARC writes to the second one too. Its own
+                glasses are kept out of what comes back (docs §20), so nothing
+                ARC wrote is counted twice; what cannot be reconciled is the
+                same glass entered twice by hand, one door each. So the rule
+                stays behavioural, and it belongs where the doors are named. */}
             <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
-              Water is read, never written. Apple Health sends one merged total per day, and ARC
-              adds it to what you logged here rather than trying to match the two up — so log a
-              glass in one place or the other, not both. A day that looks doubled is fixed in Data →
-              Water, where the two entries sit side by side.
+              Water goes both ways. A glass you log here is written to Apple Health, and undoing or
+              correcting it here changes it there too. Apple Health sends back one merged total per
+              day with ARC&rsquo;s own glasses left out, so nothing ARC wrote is counted twice. A
+              glass tapped on the watch and typed here is still two glasses, though — log a glass in
+              one place or the other, not both. A day that looks doubled is fixed in Data → Water,
+              where the two entries sit side by side.
             </Text>
           </Block>
         </View>

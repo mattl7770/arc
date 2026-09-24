@@ -19,6 +19,7 @@ import {
   unaskedReadScopes,
   ingestRejectionFor,
   isIngestableSample,
+  isPublishedIdentifier,
   localDayOf,
   quantityDailyRows,
   readWriteScopeOverlap,
@@ -28,10 +29,11 @@ import {
   STATISTIC_METRICS,
   statisticDailyRows,
   unsuppressedEchoIdentifiers,
+  WATER_PUBLISH_METRIC,
   workoutActivityName,
   workoutRows,
 } from '../src/lib/health/mapping.ts';
-import { bodySamplesFor } from '../src/lib/health/publish.ts';
+import { bodySamplesFor, waterSampleFor } from '../src/lib/health/publish.ts';
 import {
   clampRowsToWindow,
   FIRST_SYNC_DAYS,
@@ -43,6 +45,7 @@ import {
   syncWindowDays,
 } from '../src/lib/health/sync.ts';
 import {
+  classifyWriteAccess,
   collectWorkouts,
   countWriterSamples,
   healthWriteAccess,
@@ -57,6 +60,7 @@ import {
   parseWorkoutHrStatistic,
   parseWorkoutSample,
   pickSourceStatistic,
+  readDailyCumulative,
   readQuantitySamples,
   readWorkouts,
   requestHealthPermissions,
@@ -798,16 +802,20 @@ console.log('7. read scopes cover the spec');
     : bad('duplicate ingest', duplicated.join(','));
 }
 
-console.log('8. write scopes + the echo-loop tripwire (spec §10)');
+console.log('8. write scopes + the echo-loop tripwire (spec §10, §20)');
 {
-  const want = [
+  const BODY = [
     'HKQuantityTypeIdentifierBodyMass',
     'HKQuantityTypeIdentifierBodyFatPercentage',
     'HKQuantityTypeIdentifierWaistCircumference',
   ];
+  const WATER = 'HKQuantityTypeIdentifierDietaryWater';
+  // Four since 2026-09-21: the body channel, and water. Asserted as an exact
+  // list, not a superset, so a fifth write scope fails here by name.
+  const want = [...BODY, WATER];
   const missingWrite = want.filter((id) => !HEALTH_WRITE_IDENTIFIERS.includes(id));
-  missingWrite.length === 0 && HEALTH_WRITE_IDENTIFIERS.length === 3
-    ? ok('write scopes are exactly weight / body fat / waist')
+  missingWrite.length === 0 && HEALTH_WRITE_IDENTIFIERS.length === want.length
+    ? ok('write scopes are exactly weight / body fat / waist / water')
     : bad('write scopes', HEALTH_WRITE_IDENTIFIERS.join(','));
 
   // THE tripwire, in its second form.
@@ -819,14 +827,15 @@ console.log('8. write scopes + the echo-loop tripwire (spec §10)');
   // fail or be deleted. Neither — what it was protecting is kept exactly: NO
   // TYPE MAY BE BOTH READ AND WRITTEN WITHOUT ECHO SUPPRESSION BEHIND IT.
   //
-  // The overlap is therefore expected, and expected to be precisely the body
-  // channel; what must be empty is the overlap NOT covered by suppression. This
-  // still fires in CI for the case that matters now — a new write scope for a
-  // type already read on the ordinary path, where the reader retries unfiltered
-  // on a bad predicate and would re-ingest ARC's own samples.
+  // The overlap is therefore expected, and expected to be PRECISELY the body
+  // channel plus water; what must be empty is the overlap NOT covered by
+  // suppression. This still fires in CI for the case that matters — a new
+  // write scope for a type already read on the ordinary path, where the reader
+  // retries unfiltered on a bad predicate and would re-ingest ARC's own
+  // samples.
   const overlap = readWriteScopeOverlap().slice().sort();
-  overlap.length === 3 && overlap.join(',') === want.slice().sort().join(',')
-    ? ok('the read/write overlap is exactly the body channel — deliberate, not accidental')
+  overlap.join(',') === want.slice().sort().join(',')
+    ? ok('the read/write overlap is exactly the body channel + water — deliberate')
     : bad('unexpected overlap', overlap.join(','));
 
   const unsuppressed = unsuppressedEchoIdentifiers();
@@ -834,49 +843,91 @@ console.log('8. write scopes + the echo-loop tripwire (spec §10)');
     ? ok('every read+write type has echo suppression behind it')
     : bad('UNSUPPRESSED ECHO PATH', unsuppressed.join(','));
 
-  // Non-circularity: the suppressed set is derived from BODY_INGEST_METRICS, so
-  // it can only claim coverage the ingest path actually implements. Prove no
-  // published type sneaks in through the UNsuppressed readers.
-  const unsuppressedReaders = [
-    ...SAMPLE_METRICS.map((m) => m.hkIdentifier),
-    ...STATISTIC_METRICS.map((m) => m.hkIdentifier),
-  ];
-  const leaked = HEALTH_WRITE_IDENTIFIERS.filter((id) => unsuppressedReaders.includes(id));
-  leaked.length === 0
-    ? ok('no published type is read through the unfiltered-retry path')
-    : bad('PUBLISHED TYPE ON THE UNSUPPRESSED READER', leaked.join(','));
+  // Non-circularity. The suppressed set may only claim what the readers
+  // actually do:
+  //   - SAMPLE_METRICS readers retry UNFILTERED on a refused predicate, so no
+  //     published type may be read there at all;
+  //   - a STATISTIC may be published only if it is in the suppressed set, and
+  //     it is in the suppressed set only through isPublishedIdentifier — the
+  //     SAME predicate sync.ts passes as `failClosed` (pinned below by source,
+  //     because node cannot drive syncHealthData past its availability check).
+  const onSampleReader = HEALTH_WRITE_IDENTIFIERS.filter((id) =>
+    SAMPLE_METRICS.some((m) => m.hkIdentifier === id)
+  );
+  onSampleReader.length === 0
+    ? ok('no published type is read through the unfiltered-retry SAMPLE path')
+    : bad('PUBLISHED TYPE ON THE UNSUPPRESSED READER', onSampleReader.join(','));
+  const statisticDrift = STATISTIC_METRICS.filter(
+    (m) =>
+      isPublishedIdentifier(m.hkIdentifier) !== ECHO_SUPPRESSED_IDENTIFIERS.includes(m.hkIdentifier)
+  );
+  statisticDrift.length === 0
+    ? ok('a statistic is published if and only if it is read echo-suppressed')
+    : bad('STATISTIC SUPPRESSION DRIFT', statisticDrift.map((m) => m.hkIdentifier).join(','));
+  const syncSource = readFileSync(new URL('../src/lib/health/sync.ts', import.meta.url), 'utf8');
+  /readDailyCumulative\([^)]*\{\s*failClosed:\s*isPublishedIdentifier\(spec\.hkIdentifier\)/.test(
+    syncSource
+  )
+    ? ok('sync.ts reads each statistic failClosed exactly when it is published')
+    : bad('sync.ts no longer derives failClosed from isPublishedIdentifier');
 
-  // Workouts and nutrition are explicitly out of scope: neither can be deleted
-  // once written (no column stores a HealthKit UUID).
+  // Workouts and the rest of nutrition stay out: neither can be taken back once
+  // written. Water is the one Dietary type allowed, and ONLY because it can be:
+  // a capture's own id is the tag on its sample, so the Undo deletes it by that
+  // tag (deleteHealthQuantityByTag) — no UUID needs storing.
   const forbidden = HEALTH_WRITE_IDENTIFIERS.filter(
-    (id) => id.startsWith('HKQuantityTypeIdentifierDietary') || id === 'HKWorkoutTypeIdentifier'
+    (id) =>
+      (id.startsWith('HKQuantityTypeIdentifierDietary') && id !== WATER) ||
+      id === 'HKWorkoutTypeIdentifier'
   );
   forbidden.length === 0
-    ? ok('no workout or nutrition write scopes')
+    ? ok('no workout or nutrition write scopes, water excepted by name')
     : bad('out-of-scope write', forbidden.join(','));
 
-  // --- WATER IS READ AND NEVER PUBLISHED (2026-09-14) ----------------------
+  // --- WATER IS READ AND WRITTEN, WITH THE READ FAIL-CLOSED (2026-09-21) -----
   //
-  // This is the assertion the hydration read scope rests on, spelled out by
-  // name rather than left to the generic Dietary check above — because the
-  // consequence is specific and unrecoverable. A cumulativeSum statistics query
-  // CANNOT exclude ARC's own samples (Apple merges before the predicate; see
-  // readDailyCumulative), so if ARC ever published water it would read its own
-  // total straight back and double it, with no suppression available anywhere
-  // in the ladder. The only defence is that water is never written at all.
-  const WATER = 'HKQuantityTypeIdentifierDietaryWater';
-  HEALTH_READ_IDENTIFIERS.includes(WATER) && !HEALTH_WRITE_IDENTIFIERS.includes(WATER)
-    ? ok('water is a READ scope and is absent from the write scopes')
-    : bad('WATER ECHO LOOP', 'DietaryWater appears in HEALTH_WRITE_IDENTIFIERS');
-  !readWriteScopeOverlap().includes(WATER)
-    ? ok('...so it never appears in the read/write overlap at all')
-    : bad('water in the overlap');
+  // REWRITTEN, not deleted. Until 2026-09-21 this block asserted water was
+  // "READ AND NEVER PUBLISHED", because "a cumulativeSum statistics query
+  // CANNOT exclude ARC's own samples (Apple merges before the predicate)". The
+  // owner asked for two-way water ("water should get 2 way health sync"), and
+  // the premise did not survive the library's own Swift:
+  // queryStatisticsForQuantityInternal builds its predicate with the same
+  // createPredicateForSamples(filter) every sample reader uses, and hands it to
+  // HKStatisticsQuery(quantitySamplePredicate:). So the exclusion IS reachable.
+  //
+  // What the old block was protecting is kept, and is now stated as the terms
+  // on which water may be two-way at all. Every one must hold:
+  //   1. water is in READ and in WRITE, and in the suppressed set;
+  //   2. it reaches WRITE only through its own spec, never a body column;
+  //   3. the publish spec and the read spec agree on the unit, to the letter
+  //      ('mL' — a mismatch is a factor of a thousand in a medical record);
+  //   4. the body walk still cannot emit a dietary sample, so water leaves ARC
+  //      by one door only (the water walk, over manual captures);
+  //   5. the cumulative read offers the METADATA rung only — the source rung
+  //      can fail OPEN on a sum (§14) — which section 8b proves behaviourally.
+  HEALTH_READ_IDENTIFIERS.includes(WATER) &&
+  HEALTH_WRITE_IDENTIFIERS.includes(WATER) &&
+  ECHO_SUPPRESSED_IDENTIFIERS.includes(WATER)
+    ? ok('water is READ, WRITTEN and ECHO-SUPPRESSED — all three, or none')
+    : bad('WATER CONTRACT', 'read/write/suppressed disagree for DietaryWater');
+  WATER_PUBLISH_METRIC.hkIdentifier === WATER &&
+  HEALTH_WRITE_IDENTIFIERS.filter((id) => id === WATER).length === 1 &&
+  BODY_PUBLISH_METRICS.every((m) => m.column !== 'water_ml' && m.hkIdentifier !== WATER) &&
+  BODY_PUBLISH_METRICS.length + 1 === HEALTH_WRITE_IDENTIFIERS.length
+    ? ok('water is written through WATER_PUBLISH_METRIC alone — never as a body column')
+    : bad('publish specs drifted');
+  const waterRead = STATISTIC_METRICS.find((m) => m.hkIdentifier === WATER);
+  waterRead &&
+  WATER_PUBLISH_METRIC.hkUnit === waterRead.hkUnit &&
+  WATER_PUBLISH_METRIC.hkUnit === 'mL' &&
+  WATER_PUBLISH_METRIC.metricType === waterRead.metricType &&
+  WATER_PUBLISH_METRIC.toHealthKit(473.176473) === 473.176473
+    ? ok("publish and read agree: DietaryWater, 'mL', water_ml, canonical ml unchanged")
+    : bad('water unit drift', JSON.stringify({ publish: WATER_PUBLISH_METRIC, read: waterRead }));
 
-  // Structural, not merely declarative: the write list is DERIVED from
-  // BODY_PUBLISH_METRICS, which is keyed to the three body_metrics columns, so
-  // water could only become a write scope by being given one. Proven by
-  // behaviour rather than by reading the list — a body row carrying every
-  // column emits exactly three samples and none of them is dietary.
+  // Structural, not merely declarative: a body row carrying every column emits
+  // exactly three samples and none of them is dietary. Water cannot leave
+  // through the body walk by accident.
   const emitted = bodySamplesFor({
     id: 'row-1',
     createdAt: '2026-09-14T08:00:00.000Z',
@@ -886,18 +937,205 @@ console.log('8. write scopes + the echo-loop tripwire (spec §10)');
     waistCm: 84,
   }).map((s) => s.hkIdentifier);
   emitted.length === 3 && emitted.every((id) => !id.startsWith('HKQuantityTypeIdentifierDietary'))
-    ? ok('the publish walk can only ever emit the three body types — never a dietary one')
-    : bad('publish emitted a dietary sample', emitted.join(','));
-  BODY_PUBLISH_METRICS.every((m) => m.column !== 'water_ml') &&
-  BODY_PUBLISH_METRICS.length === HEALTH_WRITE_IDENTIFIERS.length
-    ? ok('no publish spec owns water, and the write list is exactly the publish specs')
-    : bad('publish specs drifted');
+    ? ok('the BODY walk can only ever emit the three body types — never a dietary one')
+    : bad('body publish emitted a dietary sample', emitted.join(','));
 
-  // And the tripwire still reads empty WITH the new read scope present. This is
-  // the assertion the hydration feature most needs to keep passing.
-  unsuppressedEchoIdentifiers().length === 0
-    ? ok('unsuppressedEchoIdentifiers() is still empty with DietaryWater in READ')
-    : bad('UNSUPPRESSED ECHO PATH', unsuppressedEchoIdentifiers().join(','));
+  // Rung 5, statically: the ladder a statistic gets is the metadata rung alone.
+  const statisticRungs = ownWriteExclusions();
+  statisticRungs.length === 1 &&
+  statisticRungs[0].kind === 'metadata' &&
+  statisticRungs[0].NOT[0].metadata?.withMetadataKey === ARC_WRITE_METADATA_KEY &&
+  statisticRungs[0].NOT.every((clause) => clause.sources === undefined)
+    ? ok('with no source accessor the ladder is the metadata rung alone (no fail-open source rung)')
+    : bad('statistic ladder', JSON.stringify(statisticRungs));
+}
+
+console.log('8b. the cumulative read keeps ARC’s own water out — the echo, pinned (§20)');
+{
+  // A fake HealthKit statistics store that does what HKStatisticsQuery does
+  // with a sample predicate: sums the samples that MATCH it. It honours a
+  // metadata-key NOT (the only clause the water read may send) and records
+  // every call, so the test can also prove what was never asked.
+  const WATER = WATER_PUBLISH_METRIC.hkIdentifier;
+  const store = (samples, { refuseNot = false, throwOn = new Set() } = {}) => {
+    const calls = [];
+    return {
+      calls,
+      deps: {
+        queryStatistics: async (identifier, options) => {
+          calls.push({ identifier, filter: options.filter });
+          const { date, NOT } = options.filter;
+          if (throwOn.has(date.startDate.toISOString())) throw new Error('fake: day refused');
+          if (NOT && refuseNot) throw new Error('fake: predicate refused');
+          const hidden = (s) =>
+            (NOT ?? []).some(
+              (c) =>
+                c.metadata !== undefined && s.metadata?.[c.metadata.withMetadataKey] !== undefined
+            );
+          const sum = samples
+            .filter((s) => s.start >= date.startDate && s.start < date.endDate && !hidden(s))
+            .reduce((a, s) => a + s.ml, 0);
+          return { sumQuantity: { unit: options.unit, quantity: sum } };
+        },
+      },
+    };
+  };
+  const day = (iso) => ({
+    date: iso,
+    start: new Date(`${iso}T00:00:00.000Z`),
+    end: new Date(new Date(`${iso}T00:00:00.000Z`).getTime() + 86_400_000),
+  });
+  const D = day('2026-09-21');
+  // Garmin's 473 mL (one bucket), plus the glass ARC published for a manual
+  // 16 oz capture — tagged exactly as publish.ts tags it.
+  const garmin = { ml: 473, start: new Date('2026-09-21T08:00:00.000Z') };
+  const arcGlass = {
+    ml: 473.176473,
+    start: new Date('2026-09-21T09:00:00.000Z'),
+    metadata: { [ARC_WRITE_METADATA_KEY]: 'capture-1' },
+  };
+
+  // The teeth first: what the OLD read (no exclusion) would have summed.
+  const naive = store([garmin, arcGlass]);
+  const naiveRead = await readDailyCumulative(WATER, 'mL', [D], {}, naive.deps);
+  Math.abs(naiveRead.samples[0].value - 946.176473) < 1e-9
+    ? ok('control: an unfiltered read of that day sums BOTH — 946.18 mL, ARC’s glass included')
+    : bad('control', JSON.stringify(naiveRead));
+
+  // The real read, exactly as sync.ts makes it for a published statistic.
+  const live = store([garmin, arcGlass]);
+  const read = await readDailyCumulative(
+    WATER,
+    'mL',
+    [D],
+    { failClosed: isPublishedIdentifier(WATER) },
+    live.deps
+  );
+  read.samples.length === 1 && read.samples[0].value === 473 && read.exclusion === 'metadata'
+    ? ok('the published-water read returns Garmin’s 473 mL alone, under the metadata rung')
+    : bad('water read', JSON.stringify(read));
+  const sent = live.calls[0]?.filter.NOT ?? [];
+  sent.length === 1 &&
+  sent[0].metadata?.withMetadataKey === ARC_WRITE_METADATA_KEY &&
+  live.calls.every((c) => (c.filter.NOT ?? []).every((clause) => clause.sources === undefined))
+    ? ok('it sends NOT(ARCPublishedFrom) and never a sources clause — the one that can fail open')
+    : bad('clauses sent', JSON.stringify(live.calls.map((c) => c.filter)));
+  live.calls.every((c) => c.filter.date.strictStartDate === true)
+    ? ok('strictStartDate survives — each sample still belongs to exactly one day')
+    : bad('strictStartDate lost');
+
+  // Fail CLOSED: a refused predicate yields no water and says so. The
+  // unfiltered query — the double — is never issued.
+  const refusing = store([garmin, arcGlass], { refuseNot: true });
+  const refused = await readDailyCumulative(
+    WATER,
+    'mL',
+    [D, day('2026-09-22')],
+    { failClosed: true },
+    refusing.deps
+  );
+  refused.samples.length === 0 &&
+  refused.exclusion === 'refused' &&
+  refused.error?.includes('predicate refused') &&
+  refusing.calls.every((c) => c.filter.NOT !== undefined)
+    ? ok('refused → no rows, exclusion "refused", and no unfiltered retry was ever sent')
+    : bad('fail closed', JSON.stringify({ refused, calls: refusing.calls.length }));
+
+  // A rung is judged on the WINDOW: one bad day under an accepted clause is a
+  // bad day, not a refused clause.
+  const flaky = store([garmin, arcGlass], { throwOn: new Set([D.start.toISOString()]) });
+  const E = day('2026-09-22');
+  const flakyRead = await readDailyCumulative(
+    WATER,
+    'mL',
+    [D, E],
+    { failClosed: true },
+    flaky.deps
+  );
+  flakyRead.exclusion === 'metadata' && flakyRead.error?.includes('day refused')
+    ? ok('one day throwing keeps the rung, and keeps the day’s error for the log')
+    : bad('window rule', JSON.stringify(flakyRead));
+
+  // Unpublished statistics read EXACTLY as before: no NOT key at all.
+  const steps = store([{ ml: 9000, start: new Date('2026-09-21T10:00:00.000Z') }]);
+  const stepsRead = await readDailyCumulative(
+    'HKQuantityTypeIdentifierStepCount',
+    'count',
+    [D],
+    { failClosed: isPublishedIdentifier('HKQuantityTypeIdentifierStepCount') },
+    steps.deps
+  );
+  !('NOT' in steps.calls[0].filter) &&
+  stepsRead.exclusion === 'none' &&
+  stepsRead.samples[0].value === 9000
+    ? ok('steps: no NOT key, exclusion "none" — the filter is byte-identical to before')
+    : bad('steps changed', JSON.stringify({ filter: steps.calls[0].filter, stepsRead }));
+  const absent = await readDailyCumulative(WATER, 'mL', [D], { failClosed: true }, null);
+  absent.samples.length === 0 && absent.exclusion === 'none' && absent.error === null
+    ? ok('no module → the absent read, as before')
+    : bad('absent', JSON.stringify(absent));
+
+  // The sample ARC writes for a capture — instant, unit, tag.
+  const typedAt = new Date(2026, 8, 21, 9, 30, 0, 0); // local 09:30 on 21 Sep
+  const same = waterSampleFor({
+    id: 'capture-1',
+    date: '2026-09-21',
+    ml: 473.176473,
+    createdAt: typedAt.toISOString(),
+  });
+  same &&
+  same.hkIdentifier === WATER &&
+  same.hkUnit === 'mL' &&
+  same.value === 473.176473 &&
+  same.sourceRowId === 'capture-1' &&
+  same.at.getTime() === typedAt.getTime()
+    ? ok('a same-day capture goes out at the moment it was typed, in mL, tagged with its own id')
+    : bad('same-day sample', JSON.stringify(same));
+  const back = waterSampleFor({
+    id: 'capture-2',
+    date: '2026-09-18',
+    ml: 250,
+    createdAt: typedAt.toISOString(),
+  });
+  back && back.at.getTime() === new Date(2026, 8, 18, 12, 0, 0, 0).getTime()
+    ? ok('a BACKDATED capture goes out at local noon of its own day, as a backdated weight does')
+    : bad('backdated sample', JSON.stringify(back));
+  waterSampleFor({ id: 'x', date: '2026-09-21', ml: 0, createdAt: typedAt.toISOString() }) ===
+    null &&
+  waterSampleFor({ id: 'x', date: '2026-09-21', ml: NaN, createdAt: typedAt.toISOString() }) ===
+    null &&
+  waterSampleFor({ id: 'x', date: '2026-09-21', ml: 250, createdAt: 'garbage' }) === null
+    ? ok('nothing doubtful is sent: zero, NaN and an unreadable instant produce no sample')
+    : bad('doubtful sample sent');
+
+  // The late write scope. Weight/body fat/waist granted in August, water never
+  // asked: that must read as "ask" (incomplete), never as "go to iOS Settings"
+  // (partial) — iOS does not even list a type the app has never requested.
+  classifyWriteAccess([2, 2, 2, 0]) === 'incomplete'
+    ? ok('granted ×3 + never asked → "incomplete" (the owner’s state after this build)')
+    : bad('late scope', classifyWriteAccess([2, 2, 2, 0]));
+  classifyWriteAccess([2, 2, 2, 2]) === 'granted' &&
+  classifyWriteAccess([0, 0, 0, 0]) === 'undetermined' &&
+  classifyWriteAccess([1, 1, 1, 1]) === 'denied' &&
+  classifyWriteAccess([2, 1, 2, 0]) === 'partial' &&
+  classifyWriteAccess([]) === 'unknown'
+    ? ok('granted / undetermined / denied / partial / unknown classify as before')
+    : bad('write access classes');
+
+  // What the log says about it.
+  const refusedWater = metricNote({
+    metric: 'water_ml',
+    label: 'water_ml',
+    returned: 0,
+    rows: 0,
+    exclusion: 'refused',
+    error: 'fake: predicate refused',
+    rejected: null,
+  });
+  refusedWater?.startsWith("Apple Health refused the filter that keeps ARC's own water out") &&
+  !refusedWater.includes('both')
+    ? ok('a refused water read says ONE filter was refused, not "both"')
+    : bad('water refused note', refusedWater);
 }
 
 console.log('9. body publish mapping — units are the whole job');
@@ -1052,8 +1290,13 @@ console.log('11. echo suppression — who may be ingested on a type ARC also wri
     ? ok('a sample with no metadata parses, tagged not-ours')
     : bad('bare sample', JSON.stringify(bare));
 
-  ECHO_SUPPRESSED_IDENTIFIERS.length === 3 &&
-  ECHO_SUPPRESSED_IDENTIFIERS.every((id) => HEALTH_WRITE_IDENTIFIERS.includes(id))
+  // Four since 2026-09-21 (water joined, through the statistics half of the
+  // derivation). Asserted as SET EQUALITY both ways: a published type with no
+  // suppression is the echo; a "suppressed" type nobody publishes is a claim
+  // about a reader that nothing exercises.
+  ECHO_SUPPRESSED_IDENTIFIERS.length === HEALTH_WRITE_IDENTIFIERS.length &&
+  ECHO_SUPPRESSED_IDENTIFIERS.every((id) => HEALTH_WRITE_IDENTIFIERS.includes(id)) &&
+  HEALTH_WRITE_IDENTIFIERS.every((id) => ECHO_SUPPRESSED_IDENTIFIERS.includes(id))
     ? ok('the suppressed set is exactly the published set')
     : bad('suppressed set', ECHO_SUPPRESSED_IDENTIFIERS.join(','));
 }

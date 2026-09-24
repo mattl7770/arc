@@ -14,16 +14,18 @@ import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { timezoneNotesIn } from '@/lib/db/repositories/day-meta';
 import { getPreferences, getWaterTarget, setWaterTarget } from '@/lib/db/repositories/user';
 import {
-  deleteWaterEntry,
   listWaterEntries,
   logWater,
-  updateWaterEntry,
   waterDaySeries,
   waterRecordStart,
   type WaterDay,
   type WaterEntry,
 } from '@/lib/db/repositories/water';
 import { shortDate, windowLabel } from '@/lib/experiments/format';
+// Correcting or removing a capture reaches Apple Health too, since water went
+// two-way (2026-09-21). A plain module over the guarded HealthKit seam, so
+// nothing native is imported statically here.
+import { editWaterCapture, removeWaterCapture } from '@/lib/health/publish';
 import { metricByKey, resolveDisplay, roundToSpec, type DisplaySpec } from '@/lib/log/metrics';
 import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
 import { daysBetween } from '@/lib/screenings/format';
@@ -338,7 +340,7 @@ export default function WaterScreen() {
     const typed = Number(editText);
     if (!Number.isFinite(typed) || typed <= 0 || typed > MAX_DISPLAY) return;
     try {
-      updateWaterEntry(getDb(), id, spec.toCanonical(typed));
+      editWaterCapture(getDb(), id, spec.toCanonical(typed));
       setEditing(null);
       refresh(day);
     } catch (error) {
@@ -354,7 +356,7 @@ export default function WaterScreen() {
       return;
     }
     try {
-      deleteWaterEntry(getDb(), id);
+      removeWaterCapture(getDb(), id);
       setEditing(null);
       setDeleteArmed(false);
       refresh(day);
