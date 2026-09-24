@@ -712,7 +712,7 @@ And the measurement the design rests on: **`pine` against `ink-secondary` is 1.0
 
 ### The three answers taken
 
-1. **Over target, the bar stops at the mark** and the number keeps counting. Adherence-neutral, and how far past is "too far" depends on goal direction, which is C7's question.
+1. **Over target, the bar stops at the mark** and the number keeps counting. Adherence-neutral, and how far past is "too far" depends on goal direction, which is C7's question. *(Overruled by FB3, below: the excess is now drawn past the mark in its own run, and the rail still means the target.)*
 2. **All four readings get a bar** — the kcal hero and the three macro cells. Calories are the reading you look at first; leaving it the only bare number would be odd.
 3. **Macros replace the item count on a meal row.** They do not both fit on a narrow phone, and the count told you how the meal was *entered*, not what was in it. It still appears on the meal's own screen, under Items. `useNutrition` no longer computes `itemCounts`; `mealItemCounts` remains in the repository (and in `db/foods.test.mjs`) with no caller on this tab.
 
@@ -756,7 +756,7 @@ C7's lift is *not* re-drawn here. The kcal and protein bars are the two readings
 
 The palette specifies the **swatch** for fills and the **ink cut** for text. On this rail the swatch fails, so the fill takes the ink cut — measured against `paper-deep` `#C6C1B0`, 2026-09-21:
 
-| state | swatch | on the rail | **ink cut (shipped)** | on the rail |
+| state | swatch | on the rail | **ink cut (FB2 — superseded by FB3's `bar` cut, below)** | on the rail |
 | --- | --- | --- | --- | --- |
 | optimal | `#2E8B57` | 2.36:1 ✗ | `#185A36` | **4.56:1** ✓ |
 | good | `#2C6C95` | 3.16:1 ✓ | `#24567A` | **4.34:1** ✓ |
@@ -773,7 +773,7 @@ Two of four swatches are under WCAG 1.4.11's 3:1 on this stock, and a palette wh
 
 **What colour does not carry.** The four ink cuts span 4.17–4.56 against one ground, i.e. they are near-isoluminant — to anyone not perceiving hue they are one dark mark, the `readiness-strip.tsx` finding again. Colour here is **reinforcement, never the sole cue**, and nothing was removed to make room for it: the mono figures and their denominators are untouched, the label still flips to OVER, the fill length is still literal, and Home still states the pillar's level in a word.
 
-**Accent budget: the bars now spend none.** Pine leaves this component entirely, which gives the budget back the headroom C6 spent.
+**Accent budget: the bars now spend none.** Pine leaves this component entirely, which gives the budget back the headroom C6 spent. *(Until FB3, below: the fills still spend none, and the run past the mark on an over-target day is the one pine the bars carry.)*
 
 #### Verification (FB2)
 
@@ -787,6 +787,63 @@ Two of four swatches are under WCAG 1.4.11's 3:1 on this stock, and a palette wh
 - **Whether a 6px bar is now a gauge.** C6 argued 6–8px crosses from rule into gauge on a sheet whose layering is borders and the paper triad. The owner overruled the 4px; whether 6px is the landing point or a step toward 8px is a hardware question.
 - **Whether four hues on one grid reads as information or as a dashboard** — CLAUDE.md §5's line. The bars are the same four colours the Home pillars wear, which is the argument for; four of them in one 3-cell row is the argument against.
 - **Whether the terminator still reads at 2.13–2.33:1** against a coloured fill, or whether `met` now rests entirely on the fill's length and the label's word.
+
+### FB3 — more pop, and over drawn past the mark (2026-09-21, no migration)
+
+The owner's note on the device checklist, on the FB2 build, verbatim: *"size of the bars is ok as i stated in a prompt prior, but the colors should pop a little more, the blue could also go over the bar again for overflow"*. Three answers: the height and the terminator stay (6px / 3px); the fill moves to a new **`bar` cut**; and a day past its target draws the excess **past the mark**, in the accent. **Presentation only** — `macroGrade` and its identity with `kcalLevel` / `proteinLevel` are untouched, and so is every grade §12b asserts.
+
+#### The `bar` cut — the most colour each hue has at 4.5:1
+
+FB2's fills were the ink cuts, and the ink cuts are TEXT cuts — darkened for reading, not for colour. On the rail they measured 4.17–4.56:1, three of four under 4.5: legible, near-isoluminant, and drab at arm's length. Each state gets **one** new step, `signal-*-bar` (`tailwind.config.js`, mirrored as `palette.signalBar` in `src/constants/theme.ts`): at the state's own hue — held to within 0.9° of the swatch in OKLCh — the most chromatic sRGB colour that still clears **4.5:1 on the rail**. Derived, not picked; the derivation is written beside the tokens.
+
+| state | swatch, on the rail | FB2 ink cut, on the rail | **`bar` cut (shipped)** | on the rail | on the paper | chroma vs the ink cut |
+| --- | --- | --- | --- | --- | --- | --- |
+| optimal | `#2E8B57` 2.36 ✗ | `#185A36` 4.56 | `#005B30` | **4.59:1** ✓ | 6.50:1 | +17% |
+| good | `#2C6C95` 3.16 | `#24567A` 4.34 | `#00537E` | **4.59:1** ✓ | 6.50:1 | +23% |
+| caution | `#A97B22` 2.10 ✗ | `#6E4F15` 4.17 | `#694900` | **4.56:1** ✓ | 6.46:1 | +7% |
+| poor | `#AA402C` 3.35 | `#8F3524` 4.31 | `#9D1700` | **4.56:1** ✓ | 6.46:1 | +35% |
+| unknown | — | `#5C5340` 4.21 | unchanged: the metadata ink | 4.21:1 | 5.97:1 | — |
+
+"On the paper" is `paper` `#E7E4DA`: the grid device draws no ground, so the sheet is what the room past the mark — and the gutter — sit on.
+
+- **It is the ceiling, not a step toward one.** More chroma at these hues means a lighter colour, and lighter falls under the floor. §13 walks each swatch's hue, finds the most chroma any in-gamut colour reaches at 4.5:1 on the rail, and asserts every cut is within 2% of it (100 / 100 / 99 / 102% — a cut can sit a hair above, since its hue is within a degree of the swatch's rather than on it). Caution gains least: at 4.5:1 on a light warm stock a yellow IS a brown. **Anything more colourful than this needs a different rail, not a different cut.**
+- **Neighbours separate.** In OKLab, where one just-noticeable difference is ~0.02, the nearest pair of fills moves from ΔEok **0.091** (caution–poor, the ink cuts) to **0.118** (optimal–caution) — past five JNDs — and all six pairs move apart.
+- **Still near-isoluminant** (4.56–4.59). The four sit AT the floor because that is where the chroma is, so colour stays reinforcement, never the sole cue: the label word, the mono figures and the fill's length carry the state without it.
+- **`unknown` is not raised.** A withheld verdict stays quieter than every stated one.
+- **The terminator on a fill:** 2.12–2.14:1 (FB2: 2.13–2.33) — accepted for FB2's reason; its job is done on the bare rail, at 9.74:1.
+
+#### Over target — the run past the mark
+
+C6 stopped the bar at the mark and FB2 kept that, so a 2,900 on 2,400 day drew exactly what a 2,400 day drew: a full rail. C6's objection to running the *fill* past the mark still stands — rescale the rail and a day exactly on target reads short of full — so the rail is **not** rescaled. The bar keeps room beside it instead:
+
+```
+[ fill ··········· rail ··········|▌]   gutter   [ run ·······+ ]
+  flex 1 — the target, and only it       2 px     flex OVERFLOW_CAP (0.5) — the room past it
+```
+
+- **The rail is the target.** The fill caps at 100% of it, and a met bar reaches the terminator. A day exactly on target is a full rail and nothing past it.
+- **The room is half the rail** — the flex ratio *is* `OVERFLOW_CAP` (`src/lib/nutrition/bar.ts`), the constant `barFigure` caps the run at, so the room and the cap cannot disagree. `barFigure` returns two new numbers beside `fillPct` / `met`: `overPct`, the run as a share of the rail's length (0–50), and `capped`.
+- **The cap is 150% of the rail's length.** At exactly 150% the run fills the room; past it the run stops and a `+` is knocked out of its end — two 1pt views in `pine-on`, 9.52:1 on pine. Inside the run rather than after it, so a capped run is never *shorter* than one at exactly 150%. The mono figure above says by how much.
+- **A 2px gutter of bare sheet** sits between the rail's end and the run, on every day. The run is 1.66:1 against the terminator it follows and 1.28–1.29:1 against every fill, and pine is closest in colour to the `good` cut (ΔEok 0.084 — closer than any two fills come), so butted together they would read as one longer bar. On the sheet both edges are crisp: paper against pine 8.31:1, against the fills 6.46–6.50:1.
+- **The run is the accent — "the blue" he asked for.** The fill wears the verdict's palette and the run is behaviour beyond the plan, so the two meanings sit in their two palettes and never share a colour. That is also why the run says *how far* and never *whether*: protein at +67% is an `optimal` fill with a capped pine run; kcal at +21% while maintaining is a `caution` fill with a pine run a fifth of the rail long.
+
+**Accent budget.** The fills spend none (FB2). The run is the only pine the bars add and the only new pine on the tab — Photo and Describe remain its only pine *action*. It is a state mark, the class C6's met-bar pine fill was, and it is absent on every day that stays inside its targets. **At most** — all four bars past 150% on a 393pt phone — the four runs total about **215pt of 6pt ink, ≈ 1,300pt², roughly 7%** of the ~17,900pt² the two capture buttons already spend (the hero's room is ≈ 117pt, each macro cell's ≈ 32–35pt). A plausible heavy day (+21% kcal, +11% protein, +25% carbs, +29% fat) draws about 90pt of it.
+
+**The cost, stated.** The rail is two-thirds of the bar's width on every day, over or not, so a day that is never over draws a shorter rail than FB2 did — the price of drawing over without rescaling. Height is untouched, as asked.
+
+#### Verification (FB3)
+
+- `db/nutrition-remaining.test.mjs` §12 — six run cases: under and on target draw none; 3 g on 180 g is a 1.67% sliver; 2,900 on 2,400 is 20.83%; exactly 150% fills the room without the `+`; past 150% stops at the cap with it. Plus: the fill is the full rail on every over day, and the no-frame guard draws no run.
+- `db/nutrition-remaining.test.mjs` §13 — re-derived for the new cuts and **strengthened, not relaxed**: the table above to 0.005 (fills on the rail and on the paper, the run on the sheet, the `+` on the run, the run against the terminator); why FB3 left both older cuts (the swatch under 3:1, the ink cut under 4.5:1 in three of four); **every graded fill ≥ 4.5:1** where FB2 asserted 3:1; `unknown` ≥ 3:1 and below every graded fill; more chroma than the ink cut at every hue, within 1° of the swatch; each cut at its hue's chroma ceiling; the nearest pair of fills ≥ 0.10 ΔEok where the ink cuts' was 0.091, and all six pairs further apart; still near-isoluminant; the terminator at 2.12–2.14 inside FB2's own bounds; the run's separation from the fills; and that `tailwind.config.js` and `palette.signalBar` carry the same four values.
+- `db/screens-render.test.mjs` — `readBars` now reads one anchored record per bar (level, fill, terminator, run, `+`) and only matches a room whose flex **is** `OVERFLOW_CAP`, so a drifted room fails every bar count loudly. §5b: the at-target day's protein bar draws its 1.67% sliver and nothing else runs. §5c: the fill table is the `bar` cut, and `MACRO_BAR_OVER` is `bg-pine` in every grade. **§5d, new — the over-target fixture:** 2,900 / 300 / 230 / 70 against 2,400 / 180 / 240 / 70 at 21:30 draws three full rails at their terminators — the in-budget fill capped AT the mark — and carbs short of its own; runs of 20.83% (kcal) and the full room with its `+` (protein), none for carbs (under) and none for fat (exactly on target); grades caution · optimal · optimal · optimal; and the hero, the label and the corner still say `kcal over`, `Protein over`, `2,900 of 2,400 kcal`.
+
+#### What only the phone can settle (FB3)
+
+- **Whether the new cuts pop enough.** They are the ceiling at this floor; if they still read as drab, the next lever is the rail, not the cut.
+- **Whether the bare third reads as room or as a bar cut short** on the days nothing is over — which is most days.
+- **Whether a 2px gutter reads as a seam or a flicker** at @3x, and whether the knocked-out `+` (5×5pt, 1pt strokes) is legible inside a 6pt run.
+- **Whether a sliver reads.** 3 g over 180 g is about 1pt of pine on a macro cell — honest, and possibly invisible.
+- **"Go over the bar again" has a second reading**: a second lap in blue drawn ON the bar from the left, which costs no width. This round built the brief's reading — past the mark. If the owner meant the lap, it is a change to `MacroBar` alone; `barFigure`'s `overPct` already carries the length either way.
 
 ---
 

@@ -100,10 +100,11 @@ module.exports = {
         // screenings. Never interface chrome; the accent never marks biology.
         // This firewall was a finding in all six hostile reviews.
         //
-        // TWO VALUES PER STATE, and they are not interchangeable
+        // THREE VALUES PER STATE, and they are not interchangeable
         // (00-design-spec.md §2):
         //   DEFAULT — the SWATCH. Fills and icons only, where 3:1 applies.
         //   ink     — the TEXT cut, darkened until it clears 4.5:1.
+        //   bar     — the GAUGE cut (FB3). One consumer, described below.
         //
         // The swatches are not text colours and never were: as text on paper-hi
         // they measure optimal 3.82 · good 5.13 · caution 3.41 · poor 5.44 —
@@ -114,13 +115,38 @@ module.exports = {
         // clears (4.56); good 4.34, caution 4.17 and poor 4.31 fall short, so
         // signal TEXT does not belong on paper-deep. No screen puts it there.
         //
+        // THE `bar` CUT (FB3, 2026-09-21) — added for ONE consumer, the Eat
+        // tab's macro bars (`MacroBar`, app/nutrition.tsx), after the owner
+        // judged FB2's ink-cut fills on the device: *"the colors should pop a
+        // little more."* FB2 filled the bars with the `ink` cut because the
+        // SWATCH is under the non-text floor on the `paper-deep` rail (optimal
+        // 2.36, caution 2.10); that was legible and drab — the ink cuts are the
+        // TEXT cuts, darkened for reading, not for colour.
+        //
+        // Each `bar` value is the MOST CHROMATIC colour that exists at that
+        // state's own hue while still clearing 4.5:1 against the rail. Derived,
+        // not picked: hue held to within 0.9° of the swatch in OKLCh, integer
+        // sRGB searched for maximum chroma subject to the floor. Chroma against
+        // the ink cut: optimal +17%, good +23%, caution +7%, poor +35%. On the
+        // rail 4.59 / 4.59 / 4.56 / 4.56; on `paper`, which is what the grid
+        // device actually sits on, 6.50 / 6.50 / 6.46 / 6.46.
+        //
+        // **There is no more pop available here.** Raising chroma further means
+        // lightening, and lightening drops the fill under the floor — so these
+        // four are the ceiling, and `caution` is the hue the floor costs most:
+        // at 4.5:1 on a light warm stock a yellow IS a brown, which is why its
+        // gain is 7% where poor's is 35%. Anything more colourful than this
+        // needs a different rail, not a different cut.
+        //
         // `unknown` is the metadata ink itself — an absent reading is absent,
-        // not a state — so it needs no separate cut.
+        // not a state — so it needs neither a text cut nor a bar cut, and it is
+        // deliberately left at 4.21:1 on the rail, BELOW all four graded cuts:
+        // a withheld verdict must never out-shout a stated one.
         signal: {
-          optimal: { DEFAULT: '#2E8B57', ink: '#185A36' },
-          good: { DEFAULT: '#2C6C95', ink: '#24567A' },
-          caution: { DEFAULT: '#A97B22', ink: '#6E4F15' },
-          poor: { DEFAULT: '#AA402C', ink: '#8F3524' },
+          optimal: { DEFAULT: '#2E8B57', ink: '#185A36', bar: '#005B30' },
+          good: { DEFAULT: '#2C6C95', ink: '#24567A', bar: '#00537E' },
+          caution: { DEFAULT: '#A97B22', ink: '#6E4F15', bar: '#694900' },
+          poor: { DEFAULT: '#AA402C', ink: '#8F3524', bar: '#9D1700' },
           unknown: '#5C5340',
         },
       },

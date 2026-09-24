@@ -95,7 +95,8 @@ import RecipeImportScreen, { ReviewDraft } from '../app/recipe-import.tsx';
 import RecipeFoldersScreen from '../app/recipe-folders.tsx';
 import RecipeReviseScreen from '../app/recipe-revise.tsx';
 import GroceryScreen from '../app/grocery.tsx';
-import NutritionScreen, { MACRO_BAR_FILL } from '../app/nutrition.tsx';
+import NutritionScreen, { MACRO_BAR_FILL, MACRO_BAR_OVER } from '../app/nutrition.tsx';
+import { OVERFLOW_CAP } from '../src/lib/nutrition/bar.ts';
 import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
 import NutritionHistoryScreen from '../app/nutrition-history.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
@@ -264,28 +265,50 @@ function figureDrew(name, html) {
 }
 
 /**
- * The C6 progress bars, read out of the markup.
+ * The macro bars, read out of the markup — one record per bar, in document
+ * order.
  *
  * NativeWind's className is a babel transform that does not run here, so colour
- * is invisible in a server render — `bg-pine` and `bg-ink-secondary` both come
- * out as the same empty `<div>`. What IS visible is the two things the bar
- * computes: the fill's inline `style="width:N%"`, and whether the rail holds a
- * SECOND child, which is the terminator. Those are one-to-one with the state —
- * the fill reaches 100% exactly when `met` is true, which is exactly when the
- * terminator is drawn — so the pair pins the render even though the hue does
- * not survive. The hue and its contrast are asserted numerically in
- * db/nutrition-remaining.test.mjs §13; what only a device can judge is how much
- * pine four bars plus two buttons puts on one screen.
+ * is invisible in a server render — every view in a bar comes out as the same
+ * class-less `<div>`. What IS visible is everything the bar computes, because it
+ * rides inline `style` and `testID`:
  *
- * The optional group cannot over-reach: when there is no terminator the next
- * characters after the fill are the rail's own closing tag, which does not match.
+ *   level       the grade, off the bar's own `data-testid` (FB2);
+ *   pct         the fill's `width:N%` — a share of the RAIL, which is the
+ *               target, so it tops out at 100;
+ *   terminator  whether the rail holds a second child after the fill — one-to-
+ *               one with `met`, which is exactly when the fill reaches 100%;
+ *   over        the run past the mark (FB3), as a share of the RAIL's length.
+ *               The run's own `width` is a share of the room past the mark, and
+ *               the room is `OVERFLOW_CAP` of the rail, so it converts back
+ *               exactly. `null` when no run is drawn;
+ *   cap         whether the run carries the `+`.
+ *
+ * ONE anchored pattern per bar rather than a scan for loose pieces: a run must
+ * sit in the room that immediately follows THIS bar's rail, so it can never be
+ * credited to a neighbour; and the room must declare `flex:` OVERFLOW_CAP, so a
+ * bar whose room drifted from the cap `barFigure` draws against stops matching
+ * and every count below fails loudly instead of passing on the wrong geometry.
+ * The hue and its contrast are asserted numerically in
+ * db/nutrition-remaining.test.mjs §13.
  */
 function readBars(html) {
-  const pattern =
-    /<div class="css-view-g5y9jx" style="width:([\d.]+)%"><\/div>(<div class="css-view-g5y9jx"><\/div>)?/g;
+  const div = '<div class="css-view-g5y9jx"';
+  const roomFlex = String(OVERFLOW_CAP).replace('.', '\\.');
+  const pattern = new RegExp(
+    'data-testid="macro-bar-(optimal|good|caution|poor|unknown)">' +
+      `${div} style="flex:1">${div} style="width:([\\d.]+)%"></div>(${div}></div>)?</div>` +
+      `${div}></div>` +
+      `${div} style="flex:${roomFlex}">` +
+      `(?:${div} style="width:([\\d.]+)%" data-testid="macro-over">(${div} data-testid="macro-over-cap">)?)?`,
+    'g'
+  );
   return [...html.matchAll(pattern)].map((m) => ({
-    pct: Number(m[1]),
-    terminator: m[2] !== undefined,
+    level: m[1],
+    pct: Number(m[2]),
+    terminator: m[3] !== undefined,
+    over: m[4] === undefined ? null : Number(m[4]) * OVERFLOW_CAP,
+    cap: m[5] !== undefined,
   }));
 }
 
@@ -307,10 +330,37 @@ function barsDrawn(name, html, count, metCount) {
 }
 
 /**
+ * The runs past the mark (FB3), bar by bar. `expected[i]` is `[over, capped]`:
+ * the run's length as a share of the rail, or `null` for no run at all. Every
+ * bar that draws a run must ALSO be a full rail carrying its terminator — the
+ * in-budget fill stops at the mark, and only the excess runs past it.
+ */
+function barsOver(name, html, expected) {
+  if (html === null) return;
+  const bars = readBars(html);
+  const say = (over, capped) =>
+    over === null ? 'none' : `${over.toFixed(2)}%${capped ? ' +' : ''}`;
+  const found = bars.map((b) => say(b.over, b.cap)).join(' · ');
+  bars.length === expected.length &&
+  bars.every(({ over, cap }, i) => {
+    const [want, capped] = expected[i];
+    return want === null
+      ? over === null && !cap
+      : over !== null && Math.abs(over - want) < 0.01 && cap === capped;
+  })
+    ? ok(`${name}: past the mark ${found}`)
+    : bad(`${name}: expected ${expected.map(([o, c]) => say(o, c)).join(' · ')}`, found);
+  const running = bars.filter((b) => b.over !== null);
+  running.every((b) => b.pct === 100 && b.terminator)
+    ? ok(`${name}: each of the ${running.length} run(s) leaves a full rail at its terminator`)
+    : bad(`${name}: a run beside a rail that is not full`, JSON.stringify(running));
+}
+
+/**
  * The GRADE each bar was coloured with, in document order (FB2).
  *
  * The class itself cannot be read here — NativeWind's babel transform does not
- * run in a server render, so `bg-signal-poor-ink` and `bg-signal-optimal-ink`
+ * run in a server render, so `bg-signal-poor-bar` and `bg-signal-optimal-bar`
  * both come out as the same class-less `<div>`, which is exactly why
  * {@link readBars} reads geometry instead. So the bar carries its level in a
  * `testID`, which react-native-web DOES emit (`data-testid`), and the level →
@@ -970,6 +1020,15 @@ const db = getDb();
     const html = render('nutrition hub (at target)', NutritionScreen);
     // 42 + 46 + 95 = 183 of a 180 g protein target.
     barsDrawn('nutrition hub (at target)', html, 4, 1);
+    // FB3: 183 of 180 g is 3 g past the mark, so the protein bar now draws a run
+    // beyond its terminator — 1.67% of the rail, a sliver, which is the honest
+    // size of 3 g. Nothing else on this day is over, so nothing else draws one.
+    barsOver('nutrition hub (at target)', html, [
+      [null, false],
+      [(3 / 180) * 100, false],
+      [null, false],
+      [null, false],
+    ]);
     expect('nutrition hub (at target)', html, [
       'Protein over', // the third cue, in words — the label already flips
       'Two scoops; the milk was whole, not skim.', // the note, still drawn
@@ -1025,13 +1084,13 @@ const db = getDb();
     // server render, so the markup above proves only that the right LEVEL
     // reached each bar; this proves the level maps to the class that colours it.
     // Whole literals, because Tailwind's scanner never sees a built fragment —
-    // a `bg-signal-${level}-ink` would compile to nothing and ship four
+    // a `bg-signal-${level}-bar` would compile to nothing and ship four
     // invisible bars.
     const expectedFill = {
-      optimal: 'h-[6px] bg-signal-optimal-ink',
-      good: 'h-[6px] bg-signal-good-ink',
-      caution: 'h-[6px] bg-signal-caution-ink',
-      poor: 'h-[6px] bg-signal-poor-ink',
+      optimal: 'h-[6px] bg-signal-optimal-bar',
+      good: 'h-[6px] bg-signal-good-bar',
+      caution: 'h-[6px] bg-signal-caution-bar',
+      poor: 'h-[6px] bg-signal-poor-bar',
       unknown: 'h-[6px] bg-signal-unknown',
     };
     const levels = Object.keys(expectedFill);
@@ -1039,18 +1098,71 @@ const db = getDb();
     Object.keys(MACRO_BAR_FILL).length === levels.length
       ? ok(`the grade → fill table is total over all ${levels.length} levels, in whole literals`)
       : bad('grade → fill table', JSON.stringify(MACRO_BAR_FILL));
-    // The INK cut, not the swatch: two of the four swatches are under 3:1 on
-    // this rail (db/nutrition-remaining.test.mjs §13 carries the measurements).
+    // The BAR cut (FB3) — neither the swatch, two of which are under 3:1 on this
+    // rail, nor FB2's ink cut, which is a TEXT cut and read as drab on the
+    // device. db/nutrition-remaining.test.mjs §13 carries the measurements.
     levels
       .filter((l) => l !== 'unknown')
-      .every((l) => MACRO_BAR_FILL[l].includes(`bg-signal-${l}-ink`))
-      ? ok('every graded fill takes the ink cut, which clears the non-text floor on paper-deep')
-      : bad('a graded fill reached for the swatch cut');
+      .every(
+        (l) =>
+          MACRO_BAR_FILL[l].includes(`bg-signal-${l}-bar`) && !MACRO_BAR_FILL[l].includes('-ink')
+      )
+      ? ok('every graded fill takes the bar cut — the most chroma its hue has at 4.5:1 on the rail')
+      : bad('a graded fill left the bar cut', JSON.stringify(MACRO_BAR_FILL));
     // The height the owner asked for, in one place: the rail and its fill must
     // not disagree, or the fill draws a stripe inside the rail.
     levels.every((l) => MACRO_BAR_FILL[l].startsWith('h-[6px] '))
       ? ok('every fill is 6px — the rail’s own height (4px before FB2)')
       : bad('a fill no longer matches the rail height');
+    // The run past the mark (FB3) is ONE literal whatever the grade: how far over
+    // the day went is behaviour, so it wears the accent and never the verdict's
+    // palette — the two meanings side by side, never sharing a colour.
+    MACRO_BAR_OVER.split(' ').includes('bg-pine') &&
+    !MACRO_BAR_OVER.includes('signal') &&
+    MACRO_BAR_OVER.split(' ').includes('h-[6px]')
+      ? ok(
+          `the run past the mark is the accent at the rail’s height, in every grade: "${MACRO_BAR_OVER}"`
+        )
+      : bad('the overflow run’s class', MACRO_BAR_OVER);
+  }
+
+  console.log('5d. Over target — the run past the mark, and the + past the cap (FB3)');
+  {
+    // The owner, from the device: "the blue could also go over the bar again
+    // for overflow." Until FB3 a bar stopped at its mark, so a day far over
+    // target drew exactly what a day ON target drew — a full rail. A dinner goes
+    // on that takes this day to 2,900 of 2,400 kcal (the example the round was
+    // cut against), 300 of 180 g protein (+67%, past the 150% cap), 230 of
+    // 240 g carbs (still under) and 70 of 70 g fat (exactly met): the four
+    // shapes a bar can take, on one screen.
+    logMeal(db, {
+      date: today,
+      time: '20:45',
+      name: 'Steak night',
+      kcal: 1060,
+      protein_g: 117,
+      carbs_g: 60,
+      fat_g: 8,
+    });
+    const html = atClock('21:30', () => render('nutrition hub (over)', NutritionScreen));
+    // The in-budget fill is capped AT the mark: three full rails with their
+    // terminators (kcal, protein, fat), and carbs short of its own.
+    barsDrawn('nutrition hub (over)', html, 4, 3);
+    barsOver('nutrition hub (over)', html, [
+      [(2900 / 2400 - 1) * 100, false], // +20.83%: a run a fifth of the rail long
+      [OVERFLOW_CAP * 100, true], // +66.7% fills the room and takes the +
+      [null, false], // under: no run
+      [null, false], // exactly on target: the mark, and nothing past it
+    ]);
+    // …and the run says HOW FAR, never WHETHER. The kcal bar is `caution` (+21%
+    // maintaining); the protein bar is `optimal` though it ran off the end of its
+    // room, because protein is one-sided. The same accent on both runs — the
+    // verdict stays in the fill.
+    barsGraded('nutrition hub (over)', html, ['caution', 'optimal', 'optimal', 'optimal']);
+    // The words agree with the geometry: the hero, the label and the corner.
+    expect('nutrition hub (over)', html, ['kcal over', 'Protein over', '2,900 of 2,400 kcal']);
+    // Put the day back, so every section below sees the day §5b left.
+    db.run('DELETE FROM meals WHERE date = ? AND name = ?', [today, 'Steak night']);
   }
 
   console.log('5b. The Eat tab — a meal waiting on a queued estimate (0057, C3)');
