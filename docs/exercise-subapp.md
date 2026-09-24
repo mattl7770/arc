@@ -1,9 +1,11 @@
 # Exercise Sub-App — Design Spec
 
 **Status:** Phase 6 — **an exercise declares what it measures** (backlog B1, migration **0046**): reps · load · time · distance per movement, so a plank is logged as a hold and a run as a time and a distance. Phase 5 before it: the live session survives the app being killed (**0045**) and exercise search tolerates how people actually type. Phase 4: body-figure freshness diagram, photo workout import (AI), saved workouts (programs retired), in-session exercise detail with bundled photos, the superset "bind" animation, and AI exercise search. AI features run through the Coach's model client and always land in an editable review; everything else stays offline.
-**Last updated:** 2026-09-14
+**Last updated:** 2026-09-23
 **Window:** parallel build, migrations **0011–0013** + **0020** + **0045** + **0046**
 **Reads:** CLAUDE.md §4/§9 · `docs/information-architecture.md` · `docs/project-status.md` ("exercise as measured data") · `db/migrations/0003_exercise.sql` · `docs/backlog-2026-09.md` (A1, A7, B1)
+
+> **Phase 10 (2026-09-23) — three owner notes from the device, no migration.** Leaving either logger no longer discards the session: it is kept exactly as an iOS kill keeps it, from its first exercise, with a Discard control of its own and one row on Home as the way back. A logged session's **duration is a field**; a live session's **start** moves in five-minute steps. Exercises **reorder** in an Order mode, where a superset moves as one. **§14** is the whole record, including the table of every way out of an open session.
 
 > **Phase 6 shipped (2026-09-14) — backlog B1, the last Phase B foundation.**
 >
@@ -333,11 +335,11 @@ The deciding constraint is the second row. Everything the training engine knows 
 
 **What survives a kill:** every exercise block and its order, every set with its weight / reps / RPE *exactly as typed* (strings, so a half-typed "1 " is still half-typed), set type, the completion stamps, the PR stamps, superset binds, the previous-session placeholders, the best-e1RM bar, the saved workout the session started from, the instant the session started (so the elapsed clock is honest, not restarted), and the rest timer's target instant if it has not already passed. The free-form logger (`workout-log.tsx`) keeps its drafted sets *and* its entry row, because that screen deliberately saves a typed-but-never-Added row.
 
-**What deliberately does not survive:** an EDIT of an already-saved session (it has a stored copy — nothing unrecorded is at risk, and a resumable edit could only re-apply half a correction); the scheduled OS rest ALERT (it was queued with expo-notifications before the kill and is still queued, so re-arming would fire it twice — only the countdown is restored); scroll position, keyboard focus and the picker sheet.
+**What deliberately does not survive:** an EDIT of an already-saved session (it has a stored copy — nothing unrecorded is at risk, and a resumable edit could only re-apply half a correction); the scheduled OS rest ALERT (it was queued with expo-notifications before the kill and is still queued, so re-arming would fire it twice — only the countdown is restored; since 2026-09-23 its id rides the draft so the resumed screen can cancel it, §14.8); scroll position, keyboard focus and the picker sheet.
 
 **Guarantees, each pinned in `db/exercise.test.mjs` §10:** the draft round-trips byte-identical across a close-and-reopen of the database file; a full draft session writes zero `workouts` and zero `workout_sets` rows and moves none of freshness / volume / PRs / placeholders / the week; discarding leaves the draft store empty and the training history untouched; finishing clears the draft only after the write succeeds; a payload from another `version`, or junk, reads as "nothing to resume" rather than throwing on the mount path.
 
-**Overwrite safety.** The logger keeps one live slot, so starting a new session while a draft exists would clobber it. Every door into the live logger on the hub therefore passes through one confirm — *Resume it* / *Start new* (destructive) / Cancel. Discarding, from the hub or from the back-out confirm, names how many sets it is about to delete.
+**Overwrite safety.** The logger keeps one live slot, so starting a new session while a draft exists would clobber it. Every door into the live logger on the hub therefore passes through one confirm — *Resume it* / *Start new* (destructive) / Cancel. Discarding, from the hub or from the logger's own **Discard workout** control, names what it is about to delete. *(Until 2026-09-23 the back-out confirm was the logger's discard; leaving no longer discards at all — §14.)*
 
 ### 9.2 A7 — the ranking, and what the resolver refuses
 
@@ -750,3 +752,94 @@ Search, nothing confident, **Add with AI** (in the results plate, under whatever
 - **Whether the door is findable where it now sits.** It moved from a standing button at the top of the picker into the results plate; the gain is that it only appears when it is the right answer, and the risk is that it appears below the fold on a long list of weak guesses.
 - **How often the gate is right.** `hack squat` is the known false negative; the real question is how many of the movements the owner actually reaches for land on the wrong side of tier 4.
 - **Whether a one-shot entry is good enough**, or whether the review card needs to be editable before Save. It is deliberately read-only for now: the manual form is one tap away and re-running the model is cheaper than building a second editor.
+
+---
+
+## 14. Phase 10 — leaving, re-timing and reordering a session (2026-09-23)
+
+Three owner notes from the device, verbatim: *"confirm in progress workouts not getting cleared, should be same for going to rest of the app"* · *"workout duration should be editable"* · *"be able to reorder exercises in a workout"*. No migration: head stays `0061`. The live logger and the logged-session editor are one screen (`app/workout-live.tsx`, editing when opened with `workoutId`); `app/workout-log.tsx` is the free-form logger, and after the review round (§14.8) it follows the same leaving rule.
+
+### 14.1 Every way out of an open session, from the code
+
+| Way out | Before | Now |
+| --- | --- | --- |
+| Header back / iOS swipe back | `beforeRemove` asked *Discard this workout?* — **Keep logging** (stay) or **Discard** (draft deleted). There was no way to leave and keep the session. The swipe was worse: the listener was added with `addListener`, which native-stack does not honour for the gesture (`NativeStackView` sets `preventNativeDismiss` only from `usePreventRemove`), so the swipe could leave while the alert was still asking. And a session with exercises but nothing typed was never written at all, so leaving it lost it silently, start instant included. | Leaves. Nothing is asked and nothing is cleared — every change is already in the slot, exactly as after an iOS kill, and a session is in the slot from its **first exercise**, typed into or not (§14.8). The one exception: if the last draft write threw, leaving asks *Leave without a saved copy?* |
+| Switching tabs | Not reachable: the logger is a root-stack screen that covers the tab bar. | Same. |
+| Pushing another screen from the logger (a block's title → exercise detail) | The logger stays mounted underneath with its state; back returns to it. Nothing lost. | Same. |
+| A notification tap (reminder, protocol item, check-in) | `router.push('/')` / `('/(tabs)/coach')` dispatches a stack PUSH, so a second `(tabs)` lands on top with the logger still mounted beneath (read from the code; a device should confirm). From there the Train hub can **resume** the same draft into a second logger, **finish** it, **discard** it or **start new** — and the logger underneath, once returned to, still held its session in memory: its next keystroke would overwrite whatever was in the slot, and its Finish would save the workout a second time. | The logger re-reads the slot whenever it regains focus (§14.2). Same session, written by the other copy → it adopts that copy. Slot emptied, or holding another session → it closes to one line and never writes, finishes or clears again. Finish checks the same thing first. |
+| App to background | Stays mounted; the draft is already written; both clocks count from instants. | Same. |
+| iOS kills the app | The draft survives in `workout_drafts` (0045). The app relaunches on Home, which said nothing; the way back was Train → Session in progress → Resume. | Same survival, plus **one row on Home** that resumes it directly (§14.3). |
+| Opening the logger again from another entry point while a draft exists | Every hub door into the live logger goes through `guardedStart` (Resume it / Start new / Cancel). Opening a logged session (`workoutId`) writes no draft, so it cannot clobber one. | Same, plus Home's row (a resume). A logger pushed without a guard over a foreign session goes stale rather than writing over it: a new screen reads the slot on mount, before its first write can land. |
+| Finish, when something after the save throws | `touchRoutineStarted`, the watch link and pair-on-save shared the save's `try`: a throw there showed *Save failed — Nothing was changed* about a workout that HAD been saved, and left its draft on screen one tap from saving it twice. | The save has its own `try`; everything after it is bookkeeping in a second one — the split `workout-log.tsx` already made. |
+
+Discarding is now its own control, **Discard workout**, under Finish (the old confirm's words and two taps), beside the hub's trash. A live session left open keeps its OS rest alert queued, as a kill already did; the resumed screen restores the countdown, does not re-arm it, and **adopts** it through the id the draft carries (§14.8), so dismissing, bumping or replacing the rest there — or Finish, or Discard, or the hub's trash — cancels it.
+
+### 14.2 The session id, and why a screen can go stale
+
+The live slot is one row, and a logger can now outlive its claim on it. So `LiveDraft` carries an optional **`sessionId`**, minted when a session starts and carried through every write, resume and start adjustment. It is **not a version bump**: a draft written before it existed is identified by its `startedAt` (`liveDraftSessionId`), which is unique per session in practice, and the next write replaces it with a real id — the reasoning that let `ingestId` land without one.
+
+`liveSlotState(stored, sessionId)` answers `free` / `mine` / `other`; only a missing row or one from another build is `free` — any draft that parses is a session, typed into or not (§14.8). The logger reads it when a new screen mounts, when it regains focus, and before Finish: nothing writes a draft except the focused logger, so those are the only moments another screen can have touched the slot, and the per-keystroke write path is unchanged. `free` means "ended elsewhere" only to a screen that had written (or resumed) the session; a fresh screen that has written nothing is simply fresh. `clearOwnDraft` refuses to delete another session.
+
+Each of those decisions is a pure function in `src/lib/exercise/draft.ts`, pinned branch by branch in `db/exercise.test.mjs` §14: `liveSlotLoss` (ended / other / still mine, and the fresh-screen case that must not read as ended), `mayClearLiveSlot`, `liveFocusDecision` (keep / adopt the other copy's write / stale) and `leaveGuard` (leave / ask about a failed write / ask about an edit's changes — it has no outcome that clears anything).
+
+### 14.3 The way back in: Train hub and Home
+
+The **Train hub's** Session in progress card is unchanged and stays the full surface (both loggers, resume or discard). **Home** gains one row under the status line: `Workout in progress · 3 sets done · started 14:02` with `RESUME ›` — see `docs/home-screen.md`. Home, because it is where the app lands after a kill, and the question it answers ("what should I do right now") sometimes has the plain answer *finish what you started*; one mono row and no device, because an open session is a fact about now and CLAUDE.md §5 allows Home one hero. It states a clock time, not an elapsed count, because Home does not tick; a session with nothing stamped yet reads `Workout in progress · started 14:02`, with no count. The free-form logger's draft is not on Home.
+
+### 14.4 Duration
+
+`workouts` stores `duration_min` (a figure) and, for a timed session, `started_at` (an instant); there is no end column. So nothing new is stored:
+
+- **A logged session edits the figure.** The editor's clock line is now `Today [ 47 ] MIN` — a number pad in the recessed stock every entry field here uses. Blank stores NULL ("no duration"); a figure the owner types must be whole minutes 1–999 (`parseDurationField`), with Save held and the margin saying why. **An untouched field never holds Save** and writes back the stored figure exactly, whatever it is — the Coach and imports can store 0, 0.3 or 1,200 minutes, and none of those round-trips through a whole-minutes field (`editedDuration`; until the review round a stored 0 held Save over a field nobody had touched). `started_at` is left alone: correcting "60, not 20" moves the end, the fact that was wrong. A changed figure (`editedDuration(…).changed`) runs a pairing pass after the save.
+- **A live session edits the START**, never the elapsed number: `started 14:02  [−5 min] [+5 min]` under the clock (`shiftSessionStart`) — the smallest honest version of "I forgot to press start", in the step people misremember by. Bounded to `[now − 6 h, now]`, the same six hours Finish's clamp records at all; a stepper that cannot move is drawn off. Finish derives both the duration and `started_at` from the start, so the correction reaches both.
+
+Every reader of a duration reads the column at query time, so the edit reaches each with nothing to invalidate — checked one by one:
+
+| Reader | Sees the edit? |
+| --- | --- |
+| Hub session line (`listRecentSessions` → `sessionDetail`) | yes — pinned, `db/exercise.test.mjs` §13 |
+| The week's cardio minutes (`weekSummary`) | yes — pinned, §13 |
+| Coach daily series (`trainingDailyTotals`) | yes — pinned, §13 |
+| Coach payload (`get_training_summary`, `get_today_snapshot`) | yes — `get_training_summary` pinned, `db/coach-tools.test.mjs` §46; the snapshot selects the same column |
+| Watch pairing — the span rule (`started_at + duration_min`) and the day rule's closest-duration / `DAY_PAIR_MIN_RATIO` test | yes, on the next pass, and the editor runs one when the figure changed — pinned, `db/wearables.test.mjs` §26. An **existing** link is not re-judged: the Unpair line on the same screen is the door out of one. |
+| Readiness strain | does not read a duration at all — it grades logged SETS (and active energy); unchanged by design |
+| Calories | ARC computes none from a duration; kcal only comes from a paired watch record, joined, never copied |
+
+### 14.5 Reorder
+
+A **Reorder** control (label voice, off the accent budget) sits above the exercise list whenever there are two things to put in order. It folds the set tables into one ruled plate — **Order** — a row per movable unit with an up and a down control; no drag library. The order is the blocks array: the draft serialises it, and Finish / Save writes the sets in block order, so `workout_sets.set_index` 1..n is the persisted order (`replaceWorkout` re-inserts in the order given). No new field.
+
+**A superset moves as one** (`src/lib/exercise/block-order.ts`). A superset is `linkedToNext` on the upper block — "bound to whatever sits below me" — so moving one member past its partner would silently re-bind it to a stranger or split the pair. The unit of movement is the segment (a maximal bound run, or one block); a segment steps past the whole neighbouring segment, never into it. The Order plate says so, and says how to move one exercise alone: split it at the seam first. A bind dangling off the last block is cleared by any move, and **removing** the lower half of a superset no longer leaves the upper half bound to whatever came next (`removeBlockKeepingBinds` — a latent bug the reorder would have exposed).
+
+The **watch pairing (0054)** is a link from the SESSION to a HealthKit record; a reorder rewrites sets under the same workout id, so the link row is untouched — pinned, `db/wearables.test.mjs` §26.
+
+**Reopening a reordered session** (`storedBlockRuns`, the same module). The editor cuts the stored flat set list back into blocks. It used to continue a block on the same movement alone and read every bind from the first group it saw per movement — so a lone Bench moved directly above a Bench + Row superset (stored `bench(–) bench(1) row(1)`) reopened as ONE Bench block with no superset, and the next Save wrote every group back as NULL. Now a run continues only on the same movement **and** the same group, and each block's bind is read from its own group against its neighbour's. Two neighbouring blocks of one movement still reopen as one block only when they share a group (or both have none) — then nothing is lost, because the merged block writes every set back with that same group. A side effect worth having: a free-text block's bind, which Save has always written, is read back too.
+
+### 14.6 Tests
+
+`db/exercise.test.mjs` §13 (segments, moves, dangling binds, removal, persisted order and groups, the start bounds, the minutes field, every reader, slot ownership, the legacy identity, Home's line) and §14 (the review round: a session from its first exercise, `liveSlotLoss` / `mayClearLiveSlot` / `liveFocusDecision` / `leaveGuard` branch by branch, the rest-alert id through the store, `editedDuration` on untouched 0 / 0.3 / 1000 / 1200.5 and on typed figures, `storedBlockRuns` on the reordered-superset probe and its neighbours, and the stored-groups round trip through the repository) · `db/wearables.test.mjs` §26 (both pairing rules read a corrected figure; a reorder keeps the link) · `db/coach-tools.test.mjs` §46 · `db/screens-render.test.mjs` §23 — the live logger is on the render walk for the first time, through a `react-native-reanimated` stub (`db/render-stubs/react-native-reanimated.mjs`; the package cannot load under node); since the review round it also renders an untouched session on Home, the hub and the logger, a stored 0-minute session with Save enabled, the reordered superset reopening with its seam, and the free-form logger's Discard control.
+
+The §13 / §46 / §26 "every reader" rows call `replaceWorkout` directly: they prove the readers read the column, not that the editor writes the right figure. The editor's half is `editedDuration`, pinned in §14.
+
+### 14.7 What only a device can settle
+
+- **Leaving by swipe.** The gesture was never blocked natively; what is new is that nothing is asked. Confirm no alert appears over a screen that has already gone.
+- **A notification tap mid-session** — that it pushes the tabs over the logger (as read from `router.push`), and that coming back to the logger after finishing or discarding from the hub shows the one-line notice rather than the old session.
+- **The rest alert after leaving mid-rest** — it is now left queued on purpose; whether it fires while elsewhere in the app is the same unconfirmed question §6 already carries. And that the resumed screen's dismiss / next set / Finish really cancels the adopted one.
+- **An untouched session kept.** Tapping Start and backing straight out now leaves a Session in progress card and a Home row until it is discarded. Whether that reads as honest or as noise is the owner's call on the device.
+- **Home's row** — whether one mono line is enough presence after a kill, and whether `RESUME ›` reads as a door.
+- **The start steppers** — whether five minutes is the right step, and whether the row crowds the clock line on a 375pt screen.
+- **Reorder** — whether folding the set tables away is the right shape for a long session, and whether 44pt arrows in a plate are easy to hit mid-set.
+- **The free-form logger's way out** — that backing out of *Log a session* now leaves quietly and the hub's card brings the draft back, and whether *Discard session* under Save is findable.
+
+### 14.8 The review round (2026-09-23)
+
+An independent review of the first cut found five things the code did not do as this section claimed. Each is fixed, and each fix is pinned in `db/exercise.test.mjs` §14 or `db/screens-render.test.mjs` §23.
+
+- **A session is kept from its first exercise, typed into or not** (`liveSessionOpen`). The first cut still wrote a draft only once a value was typed, so a saved workout started, warmed up for and left to check Home came back as nothing: no Home row, no hub card, and starting it again restarted the clock. That was the owner's complaint itself. Now the write-through runs whenever the session has a block — on mount, for a session started from a saved workout — and the hub's card, Home's row, the logger's Resume and the slot protection all accept any draft `parseLiveDraft` accepts. `draftBlocksHaveData` is narrowed to what it always really decided: whether Finish can run, and what Discard says it deletes. The cost is one Discard for a session started by mistake; §14.7 asks the owner whether that is noise. Because a new session's first write now happens on mount, before the focus check runs, a **new screen reads the slot in its initial state**: a session already there (reachable only past the hub's Resume it / Start new question) sends the screen stale instead of being overwritten. After mount only the focus check can find the slot changed, since nothing writes a draft except the focused logger.
+- **The rest alert rides the draft** (`LiveDraft.restAlertId`, optional, no version bump). The first cut left the alert queued on leaving but gave the resumed screen no way to reach it, so a dismissed rest, a ±15, the next set's rest, a Finish or a Discard all left the old alert to buzz at its original time. Now the resumed screen adopts the id (and so does a screen adopting another copy's write on focus), and the hub's trash and *Start new* cancel it before clearing the slot. One window stays open: an id that arrives from iOS after the screen has already gone (the schedule is async — milliseconds) never reaches the draft; that alert still fires on time, it just cannot be cancelled early.
+- **A reordered superset survives a reopen** (`storedBlockRuns`, §14.5).
+- **An untouched duration never holds Save** (`editedDuration`, §14.4).
+- **The free-form logger leaves the same way.** `app/workout-log.tsx` asked *Discard this workout?* on back, so the two loggers did opposite things on one gesture. It now goes through the same `leaveGuard`: backing out keeps the draft (the hub's Session in progress card resumes it), a failed draft write is the only question, and *Discard session* (*Discard workout* in its live mode) is a muted control under Save, the old confirm's words and two taps. Its write-through also records a write only once it lands, as the live logger's does. Its draft is still not on Home: a past session being typed up is not a fact about now.
+
+What the review round did not add: the free-form logger has no session id, so the notification-tap double stack §14.1 fixes for the live logger is still possible there. That predates this change — a push over the logger never went through `beforeRemove` — and is left as an open question rather than a second copy of §14.2.

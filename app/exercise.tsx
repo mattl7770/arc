@@ -18,12 +18,13 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
-import { clearWorkoutDraft } from '@/lib/db/repositories/workout-drafts';
+import { clearWorkoutDraft, readWorkoutDraft } from '@/lib/db/repositories/workout-drafts';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
 import {
   draftAgeLabel,
   liveDraftMovements,
   liveDraftSetsDone,
+  parseLiveDraft,
   type ManualDraft,
 } from '@/lib/exercise/draft';
 import { dayLabel, ingestDetail, sessionDetail, sessionTitle } from '@/lib/exercise/format';
@@ -33,6 +34,7 @@ import type { IngestedWorkout } from '@/lib/db/repositories/workout-ingest';
 import { deviceLabel } from '@/lib/db/repositories/wearables';
 import { useTrainingHub, useWorkoutDrafts } from '@/hooks/use-training';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
+import { cancelRestAlert } from '@/lib/notifications/rest-timer';
 
 /**
  * Exercise sub-app hub (docs/exercise-subapp.md). It renders at two routes: as
@@ -120,9 +122,20 @@ export default function ExerciseScreen() {
   const resumeLive = () => router.push({ pathname: '/workout-live', params: { resume: '1' } });
   const resumeManual = () => router.push({ pathname: '/workout-log', params: { resume: '1' } });
 
-  /** Discard one draft slot and re-read, so the hub stops offering it. */
+  /**
+   * Discard one draft slot and re-read, so the hub stops offering it.
+   *
+   * A live session left mid-rest still has its "Rest complete" alert queued in
+   * iOS (2026-09-23), and its id rides the draft. Discarding the session — here,
+   * or through Start new — cancels that alert too, or it would buzz about a
+   * workout that no longer exists.
+   */
   const dropDraft = (key: 'live' | 'manual') => {
     try {
+      if (key === 'live') {
+        const live = parseLiveDraft(readWorkoutDraft(getDb(), 'live')?.value ?? null);
+        void cancelRestAlert(live?.restAlertId ?? null);
+      }
       clearWorkoutDraft(getDb(), key);
     } catch (error) {
       console.warn('[exercise] draft clear failed', error);
@@ -207,7 +220,9 @@ export default function ExerciseScreen() {
       'Discard this workout?',
       setsLogged > 0
         ? `${setsLogged} ${setsLogged === 1 ? 'set' : 'sets'} logged in it will be deleted. This cannot be undone.`
-        : 'What you typed will be deleted. This cannot be undone.',
+        : // Since 2026-09-23 a live session is kept from its first exercise,
+          // so this can be a session with nothing typed in it yet.
+          'Anything typed in it will be deleted. This cannot be undone.',
       [
         { text: 'Keep it', style: 'cancel' },
         { text: 'Discard', style: 'destructive', onPress: () => dropDraft(key) },

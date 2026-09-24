@@ -2067,9 +2067,10 @@ const db = getDb();
       'Resume',
     ]);
 
-    // A draft with structure but nothing typed is NOT offered: those blocks are
-    // reproducible by starting the saved workout again, and a Resume that
-    // restores nothing typed is a Resume that wasted a tap.
+    // A draft with structure but nothing typed IS offered (reversed 2026-09-23).
+    // It used to be dropped as reproducible — but leaving the logger no longer
+    // discards, and a saved workout started, warmed up for and left to check
+    // Home came back as nothing, its start instant gone with it.
     saveWorkoutDraft(db, 'live', {
       version: DRAFT_VERSION,
       startedAt: Date.now(),
@@ -2092,8 +2093,11 @@ const db = getDb();
         },
       ],
     });
-    refute('exercise hub (empty draft)', render('exercise hub (empty draft)', ExerciseScreen), [
+    expect('exercise hub (untouched draft)', render('exercise hub (untouched draft)', ExerciseScreen), [
       'Session in progress',
+      'Barbell Row',
+      'Nothing logged yet',
+      'Resume',
     ]);
     clearWorkoutDraft(db, 'live');
 
@@ -5296,6 +5300,230 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
   card.includes('Nothing has been written. The Coach is suspended until you answer.')
     ? ok('the card still states where a write goes, that it happens once, and what NOW means')
     : bad('a consequence line went with the tail');
+}
+
+// -------------------------------------------------------------------------
+// Owner, on the device, 2026-09-23: "confirm in progress workouts not getting
+// cleared, should be same for going to rest of the app" · "workout duration
+// should be editable" · "be able to reorder exercises in a workout". What a
+// server render can prove is the first frame of each: the way back in from
+// Home, the controls each mode draws, and the ones it must not. The taps, the
+// focus check and the back gesture are device facts.
+console.log('\n23. the live logger — the way back in, reorder, and a session’s minutes');
+{
+  refute('home (no session open)', render('home (no session open)', HomeScreen), [
+    'Workout in progress',
+  ]);
+
+  const set = (key, over) => ({
+    key,
+    weight: '',
+    reps: '',
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: false,
+    pr: false,
+    ...over,
+  });
+  const block = (key, exerciseId, name, linkedToNext, sets) => ({
+    key,
+    exerciseId,
+    name,
+    loggingType: 'weight_reps',
+    measures: 'reps,load',
+    mechanic: 'compound',
+    restSec: 180,
+    prev: [],
+    bestE1rm: null,
+    linkedToNext,
+    sets,
+  });
+  saveWorkoutDraft(db, 'live', {
+    version: DRAFT_VERSION,
+    sessionId: 'render-session',
+    startedAt: Date.now() - 12 * 60_000,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [
+      block(1, 'barbell-bench-press', 'Barbell Bench Press', true, [
+        set(1, { weight: '80', reps: '8', done: true }),
+      ]),
+      block(2, 'barbell-row', 'Barbell Row', false, [set(2, { weight: '70', reps: '10' })]),
+      block(3, 'lat-pulldown', 'Lat Pulldown', false, [set(3)]),
+    ],
+  });
+
+  // Leaving the logger keeps the session, so Home has to be a way back to it —
+  // one quiet line, not a card.
+  const home = render('home (a session open)', HomeScreen);
+  expect('home (a session open)', home, ['Workout in progress · 1 set done · started ', 'Resume']);
+
+  // The resumed logger: the start and its correction, the reorder door (two
+  // units — the superset and the pulldown), and Discard as its own control now
+  // that leaving no longer discards.
+  const resumed = render('workout-live (resumed)', WorkoutLiveScreen, { resume: '1' });
+  expect('workout-live (resumed)', resumed, [
+    'elapsed',
+    'started ',
+    '−5 min',
+    '+5 min',
+    'Reorder',
+    'Barbell Bench Press',
+    'Finish workout',
+    'Discard workout',
+  ]);
+  refute('workout-live (resumed)', resumed, [
+    'Save changes',
+    'Delete session',
+    'Duration in minutes',
+  ]);
+  clearWorkoutDraft(db, 'live');
+
+  // A blank session: nothing typed, so nothing to discard and nothing to order.
+  const blank = render('workout-live (new, blank)', WorkoutLiveScreen);
+  // `aria-disabled` is the control for the 0-minute case below: Finish on an
+  // empty sheet is off, and this is how the render says so.
+  expect('workout-live (new, blank)', blank, [
+    'elapsed',
+    'started ',
+    'Nothing logged yet.',
+    'aria-disabled="true"',
+  ]);
+  refute('workout-live (new, blank)', blank, ['Discard workout', 'Reorder']);
+
+  // A logged session: its minutes are a field (a number pad, so the Done-key
+  // check above sees it too), and the live-only controls are gone.
+  const edited = logWorkout(db, { date: todayISODate(), kind: 'strength', durationMin: 47 }, [
+    { exercise: 'Barbell Row', exerciseId: 'barbell-row', reps: 8, weightKg: 70 },
+    { exercise: 'Barbell Bench Press', exerciseId: 'barbell-bench-press', reps: 5, weightKg: 90 },
+  ]);
+  const session = render('workout-live (editing)', WorkoutLiveScreen, { workoutId: edited });
+  expect('workout-live (editing)', session, [
+    'Duration in minutes',
+    'value="47"',
+    'Reorder',
+    'Save changes',
+    'Delete session',
+  ]);
+  refute('workout-live (editing)', session, ['elapsed', '−5 min', 'Discard workout']);
+  db.run('DELETE FROM workouts WHERE id = ?', [edited]);
+
+  // --- the review round ------------------------------------------------------
+  // A session with nothing typed is still a session: left to check Home, it is
+  // offered back there and on the logger, with Discard as its way out.
+  saveWorkoutDraft(db, 'live', {
+    version: DRAFT_VERSION,
+    sessionId: 'render-untouched',
+    startedAt: Date.now() - 4 * 60_000,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [
+      block(1, 'barbell-bench-press', 'Barbell Bench Press', false, [set(1), set(2)]),
+      block(2, 'barbell-row', 'Barbell Row', false, [set(3)]),
+    ],
+  });
+  const homeUntouched = render('home (an untouched session open)', HomeScreen);
+  expect('home (an untouched session open)', homeUntouched, [
+    'Workout in progress · started ',
+    'Resume',
+  ]);
+  refute('home (an untouched session open)', homeUntouched, ['set done', 'sets done']);
+  const untouched = render('workout-live (resumed, untouched)', WorkoutLiveScreen, { resume: '1' });
+  expect('workout-live (resumed, untouched)', untouched, [
+    'Barbell Bench Press',
+    'Barbell Row',
+    'Discard workout',
+  ]);
+  // A NEW logger opened over that session (past the hub's Resume it / Start new
+  // question) writes its draft on mount, so it reads the slot first and closes
+  // to the notice rather than overwriting the session there.
+  const intruder = render('workout-live (new, over an open session)', WorkoutLiveScreen, {
+    exerciseIds: 'barbell-row',
+  });
+  expect('workout-live (new, over an open session)', intruder, [
+    'A different workout is in progress now.',
+  ]);
+  refute('workout-live (new, over an open session)', intruder, ['Finish workout']);
+  clearWorkoutDraft(db, 'live');
+
+  // An untouched stored figure never holds Save, whatever it is — the Coach can
+  // store 0 minutes, and the field cannot show a whole minute for it.
+  const zero = logWorkout(db, { date: todayISODate(), kind: 'strength', durationMin: 0 }, [
+    { exercise: 'Barbell Row', exerciseId: 'barbell-row', reps: 8, weightKg: 70 },
+  ]);
+  const zeroHtml = render('workout-live (editing, 0 min stored)', WorkoutLiveScreen, {
+    workoutId: zero,
+  });
+  expect('workout-live (editing, 0 min stored)', zeroHtml, ['value="0"', 'Save changes']);
+  refute('workout-live (editing, 0 min stored)', zeroHtml, [
+    'The duration won’t save',
+    'aria-disabled="true"',
+  ]);
+  db.run('DELETE FROM workouts WHERE id = ?', [zero]);
+
+  // A lone bench moved above a Bench + Row superset reopens with the superset
+  // drawn — the seam chip — rather than merged into one Bench block.
+  const reordered = logWorkout(db, { date: todayISODate(), kind: 'strength', durationMin: 40 }, [
+    { exercise: 'Barbell Bench Press', exerciseId: 'barbell-bench-press', reps: 5, weightKg: 90 },
+    {
+      exercise: 'Barbell Bench Press',
+      exerciseId: 'barbell-bench-press',
+      reps: 5,
+      weightKg: 90,
+      supersetGroup: 1,
+    },
+    {
+      exercise: 'Barbell Row',
+      exerciseId: 'barbell-row',
+      reps: 8,
+      weightKg: 70,
+      supersetGroup: 1,
+    },
+  ]);
+  const reopened = render('workout-live (editing, bench then bench+row)', WorkoutLiveScreen, {
+    workoutId: reordered,
+  });
+  expect('workout-live (editing, bench then bench+row)', reopened, [
+    'Supersetted with the exercise above',
+  ]);
+  const benchPlates = (reopened ?? '').split('Barbell Bench Press. Open history').length - 1;
+  benchPlates === 2
+    ? ok('workout-live (editing, bench then bench+row): two Bench plates, not one merged block')
+    : bad('workout-live (editing, bench then bench+row): Bench plates', String(benchPlates));
+  db.run('DELETE FROM workouts WHERE id = ?', [reordered]);
+
+  // The free-form logger follows the same rule: leaving keeps its draft, so
+  // throwing it away is its own control, shown once there is something to lose.
+  refute('workout-log (new)', render('workout-log (new)', WorkoutLogScreen, { mode: 'past' }), [
+    'Discard session',
+  ]);
+  saveWorkoutDraft(db, 'manual', {
+    version: DRAFT_VERSION,
+    startedAt: Date.now() - 6 * 60_000,
+    mode: 'past',
+    kind: 'cardio',
+    durationText: '30',
+    sets: [],
+    exercise: '',
+    repsText: '',
+    weightText: '',
+    timeText: '',
+    distanceText: '',
+    measures: 'reps,load',
+    entryDirty: false,
+  });
+  expect(
+    'workout-log (resumed)',
+    render('workout-log (resumed)', WorkoutLogScreen, { resume: '1' }),
+    ['value="30"', 'Save session', 'Discard session']
+  );
+  clearWorkoutDraft(db, 'manual');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
