@@ -61,7 +61,7 @@ import {
   setStaple,
 } from '../src/lib/db/repositories/grocery.ts';
 
-import { logWorkout } from '../src/lib/db/repositories/exercise.ts';
+import { deleteWorkout, logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import { clearWorkoutDraft, saveWorkoutDraft } from '../src/lib/db/repositories/workout-drafts.ts';
 import { DRAFT_VERSION } from '../src/lib/exercise/draft.ts';
 import { importProgressPhotos } from '../src/lib/media/progress-photo-store.ts';
@@ -88,6 +88,11 @@ import WaterScreen from '../app/water.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import ExerciseDetailScreen from '../app/exercise-detail.tsx';
 import RoutineEditScreen from '../app/routine-edit.tsx';
+// The two set grids. They joined the walk with the stopwatch clock field
+// (2026-09-23): workout-live needed a Reanimated stub and both needed
+// `useNavigation` from the expo-router stub — see db/render-hook.mjs.
+import WorkoutLiveScreen from '../app/workout-live.tsx';
+import WorkoutLogScreen from '../app/workout-log.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
 import RecipeEditScreen from '../app/recipe-edit.tsx';
@@ -4476,6 +4481,168 @@ console.log('\n21. The Plan screen — today, a day ahead, and the past days beh
     : bad('the empty day lost the Plan link');
   for (const id of active) db.run('UPDATE protocols SET is_active = 1 WHERE id = ?', [id]);
   rederiveMissionForDay(db, today);
+}
+
+/**
+ * 22. The set clock fills from the right. Owner, on device, 2026-09-23:
+ * *"plank time should not require me to put in a colon, should automatically
+ * fill right to left"*.
+ *
+ * What a render proves is the half a keystroke cannot: that every set grid's
+ * time field is a NUMBER PAD — react-native-web turns `number-pad` into
+ * `inputMode="numeric"`, while the retired `numbers-and-punctuation` emits no
+ * inputMode at all, so the attribute IS the keyboard — that it carries the Done
+ * bar (`enterKeyHint`), and that a duration the field did not type itself draws
+ * as its clock: a stored set in the editor, and a draft on resume. The
+ * keystrokes are pure rules, pinned in db/exercise.test.mjs §12; a server render
+ * fires no events.
+ */
+console.log(
+  '\n22. The set clock — a number pad in every set grid, and a stored 90 s set draws 1:30'
+);
+{
+  /** Every `<input>` whose aria-label starts with `label`, as attribute maps, in document order. */
+  const inputsFor = (html, label) =>
+    (html?.match(/<input[^>]*>/g) || [])
+      .filter((tag) => tag.includes(`aria-label="${label}`))
+      .map((tag) =>
+        Object.fromEntries([...tag.matchAll(/([a-zA-Z-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]))
+      );
+  const clockPad = (name, input, draws) => {
+    if (!input) {
+      bad(`${name}: no time field rendered`);
+      return;
+    }
+    input.inputMode === 'numeric'
+      ? ok(`${name}: the time field is a number pad, not the punctuation keyboard`)
+      : bad(`${name}: time field keyboard`, JSON.stringify(input));
+    input.enterKeyHint === 'done'
+      ? ok(`${name}: …with the Done bar`)
+      : bad(`${name}: no Done bar on the time field`);
+    input.value === draws
+      ? ok(`${name}: it draws "${draws}"`)
+      : bad(`${name}: expected "${draws}"`, `value="${input.value}"`);
+  };
+
+  // THE EDITOR. A stored plank of 90 s, and a run long enough to need the hour.
+  const storedId = logWorkout(db, { date: todayISODate(), kind: 'strength' }, [
+    { exercise: 'Plank', exerciseId: 'plank', durationSec: 90 },
+    {
+      exercise: 'Treadmill Run',
+      exerciseId: 'treadmill-run',
+      durationSec: 5450,
+      distanceM: 8000,
+    },
+  ]);
+  const editor = render('workout-live (editing a stored session)', WorkoutLiveScreen, {
+    workoutId: storedId,
+  });
+  expect('workout-live (editing a stored session)', editor, [
+    'Plank',
+    'Treadmill Run',
+    'mm:ss', // the column label, in the label voice, unchanged
+    'Save changes',
+  ]);
+  const [plankTime, runTime] = inputsFor(editor, 'Time for set 1');
+  clockPad('workout-live (editing) · a stored 90 s plank', plankTime, '1:30');
+  clockPad('workout-live (editing) · a stored 5,450 s run', runTime, '1:30:50');
+
+  // THE LIVE LOGGER, RESUMED. Three sets, three ways a time reaches the field.
+  saveWorkoutDraft(db, 'live', {
+    version: DRAFT_VERSION,
+    startedAt: Date.now() - 5 * 60_000,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [
+      {
+        key: 1,
+        exerciseId: 'plank',
+        name: 'Plank',
+        loggingType: 'duration',
+        measures: 'time',
+        mechanic: 'isolation',
+        restSec: 60,
+        prev: [],
+        bestE1rm: null,
+        linkedToNext: false,
+        sets: [
+          // Typed by the previous build on the punctuation keyboard, where a
+          // bare number was SECONDS — so it must draw 1:30, not 0:90.
+          { key: 1, weight: '', reps: '', rpe: '', time: '90', distance: '' },
+          // Typed on the new field and left mid-number: not normalised until
+          // commit, so it comes back exactly as it was left.
+          { key: 2, weight: '', reps: '', rpe: '', time: '1:90', distance: '' },
+          { key: 3, weight: '', reps: '', rpe: '', time: '', distance: '' },
+        ].map((s) => ({ ...s, setType: 'normal', done: false, pr: false })),
+      },
+    ],
+  });
+  const resumed = render('workout-live (resumed draft)', WorkoutLiveScreen, { resume: '1' });
+  expect('workout-live (resumed draft)', resumed, ['Plank', 'Finish workout']);
+  clockPad(
+    'workout-live (resumed) · a bare 90 from the old keyboard',
+    inputsFor(resumed, 'Time for set 1')[0],
+    '1:30'
+  );
+  clockPad(
+    'workout-live (resumed) · a set left mid-typing',
+    inputsFor(resumed, 'Time for set 2')[0],
+    '1:90'
+  );
+  clockPad('workout-live (resumed) · an empty set', inputsFor(resumed, 'Time for set 3')[0], '');
+  clearWorkoutDraft(db, 'live');
+
+  // THE FREE-FORM LOGGER, RESUMED on a plank: its entry row is the other set grid.
+  saveWorkoutDraft(db, 'manual', {
+    version: DRAFT_VERSION,
+    startedAt: Date.now(),
+    mode: 'past',
+    kind: 'strength',
+    durationText: '',
+    sets: [],
+    exercise: 'Plank',
+    repsText: '',
+    weightText: '',
+    timeText: '1:30',
+    distanceText: '',
+    measures: 'time',
+    entryDirty: true,
+  });
+  const freeForm = render('workout-log (resumed on a plank)', WorkoutLogScreen, { resume: '1' });
+  expect('workout-log (resumed on a plank)', freeForm, ['they fill from the right']);
+  // The margin note described the old field; it must not come back.
+  refute('workout-log (resumed on a plank)', freeForm, ['A bare number is seconds']);
+  clockPad(
+    'workout-log (resumed on a plank)',
+    inputsFor(freeForm, 'Time in minutes and seconds')[0],
+    '1:30'
+  );
+  clearWorkoutDraft(db, 'manual');
+
+  // THE SWEEP, over source: a keyboard type and an `onFocus` leave no trace a
+  // render could show when the field is not on screen, so the rule that no set
+  // grid kept its own clock input is read where it is written.
+  const source = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+  const GRIDS = ['app/workout-live.tsx', 'app/workout-log.tsx'];
+  const field = source('src/components/exercise/duration-field.tsx');
+  [...GRIDS.map(source), field].every(
+    (text) => !text.includes('keyboardType="numbers-and-punctuation"')
+  )
+    ? ok('no set duration is typed on the punctuation keyboard any more')
+    : bad('a set grid still offers keyboardType="numbers-and-punctuation"');
+  GRIDS.every((file) => source(file).includes('<DurationField'))
+    ? ok('both set grids draw the one DurationField')
+    : bad('a set grid has its own time input');
+  field.includes('keyboardType="number-pad"') &&
+  field.includes('returnKeyType={KEYPAD_DONE}') &&
+  field.includes('selectAllOnFocus(')
+    ? ok('the field is a number pad with the Done bar, and still selects on focus (A3)')
+    : bad('DurationField lost its keyboard, its Done bar or A3');
+
+  // Leave the database as the section found it: Home renders next.
+  deleteWorkout(db, storedId);
 }
 
 // -------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
+import { DurationField } from '@/components/exercise/duration-field';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
@@ -157,7 +158,9 @@ function entryMeasuresNote(
   if (time && distance) {
     return 'Time and distance are optional — log either, or both. Distance is stored in metres.';
   }
-  if (time) return 'Time is optional, in minutes and seconds. A bare number is seconds.';
+  if (time) {
+    return 'Time is optional. Type the digits and they fill from the right — 1 3 0 is 1:30.';
+  }
   if (weight && distance) {
     return 'Load and distance are optional. Weight is entered in lb and stored in kg; distance in metres.';
   }
@@ -280,8 +283,12 @@ export default function WorkoutLogScreen() {
     setEntryDirty(true);
   };
   const changeTime = (t: string) => {
+    // Only a change of VALUE dirties the row. The clock field re-spells its
+    // text when editing ends ("1:90" → "2:30", the same 150 s), and that blur
+    // routinely lands just after Add set — marking the row dirty then would
+    // save the set just added a second time.
+    if (parseClock(t) !== parseClock(timeText)) setEntryDirty(true);
     setTimeText(t);
-    setEntryDirty(true);
   };
   const changeDistance = (t: string) => {
     setDistanceText(t);
@@ -646,17 +653,13 @@ export default function WorkoutLogScreen() {
             {showTime ? (
               <View className="min-w-[88px] flex-1">
                 <Field>
-                  <TextInput
+                  {/* The same clock field as the live logger's set grid: a
+                      number pad, digits filling from the right, no colon to
+                      reach for (owner, 2026-09-23). */}
+                  <DurationField
                     value={timeText}
                     onChangeText={changeTime}
                     placeholder="Time (mm:ss)"
-                    placeholderTextColor={palette.inkMuted}
-                    // A colon is on no iOS number pad, so this takes the full
-                    // punctuation keyboard; KEYPAD_DONE is set regardless so the
-                    // dismissal rule reads the same at every field here.
-                    keyboardType="numbers-and-punctuation"
-                    returnKeyType={KEYPAD_DONE}
-                    className="py-2.5 font-mono text-[15px] text-ink"
                     accessibilityLabel="Time in minutes and seconds"
                   />
                 </Field>

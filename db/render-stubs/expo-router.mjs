@@ -49,6 +49,19 @@ export function useRouter() {
 export function useFocusEffect() {}
 
 /**
+ * The navigation handle the two workout loggers (app/workout-live.tsx,
+ * app/workout-log.tsx) take for their unsaved-work guard. They only ever call
+ * it inside an effect — `addListener('beforeRemove', …)` — and a server render
+ * runs no effects, so the handle only has to exist for the screens to render.
+ */
+export function useNavigation() {
+  return {
+    addListener: () => () => {},
+    dispatch: () => {},
+  };
+}
+
+/**
  * The static singleton some components import for imperative navigation
  * outside the render tree (e.g. src/components/exercise/exercise-picker.tsx,
  * which the routine-edit walk pulled in — A9). Records the same way

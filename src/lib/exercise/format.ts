@@ -269,10 +269,14 @@ export function formatClock(totalSec: number): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Seconds a user typed into a `mm:ss` field, or null.
+ * Seconds a `mm:ss` field holds, or null — the reader for every set duration
+ * the loggers save.
  *
- * TOLERANT, because a number pad on iOS has no colon and this field therefore
- * takes the full `numbers-and-punctuation` keyboard, where the user can type
+ * Since 2026-09-23 the field is a number pad that draws its own colons
+ * (src/lib/exercise/clock-entry.ts), so what reaches this is always `m:ss` or
+ * `h:mm:ss`, possibly with seconds past 59 until commit ("1:90" → 150). It stays
+ * TOLERANT because a draft written by an earlier build holds whatever was typed
+ * on the old full `numbers-and-punctuation` keyboard, where the user could type
  * anything:
  *
  *   "45:00"    → 2700   the intended form

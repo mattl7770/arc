@@ -40,7 +40,17 @@ import {
   weeklyMuscleSets,
 } from '../src/lib/db/repositories/training-stats.ts';
 import { muscleFreshness } from '../src/lib/exercise/freshness.ts';
-import { lbToKg, sessionDetail, sessionTitle } from '../src/lib/exercise/format.ts';
+import { lbToKg, parseClock, sessionDetail, sessionTitle } from '../src/lib/exercise/format.ts';
+import {
+  CLOCK_ENTRY_MAX_DIGITS,
+  clockFieldShows,
+  clockToDigits,
+  commitClock,
+  digitsToClock,
+  digitsToSeconds,
+  pressClockKey,
+  secondsToClock,
+} from '../src/lib/exercise/clock-entry.ts';
 
 let pass = 0;
 let fail = 0;
@@ -919,6 +929,257 @@ console.log('11. an exercise declares what it measures, and a set carries only t
     ? ok('distance_m is metres and cannot be negative')
     : bad('distance CHECK missing');
   raw.close();
+}
+
+// ---------------------------------------------------------------------------
+// Owner, on device, 2026-09-23: "plank time should not require me to put in a
+// colon, should automatically fill right to left". The set clock is a plain
+// number pad now and the colons are drawn. These are its rules, pure, and the
+// proof that the stored value did not move: every text the field produces is
+// read by `parseClock` — the loggers' reader, unchanged — as exactly the
+// seconds its digits mean (src/lib/exercise/clock-entry.ts).
+console.log('12. the set clock fills from the right, and stores what it always stored');
+{
+  // Type keys into a field holding `start`, as src/components/exercise/
+  // duration-field.tsx does: the first key may replace (A3), the rest shift.
+  const type = (keys, start = '', replace = false) => {
+    let digits = start;
+    let first = replace;
+    const drawn = [];
+    for (const key of keys) {
+      digits = pressClockKey(digits, key, first);
+      first = false;
+      drawn.push(digitsToClock(digits));
+    }
+    return { digits, drawn: drawn.join(' ') };
+  };
+
+  // --- every example in the ask ---------------------------------------------
+  const filled = type(['1', '3', '0', '5', '0']);
+  filled.drawn === '0:01 0:13 1:30 13:05 1:30:50'
+    ? ok('1 → 0:01 · 13 → 0:13 · 130 → 1:30 · 1305 → 13:05 · 13050 → 1:30:50')
+    : bad('fill from the right', filled.drawn);
+  [
+    ['1', 1],
+    ['13', 13],
+    ['130', 90],
+    ['1305', 785],
+    ['13050', 5450],
+  ].every(([d, s]) => digitsToSeconds(d) === s && parseClock(digitsToClock(d)) === s)
+    ? ok('…each is the seconds it reads as, and parseClock reads the drawn clock the same')
+    : bad('digit seconds');
+
+  // --- backspace --------------------------------------------------------------
+  type(Array(6).fill('Backspace'), '13050').drawn === '13:05 1:30 0:13 0:01  '
+    ? ok('Backspace shifts the last digit back out, down to empty, then does nothing')
+    : bad('backspace', type(Array(6).fill('Backspace'), '13050').drawn);
+
+  // --- the colon is drawn, never typed ----------------------------------------
+  ['Enter', 'Tab', ':', '.', ',', ' ', 'a', ''].every((k) => pressClockKey('130', k) === '130')
+    ? ok('a colon, a point, Enter or a letter moves nothing — only digits and Backspace do')
+    : bad('a non-digit key moved the buffer');
+  pressClockKey('1', '30') === '130'
+    ? ok('a key reporting several digits is taken one digit at a time')
+    : bad('multi-digit key', pressClockKey('1', '30'));
+
+  // --- leading zeros ----------------------------------------------------------
+  type(['0', '0', '4', '5']).drawn === '  0:04 0:45'
+    ? ok('a leading zero moves nothing on the clock (0 0 4 5 → 0:45) and spends no place')
+    : bad('leading zero', type(['0', '0', '4', '5']).drawn);
+  type(['5', '0', '0']).drawn === '0:05 0:50 5:00'
+    ? ok('…but a zero after a digit is a digit (5 0 0 → 5:00)')
+    : bad('inner zero', type(['5', '0', '0']).drawn);
+
+  // --- empty ------------------------------------------------------------------
+  digitsToClock('') === '' &&
+  digitsToSeconds('') === null &&
+  clockFieldShows('') === '' &&
+  clockToDigits('') === '' &&
+  commitClock('') === ''
+    ? ok('empty draws nothing (the placeholder shows), means nothing, and commits to empty')
+    : bad('empty');
+  parseClock(commitClock('')) === null
+    ? ok('…so an empty field still saves no duration — NULL, not zero')
+    : bad('empty saves a value');
+
+  // --- seconds past 59: normalised on commit, not rejected --------------------
+  const ninety = type(['1', '9', '0']);
+  ninety.drawn === '0:01 0:19 1:90' && digitsToSeconds(ninety.digits) === 150
+    ? ok('1 9 0 reads 1:90 while it is typed — nothing is refused — and means 150 s')
+    : bad('190 while typing', JSON.stringify(ninety));
+  commitClock('1:90') === '2:30' && parseClock('1:90') === 150 && parseClock('2:30') === 150
+    ? ok('…and settles to 2:30 on commit: the same 150 s, re-spelled')
+    : bad('commit 1:90', commitClock('1:90'));
+  // Why not normalise as they type: 1 9 0 5 is 19:05. Normalising at the 0 would
+  // have turned the buffer into 2 3 0 and put the 5 on 23:05.
+  type(['1', '9', '0', '5']).drawn.endsWith('19:05')
+    ? ok('digits typed after an un-normalised pair land where they were typed (1905 → 19:05)')
+    : bad('typing past 1:90', type(['1', '9', '0', '5']).drawn);
+  commitClock('0:75') === '1:15' &&
+  commitClock('60:00') === '1:00:00' &&
+  commitClock('99:99') === '1:40:39'
+    ? ok('minutes past 59 carry into hours the same way (60:00 → 1:00:00, 99:99 → 1:40:39)')
+    : bad(
+        'minute carry',
+        [commitClock('0:75'), commitClock('60:00'), commitClock('99:99')].join(' ')
+      );
+  commitClock('2:30') === '2:30' && commitClock(commitClock('9:99:99')) === commitClock('9:99:99')
+    ? ok('commit is idempotent — a normal clock is left exactly as it is')
+    : bad('commit is not idempotent');
+
+  // --- the hour boundary ------------------------------------------------------
+  digitsToClock('5959') === '59:59' && digitsToSeconds('5959') === 3599
+    ? ok('5959 → 59:59, the last four-digit clock, one second under the hour')
+    : bad('5959');
+  digitsToClock('10000') === '1:00:00' && digitsToSeconds('10000') === 3600
+    ? ok('10000 → 1:00:00: the fifth digit is the hour')
+    : bad('10000');
+  secondsToClock(3599) === '59:59' &&
+  secondsToClock(3600) === '1:00:00' &&
+  secondsToClock(3661) === '1:01:01'
+    ? ok('a stored duration opens as m:ss under the hour and h:mm:ss from it')
+    : bad('hour boundary from seconds', [3599, 3600, 3661].map(secondsToClock).join(' '));
+
+  // --- the maximum ------------------------------------------------------------
+  CLOCK_ENTRY_MAX_DIGITS === 5 &&
+  pressClockKey('95959', '1') === '95959' &&
+  type(['1', '2', '3', '4', '5', '6']).digits === '12345'
+    ? ok('five digits is the most the field takes — a sixth is refused')
+    : bad('max digits');
+  digitsToClock('95959') === '9:59:59' &&
+  digitsToSeconds('95959') === 35999 &&
+  secondsToClock(35999) === '9:59:59'
+    ? ok('…and 9:59:59, five digits, is the longest set the schema stores (duration_sec < 36000)')
+    : bad('9:59:59');
+  // Five digits can still spell more than the schema takes. That is left exactly
+  // as typed for the loggers' own over-limit guard to name — never clamped.
+  digitsToClock('99999') === '9:99:99' && parseClock('9:99:99') === 38439
+    ? ok('9:99:99 is kept as typed (38,439 s) for the over-limit guard to flag, not clamped')
+    : bad('over-limit kept');
+  commitClock('9:99:99') === '10:40:39' &&
+  clockToDigits('10:40:39') === '104039' &&
+  pressClockKey('104039', '5') === '104039' &&
+  digitsToClock(pressClockKey('104039', 'Backspace')) === '1:04:03'
+    ? ok('…its commit reads 10:40:39, takes no further digit, and Backspace still edits it')
+    : bad('over-limit commit', commitClock('9:99:99'));
+
+  // --- A3: select on focus, reconciled with the microwave ---------------------
+  type(['2', '0', '0'], '130', true).drawn === '0:02 0:20 2:00'
+    ? ok(
+        'a filled field just focused: the first DIGIT starts a new number (2 0 0 over 1:30 → 2:00)'
+      )
+    : bad('first digit replaces', type(['2', '0', '0'], '130', true).drawn);
+  type(['Backspace', '5'], '130', true).drawn === '0:13 1:35'
+    ? ok('…but a first BACKSPACE edits the last digit, it does not clear (1:30 → 0:13 → 1:35)')
+    : bad('first backspace', type(['Backspace', '5'], '130', true).drawn);
+  type(['0', '4', '5'], '130', true).drawn === ' 0:04 0:45'
+    ? ok('…and a first 0 starts the number over as empty, as a leading zero does anywhere')
+    : bad('first zero', type(['0', '4', '5'], '130', true).drawn);
+  type(['5'], '', true).drawn === '0:05'
+    ? ok('replacing an empty field is just typing into it')
+    : bad('replace on empty');
+
+  // --- an existing value opens as its digits ----------------------------------
+  const stored = secondsToClock(90);
+  stored === '1:30' && clockFieldShows(stored) === '1:30' && clockToDigits(stored) === '130'
+    ? ok('a stored 90 s set opens as 1:30 — the digits 1 3 0')
+    : bad('stored 90 s', JSON.stringify([stored, clockFieldShows(stored), clockToDigits(stored)]));
+  digitsToClock(pressClockKey(clockToDigits(stored), 'Backspace')) === '0:13'
+    ? ok('…so one Backspace edits its last digit (1:30 → 0:13)')
+    : bad('stored backspace');
+  clockFieldShows('1:90') === '1:90' && clockToDigits('1:90') === '190'
+    ? ok('a draft saved mid-typing (1:90) comes back exactly as it was left, not normalised')
+    : bad('mid-typing draft');
+
+  // --- a stored zero ----------------------------------------------------------
+  // duration_sec >= 0 admits it. Drawn blank, the editor's delete-and-reinsert
+  // would re-save a set nobody touched as NULL.
+  secondsToClock(0) === '0:00' &&
+  clockFieldShows('0:00') === '0:00' &&
+  commitClock('0:00') === '0:00' &&
+  parseClock('0:00') === 0
+    ? ok('a stored 0 s set opens as 0:00, not blank, and saves back as 0 untouched')
+    : bad('stored zero');
+  clockToDigits('0:00') === '' &&
+  digitsToClock(pressClockKey(clockToDigits('0:00'), 'Backspace', true)) === '' &&
+  digitsToClock(pressClockKey(clockToDigits('0:00'), '5', true)) === '0:05'
+    ? ok('…and has no digits of its own: a Backspace clears it, a digit replaces it')
+    : bad('zero digits');
+
+  // --- drafts typed on the old punctuation keyboard ---------------------------
+  // A v3 draft written by the previous build holds whatever was typed there,
+  // and a bare number was SECONDS. It must draw the seconds it will save.
+  const legacy = [
+    ['90', '1:30', 90],
+    ['130', '2:10', 130], // looks like 1:30 now; it was 130 seconds
+    ['5:', '5:00', 300], // a trailing colon, mid-typing
+    ['45:0', '45:00', 2700], // a half-typed second
+    ['01:30', '1:30', 90],
+    [' 1:30 ', '1:30', 90],
+    ['1:05:30', '1:05:30', 3930],
+  ];
+  const misread = legacy.filter(
+    ([text, shows, s]) =>
+      clockFieldShows(text) !== shows ||
+      parseClock(text) !== s ||
+      digitsToSeconds(clockToDigits(text)) !== s ||
+      parseClock(commitClock(text)) !== s
+  );
+  misread.length === 0
+    ? ok('an old draft draws the seconds it will save: 90 → 1:30, 130 → 2:10, 5: → 5:00')
+    : bad('legacy drafts', JSON.stringify(misread));
+  clockFieldShows('1:3a') === '' &&
+  clockToDigits('1:3a') === '' &&
+  commitClock('1:3a') === '' &&
+  parseClock('1:3a') === null
+    ? ok('…and text parseClock cannot read draws empty and saves no duration, as it always did')
+    : bad('legacy junk');
+
+  // --- the stored value is unchanged: exhaustively ----------------------------
+  // Every buffer the field can hold — 1 to 5 digits, no leading zero — draws a
+  // clock that `parseClock` reads as exactly the seconds its digits mean, and
+  // that reopens as the same digits.
+  const drift = [];
+  let buffers = 0;
+  for (let n = 1; n < 100000 && drift.length < 5; n++) {
+    const digits = String(n);
+    const text = digitsToClock(digits);
+    buffers++;
+    if (
+      parseClock(text) !== digitsToSeconds(digits) ||
+      clockToDigits(text) !== digits ||
+      clockFieldShows(text) !== text ||
+      parseClock(commitClock(text)) !== parseClock(text)
+    ) {
+      drift.push(digits);
+    }
+  }
+  drift.length === 0 && buffers === 99999
+    ? ok(
+        `all ${buffers} buffers draw a clock parseClock reads as their own seconds, reopen as themselves, and keep their seconds through commit`
+      )
+    : bad('buffer round-trip', drift.join(' '));
+  // Every storable second opens as a normal clock that saves back as itself and
+  // that commit leaves alone — so opening a stored session and closing it again
+  // changes nothing, and the free-form logger's "only a change of value dirties
+  // the row" test can never see a re-spelling as an edit.
+  const secDrift = [];
+  for (let s = 0; s < 36000 && secDrift.length < 5; s++) {
+    const text = secondsToClock(s);
+    if (
+      parseClock(text) !== s ||
+      commitClock(text) !== text ||
+      clockFieldShows(text) !== text ||
+      text.replace(/:/g, '').replace(/^0+/, '').length > CLOCK_ENTRY_MAX_DIGITS
+    ) {
+      secDrift.push(s);
+    }
+  }
+  secDrift.length === 0
+    ? ok(
+        'every storable duration (0 … 35,999 s) opens as a clock of ≤ 5 digits that saves back as itself'
+      )
+    : bad('seconds round-trip', secDrift.join(' '));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

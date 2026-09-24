@@ -94,7 +94,14 @@ export type DraftSet = {
    * (`parseClock` reads it), `distance` is a number in the user's own distance
    * unit — metres are canonical only once the set is saved. Strings for the
    * same reason every other field here is one: a draft must round-trip what is
-   * half-written, and "4:" is a legal thing to be in the middle of typing.
+   * half-written, and "1:90" is a legal thing to be in the middle of typing.
+   *
+   * Since 2026-09-23 `time` is written by the stopwatch field
+   * (src/components/exercise/duration-field.tsx), which draws its own colons —
+   * "1:90" is the digits 1 9 0, and settles to "2:30" only when editing ends.
+   * The shape and its reader did not change, so `DRAFT_VERSION` did not either;
+   * a draft typed on the old punctuation keyboard ("90", "5:") still reads the
+   * way it was typed (src/lib/exercise/clock-entry.ts `clockToDigits`).
    */
   time: string;
   distance: string;
