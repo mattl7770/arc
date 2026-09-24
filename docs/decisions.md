@@ -168,6 +168,19 @@ Phase-2 commit is reverted on any of four measured signals over a week of use.
 
 ## 2026-09-19 — Modes are retired: a status is a fact, and the Coach is what adapts the day
 
+> **Superseded in part, 2026-09-23: Home's line is gone, and the door names the status.** The
+> owner, on the device: *"i think it would be better if the status button just changed to say
+> 'Sick' or whatever the currently active status is."* The control beside the date now reads
+> `STATUS` with nothing on and the status itself when one is (`SICK`, `SICK +1` for several). The
+> mono line above the hero was removed, because it restated the same fact. What only the line said
+> (the age, the excusal, the excluded baseline days and the *"no recovery verdict until it ends"*
+> escalation) is now the header of the sheet the door opens. Below, *"a line above the hero and one
+> small control beside the date"*, Q5(c)'s *"the line AND a control"* and *"Home's line seeding the
+> same re-ask"* are left as written. They describe 2026-09-19 to 2026-09-23. The re-ask is now the
+> door, then the on-chip. (The Coach tab's own chips had already gone behind the same door on
+> 2026-09-21.) The rest of this ADR stands. See `docs/information-architecture.md` §Status and
+> `docs/spikes/coach-status-buttons-modes-retirement.md` items 0 and 0b.
+
 **Decision:** the Modes system is **retired**. `day_statuses` (migration `0061`) replaces it, and
 the governing rule is one sentence:
 

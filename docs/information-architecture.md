@@ -379,10 +379,28 @@ Check what's up and adjust accordingly."* · *"I'm back home. …"* · *"My inju
 better. …"*, and *"X is over. …"* for a status the Coach recorded, whose free
 text cannot be conjugated. The ask stays on the end because on the day a status
 ends that sentence is the Coach's only cue — the state block drops the status at
-once, and its *"ended yesterday"* revert cue prints tomorrow, and never while
-another status is still running.
+once, and its *"ended yesterday"* revert cue prints tomorrow.
 (`src/lib/status/chips.ts`; Off day and Night out carry lines too, but end
 tonight and draw no ×.)
+
+**Two handoff defects, fixed 2026-09-23 (branch `claude/fb-followups`, no
+migration).**
+
+- *The revert cue was withheld while any other status ran.* It printed only
+  when nothing was open, so ending Sick on day 3 of a trip told the Coach
+  nothing the next morning. It now prints on its own `Status:` line whether or
+  not another status is open, and is withheld for one case only: the same label
+  running again today, where *"put back what it took out"* would contradict the
+  open line (`src/lib/ai/turn-context.ts`; `db/turn-context.test.mjs` §S).
+- *After one × on the Coach tab, Home's prompts stopped reaching the composer.*
+  The tab kept the × seed in state and read it ahead of the `prompt` param, and
+  never cleared it, so for as long as the tab stayed mounted a status tapped on
+  Home wrote its row with no prompt following it. Both sources now go through
+  one counter where the latest seed wins, and the tab drops the `prompt` param
+  once it has taken it, so the same sentence sent twice from Home arrives twice
+  (`src/lib/status/composer-seed.ts`; `db/statuses.test.mjs` §8). The render
+  suite cannot drive a param change, so the wiring in `app/(tabs)/coach.tsx` is
+  pinned by source, and that the composer reseeds on a real tab is a phone check.
 
 **What the door shows — one face, on both surfaces (2026-09-23).** Until then
 the two faces differed by what else was on the screen: Home's door read

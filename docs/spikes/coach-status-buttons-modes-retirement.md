@@ -102,6 +102,8 @@ What changed, on branch `claude/fb-statusname`, no migration:
   line is the Coach's only cue — the state block drops the status at once and prints *"ended
   yesterday"* tomorrow, and never while another status is still running (it prints only when
   none is — a gap in `turn-context.ts` that predates this change).
+  *(Closed 2026-09-23, `claude/fb-followups`: the cue now prints on its own line beside an open
+  status, and is withheld only for a label that is running again today.)*
 - **Two consequences, both deliberate.** The Coach tab re-reads the open statuses after every
   turn: a `set_status` write never passes through the status store's broadcast, and the door is
   now the one place that screen says a status is on. And `useReadiness` no longer subscribes to

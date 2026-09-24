@@ -48,8 +48,8 @@ no background-delivery entitlement:
 
 ```json
 ["@kingstinct/react-native-healthkit", {
-  "NSHealthShareUsageDescription": "ARC reads sleep, heart, activity and workout data from Apple Health to power readiness and recovery, and reads the weight, body-fat percentage and waist measurements stored there so a smart scale keeps your ARC record up to date.",
-  "NSHealthUpdateUsageDescription": "ARC writes the weight, body-fat percentage and waist measurements you record in ARC to Apple Health, so other apps on your iPhone can see them. Nothing else is written.",
+  "NSHealthShareUsageDescription": "ARC reads sleep, heart, activity and workout data from Apple Health to power readiness and recovery, reads the weight, body-fat percentage and waist measurements stored there so a smart scale keeps your ARC record up to date, and reads the water logged there so a glass logged on your watch or in another app counts toward your day.",
+  "NSHealthUpdateUsageDescription": "ARC writes the weight, body-fat percentage, waist and water you record in ARC to Apple Health, so other apps on your iPhone can see them. Nothing else is written.",
   "background": false
 }]
 ```
@@ -1836,6 +1836,25 @@ glass in the Health app. By the parity rule (`docs/coach-domains.md`) the Coach 
 screen calls, so the water domain now goes through `editWaterCapture` / `removeWaterCapture` like
 the water screen and the Log tab's Undo. Pinned in `db/coach-domains.test.mjs`; no schema or prompt
 text changed, so both Coach ceilings are untouched.
+
+### 20.9 The read string names water too (2026-09-23)
+
+§20.6 updated the WRITE string for water, and §15 had noted that a read scope needs no new
+Info.plist key. Both statements were true. But the READ string, `NSHealthShareUsageDescription`,
+still listed only sleep, heart, activity, workouts and the three body measurements. So the sheet
+that asked for Water told him why ARC reads everything except water. It now ends:
+*"…and reads the water logged there so a glass logged on your watch or in another app counts toward
+your day."* The §1 code block above carries both current strings; it had kept the pre-water ones.
+
+**This is an Info.plist string, so it reaches the phone only with the next native build.** The
+build on his phone keeps the old sentence. Nothing breaks in the meantime: water was already
+requested under the old wording, and iOS does not present the sheet again for a type it has
+already asked about. The new wording is what a fresh install, or a reset of Health permissions,
+will show.
+
+`db/health-mapping.test.mjs` §8c pins it structurally. Every type ARC both reads and writes needs
+a word in the test's table, and that word must appear in both strings. A new two-way type fails
+until it is named in both.
 
 ---
 

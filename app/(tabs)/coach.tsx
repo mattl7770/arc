@@ -1,4 +1,4 @@
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useNavigation } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -27,6 +27,7 @@ import { useStatuses } from '@/hooks/use-statuses';
 import { getDb } from '@/lib/db/client';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import type { RailChip } from '@/lib/status/chips';
+import { composerKey, NO_SEED, seedFromParam, seedFromRail } from '@/lib/status/composer-seed';
 import { endOpenStatus, toggleStatus } from '@/lib/status/store';
 
 /**
@@ -123,13 +124,18 @@ import { endOpenStatus, toggleStatus } from '@/lib/status/store';
 export default function CoachScreen() {
   const keySet = useSessionKeySet();
   const { reminders, reload: reloadReminders, complete, dismiss } = useReminders();
-  // A screen may route here holding a question it wants asked — today only the
-  // Protocols hub's empty state ("Ask the Coach to draft one"). It SEEDS the
-  // composer and never sends: a turn the user did not press send on would spend
-  // a model call on wording they never saw. A repeated param arrives as string[]
-  // despite the generic, so it is coerced like every other deep-linked param.
+  // A screen may route here holding a question it wants asked — Home's status
+  // door, and the Protocols hub's empty state ("Ask the Coach to draft one").
+  // It SEEDS the composer and never sends: a turn the user did not press send
+  // on would spend a model call on wording they never saw. A repeated param
+  // arrives as string[] despite the generic, so it is coerced like every other
+  // deep-linked param.
   const params = useLocalSearchParams<{ prompt?: string | string[] }>();
   const seededPrompt = Array.isArray(params.prompt) ? params.prompt[0] : params.prompt;
+  // THIS route's handle, typed to the one call made on it (dropping the param
+  // once taken — see the composer's seed below). The untyped default is keyed
+  // to a root param list that declares no `prompt`.
+  const navigation = useNavigation<{ setParams: (params: { prompt?: string }) => void }>();
 
   // Read above the turn callback, because a turn can change it.
   const statuses = useStatuses();
@@ -198,16 +204,26 @@ export default function CoachScreen() {
   const hasReminders = reminders.length > 0;
   const decisionOpen = chat.pendingWrite !== null;
 
-  // --- The status door ------------------------------------------------------
+  // --- The composer's seed ----------------------------------------------------
   //
-  // A SECOND source of seeded text, beside the deep-linked `prompt` param: the
-  // end gesture seeds rather than sends, because ending a status is bookkeeping
-  // that may not warrant a turn. The counter is what makes reseeding the SAME
-  // sentence twice remount the composer — ChatInput owns its draft, so the key
-  // is how a reseed reaches it, and `text` alone would be the same key.
-  const [railSeed, setRailSeed] = useState<{ text: string; n: number } | null>(null);
-  const seedText = railSeed?.text ?? seededPrompt;
-  const seedKey = railSeed ? `rail-${railSeed.n}` : (seededPrompt ?? 'composer');
+  // Two sources: the `prompt` param above, and the × in this tab's own status
+  // sheet (ending a status is bookkeeping that may not warrant a turn, so it
+  // seeds rather than sends). ONE counter keys both, and the latest wins
+  // (src/lib/status/composer-seed.ts). Until 2026-09-23 the × seed shadowed the
+  // param for as long as the tab stayed mounted, so a status set on Home after
+  // any × here wrote its row with no prompt following it.
+  //
+  // The param is read during render — React's pattern for state derived from a
+  // changing input — so the composer is keyed right on the render that sees it,
+  // not one render late. Then it is dropped from the route, because Home sends
+  // the same sentence every time a given chip goes on, and only a param that
+  // went away can arrive a second time.
+  const [seedState, setSeedState] = useState(() => seedFromParam(NO_SEED, seededPrompt));
+  const seed = seedFromParam(seedState, seededPrompt);
+  if (seed !== seedState) setSeedState(seed);
+  useEffect(() => {
+    if (seededPrompt) navigation.setParams({ prompt: undefined });
+  }, [navigation, seededPrompt]);
 
   const onStatusChip = useCallback(
     (chip: RailChip) => {
@@ -221,7 +237,7 @@ export default function CoachScreen() {
   );
   const onStatusEnd = useCallback((chip: RailChip & { openId: string }) => {
     const next = endOpenStatus(chip);
-    if (next) setRailSeed((prev) => ({ text: next.prompt, n: (prev?.n ?? 0) + 1 }));
+    if (next) setSeedState((prev) => seedFromRail(prev, next.prompt));
   }, []);
 
   return (
@@ -350,12 +366,12 @@ export default function CoachScreen() {
             onEnd={onStatusEnd}
           />
 
-          {/* The React key is the seeded prompt: ChatInput owns its draft, so
+          {/* The React key is the seed's counter: ChatInput owns its draft, so
               reseeding it means remounting it. Arriving with no prompt is the
               ordinary case and mounts exactly as before. */}
           <ChatInput
-            key={seedKey}
-            initialText={seedText}
+            key={composerKey(seed)}
+            initialText={seed.text}
             onSend={chat.send}
             disabled={chat.isResponding}
             blockedReason={decisionOpen ? 'Answer the proposed change to continue' : undefined}
