@@ -143,20 +143,31 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
     // the honest word for what happened to Recovery.
     if (readiness.recoveryPausedByStatus) line += ' No recovery verdict until it ends.';
     lines.push(line);
-  } else {
-    // THE REVERT CUE, and the reason ending a status is worth a line at all: a
-    // status the Coach bounded with update_protocol leaves a protocol version
-    // behind, and nothing but this sentence tells it the window has closed.
-    const yesterday = shiftISODate(today, -1);
-    const justEnded = statusesIn(db, yesterday, yesterday).filter(
-      (row) => row.end_date === yesterday
-    );
-    if (justEnded.length > 0) {
-      lines.push(
-        `Status: ${justEnded.map((r) => r.label).join(' and ')} ended yesterday — ` +
-          'put back what it took out.'
-      );
-    }
+  }
+  // THE REVERT CUE, and the reason ending a status is worth a line at all: a
+  // status the Coach bounded with update_protocol leaves a protocol version
+  // behind, and nothing but this sentence tells it the window has closed.
+  //
+  // Printed whether or not another status is still open (2026-09-23). It sat
+  // in the `else` of the block above until then, so ending Sick on day 3 of a
+  // trip told the Coach nothing the next morning: the cue is about the status
+  // that ENDED, and another one running has no bearing on it. Its own line, so
+  // the open line above still reads as the whole of what is on.
+  //
+  // One exclusion, by label: a status that ended yesterday and is running
+  // again today (a relapse, or a second tap after the ×). "Put back what it
+  // took out" would contradict the open line naming it.
+  const yesterday = shiftISODate(today, -1);
+  const openLabels = new Set(open.map((row) => row.label));
+  const justEnded = [
+    ...new Set(
+      statusesIn(db, yesterday, yesterday)
+        .filter((row) => row.end_date === yesterday && !openLabels.has(row.label))
+        .map((row) => row.label)
+    ),
+  ];
+  if (justEnded.length > 0) {
+    lines.push(`Status: ${justEnded.join(' and ')} ended yesterday — put back what it took out.`);
   }
   // A status the Coach scheduled ahead ("I fly out Monday"). Costs nothing on
   // every other day, and without it a later session cannot see its own booking.

@@ -1138,6 +1138,46 @@ console.log('8b. the cumulative read keeps ARC’s own water out — the echo, p
     : bad('water refused note', refusedWater);
 }
 
+console.log('8c. the permission strings name every type ARC reads back or writes (§20.9)');
+{
+  // iOS shows these two sentences when it asks. A type ARC both reads and
+  // writes is one the owner is asked about TWICE, so each sentence must say it
+  // by name. Water joined the read scopes on 2026-09-14 and the write scopes on
+  // 2026-09-21, and only the WRITE sentence was updated for it.
+  //
+  // A new two-way type fails here until it is given a word below AND that word
+  // is in both strings — the table is the one place to add it.
+  const WORD = {
+    HKQuantityTypeIdentifierBodyMass: 'weight',
+    HKQuantityTypeIdentifierBodyFatPercentage: 'body-fat',
+    HKQuantityTypeIdentifierWaistCircumference: 'waist',
+    HKQuantityTypeIdentifierDietaryWater: 'water',
+  };
+  const plugin = JSON.parse(
+    readFileSync(new URL('../app.json', import.meta.url), 'utf8')
+  ).expo.plugins.find((p) => Array.isArray(p) && p[0] === '@kingstinct/react-native-healthkit');
+  const read = plugin?.[1]?.NSHealthShareUsageDescription ?? '';
+  const write = plugin?.[1]?.NSHealthUpdateUsageDescription ?? '';
+  const unnamed = readWriteScopeOverlap().filter((id) => WORD[id] === undefined);
+  unnamed.length === 0
+    ? ok('every read+write type has a word to be named by')
+    : bad('two-way type with no word in the table', unnamed.join(','));
+  const missingRead = readWriteScopeOverlap().filter((id) => !read.includes(WORD[id] ?? id));
+  missingRead.length === 0
+    ? ok('the READ string names every type ARC also writes — water included')
+    : bad(
+        'NSHealthShareUsageDescription does not name',
+        missingRead.map((id) => WORD[id] ?? id).join(',')
+      );
+  const missingWrite = HEALTH_WRITE_IDENTIFIERS.filter((id) => !write.includes(WORD[id] ?? id));
+  missingWrite.length === 0
+    ? ok('the WRITE string names every type ARC writes')
+    : bad(
+        'NSHealthUpdateUsageDescription does not name',
+        missingWrite.map((id) => WORD[id] ?? id).join(',')
+      );
+}
+
 console.log('9. body publish mapping — units are the whole job');
 {
   const byColumn = (c) => BODY_PUBLISH_METRICS.find((m) => m.column === c);

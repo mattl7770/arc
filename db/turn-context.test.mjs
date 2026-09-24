@@ -335,6 +335,52 @@ console.log('S. the status line: two at once, the exclusion clause, and the reve
     ? ok('…and the day after THAT, nothing — it is not a sentence re-sent forever')
     : bad('revert cue outstayed its welcome', buildTurnContext(longOver, NOW));
 
+  // TWO OVERLAPPING. Sick ended yesterday while Traveling runs on: the cue is
+  // about the status that ended, and whether some other one is still open has
+  // no bearing on it. Until 2026-09-23 it printed only when NOTHING was open,
+  // so ending Sick on a trip told the Coach nothing the next day.
+  const { db: overlap } = freshDb();
+  startStatus(overlap, { label: 'traveling', startDate: isoDaysAgo(NOW, 6), source: 'user' });
+  const flu = startStatus(overlap, {
+    label: 'sick',
+    startDate: isoDaysAgo(NOW, 4),
+    source: 'user',
+  });
+  endStatus(overlap, flu.id, isoDaysAgo(NOW, 1));
+  const both = buildTurnContext(overlap, NOW);
+  const statusLines = both.split('\n').filter((l) => l.startsWith('Status:'));
+  both.includes('sick ended yesterday — put back what it took out.')
+    ? ok('ending Sick while Traveling continues still gives the revert cue the next day')
+    : bad('revert cue suppressed by an open status', both);
+  statusLines.length === 2 &&
+  statusLines[0].includes('traveling — day 7, open-ended') &&
+  !statusLines[0].includes('sick') &&
+  !statusLines[1].includes('traveling')
+    ? ok('…on its own line, after the open status, and neither line names the other')
+    : bad('overlap lines', statusLines.join(' | '));
+
+  // The same label ended yesterday and running again today (a relapse, or a
+  // second tap): "put back what it took out" would contradict the open line,
+  // so the cue is withheld for that label and only that label.
+  const { db: relapse } = freshDb();
+  const first = startStatus(relapse, {
+    label: 'sick',
+    startDate: isoDaysAgo(NOW, 3),
+    source: 'user',
+  });
+  endStatus(relapse, first.id, isoDaysAgo(NOW, 1));
+  startStatus(relapse, { label: 'sick', startDate: TODAY, source: 'user' });
+  const injury = startStatus(relapse, {
+    label: 'injured',
+    startDate: isoDaysAgo(NOW, 2),
+    source: 'user',
+  });
+  endStatus(relapse, injury.id, isoDaysAgo(NOW, 1));
+  const back = buildTurnContext(relapse, NOW);
+  !back.includes('sick ended yesterday') && back.includes('injured ended yesterday')
+    ? ok('a label running again today gets no revert cue; another that ended still does')
+    : bad('relapse cue', back);
+
   // A booking the Coach made for next week, so a later session can see it.
   const { db: booked } = freshDb();
   startStatus(booked, {

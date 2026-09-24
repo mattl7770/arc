@@ -6,6 +6,7 @@
  * baselines. op-sqlite and the model client are never loaded.
  * Run: npm run db:test.
  */
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
@@ -36,6 +37,13 @@ import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 import { deriveReadiness } from '../src/lib/home/readiness.ts';
 import { baselineExclusionsIn, hasExclusionSource } from '../src/lib/home/baseline-exclusions.ts';
+import { endPromptFor, promptFor, reaskFor } from '../src/lib/status/chips.ts';
+import {
+  composerKey,
+  NO_SEED,
+  seedFromParam,
+  seedFromRail,
+} from '../src/lib/status/composer-seed.ts';
 
 let pass = 0;
 let fail = 0;
@@ -760,6 +768,104 @@ console.log('\n7. excusing vs. baseline: the two predicates are NOT the same pre
   excusingStatusDaysIn(both, TODAY, TODAY).has(TODAY)
     ? ok('…and when two disagree on one day, the excusing one still forgives it')
     : bad('disagreement');
+}
+
+// ===========================================================================
+console.log('\n8. the seeded prompt: from either screen, it reaches the composer exactly once');
+// ===========================================================================
+{
+  // The Coach tab, reduced to what its composer is handed. `arrive(p)` is Home
+  // (or the Protocols hub) pushing the tab with `prompt: p`; `clear()` is the
+  // tab dropping the param once it has taken it; `end(text)` is the × in the
+  // tab's own sheet. "Reached" means the composer REMOUNTED holding the text:
+  // ChatInput reads `initialText` once, so a seed whose key did not change
+  // never reaches the field, whatever `text` says.
+  const tab = (param) => {
+    let seed = seedFromParam(NO_SEED, param);
+    let key = composerKey(seed);
+    const step = (next) => {
+      seed = next;
+      const was = key;
+      key = composerKey(seed);
+      return { remounted: key !== was, text: seed.text, key };
+    };
+    return {
+      first: () => ({ remounted: true, text: seed.text, key }),
+      arrive: (p) => step(seedFromParam(seed, p)),
+      clear: () => step(seedFromParam(seed, undefined)),
+      end: (text) => step(seedFromRail(seed, text)),
+      stay: () => step(seedFromParam(seed, seed.param)),
+    };
+  };
+  const reached = (r, text) => r.remounted && r.text === text;
+
+  const sick = promptFor('sick');
+  const traveling = promptFor('traveling');
+  const ended = endPromptFor('sick');
+
+  // The owner-facing failure, as a sequence: Sick from Home, then ended from
+  // the Coach tab's own sheet, then a status set on Home again.
+  const t = tab(sick);
+  reached(t.first(), sick)
+    ? ok("Home's prompt is in the composer on the tab's first mount")
+    : bad('first mount', JSON.stringify(t.first()));
+  const cleared = t.clear();
+  !cleared.remounted
+    ? ok('…and dropping the consumed param does not remount it (a draft in progress survives)')
+    : bad('clearing the param remounted the composer', JSON.stringify(cleared));
+  reached(t.end(ended), ended)
+    ? ok("the × on the Coach tab's sheet seeds its end sentence")
+    : bad('rail seed');
+  const after = t.arrive(traveling);
+  reached(after, traveling)
+    ? ok('THE LATCH: a status set on Home after that × still reaches the composer')
+    : bad('Home prompt swallowed after a rail seed', JSON.stringify(after));
+  const again = t.stay();
+  !again.remounted
+    ? ok('…exactly once: the same param on the next render does not reseed it')
+    : bad('reseeded on a plain re-render', JSON.stringify(again));
+
+  // The SAME sentence twice from Home, a × between them. Only the drop of the
+  // consumed param lets the second one register as an arrival at all.
+  const u = tab(sick);
+  u.clear();
+  u.end(ended);
+  const twice = u.arrive(sick);
+  reached(twice, sick)
+    ? ok('the same Home prompt a second time, after a ×, reaches the composer again')
+    : bad('repeat Home prompt swallowed', JSON.stringify(twice));
+
+  // The × twice in a row with the same sentence: the counter is the key.
+  const v = tab(undefined);
+  const e1 = v.end(ended);
+  const e2 = v.end(ended);
+  reached(e1, ended) && reached(e2, ended) && e1.key !== e2.key
+    ? ok('the same end sentence seeded twice remounts the composer twice')
+    : bad('rail reseed', JSON.stringify([e1, e2]));
+
+  // A tab that never received anything mounts an empty draft, keyed as before.
+  const w = tab(undefined);
+  w.first().text === undefined && composerKey(NO_SEED) === 'composer' && !w.stay().remounted
+    ? ok('no prompt: an empty composer, and nothing remounts it')
+    : bad('empty composer', JSON.stringify(w.first()));
+
+  // The other order: a Home prompt, then a × on the tab — the × still lands.
+  const x = tab(reaskFor('sick'));
+  x.clear();
+  reached(x.end(ended), ended)
+    ? ok('a × after a Home prompt reaches the composer too')
+    : bad('rail after param');
+
+  // The wiring, pinned by source: this suite cannot render the tab with
+  // changing params, so what connects the pure steps above to the screen is
+  // asserted where it is written.
+  const coach = readFileSync(new URL('../app/(tabs)/coach.tsx', import.meta.url), 'utf8');
+  /seedFromParam\(/.test(coach) &&
+  /seedFromRail\(/.test(coach) &&
+  /key=\{composerKey\(/.test(coach) &&
+  /setParams\(\{\s*prompt:\s*undefined\s*\}\)/.test(coach)
+    ? ok('coach.tsx routes both sources through the seed and drops the param it consumed')
+    : bad('coach.tsx no longer wires the seed handoff');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

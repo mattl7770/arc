@@ -45,10 +45,11 @@
  * That sentence stays on the end, rather than being trimmed for terseness,
  * because on the day a status ends the seeded line is the Coach's ONLY cue:
  * the × sets `ended`, so the state block stops listing the status at once, and
- * its *"ended yesterday"* revert cue does not print until tomorrow — and not
- * at all while another status is still running, because it prints only when
- * none is (src/lib/ai/turn-context.ts). A bare "I'm feeling better." asks for
- * nothing.
+ * its *"ended yesterday"* revert cue does not print until tomorrow
+ * (src/lib/ai/turn-context.ts). Since 2026-09-23 that cue prints whether or not
+ * another status is still running; before, it printed only when none was, so
+ * ending Sick on a trip never produced it. A bare "I'm feeling better." asks
+ * for nothing.
  */
 
 /** A status the rail draws as a fixed button. */
