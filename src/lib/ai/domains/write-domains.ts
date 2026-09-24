@@ -50,7 +50,6 @@ import {
   listMuscleAnchors,
   setMuscleAnchor,
 } from '@/lib/db/repositories/muscle-anchors';
-import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import {
   deleteProtocol,
   getCurrentVersion,
